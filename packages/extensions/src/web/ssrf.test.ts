@@ -43,6 +43,10 @@ const blockedUrls = [
   "http://[::ffff:127.0.0.1]/",
   "http://[::ffff:7f00:1]/",
   "http://[::ffff:a9fe:a9fe]/",
+  "http://[::ffff:0:7f00:1]/",
+  "http://[::ffff:0:a9fe:a9fe]/",
+  "http://[::ffff:0:10.0.0.1]/",
+  "http://localhost../",
   "http://[::127.0.0.1]/",
   "http://[64:ff9b::7f00:1]/",
   "http://[2002:7f00:1::]/",
@@ -68,6 +72,7 @@ const allowedUrls = [
   "http://100.128.0.1/",
   "http://[2606:4700:4700::1111]/",
   "http://[::ffff:8.8.8.8]/",
+  "http://[::ffff:0:808:808]/",
   "http://[2001:4860:4860::8888]/",
   "https://sub.domain.example.org/path?q=1",
 ];

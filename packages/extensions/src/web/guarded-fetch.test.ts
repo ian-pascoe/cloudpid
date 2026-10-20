@@ -89,6 +89,27 @@ describe("guardedFetch", () => {
     expect(sent).toEqual([]);
   });
 
+  it("looks up a hostname that merely starts with 0x, and refuses what it resolves to", async () => {
+    const { exit, sent, lookups } = await run(
+      "https://0x1.example.com/",
+      {},
+      { "0x1.example.com": ["127.0.0.1"] },
+    );
+
+    expect(failure(exit)).toBe("blocked: host resolves to a loopback address");
+    expect(lookups).toEqual(["0x1.example.com"]);
+    expect(sent).toEqual([]);
+  });
+
+  it("looks a name with several trailing dots up without them", async () => {
+    const { exit, lookups } = await run("https://example.com../", {
+      "https://example.com../": ok("hi"),
+    });
+
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(lookups).toEqual(["example.com"]);
+  });
+
   it("refuses a name that resolves to the metadata address over IPv6", async () => {
     const { exit } = await run(
       "https://v6.example.net/",

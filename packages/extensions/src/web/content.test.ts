@@ -3,7 +3,8 @@
 // @effect-diagnostics preferEffectArray:off globalDate:off
 import { describe, expect, it } from "vitest";
 import { convertContent, type WebFetchFormat } from "./content.ts";
-import { htmlToMarkdown } from "./html-markdown.ts";
+import { htmlToMarkdown, MAX_FRAMES, MAX_SPANS } from "./html-markdown.ts";
+import { HtmlTooDeepError, MAX_HTML_DEPTH } from "./html-parse.ts";
 
 const page = (html: string, format: WebFetchFormat): string =>
   convertContent(html, "text/html", format);
@@ -113,10 +114,7 @@ describe("htmlToMarkdown", () => {
     expect(htmlToMarkdown("")).toBe("");
   });
 
-  it("does not need stack for deep nesting, and stays linear on a multi-MiB flat page", () => {
-    expect(htmlToMarkdown(`${"<div>".repeat(50_000)}deep${"</div>".repeat(50_000)}`)).toBe("deep");
-    expect(htmlToMarkdown(`${"<ul><li>".repeat(5_000)}deep`)).toContain("deep");
-
+  it("stays linear on a multi-MiB flat page", () => {
     const flat = `<body>${"<p>text <a href='http://x.y/z'>y</a> and <b>bold</b></p>\n".repeat(90_000)}</body>`;
 
     expect(flat.length).toBeGreaterThan(5_000_000);
@@ -128,6 +126,100 @@ describe("htmlToMarkdown", () => {
     expect(Date.now() - started).toBeLessThan(15_000);
     expect(markdown.split("\n\n")).toHaveLength(90_000);
     // The default 5 s is short for a loaded CI runner.
+  }, 60_000);
+});
+
+describe("nesting", () => {
+  // Each of these is a page a hostile server could send within the 5 MiB limit. A converter that repeats every
+  // enclosing prefix on every line, or copies a span's text into each of its ancestors, takes tens of megabytes or
+  // seconds here; the bounds are loose for slow runners.
+  const timed = (convert: () => string) => {
+    const started = Date.now();
+    const output = convert();
+
+    return { output, ms: Date.now() - started };
+  };
+
+  it.each(["markdown", "text"] as const)(
+    "bounds the output of nested block quotes, and keeps their text, in %s format",
+    (format) => {
+      const html = `${"<blockquote><p>line</p>".repeat(1_000)}end${"</blockquote>".repeat(1_000)}`;
+      const { output, ms } = timed(() => page(html, format));
+
+      expect(output.length).toBeLessThan(500_000);
+      expect(output).toContain("end");
+      expect(ms).toBeLessThan(5_000);
+    },
+  );
+
+  it("bounds the output of nested lists", () => {
+    const html = `${"<ul><li>item".repeat(400)}end`;
+    const { output, ms } = timed(() => page(html, "markdown"));
+
+    expect(output.length).toBeLessThan(500_000);
+    expect(output).toContain("end");
+    expect(ms).toBeLessThan(5_000);
+  });
+
+  it("bounds the output of nesting through <article>, as main-content extraction finds it", () => {
+    const html = `<main>${"<article><blockquote><p>line</p>".repeat(500)}end</main>`;
+    const { output, ms } = timed(() => page(html, "markdown"));
+
+    expect(output.length).toBeLessThan(500_000);
+    expect(output).toContain("end");
+    expect(ms).toBeLessThan(5_000);
+  });
+
+  it("keeps the markup of the outermost prefixes and the text of the rest", () => {
+    const markdown = htmlToMarkdown(
+      `${"<blockquote>".repeat(20)}<p>one</p><p>two</p>${"</blockquote>".repeat(20)}<p>after</p>`,
+    );
+
+    expect(markdown).toBe(
+      `${"> ".repeat(MAX_FRAMES)}one\n${"> ".repeat(MAX_FRAMES - 1)}>\n${"> ".repeat(MAX_FRAMES)}two\n\nafter`,
+    );
+  });
+
+  it("converts nested inline elements in linear time, keeping the outermost markup and all the text", () => {
+    const { output, ms } = timed(() =>
+      htmlToMarkdown(`${"<b>".repeat(1_000)}deep text${"</b>".repeat(1_000)} after`),
+    );
+
+    expect(output).toBe(`${"**".repeat(MAX_SPANS)}deep text${"**".repeat(MAX_SPANS)} after`);
+    expect(ms).toBeLessThan(3_000);
+  });
+
+  it("closes the right span when inline elements nest past the limit", () => {
+    expect(
+      htmlToMarkdown(
+        `${"<i>".repeat(MAX_SPANS)}<b>inner</b> mid${"</i>".repeat(MAX_SPANS)} <b>tail</b>`,
+      ),
+    ).toBe(`${"*".repeat(MAX_SPANS)}inner mid${"*".repeat(MAX_SPANS)} **tail**`);
+  });
+
+  it.each(["markdown", "text"] as const)(
+    "refuses an unclosed-element bomb at once, in %s format",
+    (format) => {
+      // 5 MiB of `<div>` inside `<main>`: htmlparser2 alone takes minutes to open that many levels.
+      const bomb = `<main>${"<div>".repeat(1_000_000)}text`;
+      const started = Date.now();
+
+      expect(() => page(bomb, format)).toThrow(HtmlTooDeepError);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    },
+  );
+
+  it("converts a page nested up to the depth limit", () => {
+    const depth = MAX_HTML_DEPTH - 1;
+
+    expect(htmlToMarkdown(`${"<div>".repeat(depth)}deep${"</div>".repeat(depth)}`)).toBe("deep");
+    expect(() => htmlToMarkdown("<div>".repeat(MAX_HTML_DEPTH + 1))).toThrow(HtmlTooDeepError);
+  });
+
+  it("fails rather than produce more than the output limit", () => {
+    const html = `${"<blockquote>".repeat(MAX_FRAMES)}${"<p>x</p>".repeat(400_000)}`;
+
+    expect(() => htmlToMarkdown(html)).toThrow(/too large/);
   }, 60_000);
 });
 

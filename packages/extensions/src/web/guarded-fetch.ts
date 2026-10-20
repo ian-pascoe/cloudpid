@@ -22,7 +22,7 @@ const blocked = (reason: string, hop: number): WebToolError =>
 
 /** An IPv4 literal or a bracketed IPv6 literal needs no lookup: the host rules already judged the address. */
 const isLiteralAddress = (hostname: string): boolean =>
-  hostname.startsWith("[") || /^[0-9.]+$/.test(hostname) || /^0x/i.test(hostname);
+  hostname.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
 
 /**
  * Check that `url` may be fetched: an HTTP(S) URL without credentials, whose host is neither a private name nor
@@ -46,7 +46,7 @@ const checkUrl = Effect.fn("guardedFetch.checkUrl")(function* (url: URL, hop: nu
   if (isLiteralAddress(url.hostname)) return;
 
   const resolver = yield* DnsResolver;
-  const addresses = yield* resolver.resolve(url.hostname.replace(/\.$/, ""));
+  const addresses = yield* resolver.resolve(url.hostname.replace(/\.+$/, ""));
 
   const unsafe = Arr.findFirst(addresses, (address) => blockedAddressReason(address) !== undefined);
 

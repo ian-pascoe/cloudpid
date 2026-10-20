@@ -174,7 +174,11 @@ const fetchText = Effect.fn("web_fetch.fetchText")(function* (url: string, forma
 
   const content = yield* Effect.try({
     try: () => convertContent(new TextDecoder().decode(body), mime, format),
-    catch: () => WebToolError.make({ message: "the page could not be converted" }),
+    catch: () =>
+      WebToolError.make({
+        message:
+          "the page could not be converted (it is nested too deeply or is too large to convert); use format: html to read it as it came",
+      }),
   });
 
   return {

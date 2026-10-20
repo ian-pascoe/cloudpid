@@ -2,6 +2,7 @@
 // ../../NOTICE.md). The native array and string methods of its parse loop stay as they are.
 // @effect-diagnostics preferEffectArray:off
 import { Parser } from "htmlparser2";
+import { withDepthLimit } from "./html-parse.ts";
 
 /** Block elements that end the current line and separate a following block with a blank line. */
 export const PARAGRAPH_ELEMENTS: ReadonlySet<string> = new Set([
@@ -94,57 +95,59 @@ export const extractTextFromHtml = (html: string): string => {
     emit("\n".repeat(Math.max(0, newlines - trailingNewlines)));
   };
 
-  const parser = new Parser({
-    onopentag(name) {
-      if (skipDepth > 0 || OMITTED_ELEMENTS.has(name)) {
-        skipDepth++;
+  const parser = new Parser(
+    withDepthLimit({
+      onopentag(name) {
+        if (skipDepth > 0 || OMITTED_ELEMENTS.has(name)) {
+          skipDepth++;
 
-        return;
-      }
+          return;
+        }
 
-      if (name === "br") {
-        pendingSpace = false;
+        if (name === "br") {
+          pendingSpace = false;
 
-        if (parts.length > 0 && (preDepth > 0 || trailingNewlines < 2)) emit("\n");
-      } else if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
-      else if (LINE_ELEMENTS.has(name)) breakLine(1);
+          if (parts.length > 0 && (preDepth > 0 || trailingNewlines < 2)) emit("\n");
+        } else if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
+        else if (LINE_ELEMENTS.has(name)) breakLine(1);
 
-      if (name === "pre") preDepth++;
-    },
-    ontext(value) {
-      if (skipDepth > 0) return;
+        if (name === "pre") preDepth++;
+      },
+      ontext(value) {
+        if (skipDepth > 0) return;
 
-      if (preDepth > 0) {
-        emit(value);
+        if (preDepth > 0) {
+          emit(value);
 
-        return;
-      }
+          return;
+        }
 
-      const core = value.trim().replace(/\s+/g, " ");
-      const atLineStart = parts.length === 0 || trailingNewlines > 0;
-      const spaceBefore = pendingSpace || /^\s/.test(value);
+        const core = value.trim().replace(/\s+/g, " ");
+        const atLineStart = parts.length === 0 || trailingNewlines > 0;
+        const spaceBefore = pendingSpace || /^\s/.test(value);
 
-      if (core.length > 0) {
-        emit(spaceBefore && !atLineStart ? ` ${core}` : core);
-        pendingSpace = /\s$/.test(value);
-      } else if (!atLineStart && /\s/.test(value)) {
-        pendingSpace = true;
-      }
-    },
-    onclosetag(name) {
-      if (skipDepth > 0) {
-        skipDepth--;
+        if (core.length > 0) {
+          emit(spaceBefore && !atLineStart ? ` ${core}` : core);
+          pendingSpace = /\s$/.test(value);
+        } else if (!atLineStart && /\s/.test(value)) {
+          pendingSpace = true;
+        }
+      },
+      onclosetag(name) {
+        if (skipDepth > 0) {
+          skipDepth--;
 
-        return;
-      }
+          return;
+        }
 
-      if (name === "pre") preDepth = Math.max(0, preDepth - 1);
+        if (name === "pre") preDepth = Math.max(0, preDepth - 1);
 
-      if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
-      else if (LINE_ELEMENTS.has(name)) breakLine(1);
-      else if (CELL_ELEMENTS.has(name) && trailingNewlines === 0) pendingSpace = true;
-    },
-  });
+        if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
+        else if (LINE_ELEMENTS.has(name)) breakLine(1);
+        else if (CELL_ELEMENTS.has(name) && trailingNewlines === 0) pendingSpace = true;
+      },
+    }),
+  );
 
   parser.write(html);
   parser.end();

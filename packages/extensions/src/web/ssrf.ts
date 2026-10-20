@@ -151,6 +151,9 @@ const v6Reason = (g: readonly number[]): string | undefined => {
   // IPv4 address the host would reach: it must pass the IPv4 rules.
   if (zeros(0, 5) && at(5) === 0xffff) return v4Reason(v4Of(at(6), at(7)));
 
+  // SIIT (::ffff:0:a.b.c.d, ::ffff:0:0/96) translates to the IPv4 address the same way.
+  if (zeros(0, 4) && at(4) === 0xffff && at(5) === 0) return v4Reason(v4Of(at(6), at(7)));
+
   if (zeros(0, 6)) return v4Reason(v4Of(at(6), at(7))) ?? "IPv4-compatible address";
 
   if (at(0) === 0x64 && at(1) === 0xff9b && zeros(2, 6)) {
@@ -220,7 +223,7 @@ export const blockedHostReason = (hostname: string): string | undefined => {
     return groups === undefined ? "not a valid IPv6 address" : v6Reason(groups);
   }
 
-  const name = hostname.toLowerCase().replace(/\.$/, "");
+  const name = hostname.toLowerCase().replace(/\.+$/, "");
   const labels = name.split(".");
   const last = labels.at(-1) ?? "";
 

@@ -534,15 +534,13 @@ const providerRequest = (
   sessionId: string,
 ): ProviderRequest => {
   if (provider === "exa") {
-    const url = new URL(EXA_URL);
-
-    url.searchParams.set("exaApiKey", key);
-
+    // The key goes in a header, not the URL (`?exaApiKey=`): URLs are logged, headers are not.
     return {
-      url: url.toString(),
+      url: EXA_URL,
       headers: {
         accept: "application/json, text/event-stream",
         "content-type": "application/json",
+        authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({
         jsonrpc: "2.0",

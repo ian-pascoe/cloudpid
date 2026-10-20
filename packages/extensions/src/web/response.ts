@@ -43,7 +43,7 @@ const tooLarge = (maximumBytes: number): WebToolError =>
 
 /** Drop a response's body without reading it. */
 export const discardBody = (response: Response): Effect.Effect<void> =>
-  Effect.promise(() => response.body?.cancel() ?? Promise.resolve()).pipe(Effect.ignore);
+  Effect.promise(() => response.body?.cancel().catch(() => undefined) ?? Promise.resolve());
 
 /** What a bounded read found. */
 type Read = { readonly bytes: Uint8Array } | { readonly tooLarge: true };

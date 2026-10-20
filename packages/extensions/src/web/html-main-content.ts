@@ -1,7 +1,9 @@
 // Ported from @ian-pascoe/pi-web-tools (`src/html-main-content.ts`, MIT, © 2026 Ian Pascoe; see ../../NOTICE.md), unchanged but for
-// formatting. The native array methods of the original's hot parse loops stay as they are.
+// formatting and a depth limit on the parse (see html-parse.ts). The native array methods of the original's hot parse
+// loops stay as they are.
 // @effect-diagnostics preferEffectArray:off
 import { Parser } from "htmlparser2";
+import { withDepthLimit } from "./html-parse.ts";
 
 /** HTML narrowed to the part of a page a reader came for. */
 export type HtmlMainContent = {
@@ -84,73 +86,75 @@ function parsePage(html: string): ParsedPage {
   let totalChars = 0;
   const hiddenOpen = new Set<number>();
 
-  const parser = new Parser({
-    onopentag(name, attributes) {
-      const index = elements.length;
-      const parentIndex = open.at(-1) ?? -1;
-      const parentElement = elements[parentIndex];
-      const parentName = parentElement?.name;
-      elements.push({
-        name,
-        role: attributes["role"]?.trim().toLowerCase(),
-        start: parser.startIndex,
-        parent: parentIndex,
-        section:
-          parentElement === undefined
-            ? -1
-            : SECTIONING_ELEMENTS.has(parentElement.name)
-              ? parentIndex
-              : parentElement.section,
-        insideChrome:
-          parentElement !== undefined &&
-          (parentElement.insideChrome ||
-            isNavigation(parentElement) ||
-            BANNER_ELEMENTS.has(parentElement.name)),
-        end: undefined,
-      });
-      open.push(index);
+  const parser = new Parser(
+    withDepthLimit({
+      onopentag(name, attributes) {
+        const index = elements.length;
+        const parentIndex = open.at(-1) ?? -1;
+        const parentElement = elements[parentIndex];
+        const parentName = parentElement?.name;
+        elements.push({
+          name,
+          role: attributes["role"]?.trim().toLowerCase(),
+          start: parser.startIndex,
+          parent: parentIndex,
+          section:
+            parentElement === undefined
+              ? -1
+              : SECTIONING_ELEMENTS.has(parentElement.name)
+                ? parentIndex
+                : parentElement.section,
+          insideChrome:
+            parentElement !== undefined &&
+            (parentElement.insideChrome ||
+              isNavigation(parentElement) ||
+              BANNER_ELEMENTS.has(parentElement.name)),
+          end: undefined,
+        });
+        open.push(index);
 
-      if (HIDDEN_ELEMENTS.has(name)) {
-        hiddenDepth++;
-        hiddenOpen.add(index);
-      }
+        if (HIDDEN_ELEMENTS.has(name)) {
+          hiddenDepth++;
+          hiddenOpen.add(index);
+        }
 
-      // An inline SVG <title> is a label, not the page title.
-      if (
-        name === "title" &&
-        !titleDone &&
-        (parentName === undefined || parentName === "head" || parentName === "html")
-      ) {
-        titleDepth = 1;
-      }
-    },
-    ontext(value) {
-      if (titleDepth > 0) titleText += value;
-      else if (hiddenDepth === 0 && value.trim().length > 0) {
-        texts.push({ start: parser.startIndex, charsBefore: totalChars });
-        totalChars += value.trim().length;
-      }
-    },
-    onclosetag(name, isImplied) {
-      const index = open.pop();
+        // An inline SVG <title> is a label, not the page title.
+        if (
+          name === "title" &&
+          !titleDone &&
+          (parentName === undefined || parentName === "head" || parentName === "html")
+        ) {
+          titleDepth = 1;
+        }
+      },
+      ontext(value) {
+        if (titleDepth > 0) titleText += value;
+        else if (hiddenDepth === 0 && value.trim().length > 0) {
+          texts.push({ start: parser.startIndex, charsBefore: totalChars });
+          totalChars += value.trim().length;
+        }
+      },
+      onclosetag(name, isImplied) {
+        const index = open.pop();
 
-      if (index === undefined) return;
-      const element = elements[index];
+        if (index === undefined) return;
+        const element = elements[index];
 
-      if (element === undefined) return;
+        if (element === undefined) return;
 
-      if (!isImplied) element.end = parser.endIndex + 1;
+        if (!isImplied) element.end = parser.endIndex + 1;
 
-      if (hiddenOpen.delete(index)) hiddenDepth--;
+        if (hiddenOpen.delete(index)) hiddenDepth--;
 
-      if (name === "title" && titleDepth > 0) {
-        titleDepth = 0;
-        titleDone = true;
-        const normalized = titleText.replace(/\s+/g, " ").trim();
-        title = normalized.length === 0 ? undefined : normalized;
-      }
-    },
-  });
+        if (name === "title" && titleDepth > 0) {
+          titleDepth = 0;
+          titleDone = true;
+          const normalized = titleText.replace(/\s+/g, " ").trim();
+          title = normalized.length === 0 ? undefined : normalized;
+        }
+      },
+    }),
+  );
 
   parser.write(html);
   parser.end();

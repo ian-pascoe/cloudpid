@@ -86,7 +86,8 @@ describe("web_search", () => {
     });
     expect(web.sent).toHaveLength(1);
     expect(web.sent[0]?.method).toBe("POST");
-    expect(web.sent[0]?.url).toBe(`https://mcp.exa.ai/mcp?exaApiKey=${EXA_KEY}`);
+    expect(web.sent[0]?.url).toBe("https://mcp.exa.ai/mcp");
+    expect(web.sent[0]?.headers.authorization).toBe(`Bearer ${EXA_KEY}`);
     expect(web.sent[0]?.headers.accept).toBe("application/json, text/event-stream");
     expect(body(web.sent[0]).params).toEqual({
       name: "web_search_exa",

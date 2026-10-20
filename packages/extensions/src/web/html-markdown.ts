@@ -4,14 +4,19 @@
 // The original pi-web-tools used Turndown, which needs a DOM (not in Workers) and re-reads its accumulated output for
 // every sibling, so it is quadratic and the original had to split pages into pieces to keep it fast. This converter
 // streams instead: block structure is a stack of line prefixes (list markers, `> `), inline spans (emphasis, code,
-// links) are buffered until they close so their markers can wrap trimmed text, and every event is handled in constant
-// time, so a multi-MiB flat page costs the same per byte as a small one and nesting depth costs no stack.
+// links) are buffered until they close so their markers can wrap trimmed text, and every event is handled in time
+// bounded by its own size, so a multi-MiB flat page costs the same per byte as a small one and nesting depth costs no
+// stack. Nesting is bounded too, because every line repeats its prefixes and every span copies its text into its
+// parent: only the outermost `MAX_FRAMES` list items and quotes add a prefix, only the outermost `MAX_SPANS` inline
+// elements keep their markup (deeper ones pass their text through), and the output may not exceed
+// `MARKDOWN_MAX_OUTPUT_CHARS`, so cost stays linear in the input however a page nests.
 //
 // Output follows Turndown's settings in the original (ATX headings, `-` bullets, fenced code, `*` emphasis, `---`
 // rules, inline links), with these differences: lists are tight, an ordered list's `start` is honoured, and a table
 // is one line per row with cells separated by ` | ` (Turndown, without its GFM plugin, put each cell in a paragraph).
 import * as Arr from "effect/Array";
 import { Parser } from "htmlparser2";
+import { withDepthLimit } from "./html-parse.ts";
 import { LINE_ELEMENTS, PARAGRAPH_ELEMENTS } from "./html-text.ts";
 
 /** Elements whose content never reaches the Markdown, as in the original (`noscript` is kept, as Turndown kept it). */
@@ -32,6 +37,18 @@ const VOID_ELEMENTS: ReadonlySet<string> = new Set([
   "track",
   "wbr",
 ]);
+
+/** Most open list items and block quotes that add a line prefix; deeper ones are converted as their children only. */
+export const MAX_FRAMES = 16;
+
+/** Most open inline elements that keep their markup; deeper ones are converted as their children only. */
+export const MAX_SPANS = 32;
+
+/** Most characters of Markdown one page may produce; a page that would produce more fails to convert. */
+export const MARKDOWN_MAX_OUTPUT_CHARS = 20 * 1024 * 1024;
+
+/** An ordered list's number is clamped so a list marker, and with it a line prefix, stays short. */
+const MAX_LIST_NUMBER = 999_999_999;
 
 /** Elements converted as their children only: Markdown has no syntax for them, or they hold no content. */
 const HEADING = /^h([1-6])$/;
@@ -65,7 +82,7 @@ export const escapeText = (text: string, atLineStart: boolean): string => {
 const startNumber = (start: string | undefined): number => {
   const number = Number.parseInt(start ?? "1", 10);
 
-  return Number.isNaN(number) ? 1 : number;
+  return Number.isNaN(number) ? 1 : Math.min(Math.max(number, 0), MAX_LIST_NUMBER);
 };
 
 /** A URL as a Markdown destination: spaces and parentheses would end it early. */
@@ -91,11 +108,19 @@ const fenceFor = (code: string): string => {
 
 const WRAPPERS = { strong: "**", em: "*", del: "~~" } as const;
 
-/** Convert `html` to Markdown. Linear in its length; never throws on malformed input. */
+/**
+ * Convert `html` to Markdown. Linear in its length and nesting-proof; never throws on malformed input, only when the
+ * Markdown would exceed `MARKDOWN_MAX_OUTPUT_CHARS`.
+ */
 export const htmlToMarkdown = (html: string): string => {
   const out: string[] = [];
   const frames: Frame[] = [];
   const spans: Span[] = [];
+  /** Open inline elements past `MAX_SPANS`, which keep no markup: they close before any span does. */
+  let passThroughSpans = 0;
+  /** For each open list item and block quote, whether it added a frame. */
+  const containers: boolean[] = [];
+  let outputChars = 0;
   /** Cells written so far in each open table row. */
   const rowCells: number[] = [];
   /** Ordered list counters; a bullet list holds undefined. */
@@ -109,6 +134,14 @@ export const htmlToMarkdown = (html: string): string => {
   let skipDepth = 0;
   let headingDepth = 0;
   let pre: { text: string; language: string } | undefined;
+
+  const emit = (text: string): void => {
+    outputChars += text.length;
+
+    if (outputChars > MARKDOWN_MAX_OUTPUT_CHARS) throw new RangeError("Markdown output too large");
+
+    out.push(text);
+  };
 
   const prefix = (blank: boolean): string => {
     let text = "";
@@ -128,21 +161,21 @@ export const htmlToMarkdown = (html: string): string => {
   const write = (text: string): void => {
     if (gap > 0 && out.length > 0) {
       if (lineOpen) {
-        out.push("\n");
+        emit("\n");
         lineOpen = false;
       }
 
-      if (gap >= 2) out.push(`${prefix(true)}\n`);
+      if (gap >= 2) emit(`${prefix(true)}\n`);
     }
 
     gap = 0;
 
     if (!lineOpen) {
-      out.push(prefix(false));
+      emit(prefix(false));
       lineOpen = true;
     }
 
-    out.push(text);
+    emit(text);
   };
 
   const breakBefore = (newlines: 1 | 2): void => {
@@ -191,6 +224,12 @@ export const htmlToMarkdown = (html: string): string => {
   };
 
   const closeSpan = (): void => {
+    if (passThroughSpans > 0) {
+      passThroughSpans--;
+
+      return;
+    }
+
     const span = spans.pop();
 
     if (span === undefined) return;
@@ -208,6 +247,12 @@ export const htmlToMarkdown = (html: string): string => {
   };
 
   const openSpan = (span: Pick<Span, "kind" | "href">): void => {
+    if (spans.length >= MAX_SPANS) {
+      passThroughSpans++;
+
+      return;
+    }
+
     spans.push({ ...span, parts: [], spaceBefore: pendingSpace });
     pendingSpace = false;
   };
@@ -258,6 +303,19 @@ export const htmlToMarkdown = (html: string): string => {
     pre = undefined;
   };
 
+  /** A list item or block quote adds its prefix, unless it is inside an inline span or too deep. */
+  const openContainer = (frame: Frame): void => {
+    const adds = spans.length === 0 && frames.length < MAX_FRAMES;
+
+    containers.push(adds);
+
+    if (adds) frames.push(frame);
+  };
+
+  const closeContainer = (): void => {
+    if (containers.pop() === true) frames.pop();
+  };
+
   const open = (name: string, attributes: Readonly<Record<string, string>>): void => {
     if (pre !== undefined) {
       if (name === "br") pre.text += "\n";
@@ -285,7 +343,7 @@ export const htmlToMarkdown = (html: string): string => {
       case "br":
         if (spans.length > 0 || headingDepth > 0) pendingSpace = true;
         else if (lineOpen) {
-          out.push("  \n");
+          emit("  \n");
           lineOpen = false;
         }
 
@@ -366,9 +424,7 @@ export const htmlToMarkdown = (html: string): string => {
 
         block(1);
 
-        if (spans.length === 0) {
-          frames.push({ marker, indent: " ".repeat(marker.length), pending: true });
-        }
+        openContainer({ marker, indent: " ".repeat(marker.length), pending: true });
 
         return;
       }
@@ -376,7 +432,7 @@ export const htmlToMarkdown = (html: string): string => {
       case "blockquote":
         block(2);
 
-        if (spans.length === 0) frames.push({ marker: "> ", indent: "> ", pending: false });
+        openContainer({ marker: "> ", indent: "> ", pending: false });
 
         return;
       case "tr":
@@ -440,13 +496,13 @@ export const htmlToMarkdown = (html: string): string => {
 
         return;
       case "li":
-        if (spans.length === 0) frames.pop();
+        closeContainer();
 
         block(1);
 
         return;
       case "blockquote":
-        if (spans.length === 0) frames.pop();
+        closeContainer();
 
         block(2);
 
@@ -463,7 +519,7 @@ export const htmlToMarkdown = (html: string): string => {
   };
 
   const parser = new Parser(
-    {
+    withDepthLimit({
       onopentag(name, attributes) {
         if (skipDepth > 0 || UNRENDERED_ELEMENTS.has(name)) {
           skipDepth++;
@@ -483,7 +539,7 @@ export const htmlToMarkdown = (html: string): string => {
 
         if (!VOID_ELEMENTS.has(name)) close(name);
       },
-    },
+    }),
     { decodeEntities: true },
   );
 

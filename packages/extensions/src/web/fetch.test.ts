@@ -1,6 +1,6 @@
 // The tool seam: a scripted model calls `web_fetch` through a real Harness, over a fake network. Pages and the paging
 // and output expectations follow pi-web-tools' `test/web-fetch.test.ts` (MIT; see ../../NOTICE.md).
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalDate:off
 import { describe, expect, it } from "vitest";
 import { WebToolError } from "./errors.ts";
 import { openWebHarness } from "./harness.fixture.ts";
@@ -178,6 +178,21 @@ describe("web_fetch", () => {
       expect.stringContaining("Mozilla"),
       "cloudpid-web-tools",
     ]);
+  });
+
+  it("fails, quickly, on a page nested too deeply to convert, and still returns it as html", async () => {
+    const bomb = `<main>${"<div>".repeat(500_000)}text`;
+    const web = await open(page(bomb));
+    const started = Date.now();
+    const result = await web.call("web_fetch", { url: "https://example.com/page" });
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("the page could not be converted");
+
+    expect(
+      (await web.call("web_fetch", { url: "https://example.com/page", format: "html" })).isError,
+    ).toBe(false);
   });
 
   it("does not retry other failures", async () => {

@@ -54,7 +54,7 @@ const run = async (
   // SAFETY: the arguments are the tool's JSON parameters.
   (all.get(name) as ToolRegistration).execute(args as never, api, BACKGROUND_CONTEXT);
 
-describe.skipIf(!live)("live web_fetch", () => {
+describe.skipIf(!live)("live web_fetch", { timeout: 30_000 }, () => {
   it("fetches a public page as Markdown", async () => {
     const result = await run(await tools("", ""), "web_fetch", { url: "https://example.com/" });
 
@@ -86,7 +86,7 @@ describe.skipIf(!live)("live web_fetch", () => {
   });
 });
 
-describe.skipIf(!live)("live web_search", () => {
+describe.skipIf(!live)("live web_search", { timeout: 30_000 }, () => {
   it.skipIf(exa === "")("searches Exa", async () => {
     const result = await run(await tools(exa, ""), "web_search", {
       query: "Cloudflare Workers Durable Objects",
