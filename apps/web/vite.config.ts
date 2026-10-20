@@ -12,7 +12,8 @@ export default defineConfig({
   server: {
     proxy: {
       "/rpc": WORKER,
-      "/sessions": { target: WORKER, ws: true },
+      // Only the socket: the page at /sessions/:id is the app itself.
+      "^/sessions/[^/]+/socket$": { target: WORKER, ws: true },
     },
   },
 });
