@@ -1,10 +1,10 @@
 // The Container's idle stop (docs/spec.md → Container and Toolchains). computer never stops the Container it starts: its
 // connection to computerd (a WebSocket, a heartbeat timer, a container monitor) keeps the Workspace DO in memory, and
 // the platform's own inactivity timeout never fires. So the Workspace stops it: every use of the Container records the
-// time, and a Durable Object alarm destroys the Container once the idle time has passed without one. Minimal on purpose:
-// the idle time is fixed, nothing is snapshotted first, and a command that runs for the whole idle time without any
-// other use of the Container is stopped with it. The configurable time, snapshots and a keep-alive for running commands
-// come with #24 (snapshots and idle stop).
+// time, and a Durable Object alarm destroys the Container once the idle time has passed without one. A command that is
+// still running counts as use (`begin`/`end`): the alarm only waits again while one runs. Minimal on purpose: the idle
+// time is fixed and nothing is snapshotted first. The configurable time and snapshots come with #24 (snapshots and
+// idle stop).
 
 // @effect-diagnostics asyncFunction:off globalDate:off
 
@@ -28,6 +28,8 @@ export class IdleStop {
   #lastUse: number | undefined;
   #saved: number | undefined;
   #armed = false;
+  /** Commands on the Container that have begun and not ended. In memory: an evicted object has none running. */
+  #running = 0;
 
   constructor(deps: IdleStopDeps) {
     this.#deps = deps;
@@ -40,20 +42,42 @@ export class IdleStop {
     this.#lastUse = at;
 
     if (!this.#armed) {
-      this.#armed = true;
+      // Armed only once the alarm is set: a failed write leaves the next use to try again.
       await this.#deps.setAlarm(at + this.#deps.idleMs);
+      this.#armed = true;
     }
 
     // Storage is written at most this often: an evicted object then wakes to a use that is at most this old.
     if (this.#saved === undefined || at - this.#saved >= Math.min(30_000, this.#deps.idleMs / 4)) {
-      this.#saved = at;
       await this.#deps.save(at);
+      this.#saved = at;
     }
+  }
+
+  /** A command started on the Container: it is in use, however quiet, until `end`. */
+  begin(): Promise<void> {
+    this.#running++;
+
+    return this.touch();
+  }
+
+  /** A command on the Container ended (or its client went away). */
+  end(): Promise<void> {
+    this.#running = Math.max(0, this.#running - 1);
+
+    return this.touch();
   }
 
   /** The alarm: stop the Container if it has been idle for the whole idle time, else wait for the rest of it. */
   async alarm(): Promise<void> {
     this.#armed = false;
+
+    if (this.#running > 0) {
+      await this.#deps.setAlarm(this.#deps.now() + this.#deps.idleMs);
+      this.#armed = true;
+
+      return;
+    }
 
     const lastUse = this.#lastUse ?? (await this.#deps.load());
 
@@ -62,14 +86,15 @@ export class IdleStop {
     const due = lastUse + this.#deps.idleMs;
 
     if (this.#deps.now() < due) {
-      this.#armed = true;
       await this.#deps.setAlarm(due);
+      this.#armed = true;
 
       return;
     }
 
-    await this.#deps.stop();
+    // Forgotten before the stop, not after: a use while the Container stops is remembered and arms the next alarm.
     this.#lastUse = undefined;
     this.#saved = undefined;
+    await this.#deps.stop();
   }
 }

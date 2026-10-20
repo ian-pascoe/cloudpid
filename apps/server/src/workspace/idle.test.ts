@@ -11,6 +11,10 @@ type FakeState = {
   alarm: number | undefined;
   saved: number | undefined;
   stops: number;
+  /** Set to make `setAlarm` reject once. */
+  failNextSetAlarm: boolean;
+  /** Runs inside `stop`, while the Container is being stopped. */
+  duringStop: (() => Promise<void>) | undefined;
 };
 
 /** A fake Durable Object: a clock, one alarm, one stored time, and a count of Container stops. */
@@ -20,6 +24,8 @@ const open = (idleMs = 15 * MINUTE) => {
     alarm: undefined,
     saved: undefined,
     stops: 0,
+    failNextSetAlarm: false,
+    duringStop: undefined,
   };
 
   const make = () =>
@@ -31,9 +37,15 @@ const open = (idleMs = 15 * MINUTE) => {
         state.saved = at;
       },
       setAlarm: async (at) => {
+        if (state.failNextSetAlarm) {
+          state.failNextSetAlarm = false;
+          throw new Error("storage unavailable");
+        }
+
         state.alarm = at;
       },
       stop: async () => {
+        await state.duringStop?.();
         state.stops++;
       },
     });
@@ -128,6 +140,90 @@ describe("IdleStop", () => {
     expect(state.alarm).toBe(lastUse + 15 * MINUTE);
 
     await fire(revived);
+    expect(state.stops).toBe(1);
+  });
+
+  it("tries to arm the alarm again at the next use when setting it failed", async () => {
+    const { state, idle } = open();
+
+    state.failNextSetAlarm = true;
+    await expect(idle.touch()).rejects.toThrow("storage unavailable");
+    expect(state.alarm).toBeUndefined();
+
+    state.now += MINUTE;
+    await idle.touch();
+
+    expect(state.alarm).toBe(state.now + 15 * MINUTE);
+  });
+
+  it("tries to arm the alarm again when waiting for the rest of the idle time failed", async () => {
+    const { state, idle, fire } = open();
+
+    await idle.touch();
+    state.now += 10 * MINUTE;
+    await idle.touch();
+    state.failNextSetAlarm = true;
+    await expect(fire(idle)).rejects.toThrow("storage unavailable");
+    expect(state.alarm).toBeUndefined();
+
+    state.now += MINUTE;
+    await idle.touch();
+
+    expect(state.alarm).toBe(state.now + 15 * MINUTE);
+  });
+
+  it("remembers a use that arrives while the Container is being stopped", async () => {
+    const { state, idle, fire } = open();
+
+    await idle.touch();
+    state.duringStop = async () => {
+      state.now += 1000;
+      await idle.touch();
+    };
+
+    await fire(idle);
+
+    // The Container stopped, and the use during it armed the next alarm, which finds it.
+    expect(state.stops).toBe(1);
+    expect(state.alarm).toBe(state.now + 15 * MINUTE);
+
+    state.duringStop = undefined;
+    await fire(idle);
+    expect(state.stops).toBe(2);
+  });
+
+  it("keeps the Container, waiting again at each alarm, while a command runs", async () => {
+    const { state, idle, fire } = open();
+
+    await idle.begin();
+
+    for (let alarm = 0; alarm < 3; alarm++) {
+      await fire(idle);
+      expect(state.stops).toBe(0);
+      expect(state.alarm).toBe(state.now + 15 * MINUTE);
+    }
+
+    // The end of the command is a use: the idle time counts from it.
+    state.now += 10 * MINUTE;
+    await idle.end();
+    await fire(idle);
+    expect(state.stops).toBe(0);
+
+    await fire(idle);
+    expect(state.stops).toBe(1);
+  });
+
+  it("keeps the Container until the last of several commands ends", async () => {
+    const { state, idle, fire } = open();
+
+    await idle.begin();
+    await idle.begin();
+    await idle.end();
+    await fire(idle);
+    expect(state.stops).toBe(0);
+
+    await idle.end();
+    await fire(idle);
     expect(state.stops).toBe(1);
   });
 });

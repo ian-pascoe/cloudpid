@@ -20,6 +20,7 @@ import {
 } from "@cloudpid/computer-env";
 import { DurableObject } from "cloudflare:workers";
 import { IDLE_STOP_MS, IdleStop } from "./idle.ts";
+import { TrackedWorkspaceStub } from "./tracked.ts";
 import {
   DEFAULT_INSTANCE,
   WORKSPACE_CONTAINER,
@@ -135,8 +136,8 @@ export class Workspace extends ContainerHost {
     return this.#host.handle(request);
   }
 
-  /** The RPC stub `__getWorkspaceStub()` hands out; tests count them. */
+  /** The RPC stub `__getWorkspaceStub()` hands out, its Container commands counted by the idle stop; tests count them too. */
   protected workspaceStub(workspace: ComputerWorkspace): WorkspaceStub {
-    return workspace.stub();
+    return new TrackedWorkspaceStub(workspace, this.#idle, CONTAINER_BACKEND_ID);
   }
 }
