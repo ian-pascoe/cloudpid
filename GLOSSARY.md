@@ -88,6 +88,10 @@ _Avoid_: Config, preferences
 A value the agent may use but never see, entered by the user or resolved from 1Password at use time.
 _Avoid_: Env var, key (in general)
 
+**Secret Reference**:
+The text that stands for a Secret in a tool call, a placeholder or an environment variable named after it, resolved only when the call runs.
+_Avoid_: Secret (for the reference)
+
 **Credential**:
 A 1Password item the agent may fill into a web page, scoped to the item's own sites.
 _Avoid_: Login, password (for the item)

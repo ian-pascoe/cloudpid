@@ -84,6 +84,8 @@ jobs:
           # Bound to the Worker as secrets by the Session DO's `Config.Redacted` reads.
           MODEL_PROXY_URL: ${{ vars.MODEL_PROXY_URL }}
           MODEL_PROXY_API_KEY: ${{ secrets.MODEL_PROXY_API_KEY }}
+          # The master key the Session DO encrypts the owner's Secrets under; read the same way, and required.
+          SECRETS_ENCRYPTION_KEY: ${{ secrets.SECRETS_ENCRYPTION_KEY }}
           # Search keys, read by the web extension the same way. Both are set in `production`. A secret that is not set
           # reaches the stack as an empty string: `WebConfigLive` treats that as no key, but whether alchemy accepts an
           # empty secret binding is not verified, so set both (or remove the line of one you will never set).
