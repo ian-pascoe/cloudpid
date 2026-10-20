@@ -37,10 +37,10 @@ const memoryStorage = () => {
 };
 
 /** A store over `storage`, recording every list of pending asks it announces. */
-const open = (storage: SecretStorage) =>
+const open = (storage: SecretStorage, master = MASTER) =>
   Effect.gen(function* () {
     const announced: (readonly SecretAsk[])[] = [];
-    const vault = yield* openVault(MASTER, "session-1");
+    const vault = yield* openVault(master, "session-1");
 
     const secrets = yield* Effect.provide(
       Effect.service(Secrets),
@@ -158,6 +158,21 @@ describe("Secrets", () => {
       const third = yield* open(storage);
 
       expect(yield* third.secrets.resolve("API_KEY")).toBe(VALUE);
+    }));
+
+  test("drops the Secrets that no longer open after the key changes, instead of failing", () =>
+    Effect.gen(function* () {
+      const { storage, dump } = memoryStorage();
+      const { secrets } = yield* open(storage);
+
+      yield* Effect.forkChild(secrets.ask(ASK));
+      yield* Effect.yieldNow;
+      yield* secrets.answer("7", { API_KEY: VALUE });
+
+      const rotated = yield* open(storage, `${MASTER}-rotated`);
+
+      expect(yield* rotated.secrets.held).toEqual([]);
+      expect(dump()).not.toContain('"API_KEY":{');
     }));
 
   test("forgets Secrets after their lifetime and deletes their ciphertext", () =>

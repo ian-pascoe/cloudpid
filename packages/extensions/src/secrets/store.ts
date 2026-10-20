@@ -161,7 +161,8 @@ const makeSecrets = ({
       storage.put(SECRETS_KEY, kept);
     };
 
-    // Open the Secrets an earlier instance stored; those past their lifetime are deleted unopened.
+    // Open the Secrets an earlier instance stored; those past their lifetime are deleted unopened, and those that no
+    // longer open (the deployment's key changed) are deleted, so the Session asks for them again instead of failing.
     const start = yield* now;
 
     const expired: string[] = [];
@@ -172,7 +173,12 @@ const makeSecrets = ({
         continue;
       }
 
-      const value = yield* fromVault(vault.open(record));
+      const value = yield* vault.open(record).pipe(Effect.orElseSucceed(() => undefined));
+
+      if (value === undefined) {
+        expired.push(record.name);
+        continue;
+      }
 
       values.set(record.name, { value, expiresAt: record.expiresAt });
       redactions.hold(record.name, value);
