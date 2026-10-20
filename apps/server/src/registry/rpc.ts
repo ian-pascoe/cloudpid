@@ -16,7 +16,7 @@ export const serveRegistryRpc = (registries: Cloudflare.DurableObject<Registry>)
 
     const handlers = RegistryRpcs.toLayer({
       listSessions: () => registry.listSessions(),
-      createSession: ({ title }) => registry.createSession({ title }),
+      createSession: ({ title, workspace }) => registry.createSession({ title, workspace }),
       listWorkspaces: () => registry.listWorkspaces(),
       createWorkspace: ({ slug }) => registry.createWorkspace({ slug }),
     });

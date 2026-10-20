@@ -14,9 +14,10 @@ export const REGISTRY_NAME = "registry";
 
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
-  /** Register a new Session, idle, under a fresh UUIDv7. */
+  /** Register a new Session, idle, under a fresh UUIDv7, bound to `workspace` (default `DEFAULT_WORKSPACE`). */
   readonly createSession: (input: {
     readonly title?: string | undefined;
+    readonly workspace?: string | undefined;
   }) => Effect.Effect<SessionRecord>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
@@ -42,15 +43,15 @@ export const RegistryLive = Registry.make(
   Cloudflare.DurableObjectState.pipe(
     Effect.map((state) =>
       Effect.sync(() => {
-        const store = openRegistryStore(state.raw.storage.sql);
+        const store = openRegistryStore(state.raw.storage);
 
         return {
-          createSession: ({ title }) =>
+          createSession: ({ title, workspace }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
-              return store.createSession({ id, title: title ?? null }, now);
+              return store.createSession({ id, title: title ?? null, workspace }, now);
             }),
           getSession: ({ id }) => Effect.sync(() => store.getSession(id)),
           listSessions: () => Effect.sync(() => store.listSessions()),

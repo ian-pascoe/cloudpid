@@ -1,3 +1,4 @@
+import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { WebConfig } from "@cloudpid/extensions/web";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
@@ -10,14 +11,19 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
+import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { DEFAULT_AGENT, proxyModels } from "./models.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
+import { cachedSlug, sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
 /** The key the Session's name is kept under, for instances that are not told it. */
 const NAME_KEY = "session-name";
+
+/** The key the slug of the Session's Workspace is kept under, once the Registry has told it. */
+const WORKSPACE_KEY = "session-workspace";
 
 /** The model proxy's base URL and API key: deploy-time secrets, bound to the Worker by `Config.Redacted`. */
 export class ModelProxyConfig extends Context.Service<
@@ -65,10 +71,12 @@ export const SessionLive = Session.make(
       web: yield* WebConfig,
       registries: yield* Registry,
       state: yield* Cloudflare.DurableObjectState,
+      // The raw environment: `ComputerExecutionEnv` needs the Workspace DO's own stub, not alchemy's Effect client.
+      worker: yield* Cloudflare.WorkerEnvironment,
     };
   }).pipe(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
-    Effect.map(({ proxy, registries, state, web }) =>
+    Effect.map(({ proxy, registries, state, web, worker }) =>
       Effect.gen(function* () {
         const models = proxyModels({
           url: Redacted.value(proxy.url),
@@ -89,6 +97,22 @@ export const SessionLive = Session.make(
               : registries.getByName(REGISTRY_NAME).setSessionStatus({ id: name, status }),
         });
 
+        const workspaceSlug = cachedSlug({
+          name,
+          get: () => kv.get<string>(WORKSPACE_KEY),
+          put: (slug) => kv.put(WORKSPACE_KEY, slug),
+          lookup: (id) =>
+            runtime
+              .runPromise(registries.getByName(REGISTRY_NAME).getSession({ id }))
+              .then((session) => session?.workspace ?? null),
+        });
+
+        const workspace = sessionWorkspace({
+          // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (`worker.ts`), a raw namespace.
+          namespace: worker[WORKSPACE_BINDING] as WorkspaceNamespace,
+          slug: workspaceSlug,
+        });
+
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
@@ -99,7 +123,11 @@ export const SessionLive = Session.make(
                 models,
                 agent: DEFAULT_AGENT,
                 reset: (reason) => state.raw.abort(reason),
-                extensions: Effect.provideService(sessionExtensions, WebConfig, web),
+                extensions: sessionExtensions.pipe(
+                  Effect.provideService(WebConfig, web),
+                  Effect.provideService(WorkspaceFiles, workspace.files),
+                ),
+                env: workspace.env,
               }),
             ),
             Layer.provide(registry),

@@ -9,6 +9,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { cn } from "../lib/utils.ts";
+import { toolSummary } from "./tool-summary.ts";
 
 /**
  * The model's markdown. Images are not loaded: the page would fetch whatever URL the model (or text it read from
@@ -87,6 +88,8 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
     Option.map(decodeStreamedOutput(artifact), (found) => found.output),
   );
 
+  const summary = toolSummary(toolName, args);
+
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
 
   return (
@@ -103,6 +106,9 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
             <Check className="size-3.5 text-success" aria-label="Done" />
           )}
           <span className="font-mono text-[0.8125rem] text-foreground">{toolName}</span>
+          {summary !== undefined && (
+            <span className="min-w-0 truncate font-mono text-xs">{summary}</span>
+          )}
         </>
       }
     >

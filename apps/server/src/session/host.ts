@@ -11,6 +11,7 @@ import {
   AssistantEntry,
   type ConversationId,
   type Extension,
+  type HarnessOptions,
   type InputSubmissionDraft,
   type Submission,
   type UserInput,
@@ -80,6 +81,8 @@ export type SessionHostOptions = {
   readonly reset: (reason: string) => void;
   /** The extensions the Session's conversations run with, installed before any work resumes. */
   readonly extensions: Effect.Effect<readonly Extension[], never, Harness>;
+  /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
+  readonly env?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
 };
@@ -168,10 +171,12 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* (options: S
     openDurableObjectSqliteStorage(storage, { prefix: "pi_" }),
   );
 
-  const harness = yield* openHarness(piStorage, {
-    models: options.models,
-    settings: RETENTION,
-  }).pipe(fromHarness);
+  const harnessOptions = { models: options.models, settings: RETENTION };
+
+  const harness = yield* openHarness(
+    piStorage,
+    options.env === undefined ? harnessOptions : { ...harnessOptions, env: options.env },
+  ).pipe(fromHarness);
 
   // A storage error closes the Harness for good; reset the object so the next event reopens it.
   yield* Effect.sync(

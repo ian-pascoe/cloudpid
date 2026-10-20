@@ -23,13 +23,14 @@ const fakeRegistries = () => {
   const calls: string[] = [];
 
   const registry = {
-    createSession: ({ title }: { title?: string | undefined }) =>
+    createSession: ({ title, workspace }: { title?: string | undefined; workspace?: string }) =>
       Effect.sync(() => {
         calls.push("createSession");
 
         const record: SessionRecord = {
           id: `session-${sessions.length + 1}`,
           title: title ?? null,
+          workspace: workspace ?? "default",
           status: "idle",
           createdAt: 1,
           updatedAt: 1,
@@ -137,6 +138,22 @@ it("creates a Session in the singleton Registry and lists it", async () => {
   expect(created).toMatchObject({ id: "session-1", title: "Fix the build", status: "idle" });
   expect(listed).toEqual([created]);
   expect(fake.names).toEqual(["registry", "registry"]);
+});
+
+it("binds a created Session to the Workspace it names, and rejects a slug that is not one", async () => {
+  const fake = fakeRegistries();
+
+  const created = await withClient(
+    Effect.flatMap(Registry, (registry) => registry.createSession({ workspace: "cloudpid" })),
+    fake,
+  );
+
+  expect(created.workspace).toBe("cloudpid");
+
+  const { text, calls } = await callRaw("createSession", { workspace: "Not A Slug" });
+
+  expect(text).toContain('"Failure"');
+  expect(calls).toEqual([]);
 });
 
 it("trims a title on the server", async () => {

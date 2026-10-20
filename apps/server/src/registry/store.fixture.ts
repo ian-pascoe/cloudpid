@@ -15,10 +15,13 @@ export class TestRegistry extends DurableObject {
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
-    this.#store = openRegistryStore(ctx.storage.sql);
+    this.#store = openRegistryStore(ctx.storage);
   }
 
-  createSession(input: { id: string; title: string | null }, now: number): SessionRecord {
+  createSession(
+    input: { id: string; title: string | null; workspace?: string },
+    now: number,
+  ): SessionRecord {
     return this.#store.createSession(input, now);
   }
 
