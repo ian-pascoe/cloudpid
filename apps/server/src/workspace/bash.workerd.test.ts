@@ -10,6 +10,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { MAX_PACK_BYTES } from "./git.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -216,6 +217,29 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
         false,
       ]);
       expect(await counts()).toMatchObject({ container: 0 });
+    });
+
+    it("refuses a repository whose packfiles are too big to read into the Workspace's memory", async () => {
+      const { run, put, counts } = await repository();
+
+      // isomorphic-git reads a whole packfile, and the Workspace DO has 128 MB. A pack of this size is not a valid one;
+      // the guard answers before git opens it.
+      await put(".git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1));
+
+      const status = await run({ command: "git status" });
+
+      expect(status.isError).toBe(true);
+      expect(status.text).toMatch(/packfiles are 17 MB.*backend: "container"/);
+      expect(await counts()).toMatchObject({ container: 0 });
+    });
+
+    it("reads a repository whose packfiles are within the limit", async () => {
+      const { run, put } = await repository();
+
+      // Not a valid pack, but small: git does not open it for `status` in a repository whose objects are loose.
+      await put(".git/objects/pack/pack-small.pack", new Uint8Array(1024));
+
+      expect(await run({ command: "git status" })).toMatchObject({ isError: false });
     });
 
     // The Container's real git writes the index and the objects, and the Worker Shell's git reads them after sync. These
