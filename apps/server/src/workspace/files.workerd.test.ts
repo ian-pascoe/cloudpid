@@ -1,5 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { ComputerExecutionEnv, ComputerFiles } from "@cloudpid/computer-env";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

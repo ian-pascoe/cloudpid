@@ -69,7 +69,8 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 
 - The workspace root is `/workspace`, with one directory per repo. A Session's `cwd` defaults to its repo directory.
 - `ComputerExecutionEnv` (`packages/computer-env`) implements pi-durable's `ExecutionEnv` over the Workspace DO's RPC stub. It covers `listFiles` via `fs.find`, and must pass `registerEnvConformance`.
-- `read`, `write`, `edit`, and `bash` are pi-durable's own tools. `ls`, `find`, and `grep` are thin tools over computer's `fs.readdir`, `fs.find`, and `fs.grep`, so they never start the container. computer's `createPiTools` is not used ([ADR-0008](adr/0008-pi-durable-tools-over-computer-tools.md)).
+- `read`, `write`, `edit`, and `bash` are pi-durable's own tools. `ls`, `find`, and `grep` are thin tools over computer's `fs.readdir`, `fs.find`, and `fs.grep` (`@cloudpid/extensions/files`), so they never start the container: they reach the Workspace only through a file-search interface that has no command execution. Their parameters and output follow local pi's; `find` and `grep` skip `node_modules` and `.git`, since the Workspace's file system has no `.gitignore` handling. computer's `createPiTools` is not used ([ADR-0008](adr/0008-pi-durable-tools-over-computer-tools.md)).
+- A Session is bound to one Workspace slug, recorded in the Registry when the Session is created (`default` when none is chosen) and never changed. The Session DO asks the Registry for it once and keeps it; `HarnessOptions.env` builds a `ComputerExecutionEnv` on that Workspace's DO for each call, in the conversation's `cwd` or `/workspace`.
 - Skills: the headless-safe skills from `~/.pi/agent/skills` are copied to `skills/` and mounted read-only with `WorkerBundle` at `/workspace/.agents/skills`. Repo-local `.agents/skills` are discovered too. A `skills` prompt section lists them.
 
 ### Backends

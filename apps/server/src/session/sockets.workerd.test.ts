@@ -223,7 +223,7 @@ describe("input submitted while a Run is in progress", () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) =>
-      instance.script(['gate:call:roll_dice:{"count":1,"sides":6}', "steered", "followed up"]),
+      instance.script(['gate:call:echo:{"text":"hi"}', "steered", "followed up"]),
     );
 
     const client = await connect(stub);

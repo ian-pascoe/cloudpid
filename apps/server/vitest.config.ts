@@ -42,7 +42,10 @@ export default defineConfig({
             miniflare: {
               compatibilityDate: "2026-08-31",
               compatibilityFlags: ["nodejs_compat"],
-              durableObjects: { WORKSPACES: { className: "TestWorkspace", useSQLite: true } },
+              durableObjects: {
+                WORKSPACES: { className: "TestWorkspace", useSQLite: true },
+                WORKSPACE_SESSIONS: { className: "TestWorkspaceSession", useSQLite: true },
+              },
               workerLoaders: { LOADER: {} },
             },
           }),

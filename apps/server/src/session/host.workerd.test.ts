@@ -174,20 +174,19 @@ describe("a Session host", () => {
     expect(second).toEqual(first);
   });
 
-  it("answers a prompt that calls roll_dice, with the roll in the transcript", async () => {
+  it("answers a prompt that calls a tool, with the result in the transcript", async () => {
     const stub = fresh();
 
     const [answer, results] = await runInDurableObject(stub, async (instance: TestSession) => {
-      instance.script(['call:roll_dice:{"count":2,"sides":6}', "You rolled."]);
+      instance.script(['call:echo:{"text":"2d6"}', "You rolled."]);
 
       return [
-        await instance.prompt({ requestId: "turn-1", text: "Roll 2d6" }),
+        await instance.prompt({ requestId: "turn-1", text: "Echo 2d6" }),
         await instance.toolResults(),
       ] as const;
     });
 
     expect(answer).toMatchObject({ status: "answered", text: "You rolled." });
-    expect(results).toHaveLength(1);
-    expect(results[0]).toMatch(/^Rolled 2d6: [1-6], [1-6] \(total \d+\)$/);
+    expect(results).toEqual(["echo: 2d6"]);
   });
 });

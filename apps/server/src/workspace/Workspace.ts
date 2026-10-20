@@ -12,10 +12,7 @@ import {
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
 import { DurableObject } from "cloudflare:workers";
-import { WORKSPACE_BINDING } from "./binding.ts";
-
-/** The Workspace root: one directory per repo below it (docs/spec.md → Filesystem and tools). */
-export const WORKSPACE_ROOT = "/workspace";
+import { WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
 
 export type WorkspaceEnv = {
   /** The Worker Loader the Worker Shell runs in. */

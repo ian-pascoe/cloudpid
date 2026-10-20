@@ -4,8 +4,7 @@
 // as the Session DO hosts them over the model proxy. Tests drive it with `runInDurableObject()` and client sockets,
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
-import { callDurable, Harness } from "@cloudpid/effect-durable";
-import { WebConfig } from "@cloudpid/extensions/web";
+import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
 import {
   createModels,
   type FauxResponseStep,
@@ -13,15 +12,19 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
-import { ToolResultEntry } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  type Extension,
+  type HarnessOptions,
+  ToolResultEntry,
+} from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Schema from "effect/Schema";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { sessionExtensions } from "./extensions.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
@@ -34,6 +37,14 @@ declare global {
     }
   }
 }
+
+/** A tool to call, so a Run has a tool call in its transcript: `echo` answers `echo: <text>`. */
+const Echo = defineEffectTool({
+  name: "echo",
+  description: "Echo text back",
+  parameters: Schema.Struct({ text: Schema.String }),
+  execute: ({ text }) => Effect.succeed({ output: [{ type: "text", text: `echo: ${text}` }] }),
+});
 
 const AGENT = { model: { provider: "faux", modelId: "faux-1" } } as const;
 
@@ -72,6 +83,18 @@ export const constructions = (globalThis.testSessionConstructions ??= new Map<st
 type TestPrompt = { readonly requestId: string; readonly text: string };
 
 export class TestSession extends DurableObject {
+  /** The extensions this Session runs with, installed before any work resumes: `echo`. */
+  protected hostExtensions(): Effect.Effect<readonly Extension[], never, Harness> {
+    return Effect.all([
+      Effect.map(Echo, (echo) => defineExtension({ name: "echo", tools: [echo] })),
+    ]);
+  }
+
+  /** What builds a conversation's execution environment, if this Session has one. */
+  protected hostEnv(): HarnessOptions["env"] | undefined {
+    return undefined;
+  }
+
   #host!: SessionHostService;
   #sockets!: SessionSocketsService;
   #runtime!: ManagedRuntime.ManagedRuntime<SessionHost | SessionSockets | Harness, unknown>;
@@ -102,11 +125,8 @@ export class TestSession extends DurableObject {
               models,
               agent: AGENT,
               reset: (reason) => ctx.abort(reason),
-              // No search keys: the tests script the model, and none searches.
-              extensions: Effect.provideService(sessionExtensions, WebConfig, {
-                exaApiKey: Option.none(),
-                parallelApiKey: Option.none(),
-              }),
+              extensions: this.hostExtensions(),
+              env: this.hostEnv(),
               reportTimeout: "200 millis",
             }).pipe(
               Layer.provide(
