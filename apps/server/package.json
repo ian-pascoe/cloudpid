@@ -11,6 +11,10 @@
     "lint": "oxlint",
     "test": "vitest run"
   },
+  "dependencies": {
+    "alchemy": "2.0.0-beta.83",
+    "effect": "^4.0.5"
+  },
   "devDependencies": {
     "@cloudpid/config": "workspace:*"
   }
