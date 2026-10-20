@@ -53,7 +53,7 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 
 ### Models
 
-- Requests go to the existing proxy `api.ai.ianpascoe.dev` with a Cloudflare Access service token (`CF-Access-Client-Id` and `CF-Access-Client-Secret`). Model IDs match `~/.pi/agent/models.json`.
+- Requests go to the existing proxy `api.ai.ianpascoe.dev` with a Commissary API key (`Authorization: Bearer`). The proxy is Commissary's API host, which sits outside Cloudflare Access and rejects service tokens. Model IDs match `~/.pi/agent/models.json`.
 - Default `anthropic/claude-opus-5-5` at `high` thinking.
 - Roles: `small` haiku-5-5, `medium` sonnet-5-5, `large` opus-5-5, `xlarge` fable-5-1, with the hints from `~/.pi/agent/settings.json`.
 
@@ -145,12 +145,12 @@ They are rebuilt on pi-durable primitives, following its example 23:
 
 ### Secrets
 
-| Kind        | Holds                                                                                                                          | Storage and use                                                                                                                                                                                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deploy-time | Access service token, 1Password service-account token (v2), VAPID keys. In v1 also the GitHub token and the Exa/Parallel keys. | Read with `Config.Redacted` in `infra/` and bound as Worker secrets                                                                                                                                                                                                                      |
-| Runtime     | Values entered through `secret_ask`, which opens a masked form in the UI                                                       | Encrypted with AES-GCM in the Session DO under a key held as a Worker secret. Referenced by pi-secret's double-brace `secret:NAME` placeholder or `$PI_SECRET_*`. Injected into exec env only at call time. Redacted by `afterTool` and `beforeRequest` hooks. Expires after 15 minutes. |
+| Kind        | Holds                                                                                                                                            | Storage and use                                                                                                                                                                                                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deploy-time | Commissary API key for the model proxy, 1Password service-account token (v2), VAPID keys. In v1 also the GitHub token and the Exa/Parallel keys. | Read with `Config.Redacted` in `infra/` and bound as Worker secrets                                                                                                                                                                                                                      |
+| Runtime     | Values entered through `secret_ask`, which opens a masked form in the UI                                                                         | Encrypted with AES-GCM in the Session DO under a key held as a Worker secret. Referenced by pi-secret's double-brace `secret:NAME` placeholder or `$PI_SECRET_*`. Injected into exec env only at call time. Redacted by `afterTool` and `beforeRequest` hooks. Expires after 15 minutes. |
 
-From v2, secret references may name 1Password items. Credentials then move into a single dedicated vault, and deploy-time secrets shrink to the Access token, the 1Password token, and VAPID.
+From v2, secret references may name 1Password items. Credentials then move into a single dedicated vault, and deploy-time secrets shrink to the model proxy key, the 1Password token, and VAPID.
 
 ### Browser
 
@@ -201,6 +201,8 @@ From v2, secret references may name 1Password items. Credentials then move into 
 
 - **Infra:** alchemy `2.0.0-beta.83` with `@effect/platform-node`. Workers and DOs are written in alchemy's Effect form, or as plain classes through Worker `bindings` where a mixin such as `withWorkspace` requires it. Containers use `schedulingPolicy: "durable_object"`.
 - **Stages:** `alchemy dev` (workerd and local Docker, stage `dev_$USER`) and a single `prod` stage with `Cloudflare.state()`. GitHub Actions runs `pnpm check` and deploys `prod` on push to `main`.
+- **Access:** every stage's main Worker sits behind a Cloudflare Access application (declared on the Worker's `access` prop) with one policy, allow the owner's email. `prod` is served on `pi.ianpascoe.dev` (`ianpascoe.dev` zone, Access team `spirit-led-software`) and not on `workers.dev`; other stages stay on `workers.dev`.
+- **CI credentials:** a second stack, `infra/github.ts` (`cloudpid-github`, stage `ci`), creates the scoped deploy API token and the GitHub environment `production` (deployments from `main` only) with its secrets and variables. See `AGENTS.md` → _Infra_.
 - **Telemetry:**
   - A `pi-telemetry` → Effect `Tracer` adapter feeds Workers Observability logs and traces.
   - `pi.usage` is shown per Session in the UI.
