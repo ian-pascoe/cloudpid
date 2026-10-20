@@ -1,5 +1,6 @@
 import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
+import { SubagentSettings } from "@cloudpid/extensions/subagents";
 import { WebConfig } from "@cloudpid/extensions/web";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
@@ -16,7 +17,7 @@ import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
-import { sessionSettingsLayer } from "./settings.ts";
+import { sessionSettingsLayer, subagentSettings } from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { cachedSlug, sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
@@ -145,6 +146,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(CodemodeSandbox, sandbox),
+                  Effect.provideServiceEffect(SubagentSettings, subagentSettings),
                 ),
                 env: workspace.env,
               }),

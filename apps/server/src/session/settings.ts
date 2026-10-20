@@ -2,6 +2,7 @@
 // keeps the last it read, in its own storage, and hands the Harness live getters over that copy. The Harness reads its
 // settings synchronously, so the Registry is read before a request is admitted (`refresh`), never inside a getter.
 import { DEFAULT_SETTINGS, parseModelId, resolveLeniently, type Settings } from "@cloudpid/config";
+import { type SubagentOptions, subagentOptions } from "@cloudpid/extensions/subagents";
 import type {
   AgentChange,
   CompactionPolicy,
@@ -15,6 +16,7 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
 
 /** How long reading the Registry may take before the Session carries on with what it last read. */
@@ -31,12 +33,18 @@ export type SessionSettingsValues = {
     readonly thinkingLevel: NonNullable<AgentChange["thinkingLevel"]>;
   };
   readonly compaction: CompactionPolicy;
+  /** The model roles, depth cap, and toolsets subagents are spawned with. */
+  readonly subagents: SubagentOptions;
 };
 
 /** The parts of `settings` a Session uses. */
 export const valuesFrom = (settings: Settings): SessionSettingsValues => ({
   agent: { model: parseModelId(settings.model), thinkingLevel: settings.thinkingLevel },
   compaction: settings.compaction,
+  subagents: subagentOptions(
+    Record.map(settings.roles, (role) => ({ model: parseModelId(role.model), hint: role.hint })),
+    settings.extensions["subagents"],
+  ),
 });
 
 export type SessionSettingsService = {
@@ -53,6 +61,11 @@ export type SessionSettingsService = {
 export class SessionSettings extends Context.Service<SessionSettings, SessionSettingsService>()(
   "@cloudpid/server/session/settings/SessionSettings",
 ) {}
+
+/** What the subagents extension reads of the Session's settings: their subagent options, as last read. */
+export const subagentSettings = Effect.map(SessionSettings, (settings) => ({
+  current: () => settings.current().subagents,
+}));
 
 /** The parts of a Durable Object's `storage.kv` the settings use. */
 export type SettingsKv = {

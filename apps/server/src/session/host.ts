@@ -78,7 +78,7 @@ export type SessionHostOptions = {
    */
   readonly reset: (reason: string) => void;
   /** The extensions the Session's conversations run with, installed before any work resumes. */
-  readonly extensions: Effect.Effect<readonly Extension[], never, Harness>;
+  readonly extensions: Effect.Effect<readonly Extension[], never, Harness | SessionSettings>;
   /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
   readonly env?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */

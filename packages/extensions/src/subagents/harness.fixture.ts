@@ -1,7 +1,7 @@
 // A pi-durable Harness over memory storage with the subagents extension and stand-in coding tools, whose scripted model
 // answers each request by the agent that makes it and the last message it got. pi-durable's Harness and the faux
 // provider are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off globalRandom:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type AssistantMessage,
