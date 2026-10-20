@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The references are for agents reading source, not for checks or deploys. CI
+# sets CI=true; set SKIP_REFERENCE_REPOS=1 to opt out elsewhere.
+if [[ -n "${CI:-}" || -n "${SKIP_REFERENCE_REPOS:-}" ]]; then
+  printf 'Skipping reference repositories (CI or SKIP_REFERENCE_REPOS set)\n'
+  exit 0
+fi
+
 # Hooks export GIT_DIR and friends; clear them so nested git calls are clean.
 unset $(git rev-parse --local-env-vars)
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,8 +17,7 @@ REPOS_DIR="$PROJECT_ROOT/.repos"
 # Linked worktrees symlink each reference to the main checkout's clone instead
 # of cloning their own copy. Bare repositories have no main checkout to share.
 BASE_REPOS_DIR="$REPOS_DIR"
-if [[ "$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-dir)" != \
-  "$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)" ]]; then
+if [[ "$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-dir)" != "$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)" ]]; then
   main_root="$(git -C "$PROJECT_ROOT" worktree list --porcelain | awk '
     NR == 1 { root = substr($0, 10) }
     NR == 2 && $0 == "bare" { bare = 1 }

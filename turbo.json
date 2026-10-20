@@ -1,0 +1,30 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalDependencies": [".oxlintrc.json", "tools/oxlint/**"],
+  "tasks": {
+    // Internal packages are just-in-time (`exports` point at source), so a package's
+    // typecheck, lint, and test results depend on its dependencies' source. The
+    // `transit` node carries their hashes forward without making dependents wait
+    // for dependency tasks to finish.
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
+    "typecheck": {
+      "dependsOn": ["transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
+    },
+    "lint": {
+      "dependsOn": ["transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
+    },
+    "test": {
+      "dependsOn": ["transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    }
+  }
+}

@@ -1,17 +1,19 @@
 {
   "name": "cloudpid",
   "version": "0.0.0",
+  "private": true,
   "description": "Pi on Cloudflare",
   "type": "module",
   "scripts": {
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run test",
+    "build": "turbo run build",
+    "check": "turbo run typecheck lint test && pnpm run format:check",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "lint": "oxlint",
-    "lint:fix": "oxlint --fix",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint -- --fix",
     "prepare": "husky && effect-tsgo patch --typescript --oxlint && ./scripts/sync-reference-repos.sh",
-    "test": "vitest run",
-    "typecheck": "tsc"
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
   },
   "dependencies": {
     "@cloudflare/computer": "^0.5.1",

@@ -1,6 +1,5 @@
 {
-  "$schema": "./node_modules/@effect/tsgo/schema.json",
-  "exclude": ["node_modules", "tools/oxlint/anti-slop"],
+  "$schema": "../../../node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "module": "esnext",
     "target": "esnext",

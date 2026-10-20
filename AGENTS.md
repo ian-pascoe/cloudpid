@@ -5,6 +5,21 @@
 - **Spec**: before designing or changing architecture, packages, Durable Objects, tools, or the client protocol, read `docs/spec.md`; it records the settled design and milestones.
 - **Tool names**: every model-facing tool name is snake_case (`browser_handoff`, `subagent_wait`); wrap and rename library tools that are not.
 
+## Workspace
+
+Layout is in `docs/spec.md` → _Repository layout_. Root `typecheck`, `lint`, `test`, and `build` scripts run through Turborepo (`turbo.json`); `pnpm check` runs all but `build`, then `format:check` (oxfmt runs once at the root). Run one package with `pnpm --filter @cloudpid/protocol test`.
+
+Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<dir>` and follows the same shape:
+
+- **Just-in-time**: `exports` point at `src/*.ts`; there is no build step to run before dependents see a change. Add the package's own tests as `src/*.test.ts`.
+- **`package.json`** has `typecheck` (`tsc`), `lint` (`oxlint`), and `test` (`vitest run`) scripts, and a `workspace:*` devDependency on `@cloudpid/config`.
+- **`tsconfig.json`** extends `@cloudpid/config/tsconfig/base.json`; **`vitest.config.ts`** re-exports `@cloudpid/config/vitest`; **`.oxlintrc.json`** extends the root config. Copy these from a sibling package instead of editing the shared bases per package.
+- Tooling (`typescript`, `vitest`, `oxlint`, `oxfmt`, `turbo`) is installed once at the root; packages do not list it.
+- Runtime dependencies go in the package that imports them (`pnpm --filter @cloudpid/<pkg> add …`); the ones still at the root (`effect`, `alchemy`, `pi-*`, `@cloudflare/*`) move to their first consumer when a ticket starts using them.
+- `skills/` is bundled skill content, not a package.
+
+`pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set; the `effect-tsgo` patch still runs.
+
 ## Reference repositories
 
 `pnpm install` (its `prepare` script; rerun with `pnpm run prepare`) materializes these read-only references in `.repos/`.
@@ -21,7 +36,7 @@ Husky hooks run on every commit and push:
 
 - **pre-commit**: lint-staged runs `oxlint --fix` and `oxfmt` on staged files.
 - **commit-msg**: commitlint requires [Conventional Commits](https://www.conventionalcommits.org/) (`feat: …`, `fix: …`, `chore: …`).
-- **pre-push**: `pnpm run typecheck`, `pnpm run lint`, and `pnpm run format:check`. Tests run in CI; run `pnpm run check` for everything locally.
+- **pre-push**: `pnpm run typecheck`, `pnpm run lint` (both through Turborepo, cached), and `pnpm run format:check`. Tests run in CI; run `pnpm run check` for everything locally.
 - **post-merge / post-checkout**: `pnpm install` when `pnpm-lock.yaml` changed, otherwise a reference-repository sync.
 
 ## Agent skills

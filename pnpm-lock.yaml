@@ -228,6 +228,62 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(jiti@2.7.0)(yaml@2.9.1))
 
+  apps/codemode-sandbox:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+
+  apps/sandbox-image:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+
+  apps/server:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+
+  apps/web:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+
+  infra:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../packages/config
+
+  packages/computer-env:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../config
+
+  packages/config: {}
+
+  packages/effect-durable:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../config
+
+  packages/extensions:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../config
+
+  packages/protocol:
+    devDependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../config
+
 packages:
 
   '@alchemy.run/cloudflare-runtime@2.0.0-beta.83':

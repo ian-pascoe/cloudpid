@@ -1,0 +1,16 @@
+{
+  "name": "@cloudpid/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./vitest": "./src/vitest.ts",
+    "./tsconfig/base.json": "./tsconfig/base.json"
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "lint": "oxlint",
+    "test": "vitest run"
+  }
+}
