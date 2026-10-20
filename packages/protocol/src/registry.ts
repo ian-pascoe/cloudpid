@@ -68,16 +68,24 @@ const PUSH_SERVICE_HOSTS: ReadonlyArray<(host: string) => boolean> = [
   (host) => host.endsWith(".notify.windows.com"),
 ];
 
+/** `text` as a URL, or undefined when it is not one (`URL.canParse` is missing from Safari before 17). */
+const parseUrl = (text: string): URL | undefined => {
+  try {
+    return new URL(text);
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * Whether `endpoint` is an `https:` URL at a known push service, with no credentials and no port of its own. The
  * Registry POSTs to every endpoint it keeps, so an address of anywhere else (loopback, an internal name) is refused.
  */
 export const isPushServiceEndpoint = (endpoint: string): boolean => {
-  if (!URL.canParse(endpoint)) return false;
-
-  const url = new URL(endpoint);
+  const url = parseUrl(endpoint);
 
   return (
+    url !== undefined &&
     url.protocol === "https:" &&
     url.username === "" &&
     url.password === "" &&
