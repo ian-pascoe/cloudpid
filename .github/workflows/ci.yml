@@ -84,3 +84,7 @@ jobs:
           # Bound to the Worker as secrets by the Session DO's `Config.Redacted` reads.
           MODEL_PROXY_URL: ${{ vars.MODEL_PROXY_URL }}
           MODEL_PROXY_API_KEY: ${{ secrets.MODEL_PROXY_API_KEY }}
+          # Search keys, read by the web extension the same way. Both are set in `production`. They are optional to the
+          # stack, but an unset secret here would reach it as an empty value: remove its line instead of leaving it unset.
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}

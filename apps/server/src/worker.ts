@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { WebConfigLive } from "@cloudpid/extensions/web";
 import * as Alchemy from "alchemy";
 import * as Command from "alchemy/Command";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -80,7 +81,10 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // The Worker's init is its entry point.
     // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(
-      SessionLive.pipe(Layer.provide(ModelProxyConfigLive), Layer.provideMerge(RegistryLive)),
+      SessionLive.pipe(
+        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, WebConfigLive)),
+        Layer.provideMerge(RegistryLive),
+      ),
     ),
   ),
 ) {}

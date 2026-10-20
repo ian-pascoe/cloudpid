@@ -31,7 +31,6 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { Web } from "../web.ts";
 import { WebConfig } from "./config.ts";
-import { DnsResolver } from "./dns.ts";
 import type { WebToolError } from "./errors.ts";
 import { fakeResolver, fakeTransport } from "./web.fixture.ts";
 import { type WebRequest } from "./transport.ts";
@@ -176,5 +175,3 @@ export const openWebHarness = async (
 
   return { call, callAsProgram, sent: transport.requests, lookups: resolver.lookups, harness };
 };
-
-export { DnsResolver };

@@ -1,13 +1,13 @@
 // @effect-diagnostics missedPipeableOpportunity:off
 // The residual SSRF risk a Worker cannot close by checking the URL: a public-looking name can resolve to a private
-// address. Workers expose no resolver, so before each hop the guard asks Cloudflare's DNS-over-HTTPS endpoint (the
-// resolver `fetch` itself uses) what the name resolves to, and refuses the hop when any answer is not public.
+// address. Workers expose no resolver, so before each hop the guard asks Cloudflare's DNS-over-HTTPS endpoint what the
+// name resolves to, and refuses the hop when any answer is not public.
 //
 // What is left: the platform's own lookup at `fetch` time is separate from this one, so a name that answers
 // differently to two queries milliseconds apart (DNS rebinding with a zero TTL) can still pass. Two things bound it:
-// both lookups go through the same caching resolver, so an answer holds for its TTL, and Cloudflare refuses to
-// connect a Worker to private and internal addresses itself. The check fails closed: a lookup that cannot be made or
-// understood refuses the hop.
+// both lookups go through Cloudflare's caching resolver, so an answer holds for its TTL, and Cloudflare's edge also
+// refuses Worker subrequests to private and internal addresses (not something the guard relies on). The check fails
+// closed: a lookup that cannot be made or understood refuses the hop.
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

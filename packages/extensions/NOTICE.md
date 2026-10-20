@@ -26,6 +26,7 @@ What was ported, and what changed:
 | ----------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `json-reindent.ts`      | `json-reindent.ts`                     | none                                                                                        |
 | `html-main-content.ts`  | `html-main-content.ts`                 | none                                                                                        |
+| `content.ts`            | `web-fetch.ts` (`convertHtmlPage`)     | moved; uses the converter below                                                             |
 | `html-text.ts`          | `web-fetch.ts` (`extractTextFromHtml`) | moved                                                                                       |
 | `html-markdown.ts`      | `html-markdown.ts`, Turndown           | rewritten as one linear pass over htmlparser2 events; Turndown needs a DOM and is quadratic |
 | `output.ts`             | `web-tool-output.ts`                   | no temp-file spill: continuation notes name the next `offset`                               |

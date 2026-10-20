@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { DnsResolver } from "./dns.ts";
 import { WebToolError } from "./errors.ts";
+import { discardBody } from "./response.ts";
 import { blockedAddressReason, blockedHostReason } from "./ssrf.ts";
 import { type WebRequest, WebTransport } from "./transport.ts";
 
@@ -82,7 +83,7 @@ export const guardedFetch = Effect.fn("guardedFetch")(function* (request: WebReq
     }
 
     // The redirect's body is never read.
-    yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve()).pipe(Effect.ignore);
+    yield* discardBody(response);
 
     if (hop >= MAX_REDIRECTS) {
       return yield* WebToolError.make({
