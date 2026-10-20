@@ -1,8 +1,10 @@
 // The subagent tools through real runs: a scripted model drives the root and its children in one Harness.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { answer, call, context, gate, openSubagentHarness } from "./subagents/harness.fixture.ts";
+import { isAgentConversation, stopConversation } from "./subagents/owner.ts";
 
 describe("subagents", () => {
   it("reports a child's answer back to its parent as a follow-up when nobody waits for it", async () => {
@@ -740,5 +742,83 @@ describe("subagents", () => {
     expect((await session.texts("user")).at(-1)).toBe(
       "[Subagent result | agent=agent-1 | turn=turn-2 | status=completed]\nResumed.",
     );
+  });
+
+  describe("the owner stopping the root while a child's report is held", () => {
+    /** The root is busy when the child answers, so the report is held; then the owner stops the root. */
+    const stopWhileHeld = async (subagents: boolean) => {
+      const session = await openSubagentHarness(async (request) => {
+        if (request.agent === "agent-1") return answer("Quick answer.");
+
+        if (request.text === "Delegate it") return call(["subagent", { task: "Be quick" }]);
+
+        if (request.text.startsWith("Spawned")) {
+          // Busy until the owner stops it.
+          await new Promise((resolve) => request.signal?.addEventListener("abort", resolve));
+
+          return answer("Stopped.");
+        }
+
+        return answer(`Root saw: ${request.text}`);
+      });
+
+      const run = session.prompt("Delegate it");
+
+      await session.until(
+        async () => (await session.state()).agents["agent-1"]?.turns[0]?.delivery === "pending",
+        "the report to be held",
+      );
+      await stopConversation(session.harness, ROOT_CONVERSATION_ID, { subagents }, context);
+      await run;
+      await session.settle();
+
+      return session;
+    };
+
+    it("still delivers the report once the root is idle after a plain Stop, which starts a new run", async () => {
+      const session = await stopWhileHeld(false);
+
+      expect(await session.texts("user")).toEqual([
+        "Delegate it",
+        "[Subagent result | agent=agent-1 | turn=turn-1 | status=completed]\nQuick answer.",
+      ]);
+    });
+
+    it("drops the report when the owner stops all, so nothing starts a new run", async () => {
+      const session = await stopWhileHeld(true);
+
+      expect(await session.texts("user")).toEqual(["Delegate it"]);
+      expect((await session.state()).agents["agent-1"]?.turns).toMatchObject([
+        { id: "turn-1", status: "completed", delivery: "none" },
+      ]);
+    });
+  });
+
+  it("lets the owner address the root and a live subagent, but not one that was deleted", async () => {
+    const session = await openSubagentHarness((request) => {
+      if (request.agent === "agent-1") return answer("Done.");
+
+      if (request.text === "Delegate it") return call(["subagent", { task: "Work" }]);
+
+      if (request.text === "Remove it") return call(["subagent_delete", { agent_id: "agent-1" }]);
+
+      return answer("Noted.");
+    });
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    const child = (await session.state()).agents["agent-1"]?.conversationId;
+
+    if (child === undefined) throw new Error("No child was started");
+
+    expect(await isAgentConversation(session.harness, ROOT_CONVERSATION_ID, context)).toBe(true);
+    expect(await isAgentConversation(session.harness, child, context)).toBe(true);
+
+    await session.prompt("Remove it");
+    await session.settle();
+
+    expect((await session.state()).tombstones).toContain("agent-1");
+    expect(await isAgentConversation(session.harness, child, context)).toBe(false);
   });
 });

@@ -740,3 +740,289 @@ describe("a Session connection", () => {
     expect(connection.getState().status).toBe("closed");
   });
 });
+
+/** Answer the watch of conversation `id`, and say its snapshot, as a Session does. */
+const watchingThread = (
+  socket: FakeSocket,
+  id: number,
+  extra: { readonly [key: string]: Value } = {},
+) => {
+  const watch = socket
+    .commands()
+    .find((command) => command.type === "watch" && command.conversationId === id);
+
+  socket.say({ type: "result", id: watch?.id, result: null });
+  socket.say({ ...snapshot(extra), conversationId: id });
+};
+
+const threadEntry = (conversationId: number, id: number, text: string) => ({
+  ...entry(id, text),
+  conversationId,
+});
+
+describe("a subagent's thread on a Session connection", () => {
+  it("is watched on its own conversation, kept apart from the root's view, and dropped when released", () => {
+    const { connection, latest } = setup();
+
+    watching(latest(), { entries: [entry(1, "root text")] });
+
+    const release = connection.watchThread(2);
+
+    expect(latest().commands().at(-1)).toEqual({
+      type: "watch",
+      id: expect.any(String),
+      conversationId: 2,
+    });
+    expect(connection.getState().threads[2]).toMatchObject({ status: "loading", view: EMPTY_VIEW });
+
+    watchingThread(latest(), 2, { entries: [threadEntry(2, 5, "child text")] });
+
+    const state = connection.getState();
+
+    expect(state.threads[2]?.status).toBe("live");
+    expect(state.threads[2]?.view.messages.map((message) => message.parts)).toEqual([
+      [{ type: "text", text: "child text" }],
+    ]);
+    expect(state.view.messages.map((message) => message.parts)).toEqual([
+      [{ type: "text", text: "root text" }],
+    ]);
+
+    latest().say({
+      type: "events",
+      conversationId: 2,
+      events: [{ type: "run_start", inputs: [5] }],
+    });
+
+    expect(connection.getState().threads[2]?.view.running).toBe(true);
+    expect(connection.getState().view.running).toBe(false);
+
+    release();
+
+    expect(latest().commands().at(-1)).toEqual({
+      type: "unwatch",
+      id: expect.any(String),
+      conversationId: 2,
+    });
+    expect(connection.getState().threads[2]).toBeUndefined();
+  });
+
+  it("is watched once however many cards open it, and unwatched with the last", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+
+    const first = connection.watchThread(2);
+    const second = connection.watchThread(2);
+
+    expect(
+      latest()
+        .commands()
+        .filter((command) => command.type === "watch"),
+    ).toHaveLength(2);
+
+    first();
+    first();
+    expect(
+      latest()
+        .commands()
+        .filter((command) => command.type === "unwatch"),
+    ).toHaveLength(0);
+    second();
+    expect(
+      latest()
+        .commands()
+        .filter((command) => command.type === "unwatch"),
+    ).toHaveLength(1);
+  });
+
+  it("is watched again, from a fresh snapshot, when the Session says hello on a new socket", () => {
+    const { connection, sockets, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+    watchingThread(latest(), 2, { entries: [threadEntry(2, 5, "child text")] });
+    latest().drop();
+    vi.advanceTimersByTime(1_000);
+
+    const reconnected = sockets[1]!;
+
+    reconnected.open();
+    reconnected.say({ type: "hello", root: 1 });
+
+    expect(reconnected.commands()).toEqual([
+      { type: "watch", id: expect.any(String), conversationId: 1 },
+      { type: "watch", id: expect.any(String), conversationId: 2 },
+    ]);
+    // The last view stays until the snapshot replaces it.
+    expect(connection.getState().threads[2]?.view.messages).toHaveLength(1);
+  });
+
+  it("takes the owner's input once its watch is answered, with the conversation it is for", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+    connection.submit("take a look", "steer", 2);
+
+    expect(
+      latest()
+        .commands()
+        .some((command) => command.type === "submit"),
+    ).toBe(false);
+    expect(connection.getState().threads[2]?.sending).toEqual([
+      { id: expect.any(String), text: "take a look" },
+    ]);
+    expect(connection.getState().sending).toEqual([]);
+
+    watchingThread(latest(), 2);
+
+    expect(
+      latest()
+        .commands()
+        .filter((command) => command.type === "submit"),
+    ).toEqual([
+      {
+        type: "submit",
+        id: expect.any(String),
+        conversationId: 2,
+        input: "take a look",
+        whenBusy: "steer",
+        requestId: expect.any(String),
+      },
+    ]);
+  });
+
+  it("lists the thread's queued input by lane, with the text it sent", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+    watchingThread(latest(), 2);
+    connection.submit("later", "followUp", 2);
+
+    const submit = latest()
+      .commands()
+      .find((command) => command.type === "submit");
+
+    latest().say({ type: "result", id: submit?.id, result: { submissionId: 9 } });
+    latest().say({
+      type: "events",
+      conversationId: 2,
+      events: [{ type: "inbox_update", items: [{ id: 9, mode: "followUp" }] }],
+    });
+
+    expect(connection.getState().threads[2]?.queue.followUp).toEqual([{ id: "9", text: "later" }]);
+    expect(connection.getState().queue.followUp).toEqual([]);
+  });
+
+  it("shows a refused watch on the thread alone, and does not reconnect", () => {
+    const { connection, sockets, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+
+    const watch = latest()
+      .commands()
+      .find((command) => command.conversationId === 2);
+
+    latest().say({ type: "error", id: watch?.id, message: "No such conversation" });
+    vi.advanceTimersByTime(5_000);
+
+    expect(connection.getState().threads[2]).toMatchObject({
+      status: "failed",
+      failure: "No such conversation",
+    });
+    expect(connection.getState()).toMatchObject({ status: "live", failure: null });
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("shows a refused submit on the thread alone", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+    watchingThread(latest(), 2);
+    connection.submit("hello", "steer", 2);
+
+    const submit = latest()
+      .commands()
+      .find((command) => command.type === "submit");
+
+    latest().say({ type: "error", id: submit?.id, message: "Not a subagent" });
+
+    expect(connection.getState().threads[2]).toMatchObject({
+      failure: "Not a subagent",
+      sending: [],
+    });
+    expect(connection.getState().failure).toBeNull();
+  });
+
+  it("aborts the root, or a subagent, with or without the agents below it", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.abort();
+    connection.abort({ conversationId: 2 });
+    connection.abort({ subagents: true });
+    connection.abort({ conversationId: 2, subagents: true });
+
+    expect(
+      latest()
+        .commands()
+        .filter((command) => command.type === "abort"),
+    ).toEqual([
+      { type: "abort", id: expect.any(String) },
+      { type: "abort", id: expect.any(String), conversationId: 2 },
+      { type: "abort", id: expect.any(String), subagents: true },
+      { type: "abort", id: expect.any(String), conversationId: 2, subagents: true },
+    ]);
+  });
+});
+
+describe("the task graph on a Session connection", () => {
+  const summary = {
+    type: "task_graph",
+    agents: [
+      {
+        id: "agent-1",
+        parent: "root",
+        conversationId: 2,
+        role: null,
+        model: "anthropic/claude-haiku-5",
+        status: "working",
+      },
+    ],
+    background: [],
+  } as const;
+
+  it("is watched once asked, and again after a reconnect, and keeps the last summary", () => {
+    const { connection, sockets, latest } = setup();
+
+    connection.watchTaskGraph();
+    watching(latest());
+    connection.watchTaskGraph();
+
+    expect(
+      latest()
+        .commands()
+        .filter((command) => command.type === "watch_task_graph"),
+    ).toEqual([{ type: "watch_task_graph", id: expect.any(String) }]);
+    expect(connection.getState().taskGraph).toBeNull();
+
+    latest().say(summary);
+
+    expect(connection.getState().taskGraph?.agents).toMatchObject([
+      { id: "agent-1", status: "working" },
+    ]);
+
+    latest().drop();
+    expect(connection.getState().taskGraph?.agents).toHaveLength(1);
+    vi.advanceTimersByTime(1_000);
+    sockets[1]!.open();
+    sockets[1]!.say({ type: "hello", root: 1 });
+
+    expect(
+      sockets[1]!.commands().filter((command) => command.type === "watch_task_graph"),
+    ).toHaveLength(1);
+  });
+});

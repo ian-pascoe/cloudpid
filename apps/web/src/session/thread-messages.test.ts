@@ -251,6 +251,44 @@ describe("the thread messages of a view", () => {
     });
   });
 
+  it("names the subagent a finished subagent call started, from the details of its result", () => {
+    const spawned = {
+      type: "tool-result",
+      id: "c1",
+      name: "subagent",
+      content: [{ type: "text", text: "Spawned agent-1 (turn turn-1)" }],
+      error: false,
+    } as const;
+
+    const subagent = (
+      details: Extract<TranscriptMessage["parts"][number], { type: "tool-result" }>["details"],
+    ) =>
+      toThreadMessages(
+        view({
+          messages: [
+            user("1", "delegate"),
+            assistant("2", [
+              { type: "tool-call", id: "c1", name: "subagent", arguments: { task: "look" } },
+            ]),
+            {
+              id: "r",
+              role: "tool",
+              timestamp: 3,
+              parts: [details === undefined ? spawned : { ...spawned, details }],
+            },
+          ],
+        }),
+      )[1]?.content[0];
+
+    expect(subagent({ agent_id: "agent-1", conversation_id: 4 })).toMatchObject({
+      result: "Spawned agent-1 (turn turn-1)",
+      artifact: { subagent: { agentId: "agent-1", conversationId: 4 } },
+    });
+    // A result without them (a refused spawn) names none.
+    expect(subagent({ error: "refused" })).not.toHaveProperty("artifact");
+    expect(subagent(undefined)).not.toHaveProperty("artifact");
+  });
+
   it("appends the live message to the answer in progress, or starts one", () => {
     const live = assistant("live", [{ type: "text", text: "Hel" }]);
 

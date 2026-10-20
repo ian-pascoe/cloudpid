@@ -4,6 +4,7 @@ import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import { ArrowUp, Square } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
+import { cn } from "../lib/utils.ts";
 import type { QueuedEntry, SendingEntry } from "../session/connection.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
 
@@ -43,13 +44,22 @@ export const Composer = ({
   steerLane,
   followUpLane,
   sending,
+  onStopAll,
+  compact = false,
+  who = "the session",
 }: {
   steerLane: readonly QueuedEntry[];
   followUpLane: readonly QueuedEntry[];
   sending: readonly SendingEntry[];
+  /** Stop the run and every subagent below it; offered beside Stop while there is one to stop. */
+  onStopAll?: (() => void) | undefined;
+  /** Inside a card: no page margins, and the input does not take the focus. */
+  compact?: boolean;
+  /** Whom the message is for, in the input's placeholder. */
+  who?: string;
 }) => {
   // On a touch screen, focusing the input opens the keyboard over the transcript.
-  const autoFocus = window.matchMedia("(pointer: fine)").matches;
+  const autoFocus = !compact && window.matchMedia("(pointer: fine)").matches;
 
   const aui = useAui();
   const running = useAuiState((state) => state.thread.isRunning);
@@ -63,7 +73,9 @@ export const Composer = ({
   };
 
   return (
-    <ComposerPrimitive.Root className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-4">
+    <ComposerPrimitive.Root
+      className={cn("flex w-full flex-col gap-2", !compact && "mx-auto max-w-3xl px-4 pb-4")}
+    >
       <Lane label="Sending…" hint="waiting for the session" entries={sending} />
       <Lane label="Steering" hint="joins the run after its tool calls" entries={steerLane} />
       <Lane label="Next up" hint="starts after this run" entries={followUpLane} />
@@ -71,7 +83,7 @@ export const Composer = ({
         <ComposerPrimitive.Input
           rows={1}
           autoFocus={autoFocus}
-          placeholder={running ? "Steer the run, or queue a follow-up…" : "Message the session…"}
+          placeholder={running ? "Steer the run, or queue a follow-up…" : `Message ${who}…`}
           aria-label="Message"
           onKeyDown={onKeyDown}
           className="block max-h-48 min-h-11 w-full resize-none bg-transparent px-3 py-2.5 outline-none placeholder:text-muted-foreground"
@@ -94,6 +106,18 @@ export const Composer = ({
               >
                 <Square />
                 Stop
+              </Button>
+            )}
+            {onStopAll !== undefined && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                title="Stop this run and every subagent below it"
+                onClick={onStopAll}
+              >
+                <Square />
+                Stop all
               </Button>
             )}
             {running && (

@@ -14,10 +14,13 @@ import {
   type SecretRequest,
   type ServerMessage,
   type SessionView,
+  type TaskGraphSummary,
   type WhenBusy,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 
 /** How often the client pings an open socket. */
 export const HEARTBEAT_INTERVAL_MS = 25_000;
@@ -81,6 +84,33 @@ export interface Picked {
   readonly thinkingLevel: boolean;
 }
 
+/**
+ * A subagent's conversation, watched on the same socket. `loading` until its snapshot lands; `failed` when the
+ * Session refused or ended the watch (`failure` says why), which is not retried: the thread is opened again to retry.
+ */
+export interface ThreadState {
+  readonly status: "loading" | "live" | "failed";
+  readonly view: SessionView;
+  readonly queue: QueueLanes;
+  /** Submits to this conversation the Session has not answered. */
+  readonly sending: readonly SendingEntry[];
+  /** Why the watch failed, or the last submit to it did; until the next submit. */
+  readonly failure: string | null;
+}
+
+/** What an abort reaches: the root by default; see the `abort` command. */
+export interface AbortTarget {
+  /** The subagent's conversation to abort. */
+  readonly conversationId?: number;
+  /** Also stop the subagents below it. */
+  readonly subagents?: boolean;
+}
+
+/** A conversation ID as the protocol brands it. */
+const conversation = (id: number): ConversationId =>
+  // SAFETY: a number the Session named: in a task graph summary or a tool result's `conversation_id`.
+  id as ConversationId;
+
 export interface SessionState {
   readonly status: ConnectionStatus;
   readonly view: SessionView;
@@ -94,6 +124,22 @@ export interface SessionState {
   readonly secretRequests: readonly SecretRequest[];
   /** How long an entered Secret is held, as the Session says. */
   readonly secretLifetimeMinutes: number;
+  /** The subagent threads being watched, by conversation ID. */
+  readonly threads: Readonly<Record<string, ThreadState>>;
+  /** The Session's subagents and background work, as of the last summary; null until it sends one. */
+  readonly taskGraph: TaskGraphSummary | null;
+}
+
+/** A watch of a subagent's conversation, shared by everything that shows it. */
+interface ThreadWatch {
+  refs: number;
+  /** The `watch` command being answered, or null when none is out. */
+  commandId: string | null;
+  /** Whether the Session answered the watch, so a submit to it cannot land before its snapshot. */
+  watched: boolean;
+  status: ThreadState["status"];
+  view: SessionView;
+  failure: string | null;
 }
 
 /** A submit not yet answered. Its `requestId` makes sending it again safe. */
@@ -102,6 +148,8 @@ interface PendingSubmit {
   readonly requestId: string;
   readonly text: string;
   readonly whenBusy: WhenBusy;
+  /** The subagent's conversation it is for; the root's when absent. */
+  readonly conversationId: number | undefined;
   /** Whether it went out on the current socket. */
   sent: boolean;
 }
@@ -119,6 +167,8 @@ const submissionIdOf = (result: ServerMessage & { type: "result" }): string | un
   });
 
 const EMPTY_QUEUE: QueueLanes = { steer: [], followUp: [] };
+
+const NO_SENDING: readonly SendingEntry[] = [];
 
 /** What asking the Session over HTTP shows about why its socket does not open. */
 export type Reachability = "reachable" | "signed-out" | "missing";
@@ -156,6 +206,12 @@ export class SessionConnection {
   private readonly texts = new Map<string, string>();
   private readonly pending: PendingSubmit[] = [];
   private socket: SessionSocket | null = null;
+  private readonly threadWatches = new Map<number, ThreadWatch>();
+  private readonly threadLanes = new Map<
+    number,
+    { readonly inbox: SessionView["inbox"]; readonly version: number; readonly queue: QueueLanes }
+  >();
+  private graphWanted = false;
   private root: ConversationId | null = null;
   private watchId: string | null = null;
   private watched = false;
@@ -177,6 +233,8 @@ export class SessionConnection {
     failure: null,
     secretRequests: [],
     secretLifetimeMinutes: 15,
+    threads: {},
+    taskGraph: null,
   };
 
   constructor(
@@ -203,16 +261,60 @@ export class SessionConnection {
    * waits for the next Run. Held until the watch is answered (a submit sent before it can land before the snapshot),
    * and sent again after a reconnect if no answer came.
    */
-  submit(text: string, whenBusy: WhenBusy): void {
+  submit(text: string, whenBusy: WhenBusy, conversationId?: number): void {
     this.pending.push({
       commandId: this.nextCommandId(),
       requestId: crypto.randomUUID(),
       text,
       whenBusy,
+      conversationId: this.isRoot(conversationId) ? undefined : conversationId,
       sent: false,
     });
     this.flush();
-    this.update({ failure: null });
+
+    if (this.isRoot(conversationId)) this.update({ failure: null });
+    else this.update({}, conversationId, { failure: null });
+  }
+
+  /**
+   * Watch subagent conversation `conversationId` on this socket, from a snapshot, and keep `threads[conversationId]`
+   * current until the returned function is called. However many ask for the same conversation, it is watched once, and
+   * unwatched when the last lets go. Each new socket watches it again.
+   */
+  watchThread(conversationId: number): () => void {
+    const known = this.threadWatches.get(conversationId);
+
+    if (known !== undefined) known.refs += 1;
+    else {
+      this.threadWatches.set(conversationId, {
+        refs: 1,
+        commandId: null,
+        watched: false,
+        status: "loading",
+        view: EMPTY_VIEW,
+        failure: null,
+      });
+      this.startThreadWatch(conversationId);
+      this.update({});
+    }
+
+    let released = false;
+
+    return () => {
+      if (released) return;
+
+      released = true;
+      this.releaseThread(conversationId);
+    };
+  }
+
+  /** Stream the Session's task graph into `taskGraph`: once is enough, and a new socket asks again. */
+  watchTaskGraph(): void {
+    if (this.graphWanted) return;
+
+    this.graphWanted = true;
+
+    if (this.root !== null) this.send({ type: "watch_task_graph", id: this.nextCommandId() });
   }
 
   /**
@@ -235,9 +337,25 @@ export class SessionConnection {
     }
   }
 
-  /** Abort the root conversation's work and withdraw its queued input. */
-  abort(): void {
-    if (this.opened) this.send({ type: "abort", id: this.nextCommandId() });
+  /**
+   * Abort the root conversation's work and withdraw its queued input, or a subagent's when `conversationId` names
+   * it. With `subagents`, the agents below it stop too; otherwise they keep working.
+   */
+  abort(target: AbortTarget = {}): void {
+    if (!this.opened) return;
+
+    const { conversationId, subagents } = target;
+
+    const abort: Types.Mutable<Extract<ClientMessage, { type: "abort" }>> = {
+      type: "abort",
+      id: this.nextCommandId(),
+    };
+
+    if (conversationId !== undefined) abort.conversationId = conversation(conversationId);
+
+    if (subagents !== undefined) abort.subagents = subagents;
+
+    this.send(abort);
   }
 
   dispose(): void {
@@ -297,6 +415,15 @@ export class SessionConnection {
         this.root = message.root;
         this.watch();
 
+        for (const conversationId of this.threadWatches.keys())
+          this.startThreadWatch(conversationId);
+
+        if (this.graphWanted) this.send({ type: "watch_task_graph", id: this.nextCommandId() });
+
+        return;
+      case "task_graph":
+        this.update({ taskGraph: { agents: message.agents, background: message.background } });
+
         return;
       case "picked":
         this.update({ picked: { model: message.model, thinkingLevel: message.thinkingLevel } });
@@ -310,7 +437,18 @@ export class SessionConnection {
 
         return;
       case "events": {
-        if (message.conversationId !== this.root) return;
+        const thread = this.threadWatches.get(message.conversationId);
+
+        if (message.conversationId !== this.root) {
+          if (thread !== undefined) {
+            thread.view = reduceEvents(thread.view, message.events);
+            thread.status = "live";
+            thread.failure = null;
+            this.update({}, message.conversationId);
+          }
+
+          return;
+        }
 
         const view = reduceEvents(this.state.view, message.events);
 
@@ -333,9 +471,19 @@ export class SessionConnection {
         return;
       }
 
-      case "result":
+      case "result": {
         if (message.id === this.watchId) {
           this.watched = true;
+          this.flush();
+          this.update({});
+
+          return;
+        }
+
+        const watching = this.threadWatchOf(message.id);
+
+        if (watching !== undefined) {
+          watching.watch.watched = true;
           this.flush();
           this.update({});
 
@@ -345,22 +493,103 @@ export class SessionConnection {
         this.answered(message.id, submissionIdOf(message));
 
         return;
-      case "error":
+      }
+
+      case "error": {
+        const failed = message.id === undefined ? undefined : this.threadWatchOf(message.id);
+
         if (message.id === this.watchId) {
           // The watch was refused: start over on a new socket, after the backoff, rather than asking again at once.
           this.lost(message.message);
+        } else if (failed !== undefined) {
+          this.threadFailed(failed.conversationId, message.message);
         } else if (message.id !== undefined) {
+          const conversationId = this.pending.find(
+            (submit) => submit.commandId === message.id,
+          )?.conversationId;
+
           this.answered(message.id, undefined);
-          this.update({ failure: message.message });
+
+          if (conversationId === undefined) this.update({ failure: message.message });
+          else this.update({}, conversationId, { failure: message.message });
         } else if (message.conversationId !== undefined) {
-          // The watch ended and is dropped: start over, after the backoff, to resume it.
+          // The watch ended and is dropped: the root's starts over, after the backoff, to resume it.
           if (message.conversationId === this.root) this.lost(message.message);
+          else this.threadFailed(message.conversationId, message.message);
         } else {
           this.update({ failure: message.message });
         }
 
         return;
+      }
     }
+  }
+
+  private isRoot(conversationId: number | undefined): boolean {
+    return conversationId === undefined || conversationId === this.root;
+  }
+
+  private threadWatchOf(
+    commandId: string,
+  ): { readonly conversationId: number; readonly watch: ThreadWatch } | undefined {
+    for (const [conversationId, watch] of this.threadWatches) {
+      if (watch.commandId === commandId) return { conversationId, watch };
+    }
+
+    return undefined;
+  }
+
+  private startThreadWatch(conversationId: number): void {
+    const watch = this.threadWatches.get(conversationId);
+
+    if (watch === undefined || !this.opened) return;
+
+    watch.watched = false;
+    watch.commandId = this.nextCommandId();
+    this.send({ type: "watch", id: watch.commandId, conversationId: conversation(conversationId) });
+  }
+
+  private releaseThread(conversationId: number): void {
+    const watch = this.threadWatches.get(conversationId);
+
+    if (watch === undefined) return;
+
+    watch.refs -= 1;
+
+    if (watch.refs > 0) return;
+
+    this.threadWatches.delete(conversationId);
+    this.threadLanes.delete(conversationId);
+
+    // Submits not yet sent to a conversation nobody shows are dropped with it.
+    for (let index = this.pending.length - 1; index >= 0; index -= 1) {
+      const submit = this.pending[index];
+
+      if (submit?.conversationId === conversationId && !submit.sent) this.pending.splice(index, 1);
+    }
+
+    if (this.opened) {
+      this.send({
+        type: "unwatch",
+        id: this.nextCommandId(),
+        conversationId: conversation(conversationId),
+      });
+    }
+
+    this.update({});
+  }
+
+  /** The Session refused or ended the watch of a subagent's conversation: the thread says why, and is not retried. */
+  private threadFailed(conversationId: number, failure: string): void {
+    const watch = this.threadWatches.get(conversationId);
+
+    if (watch === undefined) return;
+
+    watch.status = "failed";
+    watch.watched = false;
+    watch.commandId = null;
+    watch.failure = failure;
+    this.update({}, conversationId);
   }
 
   /** A command's answer: a submit that has one is done, and a successful one has a submission ID to remember. */
@@ -389,19 +618,31 @@ export class SessionConnection {
   }
 
   private flush(): void {
-    if (!this.watched) return;
-
     for (const submit of this.pending) {
       if (submit.sent) continue;
 
-      submit.sent = true;
-      this.send({
+      // A submit waits for the watch of the conversation it is for: it could land before the snapshot otherwise.
+      const ready =
+        submit.conversationId === undefined
+          ? this.watched
+          : this.threadWatches.get(submit.conversationId)?.watched === true;
+
+      if (!ready) continue;
+
+      const message: Types.Mutable<Extract<ClientMessage, { type: "submit" }>> = {
         type: "submit",
         id: submit.commandId,
         input: submit.text,
         whenBusy: submit.whenBusy,
         requestId: submit.requestId,
-      });
+      };
+
+      if (submit.conversationId !== undefined) {
+        message.conversationId = conversation(submit.conversationId);
+      }
+
+      submit.sent = true;
+      this.send(message);
     }
   }
 
@@ -426,6 +667,11 @@ export class SessionConnection {
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of this.pending) submit.sent = false;
+
+    for (const watch of this.threadWatches.values()) {
+      watch.watched = false;
+      watch.commandId = null;
+    }
 
     // The next socket says again which Secret requests wait.
     this.state = { ...this.state, secretRequests: [] };
@@ -480,14 +726,32 @@ export class SessionConnection {
     clearTimeout(this.pongTimer);
   }
 
+  /**
+   * Apply `change` and tell the listeners. `patch` sets the failure shown on thread `thread`; every thread's state
+   * is rebuilt from its watch, reusing what did not change.
+   */
   private update(
     change: Partial<
       Pick<
         SessionState,
-        "status" | "view" | "failure" | "picked" | "secretRequests" | "secretLifetimeMinutes"
+        | "status"
+        | "view"
+        | "failure"
+        | "picked"
+        | "secretRequests"
+        | "secretLifetimeMinutes"
+        | "taskGraph"
       >
     >,
+    thread?: number,
+    patch?: { readonly failure: string | null },
   ): void {
+    if (thread !== undefined && patch !== undefined) {
+      const watch = this.threadWatches.get(thread);
+
+      if (watch !== undefined) watch.failure = patch.failure;
+    }
+
     const next = { ...this.state, ...change };
 
     const reuse =
@@ -496,15 +760,78 @@ export class SessionConnection {
     const queue = reuse ? this.state.queue : this.lanes(next.view);
 
     this.lanesFor = { inbox: next.view.inbox, version: this.textsVersion };
-    this.state = { ...next, queue, sending: this.sending() };
+    this.state = { ...next, queue, sending: this.sending(), threads: this.threads() };
 
     for (const listener of this.listeners) listener();
+  }
+
+  /** Each watched subagent thread's state, the same object as before where nothing about it changed. */
+  private threads(): Readonly<Record<string, ThreadState>> {
+    const before = this.state.threads;
+    const threads: Record<string, ThreadState> = {};
+    let same = Record.size(before) === this.threadWatches.size;
+
+    for (const [conversationId, watch] of this.threadWatches) {
+      const key = String(conversationId);
+      const previous = before[key];
+      const lanes = this.threadLanes.get(conversationId);
+
+      const queue =
+        lanes?.inbox === watch.view.inbox && lanes.version === this.textsVersion
+          ? lanes.queue
+          : this.lanes(watch.view);
+
+      this.threadLanes.set(conversationId, {
+        inbox: watch.view.inbox,
+        version: this.textsVersion,
+        queue,
+      });
+
+      const sending = this.sendingTo(conversationId, previous?.sending);
+
+      const unchanged =
+        previous !== undefined &&
+        previous.status === watch.status &&
+        previous.view === watch.view &&
+        previous.queue === queue &&
+        previous.sending === sending &&
+        previous.failure === watch.failure;
+
+      threads[key] = unchanged
+        ? previous
+        : { status: watch.status, view: watch.view, queue, sending, failure: watch.failure };
+      same = same && unchanged;
+    }
+
+    return same ? before : threads;
+  }
+
+  /** The submits to subagent conversation `conversationId` the Session has not answered. */
+  private sendingTo(
+    conversationId: number,
+    previous: readonly SendingEntry[] | undefined,
+  ): readonly SendingEntry[] {
+    const next = this.pending
+      .filter((submit) => submit.conversationId === conversationId)
+      .map((submit) => ({ id: submit.commandId, text: submit.text }));
+
+    if (previous === undefined) return next.length === 0 ? NO_SENDING : next;
+
+    return previous.length === next.length &&
+      previous.every((entry, index) => entry.id === next[index]?.id)
+      ? previous
+      : next.length === 0
+        ? NO_SENDING
+        : next;
   }
 
   /** The submits the Session has not answered, in the order they were made. */
   private sending(): readonly SendingEntry[] {
     const previous = this.state.sending;
-    const next = this.pending.map((submit) => ({ id: submit.commandId, text: submit.text }));
+
+    const next = this.pending
+      .filter((submit) => submit.conversationId === undefined)
+      .map((submit) => ({ id: submit.commandId, text: submit.text }));
 
     // Keep the same array while nothing changed, so a view of it need not re-render.
     return previous.length === next.length &&

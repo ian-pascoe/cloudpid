@@ -46,8 +46,11 @@ export type SocketState = {
 
 type ErrorMessage = Extract<ServerMessage, { type: "error" }>;
 
-/** What a socket keeps across hibernation: the conversations it watches. */
-const Attachment = Schema.Struct({ watches: Schema.Array(ConversationId) });
+/** What a socket keeps across hibernation: the conversations it watches, and whether it watches the task graph. */
+const Attachment = Schema.Struct({
+  watches: Schema.Array(ConversationId),
+  taskGraph: Schema.optionalKey(Schema.Boolean),
+});
 
 type Attachment = typeof Attachment.Type;
 
@@ -118,13 +121,28 @@ const readAttachment = (socket: WebSocket): Attachment =>
 /** Record that `socket` watches `conversationId`, or no longer does. */
 const setWatched = (socket: WebSocket, conversationId: ConversationId, watched: boolean) =>
   Effect.sync(() => {
-    const { watches } = readAttachment(socket);
-    const others = Arr.filter(watches, (id) => id !== conversationId);
+    const attachment = readAttachment(socket);
+    const others = Arr.filter(attachment.watches, (id) => id !== conversationId);
 
     socket.serializeAttachment({
+      ...attachment,
       watches: watched ? Arr.append(others, conversationId) : others,
     } satisfies Attachment);
   });
+
+/** Record that `socket` watches the task graph, or no longer does. */
+const setGraphWatched = (socket: WebSocket, watched: boolean) =>
+  Effect.sync(() => {
+    socket.serializeAttachment({
+      ...readAttachment(socket),
+      taskGraph: watched,
+    } satisfies Attachment);
+  });
+
+/** The key of a socket's task graph watch among its watches. */
+const TASK_GRAPH = "task_graph";
+
+type WatchKey = ConversationId | typeof TASK_GRAPH;
 
 /**
  * The Session's sockets over the object's `state`. Building it restarts the watches of sockets that outlived the last
@@ -140,7 +158,7 @@ export const sessionSocketsLayer = (
       const secrets = yield* Secrets;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
-      const watching = new Map<WebSocket, FiberMap.FiberMap<ConversationId>>();
+      const watching = new Map<WebSocket, FiberMap.FiberMap<WatchKey>>();
 
       // Answered by the runtime, so a client's heartbeat never wakes a hibernated object.
       state.setWebSocketAutoResponse(
@@ -153,7 +171,7 @@ export const sessionSocketsLayer = (
 
           if (existing !== undefined) return Effect.succeed(existing);
 
-          return FiberMap.make<ConversationId>().pipe(
+          return FiberMap.make<WatchKey>().pipe(
             Effect.tap((fibers) => Effect.sync(() => watching.set(socket, fibers))),
             Scope.provide(scope),
           );
@@ -194,6 +212,40 @@ export const sessionSocketsLayer = (
           yield* Deferred.await(started);
         });
 
+      /**
+       * Stream the task graph's summaries to `socket`, replacing a watch it already has. The first summary follows
+       * shortly; a watch that fails is dropped and the client told.
+       */
+      const watchGraph = (socket: WebSocket) =>
+        Effect.gen(function* () {
+          const fibers = yield* watchesOf(socket);
+
+          yield* setGraphWatched(socket, true);
+          yield* host.taskGraph.pipe(
+            Stream.runForEach((summary) => send(socket, { type: "task_graph", ...summary })),
+            Effect.catch((error) =>
+              setGraphWatched(socket, false).pipe(
+                Effect.andThen(
+                  send(socket, {
+                    type: "error",
+                    message: `Task graph watch ended: ${error.message}`,
+                  }),
+                ),
+              ),
+            ),
+            FiberMap.run(fibers, TASK_GRAPH),
+          );
+        });
+
+      const unwatchGraph = (socket: WebSocket) =>
+        Effect.suspend(() => {
+          const fibers = watching.get(socket);
+
+          return (fibers === undefined ? Effect.void : FiberMap.remove(fibers, TASK_GRAPH)).pipe(
+            Effect.andThen(setGraphWatched(socket, false)),
+          );
+        });
+
       const unwatch = (socket: WebSocket, conversationId: ConversationId) =>
         Effect.suspend(() => {
           const fibers = watching.get(socket);
@@ -207,15 +259,17 @@ export const sessionSocketsLayer = (
       ): Effect.Effect<{ readonly submissionId: number } | null, SessionError | SecretsError> => {
         switch (message.type) {
           case "submit": {
-            const { type: _type, id: _id, input, ...options } = message;
+            const { type: _type, id: _id, ...prompt } = message;
 
-            return host
-              .submit({ input, ...options })
-              .pipe(Effect.map((submissionId) => ({ submissionId })));
+            return host.submit(prompt).pipe(Effect.map((submissionId) => ({ submissionId })));
           }
 
-          case "abort":
-            return host.abort.pipe(Effect.as(null));
+          case "abort": {
+            const { type: _type, id: _id, ...options } = message;
+
+            return host.abort(options).pipe(Effect.as(null));
+          }
+
           case "configure":
             return host
               .configure(agentChange(message))
@@ -227,6 +281,10 @@ export const sessionSocketsLayer = (
               Effect.andThen(setWatched(socket, message.conversationId, false)),
               Effect.as(null),
             );
+          case "watch_task_graph":
+            return watchGraph(socket).pipe(Effect.as(null));
+          case "unwatch_task_graph":
+            return unwatchGraph(socket).pipe(Effect.as(null));
           case "secret_answer":
             return secrets.answer(message.request, message.values).pipe(Effect.as(null));
         }
@@ -318,6 +376,8 @@ export const sessionSocketsLayer = (
 
       // Sockets that outlived the last instance keep their watches, each from a fresh snapshot.
       for (const socket of state.getWebSockets()) {
+        if (readAttachment(socket).taskGraph === true) yield* watchGraph(socket);
+
         for (const conversationId of readAttachment(socket).watches) {
           yield* watch(socket, conversationId).pipe(
             // The watch dropped itself, so the next instance does not retry it.

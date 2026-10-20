@@ -672,3 +672,62 @@ describe("a watch", () => {
     ).toBe("closed");
   });
 });
+
+/** The task graph summaries among `messages`. */
+const graphs = (messages: readonly ServerMessage[]) =>
+  Arr.filter(messages, (message) => message.type === "task_graph");
+
+describe("a task graph watch", () => {
+  it("sends the Session's summary, and stops once unwatched", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+
+    client.send({ type: "watch_task_graph", id: "graph" });
+    expect(await client.answer("graph")).toEqual({ type: "result", id: "graph", result: null });
+    expect(graphs(await client.until((messages) => graphs(messages).length === 1))).toEqual([
+      { type: "task_graph", agents: [], background: [] },
+    ]);
+    expect(await recordedWatches(stub)).toEqual([{ watches: [], taskGraph: true }]);
+
+    client.send({ type: "unwatch_task_graph", id: "unwatch" });
+    await client.answer("unwatch");
+    expect(await recordedWatches(stub)).toEqual([{ watches: [], taskGraph: false }]);
+  });
+
+  it("survives hibernation: the woken Session sends the summary again on the same socket", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch_task_graph" });
+    await client.until((messages) => graphs(messages).length === 1);
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    // A message wakes it.
+    client.send({ type: "unwatch", id: "wake", conversationId: root });
+    await client.answer("wake");
+
+    expect(graphs(await client.until((messages) => graphs(messages).length === 1, before))).toEqual(
+      [{ type: "task_graph", agents: [], background: [] }],
+    );
+  });
+});
+
+describe("owner commands addressed to a conversation", () => {
+  it("are refused, with the command's id, when it is neither the root nor a subagent's", async () => {
+    const client = await connect(fresh());
+    const root = await client.root();
+
+    const stranger = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ConversationId)(root + 1000),
+    );
+
+    client.send({ type: "submit", id: "submit", conversationId: stranger, input: "hi" });
+    client.send({ type: "abort", id: "abort", conversationId: stranger });
+
+    expect(await client.answer("submit")).toMatchObject({ type: "error", id: "submit" });
+    expect(await client.answer("abort")).toMatchObject({ type: "error", id: "abort" });
+  });
+});

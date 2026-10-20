@@ -361,6 +361,9 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
         turn.endedAt = runtime.now();
       }
 
+      // Stopped while its report was held for an idle parent: the owner stopped everything, so nothing is reported.
+      if (turn?.delivery === "pending") turn.delivery = "none";
+
       return aborted();
     }, context),
 });

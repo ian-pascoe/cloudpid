@@ -107,4 +107,58 @@ describe("the Session socket messages", () => {
       Option.none(),
     );
   });
+
+  it("read a submit and an abort addressed to a subagent's conversation, and the abort's reach into its subagents", async () => {
+    expect(
+      await readClient(
+        '{"type":"submit","id":"1","conversationId":4,"input":"hi","whenBusy":"steer"}',
+      ),
+    ).toEqual(
+      Option.some({ type: "submit", id: "1", conversationId: 4, input: "hi", whenBusy: "steer" }),
+    );
+    expect(await readClient('{"type":"abort","conversationId":4,"subagents":true}')).toEqual(
+      Option.some({ type: "abort", conversationId: 4, subagents: true }),
+    );
+    expect(await readClient('{"type":"abort","subagents":"yes"}')).toEqual(Option.none());
+    expect(await readClient('{"type":"submit","input":"hi","conversationId":0}')).toEqual(
+      Option.none(),
+    );
+  });
+
+  it("read a request to watch the task graph, and to stop watching it", async () => {
+    expect(await readClient('{"type":"watch_task_graph","id":"w"}')).toEqual(
+      Option.some({ type: "watch_task_graph", id: "w" }),
+    );
+    expect(await readClient('{"type":"unwatch_task_graph"}')).toEqual(
+      Option.some({ type: "unwatch_task_graph" }),
+    );
+  });
+
+  it("carry a compact summary of the task graph", async () => {
+    const text = JSON.stringify({
+      type: "task_graph",
+      agents: [
+        {
+          id: "agent-1",
+          parent: "root",
+          conversationId: 2,
+          role: "small",
+          model: "anthropic/claude-haiku-5",
+          status: "working",
+        },
+      ],
+      background: [
+        {
+          id: 9,
+          kind: "pi.compaction",
+          agent: "root",
+          conversationId: 1,
+          state: "running",
+          aborting: false,
+        },
+      ],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+  });
 });

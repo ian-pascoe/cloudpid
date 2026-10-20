@@ -20,11 +20,14 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import type { TaskGraphSummary } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import { SessionHost, sessionHostLayer } from "./host.ts";
+import * as Stream from "effect/Stream";
+import { type AbortOptions, SessionHost, sessionHostLayer } from "./host.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { SessionRegistry } from "./status.ts";
 
@@ -55,6 +58,8 @@ export class TestSubagentSession extends DurableObject {
   #runtime!: ManagedRuntime.ManagedRuntime<SessionHost | Harness, unknown>;
   /** Resolves when this instance's child request starts and hangs. */
   readonly hanging = Promise.withResolvers<void>();
+  /** Resolves when `answerChild` is called: the child's hanging request then answers instead of waiting to be interrupted. */
+  readonly #childMayAnswer = Promise.withResolvers<void>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -110,21 +115,38 @@ export class TestSubagentSession extends DurableObject {
       if (this.ctx.storage.kv.get<boolean>(RELEASED) === true)
         return fauxAssistantMessage("The answer is 42.");
 
-      this.hanging.resolve();
+      // Asked to delegate further, it starts its own subagent first; after that it hangs like the others.
+      if (said.includes("Find the deeper answer") && last?.role === "user") {
+        return fauxAssistantMessage(
+          [fauxToolCall("subagent", { task: "Find it deeper" }, { id: "spawn-deeper" })],
+          { stopReason: "toolUse" },
+        );
+      }
 
-      return new Promise((_resolve, reject) => {
-        const abort = () => reject(new DOMException("Request interrupted", "AbortError"));
-
-        if (signal?.aborted === true) abort();
-        else signal?.addEventListener("abort", abort, { once: true });
-      });
+      return this.#hang(signal);
     }
+
+    // Any deeper agent hangs too.
+    if (agent !== "root") return this.#hang(signal);
 
     if (said === "Delegate it") {
       return fauxAssistantMessage(
         [
           fauxToolCall("subagent", { task: "Find the answer" }, { id: "spawn" }),
           fauxToolCall("subagent_wait", { agent_id: "agent-1" }, { id: "wait" }),
+        ],
+        { stopReason: "toolUse" },
+      );
+    }
+
+    if (said === "Delegate deep") {
+      return fauxAssistantMessage(
+        [
+          fauxToolCall(
+            "subagent",
+            { task: "Find the deeper answer", delegation: "fanout" },
+            { id: "spawn" },
+          ),
         ],
         { stopReason: "toolUse" },
       );
@@ -142,6 +164,27 @@ export class TestSubagentSession extends DurableObject {
     return fauxAssistantMessage(`Root saw: ${said}`);
   }
 
+  /** A request that stays open until it is interrupted, or `answerChild` lets it answer. */
+  #hang(signal: AbortSignal | undefined): Promise<AssistantMessage> {
+    this.hanging.resolve();
+
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(new DOMException("Request interrupted", "AbortError"));
+
+      void this.#childMayAnswer.promise.then(() => {
+        resolve(fauxAssistantMessage("The answer is 42."));
+      });
+
+      if (signal?.aborted === true) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
+
+  /** Let the child's hanging request answer now. */
+  answerChild(): void {
+    this.#childMayAnswer.resolve();
+  }
+
   /** Let the child answer, from its next request on. */
   release(): void {
     this.ctx.storage.kv.put(RELEASED, true);
@@ -150,6 +193,34 @@ export class TestSubagentSession extends DurableObject {
   submit(text: string): Promise<number> {
     return this.#runtime.runPromise(
       Effect.flatMap(SessionHost, (host) => host.submit({ requestId: text, input: text })),
+    );
+  }
+
+  /** Submit `text` to conversation `conversationId`, as the owner does. */
+  submitTo(conversationId: ConversationId, text: string): Promise<number> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) =>
+        host.submit({ requestId: text, input: text, conversationId }),
+      ),
+    );
+  }
+
+  /** Abort what `options` names: the root by default. */
+  abort(options: AbortOptions = {}): Promise<void> {
+    return this.#runtime.runPromise(Effect.flatMap(SessionHost, (host) => host.abort(options)));
+  }
+
+  /** The first summary of the task graph that `accept`s, as a client watching it is sent. */
+  taskGraph(accept: (summary: TaskGraphSummary) => boolean): Promise<TaskGraphSummary> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) =>
+        host.taskGraph.pipe(
+          Stream.filter(accept),
+          Stream.runHead,
+          Effect.timeout("5 seconds"),
+          Effect.map(Option.getOrThrow),
+        ),
+      ),
     );
   }
 

@@ -1,91 +1,22 @@
-import { MessagePrimitive, ThreadPrimitive, useAuiState } from "@assistant-ui/react";
-import * as Arr from "effect/Array";
-import * as Predicate from "effect/Predicate";
+import { ThreadPrimitive } from "@assistant-ui/react";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import { navigate } from "../router.ts";
 import type { ConfigureChange, QueuedEntry, SessionState } from "../session/connection.ts";
 import { Composer } from "./composer.tsx";
 import { ModelPicker } from "./model-picker.tsx";
-import { MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
+import { Messages } from "./messages.tsx";
 import { SecretRequests } from "./secret-form.tsx";
 
-const UserMessage = () => (
-  <MessagePrimitive.Root className="flex justify-end">
-    <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
-      <MessagePrimitive.Parts />
-    </div>
-  </MessagePrimitive.Root>
-);
-
-/** Why the model's answer ended in an error, if it did. */
-const FailureNotice = () => {
-  const error = useAuiState((state) => {
-    const status = state.message.status;
-
-    return status?.type === "incomplete" && status.reason === "error" ? status.error : undefined;
-  });
-
-  return error === undefined ? null : (
-    <p role="alert" className="mt-2 text-sm text-destructive">
-      {Predicate.isString(error) ? error : "The model failed."}
-    </p>
-  );
-};
-
-const AssistantMessage = () => (
-  <MessagePrimitive.Root className="min-w-0 break-words">
-    <MessagePrimitive.Parts
-      components={{
-        Text: MarkdownText,
-        Reasoning: ReasoningPart,
-        tools: { Fallback: ToolCallCard },
-      }}
-    />
-    <FailureNotice />
-  </MessagePrimitive.Root>
-);
-
-/**
- * A notice between turns: a Handoff, a compaction summary, or a Rollover request. Its title shows; the text it carried
- * (the Handoff the next context starts from) opens on demand.
- */
-const NoticeMessage = () => {
-  const title = useAuiState((state) => {
-    const custom = state.message.metadata.custom.title;
-
-    return Predicate.isString(custom) ? custom : "Notice";
-  });
-
-  const text = useAuiState((state) =>
-    Arr.join(
-      Arr.map(state.message.content, (part) => (part.type === "text" ? part.text : "")),
-      "",
-    ),
-  );
-
-  return (
-    <MessagePrimitive.Root className="flex items-center gap-3 text-xs text-muted-foreground">
-      <span className="h-px flex-1 bg-border" aria-hidden />
-      {text === "" ? (
-        <span>{title}</span>
-      ) : (
-        <details className="max-w-[85%] min-w-0">
-          <summary className="cursor-pointer text-center select-none">{title}</summary>
-          <p className="mt-2 rounded-md bg-muted px-3 py-2 text-left text-sm break-words whitespace-pre-wrap text-foreground">
-            {text}
-          </p>
-        </details>
-      )}
-      <span className="h-px flex-1 bg-border" aria-hidden />
-    </MessagePrimitive.Root>
-  );
-};
-
-/** What renders a message of each role. */
-const BY_ROLE = { user: UserMessage, assistant: AssistantMessage, system: NoticeMessage } as const;
-
-const Header = ({ title, picker }: { title: string | undefined; picker: ReactNode }) => (
+const Header = ({
+  title,
+  picker,
+  actions,
+}: {
+  title: string | undefined;
+  picker: ReactNode;
+  actions: ReactNode;
+}) => (
   <header className="flex items-center gap-2 border-b px-4 py-2.5">
     <button
       type="button"
@@ -99,6 +30,7 @@ const Header = ({ title, picker }: { title: string | undefined; picker: ReactNod
     </button>
     <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title ?? "Session"}</h2>
     {picker}
+    {actions}
   </header>
 );
 
@@ -111,9 +43,15 @@ export const Thread = ({
   followUpLane,
   onConfigure,
   onAnswerSecrets,
+  onStopAll,
+  actions,
 }: {
   title: string | undefined;
   state: SessionState;
+  /** Stop the run and every subagent; given while a subagent is working. */
+  onStopAll?: (() => void) | undefined;
+  /** Buttons in the header, after the model picker. */
+  actions?: ReactNode;
   onConfigure: (change: ConfigureChange) => void;
   onAnswerSecrets: (request: string, values: Readonly<Record<string, string>> | null) => void;
   notice: ReactNode;
@@ -142,6 +80,7 @@ export const Thread = ({
             onConfigure={onConfigure}
           />
         }
+        actions={actions}
       />
       {notice !== null && notice !== undefined && (
         <p
@@ -158,13 +97,7 @@ export const Thread = ({
               {state.status === "live" ? "Send a message to start the conversation." : null}
             </p>
           </ThreadPrimitive.Empty>
-          <ThreadPrimitive.Messages>
-            {({ message }) => {
-              const Message = BY_ROLE[message.role];
-
-              return <Message />;
-            }}
-          </ThreadPrimitive.Messages>
+          <Messages />
           {view.retry !== null && (
             <p role="status" className="text-sm text-muted-foreground">
               The model failed ({view.retry.error}). Retrying…
@@ -191,7 +124,12 @@ export const Thread = ({
           onAnswer={onAnswerSecrets}
         />
       </div>
-      <Composer steerLane={steerLane} followUpLane={followUpLane} sending={state.sending} />
+      <Composer
+        steerLane={steerLane}
+        followUpLane={followUpLane}
+        sending={state.sending}
+        onStopAll={onStopAll}
+      />
     </ThreadPrimitive.Root>
   );
 };
