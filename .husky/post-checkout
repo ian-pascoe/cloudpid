@@ -1,0 +1,12 @@
+# Branch checkouts only, not file checkouts; skip the checkouts a rebase makes.
+[ "$3" = "1" ] || exit 0
+[ -d "$(git rev-parse --git-path rebase-merge)" ] && exit 0
+[ -d "$(git rev-parse --git-path rebase-apply)" ] && exit 0
+
+# Reinstall when dependencies differ; `prepare` then syncs the reference
+# repositories, so sync directly only when no install ran.
+if ! git diff --quiet "$1" "$2" -- pnpm-lock.yaml 2>/dev/null; then
+  pnpm install --frozen-lockfile
+else
+  ./scripts/sync-reference-repos.sh
+fi

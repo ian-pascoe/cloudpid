@@ -1,0 +1,7 @@
+# Reinstall when the merge changed dependencies; `prepare` then syncs the
+# reference repositories, so sync directly only when no install ran.
+if ! git diff --quiet ORIG_HEAD HEAD -- pnpm-lock.yaml 2>/dev/null; then
+  pnpm install --frozen-lockfile
+else
+  ./scripts/sync-reference-repos.sh
+fi
