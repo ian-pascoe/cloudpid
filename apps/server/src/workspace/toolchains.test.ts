@@ -12,11 +12,18 @@ type ExecInput = Parameters<Shell["exec"]>[0];
 
 const encoder = new TextEncoder();
 
-/** A stream of one command's events: its output, then its exit. */
-const events = (id: string, stderr: string, code: number) =>
+/** Whether `input` is the bootstrap, whose script is the only one that defines this function. */
+const isBootstrap = (input: ExecInput) => input.source.includes("has_mise_config");
+
+/** A stream of one command's events: its output (each of `stdout` a chunk), then its exit. */
+const events = (id: string, stdout: readonly string[], stderr: string, code: number) =>
   new ReadableStream({
     start(controller) {
       let seq = 0;
+
+      for (const chunk of stdout) {
+        controller.enqueue({ id, seq: seq++, name: "stdout", value: encoder.encode(chunk) });
+      }
 
       if (stderr !== "") {
         controller.enqueue({ id, seq: seq++, name: "stderr", value: encoder.encode(stderr) });
@@ -28,12 +35,13 @@ const events = (id: string, stderr: string, code: number) =>
   });
 
 /** What a fake Container's shell does with a command: its stderr and exit status, after `gate` if there is one. */
-type Answer = { stderr?: string; code?: number; gate?: Promise<void> };
+type Answer = { stdout?: string[]; stderr?: string; code?: number; gate?: Promise<void> };
 
 /** A Container that records the commands it is sent, and what happened to its connection. */
 const fakeContainer = (answer: (input: ExecInput) => Answer = () => ({})) => {
   const execs: ExecInput[] = [];
   const disposed: string[] = [];
+  const kills: string[] = [];
   let connects = 0;
   let runtimeId = "runtime-1";
 
@@ -48,14 +56,19 @@ const fakeContainer = (answer: (input: ExecInput) => Answer = () => ({})) => {
         async exec(input) {
           execs.push(input);
 
-          const { stderr = "", code = 0, gate } = answer(input);
+          const { stdout = [], stderr = "", code = 0, gate } = answer(input);
 
           await gate;
 
-          return { id: input.id ?? `exec-${execs.length}`, events: events("x", stderr, code) };
+          return {
+            id: input.id ?? `exec-${execs.length}`,
+            events: events("x", stdout, stderr, code),
+          };
         },
-        getExec: () => Promise.reject(new Error("not used")),
-        killExec: () => Promise.resolve(),
+        getExec: async ({ id }) => ({ id, events: events("x", ["g", "hp_secret g"], "", 0) }),
+        killExec: async ({ id }) => {
+          kills.push(id);
+        },
         disposeExec: async ({ id }) => {
           disposed.push(id);
         },
@@ -76,6 +89,7 @@ const fakeContainer = (answer: (input: ExecInput) => Answer = () => ({})) => {
     backend,
     execs,
     disposed,
+    kills,
     connects: () => connects,
     restart: () => {
       runtimeId = `runtime-${connects + 1}`;
@@ -84,11 +98,9 @@ const fakeContainer = (answer: (input: ExecInput) => Answer = () => ({})) => {
 };
 
 /** The commands the backend was sent that are not its bootstrap. */
-const commands = (execs: readonly ExecInput[]) =>
-  execs.filter((input) => !input.source.includes("mise install"));
+const commands = (execs: readonly ExecInput[]) => execs.filter((input) => !isBootstrap(input));
 
-const bootstraps = (execs: readonly ExecInput[]) =>
-  execs.filter((input) => input.source.includes("mise install"));
+const bootstraps = (execs: readonly ExecInput[]) => execs.filter((input) => isBootstrap(input));
 
 // SAFETY: the fake backend ignores the host computer would pass it.
 const host = {} as Parameters<WorkspaceBackend["connect"]>[0];
@@ -134,9 +146,7 @@ describe("the bootstrap", () => {
     let finish!: () => void;
     const gate = new Promise<void>((resolve) => (finish = resolve));
 
-    const container = fakeContainer((input) =>
-      input.source.includes("mise install") ? { gate } : {},
-    );
+    const container = fakeContainer((input) => (isBootstrap(input) ? { gate } : {}));
 
     const handle = await open(container).toolchains.connect(host);
 
@@ -228,7 +238,7 @@ describe("the bootstrap", () => {
 
   it("does not stop a command when it fails, and says so without the token", async () => {
     const container = fakeContainer((input) =>
-      input.source.includes("mise install")
+      isBootstrap(input)
         ? { stderr: "mise ERROR download failed (token ghp_secret)", code: 1 }
         : {},
     );
@@ -248,9 +258,7 @@ describe("the bootstrap", () => {
   it("is tried again by a later command once a failure is a minute old, not before", async () => {
     let fail = true;
 
-    const container = fakeContainer((input) =>
-      input.source.includes("mise install") ? { code: fail ? 1 : 0 } : {},
-    );
+    const container = fakeContainer((input) => (isBootstrap(input) ? { code: fail ? 1 : 0 } : {}));
 
     const { toolchains, clock } = open(container);
     const handle = await toolchains.connect(host);
@@ -267,6 +275,67 @@ describe("the bootstrap", () => {
     await handle.rpc.shell.exec({ source: "d" });
 
     expect(bootstraps(container.execs)).toHaveLength(2);
+  });
+
+  it("waits twice as long after each failure in a row, up to a quarter of an hour", async () => {
+    const container = fakeContainer((input) => (isBootstrap(input) ? { code: 1 } : {}));
+    const { toolchains, clock } = open(container);
+    const handle = await toolchains.connect(host);
+
+    /** Moves the clock on and sends a command; how many bootstraps have run. */
+    const after = async (seconds: number) => {
+      clock.now += seconds * 1000;
+      await handle.rpc.shell.exec({ source: "x" });
+
+      return bootstraps(container.execs).length;
+    };
+
+    expect(await after(0)).toBe(1);
+
+    // A minute, then two, four, eight, fifteen, and fifteen again.
+    for (const [attempt, seconds] of [60, 120, 240, 480, 900, 900].entries()) {
+      expect(await after(seconds - 1)).toBe(attempt + 1);
+      expect(await after(1)).toBe(attempt + 2);
+    }
+  });
+
+  it("tells the command that waited for a failed bootstrap, on its stderr, without the token", async () => {
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? { stderr: "mise ERROR no such tool (ghp_secret)", code: 1 } : {},
+    );
+
+    const handle = await open(container).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "git --version" });
+
+    const [command] = commands(container.execs);
+
+    expect(command?.source).toMatch(/^printf .*>&2\ngit --version$/s);
+    expect(command?.source).toContain("Toolchain bootstrap failed (exit status 1)");
+    expect(command?.source).toContain("no such tool (***)");
+    expect(command?.source).not.toContain("ghp_secret");
+  });
+
+  it("points later commands to the failure while it is not retried yet", async () => {
+    const container = fakeContainer((input) => (isBootstrap(input) ? { code: 2 } : {}));
+    const handle = await open(container).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "a" });
+    await handle.rpc.shell.exec({ source: "b" });
+
+    const [, second] = commands(container.execs);
+
+    expect(second?.source).toContain("failed earlier (exit status 2)");
+    expect(second?.source).toMatch(/\nb$/);
+  });
+
+  it("sends a command as it is once the bootstrap succeeded", async () => {
+    const container = fakeContainer();
+    const handle = await open(container).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "a" });
+
+    expect(commands(container.execs)[0]?.source).toBe("a");
   });
 
   it("carries the git identity and the token, for git and gh", async () => {
@@ -293,6 +362,7 @@ describe("a command's environment", () => {
     expect(commands(container.execs)[0]?.env).toEqual({
       GH_TOKEN: "ghp_secret",
       GITHUB_TOKEN: "ghp_secret",
+      MISE_GLOBAL_CONFIG_FILE: "/workspace/mise.toml",
       MISE_TRUSTED_CONFIG_PATHS: "/workspace",
       MISE_YES: "1",
       GIT_TERMINAL_PROMPT: "0",
@@ -323,5 +393,111 @@ describe("a command's environment", () => {
 
     expect(commands(container.execs)[0]?.env).not.toHaveProperty("GITHUB_TOKEN");
     expect(commands(container.execs)[0]?.env).not.toHaveProperty("GH_TOKEN");
+  });
+});
+
+describe("a command killed while it waits for the bootstrap", () => {
+  it("is not run once the bootstrap ends, and ends with an exit status", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => (finish = resolve));
+    const container = fakeContainer((input) => (isBootstrap(input) ? { gate } : {}));
+    const handle = await open(container).toolchains.connect(host);
+
+    const command = handle.rpc.shell.exec({ id: "cmd-1", source: "git --version" });
+    const other = handle.rpc.shell.exec({ id: "cmd-2", source: "git status" });
+
+    await handle.rpc.shell.killExec({ id: "cmd-1" });
+    finish();
+
+    const execution = await command;
+    await other;
+
+    expect(commands(container.execs).map((input) => input.id)).toEqual(["cmd-2"]);
+    // The Container never heard of the command, so it is not asked to kill it.
+    expect(container.kills).toEqual([]);
+
+    const reader = execution.events.getReader();
+    const exit = await reader.read();
+
+    expect(exit.value).toMatchObject({ name: "exit" });
+    expect(exit.value?.name === "exit" ? exit.value.code : 0).not.toBe(0);
+  });
+
+  it("is killed on the Container as usual once it has started", async () => {
+    const container = fakeContainer();
+    const handle = await open(container).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ id: "cmd-1", source: "sleep 60" });
+    await handle.rpc.shell.killExec({ id: "cmd-1" });
+
+    expect(container.kills).toEqual(["cmd-1"]);
+  });
+});
+
+/** Everything a command printed, by stream, and its exit: what its client sees. */
+const output = async (execution: Awaited<ReturnType<Shell["exec"]>>) => {
+  const seen = { stdout: "", stderr: "", exits: 0, lastName: "" };
+  const decoder = new TextDecoder();
+  const reader = execution.events.getReader();
+
+  for (;;) {
+    const next = await reader.read();
+
+    if (next.done) break;
+
+    seen.lastName = next.value.name;
+
+    if (next.value.name === "exit") seen.exits++;
+    else seen[next.value.name] += decoder.decode(next.value.value, { stream: true });
+  }
+
+  return seen;
+};
+
+describe("a command's output", () => {
+  it("has the token taken out, wherever the chunks split it", async () => {
+    const container = fakeContainer((input) =>
+      isBootstrap(input)
+        ? {}
+        : { stdout: ["GH_TOKEN=gh", "p_sec", "ret\n", "done\n"], stderr: "ghp_secret!" },
+    );
+
+    const handle = await open(container).toolchains.connect(host);
+    const seen = await output(await handle.rpc.shell.exec({ source: "env" }));
+
+    expect(seen.stdout).toBe("GH_TOKEN=***\ndone\n");
+    expect(seen.stderr).toBe("***!");
+    expect(seen.exits).toBe(1);
+  });
+
+  it("gets what was held back at the end before the exit", async () => {
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? {} : { stdout: ["almost ghp_sec"] },
+    );
+
+    const handle = await open(container).toolchains.connect(host);
+    const seen = await output(await handle.rpc.shell.exec({ source: "x" }));
+
+    expect(seen.stdout).toBe("almost ghp_sec");
+    expect(seen.lastName).toBe("exit");
+  });
+
+  it("has the token taken out of an execution resumed with getExec too", async () => {
+    const container = fakeContainer();
+    const handle = await open(container).toolchains.connect(host);
+    const seen = await output(await handle.rpc.shell.getExec({ id: "cmd-1" }));
+
+    expect(seen.stdout).toBe("*** g");
+  });
+
+  it("is as the Container wrote it where the stack bound no token", async () => {
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? {} : { stdout: ["ghp_secret"] },
+    );
+
+    const handle = await open(container, { githubToken: undefined }).toolchains.connect(host);
+    const seen = await output(await handle.rpc.shell.exec({ source: "x" }));
+
+    expect(seen.stdout).toBe("ghp_secret");
   });
 });

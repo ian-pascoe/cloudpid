@@ -9,15 +9,17 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   BASE_MISE_TOML,
   bootstrapScript,
+  ROOT_MISE_TOML,
   TOOLCHAIN_IGNORE,
   toolchainEnv,
 } from "@cloudpid/sandbox-image/toolchains";
@@ -103,20 +105,48 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
   return { root, home, run, calls };
 };
 
+const LOCK = "mise lock --global --platform linux-x64";
+
 describe("the bootstrap", () => {
-  it("installs the Workspace's Toolchains with mise", () => {
+  it("locks the root's Toolchains, then installs them with mise", () => {
     const { root, run, calls } = sandbox();
 
     writeFileSync(join(root, "mise.toml"), "[tools]\n");
 
     expect(run().status).toBe(0);
+    expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
+  });
+
+  it("does not lock again while the lockfile is newer than the config", () => {
+    const { root, run, calls } = sandbox();
+
+    writeFileSync(join(root, "mise.toml"), "[tools]\n");
+    writeFileSync(join(root, "mise.lock"), "");
+    utimesSync(join(root, "mise.toml"), 1000, 1000);
+
+    run();
+
     expect(calls()).toEqual([`${root}: mise install`]);
+  });
+
+  it("locks again once the config is newer, as after `mise use`", () => {
+    const { root, run, calls } = sandbox();
+
+    writeFileSync(join(root, "mise.toml"), "[tools]\n");
+    writeFileSync(join(root, "mise.lock"), "");
+    utimesSync(join(root, "mise.lock"), 1000, 1000);
+
+    run();
+
+    expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
   });
 
   it("installs the Toolchains of each repo directory that declares its own", () => {
     const { root, run, calls } = sandbox();
 
     writeFileSync(join(root, "mise.toml"), "[tools]\n");
+    writeFileSync(join(root, "mise.lock"), "");
+    utimesSync(join(root, "mise.toml"), 1000, 1000);
     mkdirSync(join(root, "app"));
     writeFileSync(join(root, "app", "mise.toml"), "[tools]\n");
     mkdirSync(join(root, "plain"));
@@ -124,6 +154,38 @@ describe("the bootstrap", () => {
     run();
 
     expect(calls()).toEqual([`${root}: mise install`, `${root}/app: mise install`]);
+  });
+
+  it.each([
+    [".config/mise.toml"],
+    [".config/mise/config.toml"],
+    [".mise/config.toml"],
+    ["mise.local.toml"],
+    [".tool-versions"],
+  ])("takes %s for a mise config: no base file, and its Toolchains installed", (file) => {
+    const { root, run, calls } = sandbox();
+
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), "");
+
+    run();
+
+    expect(existsSync(join(root, "mise.toml"))).toBe(false);
+    expect(calls()).toEqual([`${root}: mise install`]);
+  });
+
+  it("installs the Toolchains of a repo directory that has only a .tool-versions", () => {
+    const { root, run, calls } = sandbox();
+
+    writeFileSync(join(root, "mise.toml"), "[tools]\n");
+    writeFileSync(join(root, "mise.lock"), "");
+    utimesSync(join(root, "mise.toml"), 1000, 1000);
+    mkdirSync(join(root, "app"));
+    writeFileSync(join(root, "app", ".tool-versions"), "node 22\n");
+
+    run();
+
+    expect(calls()).toContain(`${root}/app: mise install`);
   });
 
   it("writes the base mise.toml, git and gh in it, where the Workspace has none", () => {
@@ -135,7 +197,13 @@ describe("the bootstrap", () => {
     expect(BASE_MISE_TOML).toMatch(/"conda:git"/);
     expect(BASE_MISE_TOML).toMatch(/^gh = /m);
     expect(BASE_MISE_TOML).toMatch(/^lockfile = true$/m);
-    expect(calls()).toEqual([`${root}: mise install`]);
+    expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
+  });
+
+  it("writes the base file where mise reads it as the global config, so git and gh resolve from any directory", () => {
+    // `toolchainEnv` points MISE_GLOBAL_CONFIG_FILE at the Workspace's mise.toml, which the bootstrap seeds.
+    expect(ROOT_MISE_TOML).toBe("/workspace/mise.toml");
+    expect(toolchainEnv({}).MISE_GLOBAL_CONFIG_FILE).toBe(ROOT_MISE_TOML);
   });
 
   it("leaves a Workspace's own mise.toml as it is", () => {

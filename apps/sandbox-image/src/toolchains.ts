@@ -33,6 +33,9 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/.ruff_cache",
 ];
 
+/** The Workspace's own mise config: the Toolchains of every command, whatever its directory. */
+export const ROOT_MISE_TOML = `${WORKSPACE_ROOT}/mise.toml`;
+
 /** What the Workspace declares when it declares nothing: git and gh, which the image does not carry (ADR-0004). */
 export const BASE_MISE_TOML = `# Toolchains of this Workspace. The Container installs them on start, from mise.lock.
 # https://mise.jdx.dev/configuration.html
@@ -51,6 +54,7 @@ export type CommandEnv = { [name: string]: string };
 
 /** What `toolchainEnv` sets. */
 export type ToolchainEnv = {
+  MISE_GLOBAL_CONFIG_FILE: string;
   MISE_TRUSTED_CONFIG_PATHS: string;
   MISE_YES: string;
   GIT_TERMINAL_PROMPT: string;
@@ -67,11 +71,16 @@ export type ToolchainEnvOptions = {
 /**
  * The environment every command on the Container gets, under whatever the caller passes. computerd starts a command
  * with PATH (the image's, which has mise's shims first) and HOME but none of the image's other variables, so mise's
- * settings are here. The token is only ever here, in a process's environment: `bootstrapScript` makes git read it from there,
- * so no file holds it.
+ * settings are here. The token is only ever here, in a process's environment: `bootstrapScript` makes git read it from
+ * there, so no file holds it.
  */
 export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
   const env: ToolchainEnv = {
+    // The Workspace's mise.toml is also mise's global config: a mise shim resolves its version from the working
+    // directory's config and the global one, so without this git and gh would fail ("No version is set for shim")
+    // anywhere but under /workspace: in a scratch clone in /tmp, or in the git calls pip and npm make from their own
+    // temp directories. The image has no other git to fall back on.
+    MISE_GLOBAL_CONFIG_FILE: ROOT_MISE_TOML,
     // Every repo's mise.toml is the agent's own, in its own Workspace: trusted, and nothing to ask about. (A project's
     // mise.toml cannot set these two, so they are the environment's.)
     MISE_TRUSTED_CONFIG_PATHS: WORKSPACE_ROOT,
@@ -97,10 +106,13 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  * The bash script that makes a freshly started Container ready for commands, run once per Container start before the
  * first command (`apps/server/src/workspace/toolchains.ts`). It
  *
- * 1. writes `BASE_MISE_TOML` if the Workspace has no mise config,
- * 2. runs `mise install` (which installs from `mise.lock` and does nothing for what is present) in the Workspace and
- *    in each repo directory that has its own `mise.toml`, and exits with the first failure's status after trying all,
- * 3. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
+ * 1. writes `BASE_MISE_TOML` if the Workspace root has no mise config of any kind mise reads,
+ * 2. makes sure `mise.lock` is there and current for the root's `mise.toml`, which is mise's global config
+ *    (`toolchainEnv`) and so is only locked by `mise lock --global`: when the lockfile is missing or older than the
+ *    config, to the one platform the Container is,
+ * 3. runs `mise install` (which installs from `mise.lock` and does nothing for what is present) in the Workspace and
+ *    in each repo directory that has a mise config, and exits with the first failure's status after trying all,
+ * 4. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
  *    Container's global config has one, and points git's credentials for github.com at `$GITHUB_TOKEN` at the time
  *    git asks. Those go to the Container's `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds
  *    the token.
@@ -110,18 +122,36 @@ set -u
 root=${shellQuote(root)}
 cd "$root" || exit 1
 
-if [ ! -e mise.toml ] && [ ! -e .mise.toml ] && [ ! -e .config/mise.toml ]; then
+# Every file mise reads a Toolchain declaration from (mise.<env>.toml aside).
+has_mise_config() {
+  for file in mise.toml .mise.toml mise.local.toml .mise.local.toml .config/mise.toml .config/mise/config.toml .mise/config.toml mise/config.toml .tool-versions; do
+    [ -e "$1/$file" ] && return 0
+  done
+
+  return 1
+}
+
+if ! has_mise_config "$root"; then
   cat > mise.toml <<'CLOUDPID_BASE_MISE_TOML'
 ${BASE_MISE_TOML}CLOUDPID_BASE_MISE_TOML
 fi
 
 status=0
+
+note_failure() {
+  if [ "$1" -ne 0 ] && [ "$status" -eq 0 ]; then status=$1; fi
+}
+
+if [ -f mise.toml ] && { [ ! -e mise.lock ] || [ mise.toml -nt mise.lock ]; }; then
+  mise lock --global --platform linux-x64
+  note_failure $?
+fi
+
 for dir in "$root" "$root"/*/; do
   dir=\${dir%/}
-  if [ -f "$dir/mise.toml" ] || [ -f "$dir/.mise.toml" ]; then
+  if has_mise_config "$dir"; then
     (cd "$dir" && mise install)
-    code=$?
-    if [ "$code" -ne 0 ] && [ "$status" -eq 0 ]; then status=$code; fi
+    note_failure $?
   fi
 done
 

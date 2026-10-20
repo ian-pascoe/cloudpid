@@ -91,13 +91,15 @@ export class Workspace extends ContainerHost {
       egress: { mode: "direct" },
     };
 
-    // Toolchains, caches and dependency directories stay in the Container (docs/spec.md → Container and Toolchains).
+    // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/spec.md →
+    // Container and Toolchains). mise's Toolchains are on the Container's disk and need no entry.
     if (env.CONTAINER_FUSE !== "false") container.ignore = TOOLCHAIN_IGNORE;
 
     this.#container = new ContainerBackend(container);
 
-    // Before the first command of each Container start, the Toolchains are installed (the lockfile's), and every
-    // command gets the GitHub token. The Workspace sees this as the Container's backend.
+    // Before the first command of each Container start, the Toolchains are installed (the lockfile's); every command
+    // gets the GitHub token and mise's settings, and the token is taken out of its output. The Workspace sees this as
+    // the Container's backend.
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
