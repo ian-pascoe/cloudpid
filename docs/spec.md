@@ -149,10 +149,14 @@ They are rebuilt on pi-durable primitives, following its example 23 (`@cloudpid/
 
 ### Context management
 
-- **Notes** are a conversation document (`defineDoc`, `fork: "current"`).
-- **History** reads entries from storage. Lineage scope covers subagent conversations in the same Harness.
-- `context_rollover` returns `control: { handoff }`.
-- A `CompactionTask` `beforeCompact` hook turns automatic compaction into a prepare-then-rollover turn. The cut keeps tool batches whole.
+pi-context-management's `context_notes`, `context_history`, and `context_rollover` (`@cloudpid/extensions/context`), with its parameters and limits:
+
+- **Notes** are a conversation document (`defineDoc`, `fork: "current"`), which also keeps the last saved Handoff. A Handoff does not touch documents, so Notes outlive it.
+- **History** reads entries from storage, also those before a Handoff or compaction; Context Windows start at each head marker (`pi.reset`, `pi.compaction`). Lineage scope covers the conversations of the agent's ancestors and descendants in the Session's subagents document; references are `context:<conversationId>:<entryId>` and `context:<conversationId>:note:<name>`.
+- `context_rollover` must be the only call of its round and is not callable from scripts. It returns `control: { handoff }` with the Handoff and a Note Index; pi-durable applies it after the whole round, so the Handoff never splits a tool batch. It also queues a follow-up, so the task continues in the new context.
+- A `CompactionTask` `beforeCompact` hook, in conversations that offer `context_rollover`, turns a threshold compaction into a prepare-then-rollover turn: it declines and steers a Rollover request into the run, once per Context Window. An overflow compaction is the Emergency Rollover: its summary is the last saved Handoff and the Note Index, on pi-durable's cut, which keeps tool calls with their results. A manual compaction keeps pi-durable's summary.
+- The transcript shows Handoffs, compaction summaries, and Rollover requests as notices.
+- Not ported: Idle Rollover, the `/context`, `/compact`, and `/rollover` commands, and the Rollover Tail (`tailTokens`): a Handoff starts the context from the Handoff alone.
 
 ### Secrets
 

@@ -28,6 +28,14 @@ _Avoid_: Tier, model class
 An agent-written note that starts a fresh context window in the same conversation.
 _Avoid_: Summary, checkpoint note
 
+**Rollover**:
+Starting a conversation's fresh context window from a Handoff, which the agent prepares when the context is nearly full.
+_Avoid_: Compaction (for the agent-written kind), reset
+
+**Note**:
+A named Markdown text an agent keeps in its conversation, which outlives every Handoff.
+_Avoid_: Memory, scratchpad
+
 ## Workspaces and execution
 
 **Workspace**:
