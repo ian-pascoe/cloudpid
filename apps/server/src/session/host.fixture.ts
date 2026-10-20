@@ -13,6 +13,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import {
+  type AgentChange,
   defineExtension,
   type Extension,
   type HarnessOptions,
@@ -25,6 +26,7 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { sessionSettingsLayer } from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
@@ -46,7 +48,11 @@ const Echo = defineEffectTool({
   execute: ({ text }) => Effect.succeed({ output: [{ type: "text", text: `echo: ${text}` }] }),
 });
 
-const AGENT = { model: { provider: "faux", modelId: "faux-1" } } as const;
+/** The models the test provider serves: those the default settings and a Session's choice may name. */
+const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as const;
+
+/** The model and thinking level a request asked for. */
+export type TestRequest = { readonly model: string; readonly thinking: string | undefined };
 
 /** A scripted response that calls tool `name` with the JSON arguments `args`. */
 const CALL = /^call:(\w+):(.*)$/;
@@ -109,7 +115,11 @@ export class TestSession extends DurableObject {
     super(ctx, env);
     constructions.set(ctx.id.toString(), (constructions.get(ctx.id.toString()) ?? 0) + 1);
 
-    const faux = fauxProvider();
+    // As the model proxy's provider is named, so the settings' model ids resolve.
+    const faux = fauxProvider({
+      provider: "anthropic",
+      models: Arr.map(MODELS, (id) => ({ id, reasoning: true })),
+    });
 
     faux.setResponses(Array.from({ length: 8 }, () => this.#step()));
 
@@ -123,20 +133,26 @@ export class TestSession extends DurableObject {
             sessionHostLayer({
               storage: ctx.storage,
               models,
-              agent: AGENT,
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
               env: this.hostEnv(),
               reportTimeout: "200 millis",
             }).pipe(
               Layer.provide(
-                Layer.succeed(SessionRegistry, {
-                  report: (status) =>
-                    Effect.tryPromise({
-                      try: () => this.#report(status),
-                      catch: (cause) => ReportError.make({ message: String(cause) }),
-                    }),
-                }),
+                Layer.mergeAll(
+                  Layer.succeed(SessionRegistry, {
+                    report: (status) =>
+                      Effect.tryPromise({
+                        try: () => this.#report(status),
+                        catch: (cause) => ReportError.make({ message: String(cause) }),
+                      }),
+                  }),
+                  sessionSettingsLayer({
+                    read: Effect.orDie(Effect.tryPromise(() => this.#readSettings())),
+                    kv: ctx.storage.kv,
+                    timeout: "200 millis",
+                  }),
+                ),
               ),
             ),
           ),
@@ -189,7 +205,7 @@ export class TestSession extends DurableObject {
     return this.#runtime.runPromise(
       Effect.gen(function* () {
         const harness = yield* Harness;
-        const root = yield* harness.root(AGENT);
+        const root = yield* harness.root({});
 
         const page = yield* callDurable("entries", (context) =>
           root.entries({}, 100, undefined, context),
@@ -233,12 +249,39 @@ export class TestSession extends DurableObject {
     return this.ctx.storage.kv.get<number>("reportAttempts") ?? 0;
   }
 
+  /** Pick the root conversation's model and thinking level, as a client's `configure` does. */
+  configure(change: AgentChange): Promise<void> {
+    return Effect.runPromise(this.#host.configure(change));
+  }
+
+  /** The model and thinking level of each request the model received, oldest first. */
+  requests(): readonly TestRequest[] {
+    return this.ctx.storage.kv.get<TestRequest[]>("requests") ?? [];
+  }
+
+  /** Make reading the Registry's settings fail until `settingsRegistry("working")`. */
+  settingsRegistry(mode: "working" | "failing"): void {
+    this.ctx.storage.kv.put("settingsMode", mode);
+  }
+
   script(responses: readonly string[]): void {
     this.ctx.storage.kv.put("script", { responses, next: 0 } satisfies Script);
   }
 
   override async alarm(): Promise<void> {
     await Effect.runPromise(this.#host.alarm);
+  }
+
+  /** The Registry's saved settings overrides; none while no Registry is set. */
+  async #readSettings(): Promise<Schema.Json> {
+    const { kv } = this.ctx.storage;
+    const registry = kv.get<string>("registry");
+
+    if (registry === undefined) return {};
+
+    if (kv.get<string>("settingsMode") === "failing") throw new Error("Registry is down");
+
+    return (await this.env.REGISTRIES.getByName(registry).getSettings()).overrides;
   }
 
   async #report(status: SessionStatus): Promise<void> {
@@ -265,7 +308,14 @@ export class TestSession extends DurableObject {
 
   /** The next scripted response; the script position is stored before the response is used. */
   #step(): FauxResponseStep {
-    return (_request, options) => {
+    return (_request, options, _state, model) => {
+      const { kv } = this.ctx.storage;
+
+      kv.put("requests", [
+        ...(kv.get<TestRequest[]>("requests") ?? []),
+        { model: model.id, thinking: options?.reasoning } satisfies TestRequest,
+      ]);
+
       const script = this.ctx.storage.kv.get<Script>("script") ?? { responses: [], next: 0 };
       const text = script.responses[script.next] ?? "unscripted";
 

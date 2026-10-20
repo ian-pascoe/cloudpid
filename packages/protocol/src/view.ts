@@ -20,12 +20,12 @@
 //
 // Changes: types renamed (`PiSessionView` → `SessionView`, `PiRunningTool` → `RunningTool`), functions written as
 // `const` arrow functions, imports end in `.ts`, `blockPart` guards an undefined first part (`noUncheckedIndexedAccess`),
-// the view keeps the inbox's items (`inbox`) instead of their count (`queued`), and tool events of nested calls are left
-// out of the running tools. Formatted for this repository.
+// the view keeps the inbox's items (`inbox`) instead of their count (`queued`), tool events of nested calls are left
+// out of the running tools, and the view also follows the agent's thinking level (`thinkingLevel`). Formatted for this repository.
 
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
 
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
   AgentEvent,
   EntryRecord,
@@ -62,6 +62,8 @@ export type SessionView = {
   /** Retry backoff pi is waiting out, if any. */
   readonly retry: { readonly at: number; readonly error: string } | null;
   readonly model: { readonly provider: string; readonly modelId: string } | null;
+  /** The agent's thinking level; null before the agent has one. */
+  readonly thinkingLevel: ModelThinkingLevel | null;
   readonly error: string | null;
 };
 
@@ -74,6 +76,7 @@ export const EMPTY_VIEW: SessionView = {
   inbox: [],
   retry: null,
   model: null,
+  thinkingLevel: null,
   error: null,
 };
 
@@ -188,6 +191,7 @@ export const reduceView = (view: SessionView, event: AgentEvent): SessionView =>
         inbox: event.inbox,
         retry: event.generation?.retry ?? null,
         model: event.agent.model ?? null,
+        thinkingLevel: event.agent.thinkingLevel ?? null,
         error: null,
       };
     }
@@ -250,7 +254,11 @@ export const reduceView = (view: SessionView, event: AgentEvent): SessionView =>
     case "auto_retry_end":
       return { ...view, retry: null };
     case "agent_changed":
-      return { ...view, model: event.agent.model ?? null };
+      return {
+        ...view,
+        model: event.agent.model ?? null,
+        thinkingLevel: event.agent.thinkingLevel ?? null,
+      };
     case "task_failed":
       return { ...view, error: event.message };
     case "submission":

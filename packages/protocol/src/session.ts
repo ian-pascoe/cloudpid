@@ -2,6 +2,7 @@
 // The shapes follow the socket protocol of Cloudflare's `agents` pi example (`examples/next/harnesses/pi`, MIT), in
 // Effect `Schema`: commands carry an optional `id` that a `result` or `error` answers, and every watched conversation
 // streams `events` batches whose first batch is a `snapshot`.
+import { ModelId, ThinkingLevel } from "@cloudpid/config";
 import type { AgentEvent, ConversationId as PiConversationId } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -82,8 +83,21 @@ export const Unwatch = Schema.Struct({
   conversationId: ConversationId,
 });
 
+/**
+ * Pick the model and thinking level the root conversation runs with, from its next request on. A field left out stays
+ * as it is; `null` clears it, so the Session follows the default in the settings again (and a changed default applies
+ * to its next request). A Session that was never configured follows the default. Answered with `null`; the new
+ * choice reaches clients as an `agent_changed` event.
+ */
+export const Configure = Schema.Struct({
+  type: Schema.Literal("configure"),
+  id: CommandId,
+  model: ModelId.pipe(Schema.NullOr, Schema.optionalKey),
+  thinkingLevel: ThinkingLevel.pipe(Schema.NullOr, Schema.optionalKey),
+});
+
 /** Client → server. */
-export const ClientMessage = Schema.Union([Submit, Abort, Watch, Unwatch]);
+export const ClientMessage = Schema.Union([Submit, Abort, Watch, Unwatch, Configure]);
 
 export type ClientMessage = typeof ClientMessage.Type;
 

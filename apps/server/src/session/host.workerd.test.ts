@@ -46,7 +46,7 @@ const registered = async () => {
   const status = async () => (await registry.listSessions())[0]?.status;
   const reported = () => runInDurableObject(stub, (instance: TestSession) => instance.reported());
 
-  return { stub, status, reported };
+  return { stub, status, reported, registry };
 };
 
 describe("a Session host", () => {
@@ -188,5 +188,151 @@ describe("a Session host", () => {
 
     expect(answer).toMatchObject({ status: "answered", text: "You rolled." });
     expect(results).toEqual(["echo: 2d6"]);
+  });
+});
+
+describe("a Session's agent", () => {
+  /** Prompt the Session once, as turn `n`. */
+  const ask = (stub: DurableObjectStub<TestSession>, n: number) =>
+    runInDurableObject(stub, (instance: TestSession) =>
+      instance.prompt({ requestId: `turn-${n}`, text: "hi" }),
+    );
+
+  const requests = (stub: DurableObjectStub<TestSession>) =>
+    runInDurableObject(stub, (instance: TestSession) => instance.requests());
+
+  const script = (stub: DurableObjectStub<TestSession>, ...responses: string[]) =>
+    runInDurableObject(stub, (instance: TestSession) => instance.script(responses));
+
+  it("runs a new Session's first request on the default model at the default thinking level", async () => {
+    const { stub } = await registered();
+
+    await script(stub, "one");
+    await ask(stub, 1);
+
+    expect(await requests(stub)).toEqual([{ model: "claude-opus-5-5", thinking: "high" }]);
+  });
+
+  it("applies a default changed in the Registry to the next request of an idle Session, with no restart", async () => {
+    const { stub, registry } = await registered();
+
+    await script(stub, "one", "two");
+    await ask(stub, 1);
+
+    await registry.updateSettings(
+      { model: "anthropic/claude-sonnet-5-5", thinkingLevel: "low" },
+      1,
+    );
+    await ask(stub, 2);
+
+    expect(await requests(stub)).toEqual([
+      { model: "claude-opus-5-5", thinking: "high" },
+      { model: "claude-sonnet-5-5", thinking: "low" },
+    ]);
+  });
+
+  it("applies the default in force when a new Session first runs", async () => {
+    const { stub, registry } = await registered();
+
+    await registry.updateSettings({ model: "anthropic/claude-haiku-5-5" }, 1);
+    await script(stub, "one");
+    await ask(stub, 1);
+
+    expect(await requests(stub)).toEqual([{ model: "claude-haiku-5-5", thinking: "high" }]);
+  });
+
+  it("keeps what a Session picked, and follows the default for what it left alone", async () => {
+    const { stub, registry } = await registered();
+
+    await script(stub, "one", "two");
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.configure({ model: { provider: "anthropic", modelId: "claude-haiku-5-5" } }),
+    );
+    await ask(stub, 1);
+    await registry.updateSettings(
+      { model: "anthropic/claude-sonnet-5-5", thinkingLevel: "low" },
+      1,
+    );
+    await ask(stub, 2);
+
+    expect(await requests(stub)).toEqual([
+      { model: "claude-haiku-5-5", thinking: "high" },
+      { model: "claude-haiku-5-5", thinking: "low" },
+    ]);
+  });
+
+  it("changes the model and thinking level of the next request when the Session picks them", async () => {
+    const { stub } = await registered();
+
+    await script(stub, "one", "two");
+    await ask(stub, 1);
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.configure({
+        model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+        thinkingLevel: "minimal",
+      }),
+    );
+    await ask(stub, 2);
+
+    expect(await requests(stub)).toEqual([
+      { model: "claude-opus-5-5", thinking: "high" },
+      { model: "claude-sonnet-5-5", thinking: "minimal" },
+    ]);
+  });
+
+  it("follows the default again once its pick is cleared with null", async () => {
+    const { stub, registry } = await registered();
+
+    await script(stub, "one", "two");
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.configure({
+        model: { provider: "anthropic", modelId: "claude-haiku-5-5" },
+        thinkingLevel: "low",
+      }),
+    );
+    await ask(stub, 1);
+    await registry.updateSettings({ model: "anthropic/claude-sonnet-5-5" }, 1);
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.configure({ model: null, thinkingLevel: null }),
+    );
+    await ask(stub, 2);
+
+    expect(await requests(stub)).toEqual([
+      { model: "claude-haiku-5-5", thinking: "low" },
+      { model: "claude-sonnet-5-5", thinking: "high" },
+    ]);
+  });
+
+  it("keeps its pick across an eviction", async () => {
+    const { stub } = await registered();
+
+    await script(stub, "one");
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.configure({ model: { provider: "anthropic", modelId: "claude-haiku-5-5" } }),
+    );
+    await evictDurableObject(stub);
+    await ask(stub, 1);
+
+    expect(await requests(stub)).toEqual([{ model: "claude-haiku-5-5", thinking: "high" }]);
+  });
+
+  it("carries on with the settings it last read while the Registry is down", async () => {
+    const { stub, registry } = await registered();
+
+    await script(stub, "one", "two", "three");
+    await registry.updateSettings({ model: "anthropic/claude-sonnet-5-5" }, 1);
+    await ask(stub, 1);
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.settingsRegistry("failing"));
+    await ask(stub, 2);
+    // A new instance has only what the last one kept.
+    await evictDurableObject(stub);
+    await ask(stub, 3);
+
+    expect(await requests(stub)).toEqual([
+      { model: "claude-sonnet-5-5", thinking: "high" },
+      { model: "claude-sonnet-5-5", thinking: "high" },
+      { model: "claude-sonnet-5-5", thinking: "high" },
+    ]);
   });
 });

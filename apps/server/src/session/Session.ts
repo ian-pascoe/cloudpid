@@ -14,7 +14,8 @@ import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
-import { DEFAULT_AGENT, proxyModels } from "./models.ts";
+import { sessionSettingsLayer } from "./settings.ts";
+import { proxyModels } from "./models.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { cachedSlug, sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
@@ -113,6 +114,15 @@ export const SessionLive = Session.make(
           slug: workspaceSlug,
         });
 
+        // The Registry's saved overrides, read before each request is admitted; the last read is kept in storage.
+        const settings = sessionSettingsLayer({
+          read: registries
+            .getByName(REGISTRY_NAME)
+            .getSettings()
+            .pipe(Effect.map((saved) => saved.overrides)),
+          kv,
+        });
+
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
@@ -121,7 +131,6 @@ export const SessionLive = Session.make(
               sessionHostLayer({
                 storage: state.raw.storage,
                 models,
-                agent: DEFAULT_AGENT,
                 reset: (reason) => state.raw.abort(reason),
                 extensions: sessionExtensions.pipe(
                   Effect.provideService(WebConfig, web),
@@ -130,7 +139,7 @@ export const SessionLive = Session.make(
                 env: workspace.env,
               }),
             ),
-            Layer.provide(registry),
+            Layer.provide(Layer.mergeAll(registry, settings)),
           ),
         );
 

@@ -2,6 +2,9 @@
 // @effect-diagnostics asyncFunction:off
 // The workerd test Durable Object that hosts a `RegistryStore` over its SQLite storage, as the Registry DO does.
 import { DurableObject } from "cloudflare:workers";
+import * as Result from "effect/Result";
+import type * as Schema from "effect/Schema";
+import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
 import {
   openRegistryStore,
   type RegistryStore,
@@ -51,6 +54,19 @@ export class TestRegistry extends DurableObject {
 
   putDocument(name: string, body: string, now: number): void {
     this.#store.putDocument(name, body, now);
+  }
+
+  getSettings(): SettingsState {
+    return readSettings(this.#store);
+  }
+
+  /** Save settings overrides, as the Registry DO does; overrides that do not resolve throw. */
+  updateSettings(overrides: Schema.Json, now: number): SettingsState {
+    const saved = writeSettings(this.#store, overrides, now);
+
+    if (Result.isFailure(saved)) throw new Error(saved.failure.message);
+
+    return saved.success;
   }
 
   schemaVersion(): number {

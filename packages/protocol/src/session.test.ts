@@ -43,4 +43,31 @@ describe("the Session socket messages", () => {
       Option.none(),
     );
   });
+
+  it("read a configure with a model and a thinking level, or null to follow the default", async () => {
+    expect(
+      await readClient(
+        '{"type":"configure","id":"1","model":"anthropic/claude-sonnet-5-5","thinkingLevel":"low"}',
+      ),
+    ).toEqual(
+      Option.some({
+        type: "configure",
+        id: "1",
+        model: "anthropic/claude-sonnet-5-5",
+        thinkingLevel: "low",
+      }),
+    );
+    expect(await readClient('{"type":"configure","model":null}')).toEqual(
+      Option.some({ type: "configure", model: null }),
+    );
+  });
+
+  it("reject a configure for a model the proxy does not serve or a thinking level pi does not have", async () => {
+    expect(await readClient('{"type":"configure","model":"anthropic/nope"}')).toEqual(
+      Option.none(),
+    );
+    expect(await readClient('{"type":"configure","thinkingLevel":"extreme"}')).toEqual(
+      Option.none(),
+    );
+  });
 });

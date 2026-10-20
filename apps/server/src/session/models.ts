@@ -8,17 +8,10 @@ import {
   type Provider,
 } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 
 /** The model proxy: its base URL and API key, from the `MODEL_PROXY_URL` and `MODEL_PROXY_API_KEY` secrets. */
 export type ModelProxy = { readonly url: string; readonly apiKey: string };
-
-/** The agent a new root conversation runs with: Opus at high thinking. */
-export const DEFAULT_AGENT = {
-  model: { provider: "anthropic", modelId: "claude-opus-5-5" },
-  thinkingLevel: "high",
-} as const satisfies AgentChange;
 
 /** `models.json` caps these Claude models' context window below their catalog value. */
 const CLAUDE_CONTEXT_WINDOW = 400_000;

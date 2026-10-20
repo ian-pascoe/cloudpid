@@ -218,6 +218,73 @@ describe("a Session's commands", () => {
   });
 });
 
+describe("a Session's configure command", () => {
+  /** The agent each `agent_changed` event among `messages` reports, in order. */
+  const agents = (messages: readonly ServerMessage[], conversationId: ConversationId) =>
+    Arr.flatMap(eventsOf(messages, conversationId), (event) =>
+      event.type === "agent_changed" ? [event.agent] : [],
+    );
+
+  it("picks the model and thinking level of the next request and tells every watching client", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["Hello there"]));
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+    client.send({
+      type: "configure",
+      id: "pick",
+      model: "anthropic/claude-sonnet-5-5",
+      thinkingLevel: "low",
+    });
+    expect(await client.answer("pick")).toEqual({ type: "result", id: "pick", result: null });
+
+    const changed = await client.until((messages) => agents(messages, root).length > 0);
+
+    expect(agents(changed, root).at(-1)).toEqual({
+      model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+      thinkingLevel: "low",
+    });
+
+    client.send({ type: "submit", id: "submit", input: "hi", requestId: "turn-1" });
+    await client.until((messages) => runEnds(root)(messages) === 1);
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.requests())).toEqual([
+      { model: "claude-sonnet-5-5", thinking: "low" },
+    ]);
+  });
+
+  it("returns the Session to the default when a field is null", async () => {
+    const client = await connect(fresh());
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+    client.send({ type: "configure", id: "pick", model: "anthropic/claude-haiku-5-5" });
+    await client.answer("pick");
+    client.send({ type: "configure", id: "clear", model: null });
+    expect(await client.answer("clear")).toEqual({ type: "result", id: "clear", result: null });
+
+    const messages = await client.until((received) => agents(received, root).length > 1);
+
+    expect(agents(messages, root).at(-1)?.model).toEqual({
+      provider: "anthropic",
+      modelId: "claude-opus-5-5",
+    });
+  });
+
+  it("answers a model the proxy does not serve with an error that carries its id", async () => {
+    const client = await connect(fresh());
+
+    client.sendText('{"type":"configure","id":"bad","model":"anthropic/claude-nope"}');
+
+    expect(await client.answer("bad")).toMatchObject({ type: "error" });
+  });
+});
+
 describe("input submitted while a Run is in progress", () => {
   it("joins the running work as a steer, and starts the next Run as a follow-up", async () => {
     const stub = fresh();
