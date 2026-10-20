@@ -46,11 +46,13 @@ export default Alchemy.Stack(
       Config.withDefault("https://api.ai.ianpascoe.dev"),
     );
 
+    // Retained on destroy: deleting a GitHub environment also deletes the secrets set on it by hand
+    // (MODEL_PROXY_API_KEY), so rotating the deploy token must not take it down.
     const production = yield* GitHub.Environment("Production", {
       ...repo,
       name: "production",
       deploymentBranchPolicy: { customBranchPolicies: ["main"] },
-    });
+    }).pipe(Alchemy.RemovalPolicy.retain());
 
     // Everything `alchemy deploy` of alchemy.run.ts touches. Alchemy's state store needs Secrets Store Write (it
     // binds its token secret to a short-lived preview Worker on every run). Access Apps and Policies covers the
