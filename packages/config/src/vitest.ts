@@ -4,5 +4,8 @@ import { configDefaults, defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     exclude: [...configDefaults.exclude],
+    // Harness-level tests drive a real pi-durable Harness; under turbo's parallel CI runs they can exceed Vitest's
+    // 5 s default without being stuck.
+    testTimeout: 30_000,
   },
 });
