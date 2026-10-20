@@ -1,3 +1,4 @@
+import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { WebConfig } from "@cloudpid/extensions/web";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -12,6 +13,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
+import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { sessionSettingsLayer } from "./settings.ts";
@@ -114,6 +116,13 @@ export const SessionLive = Session.make(
           slug: workspaceSlug,
         });
 
+        // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.
+        const sandbox = remoteSandbox(
+          // SAFETY: the Server Worker binds the sandbox DO namespace as `CODEMODE_SANDBOX` (`worker.ts`), a raw namespace.
+          worker[CODEMODE_SANDBOX_BINDING] as CodemodeSandboxNamespace,
+          name ?? state.raw.id.toString(),
+        );
+
         // The Registry's saved overrides, read before each request is admitted; the last read is kept in storage.
         const settings = sessionSettingsLayer({
           read: registries
@@ -135,6 +144,7 @@ export const SessionLive = Session.make(
                 extensions: sessionExtensions.pipe(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
+                  Effect.provideService(CodemodeSandbox, sandbox),
                 ),
                 env: workspace.env,
               }),

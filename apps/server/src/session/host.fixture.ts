@@ -17,6 +17,7 @@ import {
   defineExtension,
   type Extension,
   type HarnessOptions,
+  type SnapshotEvent,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -24,7 +25,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
@@ -185,6 +188,24 @@ export class TestSession extends DurableObject {
   /** Let this instance's `gate:` responses through. */
   open(): void {
     this.#gate.resolve();
+  }
+
+  /** The snapshot a client's watch of the root conversation starts with, as the Session sends it. */
+  snapshot(): Promise<SnapshotEvent> {
+    const host = this.#host;
+
+    return Effect.runPromise(
+      Effect.flatMap(host.root, (root) => Stream.runHead(host.events(root))).pipe(
+        Effect.flatMap(
+          Option.match({ onNone: () => Effect.die("No snapshot"), onSome: Effect.succeed }),
+        ),
+        Effect.flatMap((batch) => {
+          const [first] = batch;
+
+          return first?.type === "snapshot" ? Effect.succeed(first) : Effect.die("Not a snapshot");
+        }),
+      ),
+    );
   }
 
   /** Whether no work is live; reads only, so it never runs work itself. */

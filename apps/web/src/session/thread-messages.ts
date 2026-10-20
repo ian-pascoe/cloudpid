@@ -6,6 +6,7 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/protocol";
 import * as Predicate from "effect/Predicate";
+import { liveCalls, settledCalls } from "../chat/nested-calls.ts";
 
 type ContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
@@ -93,11 +94,16 @@ const resolveCall = (
   const call = index === undefined ? undefined : turn?.content[index];
 
   if (index !== undefined && call?.type === "tool-call") {
-    turn?.content.splice(index, 1, {
-      ...call,
-      result: textOf(result.content),
-      isError: result.error,
-    });
+    const nested = settledCalls(result.details);
+
+    const resolved = { ...call, result: textOf(result.content), isError: result.error };
+
+    // The calls a tool made, which its result lists once it has ended.
+    turn?.content.splice(
+      index,
+      1,
+      nested.length === 0 ? resolved : { ...resolved, artifact: { nested } },
+    );
   }
 };
 
@@ -188,7 +194,10 @@ const withRunning = (turn: Turn, view: SessionView): Turn => {
         : undefined;
 
     if (part.type === "tool-call" && tool !== undefined) {
-      turn.content[index] = { ...part, artifact: { output: tool.output } };
+      turn.content[index] = {
+        ...part,
+        artifact: { output: tool.output, nested: liveCalls(view.nestedTools, tool.callId) },
+      };
     }
   }
 

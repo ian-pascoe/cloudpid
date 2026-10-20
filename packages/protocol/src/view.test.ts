@@ -199,18 +199,223 @@ describe("the session view", () => {
     expect(reduceView(running, asEvent({ type: "tool_execution_end", ...call })).tools).toEqual([]);
   });
 
-  it("leaves a nested call to the tool call that made it", () => {
+  it("leaves a nested call out of the running tools, and keeps it with the call that made it", () => {
     const view = fold(
       asEvent({
         type: "tool_execution_start",
-        args: {},
-        toolCallId: "c1/a",
-        toolName: "inner",
+        args: { path: "a.txt" },
+        toolCallId: "c1/c1",
+        toolName: "read",
         parentToolCallId: "c1",
       }),
     );
 
     expect(view.tools).toEqual([]);
+    expect(view.nestedTools).toEqual([
+      {
+        callId: "c1/c1",
+        parentCallId: "c1",
+        name: "read",
+        args: { path: "a.txt" },
+        output: "",
+        status: "running",
+        isError: false,
+      },
+    ]);
+  });
+
+  it("shows the nested calls of a snapshot, running and done", () => {
+    const view = fold(
+      snapshot({
+        nestedTools: [
+          {
+            callId: "c1/c1",
+            parentCallId: "c1",
+            name: "read",
+            status: "done",
+            arguments: { path: "a.txt" },
+            summary: { isError: false, durationMs: 12 },
+          },
+          {
+            callId: "c1/c2",
+            parentCallId: "c1",
+            name: "bash",
+            status: "running",
+            output: "partial",
+            arguments: { command: "ls" },
+          },
+          {
+            callId: "c1/c3",
+            parentCallId: "c1",
+            name: "grep",
+            status: "done",
+            arguments: { pattern: "x" },
+            summary: { isError: true, error: "no such file" },
+          },
+        ],
+      }),
+    );
+
+    expect(view.nestedTools).toEqual([
+      {
+        callId: "c1/c1",
+        parentCallId: "c1",
+        name: "read",
+        args: { path: "a.txt" },
+        output: "",
+        status: "done",
+        isError: false,
+        durationMs: 12,
+      },
+      {
+        callId: "c1/c2",
+        parentCallId: "c1",
+        name: "bash",
+        args: { command: "ls" },
+        output: "partial",
+        status: "running",
+        isError: false,
+      },
+      {
+        callId: "c1/c3",
+        parentCallId: "c1",
+        name: "grep",
+        args: { pattern: "x" },
+        output: "",
+        status: "done",
+        isError: true,
+        error: "no such file",
+      },
+    ]);
+  });
+
+  it("follows a nested call's output and how it ended, until the call that made it ends", () => {
+    const nested = { toolCallId: "c1/c1", toolName: "bash", parentToolCallId: "c1" };
+
+    const running = fold(
+      asEvent({ type: "tool_execution_start", args: {}, toolCallId: "c1", toolName: "codemode" }),
+      asEvent({ type: "tool_execution_start", args: { command: "ls" }, ...nested }),
+      asEvent({ type: "tool_execution_update", output: { append: "abc" }, ...nested }),
+      asEvent({ type: "tool_execution_update", output: { append: "def" }, ...nested }),
+    );
+
+    expect(running.nestedTools[0]).toMatchObject({ output: "abcdef", status: "running" });
+
+    const done = reduceView(
+      running,
+      asEvent({
+        type: "tool_execution_end",
+        result: { isError: true, durationMs: 40, diagnostics: [] },
+        ...nested,
+      }),
+    );
+
+    expect(done.nestedTools).toMatchObject([{ status: "done", isError: true, durationMs: 40 }]);
+    // A finished nested call stays beside its siblings, and is not a running tool.
+    expect(done.tools.map((tool) => tool.callId)).toEqual(["c1"]);
+
+    // The call that made them settles with its own result, which lists them.
+    const settled = reduceView(
+      done,
+      asEvent({ type: "tool_execution_end", toolCallId: "c1", toolName: "codemode" }),
+    );
+
+    expect(settled.nestedTools).toEqual([]);
+    expect(settled.tools).toEqual([]);
+  });
+
+  describe("a nested call that ended live and in a snapshot", () => {
+    const nested = { toolCallId: "c1/c1", toolName: "bash", parentToolCallId: "c1" };
+
+    const slot = {
+      callId: "c1/c1",
+      parentCallId: "c1",
+      name: "bash",
+      arguments: { command: "ls" },
+    };
+
+    const live = (...events: Fixture[]) =>
+      fold(
+        asEvent({ type: "tool_execution_start", args: { command: "ls" }, ...nested }),
+        asEvent({ type: "tool_execution_update", output: { append: "partial" }, ...nested }),
+        ...events.map(asEvent),
+      ).nestedTools;
+
+    it("is the same call: no output, its duration, and its error text", () => {
+      const ended = live({
+        type: "tool_execution_end",
+        result: {
+          isError: true,
+          durationMs: 40,
+          diagnostics: [
+            { severity: "info", message: "fyi" },
+            { severity: "error", message: "boom" },
+            { severity: "error", message: "bang" },
+          ],
+        },
+        ...nested,
+      });
+
+      const listed = fold(
+        snapshot({
+          nestedTools: [
+            {
+              ...slot,
+              status: "done",
+              summary: { isError: true, durationMs: 40, error: "boom\nbang" },
+            },
+          ],
+        }),
+      ).nestedTools;
+
+      expect(ended).toEqual(listed);
+    });
+
+    it("is a failure when it faulted or was orphaned, with no result and no summary", () => {
+      const ended = live({ type: "tool_execution_end", ...nested });
+      const listed = fold(snapshot({ nestedTools: [{ ...slot, status: "done" }] })).nestedTools;
+
+      expect(ended).toEqual(listed);
+      expect(ended[0]).toMatchObject({ status: "done", isError: true, output: "" });
+    });
+
+    it("has no error text when it succeeded, whatever its diagnostics say", () => {
+      const [ended] = live({
+        type: "tool_execution_end",
+        result: { isError: false, diagnostics: [{ severity: "error", message: "late" }] },
+        ...nested,
+      });
+
+      expect(ended).toMatchObject({ isError: false });
+      expect(ended).not.toHaveProperty("error");
+    });
+
+    it("is not shown while a snapshot lists it as pending, as live shows nothing before it starts", () => {
+      expect(fold(snapshot({ nestedTools: [{ ...slot, status: "pending" }] })).nestedTools).toEqual(
+        [],
+      );
+    });
+  });
+
+  it("drops the nested calls of nested calls with their call, and the others at the end of the run", () => {
+    const start = (toolCallId: string, parentToolCallId: string) =>
+      asEvent({
+        type: "tool_execution_start",
+        args: {},
+        toolCallId,
+        toolName: "t",
+        parentToolCallId,
+      });
+
+    const view = fold(start("c1/c1", "c1"), start("c1/c1/c1", "c1/c1"), start("c2/c1", "c2"));
+
+    const ended = reduceView(
+      view,
+      asEvent({ type: "tool_execution_end", toolCallId: "c1", toolName: "t" }),
+    );
+
+    expect(ended.nestedTools.map((tool) => tool.callId)).toEqual(["c2/c1"]);
+    expect(reduceView(view, asEvent({ type: "run_end", inputs: [1] })).nestedTools).toEqual([]);
   });
 
   it("keeps the inbox's items, so a steer and a follow-up can be told apart", () => {

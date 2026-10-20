@@ -17,3 +17,16 @@ export const relativeTime = (time: number, now: number): string => {
 
   return format.format(Math.round(hours / 24), "day");
 };
+
+/** "12 ms", "1.5 s", "2 min 5 s": how long a call took. */
+export const duration = (milliseconds: number): string => {
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+
+  const seconds = milliseconds / 1000;
+
+  if (seconds < 10) return `${Math.round(seconds * 10) / 10} s`;
+
+  if (seconds < 60) return `${Math.round(seconds)} s`;
+
+  return `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
+};

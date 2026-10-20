@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { WebConfigLive } from "@cloudpid/extensions/web";
+import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
 import * as Alchemy from "alchemy";
 import * as Command from "alchemy/Command";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -63,6 +64,23 @@ const workspaceBinding = Effect.gen(function* () {
 });
 
 /**
+ * The codemode sandbox DO namespace, bound for the Session DOs, which run their scripts in an object of it (ADR-0005).
+ * It lives in the `CodemodeSandboxes` Worker, which deploys first as its script name is the Output. Only the deploy
+ * declares it: the bundle reads the binding from `env`.
+ */
+const sandboxBinding = Effect.gen(function* () {
+  if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
+
+  const sandboxes = yield* CodemodeSandboxes;
+
+  return {
+    [CODEMODE_SANDBOX_BINDING]: Cloudflare.DurableObject("CodemodeSandbox", {
+      scriptName: sandboxes.workerName,
+    }),
+  };
+});
+
+/**
  * Deploy-time props, resolved from the stage. The stage is absent once the Worker runs (the props
  * only matter at deploy time), so that case falls back to a non-prod stage.
  */
@@ -74,7 +92,7 @@ const props = Effect.gen(function* () {
     compatibility: { date: "2026-08-31" },
     ...deployment(stage),
     assets: yield* webAssets,
-    env: yield* workspaceBinding,
+    env: { ...(yield* workspaceBinding), ...(yield* sandboxBinding) },
   };
 });
 

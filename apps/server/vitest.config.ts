@@ -64,8 +64,12 @@ export default defineConfig({
               durableObjects: {
                 WORKSPACES: { className: "TestWorkspace", useSQLite: true },
                 WORKSPACE_SESSIONS: { className: "TestWorkspaceSession", useSQLite: true },
+                CODEMODE_SESSIONS: { className: "TestCodemodeSession", useSQLite: true },
+                CODEMODE_SANDBOX: { className: "CodemodeSandbox", useSQLite: true },
               },
               workerLoaders: { LOADER: {} },
+              // pi-codemode's QuickJS engine is a `.wasm` import, which Wrangler compiles by default.
+              modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
             },
           }),
         ],

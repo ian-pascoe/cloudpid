@@ -154,6 +154,103 @@ describe("the thread messages of a view", () => {
     expect(part).not.toHaveProperty("result");
   });
 
+  it("shows the calls a running script made under its tool call, not under another's", () => {
+    const [, message] = toThreadMessages(
+      view({
+        running: true,
+        messages: [
+          user("1", "run"),
+          assistant("2", [
+            { type: "tool-call", id: "c1", name: "codemode", arguments: { code: "x" } },
+            { type: "tool-call", id: "c2", name: "bash", arguments: { command: "ls" } },
+          ]),
+        ],
+        tools: [
+          { callId: "c1", name: "codemode", output: "" },
+          { callId: "c2", name: "bash", output: "" },
+        ],
+        nestedTools: [
+          {
+            callId: "c1/c1",
+            parentCallId: "c1",
+            name: "read",
+            args: { path: "a.txt" },
+            output: "",
+            status: "done",
+            isError: false,
+            durationMs: 5,
+          },
+          {
+            callId: "c1/c2",
+            parentCallId: "c1",
+            name: "grep",
+            args: { pattern: "x" },
+            output: "",
+            status: "running",
+            isError: false,
+          },
+        ],
+      }),
+    );
+
+    expect(message?.content[0]).toMatchObject({
+      artifact: {
+        nested: [
+          { id: "c1/c1", name: "read", args: { path: "a.txt" }, status: "ok", durationMs: 5 },
+          { id: "c1/c2", name: "grep", args: { pattern: "x" }, status: "running" },
+        ],
+      },
+    });
+    expect(message?.content[1]).toMatchObject({ artifact: { nested: [] } });
+  });
+
+  it("lists the calls a finished script made, from the details of its result", () => {
+    const [, message] = toThreadMessages(
+      view({
+        messages: [
+          user("1", "run"),
+          assistant("2", [{ type: "tool-call", id: "c1", name: "codemode", arguments: {} }]),
+          {
+            id: "r",
+            role: "tool",
+            timestamp: 3,
+            parts: [
+              {
+                type: "tool-result",
+                id: "c1",
+                name: "codemode",
+                content: [{ type: "text", text: "Script completed" }],
+                error: false,
+                details: {
+                  calls: [
+                    { id: 1, name: "read", args: '{"path":"a.txt"}', status: "ok", durationMs: 3 },
+                    {
+                      id: 2,
+                      name: "bash",
+                      args: '{"command":"ls"}',
+                      status: "error",
+                      error: "boom",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(message?.content[0]).toMatchObject({
+      result: "Script completed",
+      artifact: {
+        nested: [
+          { id: "1", name: "read", args: { path: "a.txt" }, status: "ok", durationMs: 3 },
+          { id: "2", name: "bash", args: { command: "ls" }, status: "error", error: "boom" },
+        ],
+      },
+    });
+  });
+
   it("appends the live message to the answer in progress, or starts one", () => {
     const live = assistant("live", [{ type: "text", text: "Hel" }]);
 
