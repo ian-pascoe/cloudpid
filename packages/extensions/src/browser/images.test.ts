@@ -2,7 +2,12 @@
 // Bounding the screenshots a request and a snapshot carry.
 import type { Message } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { limitEntryImages, limitImages, OMITTED_IMAGE } from "./images.ts";
+import type { AgentEvent } from "@earendil-works/pi-durable";
+import { limitEntryImages, limitEventImages, limitImages, OMITTED_IMAGE } from "./images.ts";
+
+// SAFETY: a fixture holds only the fields the limit reads; the other fields of pi's event are never looked at.
+const asEvent = (event: { readonly type: string; readonly entries?: unknown }): AgentEvent =>
+  event as AgentEvent;
 
 const shot = (data: string) => ({ type: "image" as const, data, mimeType: "image/jpeg" });
 
@@ -25,6 +30,24 @@ const imagesOf = (messages: readonly Message[]) =>
   );
 
 describe("limiting screenshots", () => {
+  it("limits a snapshot in a batch of events, and leaves the other events alone", () => {
+    const snapshot = asEvent({
+      type: "snapshot",
+      entries: [
+        { id: "e1", model: [result("a", "1")] },
+        { id: "e2", model: [result("b", "2")] },
+      ],
+    });
+
+    const other = asEvent({ type: "turn_start" });
+    const [limited, same] = limitEventImages([snapshot, other], 1);
+
+    expect(same).toBe(other);
+    expect(
+      limited?.type === "snapshot" ? imagesOf(limited.entries.flatMap((e) => e.model ?? [])) : [],
+    ).toEqual(["result a", OMITTED_IMAGE, "result b", "2"]);
+  });
+
   it("returns the messages themselves while they carry no more than the limit", () => {
     const messages = [user, result("a", "1"), result("b", "2")];
 

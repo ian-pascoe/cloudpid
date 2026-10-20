@@ -11,6 +11,7 @@ import type {
   Models,
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import type { AgentEvent } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
 
 /** How many of the latest screenshots a model request carries. */
@@ -95,6 +96,20 @@ export const limitEntryImages = <E extends { readonly model?: readonly Message[]
       : { ...entry, model };
   });
 };
+
+/**
+ * `events` with the snapshots among them bounded as `limitEntryImages` does: a client that falls behind is sent a full
+ * snapshot in a batch, as one that connects is, and it is one socket message too.
+ */
+export const limitEventImages = (
+  events: readonly AgentEvent[],
+  keep: number,
+): readonly AgentEvent[] =>
+  events.map((event) =>
+    event.type === "snapshot"
+      ? { ...event, entries: limitEntryImages(event.entries, keep) }
+      : event,
+  );
 
 /** `models` with every request's earlier screenshots replaced (`limitImages` with `keep`). */
 export const imageLimitedModels = (models: Models, keep = MODEL_IMAGES): Models => {

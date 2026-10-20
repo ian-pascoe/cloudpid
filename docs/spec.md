@@ -301,5 +301,5 @@ Each milestone deploys and works end to end before the next begins.
   - Snapshot restore with computerd and `ignore` paths is untested.
   - Cross-boundary renames return `EXDEV`, so tools must keep install and temp directories on one side. Toolchains and `/tmp` are on the Container's disk, and dependency directories are inside the ignored tree they are installed in, so `npm install`, `pip install` and `mise install` all pass (checked deployed).
   - **`listxattr` on an ignored path fails.** Measured on Cloudflare (real FUSE, computerd 0.5.1): `os.listxattr` on a file under an `ignore`d path raises `ENOENT`, where a synced path returns `[]`. Python's `shutil.copystat`/`copy2` and `cp -a`/`mv` (which warn) hit it, so `python -m venv` (ensurepip copies wheels out of the Python install) failed when the Toolchains were under `/workspace/.mise` on the ignore list. They are on the Container's disk instead, where it works. `shutil.copy2` of a file inside `node_modules` or `.venv` still fails: report upstream to computerd, and revisit if it is fixed.
-
-[Showing lines 1-302 of 305 (50.0KB limit). Use offset=303 to continue.]
+- **1Password in Workers** is unproven ([issue #184](https://github.com/1Password/onepassword-sdk-js/issues/184)).
+- **Exposure of the shared browser session.** Raw CDP in the shared browser session can read cookies and filled values, so prompt injection from pages is the main threat. Mitigations are host-side fills, origin checks, and per-item approval.

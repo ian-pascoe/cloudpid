@@ -31,6 +31,7 @@ export {
 export {
   imageLimitedModels,
   limitEntryImages,
+  limitEventImages,
   limitImages,
   MODEL_IMAGES,
   OMITTED_IMAGE,

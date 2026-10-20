@@ -127,7 +127,9 @@ const resolveCall = (
     turn?.content.splice(
       index,
       1,
-      Object.keys(artifact).length === 0 ? resolved : { ...resolved, artifact },
+      nested.length === 0 && subagent === undefined && images.length === 0
+        ? resolved
+        : { ...resolved, artifact },
     );
   }
 };
