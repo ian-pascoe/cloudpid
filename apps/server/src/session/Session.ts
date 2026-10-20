@@ -1,3 +1,4 @@
+import { WebConfig } from "@cloudpid/extensions/web";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -61,12 +62,13 @@ export const SessionLive = Session.make(
   Effect.gen(function* () {
     return {
       proxy: yield* ModelProxyConfig,
+      web: yield* WebConfig,
       registries: yield* Registry,
       state: yield* Cloudflare.DurableObjectState,
     };
   }).pipe(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
-    Effect.map(({ proxy, registries, state }) =>
+    Effect.map(({ proxy, registries, state, web }) =>
       Effect.gen(function* () {
         const models = proxyModels({
           url: Redacted.value(proxy.url),
@@ -97,7 +99,7 @@ export const SessionLive = Session.make(
                 models,
                 agent: DEFAULT_AGENT,
                 reset: (reason) => state.raw.abort(reason),
-                extensions: sessionExtensions,
+                extensions: Effect.provideService(sessionExtensions, WebConfig, web),
               }),
             ),
             Layer.provide(registry),

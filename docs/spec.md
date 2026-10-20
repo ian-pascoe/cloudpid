@@ -154,6 +154,14 @@ They are rebuilt on pi-durable primitives, following its example 23:
 
 From v2, secret references may name 1Password items. Credentials then move into a single dedicated vault, and deploy-time secrets shrink to the model proxy key, the 1Password token, and VAPID.
 
+### Web
+
+`packages/extensions/src/web` ports pi-web-tools (`NOTICE.md`): `web_search` over Exa or Parallel (keys are optional deploy-time secrets; a Session with both picks one by a stable hash of its conversation ID) and `web_fetch` (Markdown, text, or HTML; JSON re-indented; `offset`/`limit` line paging). A Worker has no temp file the model can read, so a result over 50 KiB or 2,000 lines is cut to whole lines and ends with a note naming the `offset` that reads on, instead of spilling to disk. HTML converts without a DOM in one linear pass; a page nested more than 1,024 levels deep (browsers stop at 512) or converting to more than 20 MiB of Markdown fails with a note to use `format: html`, so a hostile page cannot stall the Session.
+
+**SSRF guard.** `web_fetch` reaches the network only through `guardedFetch`, which follows redirects itself and, for the URL and every hop, refuses non-HTTP(S) schemes, URLs with credentials, and any host that is or resolves to a loopback, private, link-local, CGNAT, unique-local, multicast, reserved, or cloud-metadata address (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`, `*.internal`, `*.local`, single-label names). Numeric hosts are decoded as a resolver would (decimal, hex, octal, short forms) and IPv6 forms that carry an IPv4 address (mapped, compatible, NAT64, 6to4) are judged by it.
+
+A Worker cannot resolve a name before `fetch`, so a public-looking name that resolves to a private address is caught by a DNS-over-HTTPS lookup of its A and AAAA records through Cloudflare's resolver before each hop; a lookup that fails refuses the hop. The residual risk is DNS rebinding: the platform's own lookup at `fetch` time is separate from ours, so a name that answers differently to two queries in quick succession can pass. Both lookups share Cloudflare's caching resolver, which holds an answer for its TTL, and Cloudflare's edge also refuses Worker subrequests to private and internal addresses (the guard does not rely on that), so what is left is a narrow race for an attacker who controls a name's records and wants the Session to reach a public address of their choosing, which the guard does not try to prevent.
+
 ### Browser
 
 [ADR-0007](adr/0007-browser-and-credentials.md) covers this design.

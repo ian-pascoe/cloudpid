@@ -5,6 +5,7 @@
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, Harness } from "@cloudpid/effect-durable";
+import { WebConfig } from "@cloudpid/extensions/web";
 import {
   createModels,
   type FauxResponseStep,
@@ -17,6 +18,7 @@ import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionExtensions } from "./extensions.ts";
@@ -100,7 +102,11 @@ export class TestSession extends DurableObject {
               models,
               agent: AGENT,
               reset: (reason) => ctx.abort(reason),
-              extensions: sessionExtensions,
+              // No search keys: the tests script the model, and none searches.
+              extensions: Effect.provideService(sessionExtensions, WebConfig, {
+                exaApiKey: Option.none(),
+                parallelApiKey: Option.none(),
+              }),
               reportTimeout: "200 millis",
             }).pipe(
               Layer.provide(
