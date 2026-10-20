@@ -1,14 +1,14 @@
 // Hosts one pi-durable Harness in a Session Durable Object, the way pi-durable's own `test-workers/worker.ts` does:
 // opened over the object's SQLite storage and woken by its alarm (ADR-0002). The Harness stays native Promise code,
-// reached through `Effect.tryPromise` (ADR-0003).
+// reached through the `Harness` facade and `Effect.tryPromise` (ADR-0003). The object builds both services once, as
+// one Layer kept in a `ManagedRuntime`.
+import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
   type AgentChange,
   AssistantEntry,
-  type Conversation,
-  createRegistry,
-  Harness,
+  type Extension,
   type Submission,
 } from "@earendil-works/pi-durable";
 import {
@@ -17,7 +17,9 @@ import {
 } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -51,6 +53,8 @@ export type SessionStorage = DurableObjectSqliteStorage & {
 };
 
 export type SessionHostOptions = {
+  /** The object's `ctx.storage`. */
+  readonly storage: SessionStorage;
   readonly models: Models;
   /** The root conversation's agent, applied when the root is created. */
   readonly agent: AgentChange;
@@ -59,6 +63,8 @@ export type SessionHostOptions = {
    * instance, which reopens it.
    */
   readonly reset: (reason: string) => void;
+  /** The extensions the Session's conversations run with, installed before any work resumes. */
+  readonly extensions: Effect.Effect<readonly Extension[], never, Harness>;
 };
 
 /** User input for the root conversation. Submitting the same `requestId` again finds the first submission. */
@@ -77,7 +83,7 @@ export class SessionError extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
-export type SessionHost = {
+export type SessionHostService = {
   /** Durably admit `prompt` to the root conversation and return its submission ID. */
   readonly submit: (prompt: Prompt) => Effect.Effect<number, SessionError>;
   /** Submit `prompt` and wait for its answer. */
@@ -88,21 +94,27 @@ export type SessionHost = {
   readonly idle: Effect.Effect<boolean, SessionError>;
 };
 
+/** What the Session DO answers with: its Harness, prompted and woken. */
+export class SessionHost extends Context.Service<SessionHost, SessionHostService>()(
+  "@cloudpid/server/session/host/SessionHost",
+) {}
+
 const attempt = <A>(operation: string, run: () => Promise<A>): Effect.Effect<A, SessionError> =>
   Effect.tryPromise({
     try: run,
     catch: (cause) => SessionError.make({ operation, message: String(cause) }),
   });
 
-/**
- * Open the Harness on the object's `storage`, under the `pi_` prefix, and resume interrupted work. Run it from the
- * object's constructor, inside `blockConcurrencyWhile`.
- */
-export const openSessionHost = Effect.fn("openSessionHost")(function* (
-  storage: SessionStorage,
-  options: SessionHostOptions,
-) {
-  const heartbeat = Clock.currentTimeMillis.pipe(Effect.map((now) => now + HEARTBEAT_MS));
+const fromHarness = Effect.mapError((error: HarnessError) =>
+  SessionError.make({ operation: error.operation, message: error.message }),
+);
+
+/** The alarm heartbeat's next time. */
+const heartbeat = Clock.currentTimeMillis.pipe(Effect.map((now) => now + HEARTBEAT_MS));
+
+/** Open the Harness on the object's `storage`, under the `pi_` prefix, after arming a fallback alarm. */
+const openSessionHarness = Effect.fn("openSessionHarness")(function* (options: SessionHostOptions) {
+  const { storage } = options;
 
   // A fallback before anything can fail: an object whose open or recovery fails is started again.
   const fallback = yield* heartbeat;
@@ -116,30 +128,35 @@ export const openSessionHost = Effect.fn("openSessionHost")(function* (
     openDurableObjectSqliteStorage(storage, { prefix: "pi_" }),
   );
 
-  const harness = yield* attempt("open", () =>
-    Harness.open(
-      piStorage,
-      { models: options.models, registry: createRegistry(), settings: RETENTION },
-      context,
-    ),
-  );
+  const harness = yield* openHarness(piStorage, {
+    models: options.models,
+    settings: RETENTION,
+  }).pipe(fromHarness);
 
   // A storage error closes the Harness for good; reset the object so the next event reopens it.
   yield* Effect.sync(
     () =>
-      void harness.closed.then((end) => {
+      void harness.harness.closed.then((end) => {
         if (end.reason === "failed") options.reset(`Harness failed: ${String(end.error)}`);
       }),
   );
 
+  return harness;
+});
+
+/** Install the Session's extensions in the open Harness and resume interrupted work. */
+const startSessionHost = Effect.fn("startSessionHost")(function* (options: SessionHostOptions) {
+  const { storage } = options;
+  const harness = yield* Harness;
+
+  // Before anything resumes, so resumed tool calls find their tools.
+  for (const extension of yield* options.extensions) yield* harness.install(extension);
+
   // Alarm decisions run one at a time, so an idle check never deletes the heartbeat a concurrent submit just armed.
   const serially = Semaphore.withPermit(yield* Semaphore.make(1));
 
-  const root = attempt("root", (): Promise<Conversation> =>
-    harness.root(context, { agent: options.agent }),
-  );
-
-  const inspect = attempt("inspect", () => harness.inspect(context));
+  const root = harness.root(options.agent).pipe(fromHarness);
+  const inspect = harness.inspect.pipe(fromHarness);
 
   /**
    * Live work keeps the heartbeat, as pi-durable main's `wake()` counts it: a task no installed definition can run
@@ -160,11 +177,7 @@ export const openSessionHost = Effect.fn("openSessionHost")(function* (
       : attempt("deleteAlarm", () => storage.deleteAlarm());
 
   // Armed before `resume()` runs anything, as for any call that can start work.
-  const wakeAndResume = wake.pipe(
-    Effect.flatMap(arm),
-    Effect.andThen(Effect.sync(() => harness.resume())),
-    serially,
-  );
+  const wakeAndResume = wake.pipe(Effect.flatMap(arm), Effect.andThen(harness.resume), serially);
 
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
     // Arm before admitting work: an object that dies after the commit is still woken.
@@ -224,5 +237,17 @@ export const openSessionHost = Effect.fn("openSessionHost")(function* (
     idle: inspect.pipe(
       Effect.map(({ tasks, submissions }) => tasks.length === 0 && submissions.length === 0),
     ),
-  } satisfies SessionHost;
+  } satisfies SessionHostService;
 });
+
+/**
+ * The Session's services over the object's storage: its `Harness` and its `SessionHost`. Building it opens the
+ * Harness and resumes interrupted work, so build it once, from the object's constructor inside
+ * `blockConcurrencyWhile`.
+ */
+export const sessionHostLayer = (
+  options: SessionHostOptions,
+): Layer.Layer<SessionHost | Harness, SessionError> =>
+  Layer.effect(SessionHost, startSessionHost(options)).pipe(
+    Layer.provideMerge(Layer.effect(Harness, openSessionHarness(options))),
+  );

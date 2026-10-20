@@ -3,8 +3,10 @@ import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
-import { type Answer, openSessionHost, type Prompt, SessionError } from "./host.ts";
+import { sessionExtensions } from "./extensions.ts";
+import { type Answer, type Prompt, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { DEFAULT_AGENT, proxyModels } from "./models.ts";
 
 /** The model proxy's base URL and API key: deploy-time secrets, bound to the Worker by `Config.Redacted`. */
@@ -46,12 +48,22 @@ export const SessionLive = Session.make(
           apiKey: Redacted.value(proxy.apiKey),
         });
 
+        // The object's services, built once and kept for its lifetime.
+        const runtime = ManagedRuntime.make(
+          sessionHostLayer({
+            storage: state.raw.storage,
+            models,
+            agent: DEFAULT_AGENT,
+            reset: (reason) => state.raw.abort(reason),
+            extensions: sessionExtensions,
+          }),
+        );
+
         // A failed open resets the object, and the fallback alarm it armed first starts it again.
-        const host = yield* openSessionHost(state.raw.storage, {
-          models,
-          agent: DEFAULT_AGENT,
-          reset: (reason) => state.raw.abort(reason),
-        }).pipe(Effect.orDie);
+        const host = yield* runtime.contextEffect.pipe(
+          Effect.map(Context.get(SessionHost)),
+          Effect.orDie,
+        );
 
         return {
           prompt: host.prompt,

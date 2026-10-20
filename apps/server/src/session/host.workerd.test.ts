@@ -71,4 +71,21 @@ describe("a Session host", () => {
     expect(first).toMatchObject({ status: "answered", text: "first" });
     expect(second).toEqual(first);
   });
+
+  it("answers a prompt that calls roll_dice, with the roll in the transcript", async () => {
+    const stub = fresh();
+
+    const [answer, results] = await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(['call:roll_dice:{"count":2,"sides":6}', "You rolled."]);
+
+      return [
+        await instance.prompt({ requestId: "turn-1", text: "Roll 2d6" }),
+        await instance.toolResults(),
+      ] as const;
+    });
+
+    expect(answer).toMatchObject({ status: "answered", text: "You rolled." });
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatch(/^Rolled 2d6: [1-6], [1-6] \(total \d+\)$/);
+  });
 });
