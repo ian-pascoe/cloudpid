@@ -359,13 +359,13 @@ const endWait = async (tx: Tx, key: string, input: WaitInput, now: number) => {
   );
 };
 
-/** Resolves when `runtime`'s invocation is signalled, rejecting with its reason. */
-const signalled = (runtime: WaitRuntime): Promise<never> =>
+/** Rejects with the reason when `runtime`'s invocation is signalled; its listener goes when `until` aborts. */
+const signalled = (runtime: WaitRuntime, until: AbortSignal): Promise<never> =>
   new Promise((_resolve, reject) => {
     const reject_ = () => reject(runtime.signal.reason);
 
     if (runtime.signal.aborted) reject_();
-    else runtime.signal.addEventListener("abort", reject_, { once: true });
+    else runtime.signal.addEventListener("abort", reject_, { once: true, signal: until });
   });
 
 /** Block until the Subagents document or the caller's inbox changes, or `deadline`. */
@@ -390,7 +390,7 @@ const nextChange = async (
   try {
     await Promise.race([
       changed,
-      signalled(runtime),
+      signalled(runtime, controller.signal),
       ...(deadline === null
         ? []
         : [runtime.sleep(deadline, withAbortSignal(controller.signal, context))]),
