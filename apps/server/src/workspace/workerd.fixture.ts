@@ -117,8 +117,6 @@ export class TestWorkspace extends Workspace {
   }
 }
 
-export { TestWorkspaceSession } from "./session.fixture.ts";
-
 export { WorkspaceServiceProxy };
 
 export default {
