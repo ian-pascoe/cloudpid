@@ -4,6 +4,7 @@ packages:
   - packages/*
 
 allowBuilds:
+  core-js-pure: false
   '@google/genai': true
   '@mongodb-js/zstd': true
   esbuild: true

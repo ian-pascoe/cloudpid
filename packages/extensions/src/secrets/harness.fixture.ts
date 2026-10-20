@@ -19,6 +19,7 @@ import {
   createRegistry,
   defineExtension,
   defineTool,
+  type Extension,
   Harness,
   type JsonObject,
   MemoryStorage,
@@ -157,7 +158,10 @@ export const call = (name: string, args: ToolCall["arguments"]): AssistantMessag
 export const answer = (text: string): AssistantMessage => fauxAssistantMessage(text);
 
 /** Open a Harness whose model answers each request with the next of `responses`, then "done". */
-export const openSecretsHarness = async () => {
+export const openSecretsHarness = async (
+  /** Extensions installed beside the stand-ins, before the secrets extension so its hooks see their results. */
+  beside: readonly Extension[] = [],
+) => {
   const runtime = ManagedRuntime.make(TestClock.layer());
   const execs: Exec[] = [];
   const recorded: JsonObject[] = [];
@@ -221,6 +225,9 @@ export const openSecretsHarness = async () => {
   registry.install(CodingTools);
   registry.install(resolving);
   registry.install(defineExtension({ name: "program", tools: [program] }));
+
+  for (const extension of beside) registry.install(extension);
+
   registry.install(secretsExt);
 
   const harness = await Harness.open(

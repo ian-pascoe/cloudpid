@@ -10,6 +10,7 @@
     "./web": "./src/web.ts",
     "./secrets": "./src/secrets.ts",
     "./browser": "./src/browser.ts",
+    "./browser/contract": "./src/browser/contract.ts",
     "./files": "./src/files.ts",
     "./coding-tools": "./src/coding-tools.ts",
     "./bash-routing": "./src/bash-routing.ts"
