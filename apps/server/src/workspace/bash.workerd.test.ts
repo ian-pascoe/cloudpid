@@ -25,21 +25,19 @@ const context = BACKGROUND_CONTEXT;
 
 const bash = CodingTools.tools?.find((tool) => tool.name === "bash");
 
-/** A Workspace of its own per case, so the counters start at zero. */
+/** One Workspace for every case (each Workspace loads its own Worker Shell); each case gets a directory of its own. */
+const shared = env.WORKSPACES.getByName("bash-routing");
+
 let cases = 0;
 
 const open = async () => {
   cases++;
 
-  const workspace = env.WORKSPACES.getByName(`bash-routing-${cases}`);
+  const cwd = `/workspace/case-${cases}`;
+  const executionEnv = new ComputerExecutionEnv({ workspace: shared, id: "computer:bash", cwd });
+  const before = await shared.liveStubs();
 
-  const executionEnv = new ComputerExecutionEnv({
-    workspace,
-    id: "computer:bash",
-    cwd: "/workspace/repo",
-  });
-
-  getOrThrow(await executionEnv.createDir("/workspace/repo", { recursive: true }, context));
+  getOrThrow(await executionEnv.createDir(cwd, { recursive: true }, context));
   getOrThrow(
     await executionEnv.writeFile("package.json", '{"name":"demo","version":"1.2.3"}\n', context),
   );
@@ -69,7 +67,14 @@ const open = async () => {
     }
   };
 
-  return { run, counts: () => workspace.liveStubs() };
+  /** The commands the Workspace started since this case opened. */
+  const counts = async () => {
+    const now = await shared.liveStubs();
+
+    return { started: now.started - before.started, container: now.container - before.container };
+  };
+
+  return { run, counts };
 };
 
 // The first command loads the Worker Shell and its modules (git, jq) cold, which can take longer than the default 5 s on CI.
@@ -80,7 +85,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     ["sed -n 2p notes.txt", "needle"],
     ["jq -r .version package.json", "1.2.3"],
     ["grep -c a notes.txt | cat", "2"],
-    ["cd /workspace && ls repo | head -1", "notes.txt"],
+    ["cd . && ls | head -1", "notes.txt"],
   ])("runs `%s` on the Worker Shell without starting the Container", async (command, output) => {
     const { run, counts } = await open();
 
@@ -113,7 +118,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it.skip.each(["node -v", "npm test", "gh pr list", "cat notes.txt && node x.js", "git push"])(
+  it.each(["node -v", "npm test", "gh pr list", "cat notes.txt && node x.js", "git push"])(
     "sends `%s` to the Container",
     async (command) => {
       const { run, counts } = await open();
@@ -141,7 +146,8 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     for (const name of WORKER_SHELL_COMMANDS) {
       const result = await run({ command: `command -v ${name}`, backend: "worker" });
 
-      if (result.isError) missing.push(name);
+      // `command -v` prints where it found the command, and nothing for one it did not.
+      if (result.text.trim() === "") missing.push(name);
     }
 
     expect(missing).toEqual([]);
