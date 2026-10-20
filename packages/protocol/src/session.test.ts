@@ -3,13 +3,13 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { ClientMessageJson, ServerMessageJson } from "./session.ts";
+import { decodeClientMessage, ServerMessageJson } from "./session.ts";
 
 const readServer = (text: string) =>
   Effect.runPromise(Schema.decodeEffect(ServerMessageJson)(text));
 
 const readClient = (text: string) =>
-  Schema.decodeEffect(ClientMessageJson)(text).pipe(Effect.option, Effect.runPromise);
+  decodeClientMessage(text).pipe(Effect.option, Effect.runPromise);
 
 describe("the Session socket messages", () => {
   it("carry pi's agent events unchanged", async () => {
@@ -30,7 +30,7 @@ describe("the Session socket messages", () => {
     expect(await Effect.runPromise(Schema.encodeEffect(ServerMessageJson)(decoded))).toBe(text);
   });
 
-  it("read a submit with its whenBusy mode, and reject an unknown command", async () => {
+  it("read a submit with its whenBusy mode, and reject an unknown command or key", async () => {
     expect(
       await readClient(
         '{"type":"submit","id":"1","input":"stop","whenBusy":"steer","requestId":"r1"}',
@@ -39,5 +39,8 @@ describe("the Session socket messages", () => {
       Option.some({ type: "submit", id: "1", input: "stop", whenBusy: "steer", requestId: "r1" }),
     );
     expect(await readClient('{"type":"reset"}')).toEqual(Option.none());
+    expect(await readClient('{"type":"submit","input":"stop","whenbusy":"steer"}')).toEqual(
+      Option.none(),
+    );
   });
 });

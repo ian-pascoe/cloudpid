@@ -116,10 +116,15 @@ export const Result = Schema.Struct({
   result: Schema.Json,
 });
 
-/** A command failed, or a message could not be read (then without `id`). */
+/**
+ * Something failed. With `id`, the command with that `id` failed, or could not be read. With `conversationId`, the
+ * watch of that conversation ended and is dropped: watch it again to resume. With neither, a message without a
+ * readable `id` could not be read.
+ */
 export const ErrorMessage = Schema.Struct({
   type: Schema.Literal("error"),
   id: Schema.optionalKey(Schema.String),
+  conversationId: Schema.optionalKey(ConversationId),
   message: Schema.String,
 });
 
@@ -130,6 +135,15 @@ export type ServerMessage = typeof ServerMessage.Type;
 
 /** Client messages as the socket carries them: JSON text. */
 export const ClientMessageJson = Schema.fromJsonString(ClientMessage);
+
+/**
+ * Read a client message, as the Session does: keys a message does not define are an error, so a misspelt option
+ * (`whenbusy`) fails the command instead of being ignored.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a Schema decoder, as `Schema.decodeUnknownEffect` makes.
+export const decodeClientMessage = Schema.decodeUnknownEffect(ClientMessageJson, {
+  onExcessProperty: "error",
+});
 
 /** Server messages as the socket carries them: JSON text. */
 export const ServerMessageJson = Schema.fromJsonString(ServerMessage);

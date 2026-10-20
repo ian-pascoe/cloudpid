@@ -3,8 +3,8 @@
 // watches live in memory and each socket's attachment names the conversations it watches, so an instance woken from
 // hibernation restarts them, each with a fresh snapshot, on sockets that never closed.
 import {
-  ClientMessageJson,
   ConversationId,
+  decodeClientMessage,
   HEARTBEAT,
   type ClientMessage,
   type ServerMessage,
@@ -19,6 +19,7 @@ import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -34,6 +35,8 @@ export type SocketState = {
   setWebSocketAutoResponse(pair: WebSocketRequestResponsePair): void;
 };
 
+type ErrorMessage = Extract<ServerMessage, { type: "error" }>;
+
 /** What a socket keeps across hibernation: the conversations it watches. */
 const Attachment = Schema.Struct({ watches: Schema.Array(ConversationId) });
 
@@ -41,7 +44,10 @@ type Attachment = typeof Attachment.Type;
 
 const encodeMessage = Schema.encodeEffect(ServerMessageJson);
 
-const decodeMessage = Schema.decodeUnknownEffect(ClientMessageJson);
+/** The `id` of a message that is not a valid command, so its error can answer it. */
+const decodeCommandId = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ id: Schema.String })),
+);
 
 const decodeAttachment = Schema.decodeUnknownOption(Attachment);
 
@@ -120,14 +126,16 @@ export const sessionSocketsLayer = (
 
       /**
        * Stream `conversationId`'s events to `socket`, replacing a watch it already has, and resolve once its snapshot
-       * is sent, or once a newer watch or the socket's close replaces it. A watch that ends after its snapshot is
-       * dropped, and the client told.
+       * is sent, or once a newer watch or the socket's close replaces it. The socket's attachment records the watch
+       * before it starts, and a watch that fails drops it, so the attachment never names a watch no fiber runs. One
+       * that fails after its snapshot tells the client, by `conversationId`.
        */
       const watch = (socket: WebSocket, conversationId: ConversationId) =>
         Effect.gen(function* () {
           const fibers = yield* watchesOf(socket);
           const started = yield* Deferred.make<void, SessionError>();
 
+          yield* setWatched(socket, conversationId, true);
           yield* host.events(conversationId).pipe(
             Stream.runForEach((events) =>
               send(socket, { type: "events", conversationId, events }).pipe(
@@ -135,13 +143,12 @@ export const sessionSocketsLayer = (
               ),
             ),
             Effect.catch((error) =>
-              Deferred.fail(started, error).pipe(
+              setWatched(socket, conversationId, false).pipe(
+                Effect.andThen(Deferred.fail(started, error)),
                 Effect.flatMap((first) =>
                   first
                     ? Effect.void
-                    : setWatched(socket, conversationId, false).pipe(
-                        Effect.andThen(send(socket, { type: "error", message: error.message })),
-                      ),
+                    : send(socket, { type: "error", conversationId, message: error.message }),
                 ),
               ),
             ),
@@ -172,10 +179,7 @@ export const sessionSocketsLayer = (
           case "abort":
             return host.abort.pipe(Effect.as(null));
           case "watch":
-            return watch(socket, message.conversationId).pipe(
-              Effect.andThen(setWatched(socket, message.conversationId, true)),
-              Effect.as(null),
-            );
+            return watch(socket, message.conversationId).pipe(Effect.as(null));
           case "unwatch":
             return unwatch(socket, message.conversationId).pipe(
               Effect.andThen(setWatched(socket, message.conversationId, false)),
@@ -187,13 +191,23 @@ export const sessionSocketsLayer = (
       const receive = (socket: WebSocket, data: string | ArrayBuffer) =>
         Effect.gen(function* () {
           const text = Predicate.isString(data) ? data : new TextDecoder().decode(data);
-          const decoded = yield* Effect.option(decodeMessage(text));
+          const decoded = yield* Effect.result(decodeClientMessage(text));
 
-          if (Option.isNone(decoded)) {
-            return yield* send(socket, { type: "error", message: "Unreadable message" });
+          if (Result.isFailure(decoded)) {
+            const unreadable: ErrorMessage = {
+              type: "error",
+              message: `Unreadable message: ${decoded.failure.message}`,
+            };
+
+            const id = decodeCommandId(text);
+
+            return yield* send(
+              socket,
+              Option.isSome(id) ? { ...unreadable, id: id.value.id } : unreadable,
+            );
           }
 
-          const message = decoded.value;
+          const message = decoded.success;
           const exit = yield* Effect.exit(command(socket, message));
 
           if (Exit.isSuccess(exit)) {
@@ -206,7 +220,7 @@ export const sessionSocketsLayer = (
 
           const error = Exit.findErrorOption(exit);
 
-          const failure: Extract<ServerMessage, { type: "error" }> = {
+          const failure: ErrorMessage = {
             type: "error",
             message: Option.isSome(error) ? error.value.message : "Internal error",
           };
@@ -239,11 +253,9 @@ export const sessionSocketsLayer = (
       for (const socket of state.getWebSockets()) {
         for (const conversationId of readAttachment(socket).watches) {
           yield* watch(socket, conversationId).pipe(
-            // A watch that cannot restart is dropped, so the next instance does not retry it.
+            // The watch dropped itself, so the next instance does not retry it.
             Effect.catch((error) =>
-              setWatched(socket, conversationId, false).pipe(
-                Effect.andThen(send(socket, { type: "error", message: error.message })),
-              ),
+              send(socket, { type: "error", conversationId, message: error.message }),
             ),
           );
         }
