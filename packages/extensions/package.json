@@ -10,7 +10,8 @@
     "./web": "./src/web.ts",
     "./secrets": "./src/secrets.ts",
     "./browser": "./src/browser.ts",
-    "./files": "./src/files.ts"
+    "./files": "./src/files.ts",
+    "./coding-tools": "./src/coding-tools.ts"
   },
   "scripts": {
     "typecheck": "tsc",
@@ -20,12 +21,12 @@
   "dependencies": {
     "@cloudpid/effect-durable": "workspace:*",
     "@earendil-works/chord": "^1.3.0",
+    "@earendil-works/pi-ai": "^1.3.0",
     "@earendil-works/pi-durable": "^1.3.0",
     "effect": "^4.0.5",
     "htmlparser2": "12.0.0"
   },
   "devDependencies": {
-    "@cloudpid/config": "workspace:*",
-    "@earendil-works/pi-ai": "^1.3.0"
+    "@cloudpid/config": "workspace:*"
   }
 }

@@ -1,6 +1,7 @@
 export { type ComputerEnvHost } from "./client.ts";
 
 export {
+  type ComputerBackend,
   ComputerExecutionEnv,
   type ComputerExecutionEnvOptions,
   type ComputerWorkspaceStub,

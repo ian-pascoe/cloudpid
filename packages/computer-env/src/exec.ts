@@ -95,13 +95,15 @@ class Spill {
 
 export type ExecHost = {
   readonly workspace: WorkspaceHandle;
+  /** The id of the backend to run on; undefined runs on the Workspace's default backend. */
+  readonly backend: string | undefined;
   readonly cwd: string;
   readonly spill: SpillWriter;
   /** Executions still running, so `cleanup()` can kill them. */
   readonly running: Set<string>;
 };
 
-/** Run `command` on the Workspace's default backend, streaming its output to `options.onOutput`. */
+/** Run `command` on the host's backend, streaming its output to `options.onOutput`. */
 export const exec = async (
   host: ExecHost,
   command: string | readonly string[],
@@ -171,6 +173,8 @@ export const exec = async (
     };
 
     if (options?.env !== undefined) execOptions.env = options.env;
+
+    if (host.backend !== undefined) execOptions.backend = host.backend;
 
     using handle = await workspace.runtime.exec(prepared.source, execOptions);
 
