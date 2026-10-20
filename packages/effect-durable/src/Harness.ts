@@ -55,6 +55,8 @@ export type HarnessService = {
   readonly inspect: Effect.Effect<HarnessInspection, HarnessError>;
   /** Start scheduling, continuing work an earlier instance left unfinished. */
   readonly resume: Effect.Effect<void>;
+  /** Wait until no live non-background task is left. Cancelled with the fiber. */
+  readonly waitForIdle: Effect.Effect<void, HarnessError>;
 };
 
 /** The open pi-durable Harness of this Durable Object. */
@@ -84,5 +86,6 @@ export const openHarness = (
       root: (agent) => callDurable("root", (context) => harness.root(context, { agent })),
       inspect: callDurable("inspect", (context) => harness.inspect(context)),
       resume: Effect.sync(() => harness.resume()),
+      waitForIdle: callDurable("waitForIdle", (context) => harness.waitForIdle(context)),
     } satisfies HarnessService;
   });

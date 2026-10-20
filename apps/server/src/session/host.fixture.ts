@@ -1,5 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off
 // The workerd test Worker: a Durable Object that hosts a `SessionHost` over the faux provider, as the Session DO
 // hosts one over the model proxy. Tests drive it with `runInDurableObject()`, evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
@@ -15,7 +15,9 @@ import { ToolResultEntry } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionExtensions } from "./extensions.ts";
 import {
   type Answer,
@@ -24,6 +26,16 @@ import {
   sessionHostLayer,
   type SessionHostService,
 } from "./host.ts";
+import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
+
+declare global {
+  namespace Cloudflare {
+    /** The bindings `vitest.config.ts` gives the test Worker. */
+    interface Env {
+      readonly REGISTRIES: DurableObjectNamespace<TestRegistry>;
+    }
+  }
+}
 
 const AGENT = { model: { provider: "faux", modelId: "faux-1" } } as const;
 
@@ -60,7 +72,18 @@ export class TestSession extends DurableObject {
           agent: AGENT,
           reset: (reason) => ctx.abort(reason),
           extensions: sessionExtensions,
-        }),
+          reportTimeout: "200 millis",
+        }).pipe(
+          Layer.provide(
+            Layer.succeed(SessionRegistry, {
+              report: (status) =>
+                Effect.tryPromise({
+                  try: () => this.#report(status),
+                  catch: (cause) => ReportError.make({ message: String(cause) }),
+                }),
+            }),
+          ),
+        ),
       );
       this.#host = Context.get(await this.#runtime.context(), SessionHost);
     });
@@ -108,12 +131,54 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /** Report this Session's status to the Registry object named `registry`, as the Session DO does to the Registry DO. */
+  reportTo(registry: string): void {
+    this.ctx.storage.kv.put("registry", registry);
+  }
+
+  /** Make status reports fail until `reports("working")`, or hang. */
+  reports(mode: "working" | "failing" | "hanging"): void {
+    this.ctx.storage.kv.put("reportMode", mode);
+  }
+
+  /** The statuses this Session reported, oldest first, counting only reports the Registry received. */
+  reported(): readonly SessionStatus[] {
+    return this.ctx.storage.kv.get<SessionStatus[]>("reported") ?? [];
+  }
+
+  /** How many status reports this Session has tried to make, delivered or not. */
+  reportAttempts(): number {
+    return this.ctx.storage.kv.get<number>("reportAttempts") ?? 0;
+  }
+
   script(responses: readonly string[]): void {
     this.ctx.storage.kv.put("script", { responses, next: 0 } satisfies Script);
   }
 
   override async alarm(): Promise<void> {
     await Effect.runPromise(this.#host.alarm);
+  }
+
+  async #report(status: SessionStatus): Promise<void> {
+    const registry = this.ctx.storage.kv.get<string>("registry");
+
+    if (registry === undefined) return;
+
+    const { kv } = this.ctx.storage;
+    const mode = kv.get<string>("reportMode");
+
+    kv.put("reportAttempts", (kv.get<number>("reportAttempts") ?? 0) + 1);
+
+    if (mode === "failing") throw new Error("Registry is down");
+
+    if (mode === "hanging") await new Promise(() => undefined);
+
+    await this.env.REGISTRIES.getByName(registry).setSessionStatus(
+      this.ctx.id.name ?? "",
+      status,
+      Date.now(),
+    );
+    kv.put("reported", [...(kv.get<SessionStatus[]>("reported") ?? []), status]);
   }
 
   /** The next scripted response; the script position is stored before the response is used. */

@@ -2,7 +2,8 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
 declare global {
@@ -10,6 +11,7 @@ declare global {
     /** The bindings `vitest.config.ts` gives the test Worker. */
     interface Env {
       readonly SESSIONS: DurableObjectNamespace<TestSession>;
+      readonly REGISTRIES: DurableObjectNamespace<TestRegistry>;
     }
   }
 }
@@ -27,6 +29,24 @@ const eventually = async (
   }
 
   throw new Error("Condition not reached");
+};
+
+let counter = 0;
+
+/** A Session registered in a fresh Registry, with its Session object reporting to that Registry. */
+const registered = async () => {
+  const sessionId = `session-${(counter += 1)}`;
+  const registryName = `registry-${counter}`;
+  const registry = env.REGISTRIES.getByName(registryName);
+  const stub = env.SESSIONS.getByName(sessionId);
+
+  await registry.createSession({ id: sessionId, title: null }, 1);
+  await runInDurableObject(stub, (instance: TestSession) => instance.reportTo(registryName));
+
+  const status = async () => (await registry.listSessions())[0]?.status;
+  const reported = () => runInDurableObject(stub, (instance: TestSession) => instance.reported());
+
+  return { stub, status, reported };
 };
 
 describe("a Session host", () => {
@@ -54,6 +74,88 @@ describe("a Session host", () => {
     // The next heartbeat finds nothing live and clears itself.
     await runDurableObjectAlarm(stub);
     await eventually(stub, async (_instance, state) => (await state.storage.getAlarm()) === null);
+  });
+
+  it("reports that a run is live, then that it ended, even one finished after an eviction", async () => {
+    const { stub, status, reported } = await registered();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["hang", "recovered"]);
+      await instance.submit({ requestId: "turn-1", text: "hi" });
+      await instance.hanging.promise;
+    });
+    expect(await status()).toBe("running");
+
+    await evictDurableObject(stub);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    // No client waits and no later alarm runs: the instance reports the end of the run it resumed itself.
+    await vi.waitFor(async () => expect(await status()).toBe("idle"));
+
+    // Any report of the live run comes before the one that it ended, which is last.
+    const sequence = await reported();
+
+    expect(sequence[0]).toBe("running");
+    expect(sequence.at(-1)).toBe("idle");
+    expect(sequence.slice(0, -1)).not.toContain("idle");
+  });
+
+  it("reports an answered prompt as running, then idle", async () => {
+    const { stub, reported } = await registered();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["done"]);
+      await instance.prompt({ requestId: "turn-1", text: "hi" });
+    });
+
+    expect(await reported()).toEqual(["running", "idle"]);
+  });
+
+  it("keeps its heartbeat while the Registry fails and reports the end of the run once it is back", async () => {
+    const { stub, status, reported } = await registered();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.reports("failing"));
+    // A new instance, which has not told the Registry anything yet.
+    await evictDurableObject(stub);
+
+    const answer = await runInDurableObject(stub, (instance: TestSession) => {
+      instance.script(["done"]);
+
+      return instance.prompt({ requestId: "turn-1", text: "hi" });
+    });
+
+    // A Registry that is down does not fail the prompt.
+    expect(answer).toMatchObject({ status: "answered", text: "done" });
+    expect(await reported()).toEqual([]);
+    // The end of the run could not be reported, so the heartbeat stays armed to try again.
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.reports("working"));
+    await runDurableObjectAlarm(stub);
+    expect(await status()).toBe("idle");
+    expect(await reported()).toEqual(["idle"]);
+    await eventually(stub, async (_instance, state) => (await state.storage.getAlarm()) === null);
+  });
+
+  it("treats a report that hangs as failed, so a slow Registry stalls neither the prompt nor the constructor", async () => {
+    const { stub, reported } = await registered();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.reports("hanging"));
+    // The new instance's open reports once and gives up after the timeout.
+    await evictDurableObject(stub);
+
+    const answer = await runInDurableObject(stub, (instance: TestSession) => {
+      instance.script(["done"]);
+
+      return instance.prompt({ requestId: "turn-1", text: "hi" });
+    });
+
+    expect(answer).toMatchObject({ status: "answered", text: "done" });
+    expect(await reported()).toEqual([]);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
   });
 
   it("admits a prompt submitted twice with one request id once", async () => {
