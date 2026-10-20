@@ -33,7 +33,7 @@ Browser (web UI, PWA) ──Access──▶ Main Worker ──WS─────�
 | **Registry DO**         | singleton                                 | Workspace and Session listings (title, timestamps, status), settings overrides, push subscriptions.                               |
 | **Codemode sandbox DO** | Session DO id                             | QuickJS script execution. It lives in a separately deployed Worker so scripts run in another isolate.                             |
 
-The Harness and the Workspace live in separate objects ([ADR-0001](adr/0001-session-and-workspace-durable-objects.md)).
+The Harness and the Workspace live in separate objects ([ADR-0001](adr/0001-session-and-workspace-durable-objects.md)). The Workspace DO is hosted by its own plain Worker, `Workspaces` (bound as `WORKSPACES`), because `@cloudflare/computer` reaches it with raw Workers RPC and its Worker Shell needs the Worker to export `WorkspaceServiceProxy`, which alchemy's Effect Workers do not allow.
 
 ### Session host
 
@@ -223,7 +223,8 @@ The repo is a Turborepo with pnpm workspaces. Internal packages are just-in-time
 
 ```
 infra/                    alchemy stack (alchemy.run.ts): Workers, DOs, Container, Access, secrets
-apps/server/              main Worker: Session, Workspace, Registry DOs; HTTP/WS API; static assets
+apps/server/              main Worker: Session, Registry DOs; HTTP/WS API; static assets.
+                          Workspaces Worker (src/workspace): Workspace DO
 apps/codemode-sandbox/    codemode sandbox Worker
 apps/web/                 Vite + React UI
 apps/sandbox-image/       Dockerfile (computerd + mise), base mise.toml, bootstrap

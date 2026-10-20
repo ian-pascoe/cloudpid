@@ -11,6 +11,12 @@
     "lint": "oxlint",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@cloudflare/computer": "^0.5.1",
+    "@earendil-works/chord": "^1.3.0",
+    "@earendil-works/pi-durable": "^1.3.0",
+    "ignore": "^7.0.12"
+  },
   "devDependencies": {
     "@cloudpid/config": "workspace:*"
   }

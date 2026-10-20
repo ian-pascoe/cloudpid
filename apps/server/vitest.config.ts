@@ -4,6 +4,9 @@ import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest
 
 const workerd = "src/**/*.workerd.test.ts";
 
+/** Workspace DO tests run in their own test Worker, which hosts the Workspace DO and the Worker Shell's loader. */
+const workspace = "src/workspace/**/*.workerd.test.ts";
+
 /** Node tests use the shared base; `*.workerd.test.ts` run inside workerd, against real Durable Object storage and alarms. */
 export default defineConfig({
   test: {
@@ -26,7 +29,25 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd", include: [workerd] },
+        test: {
+          name: "workerd",
+          include: [workerd],
+          exclude: [...configDefaults.exclude, workspace],
+        },
+      }),
+      defineProject({
+        plugins: [
+          cloudflareTest({
+            main: "./src/workspace/workerd.fixture.ts",
+            miniflare: {
+              compatibilityDate: "2026-08-31",
+              compatibilityFlags: ["nodejs_compat"],
+              durableObjects: { WORKSPACES: { className: "TestWorkspace", useSQLite: true } },
+              workerLoaders: { LOADER: {} },
+            },
+          }),
+        ],
+        test: { name: "workerd-workspace", include: [workspace] },
       }),
     ],
   },
