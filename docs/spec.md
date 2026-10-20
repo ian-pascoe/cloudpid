@@ -13,7 +13,7 @@ This spec records the design settled on 2026-10-20. Terms follow [`GLOSSARY.md`]
 ## Architecture
 
 ```
-Browser (web UI, PWA) ──Access──▶ Main Worker ──RPC/WS──▶ Session DO (per Session)
+Browser (web UI, PWA) ──Access──▶ Main Worker ──WS─────▶ Session DO (per Session)
                                        │                    ├─ pi-durable Harness (SQLite, prefix pi_)
                                        │                    ├─ Browser (agents/browser → Browser Run)
                                        │                    └─ RemoteCodemodeSandbox ─▶ Codemode Sandbox Worker (DO per Session)
@@ -184,10 +184,13 @@ From v2, secret references may name 1Password items. Credentials then move into 
 
 ## Client and protocol
 
-- **Wire:** Effect RPC over WebSocket, with the `RpcGroup` in `packages/protocol` shared by server and web.
-  - Commands: `submit` (with `whenBusy`), `abort`, `reset`, `compact`, `configure`, `fork`, list and create operations, and secret and approval responses.
-  - `watch(conversationId)` streams a snapshot, then pi `AgentEvent` batches unchanged.
-  - Use alchemy's `RpcWebSocket`/`RpcDurableObject` if they survive DO hibernation. Otherwise use the Cloudflare pi example's message shapes, wrapped in Effect `Schema`.
+- **Wire:** the contract lives in `packages/protocol`, shared by server and web ([ADR-0009](adr/0009-session-socket-messages-over-alchemy-rpc.md)).
+  - **Session socket:** `GET /sessions/:id/socket` on the main Worker, forwarded to the Session DO, which accepts it as a hibernatable WebSocket. Messages are JSON in the Cloudflare pi example's shapes, as Effect `Schema`. The Session greets a client with `hello` and its root conversation. Commands carry an optional `id`, which a `result` or an `error` answers.
+  - Commands: `submit` (with `whenBusy` and a `requestId` that deduplicates), `abort`, and `watch`/`unwatch`. Still to come: `reset`, `compact`, `configure`, `fork`, and secret and approval responses.
+  - `whenBusy: "steer"` joins the running Run at its next boundary, after the tool calls in progress. A steer that finds the Run giving its final answer starts the next Run, as `followUp` does.
+  - `watch(conversationId)` streams `events`: a batch holding a `snapshot`, then pi `AgentEvent` batches unchanged. The socket's attachment names its watches. A Session woken from hibernation restarts them, each with a fresh snapshot, on the same socket. A client whose socket closed (an eviction, a deploy) reconnects and watches again.
+  - The runtime answers the client's `ping` heartbeat with `pong` without waking the Session.
+  - **Registry:** `RegistryRpcs`, an Effect `RpcGroup` over HTTP (`POST /rpc`, JSON), lists and creates Sessions and Workspaces.
 - **Reducer:** `view.ts` and `transcript.ts` from Cloudflare's `agents` example `examples/next/harnesses/pi` (MIT, attributed). They are extended for `nestedTools`, compactions, and subagents. This reducer is the only code that interprets `AgentEvent`s.
 - **UI:**
   - Vite and React 19 in `apps/web`, served as static assets by the main Worker.
@@ -227,7 +230,7 @@ apps/sandbox-image/       Dockerfile (computerd + mise), base mise.toml, bootstr
 packages/effect-durable/  Effect ↔ pi-durable adapters and service facades
 packages/computer-env/    ComputerExecutionEnv
 packages/extensions/      one subpath export per extension (/subagents, /context, /todo, /web, /secrets, /browser, …)
-packages/protocol/        RpcGroup, AgentEvent reducer, transcript projection
+packages/protocol/        Session socket messages, RegistryRpcs, AgentEvent reducer, transcript projection
 packages/config/          settings Schema and defaults, model roles, shared tsconfig and vitest bases
 skills/                   bundled skills
 ```
@@ -239,7 +242,7 @@ Each milestone deploys and works end to end before the next begins.
 | Milestone     | Delivers                                                                                                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | M0 Scaffold   | Turborepo and packages. The alchemy stack deploys a hello Worker behind Access to `dev` and `prod`. CI runs check and deploy.                                                        |
-| M1 Chat       | Session DO host (Harness, alarm and wake, model proxy). Registry DO, Effect RPC over WebSocket, and the web UI with the reducer. No tools.                                           |
+| M1 Chat       | Session DO host (Harness, alarm and wake, model proxy). Registry DO, the Session socket and Registry RPC, and the web UI with the reducer. No tools.                                 |
 | M2 Files      | Workspace DO and `ComputerExecutionEnv` with conformance. pi-durable `read`/`write`/`edit`/`bash` on the Worker Shell, plus `ls`/`find`/`grep`, skills mount, and `createGitClient`. |
 | M3 Container  | Minimal image, `ignore` paths, `mise install` bootstrap, snapshots, idle stop, backend routing.                                                                                      |
 | M4 Code mode  | Sandbox Worker, `codemode`, `tool_search`, deferred tools.                                                                                                                           |
@@ -255,6 +258,5 @@ Each milestone deploys and works end to end before the next begins.
   - Exec and mmap of binaries from the FUSE mount are untested.
   - Snapshot restore with computerd and `ignore` paths is untested.
   - Cross-boundary renames return `EXDEV`, so tools must keep install and temp directories on one side.
-- **Unverified alchemy behaviour.** Whether alchemy's RPC over WebSocket survives DO hibernation is unknown, and this decides the wire format.
 - **1Password in Workers** is unproven ([issue #184](https://github.com/1Password/onepassword-sdk-js/issues/184)).
 - **Exposure of the shared browser session.** Raw CDP in the shared browser session can read cookies and filled values, so prompt injection from pages is the main threat. Mitigations are host-side fills, origin checks, and per-item approval.
