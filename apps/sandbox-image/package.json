@@ -1,0 +1,17 @@
+{
+  "name": "@cloudpid/sandbox-image",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "lint": "oxlint",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudpid/config": "workspace:*"
+  }
+}
