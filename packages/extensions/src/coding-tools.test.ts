@@ -5,14 +5,47 @@ import { describe, expect, it } from "vitest";
 import { type BackendCall, openCodingHarness } from "./coding-tools.fixture.ts";
 
 describe("bash", () => {
-  it("runs on the environment's default backend when no backend is asked for", async () => {
+  it.each([
+    ["cat README.md", "worker"],
+    ["grep -rn TODO src | head", "worker"],
+    ["git status", "worker"],
+    ["node script.js", "container"],
+    ["npm test", "container"],
+    ["gh pr list", "container"],
+    ["cat a.txt && npm test", "container"],
+  ] as const)(
+    "routes `%s` to the %s backend when no backend is asked for",
+    async (command, backend) => {
+      const { call, calls } = await openCodingHarness({ backends: true });
+
+      expect(await call("bash", { command })).toEqual({
+        text: `${backend}: ${command}`,
+        isError: false,
+      });
+      expect(calls).toEqual<BackendCall[]>([{ backend, command }]);
+    },
+  );
+
+  it("runs an explicit backend whatever the command is", async () => {
     const { call, calls } = await openCodingHarness({ backends: true });
 
-    expect(await call("bash", { command: "echo hi" })).toEqual({
-      text: "default: echo hi",
+    await call("bash", { command: "npm test", backend: "worker" });
+    await call("bash", { command: "cat README.md", backend: "container" });
+
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "worker", command: "npm test" },
+      { backend: "container", command: "cat README.md" },
+    ]);
+  });
+
+  it("runs on the environment itself when it has no backends, whatever the command is", async () => {
+    const { call, calls } = await openCodingHarness({ backends: false });
+
+    expect(await call("bash", { command: "node -v" })).toEqual({
+      text: "default: node -v",
       isError: false,
     });
-    expect(calls).toEqual<BackendCall[]>([{ backend: undefined, command: "echo hi" }]);
+    expect(calls).toEqual<BackendCall[]>([{ backend: undefined, command: "node -v" }]);
   });
 
   it.each(["worker", "container"] as const)(
@@ -73,6 +106,8 @@ describe("bash", () => {
     expect(tool("bash")?.description).toMatch(/worker/i);
     expect(tool("bash")?.description).toMatch(/container/i);
     expect(tool("bash")?.description).toMatch(/ELF|native binar/i);
+    expect(tool("bash")?.description).toMatch(/automatic/i);
+    expect(tool("bash")?.description).toMatch(/override|explicit/i);
     expect(JSON.stringify(tool("bash")?.parameters)).toContain("container");
   });
 });

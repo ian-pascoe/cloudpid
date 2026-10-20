@@ -15,8 +15,14 @@ import {
   type ContainerBackendOptions,
   withWorkspaceContainer,
 } from "@cloudflare/computer/backends/container";
+import { createGitClient } from "@cloudflare/computer/git";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
-import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
+import jq from "@cloudflare/computer/shell/jq";
+import {
+  DEFAULT_GIT_EMAIL,
+  DEFAULT_GIT_NAME,
+  TOOLCHAIN_IGNORE,
+} from "@cloudpid/sandbox-image/toolchains";
 import {
   type EnvRequest,
   type EnvResponse,
@@ -59,7 +65,10 @@ const ContainerHost = withWorkspaceContainer(class extends DurableObject<Workspa
 const LAST_USE_KEY = "cloudpid:container-last-use";
 
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
-const CONTAINER_BACKEND_ID = "container-shell";
+export const CONTAINER_BACKEND_ID = "container-shell";
+
+const nonEmpty = (value: string | undefined) =>
+  value === undefined || value === "" ? undefined : value;
 
 export class Workspace extends ContainerHost {
   readonly #workspace: ComputerWorkspace;
@@ -111,11 +120,20 @@ export class Workspace extends ContainerHost {
     this.#workspace = new ComputerWorkspace({
       storage: ctx.storage,
       observer: this.#containerUseObserver(),
+      // The Worker Shell's `git` (status, diff, log, add, commit, … that `bash` routes there) runs on computer's git client,
+      // committing as the identity the Container's bootstrap sets too.
+      git: createGitClient(),
+      defaultGitIdentity: {
+        name: nonEmpty(env.CLOUDPID_GIT_NAME) ?? DEFAULT_GIT_NAME,
+        email: nonEmpty(env.CLOUDPID_GIT_EMAIL) ?? DEFAULT_GIT_EMAIL,
+      },
       backends: [
         new WorkerShellBackend({
           loader: env.LOADER,
           workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
           ctx,
+          // `jq` is not in the shell's core commands.
+          commands: [jq],
         }),
         toolchains,
       ],

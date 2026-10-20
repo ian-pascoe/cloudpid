@@ -9,12 +9,14 @@ import {
   WorkspaceStub,
 } from "@cloudflare/computer";
 import { RpcTarget } from "cloudflare:workers";
-import { Workspace } from "./Workspace.ts";
+import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 
 /** Live counts of the stubs a `TestWorkspace` handed out. */
 export type LiveStubs = {
-  /** Commands started, through any Workspace stub: what a Container would be started for. */
+  /** Commands started, through any Workspace stub. */
   readonly started: number;
+  /** Commands started on the Container backend: what a Container would be started for. */
+  readonly container: number;
   /** Kill requests, through any Workspace stub. */
   readonly killed: number;
   readonly opened: number;
@@ -24,6 +26,7 @@ export type LiveStubs = {
 
 type Counter = {
   started: number;
+  container: number;
   killed: number;
   opened: number;
   workspaces: number;
@@ -85,8 +88,10 @@ class CountedRuntime extends WorkspaceRuntimeStub {
     return super.killExec(...args);
   }
 
-  override async exec(source: string, options = {}) {
+  override async exec(source: string, options: { readonly backend?: string } = {}) {
     this.#counter.started++;
+
+    if (options.backend === CONTAINER_BACKEND_ID) this.#counter.container++;
 
     // SAFETY: the counted handle answers every method and getter of the exec handle stub it wraps.
     return new CountedExecHandle(await super.exec(source, options), this.#counter) as never;
@@ -122,6 +127,7 @@ class CountedWorkspaceStub extends WorkspaceStub {
 export class TestWorkspace extends Workspace {
   readonly #counter: Counter = {
     started: 0,
+    container: 0,
     killed: 0,
     opened: 0,
     workspaces: 0,

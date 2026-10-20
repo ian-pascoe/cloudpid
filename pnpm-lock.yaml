@@ -238,7 +238,7 @@ importers:
     dependencies:
       '@cloudflare/computer':
         specifier: ^0.5.1
-        version: 0.5.1(@cloudflare/workers-types@5.20261019.1)(supports-color@10.2.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
+        version: 0.5.1(@cloudflare/workers-types@5.20261019.1)(@platformatic/vfs@0.4.1)(supports-color@10.2.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
       '@cloudpid/codemode-sandbox':
         specifier: workspace:*
         version: link:../codemode-sandbox
@@ -272,6 +272,9 @@ importers:
       '@earendil-works/pi-durable':
         specifier: ^1.3.0
         version: 1.3.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.2)(ws@8.22.0)(zod@4.6.5)
+      '@platformatic/vfs':
+        specifier: ^0.4.1
+        version: 0.4.1
       alchemy:
         specifier: 2.0.0-beta.83
         version: 2.0.0-beta.83(patch_hash=5c9a5bc12e095b54c98fd8955d5a679a25a18824556b973ce734faf7eaee07e8)(@effect/platform-node@4.0.5(effect@4.0.5)(redis@6.3.0))(@types/node@26.6.5)(@types/react@19.3.0)(effect@4.0.5)(hono@4.11.4)(typescript@5.9.3)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(ws@8.22.0)
@@ -364,13 +367,16 @@ importers:
     dependencies:
       '@cloudflare/computer':
         specifier: ^0.5.1
-        version: 0.5.1(@cloudflare/workers-types@5.20261019.1)(supports-color@10.2.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
+        version: 0.5.1(@cloudflare/workers-types@5.20261019.1)(@platformatic/vfs@0.4.1)(supports-color@10.2.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
       '@earendil-works/chord':
         specifier: ^1.3.0
         version: 1.3.0
       '@earendil-works/pi-durable':
         specifier: ^1.3.0
         version: 1.3.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.2)(ws@8.22.0)(zod@4.6.5)
+      '@platformatic/vfs':
+        specifier: ^0.4.1
+        version: 0.4.1
       ignore:
         specifier: ^7.0.12
         version: 7.0.12
@@ -1925,6 +1931,10 @@ packages:
   '@oxlint/plugins@1.88.0':
     resolution: {integrity: sha512-G2xbfWTrbqYRhR/vfeKNMQf/sS3/ti0iKJAAkRxHuXWZH/hne/dyIb9QKk5LuR6cJLARxsL6FMoAYmfspd74MQ==}
     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
+
+  '@platformatic/vfs@0.4.1':
+    resolution: {integrity: sha512-y8WuXiV77ovmAnFhdXLQPJyg/2yde1yJLzOmsnjJTs9ZFGJel81exqgID52NozjyGwaxizTN1nZWIW3Rxw1Tlw==}
+    engines: {node: '>= 22'}
 
   '@poppinss/colors@4.1.6':
     resolution: {integrity: sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg==}
@@ -5663,13 +5673,14 @@ snapshots:
 
   '@chevrotain/utils@10.5.0': {}
 
-  '@cloudflare/computer@0.5.1(@cloudflare/workers-types@5.20261019.1)(supports-color@10.2.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)':
+  '@cloudflare/computer@0.5.1(@cloudflare/workers-types@5.20261019.1)(@platformatic/vfs@0.4.1)(supports-color@10.2.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)':
     dependencies:
       acorn: 8.19.0
       capnweb: 0.10.0
       just-bash: 3.6.0(supports-color@10.2.2)
     optionalDependencies:
       '@cloudflare/workers-types': 5.20261019.1
+      '@platformatic/vfs': 0.4.1
       vite: 8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)
       zod: 4.6.5
     transitivePeerDependencies:
@@ -6647,6 +6658,8 @@ snapshots:
     optional: true
 
   '@oxlint/plugins@1.88.0': {}
+
+  '@platformatic/vfs@0.4.1': {}
 
   '@poppinss/colors@4.1.6':
     dependencies:
