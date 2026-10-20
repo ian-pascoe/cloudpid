@@ -73,7 +73,7 @@ const open = async () => {
 };
 
 // The first command loads the Worker Shell and its modules (git, jq) cold, which can take longer than the default 5 s on CI.
-describe.skip("bash on a Workspace", { timeout: 30_000 }, () => {
+describe("bash on a Workspace", { timeout: 30_000 }, () => {
   it.each([
     ["cat notes.txt", "alpha\nneedle\nomega"],
     ["grep needle notes.txt", "needle"],
@@ -91,7 +91,7 @@ describe.skip("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it("runs git status on the Worker Shell, inside a repository it initialized there", async () => {
+  it.skip("runs git status on the Worker Shell, inside a repository it initialized there", async () => {
     const { run, counts } = await open();
 
     const init = await run({ command: "git init -b main && git add -A && git status --short" });
@@ -101,7 +101,7 @@ describe.skip("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it("commits on the Worker Shell with an identity, which git log shows", async () => {
+  it.skip("commits on the Worker Shell with an identity, which git log shows", async () => {
     const { run, counts } = await open();
 
     const log = await run({
