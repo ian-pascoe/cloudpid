@@ -27,6 +27,12 @@ export const SETTINGS_PATH = "/settings";
 /** Whether a page path shows the settings. */
 export const isSettingsPath = (path: string): boolean => /^\/settings\/?$/.test(path);
 
+/** The Workspaces page: create Workspaces, clone repos into them, and start Sessions in them. */
+export const WORKSPACES_PATH = "/workspaces";
+
+/** Whether a page path shows the Workspaces. */
+export const isWorkspacesPath = (path: string): boolean => /^\/workspaces\/?$/.test(path);
+
 /** The Session a page path shows, if any. */
 export const sessionIdOf = (path: string): string | undefined => {
   const encoded = /^\/sessions\/([^/]+)\/?$/.exec(path)?.[1];

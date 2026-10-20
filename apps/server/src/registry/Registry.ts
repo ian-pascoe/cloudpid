@@ -25,6 +25,7 @@ export type RegistryMethods = {
   readonly createSession: (input: {
     readonly title?: string | undefined;
     readonly workspace?: string | undefined;
+    readonly repo?: string | undefined;
   }) => Effect.Effect<SessionRecord>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
@@ -79,12 +80,12 @@ export const RegistryLive = Registry.make(
         const notify = pushNotifier({ store, vapid: push.vapid });
 
         return {
-          createSession: ({ title, workspace }) =>
+          createSession: ({ title, workspace, repo }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
-              return store.createSession({ id, title: title ?? null, workspace }, now);
+              return store.createSession({ id, title: title ?? null, workspace, repo }, now);
             }),
           getSession: ({ id }) => Effect.sync(() => store.getSession(id)),
           listSessions: () => Effect.sync(() => store.listSessions()),

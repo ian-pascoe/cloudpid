@@ -23,7 +23,7 @@ export class TestRegistry extends DurableObject {
   }
 
   createSession(
-    input: { id: string; title: string | null; workspace?: string },
+    input: { id: string; title: string | null; workspace?: string; repo?: string },
     now: number,
   ): SessionRecord {
     return this.#store.createSession(input, now);

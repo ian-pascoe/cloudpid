@@ -1,18 +1,20 @@
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { cachedSlug } from "./workspace.ts";
+import { cachedPlacement, type Placement } from "./workspace.ts";
 
-/** A `cachedSlug` over an in-memory cache, and the names its lookup was asked for. */
+const ROOT_OF_DEFAULT: Placement = { slug: DEFAULT_WORKSPACE, repo: null };
+
+/** A `cachedPlacement` over an in-memory cache, and the names its lookup was asked for. */
 const setup = (
   name: string | undefined,
-  answer: (name: string) => Promise<string | null>,
-  initial?: string,
+  answer: (name: string) => Promise<Placement | null>,
+  initial?: Placement,
 ) => {
   let kept = initial;
   const asked: string[] = [];
 
-  const slug = cachedSlug({
+  const placement = cachedPlacement({
     name,
     get: () => kept,
     put: (value) => {
@@ -25,43 +27,52 @@ const setup = (
     },
   });
 
-  return { slug, asked, kept: () => kept };
+  return { placement, asked, kept: () => kept };
 };
 
-describe("cachedSlug", () => {
-  it("asks the Registry once for a listed Session, and keeps the answer", async () => {
-    const { slug, asked, kept } = setup("s1", () => Promise.resolve("acme"));
+describe("cachedPlacement", () => {
+  it("asks the Registry once for a listed Session, and keeps the Workspace and the repo", async () => {
+    const acme: Placement = { slug: "acme", repo: "pi" };
+    const { placement, asked, kept } = setup("s1", () => Promise.resolve(acme));
 
-    expect(await slug()).toBe("acme");
-    expect(await slug()).toBe("acme");
+    expect(await placement()).toEqual(acme);
+    expect(await placement()).toEqual(acme);
     expect(asked).toEqual(["s1"]);
-    expect(kept()).toBe("acme");
+    expect(kept()).toEqual(acme);
   });
 
   it("answers from what is kept without asking", async () => {
-    const { slug, asked } = setup("s1", () => Promise.resolve("other"), "acme");
+    const acme: Placement = { slug: "acme", repo: null };
 
-    expect(await slug()).toBe("acme");
+    const { placement, asked } = setup(
+      "s1",
+      () => Promise.resolve({ slug: "other", repo: null }),
+      acme,
+    );
+
+    expect(await placement()).toEqual(acme);
     expect(asked).toEqual([]);
   });
 
-  it("works on the default Workspace for a Session the Registry does not list, and asks again", async () => {
-    let answer: string | null = null;
-    const { slug, asked, kept } = setup("s1", () => Promise.resolve(answer));
+  it("works at the root of the default Workspace for a Session the Registry does not list, and asks again", async () => {
+    let answer: Placement | null = null;
+    const { placement, asked, kept } = setup("s1", () => Promise.resolve(answer));
 
-    expect(await slug()).toBe(DEFAULT_WORKSPACE);
+    expect(await placement()).toEqual(ROOT_OF_DEFAULT);
     expect(kept()).toBeUndefined();
 
-    answer = "acme";
+    answer = { slug: "acme", repo: "pi" };
 
-    expect(await slug()).toBe("acme");
+    expect(await placement()).toEqual({ slug: "acme", repo: "pi" });
     expect(asked).toEqual(["s1", "s1"]);
   });
 
-  it("works on the default Workspace for a Session whose name is unknown, without asking", async () => {
-    const { slug, asked, kept } = setup(undefined, () => Promise.resolve("acme"));
+  it("works at the root of the default Workspace for a Session whose name is unknown, without asking", async () => {
+    const { placement, asked, kept } = setup(undefined, () =>
+      Promise.resolve({ slug: "acme", repo: null }),
+    );
 
-    expect(await slug()).toBe(DEFAULT_WORKSPACE);
+    expect(await placement()).toEqual(ROOT_OF_DEFAULT);
     expect(asked).toEqual([]);
     expect(kept()).toBeUndefined();
   });
@@ -69,16 +80,18 @@ describe("cachedSlug", () => {
   it("fails when the lookup does, keeps nothing, and asks again", async () => {
     let fail = true;
 
-    const { slug, asked, kept } = setup("s1", () =>
-      fail ? Promise.reject(new Error("registry down")) : Promise.resolve("acme"),
+    const { placement, asked, kept } = setup("s1", () =>
+      fail
+        ? Promise.reject(new Error("registry down"))
+        : Promise.resolve({ slug: "acme", repo: null }),
     );
 
-    await expect(slug()).rejects.toThrow("registry down");
+    await expect(placement()).rejects.toThrow("registry down");
     expect(kept()).toBeUndefined();
 
     fail = false;
 
-    expect(await slug()).toBe("acme");
+    expect(await placement()).toEqual({ slug: "acme", repo: null });
     expect(asked).toEqual(["s1", "s1"]);
   });
 });

@@ -16,6 +16,8 @@ export type SessionRecord = {
   readonly title: string | null;
   /** The slug of the Workspace the Session works on, fixed when it is created. */
   readonly workspace: string;
+  /** The repo directory below `/workspace` that is the Session's `cwd`, fixed when it is created; null for the root. */
+  readonly repo: string | null;
   readonly status: SessionStatus;
   readonly createdAt: number;
   /** When the Session was created or its status last changed. */
@@ -35,6 +37,7 @@ export type RegistryStore = {
       readonly id: string;
       readonly title: string | null;
       readonly workspace?: string | undefined;
+      readonly repo?: string | undefined;
     },
     now: number,
   ) => SessionRecord;
@@ -66,6 +69,8 @@ type SessionRow = {
   title: string | null;
   /** Null for a Session stored before Sessions had Workspaces. */
   workspace: string | null;
+  /** Null for the Workspace root, and for a Session stored before Sessions had repos. */
+  repo: string | null;
   status: string;
   created_at: number;
   updated_at: number;
@@ -91,6 +96,7 @@ const toSession = (row: SessionRow): SessionRecord => ({
   id: row.id,
   title: row.title,
   workspace: row.workspace ?? DEFAULT_WORKSPACE,
+  repo: row.repo,
   status: checkedStatus(row.status),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -160,6 +166,10 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
       created_at INTEGER NOT NULL
     ) STRICT`);
   },
+  // 6: the repo directory a Session works in. Null for Sessions stored before, which work at the Workspace root.
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN repo TEXT");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -204,10 +214,11 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
       createWorkspace(workspace, now);
       sql.exec(
-        "INSERT INTO sessions (id, title, workspace, status, created_at, updated_at) VALUES (?, ?, ?, 'idle', ?, ?)",
+        "INSERT INTO sessions (id, title, workspace, repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'idle', ?, ?)",
         input.id,
         input.title,
         workspace,
+        input.repo ?? null,
         now,
         now,
       );
@@ -216,6 +227,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         id: input.id,
         title: input.title,
         workspace,
+        repo: input.repo ?? null,
         status: "idle",
         createdAt: now,
         updatedAt: now,

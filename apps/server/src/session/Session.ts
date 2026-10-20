@@ -33,13 +33,23 @@ import { proxyModels } from "./models.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { onIdle, wakeAt } from "./wake.ts";
-import { cachedSlug, sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
+import {
+  cachedPlacement,
+  type Placement,
+  sessionWorkspace,
+  type WorkspaceNamespace,
+} from "./workspace.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
 /** The key the Session's name is kept under, for instances that are not told it. */
 const NAME_KEY = "session-name";
 
-/** The key the slug of the Session's Workspace is kept under, once the Registry has told it. */
+/**
+ * The key the Session's placement (its Workspace's slug and repo) is kept under, once the Registry has told it. A Session
+ * that kept only a slug, under `WORKSPACE_KEY`, was bound before repos existed and works at the Workspace root.
+ */
+const PLACEMENT_KEY = "session-placement";
+
 const WORKSPACE_KEY = "session-workspace";
 
 /** The model proxy's base URL and API key: deploy-time secrets, bound to the Worker by `Config.Redacted`. */
@@ -125,20 +135,30 @@ export const SessionLive = Session.make(
         const notifyOwner = (event: PushEvent) =>
           sessionRegistry.notify(event).pipe(Effect.timeout(NOTIFY_TIMEOUT), Effect.ignore);
 
-        const workspaceSlug = cachedSlug({
+        const placement = cachedPlacement({
           name,
-          get: () => kv.get<string>(WORKSPACE_KEY),
-          put: (slug) => kv.put(WORKSPACE_KEY, slug),
+          get: () => {
+            const known = kv.get<Placement>(PLACEMENT_KEY);
+
+            if (known !== undefined) return known;
+
+            const slug = kv.get<string>(WORKSPACE_KEY);
+
+            return slug === undefined ? undefined : { slug, repo: null };
+          },
+          put: (known) => kv.put(PLACEMENT_KEY, known),
           lookup: (id) =>
             runtime
               .runPromise(registries.getByName(REGISTRY_NAME).getSession({ id }))
-              .then((session) => session?.workspace ?? null),
+              .then((session) =>
+                session === null ? null : { slug: session.workspace, repo: session.repo },
+              ),
         });
 
         const workspace = sessionWorkspace({
           // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (`worker.ts`), a raw namespace.
           namespace: worker[WORKSPACE_BINDING] as WorkspaceNamespace,
-          slug: workspaceSlug,
+          placement,
         });
 
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.

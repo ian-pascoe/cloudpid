@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isSettingsPath, SETTINGS_PATH, sessionIdOf, sessionPath } from "./router.ts";
+import {
+  isSettingsPath,
+  isWorkspacesPath,
+  SETTINGS_PATH,
+  sessionIdOf,
+  sessionPath,
+  WORKSPACES_PATH,
+} from "./router.ts";
 
 describe("Session paths", () => {
   it("round-trip a Session ID", () => {
@@ -23,5 +30,16 @@ describe("the settings path", () => {
     expect(isSettingsPath("/settings/x")).toBe(false);
     expect(isSettingsPath("/sessions/settings")).toBe(false);
     expect(sessionIdOf(SETTINGS_PATH)).toBeUndefined();
+  });
+});
+
+describe("the Workspaces path", () => {
+  it("shows the Workspaces, and no Session or settings", () => {
+    expect(isWorkspacesPath(WORKSPACES_PATH)).toBe(true);
+    expect(isWorkspacesPath("/workspaces/")).toBe(true);
+    expect(isWorkspacesPath("/workspaces/x")).toBe(false);
+    expect(isWorkspacesPath("/sessions/workspaces")).toBe(false);
+    expect(sessionIdOf(WORKSPACES_PATH)).toBeUndefined();
+    expect(isSettingsPath(WORKSPACES_PATH)).toBe(false);
   });
 });

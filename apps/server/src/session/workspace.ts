@@ -1,10 +1,11 @@
 // A Session's Workspace (`docs/spec.md` → Filesystem and tools, ADR-0001): its conversations' execution environment is a
 // `ComputerExecutionEnv` over the Workspace DO named by the Session's slug, and `ls`, `find`, and `grep` search the same
-// Workspace's files. Every Session bound to a slug reaches the same DO, so they share one tree (ADR-0006).
+// Workspace's files. Every Session bound to a slug reaches the same DO, so they share one tree (ADR-0006). A Session
+// bound to a repo works in its directory, `/workspace/<repo>`, unless a conversation names another `cwd`.
 // @effect-diagnostics asyncFunction:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { FileSearch } from "@cloudpid/extensions/files";
-import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
+import { DEFAULT_WORKSPACE, repoDirectory } from "@cloudpid/protocol";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
 import { WORKSPACE_ROOT } from "../workspace/binding.ts";
 
@@ -19,44 +20,50 @@ export type WorkspaceNamespace = {
   getByName(slug: string): ComputerWorkspaceStub;
 };
 
-export type CachedSlugOptions = {
+/** Where a Session works: its Workspace's slug, and the repo directory below `/workspace` it works in (null: the root). */
+export type Placement = { readonly slug: string; readonly repo: string | null };
+
+export type CachedPlacementOptions = {
   /** The Session's name, its ID in the Registry; undefined when unknown. */
   readonly name: string | undefined;
-  /** The slug kept from an earlier lookup. */
-  readonly get: () => string | undefined;
-  /** Keeps the slug of a lookup. */
-  readonly put: (slug: string) => void;
-  /** The slug of the Workspace the Registry lists the Session with, or null when it does not list it. */
-  readonly lookup: (name: string) => Promise<string | null>;
+  /** The placement kept from an earlier lookup. */
+  readonly get: () => Placement | undefined;
+  /** Keeps the placement of a lookup. */
+  readonly put: (placement: Placement) => void;
+  /** The Workspace and repo the Registry lists the Session with, or null when it does not list it. */
+  readonly lookup: (name: string) => Promise<Placement | null>;
 };
 
+/** Where a Session the Registry does not list works: the root of the default Workspace. */
+const DEFAULT_PLACEMENT: Placement = { slug: DEFAULT_WORKSPACE, repo: null };
+
 /**
- * The slug of a Session's Workspace. It is fixed when the Registry creates the Session, so it is asked once and kept. A
- * Session the Registry does not list (or whose name is unknown) works on the default Workspace, and is asked again. A
+ * Where a Session works. It is fixed when the Registry creates the Session, so it is asked once and kept. A Session the
+ * Registry does not list (or whose name is unknown) works at the root of the default Workspace, and is asked again. A
  * failed lookup fails the call and keeps nothing.
  */
-export const cachedSlug =
-  ({ name, get, put, lookup }: CachedSlugOptions): (() => Promise<string>) =>
+export const cachedPlacement =
+  ({ name, get, put, lookup }: CachedPlacementOptions): (() => Promise<Placement>) =>
   async () => {
     const known = get();
 
     if (known !== undefined) return known;
 
-    if (name === undefined) return DEFAULT_WORKSPACE;
+    if (name === undefined) return DEFAULT_PLACEMENT;
 
-    const slug = await lookup(name);
+    const placement = await lookup(name);
 
-    if (slug === null) return DEFAULT_WORKSPACE;
+    if (placement === null) return DEFAULT_PLACEMENT;
 
-    put(slug);
+    put(placement);
 
-    return slug;
+    return placement;
   };
 
 export type SessionWorkspaceOptions = {
   readonly namespace: WorkspaceNamespace;
-  /** The slug of the Workspace the Session is bound to. Called at each use, so it may look the slug up. */
-  readonly slug: () => Promise<string>;
+  /** The Workspace and repo the Session is bound to. Called at each use, so it may look them up. */
+  readonly placement: () => Promise<Placement>;
 };
 
 /** What a Session runs its tools on. */
@@ -71,7 +78,7 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
   const search = async () => {
     const { ComputerFiles } = await computer();
 
-    return new ComputerFiles(options.namespace.getByName(await options.slug()));
+    return new ComputerFiles(options.namespace.getByName((await options.placement()).slug));
   };
 
   const files: FileSearch = {
@@ -83,13 +90,14 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
   return {
     env: async (target) => {
       const { ComputerExecutionEnv } = await computer();
-      const slug = await options.slug();
+      const { slug, repo } = await options.placement();
 
       return new ComputerExecutionEnv({
         workspace: options.namespace.getByName(slug),
         // Environments with equal ids see the same files: one per Workspace.
         id: `computer:${slug}`,
-        cwd: target.cwd ?? WORKSPACE_ROOT,
+        // A conversation's own `cwd` first, then the Session's repo, then the Workspace root.
+        cwd: target.cwd ?? (repo === null ? WORKSPACE_ROOT : repoDirectory(repo)),
       });
     },
     files,

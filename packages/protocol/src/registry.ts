@@ -5,6 +5,7 @@ import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
+import { RepoName, WorkspaceError } from "./repo.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -37,6 +38,8 @@ export const SessionRecord = Schema.Struct({
   title: Schema.NullOr(Schema.String),
   /** The slug of the Workspace the Session works on; it never changes. */
   workspace: Schema.String,
+  /** The repo directory below `/workspace` the Session's `cwd` is, or null for the Workspace root; it never changes. */
+  repo: Schema.NullOr(Schema.String),
   status: SessionStatus,
   createdAt: Schema.Finite,
   /** When the Session was created or its status last changed. */
@@ -140,12 +143,39 @@ export class RegistryRpcs extends RpcGroup.make(
       title: Schema.optionalKey(SessionTitle),
       /** Defaults to `DEFAULT_WORKSPACE`. */
       workspace: Schema.optionalKey(WorkspaceSlug),
+      /**
+       * A repo already in the Workspace (`listRepos`) that becomes the Session's `cwd`: `/workspace/<repo>`. Without
+       * one the `cwd` is `/workspace`. A repo the Workspace does not hold fails with a `WorkspaceError`.
+       */
+      repo: Schema.optionalKey(RepoName),
     },
     success: SessionRecord,
+    error: WorkspaceError,
   }),
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
   /** Register a Workspace by slug; one already registered keeps its record. */
   Rpc.make("createWorkspace", { payload: { slug: WorkspaceSlug }, success: WorkspaceRecord }),
+  /** The repos a Workspace holds: the directories below `/workspace` that are git repositories, by name. */
+  Rpc.make("listRepos", {
+    payload: { workspace: WorkspaceSlug },
+    success: Schema.Array(Schema.String),
+    error: WorkspaceError,
+  }),
+  /**
+   * Clone a repo into `/workspace/<name>` of a Workspace (registered when new), on the Container where the network and
+   * the GitHub token are. `source` is `owner/repo` or an `https` URL (`parseRepoSource`); `name` defaults to the repo's
+   * own. Fails with a `WorkspaceError` carrying git's message when the address is not valid, the directory is taken or
+   * the clone does not finish. Answers the directory name.
+   */
+  Rpc.make("cloneRepo", {
+    payload: {
+      workspace: WorkspaceSlug,
+      source: Schema.String,
+      name: Schema.optionalKey(RepoName),
+    },
+    success: RepoName,
+    error: WorkspaceError,
+  }),
   /** The settings in force and the overrides they come from. */
   Rpc.make("getSettings", { success: SettingsState }),
   /**

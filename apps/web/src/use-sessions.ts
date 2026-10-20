@@ -12,8 +12,14 @@ export interface Sessions {
   readonly sessions: readonly SessionRecord[] | null;
   /** Why the list could not load or a Session could not be created. */
   readonly error: string | null;
-  /** Register a new Session and refresh the list; resolves to it, or undefined if that failed. */
-  readonly create: () => Promise<SessionRecord | undefined>;
+  /**
+   * Register a new Session and refresh the list; resolves to it, or undefined if that failed. It works in
+   * `/workspace/<repo>` of Workspace `workspace`, or at the root of the default Workspace without them.
+   */
+  readonly create: (where?: {
+    readonly workspace?: string;
+    readonly repo?: string;
+  }) => Promise<SessionRecord | undefined>;
   readonly refresh: () => Promise<void>;
 }
 
@@ -42,19 +48,22 @@ export const useSessions = (): Sessions => {
     };
   }, [refresh]);
 
-  const create = useCallback(async () => {
-    const answer = await registry.createSession();
+  const create = useCallback(
+    async (where?: { workspace?: string; repo?: string }) => {
+      const answer = await registry.createSession(where);
 
-    if (!answer.ok) {
-      setError(answer.message);
+      if (!answer.ok) {
+        setError(answer.message);
 
-      return undefined;
-    }
+        return undefined;
+      }
 
-    await refresh();
+      await refresh();
 
-    return answer.value;
-  }, [registry, refresh]);
+      return answer.value;
+    },
+    [registry, refresh],
+  );
 
   return { sessions, error, create, refresh };
 };
