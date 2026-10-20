@@ -1,6 +1,7 @@
 // Effect-defined pi-durable tools (ADR-0003): Effect `Schema` parameters, Chord cancellation as fiber interruption, and
 // typed failures as error results.
 import type { JsonValue } from "@earendil-works/chord";
+import type * as Chord from "@earendil-works/chord/context";
 import type { TSchema } from "@earendil-works/pi-ai";
 import type {
   ToolExecutionApi,
@@ -12,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { invoker } from "./chord.ts";
 
@@ -21,6 +23,10 @@ export type ToolFailure = { readonly message: string };
 /**
  * A tool whose parameters are an Effect `Schema.Struct` and whose execution is an Effect. A typed failure becomes an
  * error result with its message; a defect is thrown, as from any pi-durable tool.
+ *
+ * A typed failure ends the call `completed`, as any returned result does, so pi-durable does not cancel the tasks and
+ * conversations the call owns, as it does after a throw. A tool that starts owned work cleans it up itself, for
+ * example in a finalizer.
  */
 export type EffectToolDefinition<
   Fields extends Schema.Struct.Fields,
@@ -41,28 +47,61 @@ const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 /** Arguments the parameters do not model are rejected, by the JSON Schema and by the decoder alike. */
 const STRICT = { onExcessProperty: "error" } as const;
 
-/** `parameters` as the JSON Schema pi-durable validates calls against and offers the model. */
-const jsonSchema = (parameters: Schema.Top): TSchema => {
-  const document = Schema.toJsonSchemaDocument(parameters, STRICT);
+/**
+ * `parameters` as the JSON Schema pi-durable validates calls against and offers the model: one object schema, with
+ * identified schemas inlined (providers reject a root `$ref`, and pi-ai's argument repair does not follow `$ref`s).
+ * Only recursive schemas keep a reference, under `$defs`. Building a tool whose parameters compile otherwise dies.
+ */
+const jsonSchema = <Fields extends Schema.Struct.Fields>(
+  name: string,
+  parameters: Schema.Struct<Fields>,
+): Effect.Effect<TSchema> => {
+  // Effect describes an empty Struct as any non-null value.
+  if (Record.isEmptyRecord(parameters.fields)) {
+    return Effect.succeed({ type: "object", properties: {}, additionalProperties: false });
+  }
 
-  return Record.isEmptyRecord(document.definitions)
-    ? document.schema
-    : { ...document.schema, $defs: document.definitions };
+  const document = Schema.toJsonSchemaDocument(parameters, {
+    ...STRICT,
+    referencePolicy: () => undefined,
+  });
+
+  if (document.schema.type !== "object") {
+    return Effect.die(new Error(`Tool ${name}'s parameters are not one object schema`));
+  }
+
+  return Effect.succeed(
+    Record.isEmptyRecord(document.definitions)
+      ? document.schema
+      : { ...document.schema, $defs: document.definitions },
+  );
 };
 
-/** A settled call as pi-durable expects it: a typed failure as an error result; interruption and defects thrown. */
-const toResult = <TDetails extends JsonValue>(
-  exit: Exit.Exit<ToolExecutionResult<TDetails>, ToolFailure>,
-): ToolExecutionResult<TDetails> => {
-  if (Exit.isSuccess(exit)) return exit.value;
+/**
+ * A settled call as pi-durable expects it: a typed failure as an error result. A defect, even beside a failure, and
+ * any failure of a call pi-durable cancelled are thrown, so pi-durable records them itself: as a `tool_error` result,
+ * or as an aborted call.
+ */
+const toResult =
+  (context: Chord.Context) =>
+  <TDetails extends JsonValue>(
+    exit: Exit.Exit<ToolExecutionResult<TDetails>, ToolFailure>,
+  ): ToolExecutionResult<TDetails> => {
+    if (Exit.isSuccess(exit)) return exit.value;
 
-  const failure = Cause.findErrorOption(exit.cause);
+    // Defects win over failures, as in Effect's own error reporting.
+    const defect = Cause.findDefect(exit.cause);
 
-  // pi-durable records an aborted call itself, and a thrown error as an error result.
-  if (Option.isNone(failure)) throw Cause.squash(exit.cause);
+    if (Result.isSuccess(defect)) throw defect.success;
 
-  return { isError: true, output: [{ type: "text", text: failure.value.message }] };
-};
+    const failure = Cause.findErrorOption(exit.cause);
+
+    if (Option.isNone(failure) || context.abortSignal?.aborted === true) {
+      throw Cause.squash(exit.cause);
+    }
+
+    return { isError: true, output: [{ type: "text", text: failure.value.message }] };
+  };
 
 /**
  * A pi-durable tool from an Effect definition, run with the services of the Effect that builds it. The model is offered
@@ -92,11 +131,11 @@ export const defineEffectTool = <
 
     return {
       ...rest,
-      parameters: jsonSchema(parameters),
+      parameters: yield* jsonSchema(tool.name, parameters),
       execute: (args, api, context) =>
         invoke(
           Effect.flatMap(decode(args), (decoded) => execute(decoded, api)),
           context,
-        ).then(toResult),
+        ).then(toResult(context)),
     } satisfies ToolRegistration<TSchema, TDetails>;
   });

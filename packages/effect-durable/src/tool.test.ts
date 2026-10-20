@@ -2,9 +2,12 @@
 // @effect-diagnostics asyncFunction:off
 import { defineExtension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
 import { answer, callTool, context, openFauxHarness, resultText } from "./harness.fixture.ts";
+import { ChordContext } from "./chord.ts";
 import { defineEffectTool } from "./tool.ts";
 
 const Sides = Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 20 }));
@@ -141,5 +144,178 @@ describe("defineEffectTool", () => {
       isError: true,
       content: [{ type: "text", text: "The dice are lost" }],
     });
+  });
+
+  it("inlines identified schemas, so the model is offered one object schema", async () => {
+    const Die = Schema.Struct({ sides: Sides }).annotate({ identifier: "Die" });
+
+    const rollOne = defineEffectTool({
+      name: "roll_one",
+      description: "Roll one die",
+      parameters: Schema.Struct({ die: Die }).annotate({ identifier: "RollOne" }),
+      execute: ({ die }) =>
+        Effect.succeed({ output: [{ type: "text", text: `rolled a d${die.sides}` }] }),
+    });
+
+    const { requests, prompt, lastToolResult } = await openFauxHarness(
+      [defineExtension({ name: "one", tools: [Effect.runSync(rollOne)] })],
+      [callTool("roll_one", { die: { sides: 8 } }), answer("done")],
+    );
+
+    await prompt("roll");
+
+    expect(requests[0]?.tools[0]?.parameters).toEqual({
+      type: "object",
+      properties: {
+        die: {
+          type: "object",
+          properties: { sides: { type: "integer", minimum: 2, maximum: 20 } },
+          required: ["sides"],
+          additionalProperties: false,
+        },
+      },
+      required: ["die"],
+      additionalProperties: false,
+    });
+    expect(resultText(await lastToolResult())).toBe("rolled a d8");
+  });
+
+  it("offers a tool without parameters an empty object schema", () => {
+    const tool = Effect.runSync(
+      defineEffectTool({
+        name: "no_arguments",
+        description: "Take nothing",
+        parameters: Schema.Struct({}),
+        execute: () => Effect.succeed({}),
+      }),
+    );
+
+    expect(tool.parameters).toEqual({
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    });
+  });
+
+  it("decodes optional and defaulted arguments the model leaves out", async () => {
+    const label = defineEffectTool({
+      name: "label_roll",
+      description: "Label a roll",
+      parameters: Schema.Struct({
+        count: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(1))),
+        label: Schema.optional(Schema.String),
+      }),
+      execute: ({ count, label }) =>
+        Effect.succeed({ output: [{ type: "text", text: `${count} ${label ?? "unlabelled"}` }] }),
+    });
+
+    const { prompt, lastToolResult } = await openFauxHarness(
+      [defineExtension({ name: "label", tools: [Effect.runSync(label)] })],
+      [callTool("label_roll", { label: null }), answer("done")],
+    );
+
+    await prompt("label");
+
+    const result = await lastToolResult();
+
+    expect(result).toMatchObject({ isError: false });
+    expect(resultText(result)).toBe("1 unlabelled");
+  });
+
+  it("answers a defect with pi-durable's tool_error result, even when the call also failed", async () => {
+    class DiceLost extends Schema.TaggedError<DiceLost, { readonly brand: unique symbol }>()(
+      "DiceLost",
+      { message: Schema.String },
+    ) {}
+
+    const crash = defineEffectTool({
+      name: "crash",
+      description: "Crash",
+      parameters: Schema.Struct({}),
+      execute: () =>
+        Effect.fail(DiceLost.make({ message: "The dice are lost" })).pipe(
+          Effect.ensuring(Effect.die(new Error("The table broke"))),
+        ),
+    });
+
+    const { prompt, lastToolResult } = await openFauxHarness(
+      [defineExtension({ name: "crash", tools: [Effect.runSync(crash)] })],
+      [callTool("crash", {}), answer("done")],
+    );
+
+    await prompt("crash");
+
+    const result = await lastToolResult();
+
+    expect(result).toMatchObject({ isError: true });
+    expect(resultText(result)).toContain("The table broke");
+    expect(resultText(result)).not.toContain("The dice are lost");
+  });
+
+  it("settles a call that fails while being aborted as aborted", async () => {
+    const started = Promise.withResolvers<void>();
+
+    const stubborn = defineEffectTool({
+      name: "stubborn",
+      description: "Fail once aborted",
+      parameters: Schema.Struct({}),
+      execute: () =>
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            const { abortSignal } = yield* ChordContext;
+
+            started.resolve();
+            yield* Effect.callback<void>((resume) => {
+              abortSignal?.addEventListener("abort", () => resume(Effect.void), { once: true });
+            });
+
+            return yield* Effect.fail({ message: "gave up" });
+          }),
+        ),
+    });
+
+    const { root, lastToolResult } = await openFauxHarness(
+      [defineExtension({ name: "stubborn", tools: [Effect.runSync(stubborn)] })],
+      [callTool("stubborn", {}), answer("unreachable")],
+    );
+
+    await root.submit({ type: "input", content: "go" }, context);
+    await started.promise;
+    await root.abort(context);
+
+    const result = await lastToolResult();
+
+    expect(result).toMatchObject({ isError: true });
+    expect(resultText(result)).toContain("Tool stubborn was aborted");
+    expect(resultText(result)).not.toContain("gave up");
+  });
+
+  it("runs calls outside the span the tool was built in", async () => {
+    const spans: string[] = [];
+
+    const traced = defineEffectTool({
+      name: "traced",
+      description: "Report the parent span",
+      parameters: Schema.Struct({}),
+      execute: () =>
+        Effect.serviceOption(Tracer.ParentSpan).pipe(
+          Effect.map((parent) => {
+            spans.push(
+              Option.match(parent, { onNone: () => "none", onSome: (span) => span.spanId }),
+            );
+
+            return {};
+          }),
+        ),
+    }).pipe(Effect.withSpan("startup"));
+
+    const { prompt } = await openFauxHarness(
+      [defineExtension({ name: "traced", tools: [Effect.runSync(traced)] })],
+      [callTool("traced", {}), answer("done")],
+    );
+
+    await prompt("trace");
+
+    expect(spans).toEqual(["none"]);
   });
 });

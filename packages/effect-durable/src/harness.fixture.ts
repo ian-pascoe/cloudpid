@@ -10,6 +10,7 @@ import {
   fauxProvider,
   fauxToolCall,
   type Message,
+  type ToolCall,
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import {
@@ -25,7 +26,7 @@ import * as Option from "effect/Option";
 export const context = BACKGROUND_CONTEXT;
 
 /** A model response that calls tool `name` with `args`. */
-export const callTool = (name: string, args: Record<string, number | string>): AssistantMessage =>
+export const callTool = (name: string, args: ToolCall["arguments"]): AssistantMessage =>
   fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${name}` })], {
     stopReason: "toolUse",
   });
