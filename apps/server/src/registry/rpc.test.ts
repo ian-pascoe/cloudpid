@@ -11,6 +11,7 @@ import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { expect, it } from "vitest";
+import { isRegistryRpc } from "../routes.ts";
 import { serveRegistryRpc } from "./rpc.ts";
 import type { SessionRecord, WorkspaceRecord } from "./store.ts";
 
@@ -70,15 +71,18 @@ const withClient = <A, E>(
   program: Effect.Effect<A, E, Registry>,
   fake = fakeRegistries(),
 ): Promise<A> => {
-  const serve = (input: RequestInfo | URL, init?: RequestInit) =>
-    serveRegistryRpc(fake.registries).pipe(
-      Effect.provideService(
-        HttpServerRequest.HttpServerRequest,
-        HttpServerRequest.fromWeb(new Request(input, init)),
-      ),
+  const serve = (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = HttpServerRequest.fromWeb(new Request(input, init));
+
+    // Routed as the main Worker routes it.
+    if (!isRegistryRpc(request)) return Promise.resolve(new Response(null, { status: 404 }));
+
+    return serveRegistryRpc(fake.registries).pipe(
+      Effect.provideService(HttpServerRequest.HttpServerRequest, request),
       Effect.map(HttpServerResponse.toWeb),
       Effect.runPromise,
     );
+  };
 
   const client = Layer.effect(Registry, RpcClient.make(RegistryRpcs)).pipe(
     Layer.provide(RpcClient.layerProtocolHttp({ url: `http://worker.test${RPC_PATH}` })),

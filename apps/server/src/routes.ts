@@ -19,6 +19,6 @@ export const sessionSocketId = (
 ): string | undefined =>
   request.method === "GET" ? SESSION_SOCKET_PATH.exec(pathOf(request))?.[1] : undefined;
 
-/** Whether `request` is a call of `RegistryRpcs`: a `POST` to `RPC_PATH`. */
+/** Whether `request` is a call of `RegistryRpcs`: a `POST` to `RPC_PATH`, with the trailing slash Effect's client adds. */
 export const isRegistryRpc = (request: HttpServerRequest.HttpServerRequest): boolean =>
-  request.method === "POST" && pathOf(request) === RPC_PATH;
+  request.method === "POST" && [RPC_PATH, `${RPC_PATH}/`].includes(pathOf(request));
