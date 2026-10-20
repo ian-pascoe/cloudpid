@@ -131,17 +131,21 @@ Every model-facing tool name is snake_case. A library tool that isn't gets renam
 
 The tool surface and semantics stay as they are today:
 
-- Canonical IDs such as `root.agent-1`, plus tombstones and a depth cap.
+- Canonical IDs such as `agent-1` and `agent-1.reviewer` (a leading `root.` is accepted; `root` and `parent` are reserved), plus tombstones and a depth cap.
 - Model roles.
 - `read`/`modify` toolset presets under a capability ceiling.
-- `session_context`: `omit`, `inherit`, or `compact`.
-- Wait events: `turn`, `message`, `timeout`, and `steered`.
+- `session_context`: `omit`, `inherit` (the parent's conversation quoted before the task), or `compact` (a summary of it, made by the `small` role's model, or the child's own when no `small` role is configured).
+- Wait events: `turn`, `message`, `timeout`, and `steered`. One open wait per caller and child; a second is refused.
 
-They are rebuilt on pi-durable primitives, following its example 23:
+They are rebuilt on pi-durable primitives, following its example 23 (`@cloudpid/extensions/subagents`):
 
 - Children are conversations owned by a background anchor task.
-- Answers return through reporter tasks as follow-up messages, deduplicated by `requestId`.
-- `subagent_wait` is a durable task using `sleepUntil`.
+- Each input to a child is a turn, carried by a background reporter task in its parent's conversation. A Session document records the agents, their recent turns, tombstones, and open waits, and one commit decides each delivery.
+- A settled turn's answer goes to a `subagent_wait` blocked on it. Otherwise it is held (`delivery: "pending"`) until the parent is idle, so a later `subagent_wait` in the parent's run can still claim it, and then reported as a follow-up, deduplicated by `requestId`. The rule is the same for every parent: the root gets the report as follow-up input, and a parent that is itself a subagent gets it as a new turn, whose answer is reported further up. Inputs steered into one run end in one answer, which is delivered once; the other turns are `duplicate`.
+- After the user presses Stop, a held report is still delivered once the root is idle, which starts a new run. pi-minimal-subagents instead holds it until the next run; #30 decides which to keep.
+- `subagent_wait` is a durable task that sleeps until its deadline (`TaskRuntime.sleep`); a rerun of the call after an eviction finds it.
+- A child's tools are exactly its grant (`AgentState.tools`): ordinary tools within its caller's, plus all six coordinator tools when it was launched with `delegation: "fanout"` below the depth cap, or only `agent_message` otherwise.
+- The roles come from the settings' `roles`; the depth cap and toolsets from `extensions.subagents` (`maxSubagentDepth`, default 2; `baseToolset`, `readToolset`, `modifyToolset`).
 
 ### Context management
 

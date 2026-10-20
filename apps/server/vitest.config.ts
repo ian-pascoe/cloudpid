@@ -27,6 +27,7 @@ export default defineConfig({
               compatibilityFlags: ["nodejs_compat"],
               durableObjects: {
                 SESSIONS: { className: "TestSession", useSQLite: true },
+                SUBAGENT_SESSIONS: { className: "TestSubagentSession", useSQLite: true },
                 REGISTRIES: { className: "TestRegistry", useSQLite: true },
               },
             },

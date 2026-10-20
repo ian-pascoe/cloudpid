@@ -33,9 +33,22 @@ const script = (args: Args): Option.Option<string> =>
     ),
   );
 
+/** The first line of `key`'s text. */
+const firstLine = (args: Args, key: string): Option.Option<string> =>
+  Option.map(text(args, key), (value) => value.split("\n")[0] ?? value);
+
+/** `line`, after the agent a call names when it names one. */
+const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string> =>
+  Option.map(line, (value) =>
+    Option.match(text(args, "agent_id"), {
+      onNone: () => value,
+      onSome: (agent) => `${agent}: ${value}`,
+    }),
+  );
+
 /**
- * The one thing about a call worth showing beside its name: the path a file tool works on, what a search looks for, or
- * the command a shell runs. Nothing for a tool the page does not know, or arguments that do not have it.
+ * The one thing about a call worth showing beside its name: the path a file tool works on, what a search looks for,
+ * the command a shell runs, the task a subagent starts with, the message an agent sends, or the agent a call addresses. Nothing for a tool the page does not know, or arguments that do not have it.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const toolSummary = (toolName: string, args: Args): string | undefined => {
@@ -52,7 +65,16 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "codemode":
         return script(args);
       case "bash":
-        return Option.map(text(args, "command"), (command) => command.split("\n")[0] ?? command);
+        return firstLine(args, "command");
+      case "subagent":
+        return toAgent(args, firstLine(args, "task"));
+      case "agent_message":
+        return toAgent(args, firstLine(args, "message"));
+      case "subagent_wait":
+      case "subagent_status":
+      case "subagent_cancel":
+      case "subagent_delete":
+        return text(args, "agent_id");
       default:
         return Option.none();
     }

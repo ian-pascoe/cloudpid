@@ -5,6 +5,7 @@ import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/c
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
+import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
 import { WebConfig } from "@cloudpid/extensions/web";
 import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
 import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
@@ -48,6 +49,7 @@ export class TestWorkspaceSession extends TestSession {
     return sessionExtensions.pipe(
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
       Effect.provideService(CodemodeSandbox, this.sandbox()),
+      Effect.provideService(SubagentSettings, { current: () => subagentOptions({}, undefined) }),
       // No search keys: the tests script the model, and none searches.
       Effect.provideService(WebConfig, { exaApiKey: Option.none(), parallelApiKey: Option.none() }),
     );
