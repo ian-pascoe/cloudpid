@@ -57,6 +57,8 @@ export default Alchemy.Stack(
     // Everything `alchemy deploy` of alchemy.run.ts touches. Alchemy's state store needs Secrets Store Write (it
     // binds its token secret to a short-lived preview Worker on every run). Access Apps and Policies covers the
     // Worker's Access application; Zone Read, DNS Write and Workers Routes Write cover the custom domain of `prod`.
+    // Workers Containers Write covers the Workspace DO's Container application and the push of its image to
+    // Cloudflare's registry.
     const deployToken = yield* Cloudflare.ApiToken.AccountApiToken("DeployToken", {
       name: "cloudpid-ci-deploy",
       accountId,
@@ -65,6 +67,7 @@ export default Alchemy.Stack(
           effect: "allow",
           permissionGroups: [
             "Workers Scripts Write",
+            "Workers Containers Write",
             "Secrets Store Write",
             "Account Settings Read",
             ACCESS_APPS_AND_POLICIES_WRITE,

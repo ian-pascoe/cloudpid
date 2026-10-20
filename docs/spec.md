@@ -70,7 +70,7 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 
 - The workspace root is `/workspace`, with one directory per repo. A Session's `cwd` defaults to its repo directory.
 - `ComputerExecutionEnv` (`packages/computer-env`) implements pi-durable's `ExecutionEnv` over the Workspace DO's RPC stub. It covers `listFiles` via `fs.find`, and must pass `registerEnvConformance`.
-- `read`, `write`, `edit`, and `bash` are pi-durable's own tools. `ls`, `find`, and `grep` are thin tools over computer's `fs.readdir`, `fs.find`, and `fs.grep` (`@cloudpid/extensions/files`), so they never start the container: they reach the Workspace only through a file-search interface that has no command execution. Their parameters and output follow local pi's; `find` and `grep` skip `node_modules` and `.git`, since the Workspace's file system has no `.gitignore` handling. computer's `createPiTools` is not used ([ADR-0008](adr/0008-pi-durable-tools-over-computer-tools.md)).
+- `read`, `write`, and `edit` are pi-durable's own tools, and `bash` is pi-durable's tool with one more argument, `backend` (`@cloudpid/extensions/coding-tools`, see _Backends_). `ls`, `find`, and `grep` are thin tools over computer's `fs.readdir`, `fs.find`, and `fs.grep` (`@cloudpid/extensions/files`), so they never start the container: they reach the Workspace only through a file-search interface that has no command execution. Their parameters and output follow local pi's; `find` and `grep` skip `node_modules` and `.git`, since the Workspace's file system has no `.gitignore` handling. computer's `createPiTools` is not used ([ADR-0008](adr/0008-pi-durable-tools-over-computer-tools.md)).
 - A Session is bound to one Workspace slug, recorded in the Registry when the Session is created (`default` when none is chosen) and never changed. The Session DO asks the Registry for it once and keeps it; `HarnessOptions.env` builds a `ComputerExecutionEnv` on that Workspace's DO for each call, in the conversation's `cwd` or `/workspace`.
 - Skills: the headless-safe skills from `~/.pi/agent/skills` are copied to `skills/` and mounted read-only with `WorkerBundle` at `/workspace/.agents/skills`. Repo-local `.agents/skills` are discovered too. A `skills` prompt section lists them.
 
@@ -81,7 +81,9 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 | Worker Shell | just-bash in a Dynamic Worker, with `createGitClient()` providing `git` | Default for text commands: `cat`, `grep`, `sed`, `jq`, `git status`/`diff` |
 | Container    | Real Linux through computerd and FUSE at `/workspace`                   | Anything needing a real binary: `npm`, `node`, test runners, `gh`          |
 
-`bash` chooses a backend per call, with an explicit `backend` argument or a heuristic. The Worker Shell cannot run ELF binaries, so those commands always go to the Container.
+`bash` chooses a backend per call, with an explicit `backend` argument (`worker`, the default, or `container`) or a heuristic. The Worker Shell cannot run ELF binaries, so those commands always go to the Container. Only the explicit argument exists so far: the heuristic is [issue #22](https://github.com/ian-pascoe/cloudpid/issues/22). The tool description tells the model what each backend can do (`@cloudpid/extensions/coding-tools`), and an environment that cannot reach the Container answers a `container` call with an error.
+
+The Workspace DO registers both backends on its one Workspace, as `worker-shell` and `container-shell`, so both see the same `/workspace`: computer pushes the DO's changes to the Container before a Container command and pulls its changes back after it. `ComputerExecutionEnv.onBackend()` selects one. computerd runs commands with `/bin/sh -c`, which is dash on Debian, so a Container command is wrapped in `exec bash -c '…'` to keep `bash` bash. The Container starts on the first command sent to it and takes about 10 seconds to do so on Cloudflare (4 seconds under `alchemy dev`).
 
 The Worker Shell returns a command's output once, when it exits: `onOutput` gets all of stdout, then all of stderr, attributed but not interleaved in arrival order. The Container streams output as it comes, so its tests must check streaming, which the Worker Shell's cannot.
 
@@ -92,8 +94,9 @@ The Worker Shell returns a command's output once, when it exits: `onOutput` gets
 - **Image:** `debian:stable-slim` plus `fuse3`, `ca-certificates`, `computerd` (pinned to match `@cloudflare/computer`), and `mise`. Everything else, `git` and `gh` included, is a mise Toolchain. The image must be glibc-based, so no Alpine.
 - **Persistence:** `mise.toml` and `mise.lock` live in the workspace and are synced. `MISE_DATA_DIR` and `MISE_CACHE_DIR` sit under `/workspace/.mise`, which is listed in computer's `ignore`. So are `node_modules`, `.venv`, `target/`, and caches, which keeps them container-local and out of DO SQLite.
 - **Bootstrap:** on start, run `mise install`, which does nothing when the tools are already present. Snapshot the container disk after a successful install and when the container idles, and restore with `launch.containerSnapshot`.
-- **Size and idle:** `standard-2` by default with a 15-minute inactivity stop. Both are per-Workspace settings.
-- **Egress:** unrestricted direct egress in v1, logged. A per-Workspace allowlist comes later.
+- **Size and idle:** `standard-2` by default with a 15-minute inactivity stop. Both are per-Workspace settings. So far the size is fixed in the Workspace DO and the stop is minimal (see below); #24 makes both settings and adds snapshots.
+- **Idle stop:** computer never stops the Container it starts (its WebSocket, heartbeat timer and container monitor keep the Workspace DO alive, and the platform's inactivity timeout never fires), so the Workspace DO stops it: every connect, push and pull on the Container records a use, and a Durable Object alarm destroys the Container after 15 minutes without one (`apps/server/src/workspace/idle.ts`). A command still running on the Container counts as use: the Workspace stub the DO hands out (`tracked.ts`) holds the command until its client disposes the exec handle, and the alarm waits again while any is held. The time is fixed and nothing is snapshotted first; #24 refines both.
+- **Egress:** unrestricted direct egress in v1, and not logged. A per-Workspace allowlist, and logging with it, come later.
 
 ### Concurrency
 
@@ -239,7 +242,7 @@ apps/server/              main Worker: Session, Registry DOs; HTTP/WS API; stati
                           Workspaces Worker (src/workspace): Workspace DO
 apps/codemode-sandbox/    codemode sandbox Worker
 apps/web/                 Vite + React UI
-apps/sandbox-image/       Dockerfile (computerd + mise), base mise.toml, bootstrap
+apps/sandbox-image/       image/Dockerfile (computerd + mise; the Docker build context), base mise.toml, bootstrap
 packages/effect-durable/  Effect ↔ pi-durable adapters and service facades
 packages/computer-env/    ComputerExecutionEnv
 packages/extensions/      one subpath export per extension (/subagents, /context, /todo, /web, /secrets, /browser, …)
@@ -267,8 +270,9 @@ Each milestone deploys and works end to end before the next begins.
 
 - **Preview packages.** `@cloudflare/computer` is a preview: its container backend, the Worker Shell, and computerd are experimental. Pin versions and keep the image and package in lockstep.
 - **Unreleased pi-durable features.** `onWake` is not in pi-durable 1.3.0, so the heartbeat fallback is needed until the next release.
-- **Unverified container behaviour.**
-  - Exec and mmap of binaries from the FUSE mount are untested.
+- **Container behaviour.**
+  - Exec and mmap of binaries from the FUSE mount **work**, measured on Cloudflare (`standard-2`, real `/dev/fuse` mount at `/workspace`, computerd 0.5.1): a copied `perl`, `python` (with its `PYTHONHOME`), and a 120 MB `node` run from `/workspace`; a shared library copied there is mapped by the dynamic loader (`LD_LIBRARY_PATH`, `LD_DEBUG=libs` shows `calling init: /workspace/…`); Python's `mmap` reads a 1 MiB file there with `MAP_PRIVATE` (hash equal to `sha256sum`) and writes one with `MAP_SHARED`, which the Worker Shell then reads. Copying the 120 MB binary took 0.8 s. Under `alchemy dev` the local Docker has no `/dev/fuse`, so computerd uses its userspace shim (a plain directory), where the same script passes; only a deploy exercises FUSE.
+  - The Worker Shell sees Container writes, and the Container sees the Worker Shell's, through computer's sync (checked both ways, locally and deployed).
   - Snapshot restore with computerd and `ignore` paths is untested.
   - Cross-boundary renames return `EXDEV`, so tools must keep install and temp directories on one side.
 - **1Password in Workers** is unproven ([issue #184](https://github.com/1Password/onepassword-sdk-js/issues/184)).

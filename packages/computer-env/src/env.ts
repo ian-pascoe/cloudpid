@@ -28,6 +28,7 @@ import {
 import { abortedResult, type Call, caller, type ComputerEnvHost } from "./client.ts";
 import { exec, killAll } from "./exec.ts";
 import { join, resolve } from "./paths.ts";
+import { inBash } from "./shell.ts";
 import { ComputerBinaryReader, ComputerDirReader, ComputerTextLineReader } from "./readers.ts";
 import { type PollingOptions, PollingWatcher } from "./watch.ts";
 
@@ -53,6 +54,24 @@ export type ComputerExecutionEnvOptions = {
   readonly watch?: PollingOptions;
 };
 
+/** A backend a command is sent to: its id in the Workspace, and how a command is made to run in bash on it. */
+export type BackendTarget = {
+  readonly id: string;
+  readonly script: (command: string) => string;
+};
+
+/**
+ * The backends a command can be sent to, by the names `bash` gives them: the ids of the backends the Workspace DO
+ * registers (`@cloudflare/computer`'s defaults for the Worker Shell and the Container). The Worker Shell is bash; the
+ * Container's `/bin/sh` is dash, so its commands are wrapped.
+ */
+const BACKENDS = {
+  worker: { id: "worker-shell", script: (command) => command },
+  container: { id: "container-shell", script: inBash },
+} as const satisfies Record<string, BackendTarget>;
+
+export type ComputerBackend = keyof typeof BACKENDS;
+
 const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
 
 export class ComputerExecutionEnv implements ExecutionEnv {
@@ -61,14 +80,41 @@ export class ComputerExecutionEnv implements ExecutionEnv {
   readonly #workspace: ComputerWorkspaceStub;
   readonly #call: Call;
   readonly #watch: PollingOptions;
-  readonly #running = new Set<string>();
+  readonly #running: Set<string>;
+  readonly #options: ComputerExecutionEnvOptions;
+  readonly #backend: BackendTarget | undefined;
 
-  constructor(options: ComputerExecutionEnvOptions) {
+  /**
+   * @param running The commands running, shared with the environments this one makes with `onBackend()`, so one
+   *   `cleanup()` kills them all.
+   * @param backend The backend commands run on; undefined for the Workspace's default.
+   */
+  constructor(
+    options: ComputerExecutionEnvOptions,
+    running = new Set<string>(),
+    backend?: BackendTarget,
+  ) {
     this.id = options.id;
     this.cwd = options.cwd;
+    this.#options = options;
     this.#workspace = options.workspace;
     this.#call = caller(options.workspace);
     this.#watch = options.watch ?? {};
+    this.#running = running;
+    this.#backend = backend;
+  }
+
+  /**
+   * This environment with its commands sent to `backend`: the Worker Shell (`worker`) or the Container
+   * (`container`). Both see the Workspace's files. The result shares this environment's working directory at the
+   * time of the call, and its running commands, which this environment's `cleanup()` kills.
+   */
+  onBackend(backend: ComputerBackend): ComputerExecutionEnv {
+    return new ComputerExecutionEnv(
+      { ...this.#options, cwd: this.cwd },
+      this.#running,
+      BACKENDS[backend],
+    );
   }
 
   #resolve(path: string): string {
@@ -303,6 +349,7 @@ export class ComputerExecutionEnv implements ExecutionEnv {
     return exec(
       {
         workspace: workspaceHandle(this.#workspace),
+        backend: this.#backend,
         cwd: this.cwd,
         running: this.#running,
         // The spill of a command that was aborted is still written, so it runs outside the caller's context.

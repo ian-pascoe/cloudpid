@@ -24,6 +24,7 @@ import {
   type ShellExecOptions,
   type ShellExecResult,
 } from "@earendil-works/pi-durable/env";
+import type { BackendTarget } from "./env.ts";
 import { resolve } from "./paths.ts";
 
 /** How long a killed command may take to stop before `exec` returns without it. */
@@ -95,13 +96,15 @@ class Spill {
 
 export type ExecHost = {
   readonly workspace: WorkspaceHandle;
+  /** The backend to run on; undefined runs on the Workspace's default backend. */
+  readonly backend: BackendTarget | undefined;
   readonly cwd: string;
   readonly spill: SpillWriter;
   /** Executions still running, so `cleanup()` can kill them. */
   readonly running: Set<string>;
 };
 
-/** Run `command` on the Workspace's default backend, streaming its output to `options.onOutput`. */
+/** Run `command` on the host's backend, streaming its output to `options.onOutput`. */
 export const exec = async (
   host: ExecHost,
   command: string | readonly string[],
@@ -172,7 +175,12 @@ export const exec = async (
 
     if (options?.env !== undefined) execOptions.env = options.env;
 
-    using handle = await workspace.runtime.exec(prepared.source, execOptions);
+    if (host.backend !== undefined) execOptions.backend = host.backend.id;
+
+    using handle = await workspace.runtime.exec(
+      host.backend === undefined ? prepared.source : host.backend.script(prepared.source),
+      execOptions,
+    );
 
     started = true;
 

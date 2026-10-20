@@ -102,6 +102,43 @@ describe("ComputerExecutionEnv exec", () => {
   });
 });
 
+describe("ComputerExecutionEnv on a chosen backend", () => {
+  it("runs a command on the Worker Shell when asked, against the same files", async () => {
+    const executionEnv = await freshEnv(shared);
+    const chunks: string[] = [];
+
+    getOrThrow(await executionEnv.writeFile("shared.txt", "from the env", context));
+
+    const result = await executionEnv
+      .onBackend("worker")
+      .exec("cat shared.txt", { onOutput: (text) => chunks.push(text) }, context);
+
+    expect(getOrThrow(result).exitCode).toBe(0);
+    expect(chunks.join("")).toBe("from the env");
+  });
+
+  it("fails a command on the Container, as an error result, where the Workspace has none", async () => {
+    const executionEnv = await freshEnv(shared);
+
+    const result = await executionEnv.onBackend("container").exec("echo hi", undefined, context);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.error.message).toMatch(/container/i);
+  });
+
+  it("kills the commands of every backend it ran on when the environment is cleaned up", async () => {
+    const workspace = env.WORKSPACES.getByName("backend-cleanup");
+    const executionEnv = await freshEnv(workspace);
+    const lingering = executionEnv.onBackend("worker").exec("sleep 1", undefined, context);
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await executionEnv.cleanup(context);
+    await lingering;
+
+    expect((await workspace.liveStubs()).killed).toBe(1);
+  });
+});
+
 describe("ComputerExecutionEnv over many calls", () => {
   it("disposes every Workspace and exec stub it takes", async () => {
     const workspace = env.WORKSPACES.getByName("stubs");

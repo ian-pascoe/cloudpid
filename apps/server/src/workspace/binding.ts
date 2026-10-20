@@ -6,3 +6,12 @@ export const WORKSPACE_BINDING = "WORKSPACES";
 
 /** The Workspace root: one directory per repo below it (docs/spec.md → Filesystem and tools). */
 export const WORKSPACE_ROOT = "/workspace";
+
+/**
+ * The Container the Workspace DO runs the sandbox image (`apps/sandbox-image`) as: its logical id in the stack, and the key of the image in
+ * `ctx.container.images` (alchemy names each Container's image by its id).
+ */
+export const WORKSPACE_CONTAINER = "WorkspaceContainer";
+
+/** The instance type a Workspace's Container starts on (docs/spec.md → Container and Toolchains). */
+export const DEFAULT_INSTANCE = "standard-2";
