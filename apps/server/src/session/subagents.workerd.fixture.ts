@@ -20,11 +20,14 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import type { TaskGraphSummary } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import { SessionHost, sessionHostLayer } from "./host.ts";
+import * as Stream from "effect/Stream";
+import { type AbortOptions, SessionHost, sessionHostLayer } from "./host.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { SessionRegistry } from "./status.ts";
 
@@ -150,6 +153,34 @@ export class TestSubagentSession extends DurableObject {
   submit(text: string): Promise<number> {
     return this.#runtime.runPromise(
       Effect.flatMap(SessionHost, (host) => host.submit({ requestId: text, input: text })),
+    );
+  }
+
+  /** Submit `text` to conversation `conversationId`, as the owner does. */
+  submitTo(conversationId: ConversationId, text: string): Promise<number> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) =>
+        host.submit({ requestId: text, input: text, conversationId }),
+      ),
+    );
+  }
+
+  /** Abort what `options` names: the root by default. */
+  abort(options: AbortOptions = {}): Promise<void> {
+    return this.#runtime.runPromise(Effect.flatMap(SessionHost, (host) => host.abort(options)));
+  }
+
+  /** The first summary of the task graph that `accept`s, as a client watching it is sent. */
+  taskGraph(accept: (summary: TaskGraphSummary) => boolean): Promise<TaskGraphSummary> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) =>
+        host.taskGraph.pipe(
+          Stream.filter(accept),
+          Stream.runHead,
+          Effect.timeout("5 seconds"),
+          Effect.map(Option.getOrThrow),
+        ),
+      ),
     );
   }
 

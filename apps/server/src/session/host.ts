@@ -1,8 +1,17 @@
+// @effect-diagnostics asyncFunction:off -- the task graph watch is pi-durable Promise code, as the Harness's own callbacks are.
 // Hosts one pi-durable Harness in a Session Durable Object, the way pi-durable's own `test-workers/worker.ts` does:
 // opened over the object's SQLite storage and woken by its alarm (ADR-0002). The Harness stays native Promise code,
 // reached through the `Harness` facade and `Effect.tryPromise` (ADR-0003). The object builds both services once, as
 // one Layer kept in a `ManagedRuntime`.
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
+import {
+  isAgentConversation,
+  EMPTY_SUBAGENTS_STATE as EMPTY_STATE,
+  stopConversation,
+  SubagentsDoc,
+  type SubagentsState,
+} from "@cloudpid/extensions/subagents";
+import type { TaskGraphSummary } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { formatModelId, isModelId } from "@cloudpid/config";
@@ -10,6 +19,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   type Agent,
   type AgentChange,
+  type DocumentWatch,
   type ModelRef,
   type AgentEvent,
   AssistantEntry,
@@ -17,7 +27,9 @@ import {
   type Extension,
   type HarnessOptions,
   type InputSubmissionDraft,
+  ROOT_CONVERSATION_ID,
   type Submission,
+  type TaskGraph,
   type UserInput,
   type WatchEnd,
   watchEvents,
@@ -33,6 +45,7 @@ import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -41,6 +54,7 @@ import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { harnessSettings, SessionSettings, type SettingsKv } from "./settings.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
+import { summarizeTaskGraph } from "./task-graph.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -99,14 +113,27 @@ export type SessionHostOptions<R = never> = {
   readonly reportTimeout?: Duration.Input;
 };
 
-/** User input for the root conversation. */
+/** User input for the root conversation, or for the conversation of one of its subagents. */
 export type Prompt = {
+  /** The conversation to submit to: the root by default, or a live subagent's; anything else fails. */
+  readonly conversationId?: ConversationId;
   /** Submitting the same `requestId` again finds the first submission. */
   readonly requestId?: string;
   readonly input: UserInput;
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
 };
+
+/** What an abort reaches. */
+export type AbortOptions = {
+  /** The conversation to abort: the root by default. */
+  readonly conversationId?: ConversationId;
+  /** Also stop every subagent below it, and drop the reports they held. */
+  readonly subagents?: boolean;
+};
+
+/** The longest a change to the task graph waits before it is sent. */
+export const TASK_GRAPH_INTERVAL: Duration.Input = "250 millis";
 
 export type Answer =
   | { readonly status: "answered"; readonly submissionId: number; readonly text: string }
@@ -122,7 +149,7 @@ export class SessionError extends Schema.TaggedError<
 }) {}
 
 export type SessionHostService = {
-  /** Durably admit `prompt` to the root conversation and return its submission ID. */
+  /** Durably admit `prompt` to its conversation (the root's by default) and return its submission ID. */
   readonly submit: (prompt: Prompt) => Effect.Effect<number, SessionError>;
   /** Submit `prompt` and wait for its answer. */
   readonly prompt: (prompt: Prompt) => Effect.Effect<Answer, SessionError>;
@@ -144,8 +171,16 @@ export type SessionHostService = {
   readonly sync: Effect.Effect<void, SessionError>;
   /** Which of its model and thinking level the Session picked itself; the rest follows the default. */
   readonly picks: Effect.Effect<Picks>;
-  /** Abort the root conversation's work and withdraw its queued input, once it is idle. */
-  readonly abort: Effect.Effect<void, SessionError>;
+  /**
+   * Abort the work of the root conversation, or of the subagent's that `conversationId` names (anything else fails),
+   * and withdraw its queued input, once it is idle. Subagents below it keep working unless `subagents` is true.
+   */
+  readonly abort: (options?: AbortOptions) => Effect.Effect<void, SessionError>;
+  /**
+   * A summary of the Session's task graph: the current one first, then one after each change that alters it, at most one
+   * every `TASK_GRAPH_INTERVAL`. Fails when the Harness ends its watch.
+   */
+  readonly taskGraph: Stream.Stream<TaskGraphSummary, SessionError>;
   /**
    * Conversation `conversationId`'s agent events, unchanged: a batch holding its `snapshot`, then a batch per commit.
    * Fails when the conversation cannot be watched, and when the Harness ends the watch.
@@ -417,27 +452,58 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     serially,
   );
 
-  const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
+  /**
+   * The conversation the owner addresses: the root's when `conversationId` is left out, otherwise a live subagent's.
+   * Anything else fails, so a client cannot reach a conversation that is not an agent's.
+   */
+  const addressed = (conversationId: ConversationId | undefined) =>
+    conversationId === undefined || conversationId === ROOT_CONVERSATION_ID
+      ? root
+      : attempt("agent", () => isAgentConversation(harness.harness, conversationId, context)).pipe(
+          Effect.filterOrFail(
+            (known) => known,
+            () =>
+              SessionError.make({
+                operation: "agent",
+                message: `Conversation ${conversationId} is not the root or a subagent of this Session`,
+              }),
+          ),
+          Effect.andThen(
+            attempt("conversation", () => harness.harness.conversation(conversationId, context)),
+          ),
+          Effect.filterOrFail(Predicate.isNotUndefined, () =>
+            SessionError.make({
+              operation: "agent",
+              message: `Conversation ${conversationId} does not exist`,
+            }),
+          ),
+        );
+
+  const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> => {
+    const { conversationId, input, ...options } = prompt;
+    const toRoot = conversationId === undefined || conversationId === ROOT_CONVERSATION_ID;
+
+    // A subagent keeps the agent it was started with; only the root follows the settings and the owner's pick.
+    const target = toRoot ? applyAgent.pipe(Effect.andThen(root)) : addressed(conversationId);
+
     // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never holds
     // up the alarm or a status report.
-    settings.refresh.pipe(
+    return settings.refresh.pipe(
       Effect.andThen(
         // Arm before admitting work: an object that dies after the commit is still woken.
         arm({ active: true }).pipe(
-          Effect.andThen(applyAgent),
-          Effect.andThen(root),
+          Effect.andThen(target),
           Effect.flatMap((conversation) =>
-            attempt("submit", () => {
-              const { input, ...options } = prompt;
-
-              return conversation.submit({ type: "input", content: input, ...options }, context);
-            }),
+            attempt("submit", () =>
+              conversation.submit({ type: "input", content: input, ...options }, context),
+            ),
           ),
           serially,
         ),
       ),
       Effect.tap(settleWhenIdle),
     );
+  };
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {
     const submission = yield* admit(prompt);
@@ -472,6 +538,67 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     return { status: "answered", submissionId: submission.id, text } satisfies Answer;
   });
+
+  /** The Session's task graph as summaries; one per change, the first being how it stands. */
+  const taskGraphSummaries = Stream.callback<TaskGraphSummary, SessionError>((queue) =>
+    Effect.acquireRelease(
+      attempt("watchTaskGraph", async () => {
+        const graph = await harness.harness.watchTaskGraph(context);
+        let latest: TaskGraph = graph.value;
+        let doc: DocumentWatch<SubagentsState> | undefined;
+        // Summaries are made one at a time, in the order the changes came.
+        let chain: Promise<void> = Promise.resolve();
+
+        const publish = () => {
+          chain = chain.then(async () => {
+            const state = await harness.harness.snapshot(SubagentsDoc, context);
+
+            Queue.offerUnsafe(queue, summarizeTaskGraph(latest, state ?? EMPTY_STATE));
+          });
+        };
+
+        /** Follow the Subagents document, which does not exist until the first spawn and changes alone when an idle agent is deleted. */
+        const followDoc = async () => {
+          if (doc !== undefined) return;
+
+          doc = await harness.harness.watchDoc(SubagentsDoc, context);
+          doc?.start(() => {
+            publish();
+
+            return Promise.resolve();
+          });
+        };
+
+        await followDoc();
+        publish();
+        graph.start(async (value) => {
+          latest = value;
+          await followDoc();
+          publish();
+        });
+        void graph.closed.then((end) =>
+          Queue.failCauseUnsafe(
+            queue,
+            Cause.fail(
+              SessionError.make({ operation: "watchTaskGraph", message: watchEnded(end) }),
+            ),
+          ),
+        );
+
+        return { graph, doc: () => doc };
+      }),
+      (watch) =>
+        Effect.promise(async () => {
+          await watch.graph.stop();
+          await watch.doc()?.stop();
+        }),
+    ),
+  ).pipe(
+    // A burst of changes is one summary, and a change that alters nothing a client shows is none.
+    Stream.groupedWithin(Number.MAX_SAFE_INTEGER, TASK_GRAPH_INTERVAL),
+    Stream.map((summaries) => summaries[summaries.length - 1]!),
+    Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
+  );
 
   const events = (conversationId: ConversationId) =>
     Stream.callback<ReadonlyArray<AgentEvent>, SessionError>((queue) =>
@@ -526,9 +653,20 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
       return { model: pick.model !== undefined, thinkingLevel: pick.thinkingLevel !== undefined };
     }),
-    abort: root.pipe(
-      Effect.flatMap((conversation) => attempt("abort", () => conversation.abort(context))),
-    ),
+    abort: (options = {}) =>
+      addressed(options.conversationId).pipe(
+        Effect.flatMap((conversation) =>
+          attempt("abort", () =>
+            stopConversation(
+              harness.harness,
+              conversation.id,
+              { subagents: options.subagents === true },
+              context,
+            ),
+          ),
+        ),
+      ),
+    taskGraph: taskGraphSummaries,
     events,
   } satisfies SessionHostService;
 });

@@ -88,3 +88,156 @@ it("keeps a working subagent through an eviction, and reports its answer as a fo
     "[Subagent result | agent=agent-1 | turn=turn-1 | status=completed]\nThe answer is 42.",
   ]);
 });
+
+/** Start a child that hangs on its first request, by a root that answers once it has delegated. */
+const delegateQuietly = async (stub: DurableObjectStub<TestSubagentSession>) => {
+  await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+    await instance.submit("Delegate quietly");
+    await instance.hanging.promise;
+  });
+
+  const state = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.subagents(),
+  );
+
+  const child = state?.agents["agent-1"]?.conversationId;
+
+  if (child === undefined) throw new Error("No child was started");
+
+  return child;
+};
+
+/** Poll until the child's only turn has settled with `status`. */
+const turnSettled = (stub: DurableObjectStub<TestSubagentSession>, status: string) =>
+  eventually(
+    stub,
+    async (instance) =>
+      (await instance.subagents())?.agents["agent-1"]?.turns.at(-1)?.status === status,
+  );
+
+it("lets the owner abort one subagent: its turn ends aborted and the root is left alone", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+  const child = await delegateQuietly(stub);
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.abort({ conversationId: child }),
+  );
+  await turnSettled(stub, "aborted");
+
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.subagents()),
+  ).toMatchObject({ agents: { "agent-1": { turns: [{ status: "aborted", delivery: "none" }] } } });
+  // Nothing was reported to the root, which saw only what the owner said.
+  await eventually(stub, (instance) => instance.idle());
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
+  ).toEqual(["Delegate quietly"]);
+});
+
+it("refuses owner input to, and an abort of, a conversation that is neither the root nor a subagent's", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+  const child = await delegateQuietly(stub);
+  // SAFETY: only a number the Session never gave out is used, to see it refused; it is not looked up as a branded ID.
+  const stranger = (child + 40) as typeof child;
+
+  await expect(
+    runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.submitTo(stranger, "Hello"),
+    ),
+  ).rejects.toThrow(/not the root or a subagent/);
+  await expect(
+    runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.abort({ conversationId: stranger }),
+    ),
+  ).rejects.toThrow(/not the root or a subagent/);
+  // The subagent is untouched.
+  expect(
+    (await runInDurableObject(stub, (instance: TestSubagentSession) => instance.subagents()))
+      ?.agents["agent-1"]?.turns[0]?.status,
+  ).toBe("running");
+});
+
+it("stops the root without its subagents, and with them when asked", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  await delegateQuietly(stub);
+  await runInDurableObject(stub, (instance: TestSubagentSession) => instance.abort());
+
+  // The child still works.
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.taskGraph((graph) => graph.agents[0]?.status === "working"),
+    ),
+  ).toMatchObject({ agents: [{ id: "agent-1", parent: "root", status: "working" }] });
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.abort({ subagents: true }),
+  );
+  await turnSettled(stub, "aborted");
+  await eventually(stub, (instance) => instance.idle());
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
+  ).toEqual(["Delegate quietly"]);
+});
+
+it("runs the owner's input to an idle subagent in its conversation, without reporting its answer to the root", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  // The child answers at once, and its answer reaches the root as a follow-up.
+  await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+    instance.release();
+    await instance.submit("Delegate quietly");
+  });
+  await eventually(stub, async (instance) => (await instance.texts("user")).length === 2);
+  await eventually(stub, (instance) => instance.idle());
+
+  const state = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.subagents(),
+  );
+
+  const child = state!.agents["agent-1"]!.conversationId;
+
+  const reports = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.texts("user"),
+  );
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.submitTo(child, "A word from the owner"),
+  );
+  await eventually(stub, async (instance) => (await instance.texts("user", child)).length === 2);
+  await eventually(stub, (instance) => instance.idle());
+
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.texts("user", child),
+    ),
+  ).toContain("A word from the owner");
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.texts("assistant", child),
+    ),
+  ).toEqual(["The answer is 42.", "The answer is 42."]);
+  // The root heard nothing new.
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
+  ).toEqual(reports);
+});
+
+it("streams the task graph: a subagent working, then idle once it is stopped, with no bookkeeping among the background work", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  await delegateQuietly(stub);
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.taskGraph((graph) => graph.agents[0]?.status === "working"),
+    ),
+  ).toMatchObject({ background: [] });
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.abort({ subagents: true }),
+  );
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.taskGraph((graph) => graph.agents[0]?.status === "idle"),
+    ),
+  ).toMatchObject({ agents: [{ id: "agent-1", role: null }], background: [] });
+});

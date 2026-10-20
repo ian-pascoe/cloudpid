@@ -51,19 +51,32 @@ export type ConversationId = typeof ConversationId.Type;
 const CommandId = Schema.optionalKey(Schema.String);
 
 /**
- * Submit `input` to the Session's root conversation. Submitting the same `requestId` again finds the first submission,
- * so a client may resend a submit it saw no result for. Answered with `{ submissionId }`.
+ * Submit `input` to the Session's root conversation, or to the conversation of one of its subagents when
+ * `conversationId` names it (a conversation that is neither fails the command). Input to a subagent is the owner
+ * talking to it directly: the agent sees it as a user message, and its answer is not reported to the agent that started
+ * it. Submitting the same `requestId` again finds the first submission, so a client may resend a submit it saw no
+ * result for. Answered with `{ submissionId }`.
  */
 export const Submit = Schema.Struct({
   type: Schema.Literal("submit"),
   id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
   input: UserInput,
   whenBusy: Schema.optionalKey(WhenBusy),
   requestId: Schema.optionalKey(Schema.String),
 });
 
-/** Abort the root conversation's work and withdraw its queued input. Answered with `null` once it is idle. */
-export const Abort = Schema.Struct({ type: Schema.Literal("abort"), id: CommandId });
+/**
+ * Abort the work of the root conversation, or of the subagent conversation `conversationId` names, and withdraw its
+ * queued input. Its subagents are agents of their own and keep working, unless `subagents` is true: then every subagent
+ * below it is stopped too, and the results they held for it are dropped. Answered with `null` once it is idle.
+ */
+export const Abort = Schema.Struct({
+  type: Schema.Literal("abort"),
+  id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
+  subagents: Schema.optionalKey(Schema.Boolean),
+});
 
 /**
  * Stream conversation `conversationId`'s events on this socket: a `snapshot`, then pi's `AgentEvent` batches. Watching
@@ -108,8 +121,33 @@ export const SecretAnswer = Schema.Struct({
   values: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
 });
 
+/**
+ * Stream a compact summary of the Session's task graph on this socket (`task_graph`): its subagents and the background
+ * work live now. The first message follows at once, and the watch outlives hibernation like a conversation's. Answered
+ * with `null`.
+ */
+export const WatchTaskGraph = Schema.Struct({
+  type: Schema.Literal("watch_task_graph"),
+  id: CommandId,
+});
+
+/** Stop streaming the task graph on this socket. Answered with `null`. */
+export const UnwatchTaskGraph = Schema.Struct({
+  type: Schema.Literal("unwatch_task_graph"),
+  id: CommandId,
+});
+
 /** Client → server. */
-export const ClientMessage = Schema.Union([Submit, Abort, Watch, Unwatch, Configure, SecretAnswer]);
+export const ClientMessage = Schema.Union([
+  Submit,
+  Abort,
+  Watch,
+  Unwatch,
+  Configure,
+  SecretAnswer,
+  WatchTaskGraph,
+  UnwatchTaskGraph,
+]);
 
 export type ClientMessage = typeof ClientMessage.Type;
 
@@ -151,6 +189,58 @@ export const SecretRequests = Schema.Struct({
   requests: Schema.Array(SecretRequest),
   /** How long an entered Secret is held. */
   lifetimeMinutes: Schema.Finite,
+});
+
+/** A subagent as the task graph shows it. */
+export const GraphAgent = Schema.Struct({
+  /** Its canonical ID, such as `agent-1` or `agent-1.reviewer`. */
+  id: Schema.String,
+  /** The agent that started it: `root` or another subagent's ID. */
+  parent: Schema.String,
+  /** The conversation to `watch`, and to `submit` and `abort` to. */
+  conversationId: ConversationId,
+  /** The model role it was started with, if any. */
+  role: Schema.NullOr(Schema.String),
+  /** `provider/modelId`. */
+  model: Schema.String,
+  /** `working` while its conversation has live work, otherwise `idle`: it keeps its history and can take more input. */
+  status: Schema.Literals(["working", "idle"]),
+});
+
+export type GraphAgent = typeof GraphAgent.Type;
+
+/** A live background task as the task graph shows it. */
+export const GraphBackgroundTask = Schema.Struct({
+  id: Schema.Finite,
+  /** The task's kind, such as `pi.compaction`. */
+  kind: Schema.String,
+  /** The agent whose conversation it belongs to: `root` or a subagent's ID. */
+  agent: Schema.String,
+  conversationId: ConversationId,
+  state: Schema.Literals(["pending", "running", "waiting", "completing"]),
+  /** Whether an abort was asked of it and is not finished. */
+  aborting: Schema.Boolean,
+});
+
+export type GraphBackgroundTask = typeof GraphBackgroundTask.Type;
+
+/**
+ * The Session's live work, summarised from pi-durable's task graph and the Subagents document: every subagent (a
+ * deleted one is gone), parents before their children, and the live background tasks other than the subagents'
+ * own bookkeeping. Each message replaces the last. The server sends one at most every few hundred milliseconds, and keeps
+ * the lists short.
+ */
+export const TaskGraphSummary = Schema.Struct({
+  agents: Schema.Array(GraphAgent),
+  background: Schema.Array(GraphBackgroundTask),
+});
+
+export type TaskGraphSummary = typeof TaskGraphSummary.Type;
+
+/** The Session's task graph, sent to a client that watches it (`watch_task_graph`) whenever it changes. */
+export const TaskGraphMessage = Schema.Struct({
+  type: Schema.Literal("task_graph"),
+  ...TaskGraphSummary.fields,
 });
 
 /** One of pi's agent events, passed through unchanged; only its `type` is checked. */
@@ -199,6 +289,7 @@ export const ServerMessage = Schema.Union([
   Result,
   ErrorMessage,
   SecretRequests,
+  TaskGraphMessage,
 ]);
 
 export type ServerMessage = typeof ServerMessage.Type;

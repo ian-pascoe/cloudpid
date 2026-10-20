@@ -24,7 +24,14 @@ export {
   type Toolsets,
 } from "./subagents/options.ts";
 
-export { SubagentsDoc, type SubagentsState } from "./subagents/state.ts";
+export {
+  type AgentRecord,
+  EMPTY_STATE as EMPTY_SUBAGENTS_STATE,
+  SubagentsDoc,
+  type SubagentsState,
+} from "./subagents/state.ts";
+
+export { isAgentConversation, type OwnerHarness, stopConversation } from "./subagents/owner.ts";
 
 export { AGENT_INPUT_KIND } from "./subagents/tasks.ts";
 
