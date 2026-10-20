@@ -10,8 +10,13 @@ import {
   type WorkspaceObserver,
   type WorkspaceStub,
 } from "@cloudflare/computer";
-import { ContainerBackend, withWorkspaceContainer } from "@cloudflare/computer/backends/container";
+import {
+  ContainerBackend,
+  type ContainerBackendOptions,
+  withWorkspaceContainer,
+} from "@cloudflare/computer/backends/container";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
+import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
   type EnvRequest,
   type EnvResponse,
@@ -20,6 +25,7 @@ import {
 } from "@cloudpid/computer-env";
 import { DurableObject } from "cloudflare:workers";
 import { IDLE_STOP_MS, IdleStop } from "./idle.ts";
+import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
 import {
   DEFAULT_INSTANCE,
@@ -31,6 +37,19 @@ import {
 export type WorkspaceEnv = {
   /** The Worker Loader the Worker Shell runs in. */
   readonly LOADER: WorkerLoader;
+  /**
+   * The GitHub token commands on the Container get as `GH_TOKEN` and `GITHUB_TOKEN` (a deploy-time secret,
+   * `CLOUDPID_GITHUB_TOKEN`). Absent or empty, commands run without one.
+   */
+  readonly CLOUDPID_GITHUB_TOKEN?: string;
+  /** The identity of the agent's commits where the Container has no other (`CLOUDPID_GIT_NAME`, `CLOUDPID_GIT_EMAIL`). */
+  readonly CLOUDPID_GIT_NAME?: string;
+  readonly CLOUDPID_GIT_EMAIL?: string;
+  /**
+   * `"false"` where the Container's `/workspace` is not a real FUSE mount, as under `alchemy dev`: computerd's
+   * userspace shim refuses an ignore list and exits. Anything else applies `TOOLCHAIN_IGNORE`.
+   */
+  readonly CONTAINER_FUSE?: string;
 };
 
 /** A Durable Object that can start the Container it is bound to (`getWorkspaceContainer()`, for `ContainerBackend`). */
@@ -63,13 +82,28 @@ export class Workspace extends ContainerHost {
     });
 
     // The Container starts when a command first asks for it, not with the object.
-    this.#container = new ContainerBackend({
+    const container: ContainerBackendOptions = {
       container: () => this,
       workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
       name: WORKSPACE_CONTAINER,
       instance: DEFAULT_INSTANCE,
       // Unrestricted direct egress in v1, not logged (docs/spec.md → Container and Toolchains).
       egress: { mode: "direct" },
+    };
+
+    // Toolchains, caches and dependency directories stay in the Container (docs/spec.md → Container and Toolchains).
+    if (env.CONTAINER_FUSE !== "false") container.ignore = TOOLCHAIN_IGNORE;
+
+    this.#container = new ContainerBackend(container);
+
+    // Before the first command of each Container start, the Toolchains are installed (the lockfile's), and every
+    // command gets the GitHub token. The Workspace sees this as the Container's backend.
+    const toolchains = new ToolchainBackend({
+      backend: this.#container,
+      githubToken: env.CLOUDPID_GITHUB_TOKEN,
+      git: { name: env.CLOUDPID_GIT_NAME, email: env.CLOUDPID_GIT_EMAIL },
+      warn: (message) => console.warn(message),
+      now: () => Date.now(),
     });
 
     this.#workspace = new ComputerWorkspace({
@@ -81,7 +115,7 @@ export class Workspace extends ContainerHost {
           workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
           ctx,
         }),
-        this.#container,
+        toolchains,
       ],
     });
 
