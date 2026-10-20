@@ -248,6 +248,53 @@ describe("context management", () => {
     expect(session.requests.at(-1)?.text).toContain('"saved":true');
   });
 
+  it("still continues when a user message was queued behind the Rollover request", async () => {
+    const answering = Promise.withResolvers<void>();
+
+    const session = await openContextHarness(async (request) => {
+      if (request.transcript.some((text) => text.includes("The context rolled over"))) {
+        return answer("Hi.");
+      }
+
+      if (request.text.includes('"saved":true')) {
+        return call(["context_rollover", { handoff: "Answer the user's greeting." }]);
+      }
+
+      if (request.transcript.some((text) => text.includes(PREPARE))) {
+        return call(["context_notes", { action: "write", name: "plan", content: "Greet." }]);
+      }
+
+      // The answer streams while the Rollover request and the user's next message queue behind it.
+      await answering.promise;
+
+      return answer("All done.");
+    });
+
+    const answered = session.prompt("Answer me");
+
+    await session.until(async () => session.requests.length === 1, "the answer to start");
+
+    for (const [content, extra] of [
+      [PREPARE_PROMPT, { requestId: "context-prepare:1", entry: PREPARE_ENTRY }],
+      ["Also say hi", {}],
+    ] as const) {
+      await session.root.submit({ type: "input", content, whenBusy: "steer", ...extra }, context);
+    }
+
+    answering.resolve();
+    await answered;
+    await session.settle();
+
+    const kinds = (await session.entries()).map((entry) => entry.kind);
+
+    expect(kinds).toContain("pi.reset");
+    expect(kinds).toContain("cloudpid.context-continue");
+    // The message was placed before the Handoff, so the continuation is what answers it.
+    expect(
+      session.requests.at(-1)?.transcript.some((text) => text.includes("The context rolled over")),
+    ).toBe(true);
+  });
+
   it("gives a subagent Notes and History but not Rollover, so its compaction stays pi-durable's", async () => {
     const session = await openContextHarness((request) => {
       if (isSummarization(request)) return answer("Child summary.");

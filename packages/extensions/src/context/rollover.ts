@@ -16,7 +16,6 @@ import {
 } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { ContextDoc, EMPTY_STATE, MAX_NOTE_CHARACTERS, type Note, noteIndex } from "./notes.ts";
 import { durable, fail, readEntry } from "./store.ts";
@@ -86,8 +85,9 @@ const RolloverParameters = Schema.Struct({
 });
 
 /**
- * Whether this Rollover was requested after the task was answered: the run holds a Rollover request that was placed
- * right after a final answer (an assistant message without tool calls), not after a tool round of the task.
+ * Whether this Rollover was requested after the task was answered: every input of the run is a Rollover request. A
+ * request steered during the task joins the task's run, and a user message queued behind one is an input of its own
+ * run; either still needs the continuation.
  */
 const requestedAfterAnswer = (api: ToolExecutionApi) =>
   Effect.gen(function* () {
@@ -103,33 +103,9 @@ const requestedAfterAnswer = (api: ToolExecutionApi) =>
       ),
     );
 
-    const request = Arr.findFirst(
-      records,
-      (record) => record?.requestId?.startsWith(PREPARE_REQUEST) === true,
-    ).pipe(Option.getOrUndefined);
-
-    const placed = request?.entry;
-
-    if (placed === undefined) return false;
-
-    // The newest entries up to the request, newest first: the request, then what it was placed after.
-    const before = yield* durable("scanEntries", (context) =>
-      api.commit(
-        (tx) => tx.scanEntries({ conversationId: api.conversationId, maxEntryId: placed }, 8),
-        context,
-      ),
-    );
-
-    const previous = Arr.findFirst(
-      before.items,
-      (entry) => entry.id !== placed && entry.kind !== "pi.system",
-    ).pipe(Option.getOrUndefined);
-
-    const message = previous?.model?.[0];
-
     return (
-      message?.role === "assistant" &&
-      !Arr.some(message.content, (block) => block.type === "toolCall")
+      records.length > 0 &&
+      Arr.every(records, (record) => record?.requestId?.startsWith(PREPARE_REQUEST) === true)
     );
   });
 
