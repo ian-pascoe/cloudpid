@@ -1,0 +1,3 @@
+# File and shell tools are pi-durable's, running on a computer-backed ExecutionEnv
+
+The model's `read`, `write`, `edit`, and `bash` are pi-durable's own tools, running on `ComputerExecutionEnv`, an `ExecutionEnv` over the Workspace DO. They do not use `@cloudflare/computer`'s `createPiTools`, which Cloudflare's own pi example uses. pi-durable's tools carry pi's truncation, edit matching, image handling, replay policy, and structured output for code mode, so behaviour matches local pi. computer's set has different schemas and semantics and no notion of replay. computer is still used where pi has no tool: `ls`, `find`, and `grep` are thin tools over its `fs.readdir`, `fs.find`, and `fs.grep`, which answer inside the Workspace DO without starting the Container.

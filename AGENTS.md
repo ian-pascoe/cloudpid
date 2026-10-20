@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## Design
+
+- **Spec**: before designing or changing architecture, packages, Durable Objects, tools, or the client protocol, read `docs/spec.md`; it records the settled design and milestones.
+- **Tool names**: every model-facing tool name is snake_case (`browser_handoff`, `subagent_wait`); wrap and rename library tools that are not.
+
 ## Reference repositories
 
 `pnpm install` (its `prepare` script; rerun with `pnpm run prepare`) materializes these read-only references in `.repos/`.
