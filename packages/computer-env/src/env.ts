@@ -28,6 +28,7 @@ import {
 import { abortedResult, type Call, caller, type ComputerEnvHost } from "./client.ts";
 import { exec, killAll } from "./exec.ts";
 import { join, resolve } from "./paths.ts";
+import { inBash } from "./shell.ts";
 import { ComputerBinaryReader, ComputerDirReader, ComputerTextLineReader } from "./readers.ts";
 import { type PollingOptions, PollingWatcher } from "./watch.ts";
 
@@ -53,11 +54,21 @@ export type ComputerExecutionEnvOptions = {
   readonly watch?: PollingOptions;
 };
 
+/** A backend a command is sent to: its id in the Workspace, and how a command is made to run in bash on it. */
+export type BackendTarget = {
+  readonly id: string;
+  readonly script: (command: string) => string;
+};
+
 /**
- * The backends a command can be sent to, by the names `bash` gives them, as ids of the backends the Workspace DO
- * registers (`@cloudflare/computer`'s defaults for the Worker Shell and the Container).
+ * The backends a command can be sent to, by the names `bash` gives them: the ids of the backends the Workspace DO
+ * registers (`@cloudflare/computer`'s defaults for the Worker Shell and the Container). The Worker Shell is bash; the
+ * Container's `/bin/sh` is dash, so its commands are wrapped.
  */
-const BACKENDS = { worker: "worker-shell", container: "container-shell" } as const;
+const BACKENDS = {
+  worker: { id: "worker-shell", script: (command) => command },
+  container: { id: "container-shell", script: inBash },
+} as const satisfies Record<string, BackendTarget>;
 
 export type ComputerBackend = keyof typeof BACKENDS;
 
@@ -71,14 +82,18 @@ export class ComputerExecutionEnv implements ExecutionEnv {
   readonly #watch: PollingOptions;
   readonly #running: Set<string>;
   readonly #options: ComputerExecutionEnvOptions;
-  readonly #backend: string | undefined;
+  readonly #backend: BackendTarget | undefined;
 
   /**
    * @param running The commands running, shared with the environments this one makes with `onBackend()`, so one
    *   `cleanup()` kills them all.
-   * @param backend The id of the backend commands run on; undefined for the Workspace's default.
+   * @param backend The backend commands run on; undefined for the Workspace's default.
    */
-  constructor(options: ComputerExecutionEnvOptions, running = new Set<string>(), backend?: string) {
+  constructor(
+    options: ComputerExecutionEnvOptions,
+    running = new Set<string>(),
+    backend?: BackendTarget,
+  ) {
     this.id = options.id;
     this.cwd = options.cwd;
     this.#options = options;
