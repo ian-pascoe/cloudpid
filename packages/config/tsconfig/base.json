@@ -6,6 +6,7 @@
     "types": ["@cloudflare/workers-types"],
     "lib": ["esnext"],
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "strict": true,

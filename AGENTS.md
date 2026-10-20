@@ -18,6 +18,10 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 - Runtime dependencies go in the package that imports them (`pnpm --filter @cloudpid/<pkg> add …`); the ones still at the root (`effect`, `alchemy`, `pi-*`, `@cloudflare/*`) move to their first consumer when a ticket starts using them.
 - `skills/` is bundled skill content, not a package.
 
+## Infra
+
+The alchemy stack is `infra/alchemy.run.ts`; run alchemy from `infra/` (`pnpm --filter @cloudpid/infra dev` for workerd on `http://localhost:1337`, `deploy -- --stage dev_$USER` for Cloudflare). It authenticates with the local alchemy profile (`alchemy profile edit --add Cloudflare`) and keeps state with `Cloudflare.state()`. A Worker is declared in its own app with `main: import.meta.url`; the stack imports and `yield*`s it. Relative imports in Worker and stack files end in `.ts`. Effect's `http` modules are unstable, so files that use them carry `@effect-diagnostics unstableApiUsage:skip-file`, and Worker files carry `apiStabilityLeak:skip-file`.
+
 `pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set; the `effect-tsgo` patch still runs.
 
 ## Reference repositories

@@ -1,1 +1,1 @@
-export const packageName = "@cloudpid/server";
+export { default as Server } from "./worker.ts";
