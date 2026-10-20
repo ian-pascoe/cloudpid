@@ -54,6 +54,10 @@ _Avoid_: Dependency, package (for tools)
 The single index of Workspaces, Sessions, settings overrides, and notification subscriptions.
 _Avoid_: Catalog, directory
 
+**Settings**:
+The typed configuration with defaults (default model and thinking level, Roles, compaction, extension options). The overrides the user saves live in the Registry, and each Session reads them before its next request.
+_Avoid_: Config, preferences
+
 ## Credentials and the browser
 
 **Secret**:

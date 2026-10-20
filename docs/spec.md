@@ -59,9 +59,10 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 
 ### Settings
 
-- A typed Effect `Schema` with defaults in `packages/config`.
-- Runtime overrides live in a Registry DO document, editable in the UI.
-- They are passed to the Harness as live getters. They cover models, roles, thinking level, compaction, extension options, container size, idle timeout, and spend limit.
+- A typed Effect `Schema` with defaults in `packages/config`: every field has a decoding default, so decoding the overrides gives the resolved settings, and the schema's `Encoded` side is the overrides' shape (a deep partial that rejects unknown keys). Invalid overrides fail with one readable line per problem.
+- Runtime overrides live in a Registry DO document (the `documents` table, named `settings`), editable in the UI at `/settings` over `getSettings`/`updateSettings`. The Registry keeps a schema version (`registry_meta`) and runs each migration once. A write keeps only what differs from the defaults, so a setting left alone follows later default changes.
+- Each Session reads the overrides from the Registry before it admits input and keeps the last read in its own storage, so a changed default applies to the next request of new and idle Sessions without a redeploy, and a Registry that is down never stops one. The Harness's `compaction` is a getter over that copy. The default model and thinking level are written to the root conversation's agent before each request unless the Session picked its own (see `configure`).
+- They cover models, roles, thinking level, compaction, and extension options. Still to come: container size, idle timeout, and spend limit.
 
 ## Workspace and execution
 
@@ -197,11 +198,11 @@ A Worker cannot resolve a name before `fetch`, so a public-looking name that res
 
 - **Wire:** the contract lives in `packages/protocol`, shared by server and web ([ADR-0009](adr/0009-session-socket-messages-over-alchemy-rpc.md)).
   - **Session socket:** `GET /sessions/:id/socket` on the main Worker, forwarded to the Session DO, which accepts it as a hibernatable WebSocket. A Session the Registry does not know answers 404. Messages are JSON in the Cloudflare pi example's shapes, as Effect `Schema`. The Session greets a client with `hello` and its root conversation. Commands carry an optional `id`, which a `result` or an `error` answers, also when the command cannot be read. Keys a command does not define are an error.
-  - Commands: `submit` (with `whenBusy` and a `requestId` that deduplicates), `abort`, and `watch`/`unwatch`. Still to come: `reset`, `compact`, `configure`, `fork`, and secret and approval responses.
+  - Commands: `submit` (with `whenBusy` and a `requestId` that deduplicates), `abort`, and `watch`/`unwatch`. `configure` picks the root conversation's model and thinking level (`null` follows the default in the settings again); it is a socket command, not Registry RPC, because the pick belongs to one Session, is applied by that Session's Harness, and reaches every watching client as an `agent_changed` event. Still to come: `reset`, `compact`, `fork`, and secret and approval responses.
   - `whenBusy: "steer"` joins the running Run at its next boundary, after the tool calls in progress. A steer that finds the Run giving its final answer starts the next Run, as `followUp` does.
   - `watch(conversationId)` streams `events`: a batch holding a `snapshot`, then pi `AgentEvent` batches unchanged. The socket's attachment names its watches. A Session woken from hibernation restarts them, each with a fresh snapshot, on the same socket. A watch that ends, or cannot restart, is dropped with an `error` naming its `conversationId`. A client whose socket closed (an eviction, a deploy) reconnects and watches again.
   - The runtime answers the client's `ping` heartbeat with `pong` without waking the Session.
-  - **Registry:** `RegistryRpcs`, an Effect `RpcGroup` over HTTP (`POST /rpc`, JSON), lists and creates Sessions and Workspaces.
+  - **Registry:** `RegistryRpcs`, an Effect `RpcGroup` over HTTP (`POST /rpc`, JSON), lists and creates Sessions and Workspaces, and reads and replaces the settings overrides.
 - **Reducer:** `view.ts` and `transcript.ts` from Cloudflare's `agents` example `examples/next/harnesses/pi` (MIT, attributed). They are extended for `nestedTools`, compactions, and subagents. This reducer is the only code that interprets `AgentEvent`s.
 - **UI:**
   - Vite and React 19 in `apps/web`, served as static assets by the main Worker.
