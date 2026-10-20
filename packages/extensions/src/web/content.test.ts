@@ -127,7 +127,8 @@ describe("htmlToMarkdown", () => {
     // A quadratic converter takes minutes here; this one takes about a second. The bound is loose for slow runners.
     expect(Date.now() - started).toBeLessThan(15_000);
     expect(markdown.split("\n\n")).toHaveLength(90_000);
-  });
+    // The default 5 s is short for a loaded CI runner.
+  }, 60_000);
 });
 
 describe("convertContent", () => {
