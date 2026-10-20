@@ -19,12 +19,13 @@
     "plugins": [
       {
         "name": "@effect/language-service",
+        "allowedUnstableApis": ["effect/http"],
         "diagnosticSeverity": {
           "abortControllerInEffect": "error",
           "acquireReleaseDisposable": "error",
           "allOfMapToForEach": "error",
           "anyUnknownInErrorContext": "warning",
-          "apiStabilityLeak": "warning",
+          "apiStabilityLeak": "off",
           "asyncFunction": "warning",
           "catchAllTagDispatchToCatchTag": "error",
           "catchAllToMapError": "error",

@@ -15,14 +15,16 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 - **`package.json`** has `typecheck` (`tsc`), `lint` (`oxlint`), and `test` (`vitest run`) scripts, and a `workspace:*` devDependency on `@cloudpid/config`.
 - **`tsconfig.json`** extends `@cloudpid/config/tsconfig/base.json`; **`vitest.config.ts`** re-exports `@cloudpid/config/vitest`; **`.oxlintrc.json`** extends the root config. Copy these from a sibling package instead of editing the shared bases per package.
 - Tooling (`typescript`, `vitest`, `oxlint`, `oxfmt`, `turbo`) is installed once at the root; packages do not list it.
-- Runtime dependencies go in the package that imports them (`pnpm --filter @cloudpid/<pkg> add …`); the ones still at the root (`effect`, `alchemy`, `pi-*`, `@cloudflare/*`) move to their first consumer when a ticket starts using them.
+- Runtime dependencies go in the package that imports them (`pnpm --filter @cloudpid/<pkg> add …`); the ones still at the root (`pi-*`, `@cloudflare/*`) move to their first consumer when a ticket starts using them.
+- Relative imports end in `.ts` (`allowImportingTsExtensions` is on in the shared tsconfig), so every file also runs under plain Node type stripping.
+- Effect's `http` modules are unstable but allowed through `allowedUnstableApis` in the shared tsconfig; add other unstable subtrees (`effect/rpc`, …) there when a ticket adopts them.
 - `skills/` is bundled skill content, not a package.
+
+`pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set; the `effect-tsgo` patch still runs.
 
 ## Infra
 
-The alchemy stack is `infra/alchemy.run.ts`; run alchemy from `infra/` (`pnpm --filter @cloudpid/infra dev` for workerd on `http://localhost:1337`, `deploy -- --stage dev_$USER` for Cloudflare). It authenticates with the local alchemy profile (`alchemy profile edit --add Cloudflare`) and keeps state with `Cloudflare.state()`. A Worker is declared in its own app with `main: import.meta.url`; the stack imports and `yield*`s it. Relative imports in Worker and stack files end in `.ts`. Effect's `http` modules are unstable, so files that use them carry `@effect-diagnostics unstableApiUsage:skip-file`, and Worker files carry `apiStabilityLeak:skip-file`.
-
-`pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set; the `effect-tsgo` patch still runs.
+The alchemy stack is `infra/alchemy.run.ts`; its scripts run alchemy from `infra/`: `pnpm --filter @cloudpid/infra run dev` serves workerd on `http://localhost:1337`, and `pnpm --filter @cloudpid/infra run deploy --stage dev_$USER` deploys to Cloudflare (use `run`, since bare `pnpm deploy` is pnpm's built-in, and no `--`, which pnpm forwards literally; add `--dry-run` to only plan). It authenticates with the local alchemy profile (`alchemy profile edit --add Cloudflare`) and keeps state with `Cloudflare.state()`. A Worker is declared in its own app with `main: import.meta.url`; the stack imports and `yield*`s it.
 
 ## Reference repositories
 

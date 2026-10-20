@@ -1,4 +1,3 @@
-/** @effect-diagnostics unstableApiUsage:skip-file */
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { expect, it } from "vitest";
 import { hello } from "./hello.ts";
