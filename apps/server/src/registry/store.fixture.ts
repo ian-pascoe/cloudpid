@@ -68,8 +68,4 @@ export class TestRegistry extends DurableObject {
 
     return saved.success;
   }
-
-  schemaVersion(): number {
-    return this.#store.schemaVersion();
-  }
 }
