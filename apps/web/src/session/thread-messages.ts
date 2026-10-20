@@ -6,7 +6,8 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/protocol";
 import * as Predicate from "effect/Predicate";
-import { liveCalls, settledCalls } from "../chat/nested-calls.ts";
+import { liveCalls, type NestedCall, settledCalls } from "../chat/nested-calls.ts";
+import { type StartedSubagent, startedSubagent } from "../chat/subagent.ts";
 
 type ContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
@@ -95,17 +96,27 @@ const resolveCall = (
 
   if (index !== undefined && call?.type === "tool-call") {
     const nested = settledCalls(result.details);
+    const subagent = result.name === "subagent" ? startedSubagent(result.details) : undefined;
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
 
-    // The calls a tool made, which its result lists once it has ended.
+    // The calls a tool made, which its result lists once it has ended, and the subagent a `subagent` call started.
+    const artifact: CardArtifact = {};
+
+    if (nested.length > 0) artifact.nested = nested;
+
+    if (subagent !== undefined) artifact.subagent = subagent;
+
     turn?.content.splice(
       index,
       1,
-      nested.length === 0 ? resolved : { ...resolved, artifact: { nested } },
+      nested.length === 0 && subagent === undefined ? resolved : { ...resolved, artifact },
     );
   }
 };
+
+/** What a tool call's card shows beside its arguments and result. */
+type CardArtifact = { nested?: NestedCall[]; subagent?: StartedSubagent };
 
 const userMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();
 
