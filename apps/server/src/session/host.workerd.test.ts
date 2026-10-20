@@ -16,6 +16,13 @@ declare global {
   }
 }
 
+/**
+ * `vi.waitFor`, with room for a loaded CI runner: its 1 s default timed out there while a Session settled (the Registry
+ * reports ahead of the notification can take their full timeouts).
+ */
+const settles = <T>(check: () => Promise<T>) =>
+  vi.waitFor(check, { timeout: 10_000, interval: 50 });
+
 const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
 
 /** Poll `check` inside the object until it holds. */
@@ -89,7 +96,7 @@ describe("a Session host", () => {
     await evictDurableObject(stub);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     // No client waits and no later alarm runs: the instance reports the end of the run it resumed itself.
-    await vi.waitFor(async () => expect(await status()).toBe("idle"));
+    await settles(async () => expect(await status()).toBe("idle"));
 
     // Any report of the live run comes before the one that it ended, which is last.
     const sequence = await reported();
@@ -118,7 +125,7 @@ describe("a Session host", () => {
       await instance.prompt({ requestId: "turn-1", text: "hi" });
     });
 
-    await vi.waitFor(async () =>
+    await settles(async () =>
       expect(
         await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
       ).toEqual([{ kind: "finished" }]),
@@ -144,7 +151,7 @@ describe("a Session host", () => {
     await evictDurableObject(stub);
     await runDurableObjectAlarm(stub);
 
-    await vi.waitFor(async () =>
+    await settles(async () =>
       expect(
         await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
       ).toEqual([{ kind: "finished" }]),
@@ -159,7 +166,7 @@ describe("a Session host", () => {
       await instance.prompt({ requestId: "turn-1", text: "hi" });
     });
 
-    await vi.waitFor(async () =>
+    await settles(async () =>
       expect(
         await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
       ).toEqual([{ kind: "failed", reason: "invalid request: the prompt is bad" }]),
@@ -175,7 +182,7 @@ describe("a Session host", () => {
       await instance.hanging.promise;
       await instance.abortRoot();
     });
-    await vi.waitFor(async () => expect(await status()).toBe("idle"));
+    await settles(async () => expect(await status()).toBe("idle"));
     await runDurableObjectAlarm(stub);
 
     expect(await runInDurableObject(stub, (instance: TestSession) => instance.notified())).toEqual(
@@ -201,7 +208,7 @@ describe("a Session host", () => {
       instance.prompt({ requestId: "turn-2", text: "hi again" }),
     );
 
-    await vi.waitFor(async () =>
+    await settles(async () =>
       expect(
         await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
       ).toEqual([{ kind: "finished" }]),
