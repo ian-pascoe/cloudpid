@@ -46,6 +46,7 @@ export const Composer = ({
   sending,
   onStopAll,
   compact = false,
+  who = "the session",
 }: {
   steerLane: readonly QueuedEntry[];
   followUpLane: readonly QueuedEntry[];
@@ -54,6 +55,8 @@ export const Composer = ({
   onStopAll?: (() => void) | undefined;
   /** Inside a card: no page margins, and the input does not take the focus. */
   compact?: boolean;
+  /** Whom the message is for, in the input's placeholder. */
+  who?: string;
 }) => {
   // On a touch screen, focusing the input opens the keyboard over the transcript.
   const autoFocus = !compact && window.matchMedia("(pointer: fine)").matches;
@@ -80,7 +83,7 @@ export const Composer = ({
         <ComposerPrimitive.Input
           rows={1}
           autoFocus={autoFocus}
-          placeholder={running ? "Steer the run, or queue a follow-up…" : "Message the session…"}
+          placeholder={running ? "Steer the run, or queue a follow-up…" : `Message ${who}…`}
           aria-label="Message"
           onKeyDown={onKeyDown}
           className="block max-h-48 min-h-11 w-full resize-none bg-transparent px-3 py-2.5 outline-none placeholder:text-muted-foreground"

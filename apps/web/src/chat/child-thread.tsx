@@ -80,6 +80,7 @@ const LiveChildThread = ({
         )}
         <Composer
           compact
+          who={agent?.id ?? "the agent"}
           steerLane={thread.queue.steer}
           followUpLane={thread.queue.followUp}
           sending={thread.sending}
