@@ -1,0 +1,191 @@
+// Secrets through real runs: the agent asks, the owner answers in the masked form, and tools use the value through
+// references, while the value never reaches the transcript, tool output, or the model. pi-durable's Harness is
+// Promise-based, so this file is too.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
+import { describe, expect, it } from "vitest";
+import { DEFAULT_TOOLSETS } from "./subagents.ts";
+import { resolveTools } from "./subagents/toolsets.ts";
+import { SECRET_LIFETIME_MS, secretEnvName, secretReference } from "./secrets.ts";
+import { call, openSecretsHarness } from "./secrets/harness.fixture.ts";
+
+const VALUE = "ghp_live0123456789abcdef";
+const ref = secretReference;
+const env = secretEnvName;
+
+describe("secrets", () => {
+  it("lets a command use a Secret the owner entered in the masked form", async () => {
+    const session = await openSecretsHarness();
+
+    const running = session.prompt(
+      "Deploy",
+      call("secret_ask", { names: ["GITHUB_TOKEN"], reason: "push the branch" }),
+      call("bash", { command: `echo token=$${env("GITHUB_TOKEN")}` }),
+    );
+
+    const ask = await session.enter({ GITHUB_TOKEN: VALUE });
+
+    await running;
+
+    expect(ask).toMatchObject({ names: ["GITHUB_TOKEN"], reason: "push the branch" });
+    expect(session.announced.at(-1)).toEqual([]);
+    expect(session.execs.at(-1)?.env[env("GITHUB_TOKEN")]).toBe(VALUE);
+    expect(await session.lastResult()).toEqual({
+      text: `echo token=${ref("GITHUB_TOKEN")}`,
+      isError: false,
+    });
+    expect(await session.transcript()).not.toContain(VALUE);
+    expect(JSON.stringify(session.requests)).not.toContain(VALUE);
+    expect(session.dump()).not.toContain(VALUE);
+  });
+
+  it("tells the agent how to use what was entered, and what was skipped", async () => {
+    const session = await openSecretsHarness();
+    const running = session.prompt("Go", call("secret_ask", { names: ["API_KEY", "OPTIONAL"] }));
+
+    await session.enter({ API_KEY: VALUE });
+    await running;
+
+    const result = await session.lastResult();
+
+    expect(result?.text).toContain(`API_KEY: provided. Use $${env("API_KEY")} in bash commands`);
+    expect(result?.text).toContain(ref("API_KEY"));
+    expect(result?.text).toContain("OPTIONAL: skipped by the user.");
+  });
+
+  it("tells the agent the owner cancelled", async () => {
+    const session = await openSecretsHarness();
+    const running = session.prompt("Go", call("secret_ask", { names: ["API_KEY"] }));
+
+    await session.enter(null);
+    await running;
+
+    expect((await session.lastResult())?.text).toContain("the user cancelled");
+  });
+
+  it("resolves a placeholder when the tool runs, and the transcript keeps the reference", async () => {
+    const session = await openSecretsHarness();
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt("Go", call("record", { text: `key=${ref("API_KEY")}` }));
+
+    expect(session.recorded.at(-1)).toEqual({ text: `key=${VALUE}` });
+    expect(await session.lastResult()).toEqual({
+      text: `recorded: key=${ref("API_KEY")}`,
+      isError: false,
+    });
+    expect(await session.transcript()).toContain(ref("API_KEY"));
+    expect(await session.transcript()).not.toContain(VALUE);
+  });
+
+  it("blocks a call that references a Secret the Session does not hold, with guidance", async () => {
+    const session = await openSecretsHarness();
+
+    await session.prompt("Go", call("record", { text: ref("MISSING") }));
+
+    const result = await session.lastResult();
+
+    expect(result?.isError).toBe(true);
+    expect(result?.text).toContain("does not hold");
+    expect(result?.text).toContain("Call secret_ask");
+    expect(session.recorded).toEqual([]);
+
+    await session.prompt("Go", call("bash", { command: `echo $${env("MISSING")}` }));
+
+    expect((await session.lastResult())?.text).toContain("does not hold");
+    expect(session.execs).toEqual([]);
+  });
+
+  it("blocks a malformed reference, saying what a Secret Name looks like", async () => {
+    const session = await openSecretsHarness();
+
+    await session.prompt("Go", call("record", { text: ref("lower") }));
+
+    expect((await session.lastResult())?.text).toContain("not a valid Secret Name");
+    expect(session.recorded).toEqual([]);
+  });
+
+  it("writes an escaped reference as literal text", async () => {
+    const session = await openSecretsHarness();
+
+    await session.prompt("Go", call("record", { text: `docs: \\${ref("API_KEY")}` }));
+
+    expect(session.recorded.at(-1)).toEqual({ text: `docs: ${ref("API_KEY")}` });
+  });
+
+  it("redacts output streamed in chunks before the Harness keeps it", async () => {
+    const session = await openSecretsHarness();
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt("Go", call("stream", { text: `out ${ref("API_KEY")} end` }));
+
+    expect(session.recorded.at(-1)).toEqual({ retained: `out ${ref("API_KEY")} end` });
+  });
+
+  it("scrubs a value the user pastes into the chat from provider requests", async () => {
+    const session = await openSecretsHarness();
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt(`oops, my key is ${VALUE}`);
+
+    const last = JSON.stringify(session.requests.at(-1));
+
+    expect(last).not.toContain(VALUE);
+    expect(last).toContain(ref("API_KEY"));
+  });
+
+  it("resolves references in calls a program makes, and gives the program redacted results", async () => {
+    const session = await openSecretsHarness();
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt(
+      "Go",
+      call("program", { tool: "record", args: { text: `key=${ref("API_KEY")}` } }),
+    );
+
+    expect(session.recorded.at(-1)).toEqual({ text: `key=${VALUE}` });
+
+    const result = await session.lastResult();
+
+    expect(result?.text).toContain(`recorded: key=${ref("API_KEY")}`);
+    expect(await session.transcript()).not.toContain(VALUE);
+  });
+
+  it("stops resolving a Secret after its lifetime", async () => {
+    const session = await openSecretsHarness();
+
+    await session.hold({ API_KEY: VALUE });
+    await session.advance(SECRET_LIFETIME_MS);
+    await session.prompt("Go", call("record", { text: ref("API_KEY") }));
+
+    expect((await session.lastResult())?.text).toContain("expired, was forgotten");
+    expect(session.recorded).toEqual([]);
+  });
+
+  it("forgets a Secret on request", async () => {
+    const session = await openSecretsHarness();
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt("Go", call("secret_list", {}));
+
+    expect((await session.lastResult())?.text).toContain("API_KEY: held until");
+
+    await session.prompt("Go", call("secret_forget", { names: ["API_KEY"] }));
+
+    expect((await session.lastResult())?.text).toBe("API_KEY: forgotten.");
+
+    await session.prompt("Go", call("record", { text: ref("API_KEY") }));
+
+    expect((await session.lastResult())?.isError).toBe(true);
+    expect(session.dump()).not.toContain("ciphertext");
+  });
+
+  it("keeps secret_ask and secret_forget from child agents, which still list the root's Secrets", () => {
+    const resolved = resolveTools(
+      undefined,
+      ["bash", "secret_ask", "secret_list", "secret_forget"],
+      DEFAULT_TOOLSETS,
+    );
+
+    expect(resolved).toMatchObject({ success: { tools: ["bash", "secret_list"] } });
+  });
+});

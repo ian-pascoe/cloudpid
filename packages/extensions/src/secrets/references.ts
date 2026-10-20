@@ -3,7 +3,7 @@
 // a double-brace placeholder in any string argument, which the Secrets wrapper replaces with the value just before
 // the tool runs, and an environment variable under `SECRET_ENV_PREFIX` in commands, which it injects into the
 // command's environment. A backslash right before either form writes it as literal text.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/pi-ai";
 import * as Predicate from "effect/Predicate";
 
 /** Prefix of the environment variable a held Secret is injected as. */

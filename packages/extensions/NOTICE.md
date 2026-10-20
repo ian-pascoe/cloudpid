@@ -32,3 +32,16 @@ What was ported, and what changed:
 | `output.ts`             | `web-tool-output.ts`                   | no temp-file spill: continuation notes name the next `offset`                               |
 | `response.ts`           | `web-response.ts`                      | Effect; no Node `http`                                                                      |
 | `fetch.ts`, `search.ts` | `web-fetch.ts`, `web-search.ts`        | Effect Schema and Effect tools; SSRF guard; Exa/Parallel keys from deploy-time secrets      |
+
+The Secrets in `src/secrets/` are a port of [`@ian-pascoe/pi-secret`](https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-secret)
+(version 0.3.0, commit `3dad0f7`) and the redaction in its sibling `@ian-pascoe/pi-utils` (`secret-registry.ts`), the
+owner's own packages, under the same MIT licence. 1Password and Env File Secret Providers, Secret Grants,
+`secret_ask_grant`, and `secret_save` are not ported (v2).
+
+| Here            | From                                        | Change                                                                                                                                                       |
+| --------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `references.ts` | `secret-references.ts`                      | none beyond Effect predicates                                                                                                                                |
+| `redaction.ts`  | `pi-utils/secret-registry.ts` (redaction)   | per Session instance instead of process-wide; WebCrypto-free encoders instead of `Buffer`; adds a chunked stream redactor                                    |
+| `vault.ts`      | `secret-vault.ts`                           | WebCrypto; one HKDF-derived key per Session from a Worker-secret master key instead of a key file with a key per Secret                                      |
+| `store.ts`      | `pi-secret-extension.ts` (state, `context`) | values entered in a masked form on the web client and stored in the Session DO; a message redacted once keeps its redacted form in storage across evictions  |
+| `extension.ts`  | `pi-secret-extension.ts` (tools, hooks)     | pi-durable hooks; references resolved inside tool wraps rather than in `tool_call`, so no value enters durable state; injected per command, not process-wide |

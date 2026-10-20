@@ -4,6 +4,7 @@
 // child gets them by its delegation, not its selection.
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
+import { PARENT_ONLY_SECRET_TOOLS } from "../secrets/extension.ts";
 import type { Toolsets } from "./options.ts";
 
 /** The coordinator tools, in the order a child is given them. */
@@ -20,9 +21,10 @@ const COORDINATOR: ReadonlySet<string> = new Set(COORDINATOR_TOOLS);
 
 /**
  * Tools a child is never granted, whatever its selection. `context_rollover` hands off by ending the child's run, whose
- * answer is then the Rollover call rather than the turn's result, so a child keeps pi-durable's own compaction.
+ * answer is then the Rollover call rather than the turn's result, so a child keeps pi-durable's own compaction. A child
+ * uses the Secrets its root holds but cannot ask for or forget them.
  */
-export const PARENT_ONLY_TOOLS = ["context_rollover"] as const;
+export const PARENT_ONLY_TOOLS = ["context_rollover", ...PARENT_ONLY_SECRET_TOOLS] as const;
 
 const PARENT_ONLY: ReadonlySet<string> = new Set(PARENT_ONLY_TOOLS);
 
