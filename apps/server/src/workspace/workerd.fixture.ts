@@ -91,7 +91,12 @@ class CountedRuntime extends WorkspaceRuntimeStub {
   override async exec(source: string, options: { readonly backend?: string } = {}) {
     this.#counter.started++;
 
-    if (options.backend === CONTAINER_BACKEND_ID) this.#counter.container++;
+    if (options.backend === CONTAINER_BACKEND_ID) {
+      // The test Worker has no Container: count the command, and refuse it here rather than in the backend's connect.
+      this.#counter.container++;
+
+      throw new Error("This test Worker has no Container");
+    }
 
     // SAFETY: the counted handle answers every method and getter of the exec handle stub it wraps.
     return new CountedExecHandle(await super.exec(source, options), this.#counter) as never;
