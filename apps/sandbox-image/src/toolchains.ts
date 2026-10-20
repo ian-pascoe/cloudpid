@@ -98,6 +98,10 @@ export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
 };
 
 /** git's answer to a credential request for github.com: the token of the environment it runs in. */
+/** The identity of the agent's commits when no deploy-time `CLOUDPID_GIT_NAME` / `CLOUDPID_GIT_EMAIL` is set, on the Container and the Worker Shell alike. */
+export const DEFAULT_GIT_NAME = "cloudpid";
+export const DEFAULT_GIT_EMAIL = "cloudpid@users.noreply.github.com";
+
 const CREDENTIAL_HELPER = String.raw`!f() { if [ "$1" = get ] && [ -n "$GITHUB_TOKEN" ]; then echo username=x-access-token; echo "password=$GITHUB_TOKEN"; fi; }; f`;
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -156,8 +160,8 @@ for dir in "$root" "$root"/*/; do
 done
 
 if command -v git >/dev/null 2>&1; then
-  git config --global --get user.name >/dev/null || git config --global user.name "\${CLOUDPID_GIT_NAME:-cloudpid}"
-  git config --global --get user.email >/dev/null || git config --global user.email "\${CLOUDPID_GIT_EMAIL:-cloudpid@users.noreply.github.com}"
+  git config --global --get user.name >/dev/null || git config --global user.name "\${CLOUDPID_GIT_NAME:-${DEFAULT_GIT_NAME}}"
+  git config --global --get user.email >/dev/null || git config --global user.email "\${CLOUDPID_GIT_EMAIL:-${DEFAULT_GIT_EMAIL}}"
   git config --global credential.https://github.com.helper ${shellQuote(CREDENTIAL_HELPER)}
 fi
 
