@@ -35,9 +35,15 @@ export class TestSession extends DurableObject {
         openSessionHost(ctx.storage, {
           models,
           agent: { model: { provider: "faux", modelId: "faux-1" } },
+          reset: (reason) => ctx.abort(reason),
         }),
       );
     });
+  }
+
+  /** Whether no work is live; reads only, so it never runs work itself. */
+  idle(): Promise<boolean> {
+    return Effect.runPromise(this.#host.idle);
   }
 
   submit(prompt: Prompt): Promise<number> {

@@ -19,10 +19,10 @@ const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
 /** Poll `check` inside the object until it holds. */
 const eventually = async (
   stub: DurableObjectStub<TestSession>,
-  check: (state: DurableObjectState) => Promise<boolean>,
+  check: (instance: TestSession, state: DurableObjectState) => Promise<boolean>,
 ): Promise<void> => {
   for (let attempt = 0; attempt < 200; attempt++) {
-    if (await runInDurableObject(stub, (_instance: TestSession, state) => check(state))) return;
+    if (await runInDurableObject(stub, check)) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
@@ -43,14 +43,17 @@ describe("a Session host", () => {
 
     await evictDurableObject(stub);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
+    // The alarm's instance finishes the run by itself: `idle()` only reads, and no client submits or waits.
+    await eventually(stub, (instance) => instance.idle());
 
     const answer = await runInDurableObject(stub, (instance: TestSession) =>
       instance.prompt({ requestId: "turn-1", text: "hi" }),
     );
 
     expect(answer).toMatchObject({ status: "answered", text: "recovered" });
-    // Nothing is left to do: the heartbeat is gone.
-    await eventually(stub, async (state) => (await state.storage.getAlarm()) === null);
+    // The next heartbeat finds nothing live and clears itself.
+    await runDurableObjectAlarm(stub);
+    await eventually(stub, async (_instance, state) => (await state.storage.getAlarm()) === null);
   });
 
   it("admits a prompt submitted twice with one request id once", async () => {

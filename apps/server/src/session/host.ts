@@ -54,6 +54,11 @@ export type SessionHostOptions = {
   readonly models: Models;
   /** The root conversation's agent, applied when the root is created. */
   readonly agent: AgentChange;
+  /**
+   * Reset the object (`ctx.abort`). Called when a storage error closes the Harness: the next event starts a new
+   * instance, which reopens it.
+   */
+  readonly reset: (reason: string) => void;
 };
 
 /** User input for the root conversation. Submitting the same `requestId` again finds the first submission. */
@@ -79,6 +84,8 @@ export type SessionHost = {
   readonly prompt: (prompt: Prompt) => Effect.Effect<Answer, SessionError>;
   /** The alarm handler: keep the heartbeat while work is live, and resume it. */
   readonly alarm: Effect.Effect<void, SessionError>;
+  /** Whether no task is live and no submission is unsettled. Reads only: it never starts work. */
+  readonly idle: Effect.Effect<boolean, SessionError>;
 };
 
 const attempt = <A>(operation: string, run: () => Promise<A>): Effect.Effect<A, SessionError> =>
@@ -117,6 +124,14 @@ export const openSessionHost = Effect.fn("openSessionHost")(function* (
     ),
   );
 
+  // A storage error closes the Harness for good; reset the object so the next event reopens it.
+  yield* Effect.sync(
+    () =>
+      void harness.closed.then((end) => {
+        if (end.reason === "failed") options.reset(`Harness failed: ${String(end.error)}`);
+      }),
+  );
+
   // Alarm decisions run one at a time, so an idle check never deletes the heartbeat a concurrent submit just armed.
   const serially = Semaphore.withPermit(yield* Semaphore.make(1));
 
@@ -124,12 +139,18 @@ export const openSessionHost = Effect.fn("openSessionHost")(function* (
     harness.root(context, { agent: options.agent }),
   );
 
-  /** Live work keeps the heartbeat; a task no installed definition can run never becomes runnable by waking. */
-  const wake: Effect.Effect<Wake, SessionError> = attempt("inspect", () =>
-    harness.inspect(context),
-  ).pipe(
+  const inspect = attempt("inspect", () => harness.inspect(context));
+
+  /**
+   * Live work keeps the heartbeat, as pi-durable main's `wake()` counts it: a task no installed definition can run
+   * never becomes runnable by waking, and a waiting task counts through the live tasks it waits on.
+   */
+  const wake: Effect.Effect<Wake, SessionError> = inspect.pipe(
     Effect.map(({ tasks }) => ({
-      active: Arr.some(tasks, (task) => task.state.kind !== "blocked"),
+      active: Arr.some(
+        tasks,
+        (task) => task.state.kind !== "blocked" && task.state.kind !== "waiting",
+      ),
     })),
   );
 
@@ -200,5 +221,8 @@ export const openSessionHost = Effect.fn("openSessionHost")(function* (
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,
+    idle: inspect.pipe(
+      Effect.map(({ tasks, submissions }) => tasks.length === 0 && submissions.length === 0),
+    ),
   } satisfies SessionHost;
 });

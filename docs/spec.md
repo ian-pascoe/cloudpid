@@ -53,7 +53,7 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 
 ### Models
 
-- Requests go to the existing proxy `api.ai.ianpascoe.dev` with a Commissary API key (`Authorization: Bearer`). The proxy is Commissary's API host, which sits outside Cloudflare Access and rejects service tokens. Model IDs match `~/.pi/agent/models.json`.
+- Requests go to the existing proxy `api.ai.ianpascoe.dev` with a Commissary API key, sent as each provider's native API key (`x-api-key` for Anthropic). The proxy is Commissary's API host, which sits outside Cloudflare Access and rejects service tokens. Model IDs match `~/.pi/agent/models.json`.
 - Default `anthropic/claude-opus-5-5` at `high` thinking.
 - Roles: `small` haiku-5-5, `medium` sonnet-5-5, `large` opus-5-5, `xlarge` fable-5-1, with the hints from `~/.pi/agent/settings.json`.
 

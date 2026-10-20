@@ -30,6 +30,8 @@ export const promptSession = Effect.fn("promptSession")(
     return yield* HttpServerResponse.json(answer);
   },
   Effect.catchTags({
+    // The body is not JSON.
+    HttpServerError: (error) => HttpServerResponse.json({ error: error.message }, { status: 400 }),
     SchemaError: (error) => HttpServerResponse.json({ error: error.message }, { status: 400 }),
     SessionError: (error) => HttpServerResponse.json({ error: error.message }, { status: 502 }),
   }),

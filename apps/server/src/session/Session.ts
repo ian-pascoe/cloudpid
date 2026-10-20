@@ -50,6 +50,7 @@ export const SessionLive = Session.make(
         const host = yield* openSessionHost(state.raw.storage, {
           models,
           agent: DEFAULT_AGENT,
+          reset: (reason) => state.raw.abort(reason),
         }).pipe(Effect.orDie);
 
         return {
