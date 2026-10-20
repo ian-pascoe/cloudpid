@@ -24,9 +24,33 @@ _Avoid_: Job, execution
 A named model tier (`small`, `medium`, `large`, `xlarge`) chosen when delegating work.
 _Avoid_: Tier, model class
 
+**Context Window**:
+The part of a conversation the model sees: the entries from the latest Handoff or compaction summary on. Older entries leave it but stay in History.
+_Avoid_: Context (alone, for this span), session
+
 **Handoff**:
-An agent-written note that starts a fresh context window in the same conversation.
+An agent-written note that starts a fresh Context Window in the same conversation.
 _Avoid_: Summary, checkpoint note
+
+**Rollover**:
+Starting a conversation's fresh Context Window from a Handoff, which the agent prepares when the context is nearly full.
+_Avoid_: Compaction (for the agent-written kind), reset
+
+**Rollover request**:
+The message that asks the agent, once per Context Window, to update its Notes and roll over, sent when the context crosses the compaction threshold.
+_Avoid_: Compaction prompt, reminder
+
+**Emergency Rollover**:
+A Rollover that cannot wait for the agent, when the context is about to overflow or has: the last saved Handoff and the Note Index replace older entries.
+_Avoid_: Overflow compaction, summary
+
+**Note**:
+A named Markdown text an agent keeps in its conversation, which outlives every Handoff.
+_Avoid_: Memory, scratchpad
+
+**Note Index**:
+The list of Note names and references a new Context Window starts with, so the agent can read its Notes instead of carrying them.
+_Avoid_: Note list, memory dump
 
 ## Workspaces and execution
 

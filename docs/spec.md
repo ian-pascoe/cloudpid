@@ -144,15 +144,19 @@ They are rebuilt on pi-durable primitives, following its example 23 (`@cloudpid/
 - A settled turn's answer goes to a `subagent_wait` blocked on it. Otherwise it is held (`delivery: "pending"`) until the parent is idle, so a later `subagent_wait` in the parent's run can still claim it, and then reported as a follow-up, deduplicated by `requestId`. The rule is the same for every parent: the root gets the report as follow-up input, and a parent that is itself a subagent gets it as a new turn, whose answer is reported further up. Inputs steered into one run end in one answer, which is delivered once; the other turns are `duplicate`.
 - After the user presses Stop, a held report is still delivered once the root is idle, which starts a new run. pi-minimal-subagents instead holds it until the next run; #30 decides which to keep.
 - `subagent_wait` is a durable task that sleeps until its deadline (`TaskRuntime.sleep`); a rerun of the call after an eviction finds it.
-- A child's tools are exactly its grant (`AgentState.tools`): ordinary tools within its caller's, plus all six coordinator tools when it was launched with `delegation: "fanout"` below the depth cap, or only `agent_message` otherwise.
+- A child's tools are exactly its grant (`AgentState.tools`): ordinary tools within its caller's, never `context_rollover` (a Handoff would end the child's run without the turn's answer), plus all six coordinator tools when it was launched with `delegation: "fanout"` below the depth cap, or only `agent_message` otherwise.
 - The roles come from the settings' `roles`; the depth cap and toolsets from `extensions.subagents` (`maxSubagentDepth`, default 2; `baseToolset`, `readToolset`, `modifyToolset`).
 
 ### Context management
 
-- **Notes** are a conversation document (`defineDoc`, `fork: "current"`).
-- **History** reads entries from storage. Lineage scope covers subagent conversations in the same Harness.
-- `context_rollover` returns `control: { handoff }`.
-- A `CompactionTask` `beforeCompact` hook turns automatic compaction into a prepare-then-rollover turn. The cut keeps tool batches whole.
+pi-context-management's `context_notes`, `context_history`, and `context_rollover` (`@cloudpid/extensions/context`), with its parameters and limits:
+
+- **Notes** are a conversation document (`defineDoc`, `fork: "current"`), which also keeps the last saved Handoff. A Handoff does not touch documents, so Notes outlive it.
+- **History** reads entries from storage, also those before a Handoff or compaction; Context Windows start at each head marker (`pi.reset`, `pi.compaction`). Lineage scope covers the conversations of the agent's ancestors and descendants in the Session's subagents document; references are `context:<conversationId>:<entryId>` and `context:<conversationId>:note:<name>`.
+- `context_rollover` must be the only call of its round and is not callable from scripts. It returns `control: { handoff }` with the Handoff and a Note Index; pi-durable applies it after the whole round, so the Handoff never splits a tool batch. It also queues a follow-up, so the task continues in the new context, unless the run's only inputs are Rollover requests, as when one is placed after the task's final answer: then the run stops at the Handoff.
+- A `CompactionTask` `beforeCompact` hook, in conversations that offer `context_rollover`, turns a background threshold compaction (`backgroundTokens` below the blocking threshold) into a prepare-then-rollover turn: it declines, which blocks nothing, and while a run is live steers a Rollover request into it, once per Context Window. A blocking threshold compaction and an overflow compaction are the Emergency Rollover, because declining a blocking one would send a request without pi-durable's overflow recovery: the summary is the last saved Handoff and the Note Index, on pi-durable's cut, which keeps tool calls with their results. With `backgroundTokens: 0` every Rollover is an Emergency Rollover. A manual compaction keeps pi-durable's summary.
+- The transcript shows Handoffs, compaction summaries, and Rollover requests as notices; an extension's input entry asks for a notice with a `notice` title in its data.
+- Not ported: Idle Rollover, the `/context`, `/compact`, and `/rollover` commands, and the Rollover Tail (`tailTokens`): a Handoff starts the context from the Handoff alone.
 
 ### Secrets
 

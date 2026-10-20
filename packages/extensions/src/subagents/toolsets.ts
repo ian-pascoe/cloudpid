@@ -18,6 +18,14 @@ export const COORDINATOR_TOOLS = [
 
 const COORDINATOR: ReadonlySet<string> = new Set(COORDINATOR_TOOLS);
 
+/**
+ * Tools a child is never granted, whatever its selection. `context_rollover` hands off by ending the child's run, whose
+ * answer is then the Rollover call rather than the turn's result, so a child keeps pi-durable's own compaction.
+ */
+export const PARENT_ONLY_TOOLS = ["context_rollover"] as const;
+
+const PARENT_ONLY: ReadonlySet<string> = new Set(PARENT_ONLY_TOOLS);
+
 /** What `subagent`'s `tools` asks for: a preset, or exact tool names. Omitted: the caller's own ordinary tools. */
 export type ToolSelection = "none" | "read" | "modify" | ReadonlyArray<string>;
 
@@ -38,11 +46,21 @@ const matches = (pattern: string, name: string): boolean =>
   new RegExp(`^${Arr.join(Arr.map(pattern.split("*"), escape), ".*")}$`).test(name);
 
 /**
- * The ordinary tools `selection` grants under `ceiling`, the caller's ordinary tools. The base toolset applies to every
+ * The ordinary tools `selection` grants under `ceiling`, the caller's ordinary tools without the parent-only ones. The base toolset applies to every
  * selection, and the presets add theirs; a pattern that matches nothing within the ceiling is skipped with a warning.
  * Exact names stay strict: a coordinator tool, or a name outside the ceiling, fails the spawn.
  */
 export const resolveTools = (
+  selection: ToolSelection | undefined,
+  ceiling: ReadonlyArray<string>,
+  toolsets: Toolsets,
+): Result.Result<ResolvedTools, string> => {
+  const grantable = Arr.filter(ceiling, (name) => !PARENT_ONLY.has(name));
+
+  return resolveWithin(selection, grantable, toolsets);
+};
+
+const resolveWithin = (
   selection: ToolSelection | undefined,
   ceiling: ReadonlyArray<string>,
   toolsets: Toolsets,

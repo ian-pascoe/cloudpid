@@ -1,4 +1,5 @@
 import { MessagePrimitive, ThreadPrimitive, useAuiState } from "@assistant-ui/react";
+import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
@@ -43,6 +44,45 @@ const AssistantMessage = () => (
     <FailureNotice />
   </MessagePrimitive.Root>
 );
+
+/**
+ * A notice between turns: a Handoff, a compaction summary, or a Rollover request. Its title shows; the text it carried
+ * (the Handoff the next context starts from) opens on demand.
+ */
+const NoticeMessage = () => {
+  const title = useAuiState((state) => {
+    const custom = state.message.metadata.custom.title;
+
+    return Predicate.isString(custom) ? custom : "Notice";
+  });
+
+  const text = useAuiState((state) =>
+    Arr.join(
+      Arr.map(state.message.content, (part) => (part.type === "text" ? part.text : "")),
+      "",
+    ),
+  );
+
+  return (
+    <MessagePrimitive.Root className="flex items-center gap-3 text-xs text-muted-foreground">
+      <span className="h-px flex-1 bg-border" aria-hidden />
+      {text === "" ? (
+        <span>{title}</span>
+      ) : (
+        <details className="max-w-[85%] min-w-0">
+          <summary className="cursor-pointer text-center select-none">{title}</summary>
+          <p className="mt-2 rounded-md bg-muted px-3 py-2 text-left text-sm break-words whitespace-pre-wrap text-foreground">
+            {text}
+          </p>
+        </details>
+      )}
+      <span className="h-px flex-1 bg-border" aria-hidden />
+    </MessagePrimitive.Root>
+  );
+};
+
+/** What renders a message of each role. */
+const BY_ROLE = { user: UserMessage, assistant: AssistantMessage, system: NoticeMessage } as const;
 
 const Header = ({ title, picker }: { title: string | undefined; picker: ReactNode }) => (
   <header className="flex items-center gap-2 border-b px-4 py-2.5">
@@ -116,7 +156,11 @@ export const Thread = ({
             </p>
           </ThreadPrimitive.Empty>
           <ThreadPrimitive.Messages>
-            {({ message }) => (message.role === "user" ? <UserMessage /> : <AssistantMessage />)}
+            {({ message }) => {
+              const Message = BY_ROLE[message.role];
+
+              return <Message />;
+            }}
           </ThreadPrimitive.Messages>
           {view.retry !== null && (
             <p role="status" className="text-sm text-muted-foreground">

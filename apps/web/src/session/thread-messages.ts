@@ -138,6 +138,26 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
   return made;
 };
 
+const noticeMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();
+
+/** A notice (a Handoff, a compaction, a Rollover request) as a system message, its title in the metadata. */
+const toNotice = (message: TranscriptMessage): ThreadMessageLike => {
+  let made = noticeMessage.get(message);
+
+  if (made === undefined) {
+    made = {
+      id: message.id,
+      role: "system",
+      content: [{ type: "text", text: textOf(message.parts) }],
+      createdAt: dateOf(message.timestamp),
+      metadata: { custom: { title: message.title ?? "Notice" } },
+    };
+    noticeMessage.set(message, made);
+  }
+
+  return made;
+};
+
 /**
  * The turn of `group` (the assistant and tool messages after a user message, in order), then `live` if there is a
  * streaming message. Its ID comes from the user message before it, so it is the same while the answer streams and
@@ -205,7 +225,8 @@ const withRunning = (turn: Turn, view: SessionView): Turn => {
 };
 
 /**
- * The thread of `view`: user messages, and one assistant message per turn holding thinking, text, and tool calls.
+ * The thread of `view`: user messages, notices as system messages, and one assistant message per turn holding thinking,
+ * text, and tool calls.
  * The message being streamed is part of the last turn, and the last turn is running while the run is. The messages
  * before the last turn are the same objects from one view to the next, so a long transcript costs only its last
  * turn when a token arrives.
@@ -244,10 +265,11 @@ export const toThreadMessages = (view: SessionView): ThreadMessageLike[] => {
   };
 
   for (const message of view.messages) {
-    if (message.role === "user") {
+    if (message.role === "user" || message.role === "notice") {
+      // A notice starts a turn too: what the agent does after a Handoff or a Rollover request answers it.
       endTurn();
       userId = message.id;
-      thread.push(toUser(message));
+      thread.push(message.role === "user" ? toUser(message) : toNotice(message));
     } else if (message.role === "assistant" || message.role === "tool") group.push(message);
   }
 

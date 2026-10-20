@@ -681,4 +681,79 @@ describe("the transcript projection", () => {
       },
     ]);
   });
+
+  it("projects Handoffs, compaction summaries, and extension entries with a notice title as notices, other inputs as user messages", () => {
+    const projected = projectEntries([
+      asEntry({ id: 1, conversationId: 1, kind: "pi.reset", head: 1 }),
+      asEntry({
+        id: 2,
+        conversationId: 1,
+        kind: "pi.reset",
+        head: 2,
+        model: [{ role: "user", content: "Context Window Handoff\n\nGo on.", timestamp: 2 }],
+      }),
+      asEntry({
+        id: 3,
+        conversationId: 1,
+        kind: "pi.compaction",
+        head: 1,
+        data: { reason: "overflow" },
+        model: [{ role: "user", content: [{ type: "text", text: "<summary>" }], timestamp: 3 }],
+      }),
+      asEntry({
+        id: 4,
+        conversationId: 1,
+        kind: "cloudpid.context-prepare",
+        data: { notice: "Rollover requested" },
+        model: [{ role: "user", content: "Prepare a Context Rollover", timestamp: 4 }],
+      }),
+      asEntry({
+        id: 5,
+        conversationId: 1,
+        kind: "cloudpid.context-continue",
+        data: { notice: "Continued after the Handoff" },
+        model: [{ role: "user", content: "Continue", timestamp: 5 }],
+      }),
+      asEntry({
+        id: 6,
+        conversationId: 1,
+        kind: "cloudpid.agent-input",
+        data: { from: "agent-1" },
+        model: [{ role: "user", content: "A report", timestamp: 6 }],
+      }),
+    ]);
+
+    expect(projected).toEqual([
+      { id: "1", role: "notice", title: "Context reset", timestamp: 0, parts: [] },
+      {
+        id: "2",
+        role: "notice",
+        title: "Handoff",
+        timestamp: 2,
+        parts: [{ type: "text", text: "Context Window Handoff\n\nGo on." }],
+      },
+      {
+        id: "3",
+        role: "notice",
+        title: "Context compacted (overflow)",
+        timestamp: 3,
+        parts: [{ type: "text", text: "<summary>" }],
+      },
+      {
+        id: "4",
+        role: "notice",
+        title: "Rollover requested",
+        timestamp: 4,
+        parts: [{ type: "text", text: "Prepare a Context Rollover" }],
+      },
+      {
+        id: "5",
+        role: "notice",
+        title: "Continued after the Handoff",
+        timestamp: 5,
+        parts: [{ type: "text", text: "Continue" }],
+      },
+      { id: "6", role: "user", timestamp: 6, parts: [{ type: "text", text: "A report" }] },
+    ]);
+  });
 });
