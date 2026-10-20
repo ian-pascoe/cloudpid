@@ -1,7 +1,8 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off
-// The workerd test Worker: a Durable Object that hosts a `SessionHost` over the faux provider, as the Session DO
-// hosts one over the model proxy. Tests drive it with `runInDurableObject()`, evict it, and run its alarm.
+// The workerd test Worker: a Durable Object that hosts a `SessionHost` and its `SessionSockets` over the faux provider,
+// as the Session DO hosts them over the model proxy. Tests drive it with `runInDurableObject()` and client sockets,
+// evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, Harness } from "@cloudpid/effect-durable";
 import {
@@ -19,13 +20,8 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionExtensions } from "./extensions.ts";
-import {
-  type Answer,
-  type Prompt,
-  SessionHost,
-  sessionHostLayer,
-  type SessionHostService,
-} from "./host.ts";
+import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
+import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
 
 declare global {
@@ -43,16 +39,35 @@ const AGENT = { model: { provider: "faux", modelId: "faux-1" } } as const;
 const CALL = /^call:(\w+):(.*)$/;
 
 /**
- * Scripted model responses, kept in storage so a new instance continues the script: `hang` waits for an abort, and
- * `call:<tool>:<json arguments>` calls a tool.
+ * Scripted model responses, kept in storage so a new instance continues the script: `hang` waits for an abort,
+ * `call:<tool>:<json arguments>` calls a tool, and `gate:<response>` gives `response` once the test opens the gate.
  */
 type Script = { readonly responses: readonly string[]; readonly next: number };
 
+/** The scripted response `text`: a tool call or an answer. */
+const respond = (text: string) => {
+  const call = CALL.exec(text);
+
+  return call === null
+    ? fauxAssistantMessage(text)
+    : fauxAssistantMessage([fauxToolCall(call[1] ?? "", JSON.parse(call[2] ?? "{}"))], {
+        stopReason: "toolUse",
+      });
+};
+
+/** Text submitted to the root conversation, as the tests write it. */
+type TestPrompt = { readonly requestId: string; readonly text: string };
+
 export class TestSession extends DurableObject {
   #host!: SessionHostService;
-  #runtime!: ManagedRuntime.ManagedRuntime<SessionHost | Harness, unknown>;
+  #sockets!: SessionSocketsService;
+  #runtime!: ManagedRuntime.ManagedRuntime<SessionHost | SessionSockets | Harness, unknown>;
   /** Resolves when this instance's model request starts and hangs. */
   readonly hanging = Promise.withResolvers<void>();
+  /** Holds back this instance's `gate:` responses until `open()`. */
+  readonly #gate = Promise.withResolvers<void>();
+  /** Resolves when this instance's model request reaches the gate. */
+  readonly gated = Promise.withResolvers<void>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -66,27 +81,56 @@ export class TestSession extends DurableObject {
     models.setProvider(faux.provider);
     void ctx.blockConcurrencyWhile(async () => {
       this.#runtime = ManagedRuntime.make(
-        sessionHostLayer({
-          storage: ctx.storage,
-          models,
-          agent: AGENT,
-          reset: (reason) => ctx.abort(reason),
-          extensions: sessionExtensions,
-          reportTimeout: "200 millis",
-        }).pipe(
-          Layer.provide(
-            Layer.succeed(SessionRegistry, {
-              report: (status) =>
-                Effect.tryPromise({
-                  try: () => this.#report(status),
-                  catch: (cause) => ReportError.make({ message: String(cause) }),
+        sessionSocketsLayer(ctx).pipe(
+          Layer.provideMerge(
+            sessionHostLayer({
+              storage: ctx.storage,
+              models,
+              agent: AGENT,
+              reset: (reason) => ctx.abort(reason),
+              extensions: sessionExtensions,
+              reportTimeout: "200 millis",
+            }).pipe(
+              Layer.provide(
+                Layer.succeed(SessionRegistry, {
+                  report: (status) =>
+                    Effect.tryPromise({
+                      try: () => this.#report(status),
+                      catch: (cause) => ReportError.make({ message: String(cause) }),
+                    }),
                 }),
-            }),
+              ),
+            ),
           ),
         ),
       );
-      this.#host = Context.get(await this.#runtime.context(), SessionHost);
+
+      const context = await this.#runtime.context();
+
+      this.#host = Context.get(context, SessionHost);
+      this.#sockets = Context.get(context, SessionSockets);
     });
+  }
+
+  /** A client's socket to the Session, as the Session DO answers the main Worker's upgrade. */
+  override async fetch(): Promise<Response> {
+    return new Response(null, {
+      status: 101,
+      webSocket: await Effect.runPromise(this.#sockets.connect),
+    });
+  }
+
+  override async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    await Effect.runPromise(this.#sockets.receive(socket, message));
+  }
+
+  override async webSocketClose(socket: WebSocket): Promise<void> {
+    await Effect.runPromise(this.#sockets.drop(socket));
+  }
+
+  /** Let this instance's `gate:` responses through. */
+  open(): void {
+    this.#gate.resolve();
   }
 
   /** Whether no work is live; reads only, so it never runs work itself. */
@@ -94,12 +138,12 @@ export class TestSession extends DurableObject {
     return Effect.runPromise(this.#host.idle);
   }
 
-  submit(prompt: Prompt): Promise<number> {
-    return Effect.runPromise(this.#host.submit(prompt));
+  submit({ requestId, text }: TestPrompt): Promise<number> {
+    return Effect.runPromise(this.#host.submit({ requestId, input: text }));
   }
 
-  prompt(prompt: Prompt): Promise<Answer> {
-    return Effect.runPromise(this.#host.prompt(prompt));
+  prompt({ requestId, text }: TestPrompt): Promise<Answer> {
+    return Effect.runPromise(this.#host.prompt({ requestId, input: text }));
   }
 
   /** The text of each tool result in the root transcript, oldest first. */
@@ -189,15 +233,13 @@ export class TestSession extends DurableObject {
 
       this.ctx.storage.kv.put("script", { ...script, next: script.next + 1 });
 
-      const call = CALL.exec(text);
+      if (text.startsWith("gate:")) {
+        this.gated.resolve();
 
-      if (call !== null) {
-        return fauxAssistantMessage([fauxToolCall(call[1] ?? "", JSON.parse(call[2] ?? "{}"))], {
-          stopReason: "toolUse",
-        });
+        return this.#gate.promise.then(() => respond(text.slice("gate:".length)));
       }
 
-      if (text !== "hang") return fauxAssistantMessage(text);
+      if (text !== "hang") return respond(text);
       this.hanging.resolve();
 
       return new Promise((_resolve, reject) => {

@@ -6,9 +6,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
-import { promptSession, promptSessionId } from "./prompt.ts";
-import { registryRoute, serveRegistry } from "./registry/http.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
+import { serveRegistryRpc } from "./registry/rpc.ts";
+import { isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 
 /**
@@ -36,12 +36,11 @@ export default class Server extends Cloudflare.Worker<Server>()(
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const sessionId = promptSessionId(request);
-        const route = registryRoute(request);
+        const sessionId = sessionSocketId(request);
 
-        if (sessionId !== undefined) return yield* promptSession(sessions, sessionId);
+        if (sessionId !== undefined) return yield* sessions.getByName(sessionId).fetch(request);
 
-        if (route !== undefined) return yield* serveRegistry(registries, route);
+        if (isRegistryRpc(request)) return yield* serveRegistryRpc(registries);
 
         return hello;
       }),
