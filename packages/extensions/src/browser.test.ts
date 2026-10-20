@@ -245,12 +245,15 @@ describe("the browser extension", () => {
     ]);
   });
 
-  it("notes the browser as used by every run, even one that fails", async () => {
-    const { host } = fakeHost((code) =>
-      code === "fail" ? Effect.fail(BrowserError.make({ message: "down" })) : completed([]),
-    );
-
+  it("notes the browser as used before and after every run, even one that fails", async () => {
     const { session: keepAlive, uses } = fakeSession();
+    const usesAtRun: number[] = [];
+
+    const { host } = fakeHost((code) => {
+      usesAtRun.push(uses.count);
+
+      return code === "fail" ? Effect.fail(BrowserError.make({ message: "down" })) : completed([]);
+    });
 
     const session = await openSubagentHarness(looker("fine", "fail"), {}, [
       await extensionOver(host, keepAlive),
@@ -258,7 +261,9 @@ describe("the browser extension", () => {
 
     await session.prompt("Look");
 
-    expect(uses.count).toBe(2);
+    // Used before each run began, so a Session evicted during the first still has a time to close the browser from.
+    expect(usesAtRun).toEqual([1, 3]);
+    expect(uses.count).toBe(4);
   });
 });
 

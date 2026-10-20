@@ -10,6 +10,7 @@ import { browserTool, describeBrowser, FALLBACK_DESCRIPTION } from "./browser/to
 export const extensionName = "browser";
 
 export {
+  BROWSER_IDLE_MS,
   BROWSER_KEEP_ALIVE_MS,
   BrowserError,
   BrowserHost,
@@ -26,6 +27,15 @@ export {
   type BrowserStorage,
   makeBrowserSession,
 } from "./browser/session.ts";
+
+export {
+  imageLimitedModels,
+  limitEntryImages,
+  limitImages,
+  MODEL_IMAGES,
+  OMITTED_IMAGE,
+  SNAPSHOT_IMAGES,
+} from "./browser/images.ts";
 
 export { describeBrowser, MAX_IMAGE_CHARACTERS } from "./browser/tool.ts";
 

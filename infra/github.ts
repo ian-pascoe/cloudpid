@@ -60,8 +60,7 @@ export default Alchemy.Stack(
     // binds its token secret to a short-lived preview Worker on every run). Access Apps and Policies covers the
     // Worker's Access application; Zone Read, DNS Write and Workers Routes Write cover the custom domain of `prod`.
     // Workers Containers Write covers the Workspace DO's Container application and the push of its image to
-    // Cloudflare's registry. Browser Rendering Write covers the Browser Run binding of the browser Worker
-    // (`apps/browser`), which the Session DOs' browser runs on.
+    // Cloudflare's registry.
     const deployToken = yield* Cloudflare.ApiToken.AccountApiToken("DeployToken", {
       name: "cloudpid-ci-deploy",
       accountId,
@@ -71,7 +70,6 @@ export default Alchemy.Stack(
           permissionGroups: [
             "Workers Scripts Write",
             "Workers Containers Write",
-            "Browser Rendering Write",
             "Secrets Store Write",
             "Account Settings Read",
             ACCESS_APPS_AND_POLICIES_WRITE,

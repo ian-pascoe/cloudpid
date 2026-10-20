@@ -98,7 +98,10 @@ export const browserTool = (description: string) =>
         const host = yield* BrowserHost;
         const session = yield* BrowserSession;
 
-        // Used whatever came of it: the browser may have been started before the call failed.
+        // Used from the start, and again whatever came of it: a Session evicted during the run still has the time to
+        // close the browser from, and the browser may have been started before the call failed.
+        yield* session.touch;
+
         const run = yield* host
           .run({ code, conversationId: Number(api.conversationId) })
           .pipe(Effect.ensuring(session.touch));

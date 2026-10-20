@@ -2,9 +2,10 @@
 // then, across an "eviction" (a second service over the same storage).
 // @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
-import { BROWSER_KEEP_ALIVE_MS, BrowserError, type BrowserHostService } from "./host.ts";
+import { BROWSER_IDLE_MS, BrowserError, type BrowserHostService } from "./host.ts";
 import { type BrowserStorage, makeBrowserSession } from "./session.ts";
 
 /** A Durable Object's key-value storage, in memory. */
@@ -63,9 +64,9 @@ describe("the Session's browser keep-alive", () => {
 
       yield* TestClock.adjust(1_000);
       yield* session.touch;
-      yield* TestClock.adjust(BROWSER_KEEP_ALIVE_MS - 1);
+      yield* TestClock.adjust(BROWSER_IDLE_MS - 1);
 
-      expect(yield* session.closeAt).toBe(1_000 + BROWSER_KEEP_ALIVE_MS);
+      expect(yield* session.closeAt).toBe(1_000 + BROWSER_IDLE_MS);
 
       yield* session.closeIfIdle;
 
@@ -78,7 +79,7 @@ describe("the Session's browser keep-alive", () => {
       const session = makeBrowserSession({ host, storage: memoryStorage() });
 
       yield* session.touch;
-      yield* TestClock.adjust(BROWSER_KEEP_ALIVE_MS);
+      yield* TestClock.adjust(BROWSER_IDLE_MS);
       yield* session.closeIfIdle;
       yield* session.closeIfIdle;
 
@@ -92,13 +93,13 @@ describe("the Session's browser keep-alive", () => {
       const session = makeBrowserSession({ host, storage: memoryStorage() });
 
       yield* session.touch;
-      yield* TestClock.adjust(BROWSER_KEEP_ALIVE_MS - 1);
+      yield* TestClock.adjust(BROWSER_IDLE_MS - 1);
       yield* session.touch;
-      yield* TestClock.adjust(BROWSER_KEEP_ALIVE_MS - 1);
+      yield* TestClock.adjust(BROWSER_IDLE_MS - 1);
       yield* session.closeIfIdle;
 
       expect(closes.count).toBe(0);
-      expect(yield* session.closeAt).toBe(BROWSER_KEEP_ALIVE_MS - 1 + BROWSER_KEEP_ALIVE_MS);
+      expect(yield* session.closeAt).toBe(BROWSER_IDLE_MS - 1 + BROWSER_IDLE_MS);
     }));
 
   test("closes a browser used before the object was evicted", () =>
@@ -107,15 +108,43 @@ describe("the Session's browser keep-alive", () => {
       const { host, closes } = fakeHost();
 
       yield* makeBrowserSession({ host, storage }).touch;
-      yield* TestClock.adjust(BROWSER_KEEP_ALIVE_MS);
+      yield* TestClock.adjust(BROWSER_IDLE_MS);
 
       const next = makeBrowserSession({ host, storage });
 
-      expect(yield* next.closeAt).toBe(BROWSER_KEEP_ALIVE_MS);
+      expect(yield* next.closeAt).toBe(BROWSER_IDLE_MS);
 
       yield* next.closeIfIdle;
 
       expect(closes.count).toBe(1);
+    }));
+
+  test("gives up on a close that takes too long, so the Session is not held up", () =>
+    Effect.gen(function* () {
+      const closes = { count: 0 };
+
+      const host: BrowserHostService = {
+        describe: Effect.succeed("drives a browser"),
+        run: () => Effect.succeed({ output: [] }),
+        close: Effect.suspend(() => {
+          closes.count += 1;
+
+          return Effect.never;
+        }),
+      };
+
+      const session = makeBrowserSession({ host, storage: memoryStorage() });
+
+      yield* session.touch;
+      yield* TestClock.adjust(BROWSER_IDLE_MS);
+
+      const closing = yield* Effect.forkChild(session.closeIfIdle);
+
+      yield* TestClock.adjust(5_000);
+      yield* Fiber.join(closing);
+
+      expect(closes.count).toBe(1);
+      expect(yield* session.closeAt).toBeUndefined();
     }));
 
   test("lets go of a browser it cannot close: Browser Run reclaims it itself", () =>
@@ -124,7 +153,7 @@ describe("the Session's browser keep-alive", () => {
       const session = makeBrowserSession({ host, storage: memoryStorage() });
 
       yield* session.touch;
-      yield* TestClock.adjust(BROWSER_KEEP_ALIVE_MS);
+      yield* TestClock.adjust(BROWSER_IDLE_MS);
       yield* session.closeIfIdle;
       yield* session.closeIfIdle;
 

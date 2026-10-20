@@ -1,6 +1,11 @@
 import { BROWSER_HOST_BINDING } from "@cloudpid/browser/binding";
 import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
-import { BrowserHost, BrowserSession, browserSessionLayer } from "@cloudpid/extensions/browser";
+import {
+  BrowserHost,
+  BrowserSession,
+  browserSessionLayer,
+  imageLimitedModels,
+} from "@cloudpid/extensions/browser";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
@@ -167,7 +172,7 @@ export const SessionLive = Session.make(
                 storage: state.raw.storage,
                 // Every model call (generations, summaries) is scrubbed of the Secrets this Session holds.
                 models: Effect.map(Effect.service(Secrets), (held) =>
-                  scrubbingModels(models, held),
+                  scrubbingModels(imageLimitedModels(models), held),
                 ),
                 reset: (reason) => state.raw.abort(reason),
                 extensions: sessionExtensions.pipe(

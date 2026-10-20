@@ -8,6 +8,12 @@ import type { JsonValue } from "@earendil-works/chord";
  */
 export const BROWSER_KEEP_ALIVE_MS = 10 * 60_000;
 
+/**
+ * How long the Session lets its browser sit unused before it closes it. Shorter than `keep_alive`, which also covers a
+ * long gap in the middle of a turn: a Session that has settled idle does not pay for the rest of it.
+ */
+export const BROWSER_IDLE_MS = 5 * 60_000;
+
 /** A part of what a run returns: text, or a screenshot the UI shows. */
 export type BrowserOutputPart =
   | { readonly type: "text"; readonly text: string }

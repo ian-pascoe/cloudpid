@@ -7,7 +7,12 @@ import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { BrowserRun } from "./contract.ts";
 
-export { BROWSER_KEEP_ALIVE_MS, type BrowserOutputPart, type BrowserRun } from "./contract.ts";
+export {
+  BROWSER_IDLE_MS,
+  BROWSER_KEEP_ALIVE_MS,
+  type BrowserOutputPart,
+  type BrowserRun,
+} from "./contract.ts";
 
 /** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
 export class BrowserError extends Schema.TaggedError<

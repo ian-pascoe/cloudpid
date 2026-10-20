@@ -2,7 +2,7 @@
 // Secrets' expiry, over the real keep-alive so a close really follows an idle Session past it.
 // @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off
 import {
-  BROWSER_KEEP_ALIVE_MS,
+  BROWSER_IDLE_MS,
   type BrowserHostService,
   makeBrowserSession,
 } from "@cloudpid/extensions/browser";
@@ -77,7 +77,7 @@ describe("what wakes an idle Session", () => {
 
       yield* browser.touch;
 
-      expect(yield* wakeAt(secrets, browser)).toBe(BROWSER_KEEP_ALIVE_MS);
+      expect(yield* wakeAt(secrets, browser)).toBe(BROWSER_IDLE_MS);
     }));
 
   test("is the sooner of a Secret's expiry and the browser's keep-alive", () =>
@@ -107,7 +107,7 @@ describe("what a Session does when it settles", () => {
 
       expect(state).toMatchObject({ closes: 0, dropped: 1 });
 
-      yield* TestClock.adjust(BROWSER_KEEP_ALIVE_MS);
+      yield* TestClock.adjust(BROWSER_IDLE_MS);
       yield* onIdle(secrets, browser);
 
       expect(state).toMatchObject({ closes: 1, dropped: 2 });
