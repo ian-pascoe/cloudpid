@@ -2,7 +2,7 @@
 // starts the Container. The Workspace test Worker has no Container, so a command sent to it fails, and its counter
 // (`liveStubs().container`) says whether one was.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { WORKER_SHELL_BUILTINS, WORKER_SHELL_COMMANDS } from "@cloudpid/extensions/bash-routing";
@@ -75,6 +75,18 @@ const open = async () => {
     expect(result, command).toMatchObject({ isError: false });
   };
 
+  /** Writes bytes the shell would mangle (it writes text), creating the directories above `path`. */
+  const put = async (path: string, bytes: Uint8Array) => {
+    getOrThrow(
+      await executionEnv.createDir(
+        path.slice(0, path.lastIndexOf("/")),
+        { recursive: true },
+        context,
+      ),
+    );
+    getOrThrow(await executionEnv.writeFile(path, bytes, context));
+  };
+
   /** The commands the Workspace started since this case opened. */
   const counts = async () => {
     const now = await shared.liveStubs();
@@ -82,7 +94,7 @@ const open = async () => {
     return { started: now.started - before.started, container: now.container - before.container };
   };
 
-  return { run, setup, counts };
+  return { run, setup, put, counts };
 };
 
 // The first command loads the Worker Shell and its modules (git, jq) cold, which can take longer than the default 5 s on CI.
@@ -203,6 +215,47 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
         false,
         false,
       ]);
+      expect(await counts()).toMatchObject({ container: 0 });
+    });
+
+    // The Container's real git writes the index and the objects, and the Worker Shell's git reads them after sync. These
+    // files are what real git 2.5x wrote for `a.txt` ("hi") and `b.txt` ("n"), committed as "first".
+    const REAL_GIT_FILES = {
+      ".git/index":
+        "RElSQwAAAAIAAAACatfffywf0vNq199/LB/S8wEAABILPCZDAACBpAAAAfUAAAAAAAAAA0W5g742tzwHiNycvLdsu4D8e7BXAAVhLnR4dAAAAAAAatfffywguj1q199/LCC6PQEAABILPCZEAACBpAAAAfUAAAAAAAAAAoujoWOEqsw30BVksoQBdVzoBT9RAAViLnR4dAAAAAAAVFJFRQAAABkAMiAwCt14lefPhLy30YQQP6/lYDRQdjZZpKfI5OI0BtsfWOnm+md22kh/7Sc=",
+      ".git/refs/heads/main": "NGY0NTBjY2M4MmFmY2RiNDk4YjE1YWUzYmE4ZWU2N2ZjZTZkNmNmMgo=",
+      ".git/objects/45/b983be36b73c0788dc9cbcb76cbb80fc7bb057": "eAFLyslPUjBmyMjkAgARowLO",
+      ".git/objects/dd/7895e7cf84bcb7d184103fafe5603450763659":
+        "eAErKUpNVTAzYzA0MDAzMVFI1CupKGFw3dm8z2y7DXvHnTl7tufsbvhTvSEcqiAJrKB78cLkllVnzC+IpmxqYSyNecFqHwgA+zMc8g==",
+      ".git/objects/4f/450ccc82afcdb498b15ae3ba8ee67fce6d6cf2":
+        "eAF9zD0KgDAMQGHnniK7S/qbCiJeRdsUHUSoETy+xQP45o+XzuPYBbTBTioz5Exx8EypRLemlbKOTqMtS2Ef0DqPFGzwg1pu2c4KAqPMzwSaAhnTCEKPLZW+sfAPUWWvl6gXifwjhg==",
+      ".git/objects/8b/a3a16384aacc37d01564b28401755ce8053f51": "eAFLyslPUjBiyOMCAA5+Amo=",
+    };
+
+    it("reads a commit and an index real git wrote after the repository had none", async () => {
+      const { run, setup, put, counts } = await open();
+
+      await setup("git init -b main");
+      // The Worker Shell's git reads the repository while its index does not exist yet.
+      expect(await run({ command: "git status" })).toMatchObject({ isError: false });
+
+      await setup("printf 'hi\\n' > a.txt && printf 'n\\n' > b.txt");
+
+      for (const [path, data] of Object.entries(REAL_GIT_FILES)) {
+        await put(
+          path,
+          Uint8Array.from(atob(data), (char) => char.charCodeAt(0)),
+        );
+      }
+
+      const files = await run({ command: "git ls-files" });
+      const log = await run({ command: "git log --oneline" });
+      const status = await run({ command: "git status" });
+
+      expect(files.text).toBe("a.txt\nb.txt\n");
+      expect(log.text).toMatch(/^4f450cc first$/m);
+      // `notes.txt` and `package.json` are the case's own files, which real git never saw.
+      expect(porcelain(status.text)).toEqual(["?? notes.txt", "?? package.json"]);
       expect(await counts()).toMatchObject({ container: 0 });
     });
   });

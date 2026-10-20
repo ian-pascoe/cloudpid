@@ -15,7 +15,7 @@ import {
   type ContainerBackendOptions,
   withWorkspaceContainer,
 } from "@cloudflare/computer/backends/container";
-import { createGitClient } from "@cloudflare/computer/git";
+import { createGitClient, type GitClientFactory } from "@cloudflare/computer/git";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import jq from "@cloudflare/computer/shell/jq";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
@@ -62,6 +62,32 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
 export const CONTAINER_BACKEND_ID = "container-shell";
+
+/**
+ * computer's git client for the Worker Shell, built anew for every call. One client keeps isomorphic-git's cache for as
+ * long as the Workspace lives, and that cache holds the index: a client that read a repository while `.git/index` did not
+ * exist (after `git init`) keeps answering as if it still did, so after the Container's git adds and commits, `git status`
+ * says every committed file is deleted and `git ls-files` lists nothing. The cost is that each call parses the repository
+ * again, which is fine for the read-only commands `bash` routes there (`bash-routing.ts`).
+ */
+const freshGitClient = (): GitClientFactory => {
+  const create = createGitClient();
+
+  return (options) =>
+    // SAFETY: every member of a git client is a method, and the proxy forwards each call to a client of its own.
+    new Proxy({} as ReturnType<GitClientFactory>, {
+      get:
+        (_target, name) =>
+        (...args: unknown[]) => {
+          const client = create(options);
+
+          // SAFETY: `name` is a method of the client, as the proxy's only users call one.
+          const method = client[name as keyof typeof client] as (...call: unknown[]) => never;
+
+          return method.call(client, ...args);
+        },
+    });
+};
 
 export class Workspace extends ContainerHost {
   readonly #workspace: ComputerWorkspace;
@@ -115,7 +141,7 @@ export class Workspace extends ContainerHost {
       observer: this.#containerUseObserver(),
       // The Worker Shell's `git` runs on computer's git client. `bash` routes only a few read-only subcommands there
       // (`bash-routing.ts`): the Container's real git is the only one that writes `.git`.
-      git: createGitClient(),
+      git: freshGitClient(),
       backends: [
         new WorkerShellBackend({
           loader: env.LOADER,
