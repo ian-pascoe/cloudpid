@@ -89,3 +89,6 @@ jobs:
           # empty secret binding is not verified, so set both (or remove the line of one you will never set).
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}
+          # The GitHub token commands on the Workspace's Container get as GH_TOKEN/GITHUB_TOKEN (read by the Workspaces
+          # Worker's `Config.Redacted`, bound as a Worker secret). Set in `production`.
+          CLOUDPID_GITHUB_TOKEN: ${{ secrets.CLOUDPID_GITHUB_TOKEN }}

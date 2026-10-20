@@ -36,7 +36,9 @@ COPY --from=mise /mise /usr/local/bin/mise
 
 # computerd mounts its file system at MOUNT_POINT, so commands see the Workspace's files at /workspace. FUSE_MOUNT=auto
 # mounts through /dev/fuse where the platform exposes it (Cloudflare Containers) and falls back to a userspace shim
-# where it does not. mise's shims put the programs it installs on PATH.
+# where it does not. mise keeps its Toolchains on the image's own disk, in its default place under /root, and its shims put
+# the programs it installs on PATH. PATH is the one variable computerd passes on to a command, so it is the one set
+# here: mise's other settings reach a command in its exec environment (apps/sandbox-image/src/toolchains.ts).
 ENV PORT=8080 \
     MOUNT_POINT=/workspace \
     FUSE_MOUNT=auto \
