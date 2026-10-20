@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
-import { WORKER_SHELL_COMMANDS } from "@cloudpid/extensions/bash-routing";
+import { WORKER_SHELL_BUILTINS, WORKER_SHELL_COMMANDS } from "@cloudpid/extensions/bash-routing";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { env } from "cloudflare:workers";
@@ -43,7 +43,7 @@ const open = async () => {
   );
   getOrThrow(await executionEnv.writeFile("notes.txt", "alpha\nneedle\nomega\n", context));
 
-  /** What the model sees from calling `bash` with `args`. */
+  /** What the model sees from calling `bash` with `args`: its output, and whether the tool reported an error. */
   const run = async (args: Record<string, string | number>) => {
     if (bash === undefined) throw new Error("no bash tool");
 
@@ -59,12 +59,20 @@ const open = async () => {
     try {
       // SAFETY: `args` are `bash`'s parameters (the lookup by name types it as any of the tools), and `bash` uses only the
       // environment, the output sink, and diagnostics of the API.
-      await bash.execute(args as never, api as never, context);
+      const result = await bash.execute(args as never, api as never, context);
 
-      return { text: chunks.join(""), isError: false };
+      // A command that exits nonzero comes back as a result with `isError`; only a timeout or an abort throws.
+      return { text: chunks.join(""), isError: result.isError === true };
     } catch (error) {
       return { text: `${chunks.join("")}${String(error)}`, isError: true };
     }
+  };
+
+  /** Runs `command` on the Worker Shell explicitly, as test setup that the router would send to the Container. */
+  const setup = async (command: string) => {
+    const result = await run({ command, backend: "worker" });
+
+    expect(result, command).toMatchObject({ isError: false });
   };
 
   /** The commands the Workspace started since this case opened. */
@@ -74,7 +82,7 @@ const open = async () => {
     return { started: now.started - before.started, container: now.container - before.container };
   };
 
-  return { run, counts };
+  return { run, setup, counts };
 };
 
 // The first command loads the Worker Shell and its modules (git, jq) cold, which can take longer than the default 5 s on CI.
@@ -96,26 +104,124 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it("runs git status on the Worker Shell, inside a repository it initialized there", async () => {
-    const { run, counts } = await open();
+  describe("read-only git, which the Worker Shell answers as git does", () => {
+    /** A repository with `notes.txt` and `package.json` committed, as the Worker Shell's git writes it. */
+    const repository = async () => {
+      const opened = await open();
 
-    const init = await run({ command: "git init -b main && git add -A && git status --short" });
+      await opened.setup(
+        [
+          "export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com",
+          "git init -b main && git add -A && git commit -m first",
+        ].join("; "),
+      );
 
-    expect(init.isError).toBe(false);
-    expect(init.text).toContain("notes.txt");
-    expect(await counts()).toMatchObject({ started: 1, container: 0 });
-  });
+      return opened;
+    };
 
-  it("commits on the Worker Shell with an identity, which git log shows", async () => {
-    const { run, counts } = await open();
+    /** The Worker Shell's `git status` lines as `git status --porcelain` writes them (`1 XY path` is ` M path`), sorted. */
+    const porcelain = (text: string) =>
+      text
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => {
+          const entry = /^1 (..) (.+)$/.exec(line);
 
-    const log = await run({
-      command: "git init -b main && git add -A && git commit -m 'first' && git log --oneline",
+          if (entry !== null) return `${entry[1]} ${entry[2]}`;
+
+          const untracked = /^\? (.+)$/.exec(line);
+
+          if (untracked !== null) return `?? ${untracked[1]}`;
+
+          throw new Error(`unrecognized git status line: ${line}`);
+        })
+        .sort();
+
+    it("lists unstaged changes and untracked files in git status, and nothing in a clean repository", async () => {
+      const { run, setup, counts } = await repository();
+
+      const clean = await run({ command: "git status" });
+
+      expect(clean).toMatchObject({ isError: false });
+      expect(clean.text.trim()).toBe("");
+
+      await setup("echo more >> notes.txt && rm package.json && echo new > new.txt");
+
+      const status = await run({ command: "git status" });
+
+      expect(status.isError).toBe(false);
+      // What `git status --porcelain` writes for the same tree.
+      expect(porcelain(status.text)).toEqual([" D package.json", " M notes.txt", "?? new.txt"]);
+      expect(await counts()).toMatchObject({ container: 0 });
     });
 
-    expect(log.isError).toBe(false);
-    expect(log.text).toContain("first");
-    expect(await counts()).toMatchObject({ started: 1, container: 0 });
+    it("lists the index in git ls-files", async () => {
+      const { run, setup, counts } = await repository();
+
+      await setup("echo new > new.txt");
+
+      const files = await run({ command: "git ls-files" });
+
+      // `new.txt` is untracked, so it is not in the index.
+      expect(files).toEqual({ text: "notes.txt\npackage.json\n", isError: false });
+      expect(await counts()).toMatchObject({ container: 0 });
+    });
+
+    it("lists the branches in git branch, and the current one in --show-current", async () => {
+      const { run, setup, counts } = await repository();
+
+      await setup("git branch dev");
+
+      expect(await run({ command: "git branch" })).toEqual({
+        text: "  dev\n* main\n",
+        isError: false,
+      });
+      expect(await run({ command: "git branch --show-current" })).toEqual({
+        text: "main\n",
+        isError: false,
+      });
+      expect(await counts()).toMatchObject({ container: 0 });
+    });
+
+    it("answers rev-parse and log --oneline with the same commit", async () => {
+      const { run, counts } = await repository();
+
+      const head = await run({ command: "git rev-parse HEAD" });
+      const branch = await run({ command: "git rev-parse --abbrev-ref HEAD" });
+      const top = await run({ command: "git rev-parse --show-toplevel" });
+      const log = await run({ command: "git log --oneline" });
+
+      expect(head.text).toMatch(/^[0-9a-f]{40}\n$/);
+      expect(branch.text).toBe("main\n");
+      expect(top.text).toMatch(/\/case-\d+\n$/);
+      // `--oneline` abbreviates the hash to 7 characters, as git does.
+      expect(log.text).toMatch(/^[0-9a-f]{7} first$/m);
+      expect(log.text.slice(0, 7)).toBe(head.text.slice(0, 7));
+      expect([head, branch, top, log].map((result) => result.isError)).toEqual([
+        false,
+        false,
+        false,
+        false,
+      ]);
+      expect(await counts()).toMatchObject({ container: 0 });
+    });
+  });
+
+  // git that writes the index or a ref, or whose output the Worker Shell's git gets wrong, goes to the Container.
+  it.each([
+    "git add -A",
+    "git commit -m x",
+    "git diff",
+    "git show",
+    "git branch dev",
+    "git status --short",
+    "git log",
+  ])("sends `%s` to the Container", async (command) => {
+    const { run, counts } = await open();
+
+    await run({ command });
+
+    expect(await counts()).toMatchObject({ started: 1, container: 1 });
   });
 
   it.each(["node -v", "npm test", "gh pr list", "cat notes.txt && node x.js", "git push"])(
@@ -135,19 +241,28 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
 
     const result = await run({ command: "node -v", backend: "worker" });
 
+    expect(result.isError).toBe(true);
     expect(result.text).toMatch(/not found/);
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it("has every command the router sends to the Worker Shell", async () => {
+  // The router sends a command to the Worker Shell by name, so a Worker Shell that lacks one would fail it there.
+  it("has every command and builtin the router sends to the Worker Shell", async () => {
     const { run } = await open();
     const missing: string[] = [];
 
-    for (const name of WORKER_SHELL_COMMANDS) {
-      const result = await run({ command: `command -v ${name}`, backend: "worker" });
+    for (const name of [...WORKER_SHELL_COMMANDS, "git"]) {
+      const result = await run({ command: `command -v '${name}'`, backend: "worker" });
 
-      // `command -v` prints where it found the command, and nothing for one it did not.
-      if (result.text.trim() === "") missing.push(name);
+      // `command -v` prints where it found the command, and exits nonzero for one it did not.
+      if (result.isError || result.text.trim() === "") missing.push(name);
+    }
+
+    for (const name of WORKER_SHELL_BUILTINS) {
+      // `type -t` prints `builtin` or `keyword`, and nothing for a name that is not a command at all (quoted: `[[` is a keyword).
+      const result = await run({ command: `type -t '${name}'`, backend: "worker" });
+
+      if (result.isError || result.text.trim() === "") missing.push(name);
     }
 
     expect(missing).toEqual([]);
