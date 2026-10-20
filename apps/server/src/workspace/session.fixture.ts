@@ -4,6 +4,7 @@
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
+import { BrowserHost, BrowserSession } from "@cloudpid/extensions/browser";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
@@ -54,6 +55,17 @@ export class TestWorkspaceSession extends TestSession {
     return sessionExtensions.pipe(
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
       Effect.provideService(CodemodeSandbox, this.sandbox()),
+      // No browser: the tests script the model, and none drives one.
+      Effect.provideService(BrowserHost, {
+        describe: Effect.succeed(""),
+        run: () => Effect.succeed({ output: [] }),
+        close: Effect.succeed(false),
+      }),
+      Effect.provideService(BrowserSession, {
+        touch: Effect.void,
+        closeAt: Effect.undefined,
+        closeIfIdle: Effect.void,
+      }),
       Effect.provideService(SubagentSettings, { current: () => subagentOptions({}, undefined) }),
       // No search keys: the tests script the model, and none searches.
       Effect.provideService(WebConfig, { exaApiKey: Option.none(), parallelApiKey: Option.none() }),

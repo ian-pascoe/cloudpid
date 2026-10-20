@@ -15,7 +15,7 @@ This spec records the design settled on 2026-10-20. Terms follow [`GLOSSARY.md`]
 ```
 Browser (web UI, PWA) ──Access──▶ Main Worker ──WS─────▶ Session DO (per Session)
                                        │                    ├─ pi-durable Harness (SQLite, prefix pi_)
-                                       │                    ├─ Browser (agents/browser → Browser Run)
+                                       │                    ├─ browser tool ─▶ Browser Worker (Browser DO per Session → Browser Run)
                                        │                    └─ RemoteCodemodeSandbox ─▶ Codemode Sandbox Worker (DO per Session)
                                        ├──────────────▶ Registry DO (singleton)
                                        └──────────────▶ Workspace DO (per Workspace)
@@ -32,6 +32,7 @@ Browser (web UI, PWA) ──Access──▶ Main Worker ──WS─────�
 | **Workspace DO**        | slug chosen by the user (e.g. `cloudpid`) | One `@cloudflare/computer` Workspace and its container. Several Sessions may share it.                                            |
 | **Registry DO**         | singleton                                 | Workspace and Session listings (title, timestamps, status), settings overrides, push subscriptions.                               |
 | **Codemode sandbox DO** | Session DO id                             | QuickJS script execution. It lives in a separately deployed Worker so scripts run in another isolate.                             |
+| **Browser DO**          | Session DO id                             | The Session's one Browser Run browser (`agents/browser`) and the runs of the model's CDP code. It lives in the `Browsers` Worker. |
 
 The Harness and the Workspace live in separate objects ([ADR-0001](adr/0001-session-and-workspace-durable-objects.md)). The Workspace DO is hosted by its own plain Worker, `Workspaces` (bound as `WORKSPACES`): the Worker Shell reaches the DO through a `WorkspaceServiceProxy` entrypoint the hosting Worker must export (`ctx.exports`), and an alchemy Effect Worker's generated entry exports only `default` and its Effect DO classes. Session DOs bind it across scripts with `Cloudflare.DurableObject("Workspace", { scriptName: Workspaces.workerName })`, the Output and not a literal, so `Workspaces` deploys first; they call it through the raw `DurableObjectNamespace` stub, which `getWorkspace()` and `ComputerExecutionEnv` need. The two Workers deploy separately, so `ComputerExecutionEnv`'s requests to the DO only ever gain operations, never change existing ones.
 
@@ -190,8 +191,10 @@ A Worker cannot resolve a name before `fetch`, so a public-looking name that res
 
 [ADR-0007](adr/0007-browser-and-credentials.md) covers this design.
 
-- **Tool:** `agents/browser` `Browser` with `browserRun(env.BROWSER)` in the Session DO, using `Lifecycle.install(this)` for the browser only. `browserTool()` registers the model-facing `browser` tool, which runs CDP code in a Worker Loader isolate.
-- **Session:** one shared Browser Run session per Session DO, with a tab per conversation and shared cookies. Logins last as long as the Browser Run session.
+- **Tool:** `agents/browser` `Browser` with `browserRun(env.BROWSER, { keepAliveMs: 10 min })` in a Browser DO, one per Session, in the plain `Browsers` Worker (`apps/browser`). `agents/browser/pi`'s `browserTool()` there runs the model's CDP code in a Worker Loader isolate (`LOADER`). The Session DO cannot host it: `browserTool` keeps its runs in a `CodemodeRuntime` facet the hosting Worker must export, and the Server Worker, an alchemy Effect Worker, exports only its Effect DO classes. The Session DO's `browser` tool (`packages/extensions/src/browser`) reaches the Browser DO over RPC, takes its description from it, and passes the calling conversation's ID. `Browser` keeps its record through an explicit `DurableBrowserSessionStore`, so no `Lifecycle` is installed: it would take over the object's `fetch`, `alarm`, and WebSocket handlers.
+- **Session:** one shared Browser Run session per Session, with a tab per conversation (the root and each subagent: `conversation:<id>` scope) and shared cookies. Logins last as long as the Browser Run session.
+- **Keep-alive:** Browser Run closes an idle browser itself after `keep_alive` (10 minutes here; its maximum is 20). The Session also closes it, through the Browser DO, once it has been idle that long: the time of the last use is kept in the Session DO's storage, joins the Secret expiry as a wake time of the host's alarm (`wakeAt`), and the close runs when the host settles idle (`onIdle`). A Session that is never idle is not closed by it; Browser Run's own timeout still applies.
+- **Results:** a screenshot is returned as an image part and shown in the tool's card. It is kept in the transcript, sent to the model with later requests, and sent in the transcript snapshot to each client, so one over about 560 KB (750,000 base64 characters) is replaced by a note to retake it as a smaller JPEG, and only PNG, JPEG, and WebP are kept. Results are redacted of held Secrets by the secrets extension's `afterTool` hook; `browser` is not one of the tools that resolve Secret references, since its code is stored with the run.
 - **`browser_handoff({ instructions })`:** calls `Cloudflare.handoff`. The Live View URL goes only to the user, through the UI and Web Push. The tool waits durably for `handoffComplete`, up to 30 minutes.
 - **v2, `fill_credential({ item, fields, submit? })`:**
   - The host resolves 1Password items, checks that the active tab's origin matches the item's URLs, types the values with CDP `Input.insertText`, and computes TOTP itself.
@@ -260,6 +263,7 @@ infra/                    alchemy stack (alchemy.run.ts): Workers, DOs, Containe
 apps/server/              main Worker: Session, Registry DOs; HTTP/WS API; static assets.
                           Workspaces Worker (src/workspace): Workspace DO
 apps/codemode-sandbox/    codemode sandbox Worker
+apps/browser/             browser Worker: Browser DO (agents/browser on Browser Run)
 apps/web/                 Vite + React UI
 apps/sandbox-image/       image/Dockerfile (computerd + mise; the Docker build context), base mise.toml, bootstrap
 packages/effect-durable/  Effect ↔ pi-durable adapters and service facades

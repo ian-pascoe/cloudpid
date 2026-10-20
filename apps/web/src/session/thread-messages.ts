@@ -38,6 +38,19 @@ const textOf = (content: readonly TranscriptPart[]): string => {
   return lines.join("\n");
 };
 
+/** The image types a card shows: what a page returned is not shown as an SVG or any other type. */
+const SHOWN_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/** The images in a tool result that a card shows. */
+const shownImages = (
+  content: readonly TranscriptPart[],
+): { readonly mimeType: string; readonly data: string }[] =>
+  content.flatMap((part) =>
+    part.type === "image" && SHOWN_IMAGE_TYPES.has(part.mimeType)
+      ? [{ mimeType: part.mimeType, data: part.data }]
+      : [],
+  );
+
 const userContent = (parts: readonly TranscriptPart[]): ContentPart[] => {
   const content: ContentPart[] = [];
 
@@ -97,26 +110,34 @@ const resolveCall = (
   if (index !== undefined && call?.type === "tool-call") {
     const nested = settledCalls(result.details);
     const subagent = result.name === "subagent" ? startedSubagent(result.details) : undefined;
+    const images = shownImages(result.content);
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
 
-    // The calls a tool made, which its result lists once it has ended, and the subagent a `subagent` call started.
+    // What a tool left besides its text: the calls it made, which its result lists once it has ended, the subagent a
+    // `subagent` call started, and the images it returned (a browser's screenshots).
     const artifact: CardArtifact = {};
 
     if (nested.length > 0) artifact.nested = nested;
 
     if (subagent !== undefined) artifact.subagent = subagent;
 
+    if (images.length > 0) artifact.images = images;
+
     turn?.content.splice(
       index,
       1,
-      nested.length === 0 && subagent === undefined ? resolved : { ...resolved, artifact },
+      Object.keys(artifact).length === 0 ? resolved : { ...resolved, artifact },
     );
   }
 };
 
 /** What a tool call's card shows beside its arguments and result. */
-type CardArtifact = { nested?: NestedCall[]; subagent?: StartedSubagent };
+type CardArtifact = {
+  nested?: NestedCall[];
+  subagent?: StartedSubagent;
+  images?: { readonly mimeType: string; readonly data: string }[];
+};
 
 const userMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();
 

@@ -74,6 +74,12 @@ const StreamedOutput = Schema.Struct({ output: Schema.NonEmptyString });
 
 const decodeStreamedOutput = Schema.decodeUnknownOption(StreamedOutput);
 
+const decodeImages = Schema.decodeUnknownOption(
+  Schema.Struct({
+    images: Schema.Array(Schema.Struct({ mimeType: Schema.String, data: Schema.String })),
+  }),
+);
+
 const decodeNested = Schema.decodeUnknownOption(
   Schema.Struct({ nested: Schema.Array(NestedCall) }),
 );
@@ -151,7 +157,13 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
 
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
 
-  return (
+  // The screenshots a call returned, which show beside its card rather than inside it.
+  const images = Option.getOrElse(
+    Option.map(decodeImages(artifact), (found) => found.images),
+    () => [],
+  );
+
+  const card = (
     <Disclosure
       // The calls of a script that is running show as they start.
       open={running && calls.length > 0 ? true : undefined}
@@ -184,6 +196,22 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
         />
       )}
     </Disclosure>
+  );
+
+  if (images.length === 0) return card;
+
+  return (
+    <>
+      {card}
+      {images.map((image, index) => (
+        <img
+          key={index}
+          src={`data:${image.mimeType};base64,${image.data}`}
+          alt="Screenshot of the page"
+          className="my-2 max-h-96 max-w-full rounded-md border"
+        />
+      ))}
+    </>
   );
 };
 

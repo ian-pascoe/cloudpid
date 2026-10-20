@@ -1,4 +1,6 @@
+import { BROWSER_HOST_BINDING } from "@cloudpid/browser/binding";
 import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
+import { BrowserHost, BrowserSession, browserSessionLayer } from "@cloudpid/extensions/browser";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
@@ -15,6 +17,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
+import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
@@ -22,6 +25,7 @@ import { sessionSettingsLayer, subagentSettings } from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
+import { onIdle, wakeAt } from "./wake.ts";
 import { cachedSlug, sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
@@ -127,6 +131,16 @@ export const SessionLive = Session.make(
           name ?? state.raw.id.toString(),
         );
 
+        // One browser host object per Session, in the browser Worker, which keeps the Session's one Browser Run browser.
+        const browser = remoteBrowserHost(
+          // SAFETY: the Server Worker binds the browser host DO namespace as `BROWSER_HOST` (`worker.ts`), a raw namespace.
+          worker[BROWSER_HOST_BINDING] as BrowserHostNamespace,
+          name ?? state.raw.id.toString(),
+        );
+
+        // When the browser was last used is kept in this object's storage; the host's alarm closes it once idle.
+        const sessionBrowser = browserSessionLayer({ host: browser, storage: kv });
+
         // The Registry's saved overrides, read before each request is admitted; the last read is kept in storage.
         const settings = sessionSettingsLayer({
           read: registries
@@ -160,16 +174,25 @@ export const SessionLive = Session.make(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(CodemodeSandbox, sandbox),
+                  Effect.provideService(BrowserHost, browser),
                   Effect.provideServiceEffect(SubagentSettings, subagentSettings),
                 ),
                 env: workspace.env,
-                // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time.
-                wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
-                // A Secret request whose call is gone stops showing its form.
-                onIdle: Effect.flatMap(Effect.service(Secrets), (held) => held.dropAbandoned),
+                // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time, and when the
+                // browser falls idle past its keep-alive, so it is closed.
+                wakeAt: Effect.flatMap(
+                  Effect.all([Effect.service(Secrets), Effect.service(BrowserSession)]),
+                  ([held, browser]) => wakeAt(held, browser),
+                ),
+                // A Secret request whose call is gone stops showing its form, and an idle browser is closed.
+                onIdle: Effect.flatMap(
+                  Effect.all([Effect.service(Secrets), Effect.service(BrowserSession)]),
+                  ([held, browser]) => onIdle(held, browser),
+                ),
               }),
             ),
             Layer.provideMerge(sessionSecrets),
+            Layer.provideMerge(sessionBrowser),
             Layer.provide(Layer.mergeAll(registry, settings)),
           ),
         );

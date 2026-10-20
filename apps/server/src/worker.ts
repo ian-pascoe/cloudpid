@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { BROWSER_HOST_BINDING, Browsers } from "@cloudpid/browser";
 import { WebConfigLive } from "@cloudpid/extensions/web";
 import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
 import * as Alchemy from "alchemy";
@@ -82,6 +83,23 @@ const sandboxBinding = Effect.gen(function* () {
 });
 
 /**
+ * The browser host DO namespace, bound for the Session DOs, which keep their browser in an object of it (ADR-0007). It
+ * lives in the `Browsers` Worker, which deploys first as its script name is the Output. Only the deploy declares it: the
+ * bundle reads the binding from `env`.
+ */
+const browserBinding = Effect.gen(function* () {
+  if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
+
+  const browsers = yield* Browsers;
+
+  return {
+    [BROWSER_HOST_BINDING]: Cloudflare.DurableObject("BrowserHost", {
+      scriptName: browsers.workerName,
+    }),
+  };
+});
+
+/**
  * Deploy-time props, resolved from the stage. The stage is absent once the Worker runs (the props
  * only matter at deploy time), so that case falls back to a non-prod stage.
  */
@@ -93,7 +111,11 @@ const props = Effect.gen(function* () {
     compatibility: { date: "2026-08-31" },
     ...deployment(stage),
     assets: yield* webAssets,
-    env: { ...(yield* workspaceBinding), ...(yield* sandboxBinding) },
+    env: {
+      ...(yield* workspaceBinding),
+      ...(yield* sandboxBinding),
+      ...(yield* browserBinding),
+    },
   };
 });
 
