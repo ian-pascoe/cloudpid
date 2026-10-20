@@ -1,4 +1,5 @@
 // @effect-diagnostics asyncFunction:off
+import { DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
 import { RegistryRpcs, RPC_PATH } from "@cloudpid/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -8,10 +9,12 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
+import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { expect, it } from "vitest";
 import { isRegistryRpc } from "../routes.ts";
 import { serveRegistryRpc } from "./rpc.ts";
+import { SettingsUpdate } from "./settings.ts";
 import type { SessionRecord, WorkspaceRecord } from "./store.ts";
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
@@ -52,6 +55,25 @@ const fakeRegistries = () => {
         return record;
       }),
     listWorkspaces: () => Effect.sync(() => [...workspaces]),
+    getSettings: () =>
+      Effect.sync(() => {
+        calls.push("getSettings");
+
+        return { settings: DEFAULT_SETTINGS, overrides: {} };
+      }),
+    updateSettings: ({ overrides }: { overrides: Schema.Json }) =>
+      Effect.sync(() => {
+        calls.push("updateSettings");
+
+        return overrides === null
+          ? SettingsUpdate.Rejected({ message: "model: Expected an object" })
+          : SettingsUpdate.Saved({
+              state: {
+                settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
+                overrides: { thinkingLevel: "low" },
+              },
+            });
+      }),
   };
 
   return {
@@ -194,4 +216,48 @@ it("creates and lists Workspaces", async () => {
   );
 
   expect(workspaces).toEqual([{ slug: "cloudpid", createdAt: 1 }]);
+});
+
+it("reads the settings from the singleton Registry", async () => {
+  const fake = fakeRegistries();
+
+  const state = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+
+      return yield* registry.getSettings();
+    }),
+    fake,
+  );
+
+  expect(state).toEqual({ settings: DEFAULT_SETTINGS, overrides: {} });
+  expect(fake.names).toEqual(["registry"]);
+});
+
+it("saves settings overrides in the Registry and answers the settings in force", async () => {
+  const state = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+
+      return yield* registry.updateSettings({ overrides: { thinkingLevel: "low" } });
+    }),
+  );
+
+  expect(state).toMatchObject({
+    settings: { thinkingLevel: "low" },
+    overrides: { thinkingLevel: "low" },
+  });
+});
+
+it("fails an update the Registry rejects with the Registry's readable message", async () => {
+  const error = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+
+      return yield* Effect.flip(registry.updateSettings({ overrides: null }));
+    }),
+  );
+
+  expect(error).toBeInstanceOf(SettingsError);
+  expect(error.message).toBe("model: Expected an object");
 });

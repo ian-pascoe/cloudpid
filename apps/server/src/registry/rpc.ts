@@ -1,3 +1,4 @@
+import { SettingsError } from "@cloudpid/config";
 import { RegistryRpcs } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -5,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
+import { SettingsUpdate } from "./settings.ts";
 
 /**
  * The main Worker's `RegistryRpcs` endpoint (`docs/spec.md` → Client and protocol): Effect RPC over HTTP with JSON
@@ -19,6 +21,16 @@ export const serveRegistryRpc = (registries: Cloudflare.DurableObject<Registry>)
       createSession: ({ title, workspace }) => registry.createSession({ title, workspace }),
       listWorkspaces: () => registry.listWorkspaces(),
       createWorkspace: ({ slug }) => registry.createWorkspace({ slug }),
+      getSettings: () => registry.getSettings(),
+      updateSettings: ({ overrides }) =>
+        registry.updateSettings({ overrides }).pipe(
+          Effect.flatMap(
+            SettingsUpdate.$match({
+              Saved: ({ state }) => Effect.succeed(state),
+              Rejected: ({ message }) => Effect.fail(SettingsError.make({ message })),
+            }),
+          ),
+        ),
     });
 
     const serve = yield* RpcServer.toHttpEffect(RegistryRpcs).pipe(

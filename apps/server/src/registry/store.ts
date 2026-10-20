@@ -47,6 +47,12 @@ export type RegistryStore = {
   /** Register a Workspace by slug; one that is already registered keeps its record. */
   readonly createWorkspace: (slug: string, now: number) => WorkspaceRecord;
   readonly listWorkspaces: () => WorkspaceRecord[];
+  /** The JSON text of the document called `name`, or null. Documents hold the Registry's own settings. */
+  readonly getDocument: (name: string) => string | null;
+  /** Save a document, replacing the one with its name. */
+  readonly putDocument: (name: string, body: string, now: number) => void;
+  /** The schema version recorded in the Registry's storage: `SCHEMA_VERSION` once opened. */
+  readonly schemaVersion: () => number;
 };
 
 type SessionRow = {
@@ -81,6 +87,69 @@ const toSession = (row: SessionRow): SessionRecord => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
+
+/**
+ * The schema's version, kept in `registry_meta`. Version 1 is the tables every Registry has had since it was first
+ * deployed (`sessions`, `workspaces`), which are created if missing before any migration runs. A migration adds to the
+ * schema and is listed here by the version it brings the schema to; one that must change a table adds the next version
+ * beside it, and runs once per Registry.
+ */
+const MIGRATIONS: ReadonlyArray<{
+  readonly version: number;
+  readonly up: (sql: SqlStorage) => void;
+}> = [
+  {
+    version: 2,
+    // Settings overrides, and later documents, by name.
+    up: (sql) =>
+      sql.exec(`CREATE TABLE IF NOT EXISTS documents (
+        name TEXT PRIMARY KEY,
+        body TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT`),
+  },
+];
+
+/** The version of the latest migration. */
+export const SCHEMA_VERSION = Arr.reduce(MIGRATIONS, 1, (latest, { version }) =>
+  Math.max(latest, version),
+);
+
+const SCHEMA_VERSION_KEY = "schema_version";
+
+/** The version recorded in `registry_meta`; 1 for a Registry that predates the record. */
+const recordedVersion = (sql: SqlStorage): number => {
+  const [row] = sql
+    .exec<{ value: string }>("SELECT value FROM registry_meta WHERE key = ?", SCHEMA_VERSION_KEY)
+    .toArray();
+
+  return row === undefined ? 1 : Number(row.value);
+};
+
+/** Bring the schema to `SCHEMA_VERSION`, running the migrations it has not had, in order. */
+const migrate = (sql: SqlStorage): void => {
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT",
+  );
+
+  const from = recordedVersion(sql);
+
+  if (from > SCHEMA_VERSION) {
+    throw new Error(
+      `The Registry's schema is at version ${from}, newer than this release's ${SCHEMA_VERSION}`,
+    );
+  }
+
+  for (const { up } of Arr.filter(MIGRATIONS, (migration) => migration.version > from)) up(sql);
+
+  if (from !== SCHEMA_VERSION) {
+    sql.exec(
+      "INSERT OR REPLACE INTO registry_meta (key, value) VALUES (?, ?)",
+      SCHEMA_VERSION_KEY,
+      String(SCHEMA_VERSION),
+    );
+  }
+};
 
 const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => ({
   slug: row.slug,
@@ -167,6 +236,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     );
   };
 
+  migrate(sql);
+
   return {
     createSession: (input, now) => {
       const workspace = input.workspace ?? DEFAULT_WORKSPACE;
@@ -221,5 +292,24 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         sql.exec<WorkspaceRow>("SELECT * FROM workspaces ORDER BY created_at DESC, slug").toArray(),
         toWorkspace,
       ),
+
+    getDocument: (name) => {
+      const [row] = sql
+        .exec<{ body: string }>("SELECT body FROM documents WHERE name = ?", name)
+        .toArray();
+
+      return row === undefined ? null : row.body;
+    },
+
+    putDocument: (name, body, now) => {
+      sql.exec(
+        "INSERT OR REPLACE INTO documents (name, body, updated_at) VALUES (?, ?, ?)",
+        name,
+        body,
+        now,
+      );
+    },
+
+    schemaVersion: () => recordedVersion(sql),
   };
 };

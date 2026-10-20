@@ -169,6 +169,50 @@ describe("the Registry store", () => {
     });
   });
 
+  it("keeps a document by name, replacing it when it is put again", async () => {
+    const registry = fresh();
+
+    expect(await registry.getDocument("settings")).toBeNull();
+
+    await registry.putDocument("settings", '{"a":1}', 1_000);
+    await registry.putDocument("settings", '{"a":2}', 2_000);
+    await registry.putDocument("other", "x", 2_000);
+
+    expect(await registry.getDocument("settings")).toBe('{"a":2}');
+    expect(await registry.getDocument("other")).toBe("x");
+  });
+
+  it("keeps its documents across an eviction", async () => {
+    const registry = fresh();
+
+    await registry.putDocument("settings", '{"a":1}', 1_000);
+    await evictDurableObject(registry);
+
+    expect(await registry.getDocument("settings")).toBe('{"a":1}');
+  });
+
+  it("starts at the current schema version, and moves a Registry that predates versions up to it", async () => {
+    const registry = fresh();
+    const current = await registry.schemaVersion();
+
+    expect(current).toBe(2);
+
+    await registry.createSession({ id: "s-1", title: "Old" }, 1_000);
+
+    // The tables as the first deploy made them: no version record and no document table.
+    await runInDurableObject(registry, (_instance: TestRegistry, state) => {
+      state.storage.sql.exec("DROP TABLE registry_meta");
+      state.storage.sql.exec("DROP TABLE documents");
+    });
+    await evictDurableObject(registry);
+
+    expect(await registry.schemaVersion()).toBe(current);
+    expect(await registry.listSessions()).toMatchObject([{ id: "s-1", title: "Old" }]);
+
+    await registry.putDocument("settings", "{}", 2_000);
+    expect(await registry.getDocument("settings")).toBe("{}");
+  });
+
   it("keeps its Sessions and Workspaces across an eviction", async () => {
     const registry = fresh();
 

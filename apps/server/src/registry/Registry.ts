@@ -1,7 +1,10 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import type * as Schema from "effect/Schema";
 import { newSessionId } from "./ids.ts";
+import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
 import {
   openRegistryStore,
   type SessionRecord,
@@ -31,6 +34,12 @@ export type RegistryMethods = {
   /** Register a Workspace by slug; one already registered keeps its record. */
   readonly createWorkspace: (input: { readonly slug: string }) => Effect.Effect<WorkspaceRecord>;
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
+  /** The settings in force and the overrides saved over the defaults. */
+  readonly getSettings: () => Effect.Effect<SettingsState>;
+  /** Save `overrides` in place of the saved ones if they resolve; otherwise say why not, and save nothing. */
+  readonly updateSettings: (input: {
+    readonly overrides: Schema.Json;
+  }) => Effect.Effect<SettingsUpdate>;
 };
 
 /**
@@ -62,6 +71,17 @@ export const RegistryLive = Registry.make(
           createWorkspace: ({ slug }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => store.createWorkspace(slug, now))),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
+          getSettings: () => Effect.sync(() => readSettings(store)),
+          updateSettings: ({ overrides }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now): SettingsUpdate => {
+                const saved = writeSettings(store, overrides, now);
+
+                return Result.isSuccess(saved)
+                  ? SettingsUpdate.Saved({ state: saved.success })
+                  : SettingsUpdate.Rejected({ message: saved.failure.message });
+              }),
+            ),
         } satisfies RegistryMethods;
       }),
     ),

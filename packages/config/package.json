@@ -12,5 +12,8 @@
     "typecheck": "tsc",
     "lint": "oxlint",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "effect": "^4.0.5"
   }
 }

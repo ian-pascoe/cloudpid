@@ -44,4 +44,16 @@ export class TestRegistry extends DurableObject {
   listWorkspaces(): WorkspaceRecord[] {
     return this.#store.listWorkspaces();
   }
+
+  getDocument(name: string): string | null {
+    return this.#store.getDocument(name);
+  }
+
+  putDocument(name: string, body: string, now: number): void {
+    this.#store.putDocument(name, body, now);
+  }
+
+  schemaVersion(): number {
+    return this.#store.schemaVersion();
+  }
 }
