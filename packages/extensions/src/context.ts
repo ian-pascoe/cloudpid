@@ -1,7 +1,7 @@
 // The `context` extension (`docs/spec.md` → Context management): pi-context-management's `context_notes`,
 // `context_history`, and `context_rollover`, rebuilt on pi-durable. Notes are a conversation document, History reads
-// stored entries, and Rollover hands off with `control: { handoff }`; a `beforeCompact` hook turns automatic compaction
-// into a request to prepare a Rollover.
+// stored entries, and Rollover hands off with `control: { handoff }`; a `beforeCompact` hook turns a background
+// threshold compaction into a Rollover request, and a compaction that cannot wait into an Emergency Rollover.
 import { effectSection, type Harness } from "@cloudpid/effect-durable";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -14,7 +14,7 @@ export const extensionName = "context";
 
 export { ContextDoc, type ContextState, type Note } from "./context/notes.ts";
 
-export { CONTINUE_KIND, PREPARE_KIND } from "./context/rollover.ts";
+export { CONTINUE_ENTRY, PREPARE_ENTRY } from "./context/rollover.ts";
 
 /** The guideline of each context tool the request offers, as pi-context-management adds them to the prompt. */
 const Guidelines = effectSection("context_management", (input) =>

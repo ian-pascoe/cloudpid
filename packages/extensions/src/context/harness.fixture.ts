@@ -30,12 +30,16 @@ import { defaultSubagentSettings, Subagents } from "../subagents.ts";
 
 export const context = BACKGROUND_CONTEXT;
 
-/** The model's context window, and the compaction policy: a request above 3,000 tokens waits for a compaction. */
-const CONTEXT_WINDOW = 4_000;
+/**
+ * The model's context window and the compaction policy, as pi-durable's defaults in miniature: above 5,000 tokens a
+ * compaction starts in the background, and above 10,000 the next request waits for one. A request starts at about
+ * 2,500 tokens (the tool declarations), so two `big` results cross the background threshold and four the blocking one.
+ */
+const CONTEXT_WINDOW = 12_000;
 
-const COMPACTION = { reserveTokens: 1_000, keepRecentTokens: 200, backgroundTokens: 0 };
+const COMPACTION = { reserveTokens: 2_000, keepRecentTokens: 200, backgroundTokens: 5_000 };
 
-/** `big` returns this many characters, about 2,000 tokens: two results cross the threshold. */
+/** `big` returns this many characters, about 2,000 tokens. */
 const BIG_OUTPUT = 8_000;
 
 /** Stand-in tools: `big` fills the context, `noop` does nothing. */
@@ -67,6 +71,8 @@ export type Request = {
   readonly transcript: ReadonlyArray<string>;
   /** The system prompt sections offered so far, joined. */
   readonly system: string;
+  /** The tools offered so far. */
+  readonly tools: ReadonlyArray<string>;
 };
 
 /** A response that calls tools, in order. */
@@ -106,6 +112,21 @@ const agentOf = (messages: readonly Message[]): string => {
   return "root";
 };
 
+/** The tools offered so far in a request's transcript. */
+const toolsOf = (messages: readonly Message[]): string[] => {
+  const tools = new Set<string>();
+
+  for (const message of messages) {
+    if (message.role !== "system") continue;
+
+    for (const tool of message.toolsAdded ?? []) tools.add(tool.name);
+
+    for (const tool of message.toolsRemoved ?? []) tools.delete(tool.name);
+  }
+
+  return [...tools];
+};
+
 /**
  * Open a Harness whose model answers each request with `script(request)`, with the context and subagents extensions and
  * the stand-in tools installed. A large `contextWindow` keeps the threshold out of reach.
@@ -134,6 +155,7 @@ export const openContextHarness = async (
             message.role === "system" ? Object.values(message.sections ?? {}) : [],
           )
           .join("\n"),
+        tools: toolsOf(messages),
       };
 
       requests.push(request);

@@ -2,25 +2,42 @@
 // Rollover (`docs/spec.md` → Context management): the agent writes its own Handoff instead of the generated summary of
 // a compaction. `context_rollover` returns `control: { handoff }`, which pi-durable applies once the whole tool round is
 // done: it appends a `pi.reset` entry carrying the Handoff and ends the run, and a follow-up the tool queued continues
-// the task in the new context. The `beforeCompact` hook turns an automatic (threshold) compaction into a request to
-// prepare one; an overflow compaction, which cannot wait for the agent, uses the last saved Handoff instead.
+// the task in the new context. The `beforeCompact` hook turns a background threshold compaction into a Rollover request;
+// a compaction that cannot wait for the agent (a blocking threshold one, or an overflow one) is the Emergency Rollover,
+// whose summary is the last saved Handoff.
 import { callDurable, defineEffectTool, effectHook, Harness } from "@cloudpid/effect-durable";
 import {
   type CompactionHooks,
   CompactionTask,
   type ConversationId,
+  LiveDoc,
+  type ToolExecutionApi,
   type ToolTaskInput,
 } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { ContextDoc, EMPTY_STATE, MAX_NOTE_CHARACTERS, type Note, noteIndex } from "./notes.ts";
 import { durable, fail, readEntry } from "./store.ts";
 
-/** The entry kind of the request to prepare a Rollover, so the transcript can tell it from user input. */
-export const PREPARE_KIND = "cloudpid.context-prepare";
+/**
+ * The Rollover request's entry: its own kind, and a `notice` title, so the transcript shows it as a notice rather than
+ * as user input.
+ */
+export const PREPARE_ENTRY = {
+  kind: "cloudpid.context-prepare",
+  data: { notice: "Rollover requested" },
+} as const;
 
-/** The entry kind of the input that continues the task after a Handoff. */
-export const CONTINUE_KIND = "cloudpid.context-continue";
+/** The entry of the input that continues the task after a Handoff. */
+export const CONTINUE_ENTRY = {
+  kind: "cloudpid.context-continue",
+  data: { notice: "Continued after the Handoff" },
+} as const;
+
+/** The request ID prefix of Rollover requests; the suffix names the Context Window it was made in. */
+const PREPARE_REQUEST = "context-prepare:";
 
 export const PREPARE_PROMPT =
   "Prepare a Context Rollover for the current task: the context is nearly full. Update useful Notes, then call context_rollover as the only tool call of its round with an explicit Handoff containing the objective, decisions, current state, and next actions. Continue the task after the checkpoint.";
@@ -52,7 +69,7 @@ export const emergencyText = (
 ): string =>
   [
     "Context Window Handoff",
-    "Emergency Rollover: the context overflowed before a fresh Handoff, so the saved Handoff below may be stale or absent. Recover recent work from History before continuing.",
+    "Emergency Rollover: the context filled up before a fresh Handoff, so the saved Handoff below may be stale or absent. Recover recent work from History before continuing.",
     handoff ?? "No saved Handoff. Recover the user's task from recent History and Notes.",
     noteIndex(conversationId, notes),
     HISTORY_HINT,
@@ -67,6 +84,54 @@ const RolloverParameters = Schema.Struct({
       "What the next context needs to continue: the objective, decisions, current state, and next actions",
   }),
 });
+
+/**
+ * Whether this Rollover was requested after the task was answered: the run holds a Rollover request that was placed
+ * right after a final answer (an assistant message without tool calls), not after a tool round of the task.
+ */
+const requestedAfterAnswer = (api: ToolExecutionApi) =>
+  Effect.gen(function* () {
+    const { harness } = yield* Harness;
+
+    const live = yield* durable("snapshot", (context) =>
+      api.snapshot(LiveDoc, api.conversationId, context),
+    );
+
+    const records = yield* Effect.forEach(live?.run?.inputs ?? [], (id) =>
+      durable("submission", async (context) =>
+        (await harness.submission(id, context))?.status(context),
+      ),
+    );
+
+    const request = Arr.findFirst(
+      records,
+      (record) => record?.requestId?.startsWith(PREPARE_REQUEST) === true,
+    ).pipe(Option.getOrUndefined);
+
+    const placed = request?.entry;
+
+    if (placed === undefined) return false;
+
+    // The newest entries up to the request, newest first: the request, then what it was placed after.
+    const before = yield* durable("scanEntries", (context) =>
+      api.commit(
+        (tx) => tx.scanEntries({ conversationId: api.conversationId, maxEntryId: placed }, 8),
+        context,
+      ),
+    );
+
+    const previous = Arr.findFirst(
+      before.items,
+      (entry) => entry.id !== placed && entry.kind !== "pi.system",
+    ).pipe(Option.getOrUndefined);
+
+    const message = previous?.model?.[0];
+
+    return (
+      message?.role === "assistant" &&
+      !Arr.some(message.content, (block) => block.type === "toolCall")
+    );
+  });
 
 const NOT_ALONE = "Rollover must be the sole tool call of its round; call context_rollover alone";
 
@@ -112,12 +177,13 @@ export const ContextRollover = defineEffectTool({
         }, context),
       );
 
-      // Queued behind the Handoff, so the task goes on in the new context once pi-durable ends this run.
+      // Queued behind the Handoff, so the task goes on in the new context once pi-durable ends this run. A Rollover
+      // requested after the task was answered has no task to go on with: it stops at the Handoff.
       const conversation = yield* durable("conversation", (context) =>
         api.conversation(api.conversationId, context),
       );
 
-      if (conversation !== undefined) {
+      if (conversation !== undefined && !(yield* requestedAfterAnswer(api))) {
         yield* durable("continue", (context) =>
           conversation.submit(
             {
@@ -125,7 +191,7 @@ export const ContextRollover = defineEffectTool({
               content: CONTINUE_PROMPT,
               whenBusy: "followUp",
               requestId: `context-continue:${api.taskId}`,
-              entry: { kind: CONTINUE_KIND },
+              entry: CONTINUE_ENTRY,
             },
             context,
           ),
@@ -147,11 +213,16 @@ export const ContextRollover = defineEffectTool({
 type BeforeCompact = Parameters<CompactionHooks["beforeCompact"]>;
 
 /**
- * Automatic compaction as Rollover, in conversations that have `context_rollover`. A threshold compaction is declined
- * and the agent is asked, once per Context Window, to update its Notes and roll over; the request steers into the
- * running work, after its current tool round. An overflow compaction is the Emergency Rollover: its summary is the
- * last saved Handoff and the Note Index, and it keeps pi-durable's cut, which never splits a tool call from its result.
- * A manual compaction keeps pi-durable's summary.
+ * Automatic compaction as Rollover, in conversations that offer `context_rollover`:
+ *
+ * - A background threshold compaction is declined: it blocks nothing, and the request goes ahead with pi-durable's
+ *   overflow recovery intact. While a run is live, the agent is asked once per Context Window, by a request steered
+ *   after the current tool round, to update its Notes and roll over. With no run live it only declines; the next
+ *   input crosses the threshold again and asks then.
+ * - A blocking threshold compaction and an overflow compaction cannot wait for the agent: declining the blocking one
+ *   would send a request without overflow recovery. Both are the Emergency Rollover, whose summary is the last saved
+ *   Handoff and the Note Index, on pi-durable's cut, which never splits a tool call from its result.
+ * - A manual compaction keeps pi-durable's summary.
  */
 export const PrepareRollover = effectHook(CompactionTask, {
   beforeCompact: (compaction: BeforeCompact[0], api: BeforeCompact[1]) =>
@@ -168,9 +239,16 @@ export const PrepareRollover = effectHook(CompactionTask, {
 
       const agent = yield* callDurable("agent", (context) => conversation.agent(context));
 
-      if (!agent.tools.some((tool) => tool.name === "context_rollover")) return undefined;
+      if (!Arr.some(agent.tools, (tool) => tool.name === "context_rollover")) return undefined;
 
-      if (compaction.reason === "overflow") {
+      const live = yield* callDurable("snapshot", (context) =>
+        api.snapshot(LiveDoc, api.conversationId, context),
+      );
+
+      const blocking =
+        live?.compactions?.find((status) => status.taskId === api.taskId)?.blocking ?? false;
+
+      if (compaction.reason === "overflow" || blocking) {
         const state =
           (yield* callDurable("snapshot", (context) =>
             api.snapshot(ContextDoc, api.conversationId, context),
@@ -178,6 +256,8 @@ export const PrepareRollover = effectHook(CompactionTask, {
 
         return { summary: emergencyText(api.conversationId, state.handoff, state.notes) };
       }
+
+      if (live?.run === undefined) return { decline: true } as const;
 
       // The head of the current Context Window: one request per window, however often the threshold is crossed.
       const window = compaction.entries[0]?.id ?? compaction.firstKept;
@@ -188,8 +268,8 @@ export const PrepareRollover = effectHook(CompactionTask, {
             type: "input",
             content: PREPARE_PROMPT,
             whenBusy: "steer",
-            requestId: `context-prepare:${window}`,
-            entry: { kind: PREPARE_KIND, data: { reason: compaction.reason } },
+            requestId: `${PREPARE_REQUEST}${window}`,
+            entry: PREPARE_ENTRY,
           },
           context,
         ),

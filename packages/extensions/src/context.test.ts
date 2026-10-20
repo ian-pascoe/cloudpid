@@ -4,9 +4,13 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
+import { PREPARE_ENTRY } from "./context.ts";
+import { PREPARE_PROMPT } from "./context/rollover.ts";
+import { SubagentsDoc } from "./subagents.ts";
 import {
   answer,
   call,
+  context,
   contentText,
   openContextHarness,
   type Request,
@@ -15,6 +19,19 @@ import {
 const PREPARE = "Prepare a Context Rollover";
 
 const isBig = (text: string) => text.startsWith("xxxx");
+
+const isEmergency = (text: string) => text.includes("Emergency Rollover");
+
+/** What a provider answers when the request does not fit. */
+const overflow = () =>
+  fauxAssistantMessage("", {
+    stopReason: "error",
+    errorMessage: "prompt is too long: 213462 tokens > 200000 maximum",
+  });
+
+/** pi-durable's summarization request, which the scripts answer as a summarizer would. */
+const isSummarization = (request: Request) =>
+  request.text.includes("Create a structured context checkpoint summary");
 
 /**
  * The long task: two large tool results cross the threshold, and the agent keeps working until it is asked to prepare;
@@ -63,6 +80,7 @@ describe("context management", () => {
     expect(after.transcript[0]).toContain("Continue with step 3 of the long task.");
     expect(after.transcript.some(isBig)).toBe(false);
     expect(after.transcript.some((text) => text.includes(PREPARE))).toBe(false);
+    expect(kinds).toContain("cloudpid.context-continue");
   });
 
   it("keeps Notes across a Handoff and lists them in the new context", async () => {
@@ -126,10 +144,7 @@ describe("context management", () => {
       if (!overflowed) {
         overflowed = true;
 
-        return fauxAssistantMessage("", {
-          stopReason: "error",
-          errorMessage: "prompt is too long: 213462 tokens > 200000 maximum",
-        });
+        return overflow();
       }
 
       return answer("Recovered.");
@@ -145,6 +160,119 @@ describe("context management", () => {
     expect(contentText(summary!.model![0]!.content)).toMatch(
       /Emergency Rollover.*No saved Handoff.*"plan"/s,
     );
+  });
+
+  it("falls back to an Emergency Rollover when the agent ignores the request and the context fills up", async () => {
+    const session = await openContextHarness((request) =>
+      request.transcript.some(isEmergency) ? answer("Recovered.") : call(["big", {}]),
+    );
+
+    const settled = await session.prompt("Start the long task");
+
+    await session.settle();
+
+    const entries = await session.entries();
+    const kinds = entries.map((entry) => entry.kind);
+    const summary = entries.find((entry) => entry.kind === "pi.compaction");
+
+    // Asked once, ignored, and then the blocking threshold took the Emergency Rollover rather than a failed request.
+    expect(settled.status).toBe("done");
+    expect(kinds.filter((kind) => kind === "cloudpid.context-prepare")).toHaveLength(1);
+    expect(kinds).not.toContain("pi.reset");
+    expect(contentText(summary!.model![0]!.content)).toMatch(
+      /Emergency Rollover.*No saved Handoff/s,
+    );
+  });
+
+  it("recovers from an overflow after the threshold was crossed and the request ignored", async () => {
+    let overflowed = false;
+
+    const session = await openContextHarness((request) => {
+      if (request.transcript.some(isEmergency)) return answer("Recovered.");
+
+      if (request.transcript.some((text) => text.includes(PREPARE)) && !overflowed) {
+        overflowed = true;
+
+        return overflow();
+      }
+
+      return call(["big", {}]);
+    });
+
+    const settled = await session.prompt("Start the long task");
+
+    await session.settle();
+
+    const summary = (await session.entries()).find((entry) => entry.kind === "pi.compaction");
+
+    expect(overflowed).toBe(true);
+    expect(settled.status).toBe("done");
+    expect(summary?.data).toEqual({ reason: "overflow" });
+    expect(contentText(summary!.model![0]!.content)).toMatch(/Emergency Rollover/);
+  });
+
+  it("stops at the Handoff when the Rollover request comes after the task is answered", async () => {
+    const session = await openContextHarness((request) => {
+      if (request.text.includes(PREPARE)) {
+        return call(["context_notes", { action: "write", name: "plan", content: "All done." }]);
+      }
+
+      if (request.text.includes('"saved":true')) {
+        return call(["context_rollover", { handoff: "The task is answered; wait for the user." }]);
+      }
+
+      return answer("All done.");
+    });
+
+    await session.prompt("Answer me");
+
+    // As the compaction hook steers it when the threshold is crossed while the answer is being made.
+    const request = await session.root.submit(
+      {
+        type: "input",
+        content: PREPARE_PROMPT,
+        whenBusy: "steer",
+        requestId: "context-prepare:1",
+        entry: PREPARE_ENTRY,
+      },
+      context,
+    );
+
+    await request.wait(context);
+    await session.settle();
+
+    const kinds = (await session.entries()).map((entry) => entry.kind);
+
+    expect(kinds).toContain("pi.reset");
+    expect(kinds).not.toContain("cloudpid.context-continue");
+    expect(session.requests.at(-1)?.text).toContain('"saved":true');
+  });
+
+  it("gives a subagent Notes and History but not Rollover, so its compaction stays pi-durable's", async () => {
+    const session = await openContextHarness((request) => {
+      if (isSummarization(request)) return answer("Child summary.");
+
+      if (request.agent === "agent-1") {
+        return request.transcript.filter(isBig).length < 3 ? call(["big", {}]) : answer("Filled.");
+      }
+
+      if (request.text === "Delegate it") return call(["subagent", { task: "Fill your context" }]);
+
+      return answer("Noted.");
+    });
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    const child = (await session.harness.snapshot(SubagentsDoc, context))!.agents["agent-1"]!;
+    const offered = session.requests.find((request) => request.agent === "agent-1")!.tools;
+    const entries = await session.entries(child.conversationId);
+    const summary = entries.find((entry) => entry.kind === "pi.compaction");
+
+    expect(offered).toEqual(expect.arrayContaining(["context_notes", "context_history"]));
+    expect(offered).not.toContain("context_rollover");
+    expect(entries.map((entry) => entry.kind)).not.toContain("cloudpid.context-prepare");
+    expect(contentText(summary!.model![0]!.content)).toContain("Child summary.");
   });
 
   it("refuses a Rollover batched with other calls, so a Handoff never splits a tool round", async () => {
