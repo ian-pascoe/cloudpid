@@ -2,6 +2,7 @@
 // `web_search`: Exa or Parallel, over their hosted MCP endpoints. Ported from pi-web-tools' `src/web-search.ts` (see
 // ../../NOTICE.md). The keys are deploy-time secrets (`WebConfig`); with neither set the tool says so.
 import { defineEffectTool } from "@cloudpid/effect-durable";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -639,7 +640,7 @@ export const WebSearch = defineEffectTool({
   description: DESCRIPTION,
   parameters: WebSearchParameters,
   structuredOutputSchema: Schema.toJsonSchemaDocument(WebSearchOutput).schema,
-  execute: Effect.fnUntraced(function* (args, api) {
+  execute: Effect.fnUntraced(function* (args, api: ToolExecutionApi) {
     const config = yield* WebConfig;
 
     const unable = (cause: string) =>
@@ -654,7 +655,7 @@ export const WebSearch = defineEffectTool({
 
     const exa = Option.map(config.exaApiKey, Redacted.value);
     const parallel = Option.map(config.parallelApiKey, Redacted.value);
-    const sessionId = api.conversationId;
+    const sessionId = String(api.conversationId);
 
     const provider = selectSearchProvider(
       { exa: Option.isSome(exa), parallel: Option.isSome(parallel) },
