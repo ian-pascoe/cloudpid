@@ -383,20 +383,41 @@ describe("the thread messages of a view", () => {
     expect(second[1]).toEqual(first[1]);
   });
 
-  it("leaves notices out", () => {
-    expect(
-      toThreadMessages(
-        view({
-          messages: [
-            {
-              id: "n",
-              role: "notice",
-              timestamp: 0,
-              parts: [{ type: "text", text: "Context reset" }],
-            },
-          ],
-        }),
-      ),
-    ).toEqual([]);
+  it("shows a notice as a system message between turns, titled by what happened", () => {
+    const messages = toThreadMessages(
+      view({
+        messages: [
+          user("1", "go"),
+          assistant("2", [{ type: "text", text: "Working." }]),
+          {
+            id: "3",
+            role: "notice",
+            title: "Rollover requested",
+            timestamp: 3,
+            parts: [{ type: "text", text: "Prepare a Context Rollover" }],
+          },
+          assistant("4", [{ type: "text", text: "Saving Notes." }]),
+          { id: "5", role: "notice", title: "Context reset", timestamp: 0, parts: [] },
+        ],
+      }),
+    );
+
+    expect(messages).toMatchObject([
+      { id: "1", role: "user" },
+      { id: "1:reply", role: "assistant", content: [{ type: "text", text: "Working." }] },
+      {
+        id: "3",
+        role: "system",
+        content: [{ type: "text", text: "Prepare a Context Rollover" }],
+        metadata: { custom: { title: "Rollover requested" } },
+      },
+      { id: "3:reply", role: "assistant", content: [{ type: "text", text: "Saving Notes." }] },
+      {
+        id: "5",
+        role: "system",
+        content: [{ type: "text", text: "" }],
+        metadata: { custom: { title: "Context reset" } },
+      },
+    ]);
   });
 });
