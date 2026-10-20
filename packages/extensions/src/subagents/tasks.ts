@@ -4,8 +4,8 @@
 // - An anchor owns each child's conversation. It is a background task of the parent's conversation that finishes at
 //   once, so the parent's abort (Esc) and idle waits never reach the child, but the child's work keeps it completing.
 // - A reporter carries one turn: it submits an input to a child, waits for the answer, and then either hands the result
-//   to a `subagent_wait` blocked on that turn or reports it to the parent as a follow-up. Request IDs keep a restart
-//   from submitting or reporting twice.
+//   to a `subagent_wait` blocked on that turn or reports it to the parent once the parent is idle; until then a
+//   `subagent_wait` may still claim it. Request IDs keep a restart from submitting or reporting twice.
 // - A wait task is what `subagent_wait` blocks on. It ends when a commit gives its waiter a result, when a steer is
 //   queued for the caller, or at its deadline, which it sleeps until.
 // @effect-diagnostics asyncFunction:off newPromise:off preferEffectArray:off missingPipeableSignature:off
@@ -74,7 +74,9 @@ export type ReporterInput = {
 
 type ReporterState =
   | { phase: "deliver" }
-  | { phase: "report"; parent: string; report: string | null };
+  /** Hold `report` until the parent is idle; `round` counts the times it was found busy again. */
+  | { phase: "report"; parent: string; report: string | null; round: number }
+  | { phase: "post"; report: string };
 
 /** The model-visible header of a message from another agent, as pi-minimal-subagents frames it. */
 export const envelope = (
@@ -188,7 +190,7 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
 
         const next = (report: string | null): NextTaskState<ReporterState, null> => ({
           status: "running",
-          checkpoint: { phase: "report", parent: record.parent, report },
+          checkpoint: { phase: "report", parent: record.parent, report, round: 0 },
         });
 
         // A wait blocked on this turn claims its result.
@@ -234,54 +236,97 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
           return next(null);
         }
 
-        settledTurn.delivery = "auto";
+        // Reported once the parent is idle; a wait may claim it until then.
+        settledTurn.delivery = "pending";
 
         return next(
           `${envelope("result", agentId, turnId, status)}\n${status === "completed" ? text : `The turn failed: ${error ?? "unknown error"}`}`,
         );
       }, context);
     },
-    // Post the report: as a follow-up to the root, which starts a run when it is idle, or as a new turn of a parent
-    // that is itself a subagent, so that turn's answer is reported further up.
+    // Hold the report while the parent is busy, so a `subagent_wait` in its run can still claim the result instead
+    // of being told it was delivered while it sits queued. Once the parent is idle, report it: as an input to the
+    // root (`post`), or as a new turn of a parent that is itself a subagent, so that turn's answer is reported further
+    // up.
     report: async (reporter, runtime, context) => {
-      const { parent, report } = reporter.state.checkpoint;
+      const { parent, report, round } = reporter.state.checkpoint;
+      const { agentId, turnId } = reporter.input;
 
-      if (report !== null && parent === ROOT_AGENT) {
-        const root = await runtime.conversation(ROOT_CONVERSATION_ID, context);
+      if (report === null) {
+        await runtime.commit(() => completed(null), context);
 
-        await root?.submit(
-          {
-            type: "input",
-            content: report,
-            whenBusy: "followUp",
-            requestId: `subagent-report:${reporter.id}`,
-            entry: {
-              kind: AGENT_INPUT_KIND,
-              data: {
-                from: reporter.input.agentId,
-                agent_id: reporter.input.agentId,
-                turn_id: reporter.input.turnId,
-              },
-            },
-          },
-          context,
-        );
+        return;
       }
 
-      await runtime.commit(async (tx) => {
-        if (report !== null && parent !== ROOT_AGENT) {
-          const doc = await tx.doc(SubagentsDoc);
+      const owner = conversationOf(
+        (await runtime.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE,
+        parent,
+      );
 
-          await startTurn(
-            tx,
-            doc,
-            { agentId: parent, content: report, whenBusy: "steer", from: reporter.input.agentId },
-            runtime.now(),
-          );
+      if (owner !== undefined) await whenIdle(runtime, owner, context);
+
+      await runtime.commit(async (tx): Promise<NextTaskState<ReporterState, null>> => {
+        const doc = await tx.doc(SubagentsDoc);
+
+        const turn = Option.getOrUndefined(
+          Arr.findFirst(doc.agents[agentId]?.turns ?? [], (each) => each.id === turnId),
+        );
+
+        // Claimed by a wait meanwhile, or deleted.
+        if (turn?.delivery !== "pending") return completed(null);
+
+        const conversation = conversationOf(doc, parent);
+
+        if (conversation === undefined) {
+          turn.delivery = "none";
+
+          return completed(null);
         }
+
+        if ((await tx.doc(LiveDoc, conversation)).run !== undefined) {
+          return {
+            status: "running",
+            checkpoint: { phase: "report", parent, report, round: round + 1 },
+          };
+        }
+
+        turn.delivery = "auto";
+
+        if (parent === ROOT_AGENT) {
+          return { status: "running", checkpoint: { phase: "post", report } };
+        }
+
+        await startTurn(
+          tx,
+          doc,
+          { agentId: parent, content: report, whenBusy: "followUp", from: agentId },
+          runtime.now(),
+        );
 
         return completed(null);
       }, context);
+    },
+    // The root has no reporter of its own: the report is submitted to it, once, by its request ID.
+    post: async (reporter, runtime, context) => {
+      const { report } = reporter.state.checkpoint;
+      const { agentId, turnId } = reporter.input;
+      const root = await runtime.conversation(ROOT_CONVERSATION_ID, context);
+
+      await root?.submit(
+        {
+          type: "input",
+          content: report,
+          whenBusy: "followUp",
+          requestId: `subagent-report:${reporter.id}`,
+          entry: {
+            kind: AGENT_INPUT_KIND,
+            data: { from: agentId, agent_id: agentId, turn_id: turnId },
+          },
+        },
+        context,
+      );
+
+      await runtime.commit(() => completed(null), context);
     },
   },
   // Aborted with its conversation's background work, as when its parent is deleted: the turn ends unreported.
@@ -359,8 +404,11 @@ const endWait = async (tx: Tx, key: string, input: WaitInput, now: number) => {
   );
 };
 
+/** What a task needs of its runtime to block on changes. */
+type Watcher = Pick<WaitRuntime, "signal" | "sleep">;
+
 /** Rejects with the reason when `runtime`'s invocation is signalled; its listener goes when `until` aborts. */
-const signalled = (runtime: WaitRuntime, until: AbortSignal): Promise<never> =>
+const signalled = (runtime: Watcher, until: AbortSignal): Promise<never> =>
   new Promise((_resolve, reject) => {
     const reject_ = () => reject(runtime.signal.reason);
 
@@ -370,7 +418,7 @@ const signalled = (runtime: WaitRuntime, until: AbortSignal): Promise<never> =>
 
 /** Block until the Subagents document or the caller's inbox changes, or `deadline`. */
 const nextChange = async (
-  runtime: WaitRuntime,
+  runtime: Watcher,
   watches: ReadonlyArray<{ start(listener: () => Promise<void>): void } | undefined>,
   deadline: number | null,
   context: Context,
@@ -397,6 +445,25 @@ const nextChange = async (
     ]);
   } finally {
     controller.abort();
+  }
+};
+
+/** Block until conversation `id` has no run in progress. */
+const whenIdle = async (
+  runtime: Watcher & Pick<WaitRuntime, "watchDoc">,
+  id: ConversationId,
+  context: Context,
+) => {
+  for (;;) {
+    const live = await runtime.watchDoc(LiveDoc, id, context);
+
+    try {
+      if (live?.value?.run === undefined) return;
+
+      await nextChange(runtime, [live], null, context);
+    } finally {
+      await live?.stop();
+    }
   }
 };
 

@@ -772,7 +772,8 @@ const Wait = defineEffectTool({
           };
         }
 
-        if (turn.delivery === null) turn.delivery = "wait";
+        // Unreported, or held while this agent is busy: the wait claims it, and the reporter drops its report.
+        if (turn.delivery === null || turn.delivery === "pending") turn.delivery = "wait";
 
         return {
           event: waitEvent("turn", target, {

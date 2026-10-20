@@ -42,9 +42,10 @@ export type LaunchContract = {
 
 /**
  * How a settled turn's result reached the parent: claimed by a `subagent_wait`, reported automatically as a follow-up,
- * the same answer as an earlier turn's, or not at all (an aborted turn).
+ * the same answer as an earlier turn's, or not at all (an aborted turn). `pending` is a report held while the parent
+ * is busy, which a `subagent_wait` may still claim.
  */
-export type Delivery = "wait" | "auto" | "duplicate" | "none";
+export type Delivery = "wait" | "pending" | "auto" | "duplicate" | "none";
 
 export type TurnStatus = "running" | "completed" | "failed" | "aborted";
 

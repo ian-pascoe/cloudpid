@@ -72,6 +72,37 @@ describe("subagents", () => {
     expect((await session.state()).waiters).toEqual({});
   });
 
+  it("holds a child's answer while its parent is busy, so a later wait still claims it", async () => {
+    let settled = async () => false;
+
+    const session = await openSubagentHarness(async (request) => {
+      if (request.agent === "agent-1") return answer("Quick answer.");
+
+      if (request.text === "Delegate it") return call(["subagent", { task: "Be quick" }]);
+
+      if (request.text.startsWith("Spawned")) {
+        while (!(await settled())) await new Promise((resolve) => setTimeout(resolve, 5));
+
+        return call(["subagent_wait", { agent_id: "agent-1" }]);
+      }
+
+      return answer(`Root saw: ${request.text}`);
+    });
+
+    settled = async () =>
+      (await session.state()).agents["agent-1"]?.turns[0]?.status === "completed";
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    expect((await session.texts("toolResult"))[1]).toMatch(
+      /^agent-1 turn-1 completed \([\d.]+s\)\n\nQuick answer\.$/,
+    );
+    expect(await session.texts("user")).toEqual(["Delegate it"]);
+    expect((await session.state()).agents["agent-1"]?.turns).toMatchObject([
+      { id: "turn-1", status: "completed", delivery: "wait" },
+    ]);
+  });
+
   it("delivers a child's message through its parent's wait, and its later answer as a follow-up", async () => {
     let waiting = async () => false;
 
