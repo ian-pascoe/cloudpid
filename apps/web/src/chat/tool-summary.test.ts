@@ -30,6 +30,21 @@ describe("toolSummary", () => {
     expect(toolSummary("codemode", { code: "" })).toBeUndefined();
   });
 
+  it("shows the task a subagent starts with, the message an agent sends, and the agent a call addresses", () => {
+    expect(toolSummary("subagent", { task: "Find the bug\nIt is in src" })).toBe("Find the bug");
+    expect(toolSummary("subagent", { task: "Review", agent_id: "reviewer" })).toBe(
+      "reviewer: Review",
+    );
+    expect(toolSummary("agent_message", { agent_id: "agent-1", message: "Stop" })).toBe(
+      "agent-1: Stop",
+    );
+    expect(toolSummary("agent_message", { message: "Done early" })).toBe("Done early");
+    expect(toolSummary("subagent_wait", { agent_id: "agent-1" })).toBe("agent-1");
+    expect(toolSummary("subagent_status", {})).toBeUndefined();
+    expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
+    expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");
+  });
+
   it("has nothing to say about a tool it does not know, or arguments it cannot read", () => {
     expect(toolSummary("web_fetch", { url: "https://example.com" })).toBeUndefined();
     expect(toolSummary("read", {})).toBeUndefined();
