@@ -1,0 +1,177 @@
+diff --git a/lib/Cloudflare/Containers/DurableObjectApplication.d.ts b/lib/Cloudflare/Containers/DurableObjectApplication.d.ts
+index 19c0551326ce6b7277d3ed0a5c1ede5683a8f331..790ed11392e1ac3ad52a301f0a6d83b1f183c33a 100644
+--- a/lib/Cloudflare/Containers/DurableObjectApplication.d.ts
++++ b/lib/Cloudflare/Containers/DurableObjectApplication.d.ts
+@@ -74,6 +74,15 @@ export declare const declareDurableObjectApplication: (worker: {
+ export declare const retryNamespacePropagation: <A, E extends {
+     readonly _tag: string;
+ }, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
++/**
++ * Retry an application create while its namespace is not Container-enabled
++ * yet: an existing Worker that gains a Container enables it with its own
++ * upload, which runs concurrently. Bounded at ~8 minutes.
++ */
++export declare const retryContainerEnablement: <A, E extends {
++    readonly _tag: string;
++    readonly message?: unknown;
++}, R>(effect: Effect.Effect<A, E, R>, onWait: Effect.Effect<void>) => Effect.Effect<A, E, R>;
+ export declare const LiveDurableObjectApplicationProvider: () => import("effect/Layer").Layer<Provider.Provider<DurableObjectApplication>, never, CloudflareEnvironment | import("../../Stack.ts").Stack | import("../../Stage.ts").Stage | Containers.CloudflareOpContext>;
+ /**
+  * Local (dev) provider: `alchemy dev` runs every image through workerd and
+diff --git a/lib/Cloudflare/Containers/DurableObjectApplication.js b/lib/Cloudflare/Containers/DurableObjectApplication.js
+index 1c57a7079b39029b175a8021de929c3026c50e61..fa51a84112bdf0c870d4d69f3ad347a48a627fd9 100644
+--- a/lib/Cloudflare/Containers/DurableObjectApplication.js
++++ b/lib/Cloudflare/Containers/DurableObjectApplication.js
+@@ -32,6 +32,31 @@ export const retryNamespacePropagation = (effect) => effect.pipe(Effect.tapError
+     schedule: Schedule.spaced("2 seconds"),
+     times: 15,
+ }));
++/**
++ * Whether the containers API rejected the application because its namespace is
++ * not Container-enabled yet. Cloudflare reports it either with the documented
++ * code (`DurableObjectNotContainerEnabled`) or as a plain 400
++ * `{"error":"VALIDATE_INPUT","details":{"durable_objects":"Durable Object namespace is not Container-enabled"}}`.
++ */
++const isNamespaceNotContainerEnabled = (error) => error._tag === "DurableObjectNotContainerEnabled" ||
++    (error._tag === "BadRequest" &&
++        typeof error.message === "string" &&
++        error.message.includes("not Container-enabled"));
++/**
++ * A namespace becomes Container-enabled when its Worker uploads a version
++ * whose `containers` metadata names the class. A new Worker does that in its
++ * precreate placeholder, before the application is created. An EXISTING
++ * Worker that gains a Container is a cycle peer being updated: it publishes
++ * its previous attributes (with the namespace id) before its upload, which
++ * waits for the image build, so the application's create runs first and is
++ * rejected. Wait for that upload instead of failing the deploy, bounded at
++ * ~8 minutes to cover a cold image build and push.
++ */
++export const retryContainerEnablement = (effect, onWait) => effect.pipe(Effect.tapError((error) => (isNamespaceNotContainerEnabled(error) ? onWait : Effect.void)), Effect.retry({
++    while: isNamespaceNotContainerEnabled,
++    schedule: Schedule.spaced("5 seconds"),
++    times: 96,
++}));
+ /** Whether an application id names a created, live application (not a placeholder). */
+ const isLiveApplication = (id) => !!id && isLiveId(id);
+ /** The one namespace every bound Container attaches the application to. */
+@@ -153,7 +178,14 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+         // 2. Ensure
+         if (!application) {
+             yield* session.note(`Creating container application ${name}...`);
+-            application = yield* retryNamespacePropagation(Containers.createDurableObjectContainerApplication({
++            let waitNoted = false;
++            const noteWait = Effect.suspend(() => {
++                if (waitNoted)
++                    return Effect.void;
++                waitNoted = true;
++                return session.note(`Waiting for the Worker upload to enable containers on Durable Object namespace ${durableObjects.namespaceId}...`);
++            });
++            application = yield* retryContainerEnablement(retryNamespacePropagation(Containers.createDurableObjectContainerApplication({
+                 accountId,
+                 name,
+                 schedulingPolicy: "durable_object",
+@@ -165,7 +197,7 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+                         : {}),
+                 },
+                 observability: settings.observability,
+-            })).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
++            })), noteWait).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
+         }
+         yield* assertServesNamespace(application);
+         // 3. Sync declared settings and reset settings no Container declares anymore.
+diff --git a/src/Cloudflare/Containers/DurableObjectApplication.ts b/src/Cloudflare/Containers/DurableObjectApplication.ts
+index 16424a1cc024f41f9acbf3151990176fa870f4ae..3d78868cc353c9264a9ba1d35de9464e5bf59389 100644
+--- a/src/Cloudflare/Containers/DurableObjectApplication.ts
++++ b/src/Cloudflare/Containers/DurableObjectApplication.ts
+@@ -109,6 +109,45 @@ export const retryNamespacePropagation = <A, E extends { readonly _tag: string }
+     }),
+   );
+ 
++/**
++ * Whether the containers API rejected the application because its namespace is
++ * not Container-enabled yet. Cloudflare reports it either with the documented
++ * code (`DurableObjectNotContainerEnabled`) or as a plain 400
++ * `{"error":"VALIDATE_INPUT","details":{"durable_objects":"Durable Object namespace is not Container-enabled"}}`.
++ */
++const isNamespaceNotContainerEnabled = (error: { readonly _tag: string; readonly message?: unknown }) =>
++  error._tag === "DurableObjectNotContainerEnabled" ||
++  (error._tag === "BadRequest" &&
++    typeof error.message === "string" &&
++    error.message.includes("not Container-enabled"));
++
++/**
++ * A namespace becomes Container-enabled when its Worker uploads a version
++ * whose `containers` metadata names the class. A new Worker does that in its
++ * precreate placeholder, before the application is created. An EXISTING
++ * Worker that gains a Container is a cycle peer being updated: it publishes
++ * its previous attributes (with the namespace id) before its upload, which
++ * waits for the image build, so the application's create runs first and is
++ * rejected. Wait for that upload instead of failing the deploy, bounded at
++ * ~8 minutes to cover a cold image build and push.
++ */
++export const retryContainerEnablement = <
++  A,
++  E extends { readonly _tag: string; readonly message?: unknown },
++  R,
++>(
++  effect: Effect.Effect<A, E, R>,
++  onWait: Effect.Effect<void>,
++) =>
++  effect.pipe(
++    Effect.tapError((error) => (isNamespaceNotContainerEnabled(error) ? onWait : Effect.void)),
++    Effect.retry({
++      while: isNamespaceNotContainerEnabled,
++      schedule: Schedule.spaced("5 seconds"),
++      times: 96,
++    }),
++  );
++
+ /** Whether an application id names a created, live application (not a placeholder). */
+ const isLiveApplication = (id: string | undefined): id is string => !!id && isLiveId(id);
+ 
+@@ -274,20 +313,31 @@ export const LiveDurableObjectApplicationProvider = () =>
+       // 2. Ensure
+       if (!application) {
+         yield* session.note(`Creating container application ${name}...`);
+-        application = yield* retryNamespacePropagation(
+-          Containers.createDurableObjectContainerApplication({
+-            accountId,
+-            name,
+-            schedulingPolicy: "durable_object",
+-            durableObjects,
+-            configuration: {
+-              ...(settings.ssh !== undefined ? { wranglerSsh: settings.ssh } : {}),
+-              ...(settings.authorizedKeys !== undefined
+-                ? { authorizedKeys: settings.authorizedKeys }
+-                : {}),
+-            },
+-            observability: settings.observability,
+-          }),
++        let waitNoted = false;
++        const noteWait = Effect.suspend(() => {
++          if (waitNoted) return Effect.void;
++          waitNoted = true;
++          return session.note(
++            `Waiting for the Worker upload to enable containers on Durable Object namespace ${durableObjects.namespaceId}...`,
++          );
++        });
++        application = yield* retryContainerEnablement(
++          retryNamespacePropagation(
++            Containers.createDurableObjectContainerApplication({
++              accountId,
++              name,
++              schedulingPolicy: "durable_object",
++              durableObjects,
++              configuration: {
++                ...(settings.ssh !== undefined ? { wranglerSsh: settings.ssh } : {}),
++                ...(settings.authorizedKeys !== undefined
++                  ? { authorizedKeys: settings.authorizedKeys }
++                  : {}),
++              },
++              observability: settings.observability,
++            }),
++          ),
++          noteWait,
+         ).pipe(Effect.catchTag("DurableObjectAlreadyHasApplication", () => getApplication));
+       }
+       yield* assertServesNamespace(application);
