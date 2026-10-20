@@ -22,6 +22,9 @@ export const ModelId = Schema.Literals(SUPPORTED_MODELS);
 
 export type ModelId = typeof ModelId.Type;
 
+/** Whether `value` is a model the proxy serves. */
+export const isModelId = Schema.is(ModelId);
+
 /** pi-ai's thinking levels, `off` included. */
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 

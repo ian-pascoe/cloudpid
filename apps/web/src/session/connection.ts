@@ -53,6 +53,9 @@ export type ConnectionStatus =
   | "missing"
   | "closed";
 
+/** What `configure` changes: the fields of the `configure` command, without its `type` and `id`. */
+export type ConfigureChange = Omit<Extract<ClientMessage, { type: "configure" }>, "type" | "id">;
+
 /** A queued input. `text` is null when this page did not send it (it was sent before a reload). */
 export interface QueuedEntry {
   readonly id: string;
@@ -195,6 +198,15 @@ export class SessionConnection {
     });
     this.flush();
     this.update({ failure: null });
+  }
+
+  /**
+   * Pick the model and thinking level of the root conversation's next request. A field left out stays as it is, and
+   * `null` makes the Session follow the default in the settings again. The Session's `agent_changed` event brings
+   * the new pick into the view; a refusal shows as `failure`.
+   */
+  configure(change: ConfigureChange): void {
+    if (this.opened) this.send({ type: "configure", id: this.nextCommandId(), ...change });
   }
 
   /** Abort the root conversation's work and withdraw its queued input. */
