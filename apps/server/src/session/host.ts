@@ -68,7 +68,7 @@ export type SessionStorage = DurableObjectSqliteStorage & {
   deleteAlarm(): Promise<void>;
 };
 
-export type SessionHostOptions = {
+export type SessionHostOptions<R = never> = {
   /** The object's `ctx.storage`. */
   readonly storage: SessionStorage;
   readonly models: Models;
@@ -78,7 +78,12 @@ export type SessionHostOptions = {
    */
   readonly reset: (reason: string) => void;
   /** The extensions the Session's conversations run with, installed before any work resumes. */
-  readonly extensions: Effect.Effect<readonly Extension[], never, Harness | SessionSettings>;
+  readonly extensions: Effect.Effect<readonly Extension[], never, Harness | SessionSettings | R>;
+  /**
+   * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
+   * this is undefined too.
+   */
+  readonly wakeAt?: Effect.Effect<number | undefined, never, R>;
   /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
   readonly env?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
@@ -195,7 +200,9 @@ const sameAgent = (have: Agent, want: AgentChange): boolean =>
 const heartbeat = Clock.currentTimeMillis.pipe(Effect.map((now) => now + HEARTBEAT_MS));
 
 /** Open the Harness on the object's `storage`, under the `pi_` prefix, after arming a fallback alarm. */
-const openSessionHarness = Effect.fn("openSessionHarness")(function* (options: SessionHostOptions) {
+const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
+  options: SessionHostOptions<R>,
+) {
   const { storage } = options;
   const settings = yield* SessionSettings;
 
@@ -230,12 +237,21 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* (options: S
 });
 
 /** Install the Session's extensions in the open Harness and resume interrupted work. */
-const startSessionHost = Effect.fn("startSessionHost")(function* (options: SessionHostOptions) {
+const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
+  options: SessionHostOptions<R>,
+) {
   const { storage } = options;
   const harness = yield* Harness;
   const registry = yield* SessionRegistry;
   const settings = yield* SessionSettings;
   const scope = yield* Scope.Scope;
+  const services = yield* Effect.context<R>();
+
+  /** When the object must wake although no work is live. */
+  const wakeAt =
+    options.wakeAt === undefined
+      ? Effect.undefined
+      : Effect.provideContext(options.wakeAt, services);
 
   // Before anything resumes, so resumed tool calls find their tools.
   for (const extension of yield* options.extensions) yield* harness.install(extension);
@@ -332,16 +348,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
           ),
         );
 
+  /** The alarm once no work is live: deleted, unless the object must wake later anyway. */
+  const rest = wakeAt.pipe(
+    Effect.flatMap((at) =>
+      at === undefined
+        ? attempt("deleteAlarm", () => storage.deleteAlarm())
+        : attempt("setAlarm", () => storage.setAlarm(at)),
+    ),
+  );
+
   const arm = (next: Wake) =>
     next.active
       ? // The heartbeat first: a report that cannot be made must not leave live work unwoken.
         armHeartbeat.pipe(Effect.andThen(report("running")), Effect.asVoid)
       : // Report before deleting the heartbeat: an unreported end keeps it, to report again.
-        report("idle").pipe(
-          Effect.flatMap((told) =>
-            told ? attempt("deleteAlarm", () => storage.deleteAlarm()) : armHeartbeat,
-          ),
-        );
+        report("idle").pipe(Effect.flatMap((told) => (told ? rest : armHeartbeat)));
 
   /** Reconcile the alarm and the Registry with what is live now. */
   const settle = wake.pipe(Effect.flatMap(arm), serially);
@@ -501,9 +522,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
  * Harness and resumes interrupted work, so build it once, from the object's constructor inside
  * `blockConcurrencyWhile`.
  */
-export const sessionHostLayer = (
-  options: SessionHostOptions,
-): Layer.Layer<SessionHost | Harness, SessionError, SessionRegistry | SessionSettings> =>
+export const sessionHostLayer = <R = never>(
+  options: SessionHostOptions<R>,
+): Layer.Layer<SessionHost | Harness, SessionError, SessionRegistry | SessionSettings | R> =>
   Layer.effect(SessionHost, startSessionHost(options)).pipe(
     Layer.provideMerge(Layer.effect(Harness, openSessionHarness(options))),
   );

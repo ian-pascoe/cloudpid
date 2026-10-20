@@ -164,14 +164,21 @@ const makeSecrets = ({
     // Open the Secrets an earlier instance stored; those past their lifetime are deleted unopened.
     const start = yield* now;
 
+    const expired: string[] = [];
+
     for (const record of Object.values(sealed())) {
-      if (record.expiresAt <= start) continue;
+      if (record.expiresAt <= start) {
+        expired.push(record.name);
+        continue;
+      }
 
       const value = yield* fromVault(vault.open(record));
 
       values.set(record.name, { value, expiresAt: record.expiresAt });
       redactions.hold(record.name, value);
     }
+
+    if (expired.length > 0) deleteSealed(expired);
 
     const live = Effect.map(now, (time) =>
       Arr.filter([...values], ([, secret]) => secret.expiresAt > time),

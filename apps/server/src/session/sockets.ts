@@ -11,6 +11,12 @@ import {
   ServerMessageJson,
 } from "@cloudpid/protocol";
 import { parseModelId } from "@cloudpid/config";
+import {
+  SECRET_LIFETIME_MS,
+  type SecretAsk,
+  Secrets,
+  type SecretsError,
+} from "@cloudpid/extensions/secrets";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -69,7 +75,8 @@ export class SessionSockets extends Context.Service<SessionSockets, SessionSocke
 ) {}
 
 /** Send `message` on `socket`, unless it has closed. */
-const send = (socket: WebSocket, message: ServerMessage): Effect.Effect<void> =>
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain helper, not an Effect operator.
+export const send = (socket: WebSocket, message: ServerMessage): Effect.Effect<void> =>
   encodeMessage(message).pipe(
     Effect.flatMap((text) =>
       Effect.try({
@@ -80,6 +87,17 @@ const send = (socket: WebSocket, message: ServerMessage): Effect.Effect<void> =>
     ),
     Effect.ignore,
   );
+
+/** The `secret_requests` message for `asks`. */
+export const secretRequests = (asks: ReadonlyArray<SecretAsk>): ServerMessage => ({
+  type: "secret_requests",
+  lifetimeMinutes: SECRET_LIFETIME_MS / 60_000,
+  requests: Arr.map(asks, (ask) => ({
+    ...ask,
+    // SAFETY: an ask's conversation is the asking call's, a pi-durable conversation ID.
+    conversationId: ask.conversationId as ConversationId,
+  })),
+});
 
 /** The agent change a `configure` asks for: a field it leaves out is left out, as is. */
 const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): AgentChange => {
@@ -114,11 +132,12 @@ const setWatched = (socket: WebSocket, conversationId: ConversationId, watched: 
  */
 export const sessionSocketsLayer = (
   state: SocketState,
-): Layer.Layer<SessionSockets, never, SessionHost> =>
+): Layer.Layer<SessionSockets, never, SessionHost | Secrets> =>
   Layer.effect(
     SessionSockets,
     Effect.gen(function* () {
       const host = yield* SessionHost;
+      const secrets = yield* Secrets;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
       const watching = new Map<WebSocket, FiberMap.FiberMap<ConversationId>>();
@@ -182,7 +201,10 @@ export const sessionSocketsLayer = (
           return fibers === undefined ? Effect.void : FiberMap.remove(fibers, conversationId);
         });
 
-      const command = (socket: WebSocket, message: ClientMessage) => {
+      const command = (
+        socket: WebSocket,
+        message: ClientMessage,
+      ): Effect.Effect<{ readonly submissionId: number } | null, SessionError | SecretsError> => {
         switch (message.type) {
           case "submit": {
             const { type: _type, id: _id, input, ...options } = message;
@@ -205,6 +227,8 @@ export const sessionSocketsLayer = (
               Effect.andThen(setWatched(socket, message.conversationId, false)),
               Effect.as(null),
             );
+          case "secret_answer":
+            return secrets.answer(message.request, message.values).pipe(Effect.as(null));
         }
       };
 
@@ -283,6 +307,11 @@ export const sessionSocketsLayer = (
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
         );
+
+        // Requests for Secrets outlive the sockets that saw them: a client that reconnects is shown them again.
+        const asks = yield* secrets.pending;
+
+        if (asks.length > 0) yield* send(server, secretRequests(asks));
 
         return client;
       });

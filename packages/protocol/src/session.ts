@@ -96,8 +96,20 @@ export const Configure = Schema.Struct({
   thinkingLevel: ThinkingLevel.pipe(Schema.NullOr, Schema.optionalKey),
 });
 
+/**
+ * The owner's answer to Secret request `request` (`secret_requests`), entered in a masked form: a value per name, where
+ * a missing or empty one skips that name, or `null` when the owner cancelled. Answered with `null`; fails when no such
+ * request waits or a name was not requested.
+ */
+export const SecretAnswer = Schema.Struct({
+  type: Schema.Literal("secret_answer"),
+  id: CommandId,
+  request: Schema.String,
+  values: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
+});
+
 /** Client → server. */
-export const ClientMessage = Schema.Union([Submit, Abort, Watch, Unwatch, Configure]);
+export const ClientMessage = Schema.Union([Submit, Abort, Watch, Unwatch, Configure, SecretAnswer]);
 
 export type ClientMessage = typeof ClientMessage.Type;
 
@@ -113,6 +125,32 @@ export const Picked = Schema.Struct({
   type: Schema.Literal("picked"),
   model: Schema.Boolean,
   thinkingLevel: Schema.Boolean,
+});
+
+/** A call's request for the owner to enter Secrets; never carries a value. */
+export const SecretRequest = Schema.Struct({
+  /** What the answer names. */
+  id: Schema.String,
+  /** The conversation whose call asks. */
+  conversationId: ConversationId,
+  /** The Secret Names to enter, one masked field each. */
+  names: Schema.Array(Schema.String),
+  /** Why the agent needs them. */
+  reason: Schema.optionalKey(Schema.String),
+});
+
+export type SecretRequest = typeof SecretRequest.Type;
+
+/**
+ * The Secret requests waiting for the owner, oldest first. A client shows a masked form for them, never the chat, and
+ * answers each with `secret_answer`. Sent after `hello` while any waits, and to every client whenever they change (an
+ * empty list once none waits). A request outlives reconnects and evictions until it is answered or its call ends.
+ */
+export const SecretRequests = Schema.Struct({
+  type: Schema.Literal("secret_requests"),
+  requests: Schema.Array(SecretRequest),
+  /** How long an entered Secret is held. */
+  lifetimeMinutes: Schema.Finite,
 });
 
 /** One of pi's agent events, passed through unchanged; only its `type` is checked. */
@@ -154,7 +192,14 @@ export const ErrorMessage = Schema.Struct({
 });
 
 /** Server → client. */
-export const ServerMessage = Schema.Union([Hello, Picked, Events, Result, ErrorMessage]);
+export const ServerMessage = Schema.Union([
+  Hello,
+  Picked,
+  Events,
+  Result,
+  ErrorMessage,
+  SecretRequests,
+]);
 
 export type ServerMessage = typeof ServerMessage.Type;
 

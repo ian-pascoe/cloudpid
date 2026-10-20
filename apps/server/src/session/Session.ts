@@ -1,5 +1,6 @@
 import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
+import { Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
 import { WebConfig } from "@cloudpid/extensions/web";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -19,6 +20,7 @@ import { sessionExtensions } from "./extensions.ts";
 import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { sessionSettingsLayer, subagentSettings } from "./settings.ts";
 import { proxyModels } from "./models.ts";
+import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { cachedSlug, sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
@@ -72,6 +74,7 @@ export const SessionLive = Session.make(
   Effect.gen(function* () {
     return {
       proxy: yield* ModelProxyConfig,
+      secrets: yield* SecretsConfig,
       web: yield* WebConfig,
       registries: yield* Registry,
       state: yield* Cloudflare.DurableObjectState,
@@ -80,7 +83,7 @@ export const SessionLive = Session.make(
     };
   }).pipe(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
-    Effect.map(({ proxy, registries, state, web, worker }) =>
+    Effect.map(({ proxy, registries, secrets, state, web, worker }) =>
       Effect.gen(function* () {
         const models = proxyModels({
           url: Redacted.value(proxy.url),
@@ -133,6 +136,14 @@ export const SessionLive = Session.make(
           kv,
         });
 
+        // The Secrets the owner entered, encrypted in this object's storage under a key bound to this object's ID.
+        const sessionSecrets = sessionSecretsLayer({
+          encryptionKey: secrets.encryptionKey,
+          session: state.raw.id.toString(),
+          storage: kv,
+          sockets: state.raw,
+        });
+
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
@@ -149,8 +160,11 @@ export const SessionLive = Session.make(
                   Effect.provideServiceEffect(SubagentSettings, subagentSettings),
                 ),
                 env: workspace.env,
+                // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time.
+                wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
               }),
             ),
+            Layer.provideMerge(sessionSecrets),
             Layer.provide(Layer.mergeAll(registry, settings)),
           ),
         );
@@ -159,10 +173,11 @@ export const SessionLive = Session.make(
         const services = yield* Effect.orDie(runtime.contextEffect);
         const host = Context.get(services, SessionHost);
         const sockets = Context.get(services, SessionSockets);
+        const held = Context.get(services, Secrets);
 
         return {
-          // A failed alarm is retried by the runtime.
-          alarm: () => Effect.orDie(host.alarm),
+          // A failed alarm is retried by the runtime. Expired Secrets are deleted first.
+          alarm: () => Effect.orDie(held.sweep.pipe(Effect.andThen(host.alarm))),
           fetch: Effect.gen(function* () {
             const request = yield* HttpServerRequest.HttpServerRequest;
 

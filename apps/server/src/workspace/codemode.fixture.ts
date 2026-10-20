@@ -2,6 +2,7 @@
 // stops the instance's script where a test needs it, and a call after that returns.
 // @effect-diagnostics asyncFunction:off
 import { defineEffectTool, type Harness } from "@cloudpid/effect-durable";
+import type { Secrets } from "@cloudpid/extensions/secrets";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -13,7 +14,11 @@ export class TestCodemodeSession extends TestWorkspaceSession {
   /** Resolves when this instance's `hold` call starts and waits. */
   readonly holding = Promise.withResolvers<void>();
 
-  protected override hostExtensions(): Effect.Effect<readonly Extension[], never, Harness> {
+  protected override hostExtensions(): Effect.Effect<
+    readonly Extension[],
+    never,
+    Harness | Secrets
+  > {
     const { kv } = this.ctx.storage;
 
     const hold = defineEffectTool({

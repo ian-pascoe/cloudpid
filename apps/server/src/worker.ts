@@ -14,6 +14,7 @@ import { hello } from "./hello.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import { serveRegistryRpc } from "./registry/rpc.ts";
 import { isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
@@ -121,7 +122,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(
       SessionLive.pipe(
-        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, WebConfigLive)),
+        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
         Layer.provideMerge(RegistryLive),
       ),
     ),
