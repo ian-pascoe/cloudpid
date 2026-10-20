@@ -224,9 +224,6 @@ importers:
       '@cloudpid/config':
         specifier: workspace:*
         version: link:../../packages/config
-      rolldown:
-        specifier: 1.2.5
-        version: 1.2.5
 
   apps/sandbox-image:
     devDependencies:

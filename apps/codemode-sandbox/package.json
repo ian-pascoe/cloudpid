@@ -18,7 +18,6 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.5",
-    "@cloudpid/config": "workspace:*",
-    "rolldown": "1.2.5"
+    "@cloudpid/config": "workspace:*"
   }
 }

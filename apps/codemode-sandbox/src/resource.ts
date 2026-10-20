@@ -1,6 +1,5 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { CODEMODE_SANDBOX_BINDING } from "./binding.ts";
-import { compiledWasm } from "./wasm.ts";
 
 /**
  * The Worker that hosts the codemode sandbox Durable Object, one object per Session. It is a Worker of its own so a
@@ -12,8 +11,7 @@ export const CodemodeSandboxes = Cloudflare.Worker("CodemodeSandboxes", {
   main: new URL("./worker.ts", import.meta.url).href,
   compatibility: { date: "2026-08-31" },
   workersDev: false,
-  // pi-codemode's QuickJS engine is a `.wasm` import that Workers need as a compiled module.
-  build: { input: { plugins: [compiledWasm()] } },
+  // pi-codemode's QuickJS engine is a `.wasm` import: alchemy's bundler uploads it as a compiled module.
   env: {
     [CODEMODE_SANDBOX_BINDING]: Cloudflare.DurableObject("CodemodeSandbox"),
   },
