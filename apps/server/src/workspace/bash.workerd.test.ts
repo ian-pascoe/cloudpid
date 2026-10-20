@@ -233,6 +233,18 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
       expect(await counts()).toMatchObject({ container: 0 });
     });
 
+    it("measures the repository a leading -C names, not the one the command runs in", async () => {
+      const { run, put, counts } = await repository();
+
+      await put("repo/.git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1));
+      // `repo` is not a repository to git, but the guard looks only at the pack: the command is refused before git runs.
+      const status = await run({ command: "git -C repo status" });
+
+      expect(status.isError).toBe(true);
+      expect(status.text).toMatch(/packfiles are 17 MB.*backend: "container"/);
+      expect(await counts()).toMatchObject({ container: 0 });
+    });
+
     it("reads a repository whose packfiles are within the limit", async () => {
       const { run, put } = await repository();
 

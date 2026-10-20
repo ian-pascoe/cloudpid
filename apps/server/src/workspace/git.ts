@@ -10,10 +10,29 @@ export const MAX_PACK_BYTES = 16 * 1024 * 1024;
 
 type Provider = ReturnType<Parameters<GitClientFactory>[0]["ws"]["provider"]>;
 
-/** The size of the packfiles of the repository `cwd` is in (the nearest `.git` above it), 0 where there is none. */
-const packBytes = async (provider: Provider, cwd: string) => {
-  const segments = cwd.split("/").filter((segment) => segment !== "");
+/** The directory `git` runs in: `cwd`, or what a leading `-C <dir>` makes of it (the one `-C` the router lets through). */
+const gitDirectory = ({ argv, cwd = "/" }: GitCliInput) => {
+  const directory = argv[0] === "-C" ? argv[1] : undefined;
 
+  const path =
+    directory === undefined || directory === ""
+      ? cwd
+      : directory.startsWith("/")
+        ? directory
+        : `${cwd}/${directory}`;
+
+  const segments: string[] = [];
+
+  for (const segment of path.split("/")) {
+    if (segment === "..") segments.pop();
+    else if (segment !== "" && segment !== ".") segments.push(segment);
+  }
+
+  return segments;
+};
+
+/** The size of the packfiles of the repository `segments` is in (the nearest `.git` above it), 0 where there is none. */
+const packBytes = async (provider: Provider, segments: readonly string[]) => {
   for (let depth = segments.length; depth >= 0; depth--) {
     const git = `/${segments.slice(0, depth).join("/")}/.git`.replace("//", "/");
     const pack = `${git}/objects/pack`;
@@ -68,9 +87,11 @@ export const workerShellGit = (): GitClientFactory => {
         (_target, name) =>
         async (...args: unknown[]) => {
           if (name === "cli") {
-            // SAFETY: `cli` takes the Worker Shell's command, which has a working directory.
-            const { cwd = "/" } = args[0] as GitCliInput;
-            const bytes = await packBytes(options.ws.provider(), cwd);
+            // SAFETY: `cli` takes the Worker Shell's command.
+            const bytes = await packBytes(
+              options.ws.provider(),
+              gitDirectory(args[0] as GitCliInput),
+            );
 
             if (bytes > MAX_PACK_BYTES) return tooLarge(bytes);
           }
