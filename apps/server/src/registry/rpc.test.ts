@@ -22,6 +22,8 @@ const fakeRegistries = () => {
   const sessions: SessionRecord[] = [];
   const workspaces: WorkspaceRecord[] = [];
   const names: string[] = [];
+  /** The endpoints of the Web Push subscriptions kept. */
+  const pushes = new Set<string>();
   /** The Registry methods called, in order. */
   const calls: string[] = [];
 
@@ -60,6 +62,22 @@ const fakeRegistries = () => {
         calls.push("getSettings");
 
         return { settings: DEFAULT_SETTINGS, overrides: {} };
+      }),
+    getPush: ({ endpoint }: { endpoint?: string | undefined }) =>
+      Effect.sync(() => {
+        calls.push("getPush");
+
+        return { publicKey: "PUBLIC", subscribed: endpoint !== undefined && pushes.has(endpoint) };
+      }),
+    subscribePush: ({ subscription }: { subscription: { endpoint: string } }) =>
+      Effect.sync(() => {
+        calls.push("subscribePush");
+        pushes.add(subscription.endpoint);
+      }),
+    unsubscribePush: ({ endpoint }: { endpoint: string }) =>
+      Effect.sync(() => {
+        calls.push("unsubscribePush");
+        pushes.delete(endpoint);
       }),
     updateSettings: ({ overrides }: { overrides: Schema.Json }) =>
       Effect.sync(() => {
@@ -132,7 +150,7 @@ const withClient = <A, E>(
  * Call `tag` with `payload` as a hand-written client would: one Effect RPC request in JSON, unchecked by the shared
  * schemas. The answer is the endpoint's JSON text, and the Registry methods the call reached.
  */
-const callRaw = async (tag: string, payload: Readonly<Record<string, string>>) => {
+const callRaw = async (tag: string, payload: Schema.Json) => {
   const fake = fakeRegistries();
 
   const response = await worker(fake)(`http://worker.test${RPC_PATH}`, {
@@ -216,6 +234,46 @@ it("creates and lists Workspaces", async () => {
   );
 
   expect(workspaces).toEqual([{ slug: "cloudpid", createdAt: 1 }]);
+});
+
+it("subscribes a browser to Web Push, tells it so, and forgets it when it unsubscribes", async () => {
+  const endpoint = "https://push.example.net/wpush/v2/abc";
+
+  const [before, after, gone] = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+      const before = yield* registry.getPush({ endpoint });
+
+      yield* registry.subscribePush({
+        subscription: { endpoint, keys: { p256dh: "k", auth: "a" } },
+      });
+
+      const after = yield* registry.getPush({ endpoint });
+
+      yield* registry.unsubscribePush({ endpoint });
+
+      return [before, after, yield* registry.getPush({ endpoint })] as const;
+    }),
+  );
+
+  expect(before).toEqual({ publicKey: "PUBLIC", subscribed: false });
+  expect(after).toEqual({ publicKey: "PUBLIC", subscribed: true });
+  expect(gone.subscribed).toBe(false);
+});
+
+it("serves the VAPID public key to a browser that has no subscription yet", async () => {
+  const state = await withClient(Effect.flatMap(Registry, (registry) => registry.getPush({})));
+
+  expect(state).toEqual({ publicKey: "PUBLIC", subscribed: false });
+});
+
+it("rejects a subscription whose endpoint is not https, before it reaches the Registry", async () => {
+  const { text, calls } = await callRaw("subscribePush", {
+    subscription: { endpoint: "http://169.254.169.254/latest", keys: { p256dh: "k", auth: "a" } },
+  });
+
+  expect(text).toContain('"Failure"');
+  expect(calls).toEqual([]);
 });
 
 it("reads the settings from the singleton Registry", async () => {

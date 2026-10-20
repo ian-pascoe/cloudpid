@@ -1,6 +1,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 // The workerd test Durable Object that hosts a `RegistryStore` over its SQLite storage, as the Registry DO does.
+import type { PushSubscription } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
@@ -54,6 +55,22 @@ export class TestRegistry extends DurableObject {
 
   putDocument(name: string, body: string, now: number): void {
     this.#store.putDocument(name, body, now);
+  }
+
+  putPushSubscription(subscription: PushSubscription, now: number): void {
+    this.#store.putPushSubscription(subscription, now);
+  }
+
+  deletePushSubscription(endpoint: string): void {
+    this.#store.deletePushSubscription(endpoint);
+  }
+
+  hasPushSubscription(endpoint: string): boolean {
+    return this.#store.hasPushSubscription(endpoint);
+  }
+
+  listPushSubscriptions(): PushSubscription[] {
+    return this.#store.listPushSubscriptions();
   }
 
   getSettings(): SettingsState {

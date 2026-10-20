@@ -30,6 +30,8 @@ import {
   type InputSubmissionDraft,
   ROOT_CONVERSATION_ID,
   type Submission,
+  type SubmissionId,
+  type SubmissionRecord,
   type TaskGraph,
   type UserInput,
   type WatchEnd,
@@ -46,6 +48,7 @@ import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -53,6 +56,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
+import type { PushEvent } from "../push/notification.ts";
 import { harnessSettings, SessionSettings, type SettingsKv } from "./settings.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
@@ -64,6 +68,37 @@ export const HEARTBEAT_MS = 60_000;
 
 /** How long a report to the Registry may take before it counts as failed. */
 export const REPORT_TIMEOUT: Duration.Input = "5 seconds";
+
+/** How long a notification may take: the Registry waits for each push service, up to 8 seconds. */
+export const NOTIFY_TIMEOUT: Duration.Input = "15 seconds";
+
+/** The submissions the owner made whose Run's end has not been notified yet, in the Session's key-value storage. */
+const NOTIFY_KEY = "notify-submissions";
+
+/** Why a submission went unanswered by the owner's own doing: stopping a Run is not news. */
+const SILENT_REASONS: ReadonlySet<string> = new Set(["aborted", "reset"]);
+
+const isSettled = (record: SubmissionRecord): boolean =>
+  record.status === "done" || record.status === "unanswered";
+
+/**
+ * What the owner should hear of the submissions that settled: a failure if any went unanswered for a reason other than
+ * their stopping it (with its text), otherwise that a Run finished; nothing when all were stopped.
+ */
+const outcomeOf = (settled: ReadonlyArray<SubmissionRecord>): PushEvent | undefined => {
+  const failed = Arr.findFirst(
+    settled,
+    (record) => record.status === "unanswered" && !SILENT_REASONS.has(record.reason),
+  );
+
+  if (Option.isSome(failed) && failed.value.status === "unanswered") {
+    const { detail, reason } = failed.value;
+
+    return { kind: "failed", reason: Predicate.isString(detail) ? detail : reason };
+  }
+
+  return Arr.some(settled, (record) => record.status === "done") ? { kind: "finished" } : undefined;
+};
 
 /**
  * What the alarm is armed for. pi-durable 1.3.0 has no `Harness.wake()`, so the host derives `active` from the live
@@ -422,6 +457,65 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   /** Reconcile the alarm and the Registry with what is live now. */
   const settle = wake.pipe(Effect.flatMap(arm), serially);
 
+  /** The submissions whose Run's end is yet to be notified. */
+  const pendingNotices = (): SubmissionId[] => kv.get<SubmissionId[]>(NOTIFY_KEY) ?? [];
+
+  /** Tell the owner, but never fail or stall: a notification is not worth a prompt. Says whether it went out. */
+  const notifyOwner = (event: PushEvent): Effect.Effect<boolean> =>
+    registry.notify(event).pipe(
+      Effect.timeout(NOTIFY_TIMEOUT),
+      Effect.as(true),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Notifying the owner failed", cause).pipe(Effect.as(false)),
+      ),
+    );
+
+  /** Alone, so a Run's end is never notified twice by two settles at once. */
+  const notifying = Semaphore.withPermit(Semaphore.makeUnsafe(1));
+
+  /**
+   * Notify the owner of the Runs their submissions started that have ended: one push for all that settled together,
+   * failed if any failed. Submissions still unsettled wait for a later call, as do ones a failed notification could
+   * not tell. It runs outside the alarm lock, so a slow push never holds up a prompt.
+   */
+  const notifyRunEnds = Effect.gen(function* () {
+    const ids = pendingNotices();
+
+    if (ids.length === 0) return;
+
+    const records = yield* Effect.forEach(ids, (id) =>
+      attempt("submission", async () => {
+        const submission = await harness.harness.submission(id, context);
+
+        return submission === undefined ? null : await submission.status(context);
+      }),
+    );
+
+    // A submission the Harness no longer has is dropped without a word.
+    const ended = Arr.filter(
+      Arr.zip(ids, records),
+      ([, record]) => record === null || isSettled(record),
+    );
+
+    if (ended.length === 0) return;
+
+    const event = outcomeOf(
+      Arr.getSomes(Arr.map(ended, ([, record]) => Option.fromNullOr(record))),
+    );
+
+    if (event !== undefined && !(yield* notifyOwner(event))) return;
+
+    const endedIds = new Set(Arr.map(ended, ([id]) => id));
+
+    kv.put(
+      NOTIFY_KEY,
+      Arr.filter(pendingNotices(), (id) => !endedIds.has(id)),
+    );
+  }).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Run notifications failed", cause)),
+    notifying,
+  );
+
   /** Whether a fiber is waiting for the Session to go idle. */
   let waiting = false;
 
@@ -442,6 +536,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         }),
       ),
       Effect.andThen(settle),
+      Effect.andThen(notifyRunEnds),
       Effect.ignore,
       Effect.forkIn(scope),
       Effect.asVoid,
@@ -503,6 +598,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             attempt("submit", () =>
               conversation.submit({ type: "input", content: input, ...options }, context),
             ),
+          ),
+          // The owner hears how this Run ends, even after an eviction: the submission is kept until it is told.
+          Effect.tap((submission) =>
+            Effect.sync(() => {
+              kv.put(NOTIFY_KEY, Arr.dedupe([...pendingNotices(), submission.id]));
+            }),
           ),
           serially,
         ),

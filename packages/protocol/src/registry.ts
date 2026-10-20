@@ -59,6 +59,34 @@ export const SettingsState = Schema.Struct({
 
 export type SettingsState = typeof SettingsState.Type;
 
+/**
+ * A browser's Web Push subscription, as `PushSubscription.toJSON()` gives it: the push service's endpoint and the keys
+ * a message is encrypted to (RFC 8291). The endpoint must be an `https:` URL.
+ */
+export const PushSubscription = Schema.Struct({
+  endpoint: Schema.String.check(Schema.isPattern(/^https:\/\/\S+$/), Schema.isMaxLength(2048)),
+  keys: Schema.Struct({
+    p256dh: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(128)),
+    auth: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(64)),
+  }),
+});
+
+export type PushSubscription = typeof PushSubscription.Type;
+
+/** What a browser needs to subscribe to Web Push, and whether the Registry holds its subscription. */
+export const PushState = Schema.Struct({
+  /** The deployment's VAPID public key (an uncompressed P-256 point, base64url): `applicationServerKey`. */
+  publicKey: Schema.String,
+  /** Whether the Registry holds a subscription with the asked `endpoint`; false when none was asked. */
+  subscribed: Schema.Boolean,
+});
+
+export type PushState = typeof PushState.Type;
+
+/** The path of Session `sessionId`'s page in the web app, which a notification opens. */
+export const sessionPagePath = (sessionId: string): string =>
+  `/sessions/${encodeURIComponent(sessionId)}`;
+
 /** The path of Session `sessionId`'s socket on the main Worker. */
 export const sessionSocketPath = (sessionId: string): string =>
   `/sessions/${encodeURIComponent(sessionId)}/socket`;
@@ -90,4 +118,16 @@ export class RegistryRpcs extends RpcGroup.make(
     success: SettingsState,
     error: SettingsError,
   }),
+  /**
+   * The VAPID public key to subscribe with, and whether the Registry holds the subscription at `endpoint` (a browser
+   * whose push service dropped its subscription is told it is not subscribed).
+   */
+  Rpc.make("getPush", {
+    payload: { endpoint: Schema.optionalKey(Schema.String) },
+    success: PushState,
+  }),
+  /** Keep a browser's subscription, so Sessions notify it; one with the same endpoint is replaced. */
+  Rpc.make("subscribePush", { payload: { subscription: PushSubscription } }),
+  /** Forget the subscription at `endpoint`: that browser stops being notified. */
+  Rpc.make("unsubscribePush", { payload: { endpoint: Schema.String } }),
 ) {}

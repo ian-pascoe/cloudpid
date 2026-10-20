@@ -40,6 +40,7 @@ const memoryStorage = () => {
 const open = (storage: SecretStorage, master = MASTER) =>
   Effect.gen(function* () {
     const announced: (readonly SecretAsk[])[] = [];
+    const asked: SecretAsk[] = [];
     const vault = yield* openVault(master, "session-1");
 
     const secrets = yield* Effect.provide(
@@ -51,10 +52,14 @@ const open = (storage: SecretStorage, master = MASTER) =>
           Effect.sync(() => {
             announced.push(asks);
           }),
+        asked: (ask) =>
+          Effect.sync(() => {
+            asked.push(ask);
+          }),
       }),
     );
 
-    return { secrets, announced };
+    return { secrets, announced, asked };
   });
 
 const ASK: SecretAsk = {
@@ -91,6 +96,23 @@ describe("Secrets", () => {
       expect(yield* secrets.resolve("API_KEY")).toBe(VALUE);
       expect(yield* secrets.held).toEqual([{ name: "API_KEY", expiresAt: SECRET_LIFETIME_MS }]);
       expect(dump()).not.toContain(VALUE);
+    }));
+
+  test("says once that an ask is new, not again when a rerun finds it waiting", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const first = yield* open(storage);
+
+      yield* Effect.forkChild(first.secrets.ask(ASK));
+      yield* Effect.yieldNow;
+      expect(first.asked).toEqual([ASK]);
+
+      // An eviction leaves the ask stored, and the rerun of its call asks again.
+      const second = yield* open(storage);
+
+      yield* Effect.forkChild(second.secrets.ask(ASK));
+      yield* Effect.yieldNow;
+      expect(second.asked).toEqual([]);
     }));
 
   test("holds nothing when the owner cancels", () =>

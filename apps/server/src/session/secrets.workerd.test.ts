@@ -13,7 +13,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { TestSession } from "./host.fixture.ts";
 
 declare global {
@@ -142,6 +142,17 @@ describe("Secrets over the Session socket", () => {
     expect((await other.next(isRequests, seen)).requests).toEqual([]);
 
     await idle(stub);
+
+    // The owner may not have the page open: the request is pushed to them, naming what it asks for and why, and
+    // so is the end of the run.
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([
+        { kind: "input", names: ["API_KEY"], reason: "call the API" },
+        { kind: "finished" },
+      ]),
+    );
 
     const results = await runInDurableObject(stub, (instance: TestSession) =>
       instance.toolResults(),

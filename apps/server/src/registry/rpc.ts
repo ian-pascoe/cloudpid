@@ -22,6 +22,9 @@ export const serveRegistryRpc = (registries: Cloudflare.DurableObject<Registry>)
       listWorkspaces: () => registry.listWorkspaces(),
       createWorkspace: ({ slug }) => registry.createWorkspace({ slug }),
       getSettings: () => registry.getSettings(),
+      getPush: ({ endpoint }) => registry.getPush({ endpoint }),
+      subscribePush: ({ subscription }) => registry.subscribePush({ subscription }),
+      unsubscribePush: ({ endpoint }) => registry.unsubscribePush({ endpoint }),
       updateSettings: ({ overrides }) =>
         registry.updateSettings({ overrides }).pipe(
           Effect.flatMap(

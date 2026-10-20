@@ -110,6 +110,104 @@ describe("a Session host", () => {
     expect(await reported()).toEqual(["running", "idle"]);
   });
 
+  it("notifies the owner when a run they started finishes, once", async () => {
+    const { stub } = await registered();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["done"]);
+      await instance.prompt({ requestId: "turn-1", text: "hi" });
+    });
+
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([{ kind: "finished" }]),
+    );
+
+    // Settling again (the heartbeat, a later wake) does not tell them twice.
+    await runDurableObjectAlarm(stub);
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, (instance: TestSession) => instance.idle());
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.notified())).toEqual([
+      { kind: "finished" },
+    ]);
+  });
+
+  it("notifies the owner, after an eviction, of a run that finished while no client waited", async () => {
+    const { stub } = await registered();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["hang", "recovered"]);
+      await instance.submit({ requestId: "turn-1", text: "hi" });
+      await instance.hanging.promise;
+    });
+    await evictDurableObject(stub);
+    await runDurableObjectAlarm(stub);
+
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([{ kind: "finished" }]),
+    );
+  });
+
+  it("notifies the owner, with the model's error, when a run fails", async () => {
+    const { stub } = await registered();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["error:invalid request: the prompt is bad"]);
+      await instance.prompt({ requestId: "turn-1", text: "hi" });
+    });
+
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([{ kind: "failed", reason: "invalid request: the prompt is bad" }]),
+    );
+  });
+
+  it("says nothing of a run the owner stopped", async () => {
+    const { stub, status } = await registered();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["hang"]);
+      await instance.submit({ requestId: "turn-1", text: "hi" });
+      await instance.hanging.promise;
+      await instance.abortRoot();
+    });
+    await vi.waitFor(async () => expect(await status()).toBe("idle"));
+    await runDurableObjectAlarm(stub);
+
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.notified())).toEqual(
+      [],
+    );
+  });
+
+  it("keeps a notification the Registry could not take, and sends it when the next run settles", async () => {
+    const { stub } = await registered();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.notifications("failing"));
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["done", "again"]);
+      await instance.prompt({ requestId: "turn-1", text: "hi" });
+    });
+    await runDurableObjectAlarm(stub);
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.notified())).toEqual(
+      [],
+    );
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.notifications("working"));
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.prompt({ requestId: "turn-2", text: "hi again" }),
+    );
+
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([{ kind: "finished" }]),
+    );
+  });
+
   it("keeps its heartbeat while the Registry fails and reports the end of the run once it is back", async () => {
     const { stub, status, reported } = await registered();
 

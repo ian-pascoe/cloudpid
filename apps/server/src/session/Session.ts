@@ -25,7 +25,7 @@ import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
 import { sessionExtensions } from "./extensions.ts";
-import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
+import { NOTIFY_TIMEOUT, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { sessionSettingsLayer, subagentSettings } from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
@@ -106,12 +106,18 @@ export const SessionLive = Session.make(
 
         if (name !== undefined) kv.put(NAME_KEY, name);
 
-        const registry = Layer.succeed(SessionRegistry, {
+        const sessionRegistry = {
           report: (status) =>
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
               : registries.getByName(REGISTRY_NAME).setSessionStatus({ id: name, status }),
-        });
+          notify: (event) =>
+            name === undefined
+              ? ReportError.make({ message: "The Session's name is unknown" })
+              : registries.getByName(REGISTRY_NAME).notify({ sessionId: name, event }),
+        } satisfies (typeof SessionRegistry)["Service"];
+
+        const registry = Layer.succeed(SessionRegistry, sessionRegistry);
 
         const workspaceSlug = cachedSlug({
           name,
@@ -161,6 +167,9 @@ export const SessionLive = Session.make(
           session: state.raw.id.toString(),
           storage: kv,
           sockets: state.raw,
+          // A request waits for the owner, who may not have the page open: push it.
+          notify: (event) =>
+            sessionRegistry.notify(event).pipe(Effect.timeout(NOTIFY_TIMEOUT), Effect.ignore),
         });
 
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of

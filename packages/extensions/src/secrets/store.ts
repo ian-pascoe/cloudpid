@@ -143,6 +143,11 @@ export type SecretsOptions = {
   readonly vault: SecretVault;
   /** Tell the clients which asks are waiting; called whenever that changes. */
   readonly announce: (asks: ReadonlyArray<SecretAsk>) => Effect.Effect<void>;
+  /**
+   * Called once for each new ask, after `announce`: not for one a rerun finds already waiting. The ask waits for the
+   * owner whether or not this finishes, so it must not fail.
+   */
+  readonly asked?: (ask: SecretAsk) => Effect.Effect<void>;
 };
 
 const fromVault = Effect.mapError((error: SecretVaultError) =>
@@ -154,6 +159,7 @@ const makeSecrets = ({
   storage,
   vault,
   announce,
+  asked,
 }: SecretsOptions): Effect.Effect<SecretsService, SecretsError> =>
   Effect.gen(function* () {
     const redactions = new Redactions();
@@ -250,6 +256,8 @@ const makeSecrets = ({
 
         if (!asks().some((pending) => pending.id === request.id)) {
           yield* putAsks([...asks(), request]);
+
+          if (asked !== undefined) yield* asked(request);
         }
 
         yield* Deferred.await(waiter).pipe(Effect.onInterrupt(() => withdraw(request.id)));

@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
+import { DEFAULT_WORKSPACE, type PushSubscription } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
@@ -51,6 +51,14 @@ export type RegistryStore = {
   readonly getDocument: (name: string) => string | null;
   /** Save a document, replacing the one with its name. */
   readonly putDocument: (name: string, body: string, now: number) => void;
+  /** Keep a browser's Web Push subscription, replacing the one with the same endpoint. */
+  readonly putPushSubscription: (subscription: PushSubscription, now: number) => void;
+  /** Forget the subscription at `endpoint`; one that is not kept is ignored. */
+  readonly deletePushSubscription: (endpoint: string) => void;
+  /** Whether a subscription at `endpoint` is kept. */
+  readonly hasPushSubscription: (endpoint: string) => boolean;
+  /** Every kept subscription, oldest first. */
+  readonly listPushSubscriptions: () => PushSubscription[];
 };
 
 type SessionRow = {
@@ -64,6 +72,8 @@ type SessionRow = {
 };
 
 type WorkspaceRow = { slug: string; created_at: number };
+
+type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
 
 const isStatus = Schema.is(SessionStatus);
 
@@ -139,6 +149,15 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
       name TEXT PRIMARY KEY,
       body TEXT NOT NULL,
       updated_at INTEGER NOT NULL
+    ) STRICT`);
+  },
+  // 5: the browsers Web Push notifies, one row per push endpoint.
+  (sql) => {
+    sql.exec(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint TEXT PRIMARY KEY,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at INTEGER NOT NULL
     ) STRICT`);
   },
 ];
@@ -250,5 +269,33 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         now,
       );
     },
+
+    putPushSubscription: ({ endpoint, keys }, now) => {
+      sql.exec(
+        "INSERT OR REPLACE INTO push_subscriptions (endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?)",
+        endpoint,
+        keys.p256dh,
+        keys.auth,
+        now,
+      );
+    },
+
+    deletePushSubscription: (endpoint) => {
+      sql.exec("DELETE FROM push_subscriptions WHERE endpoint = ?", endpoint);
+    },
+
+    hasPushSubscription: (endpoint) =>
+      sql.exec("SELECT 1 FROM push_subscriptions WHERE endpoint = ?", endpoint).toArray().length >
+      0,
+
+    listPushSubscriptions: () =>
+      Arr.map(
+        sql
+          .exec<PushSubscriptionRow>(
+            "SELECT endpoint, p256dh, auth FROM push_subscriptions ORDER BY created_at, endpoint",
+          )
+          .toArray(),
+        ({ endpoint, p256dh, auth }) => ({ endpoint, keys: { p256dh, auth } }),
+      ),
   };
 };

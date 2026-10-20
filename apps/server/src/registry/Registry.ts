@@ -3,6 +3,10 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import type { PushState, PushSubscription } from "@cloudpid/protocol";
+import { PushConfig } from "../push/config.ts";
+import { pushNotifier } from "../push/notify.ts";
+import type { PushEvent } from "../push/notification.ts";
 import { newSessionId } from "./ids.ts";
 import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
 import {
@@ -40,6 +44,25 @@ export type RegistryMethods = {
   readonly updateSettings: (input: {
     readonly overrides: Schema.Json;
   }) => Effect.Effect<SettingsUpdate>;
+  /**
+   * The VAPID public key to subscribe with, and whether a subscription at `endpoint` is kept. Pushes to a browser the
+   * push service dropped are deleted on the next one, so a client asks before it trusts its own subscription.
+   */
+  readonly getPush: (input: { readonly endpoint?: string | undefined }) => Effect.Effect<PushState>;
+  /** Keep a browser's Web Push subscription, replacing the one with the same endpoint. */
+  readonly subscribePush: (input: {
+    readonly subscription: PushSubscription;
+  }) => Effect.Effect<void>;
+  /** Forget the subscription at `endpoint`. */
+  readonly unsubscribePush: (input: { readonly endpoint: string }) => Effect.Effect<void>;
+  /**
+   * A Session DO reports something the owner should hear: push it to every subscribed browser. Never fails; a Session
+   * that is not registered is ignored.
+   */
+  readonly notify: (input: {
+    readonly sessionId: string;
+    readonly event: PushEvent;
+  }) => Effect.Effect<void>;
 };
 
 /**
@@ -49,10 +72,11 @@ export type RegistryMethods = {
 export class Registry extends Cloudflare.DurableObject<Registry, RegistryMethods>()("Registry") {}
 
 export const RegistryLive = Registry.make(
-  Cloudflare.DurableObjectState.pipe(
-    Effect.map((state) =>
+  Effect.all({ state: Cloudflare.DurableObjectState, push: PushConfig }).pipe(
+    Effect.map(({ state, push }) =>
       Effect.sync(() => {
         const store = openRegistryStore(state.raw.storage);
+        const notify = pushNotifier({ store, vapid: push.vapid });
 
         return {
           createSession: ({ title, workspace }) =>
@@ -82,6 +106,18 @@ export const RegistryLive = Registry.make(
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
             ),
+          getPush: ({ endpoint }) =>
+            Effect.sync(() => ({
+              publicKey: push.vapid.publicKey,
+              subscribed: endpoint !== undefined && store.hasPushSubscription(endpoint),
+            })),
+          subscribePush: ({ subscription }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => store.putPushSubscription(subscription, now)),
+            ),
+          unsubscribePush: ({ endpoint }) =>
+            Effect.sync(() => store.deletePushSubscription(endpoint)),
+          notify: ({ sessionId, event }) => notify(sessionId, event),
         } satisfies RegistryMethods;
       }),
     ),

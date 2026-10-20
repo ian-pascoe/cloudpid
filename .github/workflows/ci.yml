@@ -94,3 +94,8 @@ jobs:
           # The GitHub token commands on the Workspace's Container get as GH_TOKEN/GITHUB_TOKEN (read by the Workspaces
           # Worker's `Config.Redacted`, bound as a Worker secret). Set in `production`.
           CLOUDPID_GITHUB_TOKEN: ${{ secrets.CLOUDPID_GITHUB_TOKEN }}
+          # The VAPID identity Web Push messages are signed with (read by the Registry DO's `Config.Redacted`, bound as
+          # Worker secrets): the public key also goes to the web app, which subscribes with it. Set in `production`.
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}

@@ -196,15 +196,57 @@ describe("the Registry store", () => {
       const { storage } = state;
       const { sql } = storage;
 
-      // As the release before the documents left it: version 3, with no document table.
+      // As the release before the documents left it: version 3, with no document table (or any later one).
       sql.exec("DROP TABLE documents");
-      sql.exec("DELETE FROM schema_version WHERE version = ?", MIGRATIONS.length);
+      sql.exec("DROP TABLE push_subscriptions");
+      sql.exec("DELETE FROM schema_version WHERE version > 3");
 
       const store = openRegistryStore(storage);
 
       store.putDocument("settings", "{}", 2_000);
       expect(store.getDocument("settings")).toBe("{}");
     });
+  });
+
+  it("keeps a Web Push subscription by endpoint, replacing it when its keys change", async () => {
+    const registry = fresh();
+    const first = { endpoint: "https://push.example/a", keys: { p256dh: "k1", auth: "a1" } };
+    const second = { endpoint: "https://push.example/b", keys: { p256dh: "k2", auth: "a2" } };
+
+    expect(await registry.listPushSubscriptions()).toEqual([]);
+    expect(await registry.hasPushSubscription(first.endpoint)).toBe(false);
+
+    await registry.putPushSubscription(first, 1_000);
+    await registry.putPushSubscription(second, 2_000);
+    await registry.putPushSubscription({ ...first, keys: { p256dh: "k3", auth: "a3" } }, 3_000);
+
+    expect(await registry.hasPushSubscription(first.endpoint)).toBe(true);
+    expect(await registry.listPushSubscriptions()).toEqual([
+      second,
+      { ...first, keys: { p256dh: "k3", auth: "a3" } },
+    ]);
+  });
+
+  it("forgets a Web Push subscription, and ignores one that is not kept", async () => {
+    const registry = fresh();
+    const kept = { endpoint: "https://push.example/a", keys: { p256dh: "k1", auth: "a1" } };
+
+    await registry.putPushSubscription(kept, 1_000);
+    await registry.deletePushSubscription("https://push.example/unknown");
+    expect(await registry.listPushSubscriptions()).toEqual([kept]);
+
+    await registry.deletePushSubscription(kept.endpoint);
+    expect(await registry.listPushSubscriptions()).toEqual([]);
+  });
+
+  it("keeps its Web Push subscriptions across an eviction", async () => {
+    const registry = fresh();
+    const kept = { endpoint: "https://push.example/a", keys: { p256dh: "k1", auth: "a1" } };
+
+    await registry.putPushSubscription(kept, 1_000);
+    await evictDurableObject(registry);
+
+    expect(await registry.listPushSubscriptions()).toEqual([kept]);
   });
 
   it("keeps its Sessions and Workspaces across an eviction", async () => {
