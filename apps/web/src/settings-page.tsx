@@ -230,7 +230,7 @@ export const SettingsPage = () => {
         </div>
         {settings.state?.problem !== undefined && (
           <p role="alert" className="mt-4 text-sm whitespace-pre-wrap text-destructive">
-            The saved overrides were not used, and the defaults apply: {settings.state.problem}
+            {settings.state.problem}
           </p>
         )}
         {settings.state === null ? (
