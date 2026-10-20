@@ -5,7 +5,7 @@ import { env } from "cloudflare:workers";
 import type { AgentEvent } from "@earendil-works/pi-durable";
 import {
   type ClientMessage,
-  type ConversationId,
+  ConversationId,
   ServerMessageJson,
   type ServerMessage,
 } from "@cloudpid/protocol";
@@ -234,6 +234,19 @@ describe("an abort", () => {
 });
 
 describe("a watch", () => {
+  it("of a conversation the Session does not have answers with an error", async () => {
+    const client = await connect(fresh());
+    const root = await client.root();
+
+    const unknown = await Effect.runPromise(
+      Schema.decodeUnknownEffect(ConversationId)(root + 1000),
+    );
+
+    client.send({ type: "watch", id: "watch", conversationId: unknown });
+
+    expect(await client.answer("watch")).toMatchObject({ type: "error", id: "watch" });
+  });
+
   it("survives hibernation: the woken Session sends a fresh snapshot and keeps streaming on the same socket", async () => {
     const stub = fresh();
 

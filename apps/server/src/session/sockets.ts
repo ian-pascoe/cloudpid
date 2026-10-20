@@ -120,7 +120,8 @@ export const sessionSocketsLayer = (
 
       /**
        * Stream `conversationId`'s events to `socket`, replacing a watch it already has, and resolve once its snapshot
-       * is sent. A watch that ends after that is dropped, and the client told.
+       * is sent, or once a newer watch or the socket's close replaces it. A watch that ends after its snapshot is
+       * dropped, and the client told.
        */
       const watch = (socket: WebSocket, conversationId: ConversationId) =>
         Effect.gen(function* () {
@@ -144,6 +145,7 @@ export const sessionSocketsLayer = (
                 ),
               ),
             ),
+            Effect.onInterrupt(() => Deferred.succeed(started, undefined)),
             FiberMap.run(fibers, conversationId),
           );
 
@@ -237,7 +239,12 @@ export const sessionSocketsLayer = (
       for (const socket of state.getWebSockets()) {
         for (const conversationId of readAttachment(socket).watches) {
           yield* watch(socket, conversationId).pipe(
-            Effect.catch((error) => send(socket, { type: "error", message: error.message })),
+            // A watch that cannot restart is dropped, so the next instance does not retry it.
+            Effect.catch((error) =>
+              setWatched(socket, conversationId, false).pipe(
+                Effect.andThen(send(socket, { type: "error", message: error.message })),
+              ),
+            ),
           );
         }
       }
