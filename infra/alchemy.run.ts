@@ -1,4 +1,4 @@
-import { Server } from "@cloudpid/server";
+import { Server, Workspaces } from "@cloudpid/server";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,8 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const server = yield* Server;
+
+    yield* Workspaces;
 
     return { url: server.url.as<string>() };
   }),

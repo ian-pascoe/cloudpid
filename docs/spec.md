@@ -33,7 +33,7 @@ Browser (web UI, PWA) ──Access──▶ Main Worker ──WS─────�
 | **Registry DO**         | singleton                                 | Workspace and Session listings (title, timestamps, status), settings overrides, push subscriptions.                               |
 | **Codemode sandbox DO** | Session DO id                             | QuickJS script execution. It lives in a separately deployed Worker so scripts run in another isolate.                             |
 
-The Harness and the Workspace live in separate objects ([ADR-0001](adr/0001-session-and-workspace-durable-objects.md)).
+The Harness and the Workspace live in separate objects ([ADR-0001](adr/0001-session-and-workspace-durable-objects.md)). The Workspace DO is hosted by its own plain Worker, `Workspaces` (bound as `WORKSPACES`): the Worker Shell reaches the DO through a `WorkspaceServiceProxy` entrypoint the hosting Worker must export (`ctx.exports`), and an alchemy Effect Worker's generated entry exports only `default` and its Effect DO classes. Session DOs bind it across scripts with `Cloudflare.DurableObject("Workspace", { scriptName: Workspaces.workerName })`, the Output and not a literal, so `Workspaces` deploys first; they call it through the raw `DurableObjectNamespace` stub, which `getWorkspace()` and `ComputerExecutionEnv` need. The two Workers deploy separately, so `ComputerExecutionEnv`'s requests to the DO only ever gain operations, never change existing ones.
 
 ### Session host
 
@@ -80,6 +80,8 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 | Container    | Real Linux through computerd and FUSE at `/workspace`                   | Anything needing a real binary: `npm`, `node`, test runners, `gh`          |
 
 `bash` chooses a backend per call, with an explicit `backend` argument or a heuristic. The Worker Shell cannot run ELF binaries, so those commands always go to the Container.
+
+The Worker Shell returns a command's output once, when it exits: `onOutput` gets all of stdout, then all of stderr, attributed but not interleaved in arrival order. The Container streams output as it comes, so its tests must check streaming, which the Worker Shell's cannot.
 
 ### Container and Toolchains
 
@@ -223,7 +225,8 @@ The repo is a Turborepo with pnpm workspaces. Internal packages are just-in-time
 
 ```
 infra/                    alchemy stack (alchemy.run.ts): Workers, DOs, Container, Access, secrets
-apps/server/              main Worker: Session, Workspace, Registry DOs; HTTP/WS API; static assets
+apps/server/              main Worker: Session, Registry DOs; HTTP/WS API; static assets.
+                          Workspaces Worker (src/workspace): Workspace DO
 apps/codemode-sandbox/    codemode sandbox Worker
 apps/web/                 Vite + React UI
 apps/sandbox-image/       Dockerfile (computerd + mise), base mise.toml, bootstrap
