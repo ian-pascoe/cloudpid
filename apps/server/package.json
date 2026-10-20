@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cloudflare/computer": "^0.5.1",
+    "@cloudpid/codemode-sandbox": "workspace:*",
     "@cloudpid/computer-env": "workspace:*",
     "@cloudpid/config": "workspace:*",
     "@cloudpid/effect-durable": "workspace:*",
@@ -20,6 +21,7 @@
     "@cloudpid/protocol": "workspace:*",
     "@earendil-works/chord": "^1.3.0",
     "@earendil-works/pi-ai": "^1.3.0",
+    "@earendil-works/pi-codemode": "^1.3.0",
     "@earendil-works/pi-durable": "^1.3.0",
     "alchemy": "2.0.0-beta.83",
     "effect": "^4.0.5"
