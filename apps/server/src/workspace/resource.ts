@@ -1,14 +1,14 @@
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { SANDBOX_CONTAINER, WORKSPACE_BINDING } from "./binding.ts";
+import { WORKSPACE_CONTAINER, WORKSPACE_BINDING } from "./binding.ts";
 import type { Workspace } from "./Workspace.ts";
 
 /**
  * The sandbox image (`apps/sandbox-image`) as a Container the Workspace DO schedules itself: the object picks the image
  * and the instance size when it starts the Container (`schedulingPolicy: "durable_object"`, ADR-0004), so neither is
- * declared here. The image is built from the Dockerfile, and reaches the object as `ctx.container.images.Sandbox`.
+ * declared here. The image is built from the Dockerfile, and reaches the object as `ctx.container.images.WorkspaceContainer`.
  */
-export const Sandbox = Cloudflare.Container(SANDBOX_CONTAINER, {
+export const WorkspaceContainer = Cloudflare.Container(WORKSPACE_CONTAINER, {
   schedulingPolicy: "durable_object",
   context: sandboxImageContext,
 });
@@ -23,7 +23,7 @@ export const Workspaces = Cloudflare.Worker("Workspaces", {
   workersDev: false,
   env: {
     [WORKSPACE_BINDING]: Cloudflare.DurableObject<Workspace>("Workspace", {
-      containers: [Sandbox],
+      containers: [WorkspaceContainer],
     }),
     LOADER: Cloudflare.WorkerLoader(),
   },

@@ -8,12 +8,15 @@ ARG COMPUTERD_VERSION=0.5.1
 ARG MISE_VERSION=v2026.10.15
 ARG MISE_SHA256=e3b186d4c70627f27037be615becaf4acfb30e41fb6a1819486717dc94e4e2a9
 
-# A single layer over scratch whose only content is the computerd binary at /usr/local/bin/computerd.
-FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION} AS computerd
+# Every base image is pinned by digest as well as by tag, so a rebuild cannot move to another computerd build or Debian
+# release (`libfuse2t64` is a trixie package name). Refresh a digest together with its tag: computerd's is the manifest of
+# `ghcr.io/cloudflare/computer-computerd-linux-x64:<COMPUTERD_VERSION>`, Debian's the index of `debian:stable-slim`.
 
-# mise is fetched and checked in a stage of its own, so the image keeps no curl. No BuildKit-only syntax (`ADD --checksum`):
-# Docker without buildx builds this too.
-FROM --platform=linux/amd64 debian:stable-slim AS mise
+# A single layer over scratch whose only content is the computerd binary at /usr/local/bin/computerd.
+FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:63b743262f9e854bde861c5d4a08fb57539012997f6b9e7d231cb32667c65c6a AS computerd
+
+# mise is fetched and checked in a stage of its own, so the image keeps no curl.
+FROM --platform=linux/amd64 debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5 AS mise
 ARG MISE_VERSION
 ARG MISE_SHA256
 RUN apt-get update \
@@ -22,7 +25,7 @@ RUN apt-get update \
  && echo "${MISE_SHA256}  /mise" | sha256sum -c - \
  && chmod 755 /mise
 
-FROM --platform=linux/amd64 debian:stable-slim
+FROM --platform=linux/amd64 debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends fuse3 libfuse2t64 ca-certificates \

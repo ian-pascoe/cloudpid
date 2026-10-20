@@ -227,9 +227,6 @@ importers:
 
   apps/sandbox-image:
     devDependencies:
-      '@cloudflare/computer':
-        specifier: ^0.5.1
-        version: 0.5.1(@cloudflare/workers-types@5.20261019.1)(supports-color@10.2.2)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
       '@cloudpid/config':
         specifier: workspace:*
         version: link:../../packages/config
