@@ -10,9 +10,15 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { cn } from "../lib/utils.ts";
 
+/**
+ * The model's markdown. Images are not loaded: the page would fetch whatever URL the model (or text it read from
+ * a tool) names, which tells that host the reader's address and when the page was open. Streamdown shows a blocked
+ * image as a placeholder.
+ */
 export const MarkdownText = () => (
   <StreamdownTextPrimitive
     caret="block"
+    security={{ allowedImagePrefixes: [], allowDataImages: false }}
     className="max-w-none text-[0.9375rem] leading-relaxed [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[0.8125rem] [&_code:not(pre_code)]:rounded [&_code:not(pre_code)]:bg-muted [&_code:not(pre_code)]:px-1 [&_code:not(pre_code)]:font-mono [&_code:not(pre_code)]:text-[0.85em] [&_p]:my-3 [&_ul]:my-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:pl-6 [&_a]:underline [&_a]:underline-offset-2 [&_h1]:mt-6 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:mt-5 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold"
   />
 );
@@ -73,9 +79,9 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   artifact,
   status,
 }) => {
-  // A message that did not complete leaves its unanswered calls stopped.
-  const stopped = result === undefined && status.type === "incomplete";
-  const running = result === undefined && !stopped;
+  // A call is running only while its message is; one in a message that ended (errored, cancelled, or cut off) is stopped.
+  const running = result === undefined && status.type === "running";
+  const stopped = result === undefined && !running;
 
   const streamed = Option.getOrUndefined(
     Option.map(decodeStreamedOutput(artifact), (found) => found.output),
@@ -88,7 +94,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       summary={
         <>
           {running ? (
-            <Loader className="size-3.5 animate-spin" aria-label="Running" />
+            <Loader className="size-3.5 motion-safe:animate-spin" aria-label="Running" />
           ) : isError === true ? (
             <X className="size-3.5 text-destructive" aria-label="Failed" />
           ) : stopped ? (

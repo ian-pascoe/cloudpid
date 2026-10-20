@@ -1,3 +1,5 @@
+// @effect-diagnostics globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
 import type { AppendMessage } from "@assistant-ui/react";
 import { describe, expect, it, vi } from "vitest";
 import { queueAdapter, textOf, UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";

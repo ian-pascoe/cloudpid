@@ -1,6 +1,7 @@
 import { MessagePrimitive, ThreadPrimitive, useAuiState } from "@assistant-ui/react";
 import * as Predicate from "effect/Predicate";
 import { ArrowLeft } from "lucide-react";
+import type { ReactNode } from "react";
 import { navigate } from "../router.ts";
 import type { QueuedEntry, SessionState } from "../session/connection.ts";
 import { Composer } from "./composer.tsx";
@@ -71,7 +72,7 @@ export const Thread = ({
 }: {
   title: string | undefined;
   state: SessionState;
-  notice: string | undefined;
+  notice: ReactNode;
   steerLane: readonly QueuedEntry[];
   followUpLane: readonly QueuedEntry[];
 }) => {
@@ -88,7 +89,7 @@ export const Thread = ({
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <Header title={title} model={view.model === null ? null : view.model.modelId} />
-      {notice !== undefined && (
+      {notice !== null && notice !== undefined && (
         <p
           role="status"
           className="border-b bg-muted px-4 py-1.5 text-center text-sm text-muted-foreground"
@@ -124,7 +125,7 @@ export const Thread = ({
           {problem}
         </p>
       )}
-      <Composer steerLane={steerLane} followUpLane={followUpLane} />
+      <Composer steerLane={steerLane} followUpLane={followUpLane} sending={state.sending} />
     </ThreadPrimitive.Root>
   );
 };

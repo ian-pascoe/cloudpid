@@ -1,3 +1,5 @@
+// @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
 import type { SessionRecord } from "@cloudpid/protocol";
 import { Plus } from "lucide-react";
 import { useState } from "react";

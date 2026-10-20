@@ -1,5 +1,5 @@
-// Adapted from Cloudflare's `agents` repository, `examples/next/harnesses/pi/src/transcript.ts`
-// https://github.com/cloudflare/agents/tree/main/examples/next/harnesses/pi
+// Adapted from Cloudflare's `agents` repository, `examples/next/harnesses/pi/src/transcript.ts` as of commit 1e54cf1
+// https://github.com/cloudflare/agents/blob/1e54cf19d747f122c141e0eb323226ec8b4d4865/examples/next/harnesses/pi/src/transcript.ts
 //
 // MIT License
 //
@@ -18,8 +18,9 @@
 // COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
-// Changes: formatted for this repository, relative imports end in `.ts`, the view keeps the inbox's items instead of
-// their count, and tool events of nested calls are left out of the running tools.
+// Changes: types renamed (`PiMessage` → `TranscriptMessage`, `PiMessagePart` → `TranscriptPart`), functions written as
+// `const` arrow functions, `Predicate.isString` for the typeof check, and `projectMessage` builds its result in steps.
+// Formatted for this repository.
 
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
 

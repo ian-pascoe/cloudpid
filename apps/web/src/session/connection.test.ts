@@ -1,3 +1,5 @@
+// @effect-diagnostics asyncFunction:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
 import { EMPTY_VIEW } from "@cloudpid/protocol";
 import * as Predicate from "effect/Predicate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,6 +7,7 @@ import {
   HEARTBEAT_INTERVAL_MS,
   PONG_TIMEOUT_MS,
   SessionConnection,
+  type SessionProbe,
   type SessionSocket,
 } from "./connection.ts";
 
@@ -61,16 +64,20 @@ class FakeSocket implements SessionSocket {
   }
 }
 
-const setup = () => {
+const setup = (probe: SessionProbe = () => Promise.resolve("reachable")) => {
   const sockets: FakeSocket[] = [];
 
-  const connection = new SessionConnection("wss://example.test/sessions/s1/socket", (url) => {
-    const socket = new FakeSocket(url);
+  const connection = new SessionConnection(
+    "wss://example.test/sessions/s1/socket",
+    (url) => {
+      const socket = new FakeSocket(url);
 
-    sockets.push(socket);
+      sockets.push(socket);
 
-    return socket;
-  });
+      return socket;
+    },
+    probe,
+  );
 
   return { connection, sockets, latest: () => sockets[sockets.length - 1]! };
 };
@@ -310,17 +317,67 @@ describe("a Session connection", () => {
     expect(connection.getState()).toBe(before);
   });
 
-  it("watches again when the Session drops the watch", () => {
-    const { latest } = setup();
+  it("reconnects, after the backoff, when the Session drops the watch", () => {
+    const { connection, sockets, latest } = setup();
 
     watching(latest());
     latest().say({ type: "error", conversationId: 1, message: "watch ended" });
 
-    expect(
-      latest()
-        .commands()
-        .filter((command) => command.type === "watch"),
-    ).toHaveLength(2);
+    expect(connection.getState()).toMatchObject({ status: "reconnecting", failure: "watch ended" });
+    expect(sockets).toHaveLength(1);
+
+    vi.advanceTimersByTime(500);
+
+    expect(sockets).toHaveLength(2);
+
+    watching(latest());
+
+    expect(connection.getState().status).toBe("live");
+  });
+
+  it("reconnects, after the backoff, when the Session refuses the watch, and shows why", () => {
+    const { connection, sockets, latest } = setup();
+
+    latest().open();
+    latest().say({ type: "hello", root: 1 });
+
+    const watch = latest().commands().at(-1);
+
+    latest().say({ type: "error", id: watch?.id, message: "no such conversation" });
+
+    expect(connection.getState()).toMatchObject({
+      status: "reconnecting",
+      failure: "no such conversation",
+    });
+    expect(sockets).toHaveLength(1);
+
+    vi.advanceTimersByTime(500);
+
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("keeps backing off while watches fail, as a hello alone does not start the delay over", async () => {
+    const { sockets, latest } = setup();
+
+    const refuse = () => {
+      latest().open();
+      latest().say({ type: "hello", root: 1 });
+      latest().say({ type: "error", id: latest().commands().at(-1)?.id, message: "no" });
+    };
+
+    refuse();
+    vi.advanceTimersByTime(500);
+
+    expect(sockets).toHaveLength(2);
+
+    refuse();
+    await vi.advanceTimersByTimeAsync(999);
+
+    expect(sockets).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(sockets).toHaveLength(3);
   });
 
   describe("reconnecting", () => {
@@ -344,7 +401,7 @@ describe("a Session connection", () => {
       expect(connection.getState().view.messages).toHaveLength(2);
     });
 
-    it("backs off between attempts, and starts over once connected", () => {
+    it("backs off between attempts, and starts over once connected", async () => {
       const { sockets, latest } = setup();
 
       latest().drop();
@@ -357,11 +414,11 @@ describe("a Session connection", () => {
       expect(sockets).toHaveLength(2);
 
       latest().drop();
-      vi.advanceTimersByTime(999);
+      await vi.advanceTimersByTimeAsync(999);
 
       expect(sockets).toHaveLength(2);
 
-      vi.advanceTimersByTime(1);
+      await vi.advanceTimersByTimeAsync(1);
 
       expect(sockets).toHaveLength(3);
 
@@ -370,6 +427,86 @@ describe("a Session connection", () => {
       vi.advanceTimersByTime(500);
 
       expect(sockets).toHaveLength(4);
+    });
+
+    it("stops reconnecting once the probe shows the sign-in has lapsed, and keeps the view", async () => {
+      const probe = vi.fn<SessionProbe>(() => Promise.resolve("signed-out"));
+      const { connection, sockets, latest } = setup(probe);
+
+      watching(latest(), { entries: [entry(1, "kept")] });
+      latest().drop();
+      vi.advanceTimersByTime(500);
+
+      expect(probe).not.toHaveBeenCalled();
+
+      latest().drop();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(probe).toHaveBeenCalledWith("wss://example.test/sessions/s1/socket");
+      expect(sockets).toHaveLength(2);
+      expect(connection.getState().status).toBe("signed-out");
+      expect(connection.getState().view.messages).toHaveLength(1);
+    });
+
+    it("stops reconnecting once the probe shows the Session does not exist", async () => {
+      const { connection, sockets, latest } = setup(() => Promise.resolve("missing"));
+
+      latest().drop();
+      vi.advanceTimersByTime(500);
+      latest().drop();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(sockets).toHaveLength(2);
+      expect(connection.getState().status).toBe("missing");
+    });
+
+    it("keeps reconnecting while the probe finds the Session reachable", async () => {
+      const probe = vi.fn<SessionProbe>(() => Promise.resolve("reachable"));
+      const { connection, sockets, latest } = setup(probe);
+
+      latest().drop();
+      vi.advanceTimersByTime(500);
+      latest().drop();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(sockets).toHaveLength(3);
+      expect(connection.getState().status).toBe("reconnecting");
+    });
+
+    it("does not reconnect from a probe that answers after dispose", async () => {
+      const { connection, sockets, latest } = setup();
+
+      latest().drop();
+      vi.advanceTimersByTime(500);
+      latest().drop();
+      connection.dispose();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(sockets).toHaveLength(2);
+      expect(connection.getState().status).toBe("closed");
+    });
+
+    it("lists a submit held while disconnected as sending, until it is answered", () => {
+      const { connection, latest } = setup();
+
+      watching(latest());
+      latest().drop();
+      connection.submit("offline", "followUp");
+
+      expect(connection.getState().sending).toEqual([{ id: expect.any(String), text: "offline" }]);
+
+      vi.advanceTimersByTime(500);
+      watching(latest());
+
+      const submit = latest()
+        .commands()
+        .find((command) => command.type === "submit");
+
+      expect(connection.getState().sending).toHaveLength(1);
+
+      latest().say({ type: "result", id: submit?.id, result: { submissionId: "s" } });
+
+      expect(connection.getState().sending).toEqual([]);
     });
 
     it("sends a submit again, with the same requestId, when the socket closed before its answer", () => {
@@ -429,6 +566,27 @@ describe("a Session connection", () => {
           .commands()
           .filter((command) => command.type === "submit"),
       ).toHaveLength(1);
+    });
+  });
+
+  describe("the queue", () => {
+    it("keeps the same lanes while the inbox and the remembered texts do not change", () => {
+      const { connection, latest } = setup();
+
+      watching(latest(), { inbox: [{ id: "a", mode: "followUp" }] });
+
+      const before = connection.getState().queue;
+
+      expect(before.followUp).toHaveLength(1);
+
+      latest().say({ type: "result", id: "unknown", result: null });
+      latest().say({ type: "error", message: "unrelated" });
+
+      expect(connection.getState().queue).toBe(before);
+
+      latest().say({ type: "events", conversationId: 1, events: [] });
+
+      expect(connection.getState().queue).toBe(before);
     });
   });
 

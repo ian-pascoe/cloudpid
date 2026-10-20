@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import * as Alchemy from "alchemy";
 import * as Command from "alchemy/Command";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -13,9 +14,6 @@ import { serveRegistryRpc } from "./registry/rpc.ts";
 import { isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 
-/** The web app's package. Resolved from this file: alchemy runs from `infra/`, so a relative path would miss it. */
-const WEB_DIRECTORY = new URL("../../web/", import.meta.url).pathname;
-
 /**
  * The web app (`apps/web`), built at deploy time and served as static assets by this Worker: a request that matches a
  * file is answered by the asset layer without waking the Worker, a navigation to an unknown path (`/sessions/:id`)
@@ -25,9 +23,12 @@ const WEB_DIRECTORY = new URL("../../web/", import.meta.url).pathname;
 const webAssets = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
 
+  // Alchemy runs from `infra/`, so the app's directory is resolved from this file, not from a relative path.
+  const webDirectory = fileURLToPath(new URL("../../web/", import.meta.url).href);
+
   const build = yield* Command.Build("WebBuild", {
     command: "pnpm run build",
-    cwd: WEB_DIRECTORY,
+    cwd: webDirectory,
     outdir: "dist",
     // The app imports the protocol package's source, which the default scope (the app's own files) would miss.
     memo: { include: ["**/*", "../../packages/protocol/src/**"], lockfile: true },

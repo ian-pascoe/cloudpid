@@ -1,3 +1,5 @@
+// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
 import { sessionIdOf, usePath } from "./router.ts";

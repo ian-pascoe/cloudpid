@@ -1,6 +1,9 @@
 // The browser's end of a Session socket (`docs/spec.md` → Client and protocol, ADR-0009): it connects, watches the
 // root conversation the Session names in `hello`, folds the events into a `SessionView`, sends the user's commands,
 // and keeps the connection alive: a heartbeat, and a reconnect with a fresh watch after any close.
+
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalFetch:off globalTimers:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
 import {
   EMPTY_VIEW,
   HEARTBEAT,
@@ -38,9 +41,17 @@ export type SessionSocketFactory = (url: string) => SessionSocket;
 
 /**
  * `connecting`: no snapshot yet. `live`: the view is current. `reconnecting`: the socket closed; the view is the
- * last one seen, until a fresh snapshot replaces it. `closed`: disposed.
+ * last one seen, until a fresh snapshot replaces it. `signed-out` and `missing`: reconnecting is pointless, because
+ * Access no longer lets the page through, or the Session does not exist (found out by asking over HTTP after a few
+ * failed attempts, as a WebSocket cannot see why it failed). `closed`: disposed.
  */
-export type ConnectionStatus = "connecting" | "live" | "reconnecting" | "closed";
+export type ConnectionStatus =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "signed-out"
+  | "missing"
+  | "closed";
 
 /** A queued input. `text` is null when this page did not send it (it was sent before a reload). */
 export interface QueuedEntry {
@@ -54,10 +65,18 @@ export interface QueueLanes {
   readonly followUp: readonly QueuedEntry[];
 }
 
+/** A submit the Session has not answered yet, which shows as "sending" until it does. */
+export interface SendingEntry {
+  readonly id: string;
+  readonly text: string;
+}
+
 export interface SessionState {
   readonly status: ConnectionStatus;
   readonly view: SessionView;
   readonly queue: QueueLanes;
+  /** Submits held for want of a connection, or not yet answered. */
+  readonly sending: readonly SendingEntry[];
   /** The message of the last command that failed, until the next submit. */
   readonly failure: string | null;
 }
@@ -86,6 +105,37 @@ const submissionIdOf = (result: ServerMessage & { type: "result" }): string | un
 
 const EMPTY_QUEUE: QueueLanes = { steer: [], followUp: [] };
 
+/** What asking the Session over HTTP shows about why its socket does not open. */
+export type Reachability = "reachable" | "signed-out" | "missing";
+
+export type SessionProbe = (socketUrl: string) => Promise<Reachability>;
+
+/** After this many failed attempts without a snapshot, the client asks over HTTP whether trying again can work. */
+const PROBE_AFTER_ATTEMPTS = 2;
+
+/**
+ * A plain GET of the socket's path, redirects not followed: Access answers a lapsed sign-in with a redirect to its
+ * login (or a 401), the Worker answers a Session the Registry does not know with 404, and anything else (the Session
+ * itself wants an upgrade) means the socket is worth another try.
+ */
+export const probeSession: SessionProbe = async (socketUrl) => {
+  const url = new URL(socketUrl);
+
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+
+  try {
+    const response = await fetch(url, { redirect: "manual" });
+
+    if (response.type === "opaqueredirect" || response.status === 401 || response.status === 403) {
+      return "signed-out";
+    }
+
+    return response.status === 404 ? "missing" : "reachable";
+  } catch {
+    return "reachable";
+  }
+};
+
 export class SessionConnection {
   private readonly listeners = new Set<() => void>();
   private readonly texts = new Map<string, string>();
@@ -98,6 +148,8 @@ export class SessionConnection {
   private disposed = false;
   private attempts = 0;
   private commands = 0;
+  private textsVersion = 0;
+  private lanesFor: { readonly inbox: SessionView["inbox"]; readonly version: number } | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private pongTimer: ReturnType<typeof setTimeout> | undefined;
@@ -105,12 +157,14 @@ export class SessionConnection {
     status: "connecting",
     view: EMPTY_VIEW,
     queue: EMPTY_QUEUE,
+    sending: [],
     failure: null,
   };
 
   constructor(
     private readonly url: string,
     private readonly createSocket: SessionSocketFactory = (target) => new WebSocket(target),
+    private readonly probe: SessionProbe = probeSession,
   ) {
     this.connect();
   }
@@ -139,8 +193,8 @@ export class SessionConnection {
       whenBusy,
       sent: false,
     });
-    this.update({ failure: null });
     this.flush();
+    this.update({ failure: null });
   }
 
   /** Abort the root conversation's work and withdraw its queued input. */
@@ -202,7 +256,6 @@ export class SessionConnection {
   private handle(message: ServerMessage): void {
     switch (message.type) {
       case "hello":
-        this.attempts = 0;
         this.root = message.root;
         this.watch();
 
@@ -216,9 +269,16 @@ export class SessionConnection {
           // What the snapshot's inbox no longer holds has been placed, or was withdrawn.
           const queued = new Set(view.inbox.map((item) => String(item.id)));
 
-          for (const id of this.texts.keys()) if (!queued.has(id)) this.texts.delete(id);
+          for (const id of this.texts.keys()) {
+            if (queued.has(id)) continue;
+
+            this.texts.delete(id);
+            this.textsVersion += 1;
+          }
         }
 
+        // A snapshot or event shows the watch works, so the next failure starts the backoff over.
+        this.attempts = 0;
         this.update({ view, status: "live" });
 
         return;
@@ -228,6 +288,7 @@ export class SessionConnection {
         if (message.id === this.watchId) {
           this.watched = true;
           this.flush();
+          this.update({});
 
           return;
         }
@@ -236,12 +297,15 @@ export class SessionConnection {
 
         return;
       case "error":
-        if (message.id !== undefined) {
+        if (message.id === this.watchId) {
+          // The watch was refused: start over on a new socket, after the backoff, rather than asking again at once.
+          this.lost(message.message);
+        } else if (message.id !== undefined) {
           this.answered(message.id, undefined);
           this.update({ failure: message.message });
         } else if (message.conversationId !== undefined) {
-          // The watch ended and is dropped: watch again to resume.
-          if (message.conversationId === this.root) this.watch();
+          // The watch ended and is dropped: start over, after the backoff, to resume it.
+          if (message.conversationId === this.root) this.lost(message.message);
         } else {
           this.update({ failure: message.message });
         }
@@ -261,8 +325,10 @@ export class SessionConnection {
 
     if (submissionId !== undefined) {
       this.texts.set(submissionId, submit.text);
-      this.update({});
+      this.textsVersion += 1;
     }
+
+    this.update({});
   }
 
   private watch(): void {
@@ -301,7 +367,7 @@ export class SessionConnection {
   }
 
   /** The socket closed or went silent: start over on a new one after a pause. */
-  private lost(): void {
+  private lost(failure?: string): void {
     const socket = this.socket;
 
     this.socket = null;
@@ -320,7 +386,27 @@ export class SessionConnection {
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.attempts, RECONNECT_MAX_MS);
 
     this.attempts += 1;
-    this.update({ status: "reconnecting" });
+    this.update(
+      failure === undefined ? { status: "reconnecting" } : { status: "reconnecting", failure },
+    );
+
+    if (this.attempts < PROBE_AFTER_ATTEMPTS) {
+      this.scheduleReconnect(delay);
+
+      return;
+    }
+
+    // Repeated failure: find out whether another attempt can work before making one.
+    void this.probe(this.url).then((reach) => {
+      if (this.disposed || this.socket !== null) return;
+
+      if (reach === "reachable") this.scheduleReconnect(delay);
+      else this.update({ status: reach });
+    });
+  }
+
+  private scheduleReconnect(delay: number): void {
+    clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
       if (!this.disposed) this.connect();
     }, delay);
@@ -345,9 +431,27 @@ export class SessionConnection {
   private update(change: Partial<Pick<SessionState, "status" | "view" | "failure">>): void {
     const next = { ...this.state, ...change };
 
-    this.state = { ...next, queue: this.lanes(next.view) };
+    const reuse =
+      this.lanesFor?.inbox === next.view.inbox && this.lanesFor.version === this.textsVersion;
+
+    const queue = reuse ? this.state.queue : this.lanes(next.view);
+
+    this.lanesFor = { inbox: next.view.inbox, version: this.textsVersion };
+    this.state = { ...next, queue, sending: this.sending() };
 
     for (const listener of this.listeners) listener();
+  }
+
+  /** The submits the Session has not answered, in the order they were made. */
+  private sending(): readonly SendingEntry[] {
+    const previous = this.state.sending;
+    const next = this.pending.map((submit) => ({ id: submit.commandId, text: submit.text }));
+
+    // Keep the same array while nothing changed, so a view of it need not re-render.
+    return previous.length === next.length &&
+      previous.every((entry, index) => entry.id === next[index]?.id)
+      ? previous
+      : next;
   }
 
   private lanes(view: SessionView): QueueLanes {

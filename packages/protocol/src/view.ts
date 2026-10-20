@@ -1,5 +1,5 @@
-// Adapted from Cloudflare's `agents` repository, `examples/next/harnesses/pi/src/view.ts`
-// https://github.com/cloudflare/agents/tree/main/examples/next/harnesses/pi
+// Adapted from Cloudflare's `agents` repository, `examples/next/harnesses/pi/src/view.ts` as of commit df9c0ef
+// https://github.com/cloudflare/agents/blob/df9c0ef6c4541c5552b5ce4d6ba292162dbd0908/examples/next/harnesses/pi/src/view.ts
 //
 // MIT License
 //
@@ -18,8 +18,10 @@
 // COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
-// Changes: formatted for this repository, relative imports end in `.ts`, the view keeps the inbox's items instead of
-// their count, and tool events of nested calls are left out of the running tools.
+// Changes: types renamed (`PiSessionView` → `SessionView`, `PiRunningTool` → `RunningTool`), functions written as
+// `const` arrow functions, imports end in `.ts`, `blockPart` guards an undefined first part (`noUncheckedIndexedAccess`),
+// the view keeps the inbox's items (`inbox`) instead of their count (`queued`), and tool events of nested calls are left
+// out of the running tools. Formatted for this repository.
 
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
 

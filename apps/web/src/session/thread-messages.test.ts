@@ -53,7 +53,7 @@ describe("the thread messages of a view", () => {
     expect(messages).toMatchObject([
       { id: "1", role: "user", content: [{ type: "text", text: "hi" }] },
       {
-        id: "2",
+        id: "1:reply",
         role: "assistant",
         content: [
           { type: "reasoning", text: "hm" },
@@ -101,7 +101,7 @@ describe("the thread messages of a view", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[1]).toMatchObject({
-      id: "2",
+      id: "1:reply",
       role: "assistant",
       content: [
         {
@@ -161,7 +161,7 @@ describe("the thread messages of a view", () => {
 
     expect(started).toHaveLength(2);
     expect(started[1]).toMatchObject({
-      id: "live",
+      id: "1:reply",
       content: [{ type: "text", text: "Hel" }],
       status: { type: "running" },
     });
@@ -179,7 +179,7 @@ describe("the thread messages of a view", () => {
     );
 
     expect(continued).toHaveLength(2);
-    expect(continued[1]).toMatchObject({ id: "2", status: { type: "running" } });
+    expect(continued[1]).toMatchObject({ id: "1:reply", status: { type: "running" } });
     expect(continued[1]?.content).toMatchObject([
       { type: "tool-call" },
       { type: "text", text: "Hel" },
@@ -215,6 +215,75 @@ describe("the thread messages of a view", () => {
       error: "upstream failed",
     });
     expect(messages[3]?.status).toEqual({ type: "incomplete", reason: "cancelled" });
+  });
+
+  it("gives a turn the same id while it streams and after it is committed, so assistant-ui keeps its message", () => {
+    const streaming = toThreadMessages(
+      view({
+        running: true,
+        messages: [user("1", "hi")],
+        live: assistant("live", [{ type: "text", text: "Hel" }]),
+      }),
+    );
+
+    const committed = toThreadMessages(
+      view({
+        running: true,
+        messages: [user("1", "hi"), assistant("2", [{ type: "text", text: "Hello" }])],
+      }),
+    );
+
+    expect(streaming[1]?.id).toBe("1:reply");
+    expect(committed[1]?.id).toBe(streaming[1]?.id);
+  });
+
+  it("names a turn with no user message before it", () => {
+    const [message] = toThreadMessages(
+      view({ messages: [assistant("2", [{ type: "text", text: "Hello" }])] }),
+    );
+
+    expect(message?.id).toBe("start:reply");
+  });
+
+  it("hands out the same messages for the finished turns of the next view, and rebuilds only the last", () => {
+    const messages = [
+      user("1", "a"),
+      assistant("2", [{ type: "text", text: "A" }]),
+      user("3", "b"),
+      assistant("4", [{ type: "text", text: "B" }]),
+    ];
+
+    const before = toThreadMessages(view({ running: true, messages }));
+
+    const after = toThreadMessages(
+      view({
+        running: true,
+        messages: [...messages, assistant("5", [{ type: "text", text: "more" }])],
+      }),
+    );
+
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    expect(after[2]).toBe(before[2]);
+    expect(after[3]).not.toBe(before[3]);
+    expect(after[3]?.content).toHaveLength(2);
+  });
+
+  it("rebuilds a finished turn when its messages are not the same ones", () => {
+    const first = toThreadMessages(
+      view({
+        messages: [user("1", "a"), assistant("2", [{ type: "text", text: "A" }]), user("3", "b")],
+      }),
+    );
+
+    const second = toThreadMessages(
+      view({
+        messages: [user("1", "a"), assistant("2", [{ type: "text", text: "A" }]), user("3", "b")],
+      }),
+    );
+
+    expect(second[1]).not.toBe(first[1]);
+    expect(second[1]).toEqual(first[1]);
   });
 
   it("leaves notices out", () => {

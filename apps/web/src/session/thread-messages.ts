@@ -1,5 +1,8 @@
 // A `SessionView` as assistant-ui's thread: pi's transcript alternates assistant messages and tool results, which
 // assistant-ui shows as one assistant message per turn, with each tool result on its call.
+
+// @effect-diagnostics globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/protocol";
 import * as Predicate from "effect/Predicate";
@@ -8,13 +11,16 @@ type ContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
 type Status = NonNullable<ThreadMessageLike["status"]>;
 
-/** What pi produced between two user messages, as one assistant message. */
+/** What pi produced between two user messages, as one assistant message, while it is being put together. */
 interface Turn {
   readonly id: string;
   readonly createdAt: Date | undefined;
   readonly content: ContentPart[];
   status: Status;
 }
+
+/** The turn before any user message (a Session can start with a queued run, or have its first message compacted). */
+const START = "start";
 
 const dateOf = (timestamp: number): Date | undefined =>
   timestamp === 0 ? undefined : new Date(timestamp);
@@ -95,72 +101,150 @@ const resolveCall = (
   }
 };
 
+const userMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();
+
+/** A turn followed by a user message cannot change, so its message is made once and handed out again. */
+const finishedTurn = new WeakMap<
+  TranscriptMessage,
+  {
+    readonly userId: string;
+    readonly sources: readonly TranscriptMessage[];
+    readonly message: ThreadMessageLike;
+  }
+>();
+
+const sameMessages = (a: readonly TranscriptMessage[], b: readonly TranscriptMessage[]): boolean =>
+  a.length === b.length && a.every((message, index) => message === b[index]);
+
+const toUser = (message: TranscriptMessage): ThreadMessageLike => {
+  let made = userMessage.get(message);
+
+  if (made === undefined) {
+    made = {
+      id: message.id,
+      role: "user",
+      content: userContent(message.parts),
+      createdAt: dateOf(message.timestamp),
+    };
+    userMessage.set(message, made);
+  }
+
+  return made;
+};
+
 /**
- * The thread of `view`: user messages, and one assistant message per turn holding thinking, text, and tool calls.
- * The message being streamed is part of the last turn, and a turn is running while the run is.
+ * The turn of `group` (the assistant and tool messages after a user message, in order), then `live` if there is a
+ * streaming message. Its ID comes from the user message before it, so it is the same while the answer streams and
+ * after it is committed, and assistant-ui keeps the message it already renders instead of replacing it.
  */
-export const toThreadMessages = (view: SessionView): ThreadMessageLike[] => {
-  const thread: Array<ThreadMessageLike | Turn> = [];
+const buildTurn = (
+  userId: string,
+  group: readonly TranscriptMessage[],
+  live: TranscriptMessage | null,
+): Turn | undefined => {
   let turn: Turn | undefined;
 
   const addAssistant = (message: TranscriptMessage, status: Status) => {
-    if (turn === undefined) {
-      turn = { id: message.id, createdAt: dateOf(message.timestamp), content: [], status };
-      thread.push(turn);
-    }
+    turn ??= {
+      id: `${userId}:reply`,
+      createdAt: dateOf(message.timestamp),
+      content: [],
+      status,
+    };
 
     turn.content.push(...assistantParts(message));
     turn.status = status;
   };
 
-  for (const message of view.messages) {
-    if (message.role === "user") {
-      turn = undefined;
-      thread.push({
-        id: message.id,
-        role: "user",
-        content: userContent(message.parts),
-        createdAt: dateOf(message.timestamp),
-      });
-    } else if (message.role === "assistant") addAssistant(message, statusOf(message));
+  for (const message of group) {
+    if (message.role === "assistant") addAssistant(message, statusOf(message));
     else if (message.role === "tool") {
       for (const part of message.parts) if (part.type === "tool-result") resolveCall(turn, part);
     }
   }
 
-  if (view.live !== null) addAssistant(view.live, { type: "running" });
+  if (live !== null) addAssistant(live, { type: "running" });
 
-  const turns = thread.filter((item): item is Turn => !("role" in item));
-  const lastTurn = turns.at(-1);
+  return turn;
+};
 
+const toAssistant = (turn: Turn): ThreadMessageLike => ({
+  role: "assistant",
+  id: turn.id,
+  createdAt: turn.createdAt,
+  content: turn.content,
+  status: turn.status,
+});
+
+/** The last turn: its tool calls without a result are running, and may have streamed output. */
+const withRunning = (turn: Turn, view: SessionView): Turn => {
   // The run goes on between messages, while a tool executes.
-  if (view.running && lastTurn !== undefined && thread.at(-1) === lastTurn) {
-    lastTurn.status = { type: "running" };
-  }
+  if (view.running) turn.status = { type: "running" };
 
-  // A tool call without a result is running, and may have streamed output.
-  for (const item of turns) {
-    for (const [index, part] of item.content.entries()) {
-      const tool =
-        part.type === "tool-call" && !("result" in part)
-          ? view.tools.find((running) => running.callId === part.toolCallId)
-          : undefined;
+  for (const [index, part] of turn.content.entries()) {
+    const tool =
+      part.type === "tool-call" && !("result" in part)
+        ? view.tools.find((running) => running.callId === part.toolCallId)
+        : undefined;
 
-      if (part.type === "tool-call" && tool !== undefined) {
-        item.content[index] = { ...part, artifact: { output: tool.output } };
-      }
+    if (part.type === "tool-call" && tool !== undefined) {
+      turn.content[index] = { ...part, artifact: { output: tool.output } };
     }
   }
 
-  return thread.map((item) =>
-    "role" in item
-      ? item
-      : {
-          role: "assistant",
-          id: item.id,
-          createdAt: item.createdAt,
-          content: item.content,
-          status: item.status,
-        },
-  );
+  return turn;
+};
+
+/**
+ * The thread of `view`: user messages, and one assistant message per turn holding thinking, text, and tool calls.
+ * The message being streamed is part of the last turn, and the last turn is running while the run is. The messages
+ * before the last turn are the same objects from one view to the next, so a long transcript costs only its last
+ * turn when a token arrives.
+ */
+export const toThreadMessages = (view: SessionView): ThreadMessageLike[] => {
+  const thread: ThreadMessageLike[] = [];
+  let userId = START;
+  let group: TranscriptMessage[] = [];
+
+  // A turn that a user message follows.
+  const endTurn = () => {
+    const first = group[0];
+
+    if (first === undefined) return;
+
+    const sources = group;
+
+    group = [];
+
+    const cached = finishedTurn.get(first);
+
+    if (cached?.userId === userId && sameMessages(cached.sources, sources)) {
+      thread.push(cached.message);
+
+      return;
+    }
+
+    const turn = buildTurn(userId, sources, null);
+
+    if (turn === undefined) return;
+
+    const message = toAssistant(turn);
+
+    finishedTurn.set(first, { userId, sources, message });
+    thread.push(message);
+  };
+
+  for (const message of view.messages) {
+    if (message.role === "user") {
+      endTurn();
+      userId = message.id;
+      thread.push(toUser(message));
+    } else if (message.role === "assistant" || message.role === "tool") group.push(message);
+  }
+
+  const last = buildTurn(userId, group, view.live);
+
+  if (last !== undefined) thread.push(toAssistant(withRunning(last, view)));
+
+  return thread;
 };

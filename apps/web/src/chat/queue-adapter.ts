@@ -1,5 +1,8 @@
 // The Session's inbox as assistant-ui's queue lanes: steers are its steer lane, follow-ups its queue lane. The inbox
 // lives in the Session, so sending is a `submit` with `whenBusy`, and an item leaves its lane when pi places it.
+
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
 import type {
   AppendMessage,
   ExternalThreadQueueAdapter,

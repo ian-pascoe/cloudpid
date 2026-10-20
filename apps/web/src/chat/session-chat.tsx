@@ -4,7 +4,7 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { sessionSocketPath } from "@cloudpid/protocol";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { SessionConnection, type ConnectionStatus } from "../session/connection.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
 import { queueAdapter, textOf } from "./queue-adapter.ts";
@@ -20,9 +20,25 @@ const socketUrl = (sessionId: string): string => {
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
-const CONNECTION_NOTICE: Partial<Record<ConnectionStatus, string>> = {
+const CONNECTION_NOTICE: Partial<Record<ConnectionStatus, ReactNode>> = {
   connecting: "Connecting…",
   reconnecting: "Connection lost. Reconnecting…",
+  "signed-out": (
+    <>
+      Your sign-in has expired.{" "}
+      <button
+        type="button"
+        className="font-medium text-foreground underline underline-offset-2"
+        onClick={() => {
+          window.location.reload();
+        }}
+      >
+        Reload
+      </button>{" "}
+      to sign in again.
+    </>
+  ),
+  missing: "This session no longer exists.",
 };
 
 const LiveSession = ({
