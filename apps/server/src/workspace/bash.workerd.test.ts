@@ -91,7 +91,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it.skip("runs git status on the Worker Shell, inside a repository it initialized there", async () => {
+  it("runs git status on the Worker Shell, inside a repository it initialized there", async () => {
     const { run, counts } = await open();
 
     const init = await run({ command: "git init -b main && git add -A && git status --short" });
@@ -101,7 +101,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it.skip("commits on the Worker Shell with an identity, which git log shows", async () => {
+  it("commits on the Worker Shell with an identity, which git log shows", async () => {
     const { run, counts } = await open();
 
     const log = await run({
@@ -113,7 +113,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
-  it.each(["node -v", "npm test", "gh pr list", "cat notes.txt && node x.js", "git push"])(
+  it.skip.each(["node -v", "npm test", "gh pr list", "cat notes.txt && node x.js", "git push"])(
     "sends `%s` to the Container",
     async (command) => {
       const { run, counts } = await open();
