@@ -151,7 +151,7 @@ export const SessionLive = Session.make(
             runtime
               .runPromise(registries.getByName(REGISTRY_NAME).getSession({ id }))
               .then((session) =>
-                session === null ? null : { slug: session.workspace, repo: session.repo },
+                session === null ? null : { slug: session.workspace, repo: session.repo ?? null },
               ),
         });
 

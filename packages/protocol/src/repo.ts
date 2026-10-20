@@ -22,7 +22,8 @@ export const RepoName = Schema.String.check(
   Schema.isMaxLength(MAX_REPO_NAME_LENGTH),
 );
 
-const isRepoName = (name: string): boolean =>
+/** Whether `name` is a valid repo directory name (`RepoName`). */
+export const isRepoName = (name: string): boolean =>
   REPO_NAME.test(name) && name.length <= MAX_REPO_NAME_LENGTH;
 
 /** The directory of repo `name` in a Workspace. */

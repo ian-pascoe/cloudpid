@@ -8,7 +8,6 @@ import {
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Result from "effect/Result";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 import type { Repos } from "../workspace/repos.ts";
@@ -60,12 +59,10 @@ export const serveRegistryRpc = (registries: Cloudflare.DurableObject<Registry>,
         inWorkspace("Could not list the Workspace's repos", () => repos.list(workspace)),
       cloneRepo: ({ workspace, source, name }) =>
         Effect.gen(function* () {
-          const parsed = Result.match(parseRepoSource(source), {
-            onFailure: (message) => Effect.fail(failed(message)),
-            onSuccess: Effect.succeed,
-          });
+          const found = yield* Effect.fromResult(parseRepoSource(source)).pipe(
+            Effect.mapError(failed),
+          );
 
-          const found = yield* parsed;
           // The owner's own name for the directory, if any, over the repo's.
           const repo = { url: found.url, name: name ?? found.name };
 

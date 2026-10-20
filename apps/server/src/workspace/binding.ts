@@ -4,8 +4,11 @@
  */
 export const WORKSPACE_BINDING = "WORKSPACES";
 
-/** The Workspace root: one directory per repo below it (docs/spec.md → Filesystem and tools). */
-export const WORKSPACE_ROOT = "/workspace";
+/**
+ * The Workspace root: one directory per repo below it (docs/spec.md → Filesystem and tools). Defined in the protocol's
+ * `repo` module, which pulls in none of the rest of the protocol, so the Workspaces Worker's bundle stays small.
+ */
+export { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
 
 /**
  * The Container the Workspace DO runs the sandbox image (`apps/sandbox-image`) as: its logical id in the stack, and the key of the image in

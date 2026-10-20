@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { REPO_NAME, type RepoSource, repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
+import { isRepoName, type RepoSource, repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import type { Shell } from "@earendil-works/pi-durable/env";
 import type { WorkspaceNamespace } from "../session/workspace.ts";
 
@@ -88,17 +88,45 @@ export type Directories = {
   >;
 };
 
-/** The directories below `/workspace` that hold a `.git`, by name: hidden directories and anything that is not a plain name are not repos. */
+/**
+ * Whether `cause` says a path is not there (or is not a directory). The Workspace DO's error reaches here over RPC, which may
+ * keep only its message, so the POSIX code is read from the error and, failing that, from the message.
+ */
+export const isMissing = (cause: unknown): boolean => {
+  if (!(cause instanceof Error)) return false;
+
+  const code = "code" in cause ? String(cause.code) : "";
+
+  return (
+    code === "ENOENT" ||
+    code === "ENOTDIR" ||
+    /\b(ENOENT|ENOTDIR)\b|no such file/i.test(cause.message)
+  );
+};
+
+/** `readdir`, where a path that is not there lists nothing; any other failure is the caller's. */
+const entriesOf = (files: Directories, path: string) =>
+  files.readdir(path).catch((cause: unknown) => {
+    if (isMissing(cause)) return [];
+
+    throw cause;
+  });
+
+/**
+ * The directories below `/workspace` that hold a `.git`, by name: hidden directories and anything that is not a valid repo
+ * name are not repos. A `/workspace` that is not there yet holds none; a failure to read anything else rejects, so a
+ * Workspace that cannot be read is not mistaken for one with no repos.
+ */
 export const listRepos = async (files: Directories): Promise<ReadonlyArray<string>> => {
-  const root = await files.readdir(WORKSPACE_ROOT).catch(() => []);
+  const root = await entriesOf(files, WORKSPACE_ROOT);
 
   const candidates = root.filter(
-    (entry) => entry.isDirectory && !entry.isSymbolicLink && REPO_NAME.test(entry.name),
+    (entry) => entry.isDirectory && !entry.isSymbolicLink && isRepoName(entry.name),
   );
 
   const repos = await Promise.all(
     candidates.map(async ({ name }) => {
-      const inside = await files.readdir(repoDirectory(name)).catch(() => []);
+      const inside = await entriesOf(files, repoDirectory(name));
 
       return inside.some((entry) => entry.name === ".git") ? name : undefined;
     }),

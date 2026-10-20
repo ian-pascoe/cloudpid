@@ -111,4 +111,35 @@ describe("listRepos", () => {
   it("lists nothing for a Workspace with no /workspace yet", async () => {
     expect(await listRepos(tree({}))).toEqual([]);
   });
+
+  it("skips a directory that vanished, and ignores names the Registry would refuse", async () => {
+    const long = "x".repeat(101);
+
+    const files = {
+      readdir: (path: string) => {
+        if (path === "/workspace") return Promise.resolve([dir("gone"), dir("ok"), dir(long)]);
+
+        if (path === "/workspace/ok") return Promise.resolve([dir(".git")]);
+
+        return Promise.reject(new Error("ENOENT: no such file or directory"));
+      },
+    };
+
+    expect(await listRepos(files)).toEqual(["ok"]);
+  });
+
+  it("fails, rather than list nothing, when a directory cannot be read", async () => {
+    const unreadable = new Error("RPC stub disconnected");
+
+    await expect(listRepos({ readdir: () => Promise.reject(unreadable) })).rejects.toBe(unreadable);
+
+    await expect(
+      listRepos({
+        readdir: (path) =>
+          path === "/workspace"
+            ? Promise.resolve([dir("repo")])
+            : Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" })),
+      }),
+    ).rejects.toThrow("denied");
+  });
 });
