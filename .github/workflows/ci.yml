@@ -43,3 +43,37 @@ jobs:
           restore-keys: turbo-${{ runner.os }}-
 
       - run: pnpm check
+
+  # Deploys `prod` on push to main with a scoped API token from the `production` environment
+  # (credentials as code: infra/github.ts, AGENTS.md → Infra).
+  deploy:
+    name: Deploy prod
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://pi.ianpascoe.dev
+    # One deploy at a time; never cancel one midway.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      # No dependency cache in a job holding deploy credentials (cache poisoning).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @cloudpid/infra run deploy --stage prod --no-input --yes
