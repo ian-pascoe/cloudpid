@@ -15,6 +15,7 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 - **`package.json`** has `typecheck` (`tsc`), `lint` (`oxlint`), and `test` (`vitest run`) scripts, and a `workspace:*` devDependency on `@cloudpid/config`.
 - **`tsconfig.json`** extends `@cloudpid/config/tsconfig/base.json`; **`vitest.config.ts`** re-exports `@cloudpid/config/vitest`; **`.oxlintrc.json`** extends the root config. Copy these from a sibling package instead of editing the shared bases per package.
 - Tooling (`typescript`, `vitest`, `oxlint`, `oxfmt`, `turbo`) is installed once at the root; packages do not list it.
+- Runtime dependencies go in the package that imports them (`pnpm --filter @cloudpid/<pkg> add …`); the ones still at the root (`effect`, `alchemy`, `pi-*`, `@cloudflare/*`) move to their first consumer when a ticket starts using them.
 - `skills/` is bundled skill content, not a package.
 
 `pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set; the `effect-tsgo` patch still runs.

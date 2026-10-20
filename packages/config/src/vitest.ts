@@ -6,4 +6,3 @@ export default defineConfig({
     exclude: [...configDefaults.exclude],
   },
 });
-// x

@@ -3,16 +3,22 @@
   "globalDependencies": [".oxlintrc.json", "tools/oxlint/**"],
   "tasks": {
     // Internal packages are just-in-time (`exports` point at source), so a package's
-    // result depends on its dependencies' source. `^` carries their hashes forward.
+    // typecheck, lint, and test results depend on its dependencies' source. The
+    // `transit` node carries their hashes forward without making dependents wait
+    // for dependency tasks to finish.
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
     "typecheck": {
-      "dependsOn": ["^typecheck"],
+      "dependsOn": ["transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
     },
     "lint": {
+      "dependsOn": ["transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
     },
     "test": {
-      "dependsOn": ["^test"],
+      "dependsOn": ["transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
     },
     "build": {
