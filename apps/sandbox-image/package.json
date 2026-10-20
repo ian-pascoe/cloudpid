@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@cloudflare/computer": "^0.5.1",
     "@cloudpid/config": "workspace:*"
   }
 }
