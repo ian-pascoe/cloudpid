@@ -72,7 +72,8 @@ const open = async () => {
   return { run, counts: () => workspace.liveStubs() };
 };
 
-describe("bash on a Workspace", () => {
+// The first command loads the Worker Shell and its modules (git, jq) cold, which can take longer than the default 5 s on CI.
+describe("bash on a Workspace", { timeout: 30_000 }, () => {
   it.each([
     ["cat notes.txt", "alpha\nneedle\nomega"],
     ["grep needle notes.txt", "needle"],
