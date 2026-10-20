@@ -13,8 +13,14 @@ class PushError extends Schema.TaggedError<PushError, { readonly brand: unique s
   { message: Schema.String },
 ) {}
 
-/** Pushes to different browsers go out together, up to this many at once. */
-const CONCURRENCY = 8;
+/**
+ * Pushes to different browsers go out together, up to this many at once, each given up on after `PUSH_TIMEOUT_MS`: the
+ * whole notification takes at most `ceil(browsers / CONCURRENCY) * PUSH_TIMEOUT_MS`, which stays under the Session's
+ * `NOTIFY_TIMEOUT` (20 s) for up to 64 browsers. A Session that gave up earlier would send it again.
+ */
+const CONCURRENCY = 16;
+
+const PUSH_TIMEOUT_MS = 5_000;
 
 export type NotifierOptions = {
   /** The Registry's tables: the Session's title, and the subscriptions to notify and to prune. */
@@ -48,7 +54,8 @@ export const pushNotifier =
         subscriptions,
         (subscription) =>
           Effect.tryPromise({
-            try: () => sendPush(subscription, payload, vapid, { now, fetch }),
+            try: () =>
+              sendPush(subscription, payload, vapid, { now, fetch, timeoutMs: PUSH_TIMEOUT_MS }),
             catch: (cause) => PushError.make({ message: String(cause) }),
           }).pipe(
             Effect.flatMap((result: PushResult) => {

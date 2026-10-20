@@ -162,24 +162,28 @@ const TOKEN_LIFETIME_SECONDS = 12 * 60 * 60;
 const jsonSegment = (value: Schema.Json): string =>
   base64UrlEncode(encoder.encode(JSON.stringify(value)));
 
+/** The VAPID key pair as a JWK: a P-256 point is 0x04, x and y. */
+const vapidJwk = (vapid: Vapid): JsonWebKey => {
+  const publicKey = base64UrlDecode(vapid.publicKey);
+
+  return {
+    kty: "EC",
+    crv: "P-256",
+    x: base64UrlEncode(publicKey.slice(1, 33)),
+    y: base64UrlEncode(publicKey.slice(33, 65)),
+    d: vapid.privateKey,
+  };
+};
+
 /** The `Authorization` header (RFC 8292 §3) that proves to the push service at `endpoint` who is sending. */
 export const vapidAuthorization = async (
   endpoint: string,
   vapid: Vapid,
   nowSeconds: number,
 ): Promise<string> => {
-  const publicKey = base64UrlDecode(vapid.publicKey);
-
-  // A P-256 point is 0x04, x and y.
   const key = await crypto.subtle.importKey(
     "jwk",
-    {
-      kty: "EC",
-      crv: "P-256",
-      x: base64UrlEncode(publicKey.slice(1, 33)),
-      y: base64UrlEncode(publicKey.slice(33, 65)),
-      d: vapid.privateKey,
-    },
+    vapidJwk(vapid),
     { name: "ECDSA", namedCurve: "P-256" },
     false,
     ["sign"],
@@ -199,6 +203,60 @@ export const vapidAuthorization = async (
   );
 
   return `vapid t=${unsigned}.${base64UrlEncode(new Uint8Array(signature))}, k=${vapid.publicKey}`;
+};
+
+/** The octets of base64url `text`, or undefined when it is not base64url. */
+const decodeStrict = (text: string): Uint8Array | undefined => {
+  if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) return undefined;
+
+  return base64UrlDecode(text);
+};
+
+/**
+ * Why `vapid` cannot sign pushes, or undefined when it can: the subject must be a `mailto:` or `https:` URL, the public
+ * key a 65-octet uncompressed P-256 point, the private key 32 octets, and the two a pair (a token signed with one is
+ * verified by the other). A bad secret otherwise shows only as a push service refusing every message.
+ */
+export const vapidProblem = async (vapid: Vapid): Promise<string | undefined> => {
+  if (!/^(mailto:\S+@\S+|https:\/\/\S+)$/.test(vapid.subject)) {
+    return "VAPID_SUBJECT must be a mailto: or https: URL";
+  }
+
+  const publicKey = decodeStrict(vapid.publicKey);
+
+  if (publicKey?.length !== 65 || publicKey[0] !== 4) {
+    return "VAPID_PUBLIC_KEY must be an uncompressed P-256 point (65 octets) in base64url";
+  }
+
+  if (decodeStrict(vapid.privateKey)?.length !== 32) {
+    return "VAPID_PRIVATE_KEY must be a P-256 private key (32 octets) in base64url";
+  }
+
+  try {
+    const probe = encoder.encode("vapid pair check");
+    const algorithm = { name: "ECDSA", namedCurve: "P-256" };
+
+    const signer = await crypto.subtle.importKey("jwk", vapidJwk(vapid), algorithm, false, [
+      "sign",
+    ]);
+
+    const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signer, probe);
+
+    const verifier = await crypto.subtle.importKey("raw", publicKey, algorithm, false, ["verify"]);
+
+    const matches = await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      verifier,
+      signature,
+      probe,
+    );
+
+    return matches
+      ? undefined
+      : "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are not a matching key pair";
+  } catch {
+    return "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are not a matching key pair";
+  }
 };
 
 /** What became of one push. `gone` means the push service no longer knows the subscription (404 or 410). */

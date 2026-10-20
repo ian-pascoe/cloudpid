@@ -237,7 +237,7 @@ it("creates and lists Workspaces", async () => {
 });
 
 it("subscribes a browser to Web Push, tells it so, and forgets it when it unsubscribes", async () => {
-  const endpoint = "https://push.example.net/wpush/v2/abc";
+  const endpoint = "https://updates.push.services.mozilla.com/wpush/v2/abc";
 
   const [before, after, gone] = await withClient(
     Effect.gen(function* () {
@@ -267,13 +267,39 @@ it("serves the VAPID public key to a browser that has no subscription yet", asyn
   expect(state).toEqual({ publicKey: "PUBLIC", subscribed: false });
 });
 
-it("rejects a subscription whose endpoint is not https, before it reaches the Registry", async () => {
-  const { text, calls } = await callRaw("subscribePush", {
-    subscription: { endpoint: "http://169.254.169.254/latest", keys: { p256dh: "k", auth: "a" } },
-  });
+it("rejects a subscription that is not at a known push service over https, before it reaches the Registry", async () => {
+  for (const endpoint of [
+    "http://updates.push.services.mozilla.com/wpush/v2/abc",
+    "http://169.254.169.254/latest",
+    "https://127.0.0.1/x",
+    "https://internal.example/x",
+    "https://user:pass@fcm.googleapis.com/fcm/send/abc",
+    "https://fcm.googleapis.com:8443/fcm/send/abc",
+    "https://fcm.googleapis.com.evil.example/fcm/send/abc",
+    "https://push.apple.com/x",
+  ]) {
+    const { text, calls } = await callRaw("subscribePush", {
+      subscription: { endpoint, keys: { p256dh: "k", auth: "a" } },
+    });
 
-  expect(text).toContain('"Failure"');
-  expect(calls).toEqual([]);
+    expect(text, endpoint).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+});
+
+it("accepts the endpoints the browsers' push services give out", async () => {
+  for (const endpoint of [
+    "https://fcm.googleapis.com/fcm/send/abc",
+    "https://updates.push.services.mozilla.com/wpush/v2/abc",
+    "https://web.push.apple.com/QGx",
+    "https://wns2-by3p.notify.windows.com/?token=abc",
+  ]) {
+    const { calls } = await callRaw("subscribePush", {
+      subscription: { endpoint, keys: { p256dh: "k", auth: "a" } },
+    });
+
+    expect(calls, endpoint).toEqual(["subscribePush"]);
+  }
 });
 
 it("reads the settings from the singleton Registry", async () => {

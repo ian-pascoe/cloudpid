@@ -1,32 +1,10 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a plain function over text.
 // What a push says (`docs/spec.md` → Client and protocol → Notifications): a title, a line of body, and the Session's
 // page, small enough for any push service and for a lock screen.
+import { MAX_NOTICE_URL_LENGTH, type PushEvent } from "@cloudpid/extensions/notify";
 import { sessionPagePath } from "@cloudpid/protocol";
 
-/** Something a Session tells the owner about. */
-export type PushEvent =
-  | PushNotice
-  /** A Run ended with an answer. */
-  | { readonly kind: "finished" }
-  /** A Run ended without one: a model error, a restart limit. `reason` is the error's text, when there is one. */
-  | { readonly kind: "failed"; readonly reason?: string | undefined }
-  /** The agent waits for the owner to enter Secrets. */
-  | {
-      readonly kind: "input";
-      readonly names: ReadonlyArray<string>;
-      readonly reason?: string | undefined;
-    };
-
-/**
- * Anything else the owner should hear, in the Session's name: the caller words it. `url` is where tapping it goes
- * (a path of the app, or an absolute URL such as a Browser Handoff's Live View); the Session's page by default.
- */
-export type PushNotice = {
-  readonly kind: "notice";
-  readonly title?: string | undefined;
-  readonly body: string;
-  readonly url?: string | undefined;
-};
+export type { PushEvent, PushNotice } from "@cloudpid/extensions/notify";
 
 /** The JSON a push carries, which the service worker shows. */
 export type PushPayload = {
@@ -66,6 +44,18 @@ const body = (event: PushEvent): string => {
   }
 };
 
+/** A URL as it is written on the wire: printable ASCII only, so its JSON stays as long as it looks. */
+const PLAIN_URL = /^[\x21-\x7e]+$/;
+
+/** Where a tap goes: the notice's own URL when it is usable, otherwise the Session's page. */
+const target = (event: PushEvent, sessionId: string): string =>
+  event.kind === "notice" &&
+  event.url !== undefined &&
+  event.url.length <= MAX_NOTICE_URL_LENGTH &&
+  PLAIN_URL.test(event.url)
+    ? event.url
+    : sessionPagePath(sessionId);
+
 /** The push for `event` in Session `session`, titled by the Session's title once it has one. */
 export const describeEvent = (
   event: PushEvent,
@@ -78,6 +68,6 @@ export const describeEvent = (
     MAX_TITLE,
   ),
   body: brief(body(event), MAX_BODY),
-  url: event.kind === "notice" && event.url !== undefined ? event.url : sessionPagePath(session.id),
+  url: target(event, session.id),
   tag: `${session.id}:${event.kind}`,
 });

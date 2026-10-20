@@ -8,6 +8,7 @@
     "./context": "./src/context.ts",
     "./todo": "./src/todo.ts",
     "./web": "./src/web.ts",
+    "./notify": "./src/notify.ts",
     "./secrets": "./src/secrets.ts",
     "./browser": "./src/browser.ts",
     "./browser/contract": "./src/browser/contract.ts",

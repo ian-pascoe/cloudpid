@@ -69,8 +69,11 @@ export const HEARTBEAT_MS = 60_000;
 /** How long a report to the Registry may take before it counts as failed. */
 export const REPORT_TIMEOUT: Duration.Input = "5 seconds";
 
-/** How long a notification may take: the Registry waits for each push service, up to 8 seconds. */
-export const NOTIFY_TIMEOUT: Duration.Input = "15 seconds";
+/**
+ * How long a notification may take. The Registry gives each push service 5 seconds, 16 at a time, so this holds for up
+ * to 64 subscribed browsers; a Session that gave up sooner would send the same notification again.
+ */
+export const NOTIFY_TIMEOUT: Duration.Input = "20 seconds";
 
 /** The submissions the owner made whose Run's end has not been notified yet, in the Session's key-value storage. */
 const NOTIFY_KEY = "notify-submissions";

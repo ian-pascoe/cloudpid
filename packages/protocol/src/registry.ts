@@ -1,6 +1,7 @@
 // The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions and Workspaces. They
 // hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
 import { Settings, SettingsError } from "@cloudpid/config";
+import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
@@ -59,12 +60,43 @@ export const SettingsState = Schema.Struct({
 
 export type SettingsState = typeof SettingsState.Type;
 
+/** The hosts of the push services browsers use: Google's FCM, Mozilla's autopush, Apple's and Windows'. */
+const PUSH_SERVICE_HOSTS: ReadonlyArray<(host: string) => boolean> = [
+  (host) => host === "fcm.googleapis.com",
+  (host) => host.endsWith(".push.services.mozilla.com"),
+  (host) => host.endsWith(".push.apple.com"),
+  (host) => host.endsWith(".notify.windows.com"),
+];
+
+/**
+ * Whether `endpoint` is an `https:` URL at a known push service, with no credentials and no port of its own. The
+ * Registry POSTs to every endpoint it keeps, so an address of anywhere else (loopback, an internal name) is refused.
+ */
+export const isPushServiceEndpoint = (endpoint: string): boolean => {
+  if (!URL.canParse(endpoint)) return false;
+
+  const url = new URL(endpoint);
+
+  return (
+    url.protocol === "https:" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.port === "" &&
+    Arr.some(PUSH_SERVICE_HOSTS, (matches) => matches(url.hostname))
+  );
+};
+
 /**
  * A browser's Web Push subscription, as `PushSubscription.toJSON()` gives it: the push service's endpoint and the keys
- * a message is encrypted to (RFC 8291). The endpoint must be an `https:` URL.
+ * a message is encrypted to (RFC 8291). The endpoint must be at a known push service (`isPushServiceEndpoint`).
  */
 export const PushSubscription = Schema.Struct({
-  endpoint: Schema.String.check(Schema.isPattern(/^https:\/\/\S+$/), Schema.isMaxLength(2048)),
+  endpoint: Schema.String.check(
+    Schema.isMaxLength(2048),
+    Schema.makeFilter((endpoint: string) =>
+      isPushServiceEndpoint(endpoint) ? undefined : "Not the endpoint of a known push service",
+    ),
+  ),
   keys: Schema.Struct({
     p256dh: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(128)),
     auth: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(64)),

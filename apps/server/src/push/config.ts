@@ -3,7 +3,14 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
-import type { Vapid } from "./webpush.ts";
+import * as Schema from "effect/Schema";
+import { type Vapid, vapidProblem } from "./webpush.ts";
+
+/** A VAPID secret is malformed: the Worker does not start, as when one is missing. */
+class VapidConfigError extends Schema.TaggedError<
+  VapidConfigError,
+  { readonly brand: unique symbol }
+>()("VapidConfigError", { message: Schema.String }) {}
 
 /**
  * The deployment's VAPID identity (RFC 8292): deploy-time secrets, bound to the Worker by `Config.Redacted`. The public
@@ -21,12 +28,25 @@ export const PushConfigLive = Layer.effect(
     privateKey: Config.Redacted("VAPID_PRIVATE_KEY"),
     subject: Config.Redacted("VAPID_SUBJECT"),
   }).pipe(
-    Effect.map(({ publicKey, privateKey, subject }) => ({
-      vapid: {
+    Effect.flatMap(({ publicKey, privateKey, subject }) => {
+      const vapid: Vapid = {
         publicKey: Redacted.value(publicKey),
         privateKey: Redacted.value(privateKey),
         subject: Redacted.value(subject),
-      },
-    })),
+      };
+
+      // Checked when the layer is built, so a bad secret fails a deploy or `alchemy dev` at once.
+      return Effect.tryPromise({
+        try: () => vapidProblem(vapid),
+        catch: (cause) => VapidConfigError.make({ message: String(cause) }),
+      }).pipe(
+        Effect.flatMap((problem) =>
+          problem === undefined
+            ? Effect.succeed({ vapid })
+            : Effect.fail(VapidConfigError.make({ message: problem })),
+        ),
+      );
+    }),
+    Effect.orDie,
   ),
 );

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_PAYLOAD_BYTES } from "./webpush.ts";
 import { describeEvent } from "./notification.ts";
 
 const session = { id: "0190f3a0-1111-7000-8000-000000000001", title: "Fix the build" };
@@ -62,6 +63,39 @@ describe("describeEvent", () => {
       title: "Fix the build",
       url: "/sessions/0190f3a0-1111-7000-8000-000000000001",
     });
+  });
+
+  it("opens the Session's page when a notice's link is too long or not a plain URL", () => {
+    const page = "/sessions/0190f3a0-1111-7000-8000-000000000001";
+
+    for (const url of [
+      `https://live.example/${"a".repeat(1100)}`,
+      "https://live.example/é",
+      "https://a b",
+    ]) {
+      expect(describeEvent({ kind: "notice", body: "Hi", url }, session).url).toBe(page);
+    }
+
+    expect(
+      describeEvent(
+        { kind: "notice", body: "Hi", url: `https://live.example/${"a".repeat(900)}` },
+        session,
+      ).url,
+    ).toHaveLength(921);
+  });
+
+  it("keeps the worst case under one push message", () => {
+    const awful = describeEvent(
+      {
+        kind: "notice",
+        title: "𝒯".repeat(500),
+        body: "𝒯".repeat(500),
+        url: `https://live.example/${'"'.repeat(1000)}`,
+      },
+      { id: "0190f3a0-1111-7000-8000-000000000001", title: "t" },
+    );
+
+    expect(new TextEncoder().encode(JSON.stringify(awful)).length).toBeLessThan(MAX_PAYLOAD_BYTES);
   });
 
   it("titles an untitled Session plainly and bounds a long title", () => {

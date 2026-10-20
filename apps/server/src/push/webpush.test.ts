@@ -10,6 +10,7 @@ import {
   sendPush,
   type Vapid,
   vapidAuthorization,
+  vapidProblem,
 } from "./webpush.ts";
 
 // RFC 8291 appendix A: one message with every input and the bytes it must produce.
@@ -235,6 +236,34 @@ describe("vapidAuthorization", () => {
         new TextEncoder().encode(`${head}.${claims}`),
       ),
     ).toBe(true);
+  });
+});
+
+describe("vapidProblem", () => {
+  it("accepts a pair with a mailto: or https: subject", async () => {
+    const vapid = await newVapid();
+
+    expect(await vapidProblem(vapid)).toBeUndefined();
+    expect(await vapidProblem({ ...vapid, subject: "https://example.com/owner" })).toBeUndefined();
+  });
+
+  it("names what is wrong with a secret", async () => {
+    const vapid = await newVapid();
+    const other = await newVapid();
+
+    expect(await vapidProblem({ ...vapid, subject: "owner@example.com" })).toContain(
+      "VAPID_SUBJECT",
+    );
+    expect(await vapidProblem({ ...vapid, publicKey: "short" })).toContain("VAPID_PUBLIC_KEY");
+    expect(await vapidProblem({ ...vapid, publicKey: `${vapid.publicKey}=` })).toContain(
+      "VAPID_PUBLIC_KEY",
+    );
+    expect(await vapidProblem({ ...vapid, privateKey: vapid.publicKey })).toContain(
+      "VAPID_PRIVATE_KEY",
+    );
+    expect(await vapidProblem({ ...vapid, privateKey: other.privateKey })).toContain(
+      "matching key pair",
+    );
   });
 });
 
