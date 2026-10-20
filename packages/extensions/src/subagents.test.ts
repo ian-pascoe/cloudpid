@@ -528,6 +528,69 @@ describe("subagents", () => {
     expect(await session.texts("user")).toEqual(["Delegate it"]);
   });
 
+  describe("a wait after inputs steered into one run have settled", () => {
+    const settledRun = async (turnId: string | undefined) => {
+      const ready = gate();
+      let settled = async () => false;
+
+      const session = await openSubagentHarness(async (request) => {
+        if (request.agent === "agent-1") {
+          if (request.text === "Work") {
+            await ready.promise;
+
+            return call(["read", {}]);
+          }
+
+          return answer("Shared answer.");
+        }
+
+        if (request.text === "Delegate it") {
+          return call(
+            ["subagent", { task: "Work", tools: "read" }],
+            ["agent_message", { agent_id: "agent-1", message: "Also this" }],
+          );
+        }
+
+        if (request.text.startsWith("Message queued")) {
+          ready.resolve();
+
+          while (!(await settled())) await new Promise((resolve) => setTimeout(resolve, 5));
+
+          return call([
+            "subagent_wait",
+            turnId === undefined
+              ? { agent_id: "agent-1" }
+              : { agent_id: "agent-1", turn_id: turnId },
+          ]);
+        }
+
+        return answer("Noted.");
+      });
+
+      settled = async () =>
+        ((await session.state()).agents["agent-1"]?.turns ?? []).every(
+          (turn) => turn.status === "completed",
+        );
+      await session.prompt("Delegate it");
+      await session.settle();
+
+      return session;
+    };
+
+    for (const turnId of [undefined, "turn-2"]) {
+      it(`claims the held answer once, with turn_id ${turnId ?? "omitted"}`, async () => {
+        const session = await settledRun(turnId);
+        const turns = (await session.state()).agents["agent-1"]?.turns ?? [];
+
+        expect((await session.texts("toolResult"))[2]).toMatch(
+          /^agent-1 turn-2 completed \([\d.]+s\)\n\nShared answer\.$/,
+        );
+        expect(turns.map((turn) => turn.delivery)).toEqual(["duplicate", "wait"]);
+        expect(await session.texts("user")).toEqual(["Delegate it"]);
+      });
+    }
+  });
+
   describe("roles", () => {
     const roles = {
       small: { model: { provider: "faux", modelId: "faux-small" }, hint: "Cheap and fast." },

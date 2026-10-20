@@ -767,9 +767,26 @@ const Wait = defineEffectTool({
       }
 
       if (turn.status !== "running") {
-        const repeat = turn.delivery === "auto" || turn.delivery === "duplicate";
+        // A duplicate's answer is carried by another turn of the same run, whose delivery is the one that counts.
+        const carrier =
+          turn.delivery === "duplicate"
+            ? Option.getOrUndefined(
+                Arr.findFirst(
+                  record.turns,
+                  (each) =>
+                    each.id !== turn.id &&
+                    each.answer === turn.answer &&
+                    each.delivery !== "duplicate",
+                ),
+              )
+            : turn;
 
-        if (repeat && turn_id === undefined) {
+        const delivered =
+          carrier === undefined ||
+          carrier.delivery === "auto" ||
+          (carrier !== turn && carrier.delivery === "wait");
+
+        if (delivered && turn_id === undefined) {
           return {
             event: waitEvent("turn", target, {
               turn_id: turn.id,
@@ -780,14 +797,19 @@ const Wait = defineEffectTool({
           };
         }
 
-        // Unreported, or held while this agent is busy: the wait claims it, and the reporter drops its report.
-        if (turn.delivery === null || turn.delivery === "pending") turn.delivery = "wait";
+        const output = turn.answer === null ? null : await answerText(tx, turn.answer);
+
+        // Unreported, or held while this agent is busy: the wait claims it, and the held report is dropped.
+        if (carrier?.delivery === null || carrier?.delivery === "pending") {
+          carrier.delivery = carrier === turn ? "wait" : "duplicate";
+          turn.delivery = "wait";
+        }
 
         return {
           event: waitEvent("turn", target, {
             turn_id: turn.id,
             status: turn.status,
-            output: turn.answer === null ? null : await answerText(tx, turn.answer),
+            output,
             error: turn.error,
           }),
           waitTask: null,
