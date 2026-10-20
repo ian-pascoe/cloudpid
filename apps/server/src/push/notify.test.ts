@@ -36,7 +36,14 @@ const setup = async (endpoints: Readonly<Record<string, number>>) => {
   const store = {
     getSession: (id: string) =>
       id === SESSION.id
-        ? { ...SESSION, workspace: "default", status: "idle" as const, createdAt: 1, updatedAt: 1 }
+        ? {
+            ...SESSION,
+            workspace: "default",
+            repo: null,
+            status: "idle" as const,
+            createdAt: 1,
+            updatedAt: 1,
+          }
         : null,
     listPushSubscriptions: () => subscriptions,
     deletePushSubscription: (endpoint: string) => {
@@ -96,6 +103,7 @@ describe("the notifier", () => {
         getSession: () => ({
           ...SESSION,
           workspace: "default",
+          repo: null,
           status: "idle",
           createdAt: 1,
           updatedAt: 1,
