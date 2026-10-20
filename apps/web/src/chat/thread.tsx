@@ -92,7 +92,12 @@ export const Thread = ({
       <Header
         title={title}
         picker={
-          <ModelPicker view={view} disabled={state.status !== "live"} onConfigure={onConfigure} />
+          <ModelPicker
+            view={view}
+            picked={state.picked}
+            disabled={state.status !== "live"}
+            onConfigure={onConfigure}
+          />
         }
       />
       {notice !== null && notice !== undefined && (

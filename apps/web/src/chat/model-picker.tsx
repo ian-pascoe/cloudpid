@@ -3,37 +3,40 @@
 import { isModelId, THINKING_LEVELS, type ThinkingLevel } from "@cloudpid/config";
 import type { SessionView } from "@cloudpid/protocol";
 import { NativeSelect } from "../components/ui/native-select.tsx";
-import { modelChoices, modelName } from "../models.ts";
-import type { ConfigureChange } from "../session/connection.ts";
-
-/** The select value that makes the Session follow the default again. */
-const FOLLOW_DEFAULT = "";
+import { agentSelect, FOLLOW_DEFAULT, modelChoices, modelName } from "../models.ts";
+import type { ConfigureChange, Picked } from "../session/connection.ts";
 
 const isLevel = (value: string): value is ThinkingLevel =>
   THINKING_LEVELS.some((level) => level === value);
 
 /**
  * The model and thinking level the Session's next request runs with, as selects. Picking one applies to the Session
- * alone; "Use the default" makes it follow the default in the settings again. While the Session is not live the
- * selects are disabled, as a pick has no connection to go through.
+ * alone. Each select shows the default option, named for what it resolves to, while the Session follows the default in
+ * the settings, and the concrete value once the Session picked it; the default option makes it follow again. While the
+ * Session is not live the selects are disabled, as a pick has no connection to go through.
  */
 export const ModelPicker = ({
   view,
+  picked,
   disabled,
   onConfigure,
 }: {
   view: Pick<SessionView, "model" | "thinkingLevel">;
+  picked: Picked;
   disabled: boolean;
   onConfigure: (change: ConfigureChange) => void;
 }) => {
   const model = view.model === null ? null : `${view.model.provider}/${view.model.modelId}`;
+
+  const modelSelect = agentSelect(model, picked.model, model === null ? null : modelName(model));
+  const levelSelect = agentSelect(view.thinkingLevel, picked.thinkingLevel);
 
   return (
     <div className="flex items-center gap-2">
       <NativeSelect
         aria-label="Model"
         disabled={disabled || model === null}
-        value={model ?? ""}
+        value={modelSelect.value}
         onChange={(event) => {
           const { value } = event.target;
 
@@ -43,18 +46,17 @@ export const ModelPicker = ({
         }}
         className="h-8 font-mono text-xs"
       >
-        {model === null && <option value="">…</option>}
+        <option value={FOLLOW_DEFAULT}>{modelSelect.defaultLabel}</option>
         {modelChoices(model).map((choice) => (
           <option key={choice} value={choice}>
             {modelName(choice)}
           </option>
         ))}
-        <option value={FOLLOW_DEFAULT}>Use the default</option>
       </NativeSelect>
       <NativeSelect
         aria-label="Thinking level"
         disabled={disabled || view.thinkingLevel === null}
-        value={view.thinkingLevel ?? ""}
+        value={levelSelect.value}
         onChange={(event) => {
           const { value } = event.target;
 
@@ -63,13 +65,12 @@ export const ModelPicker = ({
         }}
         className="h-8 text-xs"
       >
-        {view.thinkingLevel === null && <option value="">…</option>}
+        <option value={FOLLOW_DEFAULT}>{levelSelect.defaultLabel}</option>
         {THINKING_LEVELS.map((level) => (
           <option key={level} value={level}>
             {level}
           </option>
         ))}
-        <option value={FOLLOW_DEFAULT}>Use the default</option>
       </NativeSelect>
     </div>
   );

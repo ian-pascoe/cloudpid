@@ -5,6 +5,7 @@
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
+import { formatModelId, isModelId } from "@cloudpid/config";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   type Agent,
@@ -122,6 +123,13 @@ export type SessionHostService = {
    * and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
    */
   readonly configure: (change: AgentChange) => Effect.Effect<void, SessionError>;
+  /**
+   * Read the settings now and bring the root's agent to the default in force, unless the Session picked its own, so
+   * what a client is shown is what the next request runs on.
+   */
+  readonly sync: Effect.Effect<void, SessionError>;
+  /** Which of its model and thinking level the Session picked itself; the rest follows the default. */
+  readonly picks: Effect.Effect<Picks>;
   /** Abort the root conversation's work and withdraw its queued input, once it is idle. */
   readonly abort: Effect.Effect<void, SessionError>;
   /**
@@ -153,6 +161,9 @@ const watchEnded = (end: WatchEnd): string =>
   "error" in end
     ? `Watch ended (${end.reason}): ${String(end.error)}`
     : `Watch ended (${end.reason})`;
+
+/** Which of the root conversation's model and thinking level the Session picked, rather than follows the default. */
+export type Picks = { readonly model: boolean; readonly thinkingLevel: boolean };
 
 /** The model and thinking level a Session picked itself, in its storage. */
 type Pick = { readonly model?: ModelRef; readonly thinkingLevel?: ModelThinkingLevel };
@@ -235,7 +246,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
   const { kv } = storage;
 
   /** What this Session picked: a field is absent while the Session follows the default. */
-  const picked = (): Pick => kv.get<Pick>(PICK_KEY) ?? {};
+  const picked = (): Pick => {
+    const kept = kv.get<Pick>(PICK_KEY) ?? {};
+
+    // A model the settings no longer accept is ignored: the Session follows the default rather than fail every request.
+    return kept.model === undefined || isModelId(formatModelId(kept.model))
+      ? kept
+      : withChange(kept, { model: null });
+  };
 
   /** The agent the root conversation runs with: what the Session picked, then the default in the settings. */
   const wanted = (): AgentChange => {
@@ -363,20 +381,24 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
   );
 
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
-    // Arm before admitting work: an object that dies after the commit is still woken.
-    arm({ active: true }).pipe(
-      // The next request runs on the settings in force now.
-      Effect.andThen(settings.refresh),
-      Effect.andThen(applyAgent),
-      Effect.andThen(root),
-      Effect.flatMap((conversation) =>
-        attempt("submit", () => {
-          const { input, ...options } = prompt;
+    // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never holds
+    // up the alarm or a status report.
+    settings.refresh.pipe(
+      Effect.andThen(
+        // Arm before admitting work: an object that dies after the commit is still woken.
+        arm({ active: true }).pipe(
+          Effect.andThen(applyAgent),
+          Effect.andThen(root),
+          Effect.flatMap((conversation) =>
+            attempt("submit", () => {
+              const { input, ...options } = prompt;
 
-          return conversation.submit({ type: "input", content: input, ...options }, context);
-        }),
+              return conversation.submit({ type: "input", content: input, ...options }, context);
+            }),
+          ),
+          serially,
+        ),
       ),
-      serially,
       Effect.tap(settleWhenIdle),
     );
 
@@ -453,11 +475,20 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
     ),
     root: Effect.map(root, (conversation) => conversation.id),
     configure: (change) =>
-      Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), change))).pipe(
-        Effect.andThen(settings.refresh),
-        Effect.andThen(applyAgent),
-        serially,
+      settings.refresh.pipe(
+        Effect.andThen(
+          Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), change))).pipe(
+            Effect.andThen(applyAgent),
+            serially,
+          ),
+        ),
       ),
+    sync: settings.refresh.pipe(Effect.andThen(applyAgent.pipe(serially))),
+    picks: Effect.sync(() => {
+      const pick = picked();
+
+      return { model: pick.model !== undefined, thinkingLevel: pick.thinkingLevel !== undefined };
+    }),
     abort: root.pipe(
       Effect.flatMap((conversation) => attempt("abort", () => conversation.abort(context))),
     ),

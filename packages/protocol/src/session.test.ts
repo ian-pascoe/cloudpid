@@ -30,6 +30,14 @@ describe("the Session socket messages", () => {
     expect(await Effect.runPromise(Schema.encodeEffect(ServerMessageJson)(decoded))).toBe(text);
   });
 
+  it("carry which of the model and thinking level the Session picked", async () => {
+    expect(await readServer('{"type":"picked","model":true,"thinkingLevel":false}')).toEqual({
+      type: "picked",
+      model: true,
+      thinkingLevel: false,
+    });
+  });
+
   it("read a submit with its whenBusy mode, and reject an unknown command or key", async () => {
     expect(
       await readClient(

@@ -297,6 +297,19 @@ describe("a Session connection", () => {
     ]);
   });
 
+  it("knows which of the model and thinking level the Session picked, as it says", () => {
+    const { connection, latest } = setup();
+
+    expect(connection.getState().picked).toEqual({ model: false, thinkingLevel: false });
+
+    watching(latest());
+    latest().say({ type: "picked", model: true, thinkingLevel: false });
+    expect(connection.getState().picked).toEqual({ model: true, thinkingLevel: false });
+
+    latest().say({ type: "picked", model: false, thinkingLevel: false });
+    expect(connection.getState().picked).toEqual({ model: false, thinkingLevel: false });
+  });
+
   it("shows why a configure failed", () => {
     const { connection, latest } = setup();
 

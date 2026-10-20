@@ -104,6 +104,17 @@ export type ClientMessage = typeof ClientMessage.Type;
 /** Sent once on connect: the Session's root conversation, to `watch` and to submit to. */
 export const Hello = Schema.Struct({ type: Schema.Literal("hello"), root: ConversationId });
 
+/**
+ * Which of the root conversation's model and thinking level the Session picked itself with `configure`: the rest
+ * follows the default in the settings. Sent after `hello`, and to every connected client whenever a `configure`
+ * changes it, since `agent_changed` carries the resolved agent but not where it came from.
+ */
+export const Picked = Schema.Struct({
+  type: Schema.Literal("picked"),
+  model: Schema.Boolean,
+  thinkingLevel: Schema.Boolean,
+});
+
 /** One of pi's agent events, passed through unchanged; only its `type` is checked. */
 export const AgentEventSchema = Schema.declare(
   (input): input is AgentEvent =>
@@ -143,7 +154,7 @@ export const ErrorMessage = Schema.Struct({
 });
 
 /** Server → client. */
-export const ServerMessage = Schema.Union([Hello, Events, Result, ErrorMessage]);
+export const ServerMessage = Schema.Union([Hello, Picked, Events, Result, ErrorMessage]);
 
 export type ServerMessage = typeof ServerMessage.Type;
 

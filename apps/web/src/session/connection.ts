@@ -74,9 +74,16 @@ export interface SendingEntry {
   readonly text: string;
 }
 
+/** Which of the model and thinking level the Session picked itself; the rest follows the default in the settings. */
+export interface Picked {
+  readonly model: boolean;
+  readonly thinkingLevel: boolean;
+}
+
 export interface SessionState {
   readonly status: ConnectionStatus;
   readonly view: SessionView;
+  readonly picked: Picked;
   readonly queue: QueueLanes;
   /** Submits held for want of a connection, or not yet answered. */
   readonly sending: readonly SendingEntry[];
@@ -159,6 +166,7 @@ export class SessionConnection {
   private state: SessionState = {
     status: "connecting",
     view: EMPTY_VIEW,
+    picked: { model: false, thinkingLevel: false },
     queue: EMPTY_QUEUE,
     sending: [],
     failure: null,
@@ -270,6 +278,10 @@ export class SessionConnection {
       case "hello":
         this.root = message.root;
         this.watch();
+
+        return;
+      case "picked":
+        this.update({ picked: { model: message.model, thinkingLevel: message.thinkingLevel } });
 
         return;
       case "events": {
@@ -440,7 +452,9 @@ export class SessionConnection {
     clearTimeout(this.pongTimer);
   }
 
-  private update(change: Partial<Pick<SessionState, "status" | "view" | "failure">>): void {
+  private update(
+    change: Partial<Pick<SessionState, "status" | "view" | "failure" | "picked">>,
+  ): void {
     const next = { ...this.state, ...change };
 
     const reuse =

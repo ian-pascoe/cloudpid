@@ -316,6 +316,22 @@ describe("a Session's agent", () => {
     expect(await requests(stub)).toEqual([{ model: "claude-haiku-5-5", thinking: "high" }]);
   });
 
+  it("ignores a pick of a model the settings no longer accept, and follows the default", async () => {
+    const { stub } = await registered();
+
+    await script(stub, "one");
+    // As an earlier release left it: a pick of a model that has since been dropped.
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      state.storage.kv.put("agent-pick", {
+        model: { provider: "anthropic", modelId: "claude-retired" },
+        thinkingLevel: "low",
+      });
+    });
+    await ask(stub, 1);
+
+    expect(await requests(stub)).toEqual([{ model: "claude-opus-5-5", thinking: "low" }]);
+  });
+
   it("carries on with the settings it last read while the Registry is down", async () => {
     const { stub, registry } = await registered();
 

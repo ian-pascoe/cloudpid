@@ -195,7 +195,9 @@ export const sessionSocketsLayer = (
           case "abort":
             return host.abort.pipe(Effect.as(null));
           case "configure":
-            return host.configure(agentChange(message)).pipe(Effect.as(null));
+            return host
+              .configure(agentChange(message))
+              .pipe(Effect.andThen(announcePicks), Effect.as(null));
           case "watch":
             return watch(socket, message.conversationId).pipe(Effect.as(null));
           case "unwatch":
@@ -256,13 +258,31 @@ export const sessionSocketsLayer = (
           return fibers === undefined ? Effect.void : FiberMap.clear(fibers);
         });
 
+      /** Tell `socket`, or every connected client, which of the model and thinking level the Session picked. */
+      const announcePicks = host.picks.pipe(
+        Effect.flatMap((picks) =>
+          Effect.forEach(state.getWebSockets(), (socket) =>
+            send(socket, { type: "picked", ...picks }),
+          ),
+        ),
+        Effect.asVoid,
+      );
+
       const connect = Effect.gen(function* () {
+        // The default in force, so the client's first view shows what the next request runs on.
+        yield* host.sync.pipe(
+          Effect.catch((error) => Effect.logWarning("Syncing the agent on connect failed", error)),
+        );
+
         const root = yield* host.root;
         const { 0: client, 1: server } = new WebSocketPair();
 
         state.acceptWebSocket(server);
         server.serializeAttachment({ watches: [] } satisfies Attachment);
         yield* send(server, { type: "hello", root });
+        yield* host.picks.pipe(
+          Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
+        );
 
         return client;
       });

@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import type { TestRegistry } from "../registry/store.fixture.ts";
 import { constructions, type TestSession } from "./host.fixture.ts";
 
 declare global {
@@ -22,6 +23,7 @@ declare global {
     /** The bindings `vitest.config.ts` gives the test Worker. */
     interface Env {
       readonly SESSIONS: DurableObjectNamespace<TestSession>;
+      readonly REGISTRIES: DurableObjectNamespace<TestRegistry>;
     }
   }
 }
@@ -215,6 +217,125 @@ describe("a Session's commands", () => {
     client.send({ type: "submit", id: "again", input: "hi", requestId: "turn-1" });
 
     expect(await submitted(client, "again")).toBe(await submitted(client, "first"));
+  });
+});
+
+let registries = 0;
+
+/** A Registry holding the settings, which `stub` reads them from. */
+const registryOf = async (stub: DurableObjectStub<TestSession>) => {
+  const name = `settings-registry-${(registries += 1)}`;
+
+  await runInDurableObject(stub, (instance: TestSession) => instance.reportTo(name));
+
+  return env.REGISTRIES.getByName(name);
+};
+
+/** The agent a fresh watch of the root opens with: its snapshot's. */
+const watchedAgent = async (client: Client) => {
+  const root = await client.root();
+  const from = client.received.length;
+
+  client.send({ type: "watch", id: `watch-${from}`, conversationId: root });
+
+  const [snapshot] = eventsOf(
+    await client.until((messages) => eventsOf(messages, root).length > 0, from),
+    root,
+  );
+
+  return snapshot?.type === "snapshot" ? snapshot.agent : undefined;
+};
+
+describe("what a client first sees of a Session's agent", () => {
+  it("is the default in force, for a new Session, before any prompt", async () => {
+    const stub = fresh();
+    const registry = await registryOf(stub);
+
+    await registry.updateSettings(
+      { model: "anthropic/claude-sonnet-5-5", thinkingLevel: "low" },
+      1,
+    );
+
+    expect(await watchedAgent(await connect(stub))).toEqual({
+      model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+      thinkingLevel: "low",
+    });
+  });
+
+  it("is the changed default, for an idle Session that has run before", async () => {
+    const stub = fresh();
+    const registry = await registryOf(stub);
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["one"]));
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.prompt({ requestId: "turn-1", text: "hi" }),
+    );
+    await registry.updateSettings({ model: "anthropic/claude-haiku-5-5" }, 1);
+
+    expect((await watchedAgent(await connect(stub)))?.model).toEqual({
+      provider: "anthropic",
+      modelId: "claude-haiku-5-5",
+    });
+  });
+
+  it("is the Session's own pick, whatever the default", async () => {
+    const stub = fresh();
+    const registry = await registryOf(stub);
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.configure({ model: { provider: "anthropic", modelId: "claude-haiku-5-5" } }),
+    );
+    await registry.updateSettings({ model: "anthropic/claude-sonnet-5-5" }, 1);
+
+    expect((await watchedAgent(await connect(stub)))?.model).toEqual({
+      provider: "anthropic",
+      modelId: "claude-haiku-5-5",
+    });
+  });
+});
+
+describe("which of its agent a Session says it picked", () => {
+  const lastPicked = (messages: readonly ServerMessage[]) =>
+    Arr.findLast(messages, (message) => message.type === "picked").pipe(Option.getOrUndefined);
+
+  it("starts with nothing picked, then follows each configure on every connected client", async () => {
+    const stub = fresh();
+    const first = await connect(stub);
+    const second = await connect(stub);
+
+    expect(lastPicked(await first.until((m) => lastPicked(m) !== undefined))).toEqual({
+      type: "picked",
+      model: false,
+      thinkingLevel: false,
+    });
+
+    first.send({ type: "configure", id: "pick", model: "anthropic/claude-haiku-5-5" });
+    await first.answer("pick");
+
+    for (const client of [first, second]) {
+      expect(lastPicked(await client.until((m) => lastPicked(m)?.model === true))).toEqual({
+        type: "picked",
+        model: true,
+        thinkingLevel: false,
+      });
+    }
+
+    second.send({ type: "configure", id: "both", thinkingLevel: "low" });
+    await second.answer("both");
+    expect(lastPicked(await first.until((m) => lastPicked(m)?.thinkingLevel === true))).toEqual({
+      type: "picked",
+      model: true,
+      thinkingLevel: true,
+    });
+
+    second.send({ type: "configure", id: "clear", model: null, thinkingLevel: null });
+    expect(
+      lastPicked(
+        await first.until(
+          (m) => lastPicked(m)?.model === false && lastPicked(m)?.thinkingLevel === false,
+        ),
+      ),
+    ).toEqual({ type: "picked", model: false, thinkingLevel: false });
   });
 });
 

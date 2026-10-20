@@ -45,10 +45,13 @@ const open = (
   source: Pick<ReturnType<typeof registry>, "read">,
   kv: SettingsKv = memoryKv(),
   timeout: Duration.Input = "2 seconds",
+  backoff: Duration.Input = 0,
 ) =>
   Effect.runSync(
     Effect.gen(function* () {
-      const services = yield* Layer.build(sessionSettingsLayer({ read: source.read, kv, timeout }));
+      const services = yield* Layer.build(
+        sessionSettingsLayer({ read: source.read, kv, timeout, backoff }),
+      );
 
       return Context.get(services, SessionSettings);
     }).pipe(Effect.scoped),
@@ -112,6 +115,38 @@ describe("a Session's settings", () => {
     source.state.failing = true;
 
     expect(open(source, kv).current().agent.thinkingLevel).toBe("low");
+  });
+
+  it("leave the Registry alone for the backoff after a read fails, so a Registry that is down costs one try", async () => {
+    const source = registry({ thinkingLevel: "low" });
+    const settings = open(source, memoryKv(), "2 seconds", "1 hour");
+
+    source.state.failing = true;
+    await Effect.runPromise(settings.refresh);
+    await Effect.runPromise(settings.refresh);
+    expect(source.state.reads).toBe(1);
+
+    // Once the backoff is over, the next read goes through; a read that works ends it.
+    const quick = open(source, memoryKv(), "2 seconds", 0);
+
+    await Effect.runPromise(quick.refresh);
+    await Effect.runPromise(quick.refresh);
+    expect(source.state.reads).toBe(3);
+
+    source.state.failing = false;
+    await Effect.runPromise(quick.refresh);
+    expect(quick.current().agent.thinkingLevel).toBe("low");
+  });
+
+  it("keep the kept overrides that still resolve when another no longer does", () => {
+    const kv = memoryKv();
+
+    kv.put("settings-overrides", { model: "anthropic/retired-model", thinkingLevel: "low" });
+
+    const settings = open(registry(), kv).current();
+
+    expect(settings.agent.thinkingLevel).toBe("low");
+    expect(settings.agent.model).toEqual(valuesFrom(DEFAULT_SETTINGS).agent.model);
   });
 
   it("fall back to the defaults when the kept overrides no longer resolve", () => {

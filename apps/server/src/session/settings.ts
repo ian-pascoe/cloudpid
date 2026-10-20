@@ -1,23 +1,27 @@
 // What a Session reads from the settings (`docs/spec.md` → Settings). The overrides live in the Registry DO; the Session
 // keeps the last it read, in its own storage, and hands the Harness live getters over that copy. The Harness reads its
 // settings synchronously, so the Registry is read before a request is admitted (`refresh`), never inside a getter.
-import { DEFAULT_SETTINGS, parseModelId, resolveSettings, type Settings } from "@cloudpid/config";
+import { DEFAULT_SETTINGS, parseModelId, resolveLeniently, type Settings } from "@cloudpid/config";
 import type {
   AgentChange,
   CompactionPolicy,
   HarnessSettings,
   ModelRef,
 } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import type * as Duration from "effect/Duration";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 
 /** How long reading the Registry may take before the Session carries on with what it last read. */
 export const SETTINGS_TIMEOUT: Duration.Input = "2 seconds";
+
+/** How long after a failed read the Session leaves the Registry alone, so a Registry that is down costs one timeout. */
+export const SETTINGS_BACKOFF: Duration.Input = "30 seconds";
 
 /** What the Session and its Harness use of the settings. */
 export type SessionSettingsValues = {
@@ -66,17 +70,19 @@ export type SessionSettingsOptions = {
   readonly kv: SettingsKv;
   /** Defaults to `SETTINGS_TIMEOUT`. */
   readonly timeout?: Duration.Input;
+  /** After a read fails, how long `refresh` leaves the Registry alone. Defaults to `SETTINGS_BACKOFF`. */
+  readonly backoff?: Duration.Input;
 };
 
-/** The settings the overrides give, or the defaults, with the reason logged, when they no longer resolve. */
-const resolveOrDefaults = (overrides: Schema.Json) => {
-  const resolved = resolveSettings(overrides);
+/** The settings the overrides give, with what no longer resolves left out and logged. */
+const resolveLogged = (overrides: Schema.Json) => {
+  const { settings, dropped } = resolveLeniently(overrides);
 
-  return Result.isSuccess(resolved)
-    ? Effect.succeed(resolved.success)
+  return dropped.length === 0
+    ? Effect.succeed(settings)
     : Effect.logWarning(
-        `Saved settings overrides do not resolve:\n${resolved.failure.message}`,
-      ).pipe(Effect.as(DEFAULT_SETTINGS));
+        `Saved settings overrides that no longer apply are ignored:\n${Arr.join(dropped, "\n")}`,
+      ).pipe(Effect.as(settings));
 };
 
 /** The Session's settings, starting from the overrides last kept in `kv`. */
@@ -89,14 +95,15 @@ export const sessionSettingsLayer = (
       const { kv } = options;
       const kept = kv.get<Schema.Json>(OVERRIDES_KEY);
 
-      let current = valuesFrom(
-        kept === undefined ? DEFAULT_SETTINGS : yield* resolveOrDefaults(kept),
-      );
+      let current = valuesFrom(kept === undefined ? DEFAULT_SETTINGS : yield* resolveLogged(kept));
 
-      const refresh = options.read.pipe(
+      /** When the last read failed, while its backoff may still run. */
+      let failedAt: number | undefined;
+
+      const read = options.read.pipe(
         Effect.timeout(options.timeout ?? SETTINGS_TIMEOUT),
         Effect.flatMap((overrides) =>
-          resolveOrDefaults(overrides).pipe(
+          resolveLogged(overrides).pipe(
             Effect.tap((settings) =>
               Effect.sync(() => {
                 kv.put(OVERRIDES_KEY, overrides);
@@ -106,8 +113,34 @@ export const sessionSettingsLayer = (
           ),
         ),
         Effect.asVoid,
+        Effect.andThen(
+          Effect.sync(() => {
+            failedAt = undefined;
+          }),
+        ),
         Effect.catchCause((cause) =>
-          Effect.logWarning("Reading the settings from the Registry failed", Cause.pretty(cause)),
+          Clock.currentTimeMillis.pipe(
+            Effect.tap((now) =>
+              Effect.sync(() => {
+                failedAt = now;
+              }),
+            ),
+            Effect.andThen(
+              Effect.logWarning(
+                "Reading the settings from the Registry failed",
+                Cause.pretty(cause),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      const refresh = Clock.currentTimeMillis.pipe(
+        Effect.flatMap((now) =>
+          failedAt !== undefined &&
+          now - failedAt < Duration.toMillis(options.backoff ?? SETTINGS_BACKOFF)
+            ? Effect.void
+            : read,
         ),
       );
 
