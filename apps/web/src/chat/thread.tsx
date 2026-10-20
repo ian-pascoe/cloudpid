@@ -8,6 +8,7 @@ import type { ConfigureChange, QueuedEntry, SessionState } from "../session/conn
 import { Composer } from "./composer.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
+import { SecretRequests } from "./secret-form.tsx";
 
 const UserMessage = () => (
   <MessagePrimitive.Root className="flex justify-end">
@@ -109,10 +110,12 @@ export const Thread = ({
   steerLane,
   followUpLane,
   onConfigure,
+  onAnswerSecrets,
 }: {
   title: string | undefined;
   state: SessionState;
   onConfigure: (change: ConfigureChange) => void;
+  onAnswerSecrets: (request: string, values: Readonly<Record<string, string>> | null) => void;
   notice: ReactNode;
   steerLane: readonly QueuedEntry[];
   followUpLane: readonly QueuedEntry[];
@@ -180,6 +183,14 @@ export const Thread = ({
           {problem}
         </p>
       )}
+      <div className="px-4">
+        <SecretRequests
+          requests={state.secretRequests}
+          lifetimeMinutes={state.secretLifetimeMinutes}
+          disabled={state.status !== "live"}
+          onAnswer={onAnswerSecrets}
+        />
+      </div>
       <Composer steerLane={steerLane} followUpLane={followUpLane} sending={state.sending} />
     </ThreadPrimitive.Root>
   );
