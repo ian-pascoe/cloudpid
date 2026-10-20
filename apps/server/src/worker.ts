@@ -14,6 +14,7 @@ import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import { serveRegistryRpc } from "./registry/rpc.ts";
+import { PushConfigLive } from "./push/config.ts";
 import { isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
@@ -145,7 +146,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
     Effect.provide(
       SessionLive.pipe(
         Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
-        Layer.provideMerge(RegistryLive),
+        Layer.provideMerge(RegistryLive.pipe(Layer.provide(PushConfigLive))),
       ),
     ),
   ),

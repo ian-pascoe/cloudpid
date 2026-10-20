@@ -14,6 +14,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import type { PushEvent } from "../push/notification.ts";
 import { secretRequests, send, type SocketState } from "./sockets.ts";
 
 /** The master key Secrets are encrypted under: a deploy-time secret, bound to the Worker by `Config.Redacted`. */
@@ -37,6 +38,8 @@ export type SessionSecretsOptions = {
   readonly storage: SecretStorage;
   /** The object's sockets, which every change to the waiting requests is sent to. */
   readonly sockets: Pick<SocketState, "getWebSockets">;
+  /** Tell the owner, by Web Push, that a request is waiting for them. Leave it out to tell nobody. */
+  readonly notify?: (event: PushEvent) => Effect.Effect<void>;
 };
 
 /** The Session's `Secrets`; build it once per instance, as it opens every Secret still held. */
@@ -52,6 +55,10 @@ export const sessionSecretsLayer = (
           Effect.forEach(options.sockets.getWebSockets(), (socket) =>
             send(socket, secretRequests(asks)),
           ).pipe(Effect.asVoid),
+        asked: (ask) =>
+          options.notify === undefined
+            ? Effect.void
+            : options.notify({ kind: "input", names: ask.names, reason: ask.reason }),
       }),
     ),
   );

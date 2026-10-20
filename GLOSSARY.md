@@ -78,6 +78,10 @@ _Avoid_: Dependency, package (for tools)
 The single index of Workspaces, Sessions, settings overrides, and notification subscriptions.
 _Avoid_: Catalog, directory
 
+**Notification**:
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input, linking to the Session.
+_Avoid_: Alert, push message (for the user-facing thing)
+
 **Settings**:
 The typed configuration with defaults (default model and thinking level, Roles, compaction, extension options). The overrides the user saves live in the Registry, and each Session reads them before its next request.
 _Avoid_: Config, preferences

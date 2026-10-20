@@ -37,9 +37,14 @@ const memoryStorage = () => {
 };
 
 /** A store over `storage`, recording every list of pending asks it announces. */
-const open = (storage: SecretStorage, master = MASTER) =>
+const open = (
+  storage: SecretStorage,
+  master = MASTER,
+  notify?: (ask: SecretAsk) => Effect.Effect<void>,
+) =>
   Effect.gen(function* () {
     const announced: (readonly SecretAsk[])[] = [];
+    const asked: SecretAsk[] = [];
     const vault = yield* openVault(master, "session-1");
 
     const secrets = yield* Effect.provide(
@@ -51,10 +56,14 @@ const open = (storage: SecretStorage, master = MASTER) =>
           Effect.sync(() => {
             announced.push(asks);
           }),
+        asked: (ask) =>
+          Effect.sync(() => {
+            asked.push(ask);
+          }).pipe(Effect.andThen(notify?.(ask) ?? Effect.void)),
       }),
     );
 
-    return { secrets, announced };
+    return { secrets, announced, asked };
   });
 
 const ASK: SecretAsk = {
@@ -91,6 +100,40 @@ describe("Secrets", () => {
       expect(yield* secrets.resolve("API_KEY")).toBe(VALUE);
       expect(yield* secrets.held).toEqual([{ name: "API_KEY", expiresAt: SECRET_LIFETIME_MS }]);
       expect(dump()).not.toContain(VALUE);
+    }));
+
+  test("says once that an ask is new, not again when a rerun finds it waiting", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const first = yield* open(storage);
+
+      yield* Effect.forkChild(first.secrets.ask(ASK));
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      expect(first.asked).toEqual([ASK]);
+
+      // An eviction leaves the ask stored, and the rerun of its call asks again.
+      const second = yield* open(storage);
+
+      yield* Effect.forkChild(second.secrets.ask(ASK));
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      expect(second.asked).toEqual([]);
+    }));
+
+  test("does not wait for a notification that is slow, and withdraws the ask when interrupted meanwhile", () =>
+    Effect.gen(function* () {
+      const { secrets, asked } = yield* open(memoryStorage().storage, MASTER, () => Effect.never);
+      const asking = yield* Effect.forkChild(secrets.ask(ASK));
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      // The ask is waiting for the owner although its notification has not finished.
+      expect(asked).toEqual([ASK]);
+      expect(yield* secrets.pending).toEqual([ASK]);
+
+      yield* Fiber.interrupt(asking);
+      expect(yield* secrets.pending).toEqual([]);
     }));
 
   test("holds nothing when the owner cancels", () =>

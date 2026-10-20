@@ -38,6 +38,7 @@ import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
+import type { PushEvent } from "../push/notification.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
 
 declare global {
@@ -75,6 +76,14 @@ type Script = { readonly responses: readonly string[]; readonly next: number };
 /** The scripted response `text`: a tool call or an answer. */
 const respond = (text: string) => {
   const call = CALL.exec(text);
+
+  // `error:<message>` is a model error that is not worth retrying.
+  if (text.startsWith("error:")) {
+    return fauxAssistantMessage("", {
+      stopReason: "error",
+      errorMessage: text.slice("error:".length),
+    });
+  }
 
   return call === null
     ? fauxAssistantMessage(text)
@@ -169,6 +178,11 @@ export class TestSession extends DurableObject {
                         try: () => this.#report(status),
                         catch: (cause) => ReportError.make({ message: String(cause) }),
                       }),
+                    notify: (event) =>
+                      Effect.tryPromise({
+                        try: () => this.#notify(event),
+                        catch: (cause) => ReportError.make({ message: String(cause) }),
+                      }),
                   }),
                   sessionSettingsLayer({
                     read: Effect.orDie(Effect.tryPromise(() => this.#readSettings())),
@@ -185,6 +199,7 @@ export class TestSession extends DurableObject {
               session: ctx.id.toString(),
               storage: ctx.storage.kv,
               sockets: ctx,
+              notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
             }),
           ),
         ),
@@ -293,6 +308,21 @@ export class TestSession extends DurableObject {
     return this.ctx.storage.kv.get<SessionStatus[]>("reported") ?? [];
   }
 
+  /** Stop the root conversation's run, as a client's `abort` does. */
+  abortRoot(): Promise<void> {
+    return Effect.runPromise(this.#host.abort());
+  }
+
+  /** Make notifications fail until `notifications("working")`. */
+  notifications(mode: "working" | "failing"): void {
+    this.ctx.storage.kv.put("notifyMode", mode);
+  }
+
+  /** The notifications this Session made, oldest first, counting only those the Registry received. */
+  notified(): readonly PushEvent[] {
+    return this.ctx.storage.kv.get<PushEvent[]>("notified") ?? [];
+  }
+
   /** How many status reports this Session has tried to make, delivered or not. */
   reportAttempts(): number {
     return this.ctx.storage.kv.get<number>("reportAttempts") ?? 0;
@@ -355,6 +385,17 @@ export class TestSession extends DurableObject {
     if (kv.get<string>("settingsMode") === "failing") throw new Error("Registry is down");
 
     return (await this.env.REGISTRIES.getByName(registry).getSettings()).overrides;
+  }
+
+  #notify(event: PushEvent): Promise<void> {
+    const { kv } = this.ctx.storage;
+
+    if (kv.get<string>("notifyMode") === "failing")
+      return Promise.reject(new Error("Registry is down"));
+
+    kv.put("notified", [...(kv.get<PushEvent[]>("notified") ?? []), event]);
+
+    return Promise.resolve();
   }
 
   async #report(status: SessionStatus): Promise<void> {

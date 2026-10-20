@@ -16,6 +16,7 @@ import { Button } from "./components/ui/button.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { modelName } from "./models.ts";
 import { navigate } from "./router.ts";
+import { usePush } from "./use-push.ts";
 import { useSettings } from "./use-settings.ts";
 
 const ModelSelect = ({
@@ -65,6 +66,61 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
     {children}
   </section>
 );
+
+/** Whether this device gets a push when a Run ends, fails, or needs input. Takes effect at once, like no other setting here. */
+const NotificationsSection = () => {
+  const push = usePush();
+  const { status } = push;
+  const on = status?.kind === "on";
+
+  return (
+    <Section title="Notifications">
+      <p className="text-sm text-muted-foreground">
+        A push to this device when a run finishes or fails, or when the agent needs you to enter a
+        secret, linking to the session. Each device chooses for itself.
+      </p>
+      {status?.kind === "unsupported" && (
+        <p className="text-sm text-muted-foreground">
+          This browser cannot receive push notifications. On an iPhone or iPad, add the app to the
+          home screen first.
+        </p>
+      )}
+      {status?.kind === "denied" && (
+        <p role="alert" className="text-sm text-destructive">
+          Notifications are blocked for this site. Allow them in the browser's site settings, then
+          turn them on here.
+        </p>
+      )}
+      {status?.kind === "error" && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {status.message}
+        </p>
+      )}
+      <div className="flex items-center gap-3">
+        <Button
+          type="button"
+          variant={on ? "outline" : "default"}
+          disabled={
+            status === null ||
+            push.busy ||
+            status.kind === "unsupported" ||
+            status.kind === "denied"
+          }
+          onClick={() => {
+            void (on ? push.disable() : push.enable());
+          }}
+        >
+          {push.busy ? "Working…" : on ? "Turn off on this device" : "Turn on for this device"}
+        </Button>
+        {on && (
+          <span role="status" className="text-sm text-muted-foreground">
+            On for this device
+          </span>
+        )}
+      </div>
+    </Section>
+  );
+};
 
 const RoleFields = ({
   name,
@@ -208,7 +264,7 @@ const SettingsForm = ({
   );
 };
 
-/** The settings page: the default model and thinking level, and the model roles. */
+/** The settings page: the default model and thinking level, the model roles, and this device's notifications. */
 export const SettingsPage = () => {
   const settings = useSettings();
 
@@ -249,6 +305,7 @@ export const SettingsPage = () => {
             onSave={settings.save}
           />
         )}
+        <NotificationsSection />
       </div>
     </div>
   );

@@ -92,7 +92,10 @@ export class TestSubagentSession extends DurableObject {
         }).pipe(
           Layer.provide(
             Layer.mergeAll(
-              Layer.succeed(SessionRegistry, { report: () => Effect.void }),
+              Layer.succeed(SessionRegistry, {
+                report: () => Effect.void,
+                notify: () => Effect.void,
+              }),
               sessionSettingsLayer({ read: Effect.succeed({}), kv: ctx.storage.kv }),
             ),
           ),

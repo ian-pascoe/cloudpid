@@ -7,6 +7,7 @@ import {
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
+import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
 import { WebConfig } from "@cloudpid/extensions/web";
@@ -24,8 +25,9 @@ import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
+import type { PushEvent } from "../push/notification.ts";
 import { sessionExtensions } from "./extensions.ts";
-import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
+import { NOTIFY_TIMEOUT, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { sessionSettingsLayer, subagentSettings } from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
@@ -106,12 +108,22 @@ export const SessionLive = Session.make(
 
         if (name !== undefined) kv.put(NAME_KEY, name);
 
-        const registry = Layer.succeed(SessionRegistry, {
+        const sessionRegistry = {
           report: (status) =>
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
               : registries.getByName(REGISTRY_NAME).setSessionStatus({ id: name, status }),
-        });
+          notify: (event) =>
+            name === undefined
+              ? ReportError.make({ message: "The Session's name is unknown" })
+              : registries.getByName(REGISTRY_NAME).notify({ sessionId: name, event }),
+        } satisfies (typeof SessionRegistry)["Service"];
+
+        const registry = Layer.succeed(SessionRegistry, sessionRegistry);
+
+        /** Push to the owner without ever failing or stalling: a notification is not worth a Run. */
+        const notifyOwner = (event: PushEvent) =>
+          sessionRegistry.notify(event).pipe(Effect.timeout(NOTIFY_TIMEOUT), Effect.ignore);
 
         const workspaceSlug = cachedSlug({
           name,
@@ -161,6 +173,8 @@ export const SessionLive = Session.make(
           session: state.raw.id.toString(),
           storage: kv,
           sockets: state.raw,
+          // A request waits for the owner, who may not have the page open: push it.
+          notify: notifyOwner,
         });
 
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
@@ -178,6 +192,8 @@ export const SessionLive = Session.make(
                 extensions: sessionExtensions.pipe(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
+                  // For extensions that need the owner (a Live View link, say): pushes through the Registry.
+                  Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
                   Effect.provideService(CodemodeSandbox, sandbox),
                   Effect.provideService(BrowserHost, browser),
                   Effect.provideServiceEffect(SubagentSettings, subagentSettings),

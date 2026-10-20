@@ -1,6 +1,13 @@
 // The Registry operations (`RegistryRpcs`, Effect RPC over HTTP) as promises, for the Session list.
 import type { SettingsOverrides } from "@cloudpid/config";
-import { RegistryRpcs, RPC_PATH, type SessionRecord, type SettingsState } from "@cloudpid/protocol";
+import {
+  type PushState,
+  type PushSubscription,
+  RegistryRpcs,
+  RPC_PATH,
+  type SessionRecord,
+  type SettingsState,
+} from "@cloudpid/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -29,6 +36,12 @@ export interface RegistryApi {
   readonly getSettings: () => Promise<Answer<SettingsState>>;
   /** Replace the saved overrides; overrides that do not resolve fail with a readable message, and nothing is saved. */
   readonly updateSettings: (overrides: SettingsOverrides) => Promise<Answer<SettingsState>>;
+  /** The VAPID public key to subscribe with, and whether the Registry holds the subscription at `endpoint`. */
+  readonly getPush: (endpoint?: string) => Promise<Answer<PushState>>;
+  /** Keep this browser's Web Push subscription, so Sessions notify it. */
+  readonly subscribePush: (subscription: PushSubscription) => Promise<Answer<void>>;
+  /** Forget the subscription at `endpoint`. */
+  readonly unsubscribePush: (endpoint: string) => Promise<Answer<void>>;
 }
 
 /** A client of the main Worker at `origin`. */
@@ -59,5 +72,13 @@ export const connectRegistry = (origin: string): RegistryApi => {
     getSettings: () => answer(Registry.use((registry) => registry.getSettings())),
     updateSettings: (overrides) =>
       answer(Registry.use((registry) => registry.updateSettings({ overrides }))),
+    getPush: (endpoint) =>
+      answer(
+        Registry.use((registry) => registry.getPush(endpoint === undefined ? {} : { endpoint })),
+      ),
+    subscribePush: (subscription) =>
+      answer(Registry.use((registry) => registry.subscribePush({ subscription }))),
+    unsubscribePush: (endpoint) =>
+      answer(Registry.use((registry) => registry.unsubscribePush({ endpoint }))),
   };
 };
