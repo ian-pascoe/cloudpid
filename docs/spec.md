@@ -53,7 +53,7 @@ Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0
 
 ### Models
 
-- Requests go to the existing proxy `api.ai.ianpascoe.dev` with a Commissary API key (`Authorization: Bearer`). The proxy is Commissary's API host, which sits outside Cloudflare Access and rejects service tokens. Model IDs match `~/.pi/agent/models.json`.
+- Requests go to the existing proxy `api.ai.ianpascoe.dev` with a Commissary API key, sent as each provider's native API key (`x-api-key` for Anthropic). The proxy is Commissary's API host, which sits outside Cloudflare Access and rejects service tokens. Model IDs match `~/.pi/agent/models.json`.
 - Default `anthropic/claude-opus-5-5` at `high` thinking.
 - Roles: `small` haiku-5-5, `medium` sonnet-5-5, `large` opus-5-5, `xlarge` fable-5-1, with the hints from `~/.pi/agent/settings.json`.
 
@@ -208,7 +208,7 @@ From v2, secret references may name 1Password items. Credentials then move into 
   - `pi.usage` is shown per Session in the UI.
   - A per-Session spend limit is enforced by a `beforeRequest` hook.
 - **Testing:**
-  - Vitest 5 with `@cloudflare/vitest-pool-workers` for DO tests: eviction, alarm, and resume.
+  - Vitest 5 with `@cloudflare/vitest-plugin` (the successor of `vitest-pool-workers`) for DO tests: eviction, alarm, and resume.
   - pi-ai `fauxProvider` for scripted turns.
   - `registerEnvConformance` for `ComputerExecutionEnv`.
   - `@effect/vitest`.
