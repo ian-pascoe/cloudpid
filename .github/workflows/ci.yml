@@ -44,6 +44,9 @@ jobs:
 
       - run: pnpm check
 
+      # `check` does not build; the web app's bundle is what the server serves, so make sure it still builds.
+      - run: pnpm turbo run build --filter @cloudpid/web
+
   # Deploys `prod` on push to main with a scoped API token from the `production` environment
   # (credentials as code: infra/github.ts, AGENTS.md → Infra).
   deploy:

@@ -2,3 +2,7 @@
 export * from "./registry.ts";
 
 export * from "./session.ts";
+
+export * from "./transcript.ts";
+
+export * from "./view.ts";
