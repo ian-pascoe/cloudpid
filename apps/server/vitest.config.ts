@@ -15,11 +15,14 @@ export default defineConfig({
       defineProject({
         plugins: [
           cloudflareTest({
-            main: "./src/session/host.fixture.ts",
+            main: "./src/workerd.fixture.ts",
             miniflare: {
               compatibilityDate: "2026-08-31",
               compatibilityFlags: ["nodejs_compat"],
-              durableObjects: { SESSIONS: { className: "TestSession", useSQLite: true } },
+              durableObjects: {
+                SESSIONS: { className: "TestSession", useSQLite: true },
+                REGISTRIES: { className: "TestRegistry", useSQLite: true },
+              },
             },
           }),
         ],

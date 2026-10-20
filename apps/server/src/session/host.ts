@@ -18,15 +18,21 @@ import {
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import { SessionRegistry, type SessionStatus } from "./status.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /** How often the alarm wakes the object while work is live, so a run an eviction cut off resumes. */
 export const HEARTBEAT_MS = 60_000;
+
+/** How long a report to the Registry may take before it counts as failed. */
+export const REPORT_TIMEOUT: Duration.Input = "5 seconds";
 
 /**
  * Keep no idle conversation contexts or documents in memory. pi-durable 1.3.0 holds them on `setTimeout` timers,
@@ -65,6 +71,8 @@ export type SessionHostOptions = {
   readonly reset: (reason: string) => void;
   /** The extensions the Session's conversations run with, installed before any work resumes. */
   readonly extensions: Effect.Effect<readonly Extension[], never, Harness>;
+  /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
+  readonly reportTimeout?: Duration.Input;
 };
 
 /** User input for the root conversation. Submitting the same `requestId` again finds the first submission. */
@@ -148,6 +156,8 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* (options: S
 const startSessionHost = Effect.fn("startSessionHost")(function* (options: SessionHostOptions) {
   const { storage } = options;
   const harness = yield* Harness;
+  const registry = yield* SessionRegistry;
+  const scope = yield* Scope.Scope;
 
   // Before anything resumes, so resumed tool calls find their tools.
   for (const extension of yield* options.extensions) yield* harness.install(extension);
@@ -171,13 +181,90 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
     })),
   );
 
+  const armHeartbeat = heartbeat.pipe(
+    Effect.flatMap((at) => attempt("setAlarm", () => storage.setAlarm(at))),
+  );
+
+  /** What the Registry was last told, by this instance. Unknown at first, so a new instance tells it. */
+  let reported: SessionStatus | undefined;
+
+  /**
+   * Tell the Registry `status` unless it was just told, and say whether it now has it. A report that fails or takes
+   * too long counts as failed, so a slow Registry cannot stall prompts or the constructor.
+   */
+  const report = (status: SessionStatus): Effect.Effect<boolean> =>
+    reported === status
+      ? Effect.succeed(true)
+      : registry.report(status).pipe(
+          Effect.timeout(options.reportTimeout ?? REPORT_TIMEOUT),
+          Effect.andThen(
+            Effect.sync(() => {
+              reported = status;
+
+              return true;
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            // The Registry may have applied it before failing, so what it holds is unknown again.
+            Effect.logWarning("Registry status report failed", cause).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  reported = undefined;
+
+                  return false;
+                }),
+              ),
+            ),
+          ),
+        );
+
   const arm = (next: Wake) =>
     next.active
-      ? heartbeat.pipe(Effect.flatMap((at) => attempt("setAlarm", () => storage.setAlarm(at))))
-      : attempt("deleteAlarm", () => storage.deleteAlarm());
+      ? // The heartbeat first: a report that cannot be made must not leave live work unwoken.
+        armHeartbeat.pipe(Effect.andThen(report("running")), Effect.asVoid)
+      : // Report before deleting the heartbeat: an unreported end keeps it, to report again.
+        report("idle").pipe(
+          Effect.flatMap((told) =>
+            told ? attempt("deleteAlarm", () => storage.deleteAlarm()) : armHeartbeat,
+          ),
+        );
+
+  /** Reconcile the alarm and the Registry with what is live now. */
+  const settle = wake.pipe(Effect.flatMap(arm), serially);
+
+  /** Whether a fiber is waiting for the Session to go idle. */
+  let waiting = false;
+
+  /**
+   * Once the work now live is done, settle: nobody need be waiting on it for the Registry to hear it ended. One waiter
+   * covers every submission, since it ends when the whole Session is idle; it belongs to the layer's scope.
+   */
+  const settleWhenIdle = Effect.suspend(() => {
+    if (waiting) return Effect.void;
+
+    waiting = true;
+
+    return harness.waitForIdle.pipe(
+      // Cleared before settling, so a submit that lands meanwhile starts the next waiter.
+      Effect.ensuring(
+        Effect.sync(() => {
+          waiting = false;
+        }),
+      ),
+      Effect.andThen(settle),
+      Effect.ignore,
+      Effect.forkIn(scope),
+      Effect.asVoid,
+    );
+  });
 
   // Armed before `resume()` runs anything, as for any call that can start work.
-  const wakeAndResume = wake.pipe(Effect.flatMap(arm), Effect.andThen(harness.resume), serially);
+  const wakeAndResume = wake.pipe(
+    Effect.flatMap(arm),
+    Effect.andThen(harness.resume),
+    Effect.andThen(settleWhenIdle),
+    serially,
+  );
 
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
     // Arm before admitting work: an object that dies after the commit is still woken.
@@ -192,6 +279,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
         ),
       ),
       serially,
+      Effect.tap(settleWhenIdle),
     );
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {
@@ -199,7 +287,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
     const settled = yield* attempt("wait", () => submission.wait(context));
 
     // The run is over: drop the heartbeat unless other work is live.
-    yield* wake.pipe(Effect.flatMap(arm), serially);
+    yield* settle;
 
     if (settled.status !== "done" || settled.type !== "input") {
       return {
@@ -247,7 +335,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
  */
 export const sessionHostLayer = (
   options: SessionHostOptions,
-): Layer.Layer<SessionHost | Harness, SessionError> =>
+): Layer.Layer<SessionHost | Harness, SessionError, SessionRegistry> =>
   Layer.effect(SessionHost, startSessionHost(options)).pipe(
     Layer.provideMerge(Layer.effect(Harness, openSessionHarness(options))),
   );

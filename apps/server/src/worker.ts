@@ -7,6 +7,8 @@ import * as Option from "effect/Option";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { promptSession, promptSessionId } from "./prompt.ts";
+import { registryRoute, serveRegistry } from "./registry/http.ts";
+import { Registry, RegistryLive } from "./registry/Registry.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 
 /**
@@ -29,17 +31,26 @@ export default class Server extends Cloudflare.Worker<Server>()(
   props,
   Effect.gen(function* () {
     const sessions = yield* Session;
+    const registries = yield* Registry;
 
     return {
       fetch: Effect.gen(function* () {
-        const sessionId = promptSessionId(yield* HttpServerRequest.HttpServerRequest);
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const sessionId = promptSessionId(request);
+        const route = registryRoute(request);
 
-        return sessionId === undefined ? hello : yield* promptSession(sessions, sessionId);
+        if (sessionId !== undefined) return yield* promptSession(sessions, sessionId);
+
+        if (route !== undefined) return yield* serveRegistry(registries, route);
+
+        return hello;
       }),
     };
   }).pipe(
     // The Worker's init is its entry point.
     // @effect-diagnostics-next-line strictEffectProvide:off
-    Effect.provide(SessionLive.pipe(Layer.provide(ModelProxyConfigLive))),
+    Effect.provide(
+      SessionLive.pipe(Layer.provide(ModelProxyConfigLive), Layer.provideMerge(RegistryLive)),
+    ),
   ),
 ) {}
