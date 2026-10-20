@@ -43,7 +43,7 @@ export const RegistryLive = Registry.make(
   Cloudflare.DurableObjectState.pipe(
     Effect.map((state) =>
       Effect.sync(() => {
-        const store = openRegistryStore(state.raw.storage.sql);
+        const store = openRegistryStore(state.raw.storage);
 
         return {
           createSession: ({ title, workspace }) =>

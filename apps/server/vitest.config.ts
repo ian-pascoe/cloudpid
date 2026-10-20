@@ -5,13 +5,10 @@ import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest
 const workerd = "src/**/*.workerd.test.ts";
 
 /** Workspace DO tests run in their own test Worker, which hosts the Workspace DO and the Worker Shell's loader. */
-const workspace = "src/workspace/env.workerd.test.ts";
+const workspaceEnv = "src/workspace/env.workerd.test.ts";
 
-/** Tests of Sessions and tools on a Workspace run in a test Worker that also hosts a Session host. */
-const onWorkspace = [
-  "src/workspace/session.workerd.test.ts",
-  "src/workspace/files.workerd.test.ts",
-];
+/** Every other Workspace test (Sessions and tools on a Workspace) runs in a test Worker that also hosts a Session host. */
+const onWorkspace = "src/workspace/**/*.workerd.test.ts";
 
 /** Node tests use the shared base; `*.workerd.test.ts` run inside workerd, against real Durable Object storage and alarms. */
 export default defineConfig({
@@ -55,7 +52,7 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd-workspace", include: [workspace] },
+        test: { name: "workerd-workspace", include: [workspaceEnv] },
       }),
       defineProject({
         plugins: [
@@ -72,7 +69,11 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd-session", include: onWorkspace },
+        test: {
+          name: "workerd-session",
+          include: [onWorkspace],
+          exclude: [...configDefaults.exclude, workspaceEnv],
+        },
       }),
     ],
   },

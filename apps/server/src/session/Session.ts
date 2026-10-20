@@ -1,6 +1,5 @@
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { WebConfig } from "@cloudpid/extensions/web";
-import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -17,7 +16,7 @@ import { sessionExtensions } from "./extensions.ts";
 import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { DEFAULT_AGENT, proxyModels } from "./models.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
-import { sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
+import { cachedSlug, sessionWorkspace, type WorkspaceNamespace } from "./workspace.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
 /** The key the Session's name is kept under, for instances that are not told it. */
@@ -98,25 +97,15 @@ export const SessionLive = Session.make(
               : registries.getByName(REGISTRY_NAME).setSessionStatus({ id: name, status }),
         });
 
-        // The Session's Workspace is fixed when the Registry creates it, so it is asked once and kept. A Session the
-        // Registry does not list (or whose name is unknown) works on the default Workspace, and is asked again.
-        const workspaceSlug = (): Promise<string> => {
-          const known = kv.get<string>(WORKSPACE_KEY);
-
-          if (known !== undefined || name === undefined) {
-            return Promise.resolve(known ?? DEFAULT_WORKSPACE);
-          }
-
-          return runtime
-            .runPromise(registries.getByName(REGISTRY_NAME).getSession({ id: name }))
-            .then((session) => {
-              if (session === null) return DEFAULT_WORKSPACE;
-
-              kv.put(WORKSPACE_KEY, session.workspace);
-
-              return session.workspace;
-            });
-        };
+        const workspaceSlug = cachedSlug({
+          name,
+          get: () => kv.get<string>(WORKSPACE_KEY),
+          put: (slug) => kv.put(WORKSPACE_KEY, slug),
+          lookup: (id) =>
+            runtime
+              .runPromise(registries.getByName(REGISTRY_NAME).getSession({ id }))
+              .then((session) => session?.workspace ?? null),
+        });
 
         const workspace = sessionWorkspace({
           // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (`worker.ts`), a raw namespace.

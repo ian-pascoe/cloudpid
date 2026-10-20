@@ -87,12 +87,19 @@ const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => ({
   createdAt: row.created_at,
 });
 
+/** The part of a Durable Object's storage the store uses: its SQLite database, and transactions over it. */
+export type RegistryStorage = {
+  readonly sql: SqlStorage;
+  /** Run `closure` in a transaction: a throw rolls back everything it wrote. */
+  readonly transactionSync: <T>(closure: () => T) => T;
+};
+
 /**
  * The schema, one step per version, applied in order: version N is in place once step N has run. Steps only add
- * (tables, nullable columns), and a step is never edited once released: add the next one. A step and its version
- * record run in one synchronous turn, which Durable Object storage commits atomically.
+ * (tables, nullable columns, rows), and a step is never edited once released: add the next one. Each step and its
+ * version record run in one transaction, so a step that fails partway leaves no trace and is retried whole.
  */
-const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
+export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   // 1: the first deployed schema, whose stores recorded no version.
   (sql) => {
     sql.exec(`CREATE TABLE IF NOT EXISTS sessions (
@@ -114,25 +121,43 @@ const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE sessions ADD COLUMN workspace TEXT");
   },
+  // 3: the default Workspace is listed from the start, so a picker finds it before any Session is created in it.
+  (sql) => {
+    sql.exec(
+      `INSERT OR IGNORE INTO workspaces (slug, created_at)
+       VALUES (?, CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
+      DEFAULT_WORKSPACE,
+    );
+  },
 ];
 
-/** Bring the tables up to the latest version. */
-const migrate = (sql: SqlStorage): void => {
+/** Bring the tables up to the latest version, or to the end of `migrations`. */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const migrate = (
+  storage: RegistryStorage,
+  migrations: typeof MIGRATIONS = MIGRATIONS,
+): void => {
+  const { sql } = storage;
+
   sql.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL) STRICT");
 
   const [current] = sql
     .exec<{ version: number | null }>("SELECT MAX(version) AS version FROM schema_version")
     .toArray();
 
-  for (let version = (current?.version ?? 0) + 1; version <= MIGRATIONS.length; version++) {
-    MIGRATIONS[version - 1]?.(sql);
-    sql.exec("INSERT INTO schema_version (version) VALUES (?)", version);
+  for (let version = (current?.version ?? 0) + 1; version <= migrations.length; version++) {
+    storage.transactionSync(() => {
+      migrations[version - 1]?.(sql);
+      sql.exec("INSERT INTO schema_version (version) VALUES (?)", version);
+    });
   }
 };
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
-export const openRegistryStore = (sql: SqlStorage): RegistryStore => {
-  migrate(sql);
+export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
+  migrate(storage);
+
+  const { sql } = storage;
 
   const createWorkspace = (slug: string, now: number): WorkspaceRecord => {
     sql.exec("INSERT OR IGNORE INTO workspaces (slug, created_at) VALUES (?, ?)", slug, now);

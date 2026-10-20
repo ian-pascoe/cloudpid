@@ -173,6 +173,24 @@ describe("grep", () => {
   });
 });
 
+describe("limit", () => {
+  it.each(["ls", "find", "grep"])("must be a positive integer for %s", async (name) => {
+    const args = name === "ls" ? {} : { pattern: "needle" };
+
+    for (const limit of [0, -1, 2.5]) {
+      const result = await call(name, { ...args, limit });
+
+      expect(result.isError).toBe(true);
+    }
+  });
+
+  it("must be a non-negative integer for grep's context", async () => {
+    for (const context of [-1, 1.5]) {
+      expect((await call("grep", { pattern: "needle", context })).isError).toBe(true);
+    }
+  });
+});
+
 describe("a Workspace's Container", () => {
   it("is never started by ls, find, or grep, but is by a command", async () => {
     await call("ls", {});

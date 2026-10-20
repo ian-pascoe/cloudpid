@@ -4,8 +4,9 @@
 // `node_modules` and `.git` instead, as local pi's `find` does for a custom backend.
 //
 // The tools reach the Workspace only through `FileSearch`: directory listing, glob find, and grep. It has no command
-// execution, so a call cannot start the Container, by construction. A path is resolved and checked through the call's
-// `ExecutionEnv`, which answers from the Workspace's files too.
+// execution, so a call cannot start the Container. A path is resolved and checked through the call's `ExecutionEnv`,
+// narrowed to `PathEnv`, its two path operations (`absolutePath`, `fileInfo`), which answer from the Workspace's files
+// too: nothing a tool holds can execute a command, so that guarantee is in the types, not in the tools' care.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
@@ -131,13 +132,16 @@ const attempt = <A>(operation: string, run: () => Promise<A>): Effect.Effect<A, 
       }),
   });
 
+/** What the tools use of the call's environment: resolving a path and reading what is at it, never executing. */
+type PathEnv = Pick<ExecutionEnv, "absolutePath" | "fileInfo">;
+
 /** The call's environment, which a tool without one fails on, as pi-durable's own tools do. */
-const requireEnv = (api: ToolExecutionApi): Effect.Effect<ExecutionEnv, FilesError> =>
+const requireEnv = (api: ToolExecutionApi): Effect.Effect<PathEnv, FilesError> =>
   api.env === undefined ? fail("No execution environment is configured") : Effect.succeed(api.env);
 
 /** `path` (default: the current directory) as an absolute path in the environment. */
 const resolvePath = Effect.fnUntraced(function* (
-  env: ExecutionEnv,
+  env: PathEnv,
   path: string | undefined,
 ): Effect.fn.Return<string, FilesError> {
   const resolved = yield* attempt("Cannot resolve path", () =>
@@ -148,7 +152,7 @@ const resolvePath = Effect.fnUntraced(function* (
 });
 
 /** What `path` is in the environment: its kind, or undefined when there is nothing there. */
-const kindOf = Effect.fnUntraced(function* (env: ExecutionEnv, path: string) {
+const kindOf = Effect.fnUntraced(function* (env: PathEnv, path: string) {
   const info = yield* attempt("Cannot read path", () => env.fileInfo(path, BACKGROUND_CONTEXT));
 
   if (info.ok) return info.value.kind;
@@ -158,7 +162,7 @@ const kindOf = Effect.fnUntraced(function* (env: ExecutionEnv, path: string) {
 
 /** `path` of a directory the call may search, or a failure saying why not. */
 const directoryPath = Effect.fnUntraced(function* (
-  env: ExecutionEnv,
+  env: PathEnv,
   path: string | undefined,
 ): Effect.fn.Return<string, FilesError> {
   const absolute = yield* resolvePath(env, path);
@@ -189,8 +193,9 @@ const textResult = (text: string, details: Record<string, JsonValue>): ToolExecu
   return Record.isEmptyRecord(details) ? { output } : { output, details };
 };
 
+/** A count of at least one, as `limit` is for `ls`, `find`, and `grep`: a call with anything else fails to decode. */
 const optionalLimit = (description: string) =>
-  Schema.optionalKey(Schema.Finite.annotate({ description }));
+  Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({ description }));
 
 /** Directory entries in alphabetical order, ignoring case, as local pi sorts them. */
 const byName = Order.mapInput(
@@ -345,7 +350,7 @@ const Grep = defineEffectTool({
       }),
     ),
     context: Schema.optionalKey(
-      Schema.Finite.annotate({
+      Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
         description: "Number of lines to show before and after each match (default: 0)",
       }),
     ),
@@ -363,8 +368,8 @@ const Grep = defineEffectTool({
     if (kind === undefined) return yield* fail(`Path not found: ${searched}`);
 
     const isDirectory = kind === "directory";
-    const contextLines = context !== undefined && context > 0 ? Math.floor(context) : 0;
-    const effectiveLimit = Math.max(1, Math.floor(limit ?? DEFAULT_GREP_LIMIT));
+    const contextLines = context ?? 0;
+    const effectiveLimit = limit ?? DEFAULT_GREP_LIMIT;
 
     const matches = yield* attempt("Cannot search", () =>
       files.grep(pattern, searched, {

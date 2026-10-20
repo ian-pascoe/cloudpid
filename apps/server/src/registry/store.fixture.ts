@@ -15,7 +15,7 @@ export class TestRegistry extends DurableObject {
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
-    this.#store = openRegistryStore(ctx.storage.sql);
+    this.#store = openRegistryStore(ctx.storage);
   }
 
   createSession(

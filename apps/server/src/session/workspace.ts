@@ -4,6 +4,7 @@
 // @effect-diagnostics asyncFunction:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { FileSearch } from "@cloudpid/extensions/files";
+import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
 import { WORKSPACE_ROOT } from "../workspace/binding.ts";
 
@@ -17,6 +18,40 @@ const computer = () => import("@cloudpid/computer-env");
 export type WorkspaceNamespace = {
   getByName(slug: string): ComputerWorkspaceStub;
 };
+
+export type CachedSlugOptions = {
+  /** The Session's name, its ID in the Registry; undefined when unknown. */
+  readonly name: string | undefined;
+  /** The slug kept from an earlier lookup. */
+  readonly get: () => string | undefined;
+  /** Keeps the slug of a lookup. */
+  readonly put: (slug: string) => void;
+  /** The slug of the Workspace the Registry lists the Session with, or null when it does not list it. */
+  readonly lookup: (name: string) => Promise<string | null>;
+};
+
+/**
+ * The slug of a Session's Workspace. It is fixed when the Registry creates the Session, so it is asked once and kept. A
+ * Session the Registry does not list (or whose name is unknown) works on the default Workspace, and is asked again. A
+ * failed lookup fails the call and keeps nothing.
+ */
+export const cachedSlug =
+  ({ name, get, put, lookup }: CachedSlugOptions): (() => Promise<string>) =>
+  async () => {
+    const known = get();
+
+    if (known !== undefined) return known;
+
+    if (name === undefined) return DEFAULT_WORKSPACE;
+
+    const slug = await lookup(name);
+
+    if (slug === null) return DEFAULT_WORKSPACE;
+
+    put(slug);
+
+    return slug;
+  };
 
 export type SessionWorkspaceOptions = {
   readonly namespace: WorkspaceNamespace;
