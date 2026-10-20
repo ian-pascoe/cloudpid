@@ -15,14 +15,6 @@ import { type Answer, openSessionHost, type Prompt, type SessionHost } from "./h
 /** Scripted model responses, kept in storage so a new instance continues the script: `hang` waits for an abort. */
 type Script = { readonly responses: readonly string[]; readonly next: number };
 
-declare global {
-  namespace Cloudflare {
-    interface Env {
-      readonly SESSIONS: DurableObjectNamespace<TestSession>;
-    }
-  }
-}
-
 export class TestSession extends DurableObject {
   #host!: SessionHost;
   /** Resolves when this instance's model request starts and hangs. */

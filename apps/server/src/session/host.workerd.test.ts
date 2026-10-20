@@ -5,6 +5,15 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestSession } from "./host.fixture.ts";
 
+declare global {
+  namespace Cloudflare {
+    /** The bindings `vitest.config.ts` gives the test Worker. */
+    interface Env {
+      readonly SESSIONS: DurableObjectNamespace<TestSession>;
+    }
+  }
+}
+
 const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
 
 /** Poll `check` inside the object until it holds. */
