@@ -14,6 +14,7 @@
   "dependencies": {
     "@cloudflare/computer": "^0.5.1",
     "@cloudpid/computer-env": "workspace:*",
+    "@cloudpid/config": "workspace:*",
     "@cloudpid/effect-durable": "workspace:*",
     "@cloudpid/extensions": "workspace:*",
     "@cloudpid/protocol": "workspace:*",
@@ -24,7 +25,6 @@
     "effect": "^4.0.5"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.5",
-    "@cloudpid/config": "workspace:*"
+    "@cloudflare/vitest-plugin": "^1.4.5"
   }
 }

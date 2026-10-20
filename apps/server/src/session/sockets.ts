@@ -10,6 +10,8 @@ import {
   type ServerMessage,
   ServerMessageJson,
 } from "@cloudpid/protocol";
+import { parseModelId } from "@cloudpid/config";
+import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -23,6 +25,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import type * as Types from "effect/Types";
 import { SessionError, SessionHost } from "./host.ts";
 
 /**
@@ -77,6 +80,19 @@ const send = (socket: WebSocket, message: ServerMessage): Effect.Effect<void> =>
     ),
     Effect.ignore,
   );
+
+/** The agent change a `configure` asks for: a field it leaves out is left out, as is. */
+const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): AgentChange => {
+  const change: Types.Mutable<AgentChange> = {};
+
+  if (message.model !== undefined) {
+    change.model = message.model === null ? null : parseModelId(message.model);
+  }
+
+  if (message.thinkingLevel !== undefined) change.thinkingLevel = message.thinkingLevel;
+
+  return change;
+};
 
 const readAttachment = (socket: WebSocket): Attachment =>
   Option.getOrElse(decodeAttachment(socket.deserializeAttachment()), () => ({ watches: [] }));
@@ -178,6 +194,10 @@ export const sessionSocketsLayer = (
 
           case "abort":
             return host.abort.pipe(Effect.as(null));
+          case "configure":
+            return host
+              .configure(agentChange(message))
+              .pipe(Effect.andThen(announcePicks), Effect.as(null));
           case "watch":
             return watch(socket, message.conversationId).pipe(Effect.as(null));
           case "unwatch":
@@ -238,13 +258,31 @@ export const sessionSocketsLayer = (
           return fibers === undefined ? Effect.void : FiberMap.clear(fibers);
         });
 
+      /** Tell `socket`, or every connected client, which of the model and thinking level the Session picked. */
+      const announcePicks = host.picks.pipe(
+        Effect.flatMap((picks) =>
+          Effect.forEach(state.getWebSockets(), (socket) =>
+            send(socket, { type: "picked", ...picks }),
+          ),
+        ),
+        Effect.asVoid,
+      );
+
       const connect = Effect.gen(function* () {
+        // The default in force, so the client's first view shows what the next request runs on.
+        yield* host.sync.pipe(
+          Effect.catch((error) => Effect.logWarning("Syncing the agent on connect failed", error)),
+        );
+
         const root = yield* host.root;
         const { 0: client, 1: server } = new WebSocketPair();
 
         state.acceptWebSocket(server);
         server.serializeAttachment({ watches: [] } satisfies Attachment);
         yield* send(server, { type: "hello", root });
+        yield* host.picks.pipe(
+          Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
+        );
 
         return client;
       });

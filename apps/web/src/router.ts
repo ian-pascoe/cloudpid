@@ -21,6 +21,12 @@ export const navigate = (path: string): void => {
 export const sessionPath = (sessionId: string): string =>
   `/sessions/${encodeURIComponent(sessionId)}`;
 
+/** The settings page. */
+export const SETTINGS_PATH = "/settings";
+
+/** Whether a page path shows the settings. */
+export const isSettingsPath = (path: string): boolean => /^\/settings\/?$/.test(path);
+
 /** The Session a page path shows, if any. */
 export const sessionIdOf = (path: string): string | undefined => {
   const encoded = /^\/sessions\/([^/]+)\/?$/.exec(path)?.[1];

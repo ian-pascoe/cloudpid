@@ -295,6 +295,14 @@ describe("the session view", () => {
     expect(fold(asEvent({ type: "agent_changed", agent: { model } })).model).toEqual(model);
   });
 
+  it("follows the agent's thinking level", () => {
+    expect(EMPTY_VIEW.thinkingLevel).toBeNull();
+    expect(
+      fold(asEvent({ type: "agent_changed", agent: { thinkingLevel: "low" } })).thinkingLevel,
+    ).toBe("low");
+    expect(fold(asEvent({ type: "agent_changed", agent: {} })).thinkingLevel).toBeNull();
+  });
+
   describe("a snapshot", () => {
     const entries = [
       user(1, "roll"),
@@ -322,7 +330,7 @@ describe("the session view", () => {
             { callId: "c1", name: "roll_dice", status: "done" },
           ],
           inbox: [{ id: "s1", mode: "followUp" }],
-          agent: { model: { provider: "p", modelId: "m" } },
+          agent: { model: { provider: "p", modelId: "m" }, thinkingLevel: "high" },
         }),
       );
 
@@ -333,6 +341,7 @@ describe("the session view", () => {
       expect(view.inbox).toEqual([{ id: "s1", mode: "followUp" }]);
       expect(view.retry).toEqual({ at: 9, error: "slow" });
       expect(view.model).toEqual({ provider: "p", modelId: "m" });
+      expect(view.thinkingLevel).toBe("high");
       expect(view.error).toBeNull();
     });
 

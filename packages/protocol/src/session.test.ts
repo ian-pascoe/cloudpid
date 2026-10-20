@@ -30,6 +30,14 @@ describe("the Session socket messages", () => {
     expect(await Effect.runPromise(Schema.encodeEffect(ServerMessageJson)(decoded))).toBe(text);
   });
 
+  it("carry which of the model and thinking level the Session picked", async () => {
+    expect(await readServer('{"type":"picked","model":true,"thinkingLevel":false}')).toEqual({
+      type: "picked",
+      model: true,
+      thinkingLevel: false,
+    });
+  });
+
   it("read a submit with its whenBusy mode, and reject an unknown command or key", async () => {
     expect(
       await readClient(
@@ -40,6 +48,33 @@ describe("the Session socket messages", () => {
     );
     expect(await readClient('{"type":"reset"}')).toEqual(Option.none());
     expect(await readClient('{"type":"submit","input":"stop","whenbusy":"steer"}')).toEqual(
+      Option.none(),
+    );
+  });
+
+  it("read a configure with a model and a thinking level, or null to follow the default", async () => {
+    expect(
+      await readClient(
+        '{"type":"configure","id":"1","model":"anthropic/claude-sonnet-5-5","thinkingLevel":"low"}',
+      ),
+    ).toEqual(
+      Option.some({
+        type: "configure",
+        id: "1",
+        model: "anthropic/claude-sonnet-5-5",
+        thinkingLevel: "low",
+      }),
+    );
+    expect(await readClient('{"type":"configure","model":null}')).toEqual(
+      Option.some({ type: "configure", model: null }),
+    );
+  });
+
+  it("reject a configure for a model the proxy does not serve or a thinking level pi does not have", async () => {
+    expect(await readClient('{"type":"configure","model":"anthropic/nope"}')).toEqual(
+      Option.none(),
+    );
+    expect(await readClient('{"type":"configure","thinkingLevel":"extreme"}')).toEqual(
       Option.none(),
     );
   });

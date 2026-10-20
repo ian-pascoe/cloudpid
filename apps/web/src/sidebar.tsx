@@ -1,12 +1,12 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import type { SessionRecord } from "@cloudpid/protocol";
-import { Plus } from "lucide-react";
+import { Plus, Settings as SettingsIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
 import { cn } from "./lib/utils.ts";
-import { navigate, sessionPath } from "./router.ts";
+import { navigate, SETTINGS_PATH, sessionPath } from "./router.ts";
 import type { Sessions } from "./use-sessions.ts";
 
 export const sessionTitle = (session: SessionRecord): string => session.title ?? "Untitled session";
@@ -43,10 +43,12 @@ const SessionLink = ({ session, active }: { session: SessionRecord; active: bool
 export const Sidebar = ({
   sessions,
   activeId,
+  settingsActive,
   className,
 }: {
   sessions: Sessions;
   activeId: string | undefined;
+  settingsActive: boolean;
   className?: string;
 }) => {
   const [creating, setCreating] = useState(false);
@@ -89,6 +91,25 @@ export const Sidebar = ({
             ))}
           </ul>
         )}
+      </div>
+      <div className="border-t p-2">
+        <a
+          href={SETTINGS_PATH}
+          aria-current={settingsActive ? "page" : undefined}
+          onClick={(event) => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+
+            event.preventDefault();
+            navigate(SETTINGS_PATH);
+          }}
+          className={cn(
+            "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
+            settingsActive && "bg-accent text-accent-foreground",
+          )}
+        >
+          <SettingsIcon className="size-4" aria-hidden />
+          Settings
+        </a>
       </div>
     </nav>
   );

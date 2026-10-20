@@ -169,6 +169,44 @@ describe("the Registry store", () => {
     });
   });
 
+  it("keeps a document by name, replacing it when it is put again", async () => {
+    const registry = fresh();
+
+    expect(await registry.getDocument("settings")).toBeNull();
+
+    await registry.putDocument("settings", '{"a":1}', 1_000);
+    await registry.putDocument("settings", '{"a":2}', 2_000);
+    await registry.putDocument("other", "x", 2_000);
+
+    expect(await registry.getDocument("settings")).toBe('{"a":2}');
+    expect(await registry.getDocument("other")).toBe("x");
+  });
+
+  it("keeps its documents across an eviction", async () => {
+    const registry = fresh();
+
+    await registry.putDocument("settings", '{"a":1}', 1_000);
+    await evictDurableObject(registry);
+
+    expect(await registry.getDocument("settings")).toBe('{"a":1}');
+  });
+
+  it("adds the document table to a Registry that was already at the previous version", async () => {
+    await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+      const { storage } = state;
+      const { sql } = storage;
+
+      // As the release before the documents left it: version 3, with no document table.
+      sql.exec("DROP TABLE documents");
+      sql.exec("DELETE FROM schema_version WHERE version = ?", MIGRATIONS.length);
+
+      const store = openRegistryStore(storage);
+
+      store.putDocument("settings", "{}", 2_000);
+      expect(store.getDocument("settings")).toBe("{}");
+    });
+  });
+
   it("keeps its Sessions and Workspaces across an eviction", async () => {
     const registry = fresh();
 

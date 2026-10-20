@@ -279,6 +279,50 @@ describe("a Session connection", () => {
     expect(latest().commands().at(-1)).toEqual({ type: "abort", id: expect.any(String) });
   });
 
+  it("sends a configure with the fields given, and null to follow the default", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.configure({ model: "anthropic/claude-sonnet-5-5", thinkingLevel: "low" });
+    connection.configure({ model: null });
+
+    expect(latest().commands().slice(-2)).toEqual([
+      {
+        type: "configure",
+        id: expect.any(String),
+        model: "anthropic/claude-sonnet-5-5",
+        thinkingLevel: "low",
+      },
+      { type: "configure", id: expect.any(String), model: null },
+    ]);
+  });
+
+  it("knows which of the model and thinking level the Session picked, as it says", () => {
+    const { connection, latest } = setup();
+
+    expect(connection.getState().picked).toEqual({ model: false, thinkingLevel: false });
+
+    watching(latest());
+    latest().say({ type: "picked", model: true, thinkingLevel: false });
+    expect(connection.getState().picked).toEqual({ model: true, thinkingLevel: false });
+
+    latest().say({ type: "picked", model: false, thinkingLevel: false });
+    expect(connection.getState().picked).toEqual({ model: false, thinkingLevel: false });
+  });
+
+  it("shows why a configure failed", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.configure({ thinkingLevel: "high" });
+
+    const configure = latest().commands().at(-1);
+
+    latest().say({ type: "error", id: configure?.id, message: "Session is gone" });
+
+    expect(connection.getState().failure).toBe("Session is gone");
+  });
+
   it("reports a failed command and drops the submit that failed", () => {
     const { connection, latest } = setup();
 

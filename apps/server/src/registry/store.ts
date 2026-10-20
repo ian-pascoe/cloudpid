@@ -47,6 +47,10 @@ export type RegistryStore = {
   /** Register a Workspace by slug; one that is already registered keeps its record. */
   readonly createWorkspace: (slug: string, now: number) => WorkspaceRecord;
   readonly listWorkspaces: () => WorkspaceRecord[];
+  /** The JSON text of the document called `name`, or null. Documents hold the Registry's own settings. */
+  readonly getDocument: (name: string) => string | null;
+  /** Save a document, replacing the one with its name. */
+  readonly putDocument: (name: string, body: string, now: number) => void;
 };
 
 type SessionRow = {
@@ -128,6 +132,14 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
        VALUES (?, CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
       DEFAULT_WORKSPACE,
     );
+  },
+  // 4: documents by name, which hold the settings overrides.
+  (sql) => {
+    sql.exec(`CREATE TABLE IF NOT EXISTS documents (
+      name TEXT PRIMARY KEY,
+      body TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    ) STRICT`);
   },
 ];
 
@@ -221,5 +233,22 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         sql.exec<WorkspaceRow>("SELECT * FROM workspaces ORDER BY created_at DESC, slug").toArray(),
         toWorkspace,
       ),
+
+    getDocument: (name) => {
+      const [row] = sql
+        .exec<{ body: string }>("SELECT body FROM documents WHERE name = ?", name)
+        .toArray();
+
+      return row === undefined ? null : row.body;
+    },
+
+    putDocument: (name, body, now) => {
+      sql.exec(
+        "INSERT OR REPLACE INTO documents (name, body, updated_at) VALUES (?, ?, ?)",
+        name,
+        body,
+        now,
+      );
+    },
   };
 };

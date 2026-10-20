@@ -2,6 +2,7 @@
 // The shapes follow the socket protocol of Cloudflare's `agents` pi example (`examples/next/harnesses/pi`, MIT), in
 // Effect `Schema`: commands carry an optional `id` that a `result` or `error` answers, and every watched conversation
 // streams `events` batches whose first batch is a `snapshot`.
+import { ModelId, ThinkingLevel } from "@cloudpid/config";
 import type { AgentEvent, ConversationId as PiConversationId } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -82,13 +83,37 @@ export const Unwatch = Schema.Struct({
   conversationId: ConversationId,
 });
 
+/**
+ * Pick the model and thinking level the root conversation runs with, from its next request on. A field left out stays
+ * as it is; `null` clears it, so the Session follows the default in the settings again (and a changed default applies
+ * to its next request). A Session that was never configured follows the default. Answered with `null`; the new
+ * choice reaches clients as an `agent_changed` event.
+ */
+export const Configure = Schema.Struct({
+  type: Schema.Literal("configure"),
+  id: CommandId,
+  model: ModelId.pipe(Schema.NullOr, Schema.optionalKey),
+  thinkingLevel: ThinkingLevel.pipe(Schema.NullOr, Schema.optionalKey),
+});
+
 /** Client → server. */
-export const ClientMessage = Schema.Union([Submit, Abort, Watch, Unwatch]);
+export const ClientMessage = Schema.Union([Submit, Abort, Watch, Unwatch, Configure]);
 
 export type ClientMessage = typeof ClientMessage.Type;
 
 /** Sent once on connect: the Session's root conversation, to `watch` and to submit to. */
 export const Hello = Schema.Struct({ type: Schema.Literal("hello"), root: ConversationId });
+
+/**
+ * Which of the root conversation's model and thinking level the Session picked itself with `configure`: the rest
+ * follows the default in the settings. Sent after `hello`, and to every connected client whenever a `configure`
+ * changes it, since `agent_changed` carries the resolved agent but not where it came from.
+ */
+export const Picked = Schema.Struct({
+  type: Schema.Literal("picked"),
+  model: Schema.Boolean,
+  thinkingLevel: Schema.Boolean,
+});
 
 /** One of pi's agent events, passed through unchanged; only its `type` is checked. */
 export const AgentEventSchema = Schema.declare(
@@ -129,7 +154,7 @@ export const ErrorMessage = Schema.Struct({
 });
 
 /** Server → client. */
-export const ServerMessage = Schema.Union([Hello, Events, Result, ErrorMessage]);
+export const ServerMessage = Schema.Union([Hello, Picked, Events, Result, ErrorMessage]);
 
 export type ServerMessage = typeof ServerMessage.Type;
 

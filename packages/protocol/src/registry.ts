@@ -1,5 +1,6 @@
 // The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions and Workspaces. They
 // hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
+import { Settings, SettingsError } from "@cloudpid/config";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
@@ -48,6 +49,16 @@ export const WorkspaceRecord = Schema.Struct({ slug: Schema.String, createdAt: S
 
 export type WorkspaceRecord = typeof WorkspaceRecord.Type;
 
+/** The settings in force, and the overrides saved over the defaults (`docs/spec.md` → Settings). */
+export const SettingsState = Schema.Struct({
+  settings: Settings,
+  overrides: Schema.Json,
+  /** Why the saved overrides were not used, when they no longer resolve: the settings are then the defaults. */
+  problem: Schema.optionalKey(Schema.String),
+});
+
+export type SettingsState = typeof SettingsState.Type;
+
 /** The path of Session `sessionId`'s socket on the main Worker. */
 export const sessionSocketPath = (sessionId: string): string =>
   `/sessions/${encodeURIComponent(sessionId)}/socket`;
@@ -67,4 +78,16 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
   /** Register a Workspace by slug; one already registered keeps its record. */
   Rpc.make("createWorkspace", { payload: { slug: WorkspaceSlug }, success: WorkspaceRecord }),
+  /** The settings in force and the overrides they come from. */
+  Rpc.make("getSettings", { success: SettingsState }),
+  /**
+   * Replace the saved overrides, a partial of the settings that differs from the defaults. Overrides that do not
+   * resolve fail with a `SettingsError` whose message lists each problem, and nothing is saved. A Session reads the
+   * new settings when it next admits input.
+   */
+  Rpc.make("updateSettings", {
+    payload: { overrides: Schema.Json },
+    success: SettingsState,
+    error: SettingsError,
+  }),
 ) {}

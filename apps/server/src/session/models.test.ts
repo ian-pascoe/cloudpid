@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { DEFAULT_AGENT, proxyModels } from "./models.ts";
+import { DEFAULT_SETTINGS, parseModelId, SUPPORTED_MODELS } from "@cloudpid/config";
+import { proxyModels } from "./models.ts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -20,7 +21,8 @@ it("sends the default model's requests to the model proxy with its API key", () 
   });
 
   const models = proxyModels({ url: "https://proxy.example.test", apiKey: "test-key" });
-  const model = models.getModel(DEFAULT_AGENT.model.provider, DEFAULT_AGENT.model.modelId);
+  const { provider, modelId } = parseModelId(DEFAULT_SETTINGS.model);
+  const model = models.getModel(provider, modelId);
 
   expect(model).toBeDefined();
 
@@ -39,4 +41,14 @@ it("caps the proxied Claude models' context window as the local models.json does
 
   expect(models.getModel("anthropic", "claude-opus-5-5")?.contextWindow).toBe(400_000);
   expect(models.getModel("anthropic", "claude-haiku-5-5")?.contextWindow).toBe(400_000);
+});
+
+it("serves every model the settings accept", () => {
+  const models = proxyModels({ url: "https://proxy.example.test", apiKey: "test-key" });
+
+  for (const id of SUPPORTED_MODELS) {
+    const { provider, modelId } = parseModelId(id);
+
+    expect(models.getModel(provider, modelId), id).toBeDefined();
+  }
 });

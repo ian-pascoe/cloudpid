@@ -5,8 +5,12 @@
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
+import { formatModelId, isModelId } from "@cloudpid/config";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
+  type Agent,
   type AgentChange,
+  type ModelRef,
   type AgentEvent,
   AssistantEntry,
   type ConversationId,
@@ -34,6 +38,8 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import type * as Types from "effect/Types";
+import { harnessSettings, SessionSettings, type SettingsKv } from "./settings.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -45,13 +51,6 @@ export const HEARTBEAT_MS = 60_000;
 export const REPORT_TIMEOUT: Duration.Input = "5 seconds";
 
 /**
- * Keep no idle conversation contexts or documents in memory. pi-durable 1.3.0 holds them on `setTimeout` timers,
- * and in Workers a pending timer, even an unreferenced one, keeps the object from being evicted or hibernating. SQLite
- * is local to the object, so reloading them is cheap. pi-durable main declines these timers in Workers itself.
- */
-const RETENTION = { contextRetentionMs: 0, documentRetentionMs: 0 } as const;
-
-/**
  * What the alarm is armed for. pi-durable 1.3.0 has no `Harness.wake()`, so the host derives `active` from the live
  * tasks. Once `onWake` ships this becomes pi-durable's `Wake` (`{ active, at? }`): `wake` returns `harness.wake()`,
  * `HarnessOptions.onWake` runs `arm`, and `arm` also arms for the earliest sleep `at`.
@@ -59,10 +58,11 @@ const RETENTION = { contextRetentionMs: 0, documentRetentionMs: 0 } as const;
 type Wake = { readonly active: boolean };
 
 /**
- * The parts of a Durable Object's `ctx.storage` the host uses: its SQLite database and its alarm. Narrow on purpose,
- * so `@cloudflare/workers-types`' module and global declarations of the storage both fit it cheaply.
+ * The parts of a Durable Object's `ctx.storage` the host uses: its SQLite database, its key-value store and its alarm.
+ * Narrow on purpose, so `@cloudflare/workers-types`' module and global declarations of the storage both fit it cheaply.
  */
 export type SessionStorage = DurableObjectSqliteStorage & {
+  readonly kv: SettingsKv;
   getAlarm(): Promise<number | null>;
   setAlarm(scheduledTime: number): Promise<void>;
   deleteAlarm(): Promise<void>;
@@ -72,8 +72,6 @@ export type SessionHostOptions = {
   /** The object's `ctx.storage`. */
   readonly storage: SessionStorage;
   readonly models: Models;
-  /** The root conversation's agent, applied when the root is created. */
-  readonly agent: AgentChange;
   /**
    * Reset the object (`ctx.abort`). Called when a storage error closes the Harness: the next event starts a new
    * instance, which reopens it.
@@ -120,6 +118,18 @@ export type SessionHostService = {
   readonly idle: Effect.Effect<boolean, SessionError>;
   /** The root conversation's ID; the root is created when absent. */
   readonly root: Effect.Effect<ConversationId, SessionError>;
+  /**
+   * Pick the root conversation's model and thinking level, from its next request on: a field left out stays as it is,
+   * and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
+   */
+  readonly configure: (change: AgentChange) => Effect.Effect<void, SessionError>;
+  /**
+   * Read the settings now and bring the root's agent to the default in force, unless the Session picked its own, so
+   * what a client is shown is what the next request runs on.
+   */
+  readonly sync: Effect.Effect<void, SessionError>;
+  /** Which of its model and thinking level the Session picked itself; the rest follows the default. */
+  readonly picks: Effect.Effect<Picks>;
   /** Abort the root conversation's work and withdraw its queued input, once it is idle. */
   readonly abort: Effect.Effect<void, SessionError>;
   /**
@@ -152,12 +162,42 @@ const watchEnded = (end: WatchEnd): string =>
     ? `Watch ended (${end.reason}): ${String(end.error)}`
     : `Watch ended (${end.reason})`;
 
+/** Which of the root conversation's model and thinking level the Session picked, rather than follows the default. */
+export type Picks = { readonly model: boolean; readonly thinkingLevel: boolean };
+
+/** The model and thinking level a Session picked itself, in its storage. */
+type Pick = { readonly model?: ModelRef; readonly thinkingLevel?: ModelThinkingLevel };
+
+const PICK_KEY = "agent-pick";
+
+/** `pick` with `change` applied: a field left out stays, `null` clears it. */
+const withChange = (pick: Pick, change: AgentChange): Pick => {
+  const next: Types.Mutable<Pick> = {};
+  const model = change.model === undefined ? pick.model : (change.model ?? undefined);
+
+  const thinkingLevel =
+    change.thinkingLevel === undefined ? pick.thinkingLevel : (change.thinkingLevel ?? undefined);
+
+  if (model !== undefined) next.model = model;
+
+  if (thinkingLevel !== undefined) next.thinkingLevel = thinkingLevel;
+
+  return next;
+};
+
+/** Whether a conversation's resolved agent is already the `want`ed one. */
+const sameAgent = (have: Agent, want: AgentChange): boolean =>
+  have.model?.provider === want.model?.provider &&
+  have.model?.modelId === want.model?.modelId &&
+  have.thinkingLevel === want.thinkingLevel;
+
 /** The alarm heartbeat's next time. */
 const heartbeat = Clock.currentTimeMillis.pipe(Effect.map((now) => now + HEARTBEAT_MS));
 
 /** Open the Harness on the object's `storage`, under the `pi_` prefix, after arming a fallback alarm. */
 const openSessionHarness = Effect.fn("openSessionHarness")(function* (options: SessionHostOptions) {
   const { storage } = options;
+  const settings = yield* SessionSettings;
 
   // A fallback before anything can fail: an object whose open or recovery fails is started again.
   const fallback = yield* heartbeat;
@@ -171,7 +211,7 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* (options: S
     openDurableObjectSqliteStorage(storage, { prefix: "pi_" }),
   );
 
-  const harnessOptions = { models: options.models, settings: RETENTION };
+  const harnessOptions = { models: options.models, settings: harnessSettings(settings) };
 
   const harness = yield* openHarness(
     piStorage,
@@ -194,6 +234,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
   const { storage } = options;
   const harness = yield* Harness;
   const registry = yield* SessionRegistry;
+  const settings = yield* SessionSettings;
   const scope = yield* Scope.Scope;
 
   // Before anything resumes, so resumed tool calls find their tools.
@@ -202,7 +243,43 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
   // Alarm decisions run one at a time, so an idle check never deletes the heartbeat a concurrent submit just armed.
   const serially = Semaphore.withPermit(yield* Semaphore.make(1));
 
-  const root = harness.root(options.agent).pipe(fromHarness);
+  const { kv } = storage;
+
+  /** What this Session picked: a field is absent while the Session follows the default. */
+  const picked = (): Pick => {
+    const kept = kv.get<Pick>(PICK_KEY) ?? {};
+
+    // A model the settings no longer accept is ignored: the Session follows the default rather than fail every request.
+    return kept.model === undefined || isModelId(formatModelId(kept.model))
+      ? kept
+      : withChange(kept, { model: null });
+  };
+
+  /** The agent the root conversation runs with: what the Session picked, then the default in the settings. */
+  const wanted = (): AgentChange => {
+    const { agent } = settings.current();
+    const pick = picked();
+
+    return {
+      model: pick.model ?? agent.model,
+      thinkingLevel: pick.thinkingLevel ?? agent.thinkingLevel,
+    };
+  };
+
+  // The agent applies when the root is created: a new Session starts on the default in force.
+  const root = Effect.suspend(() => harness.root(wanted())).pipe(fromHarness);
+
+  /** Bring the root's agent to the one it wants, so its next request runs on it; nothing is written when it does. */
+  const applyAgent = Effect.gen(function* () {
+    const conversation = yield* root;
+    const want = wanted();
+    const have = yield* attempt("agent", () => conversation.agent(context));
+
+    if (sameAgent(have, want)) return;
+
+    yield* attempt("configure", () => conversation.configure(want, context));
+  });
+
   const inspect = harness.inspect.pipe(fromHarness);
 
   /**
@@ -304,17 +381,24 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
   );
 
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
-    // Arm before admitting work: an object that dies after the commit is still woken.
-    arm({ active: true }).pipe(
-      Effect.andThen(root),
-      Effect.flatMap((conversation) =>
-        attempt("submit", () => {
-          const { input, ...options } = prompt;
+    // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never holds
+    // up the alarm or a status report.
+    settings.refresh.pipe(
+      Effect.andThen(
+        // Arm before admitting work: an object that dies after the commit is still woken.
+        arm({ active: true }).pipe(
+          Effect.andThen(applyAgent),
+          Effect.andThen(root),
+          Effect.flatMap((conversation) =>
+            attempt("submit", () => {
+              const { input, ...options } = prompt;
 
-          return conversation.submit({ type: "input", content: input, ...options }, context);
-        }),
+              return conversation.submit({ type: "input", content: input, ...options }, context);
+            }),
+          ),
+          serially,
+        ),
       ),
-      serially,
       Effect.tap(settleWhenIdle),
     );
 
@@ -390,6 +474,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
       Effect.map(({ tasks, submissions }) => tasks.length === 0 && submissions.length === 0),
     ),
     root: Effect.map(root, (conversation) => conversation.id),
+    configure: (change) =>
+      settings.refresh.pipe(
+        Effect.andThen(
+          Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), change))).pipe(
+            Effect.andThen(applyAgent),
+            serially,
+          ),
+        ),
+      ),
+    sync: settings.refresh.pipe(Effect.andThen(applyAgent.pipe(serially))),
+    picks: Effect.sync(() => {
+      const pick = picked();
+
+      return { model: pick.model !== undefined, thinkingLevel: pick.thinkingLevel !== undefined };
+    }),
     abort: root.pipe(
       Effect.flatMap((conversation) => attempt("abort", () => conversation.abort(context))),
     ),
@@ -404,7 +503,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
  */
 export const sessionHostLayer = (
   options: SessionHostOptions,
-): Layer.Layer<SessionHost | Harness, SessionError, SessionRegistry> =>
+): Layer.Layer<SessionHost | Harness, SessionError, SessionRegistry | SessionSettings> =>
   Layer.effect(SessionHost, startSessionHost(options)).pipe(
     Layer.provideMerge(Layer.effect(Harness, openSessionHarness(options))),
   );

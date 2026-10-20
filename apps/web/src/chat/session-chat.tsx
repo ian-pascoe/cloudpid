@@ -78,6 +78,9 @@ const LiveSession = ({
         notice={CONNECTION_NOTICE[state.status]}
         steerLane={state.queue.steer}
         followUpLane={state.queue.followUp}
+        onConfigure={(change) => {
+          connection.configure(change);
+        }}
       />
     </AssistantRuntimeProvider>
   );
