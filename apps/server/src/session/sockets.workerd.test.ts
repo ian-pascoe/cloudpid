@@ -6,6 +6,7 @@ import type { AgentEvent } from "@earendil-works/pi-durable";
 import {
   type ClientMessage,
   ConversationId,
+  HEARTBEAT,
   ServerMessageJson,
   type ServerMessage,
 } from "@cloudpid/protocol";
@@ -14,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import type { TestSession } from "./host.fixture.ts";
+import { constructions, type TestSession } from "./host.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -40,8 +41,12 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   const received: ServerMessage[] = [];
   const closed = Promise.withResolvers<CloseEvent>();
 
+  /** How many heartbeat replies arrived. */
+  let pongs = 0;
+
   socket.addEventListener("message", (event) => {
-    received.push(Effect.runSync(decode(event.data)));
+    if (event.data === HEARTBEAT.response) pongs += 1;
+    else received.push(Effect.runSync(decode(event.data)));
   });
   socket.addEventListener("close", (event) => {
     closed.resolve(event);
@@ -65,6 +70,9 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
     received,
     closed: closed.promise,
     send: (message: ClientMessage) => socket.send(JSON.stringify(message)),
+    /** Send `text` as it is, as a client that does not follow the protocol would. */
+    sendText: (text: string) => socket.send(text),
+    pongs: () => pongs,
     until,
     /** The answer to command `id`. */
     answer: async (id: string) => {
@@ -82,6 +90,8 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
     },
   };
 };
+
+type Client = Awaited<ReturnType<typeof connect>>;
 
 /** The event batches among `messages`, in order. */
 const batches = (messages: readonly ServerMessage[]): Events[] =>
@@ -123,6 +133,27 @@ const Submitted = Schema.Struct({
   result: Schema.Struct({ submissionId: Schema.Finite }),
 });
 
+/** Wait until `stub`'s Session has no work live. */
+const idle = async (stub: DurableObjectStub<TestSession>) => {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error("Never idle");
+};
+
+/** The conversations each of `stub`'s sockets records as watched, read inside the object. */
+const recordedWatches = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, (_instance: TestSession, state) =>
+    Arr.map(state.getWebSockets(), (socket) => socket.deserializeAttachment()),
+  );
+
+/** The submission ID a submit `id` was answered with. */
+const submitted = async (client: Client, id: string) =>
+  (await Effect.runPromise(Schema.decodeUnknownEffect(Submitted)(await client.answer(id)))).result
+    .submissionId;
+
 const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
 
 describe("a Session's socket", () => {
@@ -156,6 +187,37 @@ describe("a Session's socket", () => {
   });
 });
 
+describe("a Session's commands", () => {
+  it("answer a message that is not a valid command with an error that carries its id", async () => {
+    const client = await connect(fresh());
+
+    client.sendText('{"type":"submit","id":"missing input"}');
+    client.sendText('{"type":"submit","id":"misspelt","input":"hi","whenbusy":"steer"}');
+    client.sendText("not json");
+
+    expect(await client.answer("missing input")).toMatchObject({ type: "error" });
+    expect(await client.answer("misspelt")).toMatchObject({ type: "error" });
+    expect(
+      await client.until((messages) =>
+        Arr.some(messages, (message) => message.type === "error" && !("id" in message)),
+      ),
+    ).not.toHaveLength(0);
+  });
+
+  it("admit a submit resent with its requestId once", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["Once"]));
+
+    const client = await connect(stub);
+
+    client.send({ type: "submit", id: "first", input: "hi", requestId: "turn-1" });
+    client.send({ type: "submit", id: "again", input: "hi", requestId: "turn-1" });
+
+    expect(await submitted(client, "again")).toBe(await submitted(client, "first"));
+  });
+});
+
 describe("input submitted while a Run is in progress", () => {
   it("joins the running work as a steer, and starts the next Run as a follow-up", async () => {
     const stub = fresh();
@@ -180,11 +242,11 @@ describe("input submitted while a Run is in progress", () => {
       whenBusy: "followUp",
     });
 
-    const submitted = async (id: string) =>
-      (await Effect.runPromise(Schema.decodeUnknownEffect(Submitted)(await client.answer(id))))
-        .result.submissionId;
-
-    const [a, b, c] = [await submitted("a"), await submitted("b"), await submitted("c")];
+    const [a, b, c] = [
+      await submitted(client, "a"),
+      await submitted(client, "b"),
+      await submitted(client, "c"),
+    ];
 
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
 
@@ -245,6 +307,111 @@ describe("a watch", () => {
     client.send({ type: "watch", id: "watch", conversationId: unknown });
 
     expect(await client.answer("watch")).toMatchObject({ type: "error", id: "watch" });
+  });
+
+  it("stops streaming once unwatched", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["Unseen"]));
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+    client.send({ type: "unwatch", id: "unwatch", conversationId: root });
+    await client.answer("unwatch");
+
+    const before = client.received.length;
+
+    client.send({ type: "submit", id: "submit", input: "hi", requestId: "turn-1" });
+    await client.answer("submit");
+    await idle(stub);
+
+    expect(batches(client.received.slice(before))).toEqual([]);
+    expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
+  });
+
+  it("dropped while it starts is not restarted on wake", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    client.send({ type: "unwatch", id: "unwatch", conversationId: root });
+    await client.answer("watch");
+    await client.answer("unwatch");
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    // Waking it would restart a recorded watch, and send its snapshot.
+    expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(batches(client.received.slice(before))).toEqual([]);
+  });
+
+  it("that cannot restart on wake is dropped, and the client told which", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+    const root = await client.root();
+    const gone = await Effect.runPromise(Schema.decodeUnknownEffect(ConversationId)(root + 1000));
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+    // A conversation the Session no longer has, as if it were deleted while the object slept.
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      for (const socket of state.getWebSockets())
+        socket.serializeAttachment({ watches: [root, gone] });
+    });
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    // Waking restarts the watches: the root's with a snapshot, the other's not at all.
+    expect(await recordedWatches(stub)).toEqual([{ watches: [root] }]);
+
+    const woken = await client.until((messages) => messages.length >= 2, before);
+
+    expect(woken).toContainEqual({
+      type: "error",
+      conversationId: gone,
+      message: expect.any(String),
+    });
+    expect(types(eventsOf(woken, root))).toEqual(["snapshot"]);
+
+    // The next wake does not retry it.
+    await evictDurableObject(stub);
+
+    const again = client.received.length;
+
+    await recordedWatches(stub);
+    await client.until((messages) => messages.length >= 1, again);
+    expect(Arr.filter(client.received.slice(again), (message) => message.type === "error")).toEqual(
+      [],
+    );
+  });
+
+  it("answers the heartbeat while the Session hibernates, without waking it", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+
+    client.send({ type: "watch", id: "watch", conversationId: await client.root() });
+    await client.answer("watch");
+    await evictDurableObject(stub);
+
+    const instances = constructions.get(stub.id.toString());
+
+    expect(instances).toBe(1);
+
+    client.sendText(HEARTBEAT.request);
+
+    for (let attempt = 0; attempt < 300 && client.pongs() === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(client.pongs()).toBe(1);
+    expect(constructions.get(stub.id.toString())).toBe(instances);
   });
 
   it("survives hibernation: the woken Session sends a fresh snapshot and keeps streaming on the same socket", async () => {

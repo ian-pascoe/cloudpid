@@ -55,6 +55,17 @@ const respond = (text: string) => {
       });
 };
 
+declare global {
+  /** See `constructions`. */
+  var testSessionConstructions: Map<string, number> | undefined;
+}
+
+/**
+ * How many instances of each test Session were constructed, by object ID. Kept in the isolate's global scope, which
+ * the tests share, so a test can read it without waking an object.
+ */
+export const constructions = (globalThis.testSessionConstructions ??= new Map<string, number>());
+
 /** Text submitted to the root conversation, as the tests write it. */
 type TestPrompt = { readonly requestId: string; readonly text: string };
 
@@ -71,6 +82,7 @@ export class TestSession extends DurableObject {
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
+    constructions.set(ctx.id.toString(), (constructions.get(ctx.id.toString()) ?? 0) + 1);
 
     const faux = fauxProvider();
 
