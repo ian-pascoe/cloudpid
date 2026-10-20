@@ -19,6 +19,7 @@ import {
   defineExtension,
   defineTool,
   type EntryRecord,
+  type Extension,
   Harness,
   MemoryStorage,
   ROOT_CONVERSATION_ID,
@@ -120,6 +121,8 @@ const toolsOf = (messages: readonly Message[]): string[] => {
 export const openSubagentHarness = async (
   script: (request: Request) => AssistantMessage | Promise<AssistantMessage>,
   options: Partial<SubagentOptions> = {},
+  /** Extensions installed beside the subagents and the stand-in coding tools. */
+  extensions: readonly Extension[] = [],
 ) => {
   const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-small" }] });
   const models = createModels();
@@ -157,6 +160,8 @@ export const openSubagentHarness = async (
 
   registry.install(Coding);
   registry.install(subagents);
+
+  for (const extension of extensions) registry.install(extension);
 
   const storage = new MemoryStorage();
   const harness = await Harness.open(storage, { models, registry }, context);

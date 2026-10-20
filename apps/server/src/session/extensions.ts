@@ -1,4 +1,5 @@
 import type { Harness } from "@cloudpid/effect-durable";
+import { Browser, type BrowserHost, type BrowserSession } from "@cloudpid/extensions/browser";
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContextManagement } from "@cloudpid/extensions/context";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
@@ -18,13 +19,22 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
  * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; and the secret tools
  * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
- * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query). Needs `WebConfig`: the search keys, which the Session DO reads with
+ * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query); and `browser`, which drives the
+ * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
+ * the run, so Secret references stay references there, while its results are redacted. Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
  */
 export const sessionExtensions: Effect.Effect<
   readonly Extension[],
   never,
-  WorkspaceFiles | WebConfig | CodemodeSandbox | SubagentSettings | Harness | Secrets
+  | WorkspaceFiles
+  | WebConfig
+  | CodemodeSandbox
+  | SubagentSettings
+  | Harness
+  | Secrets
+  | BrowserHost
+  | BrowserSession
 > = Effect.all([
   Effect.succeed(CodingTools),
   Files,
@@ -32,6 +42,7 @@ export const sessionExtensions: Effect.Effect<
   Codemode,
   Subagents,
   ContextManagement,
+  Browser,
 ]).pipe(
   // Last, so its hooks see every other extension's results; only these tools' arguments resolve Secrets.
   Effect.flatMap((extensions) => {

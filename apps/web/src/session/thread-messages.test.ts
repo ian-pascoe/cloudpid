@@ -289,6 +289,42 @@ describe("the thread messages of a view", () => {
     expect(subagent(undefined)).not.toHaveProperty("artifact");
   });
 
+  it("puts the screenshots of a finished tool call on its card, besides its text", () => {
+    const [, message] = toThreadMessages(
+      view({
+        messages: [
+          user("1", "look"),
+          assistant("2", [
+            { type: "tool-call", id: "c1", name: "browser", arguments: { code: "x" } },
+          ]),
+          {
+            id: "r",
+            role: "tool",
+            timestamp: 3,
+            parts: [
+              {
+                type: "tool-result",
+                id: "c1",
+                name: "browser",
+                content: [
+                  { type: "text", text: "Screenshot attached." },
+                  { type: "image", data: "AAAA", mimeType: "image/png" },
+                  { type: "image", data: "PHN2Zz4=", mimeType: "image/svg+xml" },
+                ],
+                error: false,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(message?.content[0]).toMatchObject({
+      result: "Screenshot attached.\n[image]\n[image]",
+      artifact: { images: [{ mimeType: "image/png", data: "AAAA" }] },
+    });
+  });
+
   it("appends the live message to the answer in progress, or starts one", () => {
     const live = assistant("live", [{ type: "text", text: "Hel" }]);
 

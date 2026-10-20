@@ -15,6 +15,7 @@ import type { TaskGraphSummary } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { formatModelId, isModelId } from "@cloudpid/config";
+import { limitEventImages, SNAPSHOT_IMAGES } from "@cloudpid/extensions/browser";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   type Agent,
@@ -639,9 +640,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ).pipe(
         Effect.andThen((watch) =>
           Effect.sync(() => {
-            Queue.offerUnsafe(queue, [watch.snapshot]);
+            // The screenshots a snapshot carries are bounded: it is one socket message, whose size is capped. A snapshot
+            // that comes later in a batch, to a client that fell behind, is bounded the same.
+            Queue.offerUnsafe(queue, limitEventImages([watch.snapshot], SNAPSHOT_IMAGES));
             watch.start((batch) => {
-              Queue.offerUnsafe(queue, batch);
+              Queue.offerUnsafe(queue, limitEventImages(batch, SNAPSHOT_IMAGES));
 
               return Promise.resolve();
             });

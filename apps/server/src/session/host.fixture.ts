@@ -5,6 +5,7 @@
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
+import { imageLimitedModels } from "@cloudpid/extensions/browser";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
   createModels,
@@ -150,7 +151,9 @@ export class TestSession extends DurableObject {
             sessionHostLayer({
               storage: ctx.storage,
               // As the Session DO's: every model call is scrubbed of the Secrets the Session holds.
-              models: Effect.map(Effect.service(Secrets), (held) => scrubbingModels(models, held)),
+              models: Effect.map(Effect.service(Secrets), (held) =>
+                scrubbingModels(imageLimitedModels(models), held),
+              ),
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
               env: this.hostEnv(),
