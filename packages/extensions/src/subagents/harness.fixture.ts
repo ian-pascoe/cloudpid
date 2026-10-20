@@ -59,6 +59,10 @@ export type Request = {
   /** The tools the request offered. */
   readonly tools: ReadonlyArray<string>;
   readonly model: string;
+  /** The system prompt sections offered so far, joined. */
+  readonly system: string;
+  /** Aborted when the request is. */
+  readonly signal: AbortSignal | undefined;
 };
 
 /** A response that calls tools, in order. */
@@ -124,7 +128,7 @@ export const openSubagentHarness = async (
 
   models.setProvider(faux.provider);
   faux.setResponses(
-    Array.from({ length: 200 }, () => (transcript, _options, _state, model) => {
+    Array.from({ length: 200 }, () => (transcript, options, _state, model) => {
       const messages = transcript.messages;
       const last = messages.findLast((message) => message.role !== "system");
 
@@ -133,6 +137,12 @@ export const openSubagentHarness = async (
         text: last === undefined ? "" : contentText(last.content),
         tools: toolsOf(messages),
         model: model.id,
+        system: messages
+          .flatMap((message) =>
+            message.role === "system" ? Object.values(message.sections ?? {}) : [],
+          )
+          .join("\n"),
+        signal: options?.signal,
       };
 
       requests.push(request);

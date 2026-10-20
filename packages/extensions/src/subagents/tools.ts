@@ -39,6 +39,7 @@ import {
   isWithin,
   normalizeAgentId,
   parentAgentId,
+  RESERVED_AGENT_IDS,
   ROOT_AGENT,
   SEGMENT,
 } from "./ids.ts";
@@ -170,7 +171,10 @@ const directChild = (state: SubagentsState, caller: string, id: string) =>
     ? liveAgent(state, id)
     : fail(`${id} is not a direct child of ${caller}; you may only address your own children`);
 
-const isBusy = (api: ToolExecutionApi, agent: AgentRecord) =>
+/** An agent as cancel and delete stop it. */
+type Stoppable = Pick<AgentRecord, "id" | "conversationId">;
+
+const isBusy = (api: ToolExecutionApi, agent: Stoppable) =>
   Effect.map(
     durable("snapshot", (context) => api.snapshot(LiveDoc, agent.conversationId, context)),
     (live) => live?.run !== undefined,
@@ -341,6 +345,10 @@ const Spawn = defineEffectTool({
     const earlier = yield* recorded(api, SpawnCall);
 
     if (Option.isSome(earlier)) return spawnResult(earlier.value);
+
+    if (args.agent_id !== undefined && RESERVED_AGENT_IDS.has(args.agent_id)) {
+      return yield* fail(`${args.agent_id} is reserved; choose another agent_id`);
+    }
 
     const options = yield* currentOptions;
     const state = yield* readState(api);
@@ -786,6 +794,10 @@ const Wait = defineEffectTool({
         };
       }
 
+      if (openWaiter(doc, caller, target) !== undefined) {
+        return refuse(`Duplicate wait: you are already waiting for ${target}`);
+      }
+
       const inbox = await tx.doc(InboxDoc, api.conversationId);
 
       if (Arr.some(inbox.items, (item) => item.mode === "steer") || timeout_ms === 0) {
@@ -1003,7 +1015,7 @@ const Status = defineEffectTool({
 // ─── subagent_cancel and subagent_delete ─────────────────────────────────────
 
 /** Abort the work of `agents`, deepest first; which of them were running. */
-const stopAll = (api: ToolExecutionApi, agents: ReadonlyArray<AgentRecord>, background: boolean) =>
+const stopAll = (api: ToolExecutionApi, agents: ReadonlyArray<Stoppable>, background: boolean) =>
   Effect.map(
     Effect.forEach(agents, (agent) =>
       Effect.flatMap(isBusy(api, agent), (busy) =>
@@ -1018,6 +1030,35 @@ const stopAll = (api: ToolExecutionApi, agents: ReadonlyArray<AgentRecord>, back
     ),
     Arr.flatten,
   );
+
+/**
+ * Abort `target`, with its subtree when `recursive`, then again for any descendant spawned while it was being stopped,
+ * until none is left running unstopped. Returns which agents were running, and every agent stopped.
+ */
+const stopSubtree = Effect.fnUntraced(function* (
+  api: ToolExecutionApi,
+  target: string,
+  recursive: boolean,
+) {
+  const stopped = new Set<string>();
+  const affected: string[] = [];
+
+  for (;;) {
+    const state = yield* readState(api);
+
+    const scope = recursive
+      ? subtreeOf(state, target)
+      : Option.toArray(Record.get(state.agents, target));
+
+    const fresh = Arr.filter(scope, (agent) => !stopped.has(agent.id));
+
+    if (fresh.length === 0) return { affected, stopped };
+
+    for (const agent of fresh) stopped.add(agent.id);
+
+    affected.push(...(yield* stopAll(api, fresh, recursive)));
+  }
+});
 
 const CancelParameters = Schema.Struct({
   agent_id: CanonicalId("Direct child canonical agent ID"),
@@ -1037,8 +1078,7 @@ const Cancel = defineEffectTool({
     const caller = yield* callerOf(api, state);
     const target = normalizeAgentId(agent_id);
     const agent = yield* directChild(state, caller, target);
-    const all = recursive ?? true;
-    const affected = yield* stopAll(api, all ? subtreeOf(state, target) : [agent], all);
+    const { affected } = yield* stopSubtree(api, agent.id, recursive ?? true);
 
     return {
       output: text(
@@ -1089,21 +1129,23 @@ const Delete = defineEffectTool({
       );
     }
 
-    yield* stopAll(api, subtree, true);
+    const { stopped } = yield* stopSubtree(api, target, true);
 
-    const deleted = yield* durable("delete", (context) =>
+    // The subtree as it is now: a descendant spawned after the last scan is deleted too, and stopped below. Once its
+    // conversation is unmapped, no deleted agent can spawn again.
+    const removed = yield* durable("delete", (context) =>
       api.commit(async (tx) => {
         const doc = await tx.doc(SubagentsDoc);
-        const ids: string[] = [];
+        const gone: Stoppable[] = [];
 
-        for (const agent of subtree) {
-          if (doc.agents[agent.id] === undefined) continue;
-
+        for (const agent of subtreeOf(doc, target)) {
           delete doc.agents[agent.id];
           delete doc.conversations[String(agent.conversationId)];
           doc.tombstones.push(agent.id);
-          ids.push(agent.id);
+          gone.push({ id: agent.id, conversationId: agent.conversationId });
         }
+
+        const ids = Arr.map(gone, (agent) => agent.id);
 
         for (const [key, waiter] of Record.toEntries(doc.waiters)) {
           if (!ids.includes(waiter.target) || waiter.result !== null) continue;
@@ -1118,9 +1160,17 @@ const Delete = defineEffectTool({
           }
         }
 
-        return ids;
+        return gone;
       }, context),
     );
+
+    yield* stopAll(
+      api,
+      Arr.filter(removed, (agent) => !stopped.has(agent.id)),
+      true,
+    );
+
+    const deleted = Arr.map(removed, (agent) => agent.id);
 
     return {
       output: text(

@@ -6,6 +6,9 @@
 /** The root agent: the Session's root conversation. */
 export const ROOT_AGENT = "root";
 
+/** Names no agent may take: the root's, and `agent_message`'s alias for the caller's parent. */
+export const RESERVED_AGENT_IDS: ReadonlySet<string> = new Set([ROOT_AGENT, "parent"]);
+
 /** One segment of a canonical ID: what `subagent`'s `agent_id` names. */
 export const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 

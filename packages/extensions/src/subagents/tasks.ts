@@ -205,25 +205,39 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
           ),
         );
 
+        // Several inputs steered into one run end in one answer, which reaches the parent once, whichever of their
+        // turns settles first: the turn that carries it is `wait`, `pending`, or `auto`, and the others `duplicate`.
+        const siblings =
+          answer === null
+            ? []
+            : Arr.filter(record.turns, (each) => each.id !== turnId && each.answer === answer);
+
+        const delivered = Arr.some(
+          siblings,
+          (each) => each.delivery === "wait" || each.delivery === "auto",
+        );
+
         if (waiting !== undefined) {
-          waiting.result = waitEvent("turn", agentId, {
-            turn_id: turnId,
-            status,
-            output: text,
-            error,
-            elapsed_ms: now - waiting.startedAt,
-          });
-          settledTurn.delivery = "wait";
+          // A report still held for the same answer gives way to this wait.
+          for (const each of siblings) {
+            if (each.delivery === "pending") each.delivery = "duplicate";
+          }
+
+          const elapsed_ms = now - waiting.startedAt;
+
+          waiting.result = waitEvent(
+            "turn",
+            agentId,
+            delivered
+              ? { turn_id: turnId, status, already_delivered: true, elapsed_ms }
+              : { turn_id: turnId, status, output: text, error, elapsed_ms },
+          );
+          settledTurn.delivery = delivered ? "duplicate" : "wait";
 
           return next(null);
         }
 
-        // Several inputs steered into one run end in one answer, which is reported once.
-        const duplicate =
-          answer !== null &&
-          Arr.some(record.turns, (each) => each.id !== turnId && each.answer === answer);
-
-        if (duplicate) {
+        if (siblings.length > 0) {
           settledTurn.delivery = "duplicate";
 
           return next(null);
@@ -392,6 +406,22 @@ const endWait = async (tx: Tx, key: string, input: WaitInput, now: number) => {
     );
   }
 
+  const turn = Arr.findFirst(target.turns, (each) => each.id === input.turnId).pipe(
+    Option.getOrUndefined,
+  );
+
+  // Settled without a result for this wait: it reached the caller another way.
+  if (turn?.status !== "running") {
+    return completed<{ phase: "wait" }, WaitEvent>(
+      waitEvent("turn", input.target, {
+        turn_id: input.turnId,
+        status: turn?.status ?? "completed",
+        already_delivered: true,
+        elapsed_ms: elapsed,
+      }),
+    );
+  }
+
   const busy = (await tx.doc(LiveDoc, target.conversationId)).run !== undefined;
   const steered = steerQueued(await tx.doc(InboxDoc, input.callerConversation));
 
@@ -482,11 +512,18 @@ export const WaitTask = defineTask<WaitInput, { phase: "wait" }, WaitEvent>({
         const inbox = await runtime.watchDoc(InboxDoc, callerConversation, context);
 
         try {
-          const waiter = (doc?.value ?? EMPTY_STATE).waiters[key];
+          const state = doc?.value ?? EMPTY_STATE;
+          const waiter = state.waiters[key];
+
+          const settled = !Arr.some(
+            state.agents[task.input.target]?.turns ?? [],
+            (each) => each.id === task.input.turnId && each.status === "running",
+          );
 
           const done =
             waiter === undefined ||
             waiter.result !== null ||
+            settled ||
             steerQueued(inbox?.value) ||
             (deadline !== null && runtime.now() >= deadline);
 
