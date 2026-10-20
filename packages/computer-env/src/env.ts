@@ -5,6 +5,7 @@
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off
 import type { WorkspaceHandle } from "@cloudflare/computer";
 import type { Context } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type BinaryReader,
   type DirReader,
@@ -304,12 +305,13 @@ export class ComputerExecutionEnv implements ExecutionEnv {
         workspace: workspaceHandle(this.#workspace),
         cwd: this.cwd,
         running: this.#running,
+        // The spill of a command that was aborted is still written, so it runs outside the caller's context.
         spill: async (output) => {
-          const path = await this.createTempFile({ suffix: ".log" }, context);
+          const path = await this.createTempFile({ suffix: ".log" }, BACKGROUND_CONTEXT);
 
           if (!path.ok) return undefined;
 
-          const written = await this.writeFile(path.value, output, context);
+          const written = await this.writeFile(path.value, output, BACKGROUND_CONTEXT);
 
           return written.ok ? path.value : undefined;
         },

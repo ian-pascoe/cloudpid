@@ -6,18 +6,18 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FileWatcher, WatchChange } from "@earendil-works/pi-durable/env";
-import type { Call } from "./client.ts";
+import { type Call, isUnreachable } from "./client.ts";
 import { isWithin } from "./paths.ts";
 import type { ScanTarget, Snapshot } from "./wire.ts";
 
 export type PollingOptions = {
-  /** Interval between snapshots; default 250 ms. */
+  /** Interval between snapshots; default 2 s, as pi-durable's `NodeFileWatcher`. Each one walks the targets in the DO. */
   readonly pollIntervalMs?: number;
   /** Most directories one watcher covers; default 10,000. */
   readonly maxDirectories?: number;
 };
 
-const DEFAULT_POLL_MS = 250;
+const DEFAULT_POLL_MS = 2000;
 const DEFAULT_MAX_DIRECTORIES = 10_000;
 
 export class PollingWatcher implements FileWatcher {
@@ -31,6 +31,8 @@ export class PollingWatcher implements FileWatcher {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #running: Promise<void> | undefined;
   #closed = false;
+  /** A snapshot failed because the Workspace DO was unreachable, so changes since the last one may be lost. */
+  #uncertain = false;
 
   private constructor(
     call: Call,
@@ -91,6 +93,13 @@ export class PollingWatcher implements FileWatcher {
 
     if (this.#closed) return;
 
+    // An unreachable Workspace DO (a deploy resets it) is transient: keep polling, and report `overflow` once it answers.
+    if (!next.ok && isUnreachable(next.error)) {
+      this.#uncertain = true;
+
+      return;
+    }
+
     if (!next.ok) {
       this.#deliver({ error: next.error });
       this.#closed = true;
@@ -103,7 +112,10 @@ export class PollingWatcher implements FileWatcher {
 
     this.#snapshot = snapshot;
 
-    if (changed.size > 0) this.#deliver({ paths: [...changed].sort() });
+    if (this.#uncertain) {
+      this.#uncertain = false;
+      this.#deliver({ overflow: true });
+    } else if (changed.size > 0) this.#deliver({ paths: [...changed].sort() });
   }
 
   #diff(next: ReadonlyMap<string, string>): Set<string> {

@@ -22,6 +22,15 @@ export const READERS_DIR = "/.computer/readers";
 /** A reader link older than this belongs to a reader whose client went away without closing it. */
 const STALE_READER_MS = 60 * 60 * 1000;
 
+/** Where `createTempDir` and `createTempFile` (and so exec spills) create their paths. */
+const TEMP_DIR = "/tmp";
+
+/**
+ * A temp entry not modified for this long is removed when the Workspace DO starts: no OS cleans the Workspace's `/tmp`,
+ * and its files would otherwise stay in the Workspace's storage, listings and (with a Container) synced tree.
+ */
+const STALE_TEMP_MS = 24 * 60 * 60 * 1000;
+
 /** The Workspace's metadata for one path, as `fs.stat` and `fs.lstat` return it. */
 type Stat = {
   readonly inode: number;
@@ -94,7 +103,7 @@ export class WorkspaceEnvHost {
     return operation(...request.args);
   }
 
-  /** Create the Workspace root and remove reader links that no client will close. */
+  /** Create the Workspace root, and remove reader links that no client will close and stale temp files. */
   async prepare(root: string, now: number): Promise<void> {
     const fs = this.#workspace.fs;
 
@@ -106,6 +115,16 @@ export class WorkspaceEnvHost {
 
       if (Number.isNaN(openedAt) || now - openedAt > STALE_READER_MS) {
         await fs.rm(`${READERS_DIR}/${entry.name}`, { force: true });
+      }
+    }
+
+    await fs.mkdir(TEMP_DIR, { recursive: true });
+
+    for (const entry of await fs.readdir(TEMP_DIR)) {
+      const path = `${TEMP_DIR}/${entry.name}`;
+
+      if (now - (await fs.lstat(path)).mtime > STALE_TEMP_MS) {
+        await fs.rm(path, { recursive: true, force: true });
       }
     }
   }
@@ -229,7 +248,7 @@ export class WorkspaceEnvHost {
           return null;
         }),
       createTempDir: (prefix) => {
-        const path = `/tmp/${prefix}${crypto.randomUUID()}`;
+        const path = `${TEMP_DIR}/${prefix}${crypto.randomUUID()}`;
 
         return attempt(path, async () => {
           await fs.mkdir(path, { recursive: true });

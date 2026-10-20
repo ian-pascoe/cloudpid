@@ -33,6 +33,12 @@ export type Call = <Operation extends HostOperation>(
   ...args: Parameters<HostOperations[Operation]>
 ) => Promise<Result<ValueOf<Operation>, FileError>>;
 
+/** Failures of the RPC call itself (the Workspace DO was unreachable or reset), not of the operation it asked for. */
+const unreachable = new WeakSet<FileError>();
+
+/** Whether `error` says the Workspace DO could not be reached, so the operation may succeed if repeated. */
+export const isUnreachable = (error: FileError): boolean => unreachable.has(error);
+
 export const abortedResult = <T>(
   context: Context,
   path?: string,
@@ -59,9 +65,15 @@ export const caller =
         ValueOf<typeof op>
       >;
     } catch (cause) {
-      return err(
-        new FileError("unknown", cause instanceof Error ? cause.message : String(cause), path),
+      const error = new FileError(
+        "unknown",
+        cause instanceof Error ? cause.message : String(cause),
+        path,
       );
+
+      unreachable.add(error);
+
+      return err(error);
     }
 
     return abortedResult(context, path) ?? fromResult(response);

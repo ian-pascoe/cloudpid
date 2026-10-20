@@ -1,6 +1,10 @@
 // `ExecutionEnv.exec` on the Workspace's runtime, through `@cloudflare/computer`'s own RPC client. Every Workspace
 // client and exec handle it takes is disposed (computer's stub-disposal contract), including when a timeout or an
 // abort returns before the command has stopped.
+//
+// On the Worker Shell (just-bash in a Dynamic Worker) a command's output arrives once, when it exits: `onOutput` then
+// gets all of stdout and then all of stderr, attributed but not interleaved in arrival order. Backends that stream
+// (the Container) deliver chunks as they come.
 // pi-durable's `ExecutionEnv` is Promise-native and stays so (ADR-0003); this adapter follows it.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalDate:off globalTimers:off missingPipeableSignature:off newPromise:off preferEffectArray:off
 import {
@@ -55,6 +59,9 @@ const prepare = (command: string | readonly string[]): Prepared | undefined => {
   return { source, marker };
 };
 
+/** Whether `context` was aborted; a call, so a check after an `await` is not narrowed away by one before it. */
+const isAborted = (context: Context): boolean => context.abortSignal?.aborted === true;
+
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 /** Counts output against the spill thresholds and keeps all of it once they are crossed. */
@@ -101,7 +108,7 @@ export const exec = async (
   options: ShellExecOptions | undefined,
   context: Context,
 ): Promise<Result<ShellExecResult, ExecutionError>> => {
-  if (context.abortSignal?.aborted === true) return err(new ExecutionError("aborted", "aborted"));
+  if (isAborted(context)) return err(new ExecutionError("aborted", "aborted"));
 
   const prepared = prepare(command);
 
@@ -115,11 +122,20 @@ export const exec = async (
     return err(new ExecutionError("shell_unavailable", String(cause)));
   }
 
+  // An abort while the client was being acquired fired before any listener could see it.
+  if (isAborted(context)) {
+    workspace[Symbol.dispose]();
+
+    return err(new ExecutionError("aborted", "aborted"));
+  }
+
   const id = crypto.randomUUID();
   const spill = new Spill(options?.spill);
   let stopped: ExecutionErrorCode | undefined;
   let returned = false;
+  let started = false;
   let missing = false;
+  let callbackError: ExecutionError | undefined;
   const stop = Promise.withResolvers<void>();
 
   const kill = (reason: ExecutionErrorCode) => {
@@ -132,10 +148,16 @@ export const exec = async (
     if (returned || text === "") return;
     spill.push(text);
 
+    if (callbackError !== undefined) return;
+
     try {
       options?.onOutput?.(text, context, { stream });
-    } catch {
-      // A throwing callback must not end the command or lose its exit code.
+    } catch (cause) {
+      // As in pi-durable's own environments: a failing output sink kills the command.
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+
+      callbackError = new ExecutionError("callback_error", error.message, error);
+      kill("callback_error");
     }
   };
 
@@ -152,7 +174,9 @@ export const exec = async (
 
     using handle = await workspace.runtime.exec(prepared.source, execOptions);
 
-    let exitCode = 0;
+    started = true;
+
+    let exitCode: number | undefined;
 
     for await (const event of handle) {
       if (event.name === "exit") exitCode = event.code;
@@ -166,6 +190,9 @@ export const exec = async (
       } else deliver(event.value, event.name);
     }
 
+    if (exitCode === undefined)
+      throw new Error("The command's output ended without an exit status");
+
     return exitCode;
   };
 
@@ -177,6 +204,7 @@ export const exec = async (
   const onAbort = () => kill("aborted");
 
   context.abortSignal?.addEventListener("abort", onAbort, { once: true });
+
   host.running.add(id);
 
   const execution = run().then(
@@ -194,8 +222,9 @@ export const exec = async (
     const first = await Promise.race([execution, stop.promise]);
 
     if (first !== undefined && stopped === undefined) {
+      // `spawn_error` tells the caller the command never started, so it may try another form of it.
       if (!first.ok) {
-        return err(new ExecutionError("spawn_error", String(first.cause)));
+        return err(new ExecutionError(started ? "unknown" : "spawn_error", String(first.cause)));
       }
 
       if (missing) {
@@ -223,6 +252,8 @@ export const exec = async (
       )
         break;
     }
+
+    if (callbackError !== undefined) return err(callbackError);
 
     const error = new ExecutionError(
       stopped ?? "aborted",

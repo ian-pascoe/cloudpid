@@ -1,5 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
@@ -24,6 +24,9 @@ const shared = env.WORKSPACES.getByName("conformance");
 
 let cases = 0;
 
+/** Polls faster than the 2 s default, so the conformance watch cases settle quickly. */
+const watch = { pollIntervalMs: 250 };
+
 /** An environment on `workspace` whose `cwd` is a fresh, empty directory. */
 const freshEnv = async (workspace: DurableObjectStub<TestWorkspace>) => {
   const cwd = `/workspace/case-${++cases}`;
@@ -31,7 +34,7 @@ const freshEnv = async (workspace: DurableObjectStub<TestWorkspace>) => {
 
   getOrThrow(await created.createDir(cwd, { recursive: true }, context));
 
-  return new ComputerExecutionEnv({ workspace, id: "computer:test", cwd });
+  return new ComputerExecutionEnv({ workspace, id: "computer:test", cwd, watch });
 };
 
 registerEnvConformance(
@@ -62,6 +65,41 @@ describe("ComputerExecutionEnv exec", () => {
     expect(joined("stdout")).toBe("one\nthree\n");
     expect(joined("stderr")).toBe("two\n");
   });
+
+  it("kills a command aborted while the Workspace client is still being acquired", async () => {
+    const executionEnv = await freshEnv(shared);
+    const controller = new AbortController();
+    const started = Date.now();
+
+    const running = executionEnv.exec(
+      "sleep 2",
+      undefined,
+      withAbortSignal(controller.signal, context),
+    );
+
+    controller.abort();
+
+    const result = await running;
+
+    expect(result.ok ? result.value : result.error.code).toBe("aborted");
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it("fails with callback_error when onOutput throws", async () => {
+    const executionEnv = await freshEnv(shared);
+
+    const result = await executionEnv.exec(
+      "echo out",
+      {
+        onOutput: () => {
+          throw new Error("sink closed");
+        },
+      },
+      context,
+    );
+
+    expect(result.ok ? result.value : result.error.code).toBe("callback_error");
+  });
 });
 
 describe("ComputerExecutionEnv over many calls", () => {
@@ -89,6 +127,13 @@ describe("ComputerExecutionEnv over many calls", () => {
       getOrThrow(await executionEnv.listFiles?.(".", undefined, context));
     }
 
+    // `cleanup()` kills what still runs, through a Workspace client of its own.
+    const lingering = executionEnv.exec("sleep 2", undefined, context);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await executionEnv.cleanup(context);
+    await lingering;
+
     // A disposed stub reaches the Workspace DO asynchronously.
     for (let attempt = 0; attempt < 100; attempt++) {
       const live = await workspace.liveStubs();
@@ -99,7 +144,8 @@ describe("ComputerExecutionEnv over many calls", () => {
 
     const live = await workspace.liveStubs();
 
-    expect(live.opened).toBeGreaterThan(0);
+    // Every exec opened at least one counted Workspace stub, so none bypassed the count.
+    expect(live.opened).toBeGreaterThanOrEqual(12);
     expect(live).toMatchObject({ workspaces: 0, execs: 0 });
   }, 30_000);
 });
