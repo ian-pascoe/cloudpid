@@ -1,0 +1,43 @@
+// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+
+import { parseRepoSource, type SessionRecord, WorkspaceSlug } from "@cloudpid/protocol";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+
+/** A Workspace's Sessions, newest first. */
+export type WorkspaceGroup = {
+  readonly workspace: string;
+  readonly sessions: readonly SessionRecord[];
+};
+
+/**
+ * `sessions` (newest first) grouped by the Workspace they work on: the Workspace of the newest Session first, the
+ * Sessions of each in the order given.
+ */
+export const groupByWorkspace = (sessions: readonly SessionRecord[]): readonly WorkspaceGroup[] => {
+  const groups = new Map<string, SessionRecord[]>();
+
+  for (const session of sessions) {
+    const group = groups.get(session.workspace);
+
+    if (group === undefined) groups.set(session.workspace, [session]);
+    else group.push(session);
+  }
+
+  return [...groups].map(([workspace, grouped]) => ({ workspace, sessions: grouped }));
+};
+
+const isSlug = Schema.is(WorkspaceSlug);
+
+/** Why `text` cannot be a Workspace slug, or null when it can. */
+export const slugProblem = (text: string): string | null =>
+  isSlug(text)
+    ? null
+    : "Use lowercase letters, digits and dashes, starting with a letter or digit (up to 63)";
+
+/** Why `text` cannot be cloned, or null when it can: the same rules as the server's, so a mistake shows as it is typed. */
+export const sourceProblem = (text: string): string | null => {
+  const parsed = parseRepoSource(text);
+
+  return Result.isFailure(parsed) ? parsed.failure : null;
+};

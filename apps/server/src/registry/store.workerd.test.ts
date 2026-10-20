@@ -37,6 +37,7 @@ describe("the Registry store", () => {
       id: "s-1",
       title: "Fix the build",
       workspace: DEFAULT_WORKSPACE,
+      repo: null,
       status: "idle",
       createdAt: 1_000,
       updatedAt: 1_000,
@@ -199,6 +200,7 @@ describe("the Registry store", () => {
       // As the release before the documents left it: version 3, with no document table (or any later one).
       sql.exec("DROP TABLE documents");
       sql.exec("DROP TABLE push_subscriptions");
+      sql.exec("ALTER TABLE sessions DROP COLUMN repo");
       sql.exec("DELETE FROM schema_version WHERE version > 3");
 
       const store = openRegistryStore(storage);
@@ -247,6 +249,40 @@ describe("the Registry store", () => {
     await evictDurableObject(registry);
 
     expect(await registry.listPushSubscriptions()).toEqual([kept]);
+  });
+
+  it("binds a Session to the repo it is created with, and keeps it", async () => {
+    const registry = fresh();
+
+    const created = await registry.createSession(
+      { id: "s-1", title: null, workspace: "cloudpid", repo: "pi" },
+      1_000,
+    );
+
+    expect(created).toMatchObject({ workspace: "cloudpid", repo: "pi" });
+    expect(await registry.getSession("s-1")).toEqual(created);
+    expect(await registry.listSessions()).toEqual([created]);
+  });
+
+  it("adds the repo column to a Registry at the previous version, its Sessions working at the root", async () => {
+    await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+      const { storage } = state;
+      const { sql } = storage;
+
+      // As the release before repos left it: version 5, Sessions without a repo column.
+      sql.exec("ALTER TABLE sessions DROP COLUMN repo");
+      sql.exec("DELETE FROM schema_version WHERE version = 6");
+      sql.exec(
+        "INSERT INTO sessions (id, title, workspace, status, created_at, updated_at) VALUES ('old', NULL, 'a', 'idle', 1, 1)",
+      );
+
+      const store = openRegistryStore(storage);
+
+      expect(store.getSession("old")).toMatchObject({ workspace: "a", repo: null });
+      expect(store.createSession({ id: "new", title: null, repo: "pi" }, 2)).toMatchObject({
+        repo: "pi",
+      });
+    });
   });
 
   it("keeps its Sessions and Workspaces across an eviction", async () => {

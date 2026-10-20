@@ -16,7 +16,7 @@ import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
-import { sessionWorkspace } from "../session/workspace.ts";
+import { type Placement, sessionWorkspace } from "../session/workspace.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -36,7 +36,10 @@ export class TestWorkspaceSession extends TestSession {
   #workspace() {
     return sessionWorkspace({
       namespace: this.env.WORKSPACES,
-      slug: () => Promise.resolve(this.ctx.storage.kv.get<string>(KEY) ?? DEFAULT_WORKSPACE),
+      placement: () =>
+        Promise.resolve(
+          this.ctx.storage.kv.get<Placement>(KEY) ?? { slug: DEFAULT_WORKSPACE, repo: null },
+        ),
     });
   }
 
@@ -76,8 +79,8 @@ export class TestWorkspaceSession extends TestSession {
     return this.#workspace().env;
   }
 
-  /** Bind this Session to Workspace `slug`, as the Registry binds a Session when it is created. */
-  bindWorkspace(slug: string): void {
-    this.ctx.storage.kv.put(KEY, slug);
+  /** Bind this Session to Workspace `slug` (and the repo directory in it), as the Registry binds a Session when it is created. */
+  bindWorkspace(slug: string, repo: string | null = null): void {
+    this.ctx.storage.kv.put(KEY, { slug, repo } satisfies Placement);
   }
 }

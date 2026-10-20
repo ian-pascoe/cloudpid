@@ -19,6 +19,8 @@ import { isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
+import { workspaceRepos } from "./workspace/repos.ts";
+import type { WorkspaceNamespace } from "./session/workspace.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
 import { Workspaces } from "./workspace/resource.ts";
 
@@ -127,6 +129,10 @@ export default class Server extends Cloudflare.Worker<Server>()(
   Effect.gen(function* () {
     const sessions = yield* Session;
     const registries = yield* Registry;
+    // The raw environment: the Workspace DO's own stub, as the Session DOs take it.
+    const worker = yield* Cloudflare.WorkerEnvironment;
+    // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (above), a raw namespace.
+    const repos = workspaceRepos(worker[WORKSPACE_BINDING] as WorkspaceNamespace);
 
     return {
       fetch: Effect.gen(function* () {
@@ -135,7 +141,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
 
         if (sessionId !== undefined) return yield* connectSession(sessions, registries, sessionId);
 
-        if (isRegistryRpc(request)) return yield* serveRegistryRpc(registries);
+        if (isRegistryRpc(request)) return yield* serveRegistryRpc(registries, repos);
 
         return hello;
       }),

@@ -2,17 +2,19 @@
 
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
-import { isSettingsPath, sessionIdOf, usePath } from "./router.ts";
+import { isSettingsPath, isWorkspacesPath, sessionIdOf, usePath } from "./router.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle } from "./sidebar.tsx";
 import { useSessions } from "./use-sessions.ts";
+import { WorkspacesPage } from "./workspaces-page.tsx";
 
 export const App = () => {
   const path = usePath();
   const sessionId = sessionIdOf(path);
   const settingsOpen = isSettingsPath(path);
+  const workspacesOpen = isWorkspacesPath(path);
   // On a narrow screen the list is shown alone; any other page takes its place.
-  const listOnly = sessionId === undefined && !settingsOpen;
+  const listOnly = sessionId === undefined && !settingsOpen && !workspacesOpen;
   const sessions = useSessions();
   const session = sessions.sessions?.find((known) => known.id === sessionId);
 
@@ -23,11 +25,14 @@ export const App = () => {
         sessions={sessions}
         activeId={sessionId}
         settingsActive={settingsOpen}
+        workspacesActive={workspacesOpen}
         className={cn(listOnly ? "flex" : "hidden md:flex")}
       />
       <main className={cn("min-w-0 flex-1 flex-col", listOnly ? "hidden md:flex" : "flex")}>
         {settingsOpen ? (
           <SettingsPage />
+        ) : workspacesOpen ? (
+          <WorkspacesPage sessions={sessions} />
         ) : sessionId === undefined ? (
           <div className="m-auto max-w-sm px-6 text-center">
             <h2 className="text-lg font-semibold">Pick a session, or start a new one</h2>

@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
-import { RegistryRpcs, RPC_PATH } from "@cloudpid/protocol";
+import { RegistryRpcs, RPC_PATH, WorkspaceError } from "@cloudpid/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -15,6 +15,7 @@ import { expect, it } from "vitest";
 import { isRegistryRpc } from "../routes.ts";
 import { serveRegistryRpc } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
+import type { Repos } from "../workspace/repos.ts";
 import type { SessionRecord, WorkspaceRecord } from "./store.ts";
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
@@ -28,7 +29,15 @@ const fakeRegistries = () => {
   const calls: string[] = [];
 
   const registry = {
-    createSession: ({ title, workspace }: { title?: string | undefined; workspace?: string }) =>
+    createSession: ({
+      title,
+      workspace,
+      repo,
+    }: {
+      title?: string | undefined;
+      workspace?: string;
+      repo?: string;
+    }) =>
       Effect.sync(() => {
         calls.push("createSession");
 
@@ -36,6 +45,7 @@ const fakeRegistries = () => {
           id: `session-${sessions.length + 1}`,
           title: title ?? null,
           workspace: workspace ?? "default",
+          repo: repo ?? null,
           status: "idle",
           createdAt: 1,
           updatedAt: 1,
@@ -94,9 +104,37 @@ const fakeRegistries = () => {
       }),
   };
 
+  /** The Workspaces' repos: what `list` answers per slug, and the clones asked for. */
+  const held = new Map<string, string[]>([["cloudpid", ["pi"]]]);
+  const clones: Array<{ slug: string; url: string; name: string }> = [];
+  let cloneFails: string | undefined;
+
+  const repos: Repos = {
+    list: (slug) => {
+      calls.push("list");
+
+      return Promise.resolve(held.get(slug) ?? []);
+    },
+    clone: (slug, { url, name }) => {
+      calls.push("clone");
+
+      if (cloneFails !== undefined) return Promise.reject(new Error(cloneFails));
+
+      clones.push({ slug, url, name });
+      held.set(slug, [...(held.get(slug) ?? []), name]);
+
+      return Promise.resolve();
+    },
+  };
+
   return {
     names,
     calls,
+    repos,
+    clones,
+    failClones: (message: string) => {
+      cloneFails = message;
+    },
     // SAFETY: the endpoint only calls `getByName` on the namespace, and the result only through the methods above.
     registries: {
       getByName: (name: string) => {
@@ -121,7 +159,7 @@ const worker =
     // Routed as the main Worker routes it.
     if (!isRegistryRpc(request)) return Promise.resolve(new Response(null, { status: 404 }));
 
-    return serveRegistryRpc(fake.registries).pipe(
+    return serveRegistryRpc(fake.registries, fake.repos).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
       Effect.map(HttpServerResponse.toWeb),
       Effect.runPromise,
@@ -287,6 +325,55 @@ it("rejects a subscription that is not at a known push service over https, befor
   }
 });
 
+it("binds a Session to a repo its Workspace holds", async () => {
+  const fake = fakeRegistries();
+
+  const created = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      registry.createSession({ workspace: "cloudpid", repo: "pi" }),
+    ),
+    fake,
+  );
+
+  expect(created).toMatchObject({ workspace: "cloudpid", repo: "pi" });
+  expect(fake.calls).toEqual(["list", "createSession"]);
+});
+
+it("refuses a Session on a repo its Workspace does not hold, before it is registered", async () => {
+  const fake = fakeRegistries();
+
+  const error = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      Effect.flip(registry.createSession({ workspace: "cloudpid", repo: "ghost" })),
+    ),
+    fake,
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toBe('Workspace "cloudpid" has no repo "ghost"');
+  expect(fake.calls).toEqual(["list"]);
+});
+
+it("checks a repo against the default Workspace when the Session names none", async () => {
+  const fake = fakeRegistries();
+
+  const error = await withClient(
+    Effect.flatMap(Registry, (registry) => Effect.flip(registry.createSession({ repo: "pi" }))),
+    fake,
+  );
+
+  expect(error.message).toBe('Workspace "default" has no repo "pi"');
+});
+
+it("rejects a repo name that is a path or an option, before it reaches the Workspace", async () => {
+  for (const repo of ["..", "../x", "a/b", "-x", ".git", "a b"]) {
+    const { text, calls } = await callRaw("createSession", { workspace: "cloudpid", repo });
+
+    expect(text).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+});
+
 it("accepts the endpoints the browsers' push services give out", async () => {
   for (const endpoint of [
     "https://fcm.googleapis.com/fcm/send/abc",
@@ -300,6 +387,95 @@ it("accepts the endpoints the browsers' push services give out", async () => {
 
     expect(calls, endpoint).toEqual(["subscribePush"]);
   }
+});
+
+it("lists the repos of a Workspace", async () => {
+  const repos = await withClient(
+    Effect.flatMap(Registry, (registry) => registry.listRepos({ workspace: "cloudpid" })),
+  );
+
+  expect(repos).toEqual(["pi"]);
+});
+
+it("clones a repo into a Workspace, registering it, under the name the repo has", async () => {
+  const fake = fakeRegistries();
+
+  const name = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      registry.cloneRepo({ workspace: "fresh", source: "octocat/Hello-World" }),
+    ),
+    fake,
+  );
+
+  expect(name).toBe("Hello-World");
+  expect(fake.calls).toEqual(["createWorkspace", "clone"]);
+  expect(fake.clones).toEqual([
+    { slug: "fresh", url: "https://github.com/octocat/Hello-World.git", name: "Hello-World" },
+  ]);
+});
+
+it("clones into the directory the owner names", async () => {
+  const fake = fakeRegistries();
+
+  const name = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      registry.cloneRepo({
+        workspace: "cloudpid",
+        source: "https://github.com/octocat/Hello-World",
+        name: "hello",
+      }),
+    ),
+    fake,
+  );
+
+  expect(name).toBe("hello");
+  expect(fake.clones).toMatchObject([
+    { url: "https://github.com/octocat/Hello-World", name: "hello" },
+  ]);
+});
+
+it("refuses a clone source that is not a plain repo address, before it reaches the Workspace", async () => {
+  const fake = fakeRegistries();
+
+  const error = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      Effect.flip(registry.cloneRepo({ workspace: "cloudpid", source: "file:///etc" })),
+    ),
+    fake,
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toContain("https");
+  expect(fake.calls).toEqual([]);
+
+  for (const name of ["..", "a/b", "-x"]) {
+    const { text, calls } = await callRaw("cloneRepo", {
+      workspace: "cloudpid",
+      source: "octocat/Hello-World",
+      name,
+    });
+
+    expect(text).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+});
+
+it("fails a clone that does not finish with git's message", async () => {
+  const fake = fakeRegistries();
+
+  fake.failClones("git clone failed (exit 128): fatal: repository not found");
+
+  const error = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      Effect.flip(registry.cloneRepo({ workspace: "cloudpid", source: "octocat/missing" })),
+    ),
+    fake,
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toBe(
+    "Clone failed: git clone failed (exit 128): fatal: repository not found",
+  );
 });
 
 it("reads the settings from the singleton Registry", async () => {
