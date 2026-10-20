@@ -32,54 +32,48 @@ export const WORKER_SHELL_COMMANDS: readonly string[] = names(
 );
 
 /** The shell's own commands, which run in the Worker Shell's interpreter. `source`, `.`, and `eval` run unseen text. */
-const SHELL_BUILTINS: ReadonlySet<string> = new Set(
-  names(
-    [
-      ": true false cd export unset exit local set break continue return shift getopts pushd popd dirs",
-      "read mapfile readarray declare typeset readonly let test [ [[ echo printf pwd alias unalias type hash",
-      "ulimit umask trap wait kill jobs fg bg history help builtin command exec shopt time",
-    ].join(" "),
-  ),
+export const WORKER_SHELL_BUILTINS: readonly string[] = names(
+  [
+    ": true false cd export unset exit local set break continue return shift getopts pushd popd dirs",
+    "read mapfile readarray declare typeset readonly let test [ [[ echo printf pwd alias unalias type hash",
+    "ulimit umask trap wait kill jobs fg bg history help builtin command exec shopt time",
+  ].join(" "),
 );
+
+const SHELL_BUILTINS: ReadonlySet<string> = new Set(WORKER_SHELL_BUILTINS);
 
 const WORKER_COMMAND_SET: ReadonlySet<string> = new Set(WORKER_SHELL_COMMANDS);
 
-/** What computer's git client takes of one subcommand: the options it parses, and how many other arguments. */
+/** What the Worker Shell's git is trusted with for one subcommand: the options it takes, and what else may follow. */
 type GitSubcommand = {
   /** Options without a value. */
   readonly flags?: readonly string[];
   /** Options with a value, as the next word or after `=`. */
   readonly values?: readonly string[];
-  /** Options that take a value only after `=`. */
-  readonly optionalValues?: readonly string[];
-  readonly maxArguments?: number;
+  /** At least one of these options must be there: the forms of the subcommand whose output is git's. */
+  readonly oneOf?: readonly string[];
+  /** The only words that may follow the options, when it takes any (`rev-parse HEAD`). */
+  readonly arguments?: readonly string[];
 };
 
 /**
- * The subcommands git runs on the Worker Shell: local ones that read the repository or stage and commit. An option the
- * client does not parse sends the call to the Container's real git. What is left of computer's client goes there too:
- * the network (`clone`, `fetch`, `pull`, `push`: the Worker Shell has no network and no credentials), `config` (the
- * Container's identity is the one that counts), and what rewrites the working tree (`checkout`, `switch`, `reset`,
- * `merge`, `stash`, `clean`), where real git's refusals matter.
+ * The subcommands git runs on the Worker Shell: the few read-only ones whose output is checked against real git's in
+ * `apps/server/src/workspace/bash.workerd.test.ts`, in the forms checked. computer's git client is isomorphic-git, not
+ * git, so everything else goes to the Container's real git: what writes the index or refs (`add`, `rm`, `commit`,
+ * `tag`, `branch <name>`, `init`, `remote add`: two git implementations must not write one `.git`), what it gets
+ * wrong (`diff` of a revision prints nothing, `show` has no patch, `log` dates and paths, `status -s`, `cat-file`), what
+ * needs the network or credentials (`clone`, `fetch`, `pull`, `push`), and what rewrites the working tree (`checkout`,
+ * `switch`, `reset`, `merge`, `stash`, `clean`). Bare `git status` prints one `XY path` line per changed file (`?` for
+ * untracked), not git's long format, and `git status` of a repo that tracks files under the `ignore` paths shows them
+ * deleted, since those never reach the Workspace.
  */
 const GIT_ON_WORKER: ReadonlyMap<string, GitSubcommand> = new Map(
   Object.entries({
-    status: { flags: ["-s", "--short"], optionalValues: ["--porcelain"], maxArguments: 0 },
-    diff: { flags: ["--stat", "--name-only", "--name-status"] },
-    log: { flags: ["--oneline"], values: ["-n", "--format", "--pretty"] },
-    show: {},
-    add: { flags: ["-f", "--force", "-A", "--all"] },
-    rm: { flags: ["--cached"] },
-    commit: { flags: ["-a", "--all", "--amend"], values: ["-m", "--message", "--author"] },
-    "rev-parse": { flags: ["--abbrev-ref", "--show-toplevel"] },
-    "symbolic-ref": { flags: ["--short", "-q", "--quiet"] },
-    "ls-files": { values: ["--ref"] },
-    "ls-tree": {},
-    "cat-file": { flags: ["-p", "-t", "-s"] },
-    branch: { flags: ["-d", "-D", "--delete", "-f", "--force", "--show-current"] },
-    tag: { flags: ["-d", "--delete", "-f", "--force"] },
-    init: { flags: ["--bare"], values: ["-b", "--initial-branch"] },
-    remote: { maxArguments: 3 },
+    status: { arguments: [] },
+    log: { flags: ["--oneline"], values: ["-n"], oneOf: ["--oneline"], arguments: [] },
+    "rev-parse": { flags: ["--abbrev-ref", "--show-toplevel"], arguments: ["HEAD"] },
+    "ls-files": { arguments: [] },
+    branch: { flags: ["--show-current"], arguments: [] },
   } satisfies Record<string, GitSubcommand>),
 );
 
@@ -538,8 +532,13 @@ class Reader {
     return true;
   }
 
-  /** Skip `$((…))` or `${…}`, which hold no commands to run; false if unclosed. */
+  /**
+   * Skip `$((…))` or `${…}`; false if unclosed. They run nothing themselves, but a substitution inside one does, and
+   * that is not read: the command is left to bash.
+   */
   #skipBalanced(open: string, close: string): boolean {
+    const start = this.#at;
+
     this.#at++;
 
     let depth = 0;
@@ -551,6 +550,10 @@ class Reader {
       else if (char === open) depth++;
       else if (char === close && --depth === 0) {
         this.#at++;
+
+        if (/\$\(|`/.test(this.#source.slice(start + 2, this.#at))) {
+          this.unreadable ??= "a command substitution inside ${…} or $((…))";
+        }
 
         return true;
       }
@@ -619,42 +622,32 @@ const gitNeeds = (args: readonly Word[]): string | undefined => {
 
   if (spec === undefined) return `${label} is not a git command the Worker Shell runs`;
 
-  let positional = 0;
   let afterDashes = false;
+  let oneOf = spec.oneOf === undefined;
 
   for (let i = at + 1; i < args.length; i++) {
     const text = args[i]?.text ?? "";
 
     if (afterDashes || text === "-" || !text.startsWith("-")) {
-      positional++;
+      if (spec.arguments?.includes(text) !== true) {
+        return `${label} ${text}: the Worker Shell's git does not take that argument`;
+      }
     } else if (text === "--") {
       afterDashes = true;
     } else if (sub.text === "log" && /^-\d+$/.test(text)) {
       // `git log -5`
-    } else if (sub.text === "commit" && /^-a+m$/.test(text)) {
+    } else if (spec.flags?.includes(text) === true) {
+      oneOf ||= spec.oneOf?.includes(text) === true;
+    } else if (spec.values?.includes(text) === true) {
       i++;
     } else {
-      const equals = text.startsWith("--") ? text.indexOf("=") : -1;
-      const name = equals === -1 ? text : text.slice(0, equals);
-
-      if (equals === -1 && spec.flags?.includes(name) === true) continue;
-
-      if (spec.values?.includes(name) === true) {
-        if (equals === -1) i++;
-        continue;
-      }
-
-      if (spec.optionalValues?.includes(name) === true) continue;
-
       return `${label} ${text}: the Worker Shell's git does not take that option`;
     }
   }
 
-  if (spec.maxArguments !== undefined && positional > spec.maxArguments) {
-    return `${label} with arguments the Worker Shell's git does not take`;
-  }
-
-  return undefined;
+  return oneOf
+    ? undefined
+    : `${label} without ${spec.oneOf?.join(" or ")}: its output is not git's`;
 };
 
 type Context = { readonly functions: ReadonlySet<string>; readonly depth: number };

@@ -18,11 +18,7 @@ import {
 import { createGitClient } from "@cloudflare/computer/git";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import jq from "@cloudflare/computer/shell/jq";
-import {
-  DEFAULT_GIT_EMAIL,
-  DEFAULT_GIT_NAME,
-  TOOLCHAIN_IGNORE,
-} from "@cloudpid/sandbox-image/toolchains";
+import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
   type EnvRequest,
   type EnvResponse,
@@ -66,9 +62,6 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
 export const CONTAINER_BACKEND_ID = "container-shell";
-
-const nonEmpty = (value: string | undefined) =>
-  value === undefined || value === "" ? undefined : value;
 
 export class Workspace extends ContainerHost {
   readonly #workspace: ComputerWorkspace;
@@ -120,13 +113,9 @@ export class Workspace extends ContainerHost {
     this.#workspace = new ComputerWorkspace({
       storage: ctx.storage,
       observer: this.#containerUseObserver(),
-      // The Worker Shell's `git` (status, diff, log, add, commit, … that `bash` routes there) runs on computer's git client,
-      // committing as the identity the Container's bootstrap sets too.
+      // The Worker Shell's `git` runs on computer's git client. `bash` routes only a few read-only subcommands there
+      // (`bash-routing.ts`): the Container's real git is the only one that writes `.git`.
       git: createGitClient(),
-      defaultGitIdentity: {
-        name: nonEmpty(env.CLOUDPID_GIT_NAME) ?? DEFAULT_GIT_NAME,
-        email: nonEmpty(env.CLOUDPID_GIT_EMAIL) ?? DEFAULT_GIT_EMAIL,
-      },
       backends: [
         new WorkerShellBackend({
           loader: env.LOADER,
