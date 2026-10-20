@@ -1,3 +1,5 @@
+// workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";

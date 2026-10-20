@@ -1,3 +1,5 @@
+// workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 // The workerd test Worker: a Durable Object that hosts a `SessionHost` over the faux provider, as the Session DO
 // hosts one over the model proxy. Tests drive it with `runInDurableObject()`, evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";

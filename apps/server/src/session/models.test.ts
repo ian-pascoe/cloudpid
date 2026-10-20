@@ -5,15 +5,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("sends the default model's requests to the model proxy with its API key", async () => {
+it("sends the default model's requests to the model proxy with its API key", () => {
   const requests: Request[] = [];
 
-  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     requests.push(new Request(input, init));
 
-    return Response.json(
-      { type: "error", error: { type: "invalid_request_error", message: "stub" } },
-      { status: 400 },
+    return Promise.resolve(
+      Response.json(
+        { type: "error", error: { type: "invalid_request_error", message: "stub" } },
+        { status: 400 },
+      ),
     );
   });
 
@@ -21,14 +23,15 @@ it("sends the default model's requests to the model proxy with its API key", asy
   const model = models.getModel(DEFAULT_AGENT.model.provider, DEFAULT_AGENT.model.modelId);
 
   expect(model).toBeDefined();
-  await models.completeSimple(model!, {
-    messages: [{ role: "user", content: "hi", timestamp: 0 }],
-  });
 
-  const request = requests[0];
+  return models
+    .completeSimple(model!, { messages: [{ role: "user", content: "hi", timestamp: 0 }] })
+    .then(() => {
+      const request = requests[0];
 
-  expect(new URL(request!.url).origin).toBe("https://proxy.example.test");
-  expect(request!.headers.get("x-api-key")).toBe("test-key");
+      expect(new URL(request!.url).origin).toBe("https://proxy.example.test");
+      expect(request!.headers.get("x-api-key")).toBe("test-key");
+    });
 });
 
 it("caps the proxied Claude models' context window as the local models.json does", () => {

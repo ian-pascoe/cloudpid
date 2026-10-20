@@ -78,3 +78,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Bound to the Worker as secrets by the Session DO's `Config.Redacted` reads.
+          MODEL_PROXY_URL: ${{ vars.MODEL_PROXY_URL }}
+          MODEL_PROXY_API_KEY: ${{ secrets.MODEL_PROXY_API_KEY }}

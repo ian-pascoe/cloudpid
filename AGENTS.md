@@ -11,7 +11,7 @@ Layout is in `docs/spec.md` → _Repository layout_. Root `typecheck`, `lint`, `
 
 Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<dir>` and follows the same shape:
 
-- **Just-in-time**: `exports` point at `src/*.ts`; there is no build step to run before dependents see a change. Add the package's own tests as `src/*.test.ts`.
+- **Just-in-time**: `exports` point at `src/*.ts`; there is no build step to run before dependents see a change. Add the package's own tests as `src/*.test.ts`. Tests that need workerd (Durable Object storage, alarms, eviction) are `src/**/*.workerd.test.ts`, run by the package's `workerd` Vitest project through `@cloudflare/vitest-plugin` (see `apps/server/vitest.config.ts`): `pnpm exec vitest run --project workerd <file>`.
 - **`package.json`** has `typecheck` (`tsc`), `lint` (`oxlint`), and `test` (`vitest run`) scripts, and a `workspace:*` devDependency on `@cloudpid/config`.
 - **`tsconfig.json`** extends `@cloudpid/config/tsconfig/base.json`; **`vitest.config.ts`** re-exports `@cloudpid/config/vitest`; **`.oxlintrc.json`** extends the root config. Copy these from a sibling package instead of editing the shared bases per package.
 - Tooling (`typescript`, `vitest`, `oxlint`, `oxfmt`, `turbo`) is installed once at the root; packages do not list it.
@@ -25,6 +25,8 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 ## Infra
 
 The alchemy stack is `infra/alchemy.run.ts`; its scripts run alchemy from `infra/`: `pnpm --filter @cloudpid/infra run dev` serves workerd on `http://localhost:1337`, and `pnpm --filter @cloudpid/infra run deploy --stage dev_$USER` deploys to Cloudflare (use `run`, since bare `pnpm deploy` is pnpm's built-in, and no `--`, which pnpm forwards literally; add `--dry-run` to only plan). It authenticates with the local alchemy profile (`alchemy profile edit --add Cloudflare`) and keeps state with `Cloudflare.state()`. A Worker is declared in its own app with `main: import.meta.url`; the stack imports and `yield*`s it.
+
+**Model proxy secrets.** Every deploy and `alchemy dev` needs `MODEL_PROXY_URL` and `MODEL_PROXY_API_KEY` in the environment: the Session DO reads them with `Config.Redacted`, which binds them to the Worker as secrets (see _CI_ for where they live). `alchemy dev --stage dev_$USER` replaces that stage's deployed Worker with the local one and deletes its Access app; redeploy the stage afterwards.
 
 **Stages and Access.** `apps/server/src/deployment.ts` decides per stage where the Worker is served and who may reach it: `prod` is served on `https://pi.ianpascoe.dev` (workers.dev off), every other stage on `workers.dev`, and all of them sit behind an Access application that allows only the owner's email. The Access team domain is `spirit-led-software`. `alchemy dev` runs locally and has no Access.
 

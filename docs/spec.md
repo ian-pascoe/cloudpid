@@ -208,7 +208,7 @@ From v2, secret references may name 1Password items. Credentials then move into 
   - `pi.usage` is shown per Session in the UI.
   - A per-Session spend limit is enforced by a `beforeRequest` hook.
 - **Testing:**
-  - Vitest 5 with `@cloudflare/vitest-pool-workers` for DO tests: eviction, alarm, and resume.
+  - Vitest 5 with `@cloudflare/vitest-plugin` (the successor of `vitest-pool-workers`) for DO tests: eviction, alarm, and resume.
   - pi-ai `fauxProvider` for scripted turns.
   - `registerEnvConformance` for `ComputerExecutionEnv`.
   - `@effect/vitest`.
