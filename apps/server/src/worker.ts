@@ -1,4 +1,5 @@
 import * as Alchemy from "alchemy";
+import * as Command from "alchemy/Command";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -12,6 +13,33 @@ import { serveRegistryRpc } from "./registry/rpc.ts";
 import { isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 
+/** The web app's package. Resolved from this file: alchemy runs from `infra/`, so a relative path would miss it. */
+const WEB_DIRECTORY = new URL("../../web/", import.meta.url).pathname;
+
+/**
+ * The web app (`apps/web`), built at deploy time and served as static assets by this Worker: a request that matches a
+ * file is answered by the asset layer without waking the Worker, a navigation to an unknown path (`/sessions/:id`)
+ * gets `index.html`, and every other request (the Session socket, `/rpc`) reaches the Worker. The Worker's bundle
+ * folds the build step away, so only the deploy runs it.
+ */
+const webAssets = Effect.gen(function* () {
+  if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
+
+  const build = yield* Command.Build("WebBuild", {
+    command: "pnpm run build",
+    cwd: WEB_DIRECTORY,
+    outdir: "dist",
+    // The app imports the protocol package's source, which the default scope (the app's own files) would miss.
+    memo: { include: ["**/*", "../../packages/protocol/src/**"], lockfile: true },
+  });
+
+  return {
+    directory: build.outdir,
+    hash: build.hash.output,
+    notFoundHandling: "single-page-application" as const,
+  };
+});
+
 /**
  * Deploy-time props, resolved from the stage. The stage is absent once the Worker runs (the props
  * only matter at deploy time), so that case falls back to a non-prod stage.
@@ -23,6 +51,7 @@ const props = Effect.gen(function* () {
     main: import.meta.url,
     compatibility: { date: "2026-08-31" },
     ...deployment(stage),
+    assets: yield* webAssets,
   };
 });
 
