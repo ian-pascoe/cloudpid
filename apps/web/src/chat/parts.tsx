@@ -1,3 +1,5 @@
+// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: JSX lists are native arrays.
+
 import {
   useAuiState,
   type ReasoningMessagePartComponent,
@@ -8,7 +10,9 @@ import { Check, ChevronRight, Loader, X } from "lucide-react";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
+import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
 
 /**
@@ -70,6 +74,56 @@ const StreamedOutput = Schema.Struct({ output: Schema.NonEmptyString });
 
 const decodeStreamedOutput = Schema.decodeUnknownOption(StreamedOutput);
 
+const decodeNested = Schema.decodeUnknownOption(
+  Schema.Struct({ nested: Schema.Array(NestedCall) }),
+);
+
+/** The mark of a call's state, as on a tool card's own line. */
+const StateIcon = ({ status }: { status: NestedCall["status"] }) => {
+  switch (status) {
+    case "running":
+      return <Loader className="size-3.5 motion-safe:animate-spin" aria-label="Running" />;
+    case "ok":
+      return <Check className="size-3.5 text-success" aria-label="Done" />;
+    case "error":
+      return <X className="size-3.5 text-destructive" aria-label="Failed" />;
+    case "cancelled":
+      return <X className="size-3.5" aria-label="Stopped" />;
+  }
+};
+
+/** The calls a tool made, such as a script's, in the order they started: live while it runs, then as it recorded them. */
+const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
+  <div className="mt-2 first:mt-0">
+    <div className="text-xs font-medium text-muted-foreground">Calls</div>
+    <ul className="mt-1 space-y-1">
+      {calls.map((call) => {
+        const summary = toolSummary(call.name, call.args);
+
+        return (
+          <li key={call.id}>
+            <div className="flex items-center gap-2 text-xs">
+              <StateIcon status={call.status} />
+              <span className="font-mono text-[0.8125rem] text-foreground">{call.name}</span>
+              {summary !== undefined && (
+                <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>
+              )}
+              {call.durationMs !== undefined && (
+                <span className="ml-auto shrink-0 text-muted-foreground">
+                  {duration(call.durationMs)}
+                </span>
+              )}
+            </div>
+            {call.error !== undefined && (
+              <div className="mt-0.5 ml-5.5 truncate text-xs text-destructive">{call.error}</div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  </div>
+);
+
 /** A tool call: its name and state on one line, its arguments, streamed output, and result when opened. */
 export const ToolCallCard: ToolCallMessagePartComponent = ({
   toolName,
@@ -90,10 +144,17 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
 
   const summary = toolSummary(toolName, args);
 
+  const calls = Option.getOrElse(
+    Option.map(decodeNested(artifact), (found) => found.nested),
+    () => [],
+  );
+
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
 
   return (
     <Disclosure
+      // The calls of a script that is running show as they start.
+      open={running && calls.length > 0 ? true : undefined}
       summary={
         <>
           {running ? (
@@ -113,6 +174,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       }
     >
       <Output label="Arguments" text={shownArgs} />
+      {calls.length > 0 && <NestedCalls calls={calls} />}
       {streamed !== undefined && result === undefined && <Output label="Output" text={streamed} />}
       {result !== undefined && (
         <Output

@@ -1,4 +1,5 @@
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 
@@ -23,6 +24,15 @@ const search = (args: Args): Option.Option<string> =>
     }),
   );
 
+/** The first line of a script that is not its `// @options:` line, or nothing for an empty one. */
+const script = (args: Args): Option.Option<string> =>
+  Option.flatMap(text(args, "code"), (code) =>
+    Arr.findFirst(
+      Arr.map(code.split("\n"), (line) => line.trim()),
+      (line) => line !== "" && !line.startsWith("// @options:"),
+    ),
+  );
+
 /**
  * The one thing about a call worth showing beside its name: the path a file tool works on, what a search looks for, or
  * the command a shell runs. Nothing for a tool the page does not know, or arguments that do not have it.
@@ -39,6 +49,8 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "grep":
       case "find":
         return search(args);
+      case "codemode":
+        return script(args);
       case "bash":
         return Option.map(text(args, "command"), (command) => command.split("\n")[0] ?? command);
       default:

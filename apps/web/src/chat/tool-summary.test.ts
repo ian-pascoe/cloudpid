@@ -20,6 +20,16 @@ describe("toolSummary", () => {
     expect(toolSummary("bash", { command: "x".repeat(200) })).toBe(`${"x".repeat(79)}…`);
   });
 
+  it("shows the first line of a script, past its options line", () => {
+    expect(
+      toolSummary("codemode", { code: "const a = await tools.read({ path: 'a' });\nreturn a;" }),
+    ).toBe("const a = await tools.read({ path: 'a' });");
+    expect(
+      toolSummary("codemode", { code: '// @options: {"timeout_ms": 5000}\n\nreturn 1;' }),
+    ).toBe("return 1;");
+    expect(toolSummary("codemode", { code: "" })).toBeUndefined();
+  });
+
   it("has nothing to say about a tool it does not know, or arguments it cannot read", () => {
     expect(toolSummary("web_fetch", { url: "https://example.com" })).toBeUndefined();
     expect(toolSummary("read", {})).toBeUndefined();

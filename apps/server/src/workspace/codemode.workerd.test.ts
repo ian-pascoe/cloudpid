@@ -1,6 +1,6 @@
 // A Session's `codemode` tool over the real Workspace and sandbox Durable Objects.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
@@ -85,6 +85,19 @@ describe("the codemode tool", () => {
       await instance.submit({ requestId: "turn-1", text: "go" });
       // The script has made its first call, and waits in the second.
       await instance.holding.promise;
+
+      // A client that watches sees the calls under the `codemode` call that is running them.
+      const { nestedTools, tools } = await instance.snapshot();
+      const parent = tools.find((slot) => slot.name === "codemode");
+
+      expect(parent?.status).toBe("running");
+      expect(
+        nestedTools.map(({ name, status, parentCallId }) => ({ name, status, parentCallId })),
+      ).toEqual([
+        { name: "write", status: "done", parentCallId: parent?.callId },
+        { name: "bash", status: "done", parentCallId: parent?.callId },
+        { name: "hold", status: "running", parentCallId: parent?.callId },
+      ]);
     });
 
     await runInDurableObject(stub, (instance: TestCodemodeSession) => instance.closeSandbox());
