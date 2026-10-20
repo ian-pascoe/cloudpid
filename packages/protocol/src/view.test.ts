@@ -324,6 +324,79 @@ describe("the session view", () => {
     expect(settled.tools).toEqual([]);
   });
 
+  describe("a nested call that ended live and in a snapshot", () => {
+    const nested = { toolCallId: "c1/c1", toolName: "bash", parentToolCallId: "c1" };
+
+    const slot = {
+      callId: "c1/c1",
+      parentCallId: "c1",
+      name: "bash",
+      arguments: { command: "ls" },
+    };
+
+    const live = (...events: Fixture[]) =>
+      fold(
+        asEvent({ type: "tool_execution_start", args: { command: "ls" }, ...nested }),
+        asEvent({ type: "tool_execution_update", output: { append: "partial" }, ...nested }),
+        ...events.map(asEvent),
+      ).nestedTools;
+
+    it("is the same call: no output, its duration, and its error text", () => {
+      const ended = live({
+        type: "tool_execution_end",
+        result: {
+          isError: true,
+          durationMs: 40,
+          diagnostics: [
+            { severity: "info", message: "fyi" },
+            { severity: "error", message: "boom" },
+            { severity: "error", message: "bang" },
+          ],
+        },
+        ...nested,
+      });
+
+      const listed = fold(
+        snapshot({
+          nestedTools: [
+            {
+              ...slot,
+              status: "done",
+              summary: { isError: true, durationMs: 40, error: "boom\nbang" },
+            },
+          ],
+        }),
+      ).nestedTools;
+
+      expect(ended).toEqual(listed);
+    });
+
+    it("is a failure when it faulted or was orphaned, with no result and no summary", () => {
+      const ended = live({ type: "tool_execution_end", ...nested });
+      const listed = fold(snapshot({ nestedTools: [{ ...slot, status: "done" }] })).nestedTools;
+
+      expect(ended).toEqual(listed);
+      expect(ended[0]).toMatchObject({ status: "done", isError: true, output: "" });
+    });
+
+    it("has no error text when it succeeded, whatever its diagnostics say", () => {
+      const [ended] = live({
+        type: "tool_execution_end",
+        result: { isError: false, diagnostics: [{ severity: "error", message: "late" }] },
+        ...nested,
+      });
+
+      expect(ended).toMatchObject({ isError: false });
+      expect(ended).not.toHaveProperty("error");
+    });
+
+    it("is not shown while a snapshot lists it as pending, as live shows nothing before it starts", () => {
+      expect(fold(snapshot({ nestedTools: [{ ...slot, status: "pending" }] })).nestedTools).toEqual(
+        [],
+      );
+    });
+  });
+
   it("drops the nested calls of nested calls with their call, and the others at the end of the run", () => {
     const start = (toolCallId: string, parentToolCallId: string) =>
       asEvent({

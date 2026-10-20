@@ -24,15 +24,19 @@ export class CodemodeSandbox extends Context.Service<CodemodeSandbox, CodemodeSa
 
 /**
  * A sandbox that runs each script in the namespace's object named `name`: one per Session, so a Session's scripts take
- * turns on one thread in an isolate of their own, apart from the Session DO's and other Sessions'.
+ * turns on one object, in the sandbox Worker's isolates rather than the Session DO's. Objects of different Sessions may
+ * share an isolate, and so its thread and memory.
  */
 export const remoteSandbox = (
   namespace: CodemodeSandboxNamespace,
   name: string,
 ): CodemodeSandboxBase => new RemoteCodemodeSandbox({ remote: () => namespace.getByName(name) });
 
-/** The `codemode` tool and its prompt section, over the Session's sandbox. */
+/**
+ * The `codemode` tool and its prompt section, over the Session's sandbox. Scripts get no `models.*`: the model proxy
+ * serves only chat models, so the classifier and image generation they offer could not succeed.
+ */
 export const Codemode: Effect.Effect<Extension, never, CodemodeSandbox> = Effect.map(
   CodemodeSandbox,
-  (sandbox) => createCodemodeExtension({ sandbox }),
+  (sandbox) => createCodemodeExtension({ sandbox, models: false }),
 );

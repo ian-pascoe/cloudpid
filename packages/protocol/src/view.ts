@@ -21,8 +21,8 @@
 // Changes: types renamed (`PiSessionView` → `SessionView`, `PiRunningTool` → `RunningTool`), functions written as
 // `const` arrow functions, imports end in `.ts`, `blockPart` guards an undefined first part (`noUncheckedIndexedAccess`),
 // the view keeps the inbox's items (`inbox`) instead of their count (`queued`), tool events of nested calls are left
-// out of the running tools and kept in `nestedTools` instead, with their output and how they ended (the example
-// ignores them), and the view also follows the agent's thinking level (`thinkingLevel`). Formatted for this repository.
+// out of the running tools and kept in `nestedTools` instead, with their output and how they ended (the example lists
+// them among the running tools like any other call), and the view also follows the agent's thinking level (`thinkingLevel`). Formatted for this repository.
 
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
 
@@ -206,7 +206,8 @@ const snapshotNestedTool = (slot: SnapshotEvent["nestedTools"][number]): NestedT
     args: slot.arguments,
     output: slot.output ?? "",
     status: slot.status === "done" ? "done" : "running",
-    isError: slot.summary?.isError ?? false,
+    // A call that faulted or was orphaned is done without a summary: it did not succeed.
+    isError: slot.summary?.isError ?? slot.status === "done",
   };
 
   const { durationMs, error } = slot.summary ?? {};
@@ -217,6 +218,25 @@ const snapshotNestedTool = (slot: SnapshotEvent["nestedTools"][number]): NestedT
 
   return nested;
 };
+
+/** The most error text a nested call's summary keeps, as pi-durable cuts it. */
+const MAX_ERROR_CHARS = 500;
+
+/** The error messages of a nested call's result joined with newlines, cut as pi-durable cuts a summary's. */
+const errorText = (
+  result:
+    | {
+        readonly isError: boolean;
+        readonly diagnostics: readonly { readonly severity: string; readonly message: string }[];
+      }
+    | undefined,
+): string =>
+  result?.isError === true
+    ? result.diagnostics
+        .flatMap((diagnostic) => (diagnostic.severity === "error" ? [diagnostic.message] : []))
+        .join("\n")
+        .slice(0, MAX_ERROR_CHARS)
+    : "";
 
 /** A running tool's output after an update: its window trimmed at the front and appended to, or replaced. */
 const nextOutput = (
@@ -258,7 +278,10 @@ export const reduceView = (view: SessionView, event: AgentEvent): SessionView =>
         tools: event.tools
           .filter((slot) => slot.status === "running")
           .map((slot) => ({ callId: slot.callId, name: slot.name, output: slot.output ?? "" })),
-        nestedTools: event.nestedTools.map(snapshotNestedTool),
+        // A call not started yet is not shown, as live shows nothing before its `tool_execution_start`.
+        nestedTools: event.nestedTools.flatMap((slot) =>
+          slot.status === "pending" ? [] : [snapshotNestedTool(slot)],
+        ),
         inbox: event.inbox,
         retry: event.generation?.retry ?? null,
         model: event.agent.model ?? null,
@@ -347,16 +370,22 @@ export const reduceView = (view: SessionView, event: AgentEvent): SessionView =>
           nestedTools: view.nestedTools.map((tool): NestedTool => {
             if (tool.callId !== event.toolCallId) return tool;
 
-            const done: NestedTool = {
+            // As a snapshot lists a done call: no output, and how it ended. A call with no result faulted or was
+            // orphaned: it did not succeed.
+            const done: Types.Mutable<NestedTool> = {
               ...tool,
+              output: "",
               status: "done",
-              // A call with no result faulted or was orphaned: it did not succeed.
               isError: result?.isError ?? true,
             };
 
-            return result?.durationMs === undefined
-              ? done
-              : { ...done, durationMs: result.durationMs };
+            if (result?.durationMs !== undefined) done.durationMs = result.durationMs;
+
+            const error = errorText(result);
+
+            if (error !== "") done.error = error;
+
+            return done;
           }),
         };
       }
