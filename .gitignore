@@ -5,3 +5,4 @@ node_modules/
 .alchemy/
 .env*
 !.env.example
+dist/
