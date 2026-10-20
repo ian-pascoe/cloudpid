@@ -4,8 +4,14 @@ import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest
 
 const workerd = "src/**/*.workerd.test.ts";
 
-/** Workspace DO tests run in their own test Worker, which hosts the Workspace DO and the Worker Shell's loader. */
-const workspaceEnv = "src/workspace/env.workerd.test.ts";
+/**
+ * Workspace DO tests run in their own test Worker, which hosts the Workspace DO and the Worker Shell's loader.
+ *
+ * `bash.workerd.test.ts` needs only that. It lives here, not in `workerd-session`, because there it reproducibly crashed
+ * another file's worker in CI (a workerd websocket close, 1009 "Message too large"), which never happens locally and which
+ * nothing explains yet: https://github.com/ian-pascoe/cloudpid/issues/64. Move it when that is fixed.
+ */
+const workspaceOnly = ["src/workspace/env.workerd.test.ts", "src/workspace/bash.workerd.test.ts"];
 
 /** Every other Workspace test (Sessions and tools on a Workspace) runs in a test Worker that also hosts a Session host. */
 const onWorkspace = "src/workspace/**/*.workerd.test.ts";
@@ -53,7 +59,7 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd-workspace", include: [workspaceEnv] },
+        test: { name: "workerd-workspace", include: workspaceOnly },
       }),
       defineProject({
         plugins: [
@@ -77,7 +83,7 @@ export default defineConfig({
         test: {
           name: "workerd-session",
           include: [onWorkspace],
-          exclude: [...configDefaults.exclude, workspaceEnv],
+          exclude: [...configDefaults.exclude, ...workspaceOnly],
         },
       }),
     ],

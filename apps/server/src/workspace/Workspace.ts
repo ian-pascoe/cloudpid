@@ -16,6 +16,7 @@ import {
   withWorkspaceContainer,
 } from "@cloudflare/computer/backends/container";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
+import jq from "@cloudflare/computer/shell/jq";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
   type EnvRequest,
@@ -24,6 +25,7 @@ import {
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
 import { DurableObject } from "cloudflare:workers";
+import { workerShellGit } from "./git.ts";
 import { IDLE_STOP_MS, IdleStop } from "./idle.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
@@ -59,7 +61,7 @@ const ContainerHost = withWorkspaceContainer(class extends DurableObject<Workspa
 const LAST_USE_KEY = "cloudpid:container-last-use";
 
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
-const CONTAINER_BACKEND_ID = "container-shell";
+export const CONTAINER_BACKEND_ID = "container-shell";
 
 export class Workspace extends ContainerHost {
   readonly #workspace: ComputerWorkspace;
@@ -111,11 +113,16 @@ export class Workspace extends ContainerHost {
     this.#workspace = new ComputerWorkspace({
       storage: ctx.storage,
       observer: this.#containerUseObserver(),
+      // The Worker Shell's `git` runs on computer's git client. `bash` routes only a few read-only subcommands there
+      // (`bash-routing.ts`): the Container's real git is the only one that writes `.git`.
+      git: workerShellGit(),
       backends: [
         new WorkerShellBackend({
           loader: env.LOADER,
           workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
           ctx,
+          // `jq` is not in the shell's core commands.
+          commands: [jq],
         }),
         toolchains,
       ],
