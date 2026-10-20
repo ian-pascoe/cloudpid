@@ -3,11 +3,13 @@
 import {
   DEFAULT_SETTINGS,
   overridesFrom,
+  resolveLeniently,
   resolveSettings,
   type Settings,
   SettingsError,
   type SettingsOverrides,
 } from "@cloudpid/config";
+import * as Arr from "effect/Array";
 import * as Data from "effect/Data";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -35,23 +37,31 @@ const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
 const defaults: SettingsState = { settings: DEFAULT_SETTINGS, overrides: {} };
 
-/** The settings in force. Overrides that cannot be read or no longer resolve give the defaults, with the `problem`. */
+/**
+ * The settings in force. Saved overrides that no longer resolve (a model a release dropped, a setting it renamed) cost
+ * only themselves: the rest still apply, and `problem` lists what was left out, so saving the form that shows the
+ * survivors is the user's choice to forget the rest. Text that is not JSON gives the defaults, with the `problem`.
+ */
 export const readSettings = (documents: DocumentStore): SettingsState => {
   const body = documents.getDocument(SETTINGS_DOCUMENT);
 
   if (body === null) return defaults;
 
-  const overrides = parseJson(body);
+  const saved = parseJson(body);
 
-  if (Option.isNone(overrides)) {
+  if (Option.isNone(saved)) {
     return { ...defaults, problem: "The saved settings overrides are not valid JSON." };
   }
 
-  const resolved = resolveSettings(overrides.value);
+  const { settings, dropped } = resolveLeniently(saved.value);
+  const state = { settings, overrides: overridesFrom(settings) };
 
-  return Result.isSuccess(resolved)
-    ? { settings: resolved.success, overrides: overridesFrom(resolved.success) }
-    : { ...defaults, problem: resolved.failure.message };
+  return dropped.length === 0
+    ? state
+    : {
+        ...state,
+        problem: `These saved overrides no longer apply and are ignored:\n${Arr.join(dropped, "\n")}`,
+      };
 };
 
 /**

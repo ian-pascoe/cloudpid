@@ -46,15 +46,39 @@ describe("reading the settings", () => {
     });
   });
 
-  it("falls back to the defaults, and says why, when the saved overrides no longer resolve", () => {
-    // A setting a later release dropped, or a hand-edited row.
-    const store = documents({ [SETTINGS_DOCUMENT]: '{"model":"anthropic/retired-model"}' });
+  it("drops only the saved overrides that no longer resolve, keeps the others, and says which", () => {
+    // A model a later release dropped, beside overrides that are still valid.
+    const store = documents({
+      [SETTINGS_DOCUMENT]:
+        '{"model":"anthropic/retired-model","thinkingLevel":"low","roles":{"xlarge":{"model":"anthropic/retired-model","hint":"Mine"}}}',
+    });
 
     const state = readSettings(store);
 
-    expect(state.settings).toEqual(DEFAULT_SETTINGS);
-    expect(state.overrides).toEqual({});
-    expect(state.problem).toContain("model");
+    expect(state.settings.model).toBe(DEFAULT_SETTINGS.model);
+    expect(state.settings.thinkingLevel).toBe("low");
+    expect(state.settings.roles.xlarge).toEqual({
+      model: "anthropic/claude-fable-5-1",
+      hint: "Mine",
+    });
+    expect(state.overrides).toEqual({ thinkingLevel: "low", roles: { xlarge: { hint: "Mine" } } });
+    expect(state.problem).toContain("model:");
+    expect(state.problem).toContain("roles.xlarge.model");
+  });
+
+  it("saves the survivors, and nothing of what was dropped, when the form saves them back", () => {
+    const store = documents({
+      [SETTINGS_DOCUMENT]: '{"model":"anthropic/retired-model","thinkingLevel":"low"}',
+    });
+
+    const { overrides } = readSettings(store);
+
+    saved(store, overrides);
+
+    expect(readSettings(store)).toEqual({
+      settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
+      overrides: { thinkingLevel: "low" },
+    });
   });
 
   it("falls back to the defaults when the saved text is not JSON", () => {

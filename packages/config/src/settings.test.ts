@@ -1,9 +1,11 @@
+import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SETTINGS,
   overridesFrom,
+  resolveLeniently,
   resolveSettings,
   SUPPORTED_MODELS,
   type Settings,
@@ -150,5 +152,46 @@ describe("overrides from settings", () => {
     });
 
     expect(resolved(overridesFrom(settings))).toEqual(settings);
+  });
+});
+
+describe("resolving stale overrides leniently", () => {
+  it("is the strict resolution when every override resolves", () => {
+    const overrides = { thinkingLevel: "low", roles: { small: { hint: "Mine" } } } as const;
+
+    expect(resolveLeniently(overrides)).toEqual({ settings: resolved(overrides), dropped: [] });
+  });
+
+  it("drops only the override that no longer resolves, and keeps its siblings", () => {
+    const { settings, dropped } = resolveLeniently({
+      model: "anthropic/retired-model",
+      thinkingLevel: "low",
+      compaction: { enabled: false, reserveTokens: -1 },
+      roles: { xlarge: { model: "anthropic/retired-model", hint: "Mine" } },
+    });
+
+    expect(settings.model).toBe(DEFAULT_SETTINGS.model);
+    expect(settings.thinkingLevel).toBe("low");
+    expect(settings.compaction).toEqual({ ...DEFAULT_SETTINGS.compaction, enabled: false });
+    expect(settings.roles.xlarge).toEqual({ model: "anthropic/claude-fable-5-1", hint: "Mine" });
+    expect(dropped).toHaveLength(3);
+    expect(Arr.join(dropped, "\n")).toContain("model:");
+    expect(Arr.join(dropped, "\n")).toContain("compaction.reserveTokens");
+    expect(Arr.join(dropped, "\n")).toContain("roles.xlarge.model");
+  });
+
+  it("drops a setting a release no longer has", () => {
+    const { settings, dropped } = resolveLeniently({ retiredSetting: true, thinkingLevel: "low" });
+
+    expect(settings.thinkingLevel).toBe("low");
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("retiredSetting");
+  });
+
+  it("gives the defaults for overrides that are not an object", () => {
+    const { settings, dropped } = resolveLeniently("high");
+
+    expect(settings).toEqual(DEFAULT_SETTINGS);
+    expect(dropped).toHaveLength(1);
   });
 });

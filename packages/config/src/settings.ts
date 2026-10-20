@@ -136,17 +136,31 @@ const decodeOverrides = Schema.decodeUnknownResult(Settings, {
   errors: "all",
 });
 
+/** One thing wrong with overrides: the keys that lead to it, and a line for a person to read. */
+type Problem = { readonly keys: ReadonlyArray<string>; readonly line: string };
+
+const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
+  Arr.map(formatIssues(error.issue).issues, (issue) => {
+    const path = pathText(issue.path);
+
+    return {
+      keys: Arr.map(issue.path ?? [], (key) =>
+        String(Predicate.hasProperty(key, "key") ? key.key : key),
+      ),
+      line: path === "" ? issue.message : `${path}: ${issue.message}`,
+    };
+  });
+
 /** The settings `overrides` give over the defaults, or why they are not valid settings. */
 export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings, SettingsError> =>
-  Result.mapError(decodeOverrides(overrides), (error) => {
-    const lines = Arr.map(formatIssues(error.issue).issues, (issue) => {
-      const path = pathText(issue.path);
-
-      return path === "" ? issue.message : `${path}: ${issue.message}`;
-    });
-
-    return SettingsError.make({ message: Arr.join(lines, "\n") });
-  });
+  Result.mapError(decodeOverrides(overrides), (error) =>
+    SettingsError.make({
+      message: Arr.join(
+        Arr.map(problemsOf(error), (problem) => problem.line),
+        "\n",
+      ),
+    }),
+  );
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
@@ -179,3 +193,49 @@ export const overridesFrom = (settings: Settings): SettingsOverrides =>
   // SAFETY: both sides are complete encodings of `Settings`, and the difference keeps only keys the first has.
   (difference(encodeSettings(settings), encodeSettings(DEFAULT_SETTINGS)) ??
     {}) as SettingsOverrides;
+
+/** `value` without what lies at `keys`, if anything does. */
+const omitPath = (value: Schema.Json, keys: ReadonlyArray<string>): Schema.Json => {
+  const [head, ...rest] = keys;
+
+  if (head === undefined || !isJsonObject(value)) return value;
+
+  return rest.length === 0
+    ? Record.filter(value, (_, key) => key !== head)
+    : Record.map(value, (entry, key) => (key === head ? omitPath(entry, rest) : entry));
+};
+
+/** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
+export type LenientSettings = {
+  readonly settings: Settings;
+  /** One line per setting dropped, as `resolveSettings` words it: empty when every override resolved. */
+  readonly dropped: ReadonlyArray<string>;
+};
+
+/**
+ * The settings `overrides` give once every override that does not resolve is dropped: a value a release no longer
+ * accepts (a model that left `SUPPORTED_MODELS`) or a key it dropped costs only itself, and its siblings still apply.
+ * Overrides that are not an object at all give the defaults. Writes stay strict (`resolveSettings`); this is for
+ * reading what an earlier release saved.
+ */
+export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
+  let rest = overrides;
+  const dropped: string[] = [];
+
+  // Dropping a path settles its problem; a few rounds cover a document with several.
+  for (let round = 0; round < 8; round += 1) {
+    const result = decodeOverrides(rest);
+
+    if (Result.isSuccess(result)) return { settings: result.success, dropped };
+
+    const problems = problemsOf(result.failure);
+
+    for (const problem of problems) dropped.push(problem.line);
+
+    if (Arr.some(problems, (problem) => problem.keys.length === 0)) break;
+
+    rest = Arr.reduce(problems, rest, (left, problem) => omitPath(left, problem.keys));
+  }
+
+  return { settings: DEFAULT_SETTINGS, dropped };
+};
