@@ -5,6 +5,7 @@ import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/c
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
+import type { Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
 import { WebConfig } from "@cloudpid/extensions/web";
 import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
@@ -45,7 +46,11 @@ export class TestWorkspaceSession extends TestSession {
     return (this.#sandbox ??= remoteSandbox(this.env.CODEMODE_SANDBOX, this.ctx.id.toString()));
   }
 
-  protected override hostExtensions(): Effect.Effect<readonly Extension[], never, Harness> {
+  protected override hostExtensions(): Effect.Effect<
+    readonly Extension[],
+    never,
+    Harness | Secrets
+  > {
     return sessionExtensions.pipe(
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
       Effect.provideService(CodemodeSandbox, this.sandbox()),

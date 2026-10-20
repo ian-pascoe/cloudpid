@@ -11,6 +11,7 @@ import {
   ServerMessageJson,
   type ClientMessage,
   type ConversationId,
+  type SecretRequest,
   type ServerMessage,
   type SessionView,
   type WhenBusy,
@@ -89,6 +90,10 @@ export interface SessionState {
   readonly sending: readonly SendingEntry[];
   /** The message of the last command that failed, until the next submit. */
   readonly failure: string | null;
+  /** Requests for Secrets waiting for the owner, to answer in a masked form; never shown in the chat. */
+  readonly secretRequests: readonly SecretRequest[];
+  /** How long an entered Secret is held, as the Session says. */
+  readonly secretLifetimeMinutes: number;
 }
 
 /** A submit not yet answered. Its `requestId` makes sending it again safe. */
@@ -170,6 +175,8 @@ export class SessionConnection {
     queue: EMPTY_QUEUE,
     sending: [],
     failure: null,
+    secretRequests: [],
+    secretLifetimeMinutes: 15,
   };
 
   constructor(
@@ -215,6 +222,17 @@ export class SessionConnection {
    */
   configure(change: ConfigureChange): void {
     if (this.opened) this.send({ type: "configure", id: this.nextCommandId(), ...change });
+  }
+
+  /**
+   * Answer Secret request `request` with the values the owner typed (a name left out is skipped), or `null` when the
+   * owner cancelled. The values go to the Session once and are not kept here; the Session's next `secret_requests`
+   * closes the form, and a refusal shows as `failure`.
+   */
+  answerSecrets(request: string, values: Readonly<Record<string, string>> | null): void {
+    if (this.opened) {
+      this.send({ type: "secret_answer", id: this.nextCommandId(), request, values });
+    }
   }
 
   /** Abort the root conversation's work and withdraw its queued input. */
@@ -282,6 +300,13 @@ export class SessionConnection {
         return;
       case "picked":
         this.update({ picked: { model: message.model, thinkingLevel: message.thinkingLevel } });
+
+        return;
+      case "secret_requests":
+        this.update({
+          secretRequests: message.requests,
+          secretLifetimeMinutes: message.lifetimeMinutes,
+        });
 
         return;
       case "events": {
@@ -402,6 +427,9 @@ export class SessionConnection {
     // What was sent went with the socket; the answers will not come.
     for (const submit of this.pending) submit.sent = false;
 
+    // The next socket says again which Secret requests wait.
+    this.state = { ...this.state, secretRequests: [] };
+
     // An unanswered close may leave the socket open at this end.
     socket?.close();
 
@@ -453,7 +481,12 @@ export class SessionConnection {
   }
 
   private update(
-    change: Partial<Pick<SessionState, "status" | "view" | "failure" | "picked">>,
+    change: Partial<
+      Pick<
+        SessionState,
+        "status" | "view" | "failure" | "picked" | "secretRequests" | "secretLifetimeMinutes"
+      >
+    >,
   ): void {
     const next = { ...this.state, ...change };
 

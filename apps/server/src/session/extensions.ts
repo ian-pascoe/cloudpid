@@ -2,9 +2,11 @@ import type { Harness } from "@cloudpid/effect-durable";
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContextManagement } from "@cloudpid/extensions/context";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
+import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Web, WebConfig, WebNetworkLive } from "@cloudpid/extensions/web";
 import type { Extension } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { Codemode, CodemodeSandbox } from "./codemode.ts";
 
@@ -14,13 +16,15 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * builds for each call and the `WorkspaceFiles` they need; `web_search` and `web_fetch`; `codemode`, whose scripts call
  * the tools above and run in the `CodemodeSandbox` (`./codemode.ts`); the subagent tools, which read their roles,
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
- * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`. Needs `WebConfig`: the search keys, which the Session DO reads with
+ * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; and the secret tools
+ * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
+ * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
  */
 export const sessionExtensions: Effect.Effect<
   readonly Extension[],
   never,
-  WorkspaceFiles | WebConfig | CodemodeSandbox | SubagentSettings | Harness
+  WorkspaceFiles | WebConfig | CodemodeSandbox | SubagentSettings | Harness | Secrets
 > = Effect.all([
   Effect.succeed(CodingTools),
   Files,
@@ -29,6 +33,18 @@ export const sessionExtensions: Effect.Effect<
   Subagents,
   ContextManagement,
 ]).pipe(
+  // Last, so its hooks see every other extension's results; only these tools' arguments resolve Secrets.
+  Effect.flatMap((extensions) => {
+    const [coding, files, web] = extensions;
+
+    const resolving = [
+      ...(coding.tools ?? []),
+      ...(files.tools ?? []),
+      ...Arr.filter(web.tools ?? [], (tool) => tool.name === "web_fetch"),
+    ];
+
+    return Effect.map(secretsExtension(resolving), (secrets) => [...extensions, secrets]);
+  }),
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(WebNetworkLive),
 );

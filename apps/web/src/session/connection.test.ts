@@ -310,6 +310,52 @@ describe("a Session connection", () => {
     expect(connection.getState().picked).toEqual({ model: false, thinkingLevel: false });
   });
 
+  describe("Secret requests", () => {
+    const request = { id: "12", conversationId: 1, names: ["API_KEY"], reason: "deploy" };
+
+    it("shows the requests the Session says are waiting, until it says none are", () => {
+      const { connection, latest } = setup();
+
+      expect(connection.getState().secretRequests).toEqual([]);
+
+      watching(latest());
+      latest().say({ type: "secret_requests", lifetimeMinutes: 15, requests: [request] });
+      expect(connection.getState().secretRequests).toEqual([request]);
+      expect(connection.getState().secretLifetimeMinutes).toBe(15);
+
+      latest().say({ type: "secret_requests", lifetimeMinutes: 15, requests: [] });
+      expect(connection.getState().secretRequests).toEqual([]);
+    });
+
+    it("sends the owner's answer, or a cancellation, for a request", () => {
+      const { connection, latest } = setup();
+
+      watching(latest());
+      connection.answerSecrets("12", { API_KEY: "value-typed-in" });
+      connection.answerSecrets("12", null);
+
+      expect(latest().commands().slice(-2)).toEqual([
+        {
+          type: "secret_answer",
+          id: expect.any(String),
+          request: "12",
+          values: { API_KEY: "value-typed-in" },
+        },
+        { type: "secret_answer", id: expect.any(String), request: "12", values: null },
+      ]);
+    });
+
+    it("forgets the requests of a closed socket, as the next one says again which wait", () => {
+      const { connection, latest } = setup();
+
+      watching(latest());
+      latest().say({ type: "secret_requests", lifetimeMinutes: 15, requests: [request] });
+      latest().drop();
+
+      expect(connection.getState().secretRequests).toEqual([]);
+    });
+  });
+
   it("shows why a configure failed", () => {
     const { connection, latest } = setup();
 

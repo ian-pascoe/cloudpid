@@ -70,6 +70,35 @@ describe("the Session socket messages", () => {
     );
   });
 
+  it("carry the Secret requests waiting for the owner, never a value", async () => {
+    const text = JSON.stringify({
+      type: "secret_requests",
+      lifetimeMinutes: 15,
+      requests: [{ id: "12", conversationId: 1, names: ["API_KEY"], reason: "deploy" }],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+  });
+
+  it("read the owner's answer to a Secret request, or its cancellation", async () => {
+    expect(
+      await readClient(
+        '{"type":"secret_answer","id":"c1","request":"12","values":{"API_KEY":"v"}}',
+      ),
+    ).toEqual(
+      Option.some({
+        type: "secret_answer",
+        id: "c1",
+        request: "12",
+        values: { API_KEY: "v" },
+      }),
+    );
+    expect(await readClient('{"type":"secret_answer","request":"12","values":null}')).toEqual(
+      Option.some({ type: "secret_answer", request: "12", values: null }),
+    );
+    expect(await readClient('{"type":"secret_answer","request":"12"}')).toEqual(Option.none());
+  });
+
   it("reject a configure for a model the proxy does not serve or a thinking level pi does not have", async () => {
     expect(await readClient('{"type":"configure","model":"anthropic/nope"}')).toEqual(
       Option.none(),

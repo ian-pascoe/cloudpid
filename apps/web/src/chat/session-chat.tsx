@@ -81,6 +81,9 @@ const LiveSession = ({
         onConfigure={(change) => {
           connection.configure(change);
         }}
+        onAnswerSecrets={(request, values) => {
+          connection.answerSecrets(request, values);
+        }}
       />
     </AssistantRuntimeProvider>
   );

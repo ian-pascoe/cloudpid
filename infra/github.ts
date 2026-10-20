@@ -12,7 +12,9 @@
  *   GITHUB_REPOSITORY  owner/name (default: ian-pascoe/cloudpid)
  *
  * Not managed here: the `production` environment's secret MODEL_PROXY_API_KEY, a Commissary API key minted in
- * Commissary's panel and set by hand (`gh secret set MODEL_PROXY_API_KEY --env production`).
+ * Commissary's panel and set by hand (`gh secret set MODEL_PROXY_API_KEY --env production`), and its secret
+ * SECRETS_ENCRYPTION_KEY, the master key for the owner's Secrets (`openssl rand -base64 32 | gh secret set
+ * SECRETS_ENCRYPTION_KEY --env production`).
  */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -47,7 +49,7 @@ export default Alchemy.Stack(
     );
 
     // Retained on destroy: deleting a GitHub environment also deletes the secrets set on it by hand
-    // (MODEL_PROXY_API_KEY), so rotating the deploy token must not take it down.
+    // (MODEL_PROXY_API_KEY, SECRETS_ENCRYPTION_KEY), so rotating the deploy token must not take it down.
     const production = yield* GitHub.Environment("Production", {
       ...repo,
       name: "production",

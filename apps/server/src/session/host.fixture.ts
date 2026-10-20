@@ -5,6 +5,7 @@
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
+import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
   createModels,
   type FauxResponseStep,
@@ -23,12 +24,16 @@ import {
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
@@ -91,12 +96,18 @@ export const constructions = (globalThis.testSessionConstructions ??= new Map<st
 /** Text submitted to the root conversation, as the tests write it. */
 type TestPrompt = { readonly requestId: string; readonly text: string };
 
+/** The test Worker's `SECRETS_ENCRYPTION_KEY`. */
+const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef");
+
 export class TestSession extends DurableObject {
-  /** The extensions this Session runs with, installed before any work resumes: `echo`. */
-  protected hostExtensions(): Effect.Effect<readonly Extension[], never, Harness> {
-    return Effect.all([
-      Effect.map(Echo, (echo) => defineExtension({ name: "echo", tools: [echo] })),
-    ]);
+  /** The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, and the secret tools. */
+  protected hostExtensions(): Effect.Effect<readonly Extension[], never, Harness | Secrets> {
+    return Effect.gen(function* () {
+      const tool = yield* Echo;
+      const echo = defineExtension({ name: "echo", tools: [tool] });
+
+      return [echo, yield* secretsExtension([tool])];
+    });
   }
 
   /** What builds a conversation's execution environment, if this Session has one. */
@@ -106,7 +117,10 @@ export class TestSession extends DurableObject {
 
   #host!: SessionHostService;
   #sockets!: SessionSocketsService;
-  #runtime!: ManagedRuntime.ManagedRuntime<SessionHost | SessionSockets | Harness, unknown>;
+  #runtime!: ManagedRuntime.ManagedRuntime<
+    SessionHost | SessionSockets | Harness | Secrets,
+    unknown
+  >;
   /** Resolves when this instance's model request starts and hangs. */
   readonly hanging = Promise.withResolvers<void>();
   /** Holds back this instance's `gate:` responses until `open()`. */
@@ -135,11 +149,14 @@ export class TestSession extends DurableObject {
           Layer.provideMerge(
             sessionHostLayer({
               storage: ctx.storage,
-              models,
+              // As the Session DO's: every model call is scrubbed of the Secrets the Session holds.
+              models: Effect.map(Effect.service(Secrets), (held) => scrubbingModels(models, held)),
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
               env: this.hostEnv(),
               reportTimeout: "200 millis",
+              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
+              onIdle: Effect.flatMap(Effect.service(Secrets), (held) => held.dropAbandoned),
             }).pipe(
               Layer.provide(
                 Layer.mergeAll(
@@ -158,6 +175,14 @@ export class TestSession extends DurableObject {
                 ),
               ),
             ),
+          ),
+          Layer.provideMerge(
+            sessionSecretsLayer({
+              encryptionKey: SECRETS_KEY,
+              session: ctx.id.toString(),
+              storage: ctx.storage.kv,
+              sockets: ctx,
+            }),
           ),
         ),
       );
@@ -290,7 +315,31 @@ export class TestSession extends DurableObject {
   }
 
   override async alarm(): Promise<void> {
-    await Effect.runPromise(this.#host.alarm);
+    await this.#runtime.runPromise(
+      Effect.flatMap(Effect.service(Secrets), (held) => held.sweep).pipe(
+        Effect.andThen(this.#host.alarm),
+      ),
+    );
+  }
+
+  /** Hold `values` as if the owner had entered them for a request. */
+  hold(values: Readonly<Record<string, string>>): Promise<void> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const secrets = yield* Secrets;
+        const request = { id: "test-hold", conversationId: 1, names: Record.keys(values) };
+        const asking = yield* Effect.forkChild(secrets.ask(request));
+
+        yield* Effect.yieldNow;
+        yield* secrets.answer(request.id, values);
+        yield* Fiber.join(asking);
+      }),
+    );
+  }
+
+  /** This object's storage, as JSON, to check that no Secret value is in it. */
+  storageDump(): string {
+    return JSON.stringify([...this.ctx.storage.kv.list()]);
   }
 
   /** The Registry's saved settings overrides; none while no Registry is set. */
