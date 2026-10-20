@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
@@ -38,7 +39,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const sessionId = sessionSocketId(request);
 
-        if (sessionId !== undefined) return yield* sessions.getByName(sessionId).fetch(request);
+        if (sessionId !== undefined) return yield* connectSession(sessions, registries, sessionId);
 
         if (isRegistryRpc(request)) return yield* serveRegistryRpc(registries);
 
