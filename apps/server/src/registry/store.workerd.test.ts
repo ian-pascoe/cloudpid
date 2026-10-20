@@ -1,9 +1,11 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
+import { openRegistryStore } from "./store.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 
 declare global {
@@ -26,6 +28,7 @@ describe("the Registry store", () => {
     expect(created).toEqual({
       id: "s-1",
       title: "Fix the build",
+      workspace: DEFAULT_WORKSPACE,
       status: "idle",
       createdAt: 1_000,
       updatedAt: 1_000,
@@ -102,18 +105,69 @@ describe("the Registry store", () => {
     expect(await registry.listWorkspaces()).toEqual([{ slug: "cloudpid", createdAt: 1_000 }]);
   });
 
+  it("binds a Session to the Workspace it is created with, and lists that Workspace", async () => {
+    const registry = fresh();
+
+    const created = await registry.createSession(
+      { id: "s-1", title: null, workspace: "cloudpid" },
+      1_000,
+    );
+
+    expect(created.workspace).toBe("cloudpid");
+    expect((await registry.getSession("s-1"))?.workspace).toBe("cloudpid");
+    expect(await registry.listWorkspaces()).toEqual([{ slug: "cloudpid", createdAt: 1_000 }]);
+  });
+
+  it("binds a Session created without a Workspace to the default one", async () => {
+    const registry = fresh();
+
+    await registry.createSession({ id: "s-1", title: null }, 1_000);
+
+    expect((await registry.getSession("s-1"))?.workspace).toBe(DEFAULT_WORKSPACE);
+    expect(await registry.listWorkspaces()).toEqual([
+      { slug: DEFAULT_WORKSPACE, createdAt: 1_000 },
+    ]);
+  });
+
+  it("opens a Registry written before Sessions had Workspaces, binding its Sessions to the default", async () => {
+    await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+      const { sql } = state.storage;
+
+      // The first deployed schema: no `workspace` column, no schema version.
+      sql.exec("DROP TABLE sessions");
+      sql.exec("DROP TABLE schema_version");
+      sql.exec(`CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT`);
+      sql.exec("INSERT INTO sessions VALUES ('old', 'Before', 'idle', 1, 1)");
+
+      const store = openRegistryStore(sql);
+
+      expect(store.getSession("old")).toMatchObject({ id: "old", workspace: DEFAULT_WORKSPACE });
+      // Opening again changes nothing, and the new column is writable.
+      expect(
+        openRegistryStore(sql).createSession({ id: "new", title: null, workspace: "a" }, 2),
+      ).toMatchObject({
+        workspace: "a",
+      });
+    });
+  });
+
   it("keeps its Sessions and Workspaces across an eviction", async () => {
     const registry = fresh();
 
-    await registry.createSession({ id: "s-1", title: "Survivor" }, 1_000);
+    await registry.createSession({ id: "s-1", title: "Survivor", workspace: "cloudpid" }, 1_000);
     await registry.setSessionStatus("s-1", "running", 2_000);
-    await registry.createWorkspace("cloudpid", 1_000);
 
     await evictDurableObject(registry);
 
     // A new instance reopens the same storage.
     expect(await registry.listSessions()).toMatchObject([
-      { id: "s-1", title: "Survivor", status: "running", updatedAt: 2_000 },
+      { id: "s-1", title: "Survivor", workspace: "cloudpid", status: "running", updatedAt: 2_000 },
     ]);
     expect(await registry.listWorkspaces()).toEqual([{ slug: "cloudpid", createdAt: 1_000 }]);
   });

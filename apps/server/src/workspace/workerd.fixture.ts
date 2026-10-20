@@ -13,12 +13,14 @@ import { Workspace } from "./Workspace.ts";
 
 /** Live counts of the stubs a `TestWorkspace` handed out. */
 export type LiveStubs = {
+  /** Commands started, through any Workspace stub: what a Container would be started for. */
+  readonly started: number;
   readonly opened: number;
   readonly workspaces: number;
   readonly execs: number;
 };
 
-type Counter = { opened: number; workspaces: number; execs: number };
+type Counter = { started: number; opened: number; workspaces: number; execs: number };
 
 /** An exec handle stub that counts itself until its client disposes it. */
 class CountedExecHandle extends RpcTarget {
@@ -70,6 +72,8 @@ class CountedRuntime extends WorkspaceRuntimeStub {
   }
 
   override async exec(source: string, options = {}) {
+    this.#counter.started++;
+
     // SAFETY: the counted handle answers every method and getter of the exec handle stub it wraps.
     return new CountedExecHandle(await super.exec(source, options), this.#counter) as never;
   }
@@ -102,7 +106,7 @@ class CountedWorkspaceStub extends WorkspaceStub {
 }
 
 export class TestWorkspace extends Workspace {
-  readonly #counter: Counter = { opened: 0, workspaces: 0, execs: 0 };
+  readonly #counter: Counter = { started: 0, opened: 0, workspaces: 0, execs: 0 };
 
   liveStubs(): LiveStubs {
     return { ...this.#counter };

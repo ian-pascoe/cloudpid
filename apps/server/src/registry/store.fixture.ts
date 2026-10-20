@@ -18,7 +18,10 @@ export class TestRegistry extends DurableObject {
     this.#store = openRegistryStore(ctx.storage.sql);
   }
 
-  createSession(input: { id: string; title: string | null }, now: number): SessionRecord {
+  createSession(
+    input: { id: string; title: string | null; workspace?: string },
+    now: number,
+  ): SessionRecord {
     return this.#store.createSession(input, now);
   }
 

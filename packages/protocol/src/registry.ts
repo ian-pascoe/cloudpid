@@ -24,12 +24,17 @@ export const SessionTitle = Schema.Trim.check(
 /** A Workspace slug, which is also its directory and its Workspace DO's name. */
 export const WorkspaceSlug = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
 
+/** The Workspace a Session is bound to when it is created without one. */
+export const DEFAULT_WORKSPACE = "default";
+
 /** A Session as the Registry lists it. Times are epoch milliseconds. */
 export const SessionRecord = Schema.Struct({
   /** The Session DO's name: a UUIDv7. Its socket is at `sessionSocketPath(id)`. */
   id: Schema.String,
   /** Null until the user or the title task gives it one. */
   title: Schema.NullOr(Schema.String),
+  /** The slug of the Workspace the Session works on; it never changes. */
+  workspace: Schema.String,
   status: SessionStatus,
   createdAt: Schema.Finite,
   /** When the Session was created or its status last changed. */
@@ -50,9 +55,13 @@ export const sessionSocketPath = (sessionId: string): string =>
 export class RegistryRpcs extends RpcGroup.make(
   /** Every Session, newest first. */
   Rpc.make("listSessions", { success: Schema.Array(SessionRecord) }),
-  /** Register a new Session, idle, under a fresh UUIDv7. */
+  /** Register a new Session, idle, under a fresh UUIDv7, bound to a Workspace (registered when new). */
   Rpc.make("createSession", {
-    payload: { title: Schema.optionalKey(SessionTitle) },
+    payload: {
+      title: Schema.optionalKey(SessionTitle),
+      /** Defaults to `DEFAULT_WORKSPACE`. */
+      workspace: Schema.optionalKey(WorkspaceSlug),
+    },
     success: SessionRecord,
   }),
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),

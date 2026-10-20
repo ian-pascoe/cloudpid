@@ -1,3 +1,4 @@
+import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
@@ -13,6 +14,8 @@ export type SessionRecord = {
   readonly id: string;
   /** Null until the user or the title task gives it one. */
   readonly title: string | null;
+  /** The slug of the Workspace the Session works on, fixed when it is created. */
+  readonly workspace: string;
   readonly status: SessionStatus;
   readonly createdAt: number;
   /** When the Session was created or its status last changed. */
@@ -26,9 +29,13 @@ export type WorkspaceRecord = {
 };
 
 export type RegistryStore = {
-  /** Register a Session, idle. */
+  /** Register a Session, idle, bound to `workspace` (default `DEFAULT_WORKSPACE`), which is registered too. */
   readonly createSession: (
-    input: { readonly id: string; readonly title: string | null },
+    input: {
+      readonly id: string;
+      readonly title: string | null;
+      readonly workspace?: string | undefined;
+    },
     now: number,
   ) => SessionRecord;
   /** The Session registered under `id`, or null. */
@@ -45,6 +52,8 @@ export type RegistryStore = {
 type SessionRow = {
   id: string;
   title: string | null;
+  /** Null for a Session stored before Sessions had Workspaces. */
+  workspace: string | null;
   status: string;
   created_at: number;
   updated_at: number;
@@ -67,6 +76,7 @@ const checkedStatus = (status: string): SessionStatus => {
 const toSession = (row: SessionRow): SessionRecord => ({
   id: row.id,
   title: row.title,
+  workspace: row.workspace ?? DEFAULT_WORKSPACE,
   status: checkedStatus(row.status),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -78,34 +88,82 @@ const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => ({
 });
 
 /**
- * Create the tables if they are missing and return the store over them. Run it from the object's constructor. The
- * schema is only ever added to, so `IF NOT EXISTS` is the whole migration until a table has to change.
+ * The schema, one step per version, applied in order: version N is in place once step N has run. Steps only add
+ * (tables, nullable columns), and a step is never edited once released: add the next one. A step and its version
+ * record run in one synchronous turn, which Durable Object storage commits atomically.
  */
+const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
+  // 1: the first deployed schema, whose stores recorded no version.
+  (sql) => {
+    sql.exec(`CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    ) STRICT`);
+    sql.exec(
+      "CREATE INDEX IF NOT EXISTS sessions_by_created ON sessions (created_at DESC, id DESC)",
+    );
+    sql.exec(`CREATE TABLE IF NOT EXISTS workspaces (
+      slug TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL
+    ) STRICT`);
+  },
+  // 2: the Workspace a Session works on. Null for Sessions stored before, which read as the default Workspace.
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN workspace TEXT");
+  },
+];
+
+/** Bring the tables up to the latest version. */
+const migrate = (sql: SqlStorage): void => {
+  sql.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL) STRICT");
+
+  const [current] = sql
+    .exec<{ version: number | null }>("SELECT MAX(version) AS version FROM schema_version")
+    .toArray();
+
+  for (let version = (current?.version ?? 0) + 1; version <= MIGRATIONS.length; version++) {
+    MIGRATIONS[version - 1]?.(sql);
+    sql.exec("INSERT INTO schema_version (version) VALUES (?)", version);
+  }
+};
+
+/** Migrate the tables and return the store over them. Run it from the object's constructor. */
 export const openRegistryStore = (sql: SqlStorage): RegistryStore => {
-  sql.exec(`CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    status TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  ) STRICT`);
-  sql.exec("CREATE INDEX IF NOT EXISTS sessions_by_created ON sessions (created_at DESC, id DESC)");
-  sql.exec(`CREATE TABLE IF NOT EXISTS workspaces (
-    slug TEXT PRIMARY KEY,
-    created_at INTEGER NOT NULL
-  ) STRICT`);
+  migrate(sql);
+
+  const createWorkspace = (slug: string, now: number): WorkspaceRecord => {
+    sql.exec("INSERT OR IGNORE INTO workspaces (slug, created_at) VALUES (?, ?)", slug, now);
+
+    return toWorkspace(
+      sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE slug = ?", slug).one(),
+    );
+  };
 
   return {
     createSession: (input, now) => {
+      const workspace = input.workspace ?? DEFAULT_WORKSPACE;
+
+      createWorkspace(workspace, now);
       sql.exec(
-        "INSERT INTO sessions (id, title, status, created_at, updated_at) VALUES (?, ?, 'idle', ?, ?)",
+        "INSERT INTO sessions (id, title, workspace, status, created_at, updated_at) VALUES (?, ?, ?, 'idle', ?, ?)",
         input.id,
         input.title,
+        workspace,
         now,
         now,
       );
 
-      return { id: input.id, title: input.title, status: "idle", createdAt: now, updatedAt: now };
+      return {
+        id: input.id,
+        title: input.title,
+        workspace,
+        status: "idle",
+        createdAt: now,
+        updatedAt: now,
+      };
     },
 
     getSession: (id) => {
@@ -131,13 +189,7 @@ export const openRegistryStore = (sql: SqlStorage): RegistryStore => {
       );
     },
 
-    createWorkspace: (slug, now) => {
-      sql.exec("INSERT OR IGNORE INTO workspaces (slug, created_at) VALUES (?, ?)", slug, now);
-
-      return toWorkspace(
-        sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE slug = ?", slug).one(),
-      );
-    },
+    createWorkspace,
 
     listWorkspaces: () =>
       Arr.map(
