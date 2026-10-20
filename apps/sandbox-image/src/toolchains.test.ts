@@ -25,32 +25,31 @@ import {
 const dockerfile = readFileSync(join(sandboxImageContext, "Dockerfile"), "utf8");
 
 describe("the ignore list", () => {
-  it("keeps Toolchains, caches, and dependency directories off the synced Workspace", () => {
+  it("keeps dependency directories, build output, and caches off the synced Workspace", () => {
     expect(TOOLCHAIN_IGNORE).toEqual(
-      expect.arrayContaining([
-        "/.mise/data",
-        "/.mise/cache",
-        "/.mise/tmp",
-        "**/node_modules",
-        "**/.venv",
-        "/target",
-        "/*/target",
-        "**/.cache",
-      ]),
+      expect.arrayContaining(["**/node_modules", "**/.venv", "/target", "/*/target", "**/.cache"]),
     );
   });
 
-  it("does not hide mise's own config and lock sidecars, which the Workspace syncs", () => {
-    expect(TOOLCHAIN_IGNORE).not.toContain("/.mise");
-    expect(TOOLCHAIN_IGNORE).not.toContain("**/.mise");
+  it("does not make a source directory called target local to the Container", () => {
+    expect(TOOLCHAIN_IGNORE).not.toContain("**/target");
   });
 
-  it("covers the directories the image points mise at, and the temp directory commands get", () => {
-    const env = (name: string) => new RegExp(`^\\s*${name}=(\\S+)`, "m").exec(dockerfile)?.[1];
+  it("leaves mise to the Container's own disk: its data and temp files are on one filesystem, off the ignore boundary", () => {
+    const env = toolchainEnv({});
 
-    expect(env("MISE_DATA_DIR")).toBe("/workspace/.mise/data");
-    expect(env("MISE_CACHE_DIR")).toBe("/workspace/.mise/cache");
-    expect(toolchainEnv({}).TMPDIR).toBe("/workspace/.mise/tmp");
+    // None of these is set, so mise and every tool use their defaults, under /root and /tmp.
+    expect(env).not.toHaveProperty("MISE_DATA_DIR");
+    expect(env).not.toHaveProperty("MISE_CACHE_DIR");
+    expect(env).not.toHaveProperty("TMPDIR");
+    expect(TOOLCHAIN_IGNORE.filter((pattern) => pattern.includes(".mise"))).toEqual([]);
+  });
+
+  it("is where the image's PATH looks for mise's shims: mise's default data directory", () => {
+    // computerd gives a command PATH from the image's environment but not the rest of it.
+    const path = /^\s*PATH=(\S+)/m.exec(dockerfile)?.[1];
+
+    expect(path?.split(":")[0]).toBe("/root/.local/share/mise/shims");
   });
 });
 
@@ -95,7 +94,6 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         HOME: home,
-        TMPDIR: join(root, ".mise", "tmp"),
         ...env,
       },
     });
@@ -147,14 +145,6 @@ describe("the bootstrap", () => {
     run();
 
     expect(readFileSync(join(root, "mise.toml"), "utf8")).toBe('[tools]\nnode = "22"\n');
-  });
-
-  it("makes the temp directory commands get, before mise needs it", () => {
-    const { root, run } = sandbox();
-
-    run();
-
-    expect(existsSync(join(root, ".mise", "tmp"))).toBe(true);
   });
 
   it("fails with mise's exit status, so the caller can tell the install did not finish", () => {

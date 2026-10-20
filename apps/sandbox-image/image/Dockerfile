@@ -36,22 +36,13 @@ COPY --from=mise /mise /usr/local/bin/mise
 
 # computerd mounts its file system at MOUNT_POINT, so commands see the Workspace's files at /workspace. FUSE_MOUNT=auto
 # mounts through /dev/fuse where the platform exposes it (Cloudflare Containers) and falls back to a userspace shim
-# where it does not.
-#
-# mise keeps its Toolchains and downloads under /workspace/.mise/{data,cache}, which the Workspace DO lists as container-local
-# (computerd's MOUNT_IGNORE; apps/sandbox-image/src/toolchains.ts), so they never sync into the DO. They are in the
-# mount rather than on the image's disk so that a Toolchain's files and its downloads and temp files (TMPDIR, set for each
-# command) are on one side of the ignore boundary: a rename between the two sides fails with EXDEV. mise's shims put the
-# programs it installs on PATH. MISE_TRUSTED_CONFIG_PATHS trusts the mise.toml of every repo in the Workspace, and
-# MISE_YES keeps mise from asking (these two are ignored in a project's own config, so they are set here).
+# where it does not. mise keeps its Toolchains on the image's own disk, in its default place under /root, and its shims put
+# the programs it installs on PATH. PATH is the one variable computerd passes on to a command, so it is the one set
+# here: mise's other settings reach a command in its exec environment (apps/sandbox-image/src/toolchains.ts).
 ENV PORT=8080 \
     MOUNT_POINT=/workspace \
     FUSE_MOUNT=auto \
-    MISE_DATA_DIR=/workspace/.mise/data \
-    MISE_CACHE_DIR=/workspace/.mise/cache \
-    MISE_TRUSTED_CONFIG_PATHS=/workspace \
-    MISE_YES=1 \
-    PATH=/workspace/.mise/data/shims:${PATH}
+    PATH=/root/.local/share/mise/shims:${PATH}
 EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/computerd"]

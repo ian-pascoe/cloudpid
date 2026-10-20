@@ -279,13 +279,12 @@ describe("the bootstrap", () => {
       CLOUDPID_GIT_NAME: "Pi Agent",
       CLOUDPID_GIT_EMAIL: "pi@example.com",
       GITHUB_TOKEN: "ghp_secret",
-      TMPDIR: "/workspace/.mise/tmp",
     });
   });
 });
 
 describe("a command's environment", () => {
-  it("has the token, the temp directory, and no git prompts", async () => {
+  it("has the token, mise's trust settings, and no git prompts", async () => {
     const container = fakeContainer();
     const handle = await open(container).toolchains.connect(host);
 
@@ -294,7 +293,8 @@ describe("a command's environment", () => {
     expect(commands(container.execs)[0]?.env).toEqual({
       GH_TOKEN: "ghp_secret",
       GITHUB_TOKEN: "ghp_secret",
-      TMPDIR: "/workspace/.mise/tmp",
+      MISE_TRUSTED_CONFIG_PATHS: "/workspace",
+      MISE_YES: "1",
       GIT_TERMINAL_PROMPT: "0",
     });
   });

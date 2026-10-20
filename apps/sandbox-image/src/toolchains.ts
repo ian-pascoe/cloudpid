@@ -4,23 +4,22 @@
 /** The Workspace as the Container mounts it (`MOUNT_POINT` in the Dockerfile). */
 export const WORKSPACE_ROOT = "/workspace";
 
-/** Where mise keeps what it installs, and its downloads and temp files: all on the container-local side. */
-const MISE_DIR = `${WORKSPACE_ROOT}/.mise`;
-
 /**
  * Paths computer keeps container-local (computerd's `MOUNT_IGNORE`): they are never recorded in the Workspace DO's
- * file system, so installs, caches and dependency trees cost no DO storage and no sync. The patterns are computer's:
+ * file system, so dependency trees, build output and caches cost no DO storage and no sync. The patterns are computer's:
  * `/…` from the mount root, `**` + `/…` at any depth.
  *
- * Only mise's `data`, `cache` and `tmp` are listed, not `.mise` itself: mise's config and lock sidecars
- * (`.mise/config.toml`, `.mise/locks/`) belong to the project and sync with it. A rename between an ignored and a
- * synced path fails with `EXDEV`, so what installs write is kept on the ignored side: `TMPDIR` is `.mise/tmp`
- * (`toolchainEnv`), next to mise's data and cache.
+ * mise's own directories are not here, because they are not under `/workspace`: mise keeps its Toolchains and
+ * downloads where it does by default, on the Container's disk (`/root/.local/share/mise`, `/root/.cache/mise`), and
+ * its temp files go to `/tmp` on the same disk. That makes a rename between them one filesystem's (no `EXDEV`), and
+ * it never crosses the ignore boundary at all. Putting them under `/workspace/.mise` on this list, as docs/spec.md
+ * first planned, works for installs (gh, git, node, python install there) but computerd 0.5.1's FUSE answers
+ * `listxattr` on an ignored path with `ENOENT` where a synced path answers `[]`, which makes Python's
+ * `shutil.copystat` fail: `python -m venv` could not copy ensurepip's wheels out of a Toolchain on such a path.
+ * Python copying files out of a `node_modules` or `.venv` is subject to the same limit, so it is a computerd
+ * issue to raise; keeping the Toolchains off the ignored FUSE path keeps it to files in those directories.
  */
 export const TOOLCHAIN_IGNORE: readonly string[] = [
-  "/.mise/data",
-  "/.mise/cache",
-  "/.mise/tmp",
   "**/node_modules",
   "**/.venv",
   // Cargo's target directory, in a repo (`/<repo>/target`) or at the Workspace root. Not at any depth: a source
@@ -52,7 +51,8 @@ export type CommandEnv = { [name: string]: string };
 
 /** What `toolchainEnv` sets. */
 export type ToolchainEnv = {
-  TMPDIR: string;
+  MISE_TRUSTED_CONFIG_PATHS: string;
+  MISE_YES: string;
   GIT_TERMINAL_PROMPT: string;
   GH_TOKEN?: string;
   GITHUB_TOKEN?: string;
@@ -65,13 +65,17 @@ export type ToolchainEnvOptions = {
 };
 
 /**
- * The environment every command on the Container gets, under whatever the caller passes. The token is only ever here,
- * in a process's environment: `bootstrapScript` makes git read it from there, so no file holds it.
+ * The environment every command on the Container gets, under whatever the caller passes. computerd starts a command
+ * with PATH (the image's, which has mise's shims first) and HOME but none of the image's other variables, so mise's
+ * settings are here. The token is only ever here, in a process's environment: `bootstrapScript` makes git read it from there,
+ * so no file holds it.
  */
 export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
   const env: ToolchainEnv = {
-    // Temp files go where installs go, so a rename from one to the other stays on the ignored side.
-    TMPDIR: `${MISE_DIR}/tmp`,
+    // Every repo's mise.toml is the agent's own, in its own Workspace: trusted, and nothing to ask about. (A project's
+    // mise.toml cannot set these two, so they are the environment's.)
+    MISE_TRUSTED_CONFIG_PATHS: WORKSPACE_ROOT,
+    MISE_YES: "1",
     // A prompt nobody answers would hang the command.
     GIT_TERMINAL_PROMPT: "0",
   };
@@ -104,7 +108,6 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 export const bootstrapScript = (root: string = WORKSPACE_ROOT): string => `
 set -u
 root=${shellQuote(root)}
-mkdir -p "\${TMPDIR:-${MISE_DIR}/tmp}"
 cd "$root" || exit 1
 
 if [ ! -e mise.toml ] && [ ! -e .mise.toml ] && [ ! -e .config/mise.toml ]; then
