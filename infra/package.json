@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "alchemy dev",
     "deploy": "alchemy deploy",
+    "ci:setup": "alchemy deploy --config github.ts --stage ci --profile admin",
     "typecheck": "tsc",
     "lint": "oxlint",
     "test": "vitest run"
