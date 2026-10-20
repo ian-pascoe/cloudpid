@@ -131,17 +131,19 @@ Every model-facing tool name is snake_case. A library tool that isn't gets renam
 
 The tool surface and semantics stay as they are today:
 
-- Canonical IDs such as `root.agent-1`, plus tombstones and a depth cap.
+- Canonical IDs such as `agent-1` and `agent-1.reviewer` (a leading `root.` is accepted), plus tombstones and a depth cap.
 - Model roles.
 - `read`/`modify` toolset presets under a capability ceiling.
 - `session_context`: `omit`, `inherit`, or `compact`.
 - Wait events: `turn`, `message`, `timeout`, and `steered`.
 
-They are rebuilt on pi-durable primitives, following its example 23:
+They are rebuilt on pi-durable primitives, following its example 23 (`@cloudpid/extensions/subagents`):
 
 - Children are conversations owned by a background anchor task.
-- Answers return through reporter tasks as follow-up messages, deduplicated by `requestId`.
-- `subagent_wait` is a durable task using `sleepUntil`.
+- Each input to a child is a turn, carried by a background reporter task in its parent's conversation. Answers return as follow-up messages, deduplicated by `requestId`, unless a `subagent_wait` blocked on the turn claims them. A Session document records the agents, their recent turns, tombstones, and open waits, and one commit decides each delivery.
+- `subagent_wait` is a durable task that sleeps until its deadline (`TaskRuntime.sleep`); a rerun of the call after an eviction finds it.
+- A child's tools are exactly its grant (`AgentState.tools`): ordinary tools within its caller's, plus all six coordinator tools when it was launched with `delegation: "fanout"` below the depth cap, or only `agent_message` otherwise.
+- The roles come from the settings' `roles`; the depth cap and toolsets from `extensions.subagents` (`maxSubagentDepth`, default 2; `baseToolset`, `readToolset`, `modifyToolset`).
 
 ### Context management
 
