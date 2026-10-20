@@ -31,6 +31,8 @@ export type RegistryStore = {
     input: { readonly id: string; readonly title: string | null },
     now: number,
   ) => SessionRecord;
+  /** The Session registered under `id`, or null. */
+  readonly getSession: (id: string) => SessionRecord | null;
   /** Every Session, newest first. */
   readonly listSessions: () => SessionRecord[];
   /** Record that a Session's Run started or ended. A Session that is not registered is ignored. */
@@ -104,6 +106,12 @@ export const openRegistryStore = (sql: SqlStorage): RegistryStore => {
       );
 
       return { id: input.id, title: input.title, status: "idle", createdAt: now, updatedAt: now };
+    },
+
+    getSession: (id) => {
+      const [row] = sql.exec<SessionRow>("SELECT * FROM sessions WHERE id = ?", id).toArray();
+
+      return row === undefined ? null : toSession(row);
     },
 
     listSessions: () =>

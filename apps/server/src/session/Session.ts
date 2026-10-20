@@ -2,13 +2,17 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as HttpBody from "effect/http/HttpBody";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { sessionExtensions } from "./extensions.ts";
-import { type Answer, type Prompt, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
+import { SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { DEFAULT_AGENT, proxyModels } from "./models.ts";
+import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
 /** The key the Session's name is kept under, for instances that are not told it. */
@@ -29,11 +33,23 @@ export const ModelProxyConfigLive = Layer.effect(
   }),
 );
 
-/** What the Session DO answers over RPC. */
+/**
+ * What the Session DO answers: its alarm, and its clients' sockets (`docs/spec.md` → Client and protocol). `fetch`
+ * accepts a socket upgrade the main Worker forwards; the socket's events then reach the object directly.
+ */
 export type SessionMethods = {
-  /** Submit `prompt` to the root conversation and wait for its answer. */
-  readonly prompt: (prompt: Prompt) => Effect.Effect<Answer, SessionError>;
   readonly alarm: () => Effect.Effect<void>;
+  readonly fetch: Effect.Effect<
+    HttpServerResponse.HttpServerResponse,
+    never,
+    HttpServerRequest.HttpServerRequest
+  >;
+  readonly webSocketMessage: (
+    socket: Cloudflare.WebSocket,
+    message: string | ArrayBuffer,
+  ) => Effect.Effect<void>;
+  readonly webSocketClose: (socket: Cloudflare.WebSocket) => Effect.Effect<void>;
+  readonly webSocketError: (socket: Cloudflare.WebSocket) => Effect.Effect<void>;
 };
 
 /** One Session: a pi-durable Harness over this object's SQLite storage (`docs/spec.md` → Session host). */
@@ -71,27 +87,54 @@ export const SessionLive = Session.make(
               : registries.getByName(REGISTRY_NAME).setSessionStatus({ id: name, status }),
         });
 
-        // The object's services, built once and kept for its lifetime.
+        // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
+        // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
-          sessionHostLayer({
-            storage: state.raw.storage,
-            models,
-            agent: DEFAULT_AGENT,
-            reset: (reason) => state.raw.abort(reason),
-            extensions: sessionExtensions,
-          }).pipe(Layer.provide(registry)),
+          sessionSocketsLayer(state.raw).pipe(
+            Layer.provideMerge(
+              sessionHostLayer({
+                storage: state.raw.storage,
+                models,
+                agent: DEFAULT_AGENT,
+                reset: (reason) => state.raw.abort(reason),
+                extensions: sessionExtensions,
+              }),
+            ),
+            Layer.provide(registry),
+          ),
         );
 
         // A failed open resets the object, and the fallback alarm it armed first starts it again.
-        const host = yield* runtime.contextEffect.pipe(
-          Effect.map(Context.get(SessionHost)),
-          Effect.orDie,
-        );
+        const services = yield* Effect.orDie(runtime.contextEffect);
+        const host = Context.get(services, SessionHost);
+        const sockets = Context.get(services, SessionSockets);
 
         return {
-          prompt: host.prompt,
           // A failed alarm is retried by the runtime.
           alarm: () => Effect.orDie(host.alarm),
+          fetch: Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+
+            if (request.headers.upgrade?.toLowerCase() !== "websocket") {
+              return HttpServerResponse.empty({ status: 426, headers: { upgrade: "websocket" } });
+            }
+
+            const client = yield* sockets.connect;
+
+            return HttpServerResponse.setBody(
+              HttpServerResponse.empty({ status: 101 }),
+              HttpBody.raw(new Response(null, { status: 101, webSocket: client })),
+            );
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Session socket upgrade failed", cause).pipe(
+                Effect.as(HttpServerResponse.empty({ status: 503 })),
+              ),
+            ),
+          ),
+          webSocketMessage: (socket, message) => sockets.receive(socket.ws, message),
+          webSocketClose: (socket) => sockets.drop(socket.ws),
+          webSocketError: (socket) => sockets.drop(socket.ws),
         };
       }),
     ),

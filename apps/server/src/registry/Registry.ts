@@ -18,6 +18,8 @@ export type RegistryMethods = {
   readonly createSession: (input: {
     readonly title?: string | undefined;
   }) => Effect.Effect<SessionRecord>;
+  /** The Session registered under `id`, or null. */
+  readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
   /** Every Session, newest first. */
   readonly listSessions: () => Effect.Effect<ReadonlyArray<SessionRecord>>;
   /** The Session DO reports that a Run started or ended. A Session that is not registered is ignored. */
@@ -50,6 +52,7 @@ export const RegistryLive = Registry.make(
 
               return store.createSession({ id, title: title ?? null }, now);
             }),
+          getSession: ({ id }) => Effect.sync(() => store.getSession(id)),
           listSessions: () => Effect.sync(() => store.listSessions()),
           setSessionStatus: ({ id, status }) =>
             Clock.currentTimeMillis.pipe(

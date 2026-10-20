@@ -33,6 +33,15 @@ describe("the Registry store", () => {
     expect(await registry.listSessions()).toEqual([created]);
   });
 
+  it("finds a registered Session by its ID, and nothing for an unknown one", async () => {
+    const registry = fresh();
+
+    const created = await registry.createSession({ id: "s-1", title: null }, 1_000);
+
+    expect(await registry.getSession("s-1")).toEqual(created);
+    expect(await registry.getSession("s-2")).toBeNull();
+  });
+
   it("lists Sessions newest first", async () => {
     const registry = fresh();
 

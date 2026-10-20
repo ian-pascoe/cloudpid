@@ -7,23 +7,32 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
   type AgentChange,
+  type AgentEvent,
   AssistantEntry,
+  type ConversationId,
   type Extension,
+  type InputSubmissionDraft,
   type Submission,
+  type UserInput,
+  type WatchEnd,
+  watchEvents,
 } from "@earendil-works/pi-durable";
 import {
   type DurableObjectSqliteStorage,
   openDurableObjectSqliteStorage,
 } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import * as Arr from "effect/Array";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -75,8 +84,14 @@ export type SessionHostOptions = {
   readonly reportTimeout?: Duration.Input;
 };
 
-/** User input for the root conversation. Submitting the same `requestId` again finds the first submission. */
-export type Prompt = { readonly requestId: string; readonly text: string };
+/** User input for the root conversation. */
+export type Prompt = {
+  /** Submitting the same `requestId` again finds the first submission. */
+  readonly requestId?: string;
+  readonly input: UserInput;
+  /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
+  readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
+};
 
 export type Answer =
   | { readonly status: "answered"; readonly submissionId: number; readonly text: string }
@@ -100,6 +115,17 @@ export type SessionHostService = {
   readonly alarm: Effect.Effect<void, SessionError>;
   /** Whether no task is live and no submission is unsettled. Reads only: it never starts work. */
   readonly idle: Effect.Effect<boolean, SessionError>;
+  /** The root conversation's ID; the root is created when absent. */
+  readonly root: Effect.Effect<ConversationId, SessionError>;
+  /** Abort the root conversation's work and withdraw its queued input, once it is idle. */
+  readonly abort: Effect.Effect<void, SessionError>;
+  /**
+   * Conversation `conversationId`'s agent events, unchanged: a batch holding its `snapshot`, then a batch per commit.
+   * Fails when the conversation cannot be watched, and when the Harness ends the watch.
+   */
+  readonly events: (
+    conversationId: ConversationId,
+  ) => Stream.Stream<ReadonlyArray<AgentEvent>, SessionError>;
 };
 
 /** What the Session DO answers with: its Harness, prompted and woken. */
@@ -116,6 +142,12 @@ const attempt = <A>(operation: string, run: () => Promise<A>): Effect.Effect<A, 
 const fromHarness = Effect.mapError((error: HarnessError) =>
   SessionError.make({ operation: error.operation, message: error.message }),
 );
+
+/** Why a watch of agent events ended. */
+const watchEnded = (end: WatchEnd): string =>
+  "error" in end
+    ? `Watch ended (${end.reason}): ${String(end.error)}`
+    : `Watch ended (${end.reason})`;
 
 /** The alarm heartbeat's next time. */
 const heartbeat = Clock.currentTimeMillis.pipe(Effect.map((now) => now + HEARTBEAT_MS));
@@ -271,12 +303,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
     arm({ active: true }).pipe(
       Effect.andThen(root),
       Effect.flatMap((conversation) =>
-        attempt("submit", () =>
-          conversation.submit(
-            { type: "input", content: prompt.text, requestId: prompt.requestId },
-            context,
-          ),
-        ),
+        attempt("submit", () => {
+          const { input, ...options } = prompt;
+
+          return conversation.submit({ type: "input", content: input, ...options }, context);
+        }),
       ),
       serially,
       Effect.tap(settleWhenIdle),
@@ -316,6 +347,34 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
     return { status: "answered", submissionId: submission.id, text } satisfies Answer;
   });
 
+  const events = (conversationId: ConversationId) =>
+    Stream.callback<ReadonlyArray<AgentEvent>, SessionError>((queue) =>
+      Effect.acquireRelease(
+        attempt("watch", () =>
+          // pi-durable fails the watch of a conversation it does not have.
+          watchEvents(harness.harness, conversationId, context),
+        ),
+        (watch) => Effect.promise(() => watch.stop()),
+      ).pipe(
+        Effect.andThen((watch) =>
+          Effect.sync(() => {
+            Queue.offerUnsafe(queue, [watch.snapshot]);
+            watch.start((batch) => {
+              Queue.offerUnsafe(queue, batch);
+
+              return Promise.resolve();
+            });
+            void watch.closed.then((end) =>
+              Queue.failCauseUnsafe(
+                queue,
+                Cause.fail(SessionError.make({ operation: "watch", message: watchEnded(end) })),
+              ),
+            );
+          }),
+        ),
+      ),
+    );
+
   yield* wakeAndResume;
 
   return {
@@ -325,6 +384,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* (options: Sessi
     idle: inspect.pipe(
       Effect.map(({ tasks, submissions }) => tasks.length === 0 && submissions.length === 0),
     ),
+    root: Effect.map(root, (conversation) => conversation.id),
+    abort: root.pipe(
+      Effect.flatMap((conversation) => attempt("abort", () => conversation.abort(context))),
+    ),
+    events,
   } satisfies SessionHostService;
 });
 

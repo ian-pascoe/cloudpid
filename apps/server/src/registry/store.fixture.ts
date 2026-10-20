@@ -22,6 +22,10 @@ export class TestRegistry extends DurableObject {
     return this.#store.createSession(input, now);
   }
 
+  getSession(id: string): SessionRecord | null {
+    return this.#store.getSession(id);
+  }
+
   listSessions(): SessionRecord[] {
     return this.#store.listSessions();
   }

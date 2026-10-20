@@ -1,12 +1,10 @@
 // What a Session tells the Registry (`docs/spec.md` → Durable Objects): whether it has a Run in progress.
+import { SessionStatus } from "@cloudpid/protocol";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-/** Whether a Session has a Run in progress. */
-export const SessionStatus = Schema.Literals(["idle", "running"]);
-
-export type SessionStatus = typeof SessionStatus.Type;
+export { SessionStatus };
 
 /** A status report could not be made. */
 export class ReportError extends Schema.TaggedError<
