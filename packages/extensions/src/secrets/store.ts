@@ -91,6 +91,8 @@ export type SecretsService = {
   ) => Effect.Effect<void, SecretsError>;
   /** `value` with every value held in this instance replaced by its Secret Reference. */
   readonly redact: <A>(value: A) => A;
+  /** Whether `redact` can change anything: whether this instance held any value. */
+  readonly redacting: () => boolean;
   /** A stream of output redacted as it arrives. */
   readonly stream: () => RedactionStream;
   /**
@@ -402,6 +404,7 @@ const makeSecrets = ({
       }),
       answer,
       redact: (value) => redactions.redact(value),
+      redacting: () => redactions.generation > 0,
       stream: () => redactions.stream(),
       scrub,
     } satisfies SecretsService;

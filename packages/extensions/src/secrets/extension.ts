@@ -141,7 +141,7 @@ const redactSpill = async (env: ExecutionEnv, path: string, redact: (text: strin
 const withSecretEnvironment = (
   env: ExecutionEnv,
   variables: () => Promise<Readonly<Record<string, string>>>,
-  redact: (text: string) => string,
+  redactions: Pick<SecretsService, "redact" | "redacting">,
 ): ExecutionEnv =>
   new Proxy(env, {
     get: (target, key) => {
@@ -155,7 +155,10 @@ const withSecretEnvironment = (
 
           const spillPath = result.ok ? result.value.spillPath : result.error.spillPath;
 
-          if (spillPath !== undefined) await redactSpill(target, spillPath, redact);
+          // Read back only when redaction can change it: a spill is up to megabytes over the Workspace's RPC.
+          if (spillPath !== undefined && redactions.redacting()) {
+            await redactSpill(target, spillPath, (text) => redactions.redact(text));
+          }
 
           return result;
         };
@@ -168,7 +171,7 @@ const withSecretEnvironment = (
         const backends = target as ExecutionEnv & BackendEnv;
 
         const onBackend: BackendEnv["onBackend"] = (backend) =>
-          withSecretEnvironment(backends.onBackend(backend), variables, redact);
+          withSecretEnvironment(backends.onBackend(backend), variables, redactions);
 
         return onBackend;
       }
@@ -212,11 +215,7 @@ const withSecrets =
         env:
           api.env === undefined
             ? undefined
-            : withSecretEnvironment(
-                api.env,
-                () => run(secrets.environment),
-                (text) => secrets.redact(text),
-              ),
+            : withSecretEnvironment(api.env, () => run(secrets.environment), secrets),
         output: (chunk) => {
           const settled = stream.push(
             Predicate.isString(chunk) ? chunk : decoder.decode(chunk, { stream: true }),
