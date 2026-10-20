@@ -10,25 +10,49 @@ export const agentOfConversation = (
   conversationId: number,
 ): GraphAgent | undefined => graph?.agents.find((agent) => agent.conversationId === conversationId);
 
-/** The agents working below `agentId` (`root` for all), at any depth: what stopping it with its subagents would stop. */
-export const workingBelow = (graph: TaskGraphSummary | null, agentId: string): GraphAgent[] => {
-  if (graph === null) return [];
-
+const isBelowAgent = (graph: TaskGraphSummary, agentId: string, parentOf: string): boolean => {
   const parents = new Map(graph.agents.map((agent) => [agent.id, agent.parent]));
 
-  const isBelow = (agent: GraphAgent): boolean => {
-    for (let parent = agent.parent; ;) {
-      if (parent === agentId) return true;
+  for (let parent = parentOf; ;) {
+    if (parent === agentId) return true;
 
-      const next = parents.get(parent);
+    const next = parents.get(parent);
 
-      if (next === undefined) return false;
+    if (next === undefined) return false;
 
-      parent = next;
-    }
-  };
+    parent = next;
+  }
+};
 
-  return graph.agents.filter((agent) => agent.status === "working" && isBelow(agent));
+/** The agents working below `agentId` (`root` for all), at any depth. */
+export const workingBelow = (graph: TaskGraphSummary | null, agentId: string): GraphAgent[] =>
+  graph === null
+    ? []
+    : graph.agents.filter(
+        (agent) => agent.status === "working" && isBelowAgent(graph, agentId, agent.parent),
+      );
+
+/**
+ * Whether stopping `agentId` with its subagents would stop anything beyond what a plain Stop does: an agent working
+ * below it, background work of it or below it, or, while it is running itself, any agent below it, since one that has
+ * answered (and is idle) can have a report held for the run that is still going.
+ */
+export const canStopAllBelow = (
+  graph: TaskGraphSummary | null,
+  agentId: string,
+  running: boolean,
+): boolean => {
+  if (graph === null) return false;
+
+  const below = graph.agents.filter((agent) => isBelowAgent(graph, agentId, agent.parent));
+
+  return (
+    below.some((agent) => agent.status === "working") ||
+    (running && below.length > 0) ||
+    graph.background.some(
+      (task) => task.agent === agentId || isBelowAgent(graph, agentId, task.agent),
+    )
+  );
 };
 
 /** How deep `agent` is: 0 for a child of the root. */

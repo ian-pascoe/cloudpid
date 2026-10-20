@@ -5,7 +5,7 @@ import {
 } from "@assistant-ui/react";
 import { sessionSocketPath } from "@cloudpid/protocol";
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { workingBelow } from "../session/agents.ts";
+import { canStopAllBelow } from "../session/agents.ts";
 import { SessionConnection, type ConnectionStatus } from "../session/connection.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
 import { queueAdapter, textOf } from "./queue-adapter.ts";
@@ -53,7 +53,7 @@ const LiveSession = ({
 }) => {
   const state = useSyncExternalStore(connection.subscribe, connection.getState);
   const [panelOpen, setPanelOpen] = useState(false);
-  const stoppable = workingBelow(state.taskGraph, "root").length > 0;
+  const stoppable = canStopAllBelow(state.taskGraph, "root", state.view.running);
 
   // The cards and the panel read the task graph, so it is watched for as long as the Session is shown.
   useEffect(() => {

@@ -8,7 +8,7 @@ import { ListTree, Square, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
-import { depthOf, workingBelow } from "../session/agents.ts";
+import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { Messages } from "./messages.tsx";
 import { useConnection, useSession } from "./session-context.tsx";
@@ -101,7 +101,10 @@ export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: (
 export const TaskPanel = ({ onClose, className }: { onClose: () => void; className?: string }) => {
   const connection = useConnection();
   const graph = useSession((state) => state.taskGraph);
-  const working = useSession((state) => workingBelow(state.taskGraph, "root").length);
+
+  const stoppable = useSession((state) =>
+    canStopAllBelow(state.taskGraph, "root", state.view.running),
+  );
 
   return (
     <aside
@@ -110,7 +113,7 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
     >
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
         <h3 className="flex-1 text-sm font-semibold">Tasks</h3>
-        {working > 0 && (
+        {stoppable && (
           <Button
             type="button"
             variant="destructive"

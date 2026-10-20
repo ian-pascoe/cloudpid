@@ -45,9 +45,12 @@ const byDepthDescending = Order.mapInput(
 
 /** The agents below `agentId`, deepest first: all of them for the root. */
 const below = (state: SubagentsState, agentId: string): AgentRecord[] =>
-  agentId === ROOT_AGENT
-    ? Arr.sort(Record.values(state.agents), byDepthDescending)
-    : Arr.filter(subtreeOf(state, agentId), (agent) => agent.id !== agentId);
+  Arr.sort(
+    agentId === ROOT_AGENT
+      ? Record.values(state.agents)
+      : Arr.filter(subtreeOf(state, agentId), (agent) => agent.id !== agentId),
+    byDepthDescending,
+  );
 
 /**
  * Abort the work of the agent whose conversation is `conversationId`, and withdraw its queued input. With
@@ -68,15 +71,26 @@ export const stopConversation = async (
 
   if (!options.subagents) return;
 
-  // An agent that was started while the abort ran is stopped by a second pass, deepest first.
-  const state = await readState(harness, context);
-  const target = agentOf(state, conversationId) ?? ROOT_AGENT;
+  // Same loop as the extension's `stopSubtree`: an abort waits until its conversation is idle, and meanwhile an agent
+  // still running (the parent of the one being stopped) can start another. So read the state again after each pass and
+  // stop whatever is new, until nothing is.
+  const stopped = new Set<string>();
 
-  for (const agent of below(state, target)) {
-    await (
-      await harness.conversation(agent.conversationId, context)
-    )?.abort(context, {
-      background: true,
-    });
+  for (;;) {
+    const state = await readState(harness, context);
+    const target = agentOf(state, conversationId) ?? ROOT_AGENT;
+    const fresh = Arr.filter(below(state, target), (agent) => !stopped.has(agent.id));
+
+    if (fresh.length === 0) return;
+
+    for (const agent of fresh) {
+      stopped.add(agent.id);
+
+      await (
+        await harness.conversation(agent.conversationId, context)
+      )?.abort(context, {
+        background: true,
+      });
+    }
   }
 };

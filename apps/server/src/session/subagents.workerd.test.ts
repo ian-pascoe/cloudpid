@@ -2,6 +2,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectRecord:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import * as Arr from "effect/Array";
 import { expect, it } from "vitest";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
@@ -240,4 +241,89 @@ it("streams the task graph: a subagent working, then idle once it is stopped, wi
       instance.taskGraph((graph) => graph.agents[0]?.status === "idle"),
     ),
   ).toMatchObject({ agents: [{ id: "agent-1", role: null }], background: [] });
+});
+
+it("runs the owner's input into a child's run that a parent turn waits on, and gives the wait the one answer", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+    await instance.submit("Delegate it");
+    await instance.hanging.promise;
+  });
+  await eventually(
+    stub,
+    async (instance) => Object.keys((await instance.subagents())?.waiters ?? {}).length === 1,
+  );
+
+  const child = (await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.subagents(),
+  ))!.agents["agent-1"]!.conversationId;
+
+  // The owner speaks while the run the root waits on is going, and then the child answers.
+  await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+    await instance.submitTo(child, "A word from the owner");
+    instance.release();
+    instance.answerChild();
+  });
+  await eventually(stub, (instance) => instance.idle());
+
+  const subagents = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.subagents(),
+  );
+
+  expect(subagents?.agents["agent-1"]?.turns).toMatchObject([
+    { id: "turn-1", status: "completed", delivery: "wait" },
+  ]);
+  expect(subagents?.waiters).toEqual({});
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.texts("user", child),
+    ),
+  ).toContain("A word from the owner");
+
+  const results = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.texts("toolResult"),
+  );
+
+  // One answer, claimed by the wait, and not reported to the root again.
+  expect(results[1]).toMatch(/^agent-1 turn-1 completed \([\d.]+s\)\n\nThe answer is 42\.$/);
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
+  ).toEqual(["Delegate it"]);
+});
+
+it("stops everything below the root, a grandchild too, and the Session goes idle", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.submit("Delegate deep"),
+  );
+  // The child starts a subagent of its own, which hangs.
+  await eventually(
+    stub,
+    async (instance) => Object.keys((await instance.subagents())?.agents ?? {}).length === 2,
+  );
+  await eventually(stub, async (instance) => {
+    const agents = Object.values((await instance.subagents())?.agents ?? {});
+
+    return (
+      agents.length === 2 && Arr.every(agents, (agent) => agent.turns.at(-1)?.status === "running")
+    );
+  });
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.abort({ subagents: true }),
+  );
+  await eventually(stub, (instance) => instance.idle());
+
+  const agents = Object.values(
+    (await runInDurableObject(stub, (instance: TestSubagentSession) => instance.subagents()))
+      ?.agents ?? {},
+  );
+
+  expect(agents).toHaveLength(2);
+
+  for (const agent of agents) {
+    expect(agent.turns.at(-1)).toMatchObject({ status: "aborted", delivery: "none" });
+  }
 });

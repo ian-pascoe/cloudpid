@@ -135,6 +135,9 @@ export type AbortOptions = {
 /** The longest a change to the task graph waits before it is sent. */
 export const TASK_GRAPH_INTERVAL: Duration.Input = "250 millis";
 
+/** How long to wait before reading the Subagents document again after a read failed. */
+const TASK_GRAPH_RETRY: Duration.Input = "1 second";
+
 export type Answer =
   | { readonly status: "answered"; readonly submissionId: number; readonly text: string }
   | { readonly status: "unanswered"; readonly submissionId: number; readonly reason: string };
@@ -489,10 +492,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never holds
     // up the alarm or a status report.
     return settings.refresh.pipe(
-      Effect.andThen(
+      // Another conversation is checked before arming: a bad ID must not report the Session running to the Registry.
+      Effect.andThen(toRoot ? Effect.succeed(target) : Effect.map(target, Effect.succeed)),
+      Effect.flatMap((resolved) =>
         // Arm before admitting work: an object that dies after the commit is still woken.
         arm({ active: true }).pipe(
-          Effect.andThen(target),
+          Effect.andThen(resolved),
           Effect.flatMap((conversation) =>
             attempt("submit", () =>
               conversation.submit({ type: "input", content: input, ...options }, context),
@@ -541,57 +546,80 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /** The Session's task graph as summaries; one per change, the first being how it stands. */
   const taskGraphSummaries = Stream.callback<TaskGraphSummary, SessionError>((queue) =>
-    Effect.acquireRelease(
-      attempt("watchTaskGraph", async () => {
-        const graph = await harness.harness.watchTaskGraph(context);
-        let latest: TaskGraph = graph.value;
-        let doc: DocumentWatch<SubagentsState> | undefined;
-        // Summaries are made one at a time, in the order the changes came.
-        let chain: Promise<void> = Promise.resolve();
+    Effect.flatMap(Effect.context<never>(), (services) =>
+      Effect.acquireRelease(
+        attempt("watchTaskGraph", async () => {
+          const run = Effect.runForkWith(services);
+          const graph = await harness.harness.watchTaskGraph(context);
+          let latest: TaskGraph = graph.value;
+          let doc: DocumentWatch<SubagentsState> | undefined;
+          // Summaries are made one at a time, in the order the changes came.
+          let chain: Promise<void> = Promise.resolve();
+          let stopped = false;
 
-        const publish = () => {
-          chain = chain.then(async () => {
-            const state = await harness.harness.snapshot(SubagentsDoc, context);
+          const publish = (): void => {
+            if (stopped) return;
 
-            Queue.offerUnsafe(queue, summarizeTaskGraph(latest, state ?? EMPTY_STATE));
-          });
-        };
+            chain = chain.then(async () => {
+              try {
+                const state = await harness.harness.snapshot(SubagentsDoc, context);
 
-        /** Follow the Subagents document, which does not exist until the first spawn and changes alone when an idle agent is deleted. */
-        const followDoc = async () => {
-          if (doc !== undefined) return;
+                Queue.offerUnsafe(queue, summarizeTaskGraph(latest, state ?? EMPTY_STATE));
+              } catch (error) {
+                // One failed read must not wedge the queue or leave the panel stale: log it and read again shortly.
+                run(
+                  Effect.logWarning("Task graph summary failed", error).pipe(
+                    Effect.andThen(Effect.sleep(TASK_GRAPH_RETRY)),
+                    Effect.andThen(Effect.sync(publish)),
+                  ),
+                );
+              }
+            });
+          };
 
-          doc = await harness.harness.watchDoc(SubagentsDoc, context);
-          doc?.start(() => {
-            publish();
+          /** Follow the Subagents document, which does not exist until the first spawn and changes alone when an idle agent is deleted. */
+          const followDoc = async () => {
+            if (doc !== undefined) return;
 
-            return Promise.resolve();
-          });
-        };
+            doc = await harness.harness.watchDoc(SubagentsDoc, context);
+            doc?.start(() => {
+              publish();
 
-        await followDoc();
-        publish();
-        graph.start(async (value) => {
-          latest = value;
+              return Promise.resolve();
+            });
+          };
+
           await followDoc();
           publish();
-        });
-        void graph.closed.then((end) =>
-          Queue.failCauseUnsafe(
-            queue,
-            Cause.fail(
-              SessionError.make({ operation: "watchTaskGraph", message: watchEnded(end) }),
+          graph.start(async (value) => {
+            latest = value;
+            await followDoc();
+            publish();
+          });
+          void graph.closed.then((end) =>
+            Queue.failCauseUnsafe(
+              queue,
+              Cause.fail(
+                SessionError.make({ operation: "watchTaskGraph", message: watchEnded(end) }),
+              ),
             ),
-          ),
-        );
+          );
 
-        return { graph, doc: () => doc };
-      }),
-      (watch) =>
-        Effect.promise(async () => {
-          await watch.graph.stop();
-          await watch.doc()?.stop();
+          return {
+            graph,
+            doc: () => doc,
+            stop: () => {
+              stopped = true;
+            },
+          };
         }),
+        (watch) =>
+          Effect.promise(async () => {
+            watch.stop();
+            await watch.graph.stop();
+            await watch.doc()?.stop();
+          }),
+      ),
     ),
   ).pipe(
     // A burst of changes is one summary, and a change that alters nothing a client shows is none.

@@ -12,7 +12,7 @@ import {
 import { useEffect, useMemo, type ReactNode } from "react";
 import { type ThreadState } from "../session/connection.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
-import { agentOfConversation, workingBelow } from "../session/agents.ts";
+import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import { Composer } from "./composer.tsx";
 import { queueAdapter, textOf } from "./queue-adapter.ts";
 import { useConnection, useSession } from "./session-context.tsx";
@@ -31,7 +31,11 @@ const LiveChildThread = ({
 }) => {
   const connection = useConnection();
   const agent = useSession((state) => agentOfConversation(state.taskGraph, conversationId));
-  const stopAll = useSession((state) => workingBelow(state.taskGraph, agent?.id ?? "").length > 0);
+
+  const stopAll = useSession((state) =>
+    canStopAllBelow(state.taskGraph, agent?.id ?? "", thread.view.running),
+  );
+
   const threadMessages = useMemo(() => toThreadMessages(thread.view), [thread.view]);
 
   const queue = useMemo(
