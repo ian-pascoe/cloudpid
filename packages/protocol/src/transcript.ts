@@ -20,7 +20,7 @@
 //
 // Changes: types renamed (`PiMessage` → `TranscriptMessage`, `PiMessagePart` → `TranscriptPart`), functions written as
 // `const` arrow functions, `Predicate.isString` for the typeof check, and `projectMessage` builds its result in steps.
-// Resets, compaction summaries, and the context extension's inputs project as titled notices.
+// Resets, compaction summaries, and extension entries with a `notice` title in their data project as titled notices.
 // Formatted for this repository.
 
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
@@ -133,12 +133,6 @@ export const projectMessage = (message: Message, id: string): TranscriptMessage 
   }
 };
 
-/** The input kinds of the context extension (`@cloudpid/extensions/context`), shown as notices rather than user input. */
-const NOTICE_KINDS = new Map([
-  ["cloudpid.context-prepare", "Rollover requested"],
-  ["cloudpid.context-continue", "Continued after the Handoff"],
-]);
-
 /** The title of an entry shown as a notice, or `undefined` for an entry shown as its message. */
 const noticeTitle = (entry: EntryRecord): string | undefined => {
   if (entry.kind === "pi.reset") return entry.model === undefined ? "Context reset" : "Handoff";
@@ -149,12 +143,18 @@ const noticeTitle = (entry: EntryRecord): string | undefined => {
     return Predicate.isString(reason) ? `Context compacted (${reason})` : "Context compacted";
   }
 
-  return NOTICE_KINDS.get(entry.kind);
+  // An extension's own entry kind asks to be a notice with a `notice` title in its data.
+  const notice =
+    !entry.kind.startsWith("pi.") && Predicate.hasProperty(entry.data, "notice")
+      ? entry.data.notice
+      : undefined;
+
+  return Predicate.isString(notice) ? notice : undefined;
 };
 
 /**
  * Project one transcript entry. Entries that carry a model message become that message; a reset (with the Handoff it
- * carries), a compaction summary, and the context extension's inputs become notices; system-prompt entries and other
+ * carries), a compaction summary, and an extension's entry whose data has a `notice` title become notices; system-prompt entries and other
  * bookkeeping have no projection.
  */
 export const projectEntry = (entry: EntryRecord): TranscriptMessage | undefined => {

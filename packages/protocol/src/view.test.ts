@@ -682,7 +682,7 @@ describe("the transcript projection", () => {
     ]);
   });
 
-  it("projects Handoffs, compaction summaries, and context-management inputs as notices", () => {
+  it("projects Handoffs, compaction summaries, and extension entries with a notice title as notices, other inputs as user messages", () => {
     const projected = projectEntries([
       asEntry({ id: 1, conversationId: 1, kind: "pi.reset", head: 1 }),
       asEntry({
@@ -704,13 +704,22 @@ describe("the transcript projection", () => {
         id: 4,
         conversationId: 1,
         kind: "cloudpid.context-prepare",
+        data: { notice: "Rollover requested" },
         model: [{ role: "user", content: "Prepare a Context Rollover", timestamp: 4 }],
       }),
       asEntry({
         id: 5,
         conversationId: 1,
         kind: "cloudpid.context-continue",
+        data: { notice: "Continued after the Handoff" },
         model: [{ role: "user", content: "Continue", timestamp: 5 }],
+      }),
+      asEntry({
+        id: 6,
+        conversationId: 1,
+        kind: "cloudpid.agent-input",
+        data: { from: "agent-1" },
+        model: [{ role: "user", content: "A report", timestamp: 6 }],
       }),
     ]);
 
@@ -744,6 +753,7 @@ describe("the transcript projection", () => {
         timestamp: 5,
         parts: [{ type: "text", text: "Continue" }],
       },
+      { id: "6", role: "user", timestamp: 6, parts: [{ type: "text", text: "A report" }] },
     ]);
   });
 });
