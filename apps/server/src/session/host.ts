@@ -71,7 +71,11 @@ export type SessionStorage = DurableObjectSqliteStorage & {
 export type SessionHostOptions<R = never> = {
   /** The object's `ctx.storage`. */
   readonly storage: SessionStorage;
-  readonly models: Models;
+  /**
+   * The models every conversation's requests go through, or an Effect that builds them from the Session's services
+   * (such as models that scrub requests with its `Secrets`).
+   */
+  readonly models: Models | Effect.Effect<Models, never, R>;
   /**
    * Reset the object (`ctx.abort`). Called when a storage error closes the Harness: the next event starts a new
    * instance, which reopens it.
@@ -84,6 +88,11 @@ export type SessionHostOptions<R = never> = {
    * this is undefined too.
    */
   readonly wakeAt?: Effect.Effect<number | undefined, never, R>;
+  /**
+   * Runs whenever the object settles with no work live, so state a call left behind can be cleared, such as a Secret
+   * request whose call was abandoned while the object was evicted.
+   */
+  readonly onIdle?: Effect.Effect<void, never, R>;
   /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
   readonly env?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
@@ -218,7 +227,8 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
     openDurableObjectSqliteStorage(storage, { prefix: "pi_" }),
   );
 
-  const harnessOptions = { models: options.models, settings: harnessSettings(settings) };
+  const models = Effect.isEffect(options.models) ? yield* options.models : options.models;
+  const harnessOptions = { models, settings: harnessSettings(settings) };
 
   const harness = yield* openHarness(
     piStorage,
@@ -252,6 +262,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     options.wakeAt === undefined
       ? Effect.undefined
       : Effect.provideContext(options.wakeAt, services);
+
+  const onIdle =
+    options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
 
   // Before anything resumes, so resumed tool calls find their tools.
   for (const extension of yield* options.extensions) yield* harness.install(extension);
@@ -362,7 +375,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ? // The heartbeat first: a report that cannot be made must not leave live work unwoken.
         armHeartbeat.pipe(Effect.andThen(report("running")), Effect.asVoid)
       : // Report before deleting the heartbeat: an unreported end keeps it, to report again.
-        report("idle").pipe(Effect.flatMap((told) => (told ? rest : armHeartbeat)));
+        onIdle.pipe(
+          Effect.andThen(report("idle")),
+          Effect.flatMap((told) => (told ? rest : armHeartbeat)),
+        );
 
   /** Reconcile the alarm and the Registry with what is live now. */
   const settle = wake.pipe(Effect.flatMap(arm), serially);

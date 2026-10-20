@@ -1,8 +1,9 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
 // The `secrets` extension (`docs/spec.md` → Secrets), ported from pi-secret's `pi-secret-extension.ts` (see
 // ../../NOTICE.md): `secret_ask`, `secret_list`, and `secret_forget`; a `beforeTool` hook that blocks calls referencing
-// a Secret the Session does not hold; an `afterTool` hook that redacts every result; a `beforeRequest` hook that
-// scrubs provider requests; and wraps that resolve references in the tools that use Secrets.
+// a Secret the Session does not hold; an `afterTool` hook that redacts every result; and wraps that resolve references
+// in the tools that use Secrets. Provider requests are scrubbed at the Session's model seam (`./models.ts`), which the
+// host installs, so every model call is covered, not only generations.
 //
 // Values never enter durable state. pi-durable records the arguments a `beforeTool` hook returns (in the call's intent
 // and in a nested call's progress), so the hook only blocks; the wrap of each tool that uses Secrets resolves its
@@ -12,11 +13,11 @@
 // resolve their own.
 import { defineEffectTool, effectHook, effectSection } from "@cloudpid/effect-durable";
 import type { JsonValue as DetailsJson } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   type Extension,
-  GenerationTask,
   ToolTask,
   type ToolExecutionApi,
   type ToolRegistration,
@@ -112,20 +113,52 @@ const resolveAll = (secrets: SecretsService, names: ReadonlyArray<string>) =>
     return reason === undefined ? { values } : { reason };
   });
 
-/** `env` with every held Secret added to the environment of each command it runs, read when the command starts. */
+/**
+ * Redact the Result Spill at `path` in place: it holds a command's raw output, in the Workspace's `/tmp`, which outlives
+ * the Secret and is readable by every Session on the Workspace. Runs on its own context, so an aborted command's spill
+ * is redacted too; a spill that cannot be rewritten is removed.
+ */
+const redactSpill = async (env: ExecutionEnv, path: string, redact: (text: string) => string) => {
+  const read = await env.readTextFile(path, BACKGROUND_CONTEXT);
+
+  if (read.ok) {
+    const redacted = redact(read.value);
+
+    if (redacted === read.value) return;
+
+    const written = await env.writeFile(path, redacted, BACKGROUND_CONTEXT);
+
+    if (written.ok) return;
+  }
+
+  await env.remove(path, { force: true }, BACKGROUND_CONTEXT);
+};
+
+/**
+ * `env` with every held Secret added to the environment of each command it runs, read when the command starts, and the
+ * Result Spill of each command redacted before the command's result reaches the tool.
+ */
 const withSecretEnvironment = (
   env: ExecutionEnv,
   variables: () => Promise<Readonly<Record<string, string>>>,
+  redact: (text: string) => string,
 ): ExecutionEnv =>
   new Proxy(env, {
     get: (target, key) => {
       if (key === "exec") {
-        const exec: ExecutionEnv["exec"] = async (command, options, context) =>
-          target.exec(
+        const exec: ExecutionEnv["exec"] = async (command, options, context) => {
+          const result = await target.exec(
             command,
             { ...options, env: { ...options?.env, ...(await variables()) } },
             context,
           );
+
+          const spillPath = result.ok ? result.value.spillPath : result.error.spillPath;
+
+          if (spillPath !== undefined) await redactSpill(target, spillPath, redact);
+
+          return result;
+        };
 
         return exec;
       }
@@ -135,7 +168,7 @@ const withSecretEnvironment = (
         const backends = target as ExecutionEnv & BackendEnv;
 
         const onBackend: BackendEnv["onBackend"] = (backend) =>
-          withSecretEnvironment(backends.onBackend(backend), variables);
+          withSecretEnvironment(backends.onBackend(backend), variables, redact);
 
         return onBackend;
       }
@@ -179,7 +212,11 @@ const withSecrets =
         env:
           api.env === undefined
             ? undefined
-            : withSecretEnvironment(api.env, () => run(secrets.environment)),
+            : withSecretEnvironment(
+                api.env,
+                () => run(secrets.environment),
+                (text) => secrets.redact(text),
+              ),
         output: (chunk) => {
           const settled = stream.push(
             Predicate.isString(chunk) ? chunk : decoder.decode(chunk, { stream: true }),
@@ -273,11 +310,11 @@ const outcomeDetails = (outcome: AskOutcome): { readonly [key: string]: DetailsJ
     : { name: outcome.name, status: outcome.status };
 
 /**
- * The `secrets` extension. The tools of `resolving` (the coding, file, and web tools) run with Secrets; every other
- * tool sees references as written. Needs the Session's `Secrets`.
+ * The `secrets` extension. The `resolving` tools (the coding and file tools, and `web_fetch`) run with Secrets; every
+ * other tool sees references as written. Needs the Session's `Secrets`.
  */
 export const secretsExtension = (
-  resolving: ReadonlyArray<Extension>,
+  resolving: ReadonlyArray<ToolRegistration>,
 ): Effect.Effect<Extension, never, Secrets> =>
   Effect.gen(function* () {
     const secrets = yield* Secrets;
@@ -389,13 +426,6 @@ export const secretsExtension = (
       afterTool: (_call, toolResult) => Effect.sync(() => secrets.redact(toolResult)),
     });
 
-    const requests = yield* effectHook(GenerationTask, {
-      beforeRequest: (request) =>
-        Effect.map(secrets.scrub(request.messages), (messages) =>
-          messages === request.messages ? undefined : { messages },
-        ),
-    });
-
     const guidelines = yield* effectSection("secrets", (input) =>
       Effect.sync(() =>
         Arr.some(input.agent.tools, (tool) => SECRET_TOOLS.has(tool.name))
@@ -409,10 +439,8 @@ export const secretsExtension = (
     return defineExtension({
       name: extensionName,
       tools: [ask, list, forget],
-      hooks: [tools, requests],
+      hooks: [tools],
       sections: [guidelines],
-      wraps: resolving.flatMap((extension) =>
-        (extension.tools ?? []).map((tool) => wrapTool(tool, wrap)),
-      ),
+      wraps: resolving.map((tool) => wrapTool(tool, wrap)),
     });
   });

@@ -204,4 +204,34 @@ describe("Secrets over the Session socket", () => {
 
     expect(results.at(-1)).toBe(`echo: key=${secretReference("API_KEY")}`);
   });
+
+  it("withdraws a request whose call is gone once the Session is idle", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    const stray = { id: "99", conversationId: 1, names: ["API_KEY"] };
+
+    // As an abandoned call leaves it: stored, with no call to come back for it.
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      state.storage.kv.put("secret-asks", [stray]);
+    });
+    await evictDurableObject(stub);
+
+    const asks = async () =>
+      runInDurableObject(stub, (_instance: TestSession, state) =>
+        state.storage.kv.get("secret-asks"),
+      );
+
+    // The new instance settles with no work live.
+    for (let attempt = 0; attempt < 300 && JSON.stringify(await asks()) !== "[]"; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(await asks()).toEqual([]);
+
+    const client = await connect(stub);
+
+    client.send({ type: "secret_answer", id: "late", request: stray.id, values: null });
+
+    expect(await client.next(isAnswer("late"))).toMatchObject({ type: "error" });
+    expect(client.received.some(isPending)).toBe(false);
+  });
 });

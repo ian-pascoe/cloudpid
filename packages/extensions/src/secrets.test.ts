@@ -133,6 +133,34 @@ describe("secrets", () => {
     expect(last).toContain(ref("API_KEY"));
   });
 
+  it("scrubs model calls other than generations, such as a compaction summary of the chat", async () => {
+    const session = await openSecretsHarness();
+
+    await session.hold({ API_KEY: VALUE });
+
+    const model = session.models.getModel("faux", "faux-1");
+
+    expect(model).toBeDefined();
+
+    const before = session.requests.length;
+
+    await session.models.completeSimple(model!, {
+      messages: [{ role: "user", content: `summarize: my key is ${VALUE}`, timestamp: 1 }],
+    });
+    await session.models
+      .streamSimple(model!, {
+        messages: [{ role: "user", content: `again: ${VALUE}`, timestamp: 2 }],
+      })
+      .result();
+
+    const sent = JSON.stringify(session.requests.slice(before));
+
+    expect(session.requests).toHaveLength(before + 2);
+    expect(sent).not.toContain(VALUE);
+    expect(sent).toContain(`summarize: my key is ${ref("API_KEY")}`);
+    expect(sent).toContain(`again: ${ref("API_KEY")}`);
+  });
+
   it("resolves references in calls a program makes, and gives the program redacted results", async () => {
     const session = await openSecretsHarness();
 

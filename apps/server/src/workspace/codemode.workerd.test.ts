@@ -197,4 +197,43 @@ describe("Secrets on a Workspace", () => {
     expect(await read(".env")).toBe(`TOKEN=${VALUE}\n`);
     expect(await read("nested.txt")).toBe(VALUE);
   });
+
+  it("redacts the Result Spill of a command whose output crosses the spill thresholds", async () => {
+    const stub = env.CODEMODE_SESSIONS.getByName("secrets-2");
+
+    const results = await runInDurableObject(stub, async (instance: TestCodemodeSession) => {
+      instance.bindWorkspace("secrets-2");
+      await instance.hold({ TOKEN: VALUE });
+      instance.script([
+        call("bash", {
+          command: `for i in $(seq 1 2100); do echo "line $i $${TOKEN}"; done`,
+        }),
+        "done",
+      ]);
+
+      const answer = await instance.prompt({ requestId: crypto.randomUUID(), text: "go" });
+
+      expect(answer).toMatchObject({ status: "answered", text: "done" });
+
+      return instance.toolResults();
+    });
+
+    expect(JSON.stringify(results)).not.toContain(VALUE);
+
+    const spillPath = /Full output: (\S+)/.exec(results.join("\n"))?.[1];
+
+    expect(spillPath).toBeDefined();
+
+    const workspace = new ComputerExecutionEnv({
+      workspace: env.WORKSPACES.getByName("secrets-2"),
+      id: "computer:secrets-2",
+      cwd: "/workspace",
+    });
+
+    const spill = getOrThrow(await workspace.readTextFile(spillPath ?? "", BACKGROUND_CONTEXT));
+
+    expect(spill.split("\n")).toHaveLength(2101);
+    expect(spill).toContain(`line 2100 ${ref}\n`);
+    expect(spill).not.toContain(VALUE);
+  });
 });

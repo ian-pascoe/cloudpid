@@ -5,7 +5,7 @@
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
-import { Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
+import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
   createModels,
   type FauxResponseStep,
@@ -103,9 +103,10 @@ export class TestSession extends DurableObject {
   /** The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, and the secret tools. */
   protected hostExtensions(): Effect.Effect<readonly Extension[], never, Harness | Secrets> {
     return Effect.gen(function* () {
-      const echo = defineExtension({ name: "echo", tools: [yield* Echo] });
+      const tool = yield* Echo;
+      const echo = defineExtension({ name: "echo", tools: [tool] });
 
-      return [echo, yield* secretsExtension([echo])];
+      return [echo, yield* secretsExtension([tool])];
     });
   }
 
@@ -148,12 +149,14 @@ export class TestSession extends DurableObject {
           Layer.provideMerge(
             sessionHostLayer({
               storage: ctx.storage,
-              models,
+              // As the Session DO's: every model call is scrubbed of the Secrets the Session holds.
+              models: Effect.map(Effect.service(Secrets), (held) => scrubbingModels(models, held)),
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
               env: this.hostEnv(),
               reportTimeout: "200 millis",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
+              onIdle: Effect.flatMap(Effect.service(Secrets), (held) => held.dropAbandoned),
             }).pipe(
               Layer.provide(
                 Layer.mergeAll(

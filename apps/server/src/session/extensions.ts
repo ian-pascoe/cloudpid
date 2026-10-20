@@ -6,6 +6,7 @@ import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Web, WebConfig, WebNetworkLive } from "@cloudpid/extensions/web";
 import type { Extension } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { Codemode, CodemodeSandbox } from "./codemode.ts";
 
@@ -16,8 +17,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * the tools above and run in the `CodemodeSandbox` (`./codemode.ts`); the subagent tools, which read their roles,
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
  * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; and the secret tools
- * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding, file, and web tools use the Session's
- * `Secrets`. Needs `WebConfig`: the search keys, which the Session DO reads with
+ * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
+ * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
  */
 export const sessionExtensions: Effect.Effect<
@@ -36,10 +37,13 @@ export const sessionExtensions: Effect.Effect<
   Effect.flatMap((extensions) => {
     const [coding, files, web] = extensions;
 
-    return Effect.map(secretsExtension([coding, files, web]), (secrets) => [
-      ...extensions,
-      secrets,
-    ]);
+    const resolving = [
+      ...(coding.tools ?? []),
+      ...(files.tools ?? []),
+      ...Arr.filter(web.tools ?? [], (tool) => tool.name === "web_fetch"),
+    ];
+
+    return Effect.map(secretsExtension(resolving), (secrets) => [...extensions, secrets]);
   }),
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(WebNetworkLive),

@@ -76,6 +76,12 @@ export type SecretsService = {
   /** The asks waiting for the owner, oldest first. */
   readonly pending: Effect.Effect<ReadonlyArray<SecretAsk>>;
   /**
+   * Withdraw every ask no call in this instance waits for, and drop the answers no call took. Run only while no work is
+   * live: then no call can still come back for them (one an eviction cut off has rerun by then), so they were
+   * abandoned, such as a call aborted while the object was evicted.
+   */
+  readonly dropAbandoned: Effect.Effect<void>;
+  /**
    * The owner's answer to ask `id`: a value per name (an empty or missing one skips the name), or `null` when the owner
    * cancelled. Fails when no such ask waits, or the answer names a Secret the ask did not request.
    */
@@ -109,6 +115,22 @@ const ANSWERS_KEY = "secret-answers";
 const SCRUBBED_KEY = "secret-scrubbed";
 
 const scrubbedKey = (digest: string) => `secret-scrubbed:${digest}`;
+
+const encoder = new TextEncoder();
+
+/**
+ * The index of a message in the scrubbed forms: an unkeyed SHA-256 of its JSON, so the index survives a change of the
+ * deployment's key. A keyed digest would hide nothing, as the message sits in the same object's transcript.
+ */
+const messageDigest = <M>(message: M): Effect.Effect<string, SecretsError> =>
+  Effect.tryPromise({
+    try: () =>
+      crypto.subtle.digest(
+        "SHA-256",
+        encoder.encode(`cloudpid scrubbed message v1\n${JSON.stringify(message)}`),
+      ),
+    catch: (cause) => SecretsError.make({ message: `Cannot digest a message: ${String(cause)}` }),
+  }).pipe(Effect.map((digest) => btoa(String.fromCharCode(...new Uint8Array(digest)))));
 
 type Sealed = Readonly<Record<string, SealedSecret>>;
 
@@ -304,7 +326,7 @@ const makeSecrets = ({
         const scrubbed: M[] = [];
 
         for (const message of messages) {
-          const digest = yield* fromVault(vault.digest(JSON.stringify(message)));
+          const digest = yield* messageDigest(message);
           let first = sent.get(digest);
 
           if (first === undefined) {
@@ -371,6 +393,13 @@ const makeSecrets = ({
       }),
       ask,
       pending: Effect.sync(asks),
+      dropAbandoned: Effect.suspend(() => {
+        if (Object.keys(answers()).length > 0) storage.put(ANSWERS_KEY, {});
+
+        const waited = asks().filter((pending) => waiters.has(pending.id));
+
+        return waited.length === asks().length ? Effect.void : putAsks(waited);
+      }),
       answer,
       redact: (value) => redactions.redact(value),
       stream: () => redactions.stream(),

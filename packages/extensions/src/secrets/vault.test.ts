@@ -63,13 +63,4 @@ describe("SecretVault", () => {
   it("refuses a master key too short to be one", async () => {
     expect(Exit.isFailure(await Effect.runPromiseExit(openVault("short", "session-1")))).toBe(true);
   });
-
-  it("gives equal digests for equal text and different ones across Sessions", async () => {
-    const one = await run(openVault(MASTER, "session-1"));
-    const two = await run(openVault(MASTER, "session-2"));
-
-    expect(await run(one.digest("hello"))).toBe(await run(one.digest("hello")));
-    expect(await run(one.digest("hello"))).not.toBe(await run(one.digest("world")));
-    expect(await run(one.digest("hello"))).not.toBe(await run(two.digest("hello")));
-  });
 });

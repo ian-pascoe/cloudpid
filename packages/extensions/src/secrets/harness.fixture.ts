@@ -39,6 +39,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { CodingTools } from "../coding-tools.ts";
 import { secretsExtension } from "./extension.ts";
+import { scrubbingModels } from "./models.ts";
 import { type SecretAsk, Secrets, secretsLayer, type SecretStorage } from "./store.ts";
 import { openVault } from "./vault.ts";
 
@@ -194,9 +195,10 @@ export const openSecretsHarness = async () => {
   const resolving = usingSecrets(recorded);
 
   const extensions = await runtime.runPromise(
-    Effect.all([Program, secretsExtension([CodingTools, resolving])]).pipe(
-      Effect.provideService(Secrets, secrets),
-    ),
+    Effect.all([
+      Program,
+      secretsExtension([...(CodingTools.tools ?? []), ...(resolving.tools ?? [])]),
+    ]).pipe(Effect.provideService(Secrets, secrets)),
   );
 
   const [program, secretsExt] = extensions;
@@ -206,6 +208,9 @@ export const openSecretsHarness = async () => {
   let script: AssistantMessage[] = [];
 
   models.setProvider(faux.provider);
+
+  // As the Session DO installs it: every model call, not only generations, is scrubbed.
+  const scrubbed = scrubbingModels(models, secrets);
   faux.setResponses(
     Array.from({ length: 100 }, () => (transcript: { readonly messages: readonly Message[] }) => {
       requests.push(structuredClone([...transcript.messages]));
@@ -220,7 +225,7 @@ export const openSecretsHarness = async () => {
 
   const harness = await Harness.open(
     new MemoryStorage(),
-    { models, registry, env: () => asEnv(new FakeEnv(execs)) },
+    { models: scrubbed, registry, env: () => asEnv(new FakeEnv(execs)) },
     context,
   );
 
@@ -298,6 +303,8 @@ export const openSecretsHarness = async () => {
     recorded,
     requests,
     announced,
+    /** The Harness's models, which an extension's own model calls (summaries, titles) go through. */
+    models: scrubbed,
     dump: () => JSON.stringify([...map]),
     advance: (millis: number) => runtime.runPromise(TestClock.adjust(millis)),
   };

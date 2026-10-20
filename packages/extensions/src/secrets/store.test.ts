@@ -274,6 +274,35 @@ describe("Secrets", () => {
       expect(yield* evicted.secrets.scrub([pasted])).toEqual([
         userMessage(`oops: ${secretReference("API_KEY")}`),
       ]);
+
+      // Also after the deployment's key changes, which drops every Secret held.
+      const rotated = yield* open(storage, `${MASTER}-rotated`);
+
+      expect(yield* rotated.secrets.scrub([pasted])).toEqual([
+        userMessage(`oops: ${secretReference("API_KEY")}`),
+      ]);
+    }));
+
+  test("drops an ask no call came back for, once no work is live, and keeps one a call waits on", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const first = yield* open(storage);
+
+      // Evicted while the ask waits; the call is then abandoned, so nothing reruns it.
+      yield* Effect.forkChild(first.secrets.ask(ASK));
+      yield* Effect.yieldNow;
+
+      const second = yield* open(storage);
+      const waiting = yield* Effect.forkChild(second.secrets.ask({ ...ASK, id: "8" }));
+
+      yield* Effect.yieldNow;
+      yield* second.secrets.dropAbandoned;
+
+      expect(yield* second.secrets.pending).toEqual([{ ...ASK, id: "8" }]);
+      expect(second.announced.at(-1)).toEqual([{ ...ASK, id: "8" }]);
+
+      yield* second.secrets.answer("8", null);
+      yield* Fiber.join(waiting);
     }));
 
   test("leaves requests alone while no Secret was ever held", () =>

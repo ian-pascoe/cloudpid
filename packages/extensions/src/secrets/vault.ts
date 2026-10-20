@@ -48,7 +48,7 @@ const attempt = <A>(operation: string, run: () => Promise<A>) =>
     catch: (cause) => SecretVaultError.make({ message: `Cannot ${operation}: ${String(cause)}` }),
   });
 
-/** One Session's keys: AES-GCM for values, and HMAC for digests of text that may hold values. */
+/** One Session's key: AES-GCM for values. */
 export type SecretVault = {
   readonly seal: (
     name: string,
@@ -56,8 +56,6 @@ export type SecretVault = {
     expiresAt: number,
   ) => Effect.Effect<SealedSecret, SecretVaultError>;
   readonly open: (sealed: SealedSecret) => Effect.Effect<string, SecretVaultError>;
-  /** A keyed digest of `text`, base64: equal for equal text in this Session, and reveals nothing of it. */
-  readonly digest: (text: string) => Effect.Effect<string, SecretVaultError>;
 };
 
 /** Bind the ciphertext to its Session, Secret Name, and expiry, so an edited record fails to open. */
@@ -105,12 +103,6 @@ export const openVault = (
       "decrypt",
     ]);
 
-    const hmac = yield* derive(
-      "cloudpid secrets v1 hmac",
-      { name: "HMAC", hash: "SHA-256", length: 256 },
-      ["sign"],
-    );
-
     return {
       seal: (name, value, expiresAt) =>
         Effect.gen(function* () {
@@ -144,9 +136,5 @@ export const openVault = (
             fromBase64(sealed.ciphertext),
           ),
         ).pipe(Effect.map((plain) => decoder.decode(plain))),
-      digest: (text) =>
-        attempt("digest text", () => crypto.subtle.sign("HMAC", hmac, encoder.encode(text))).pipe(
-          Effect.map(toBase64),
-        ),
     } satisfies SecretVault;
   });

@@ -1,6 +1,6 @@
 import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
-import { Secrets } from "@cloudpid/extensions/secrets";
+import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
 import { WebConfig } from "@cloudpid/extensions/web";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -151,7 +151,10 @@ export const SessionLive = Session.make(
             Layer.provideMerge(
               sessionHostLayer({
                 storage: state.raw.storage,
-                models,
+                // Every model call (generations, summaries) is scrubbed of the Secrets this Session holds.
+                models: Effect.map(Effect.service(Secrets), (held) =>
+                  scrubbingModels(models, held),
+                ),
                 reset: (reason) => state.raw.abort(reason),
                 extensions: sessionExtensions.pipe(
                   Effect.provideService(WebConfig, web),
@@ -162,6 +165,8 @@ export const SessionLive = Session.make(
                 env: workspace.env,
                 // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time.
                 wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
+                // A Secret request whose call is gone stops showing its form.
+                onIdle: Effect.flatMap(Effect.service(Secrets), (held) => held.dropAbandoned),
               }),
             ),
             Layer.provideMerge(sessionSecrets),

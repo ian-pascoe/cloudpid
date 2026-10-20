@@ -7,6 +7,8 @@ export {
   secretsExtension,
 } from "./secrets/extension.ts";
 
+export { scrubbingModels } from "./secrets/models.ts";
+
 export { Redactions, type RedactionStream } from "./secrets/redaction.ts";
 
 export {
