@@ -6,12 +6,14 @@ import {
   type WorkspaceSettings,
 } from "@cloudpid/config";
 import { RegistryRpcs, RPC_PATH, SessionNotFound, WorkspaceError } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
@@ -71,14 +73,13 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         calls.push("renameSession");
 
-        const index = sessions.findIndex((session) => session.id === id);
-        const found = sessions[index];
+        const found = Arr.findFirst(sessions, (session) => session.id === id);
 
-        if (found === undefined) return null;
+        if (Option.isNone(found)) return null;
 
-        const renamed: SessionRecord = { ...found, title, titleSource: "owner" };
+        const renamed: SessionRecord = { ...found.value, title, titleSource: "owner" };
 
-        sessions[index] = renamed;
+        sessions.splice(sessions.indexOf(found.value), 1, renamed);
 
         return renamed;
       }),
@@ -297,10 +298,9 @@ it("renames a Session, which is the owner's title from then on", async () => {
 
 it("fails to rename a Session the Registry does not know", async () => {
   const error = await withClient(
-    Effect.flip(
-      Effect.flatMap(Registry, (registry) =>
-        registry.renameSession({ id: "ghost", title: "Nope" }),
-      ),
+    Registry.pipe(
+      Effect.flatMap((registry) => registry.renameSession({ id: "ghost", title: "Nope" })),
+      Effect.flip,
     ),
   );
 
