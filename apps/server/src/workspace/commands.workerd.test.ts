@@ -78,10 +78,11 @@ describe("a message that names a Skill or a template", () => {
     });
 
     const entries = await run(async (instance) => {
-      instance.script(["Deployed.", "Reviewed.", "Echoed."]);
+      instance.script(["Deployed.", "Reviewed.", "Echoed.", "Linked."]);
       await instance.prompt({ requestId: "skill", text: "/skill:deploy to staging" });
       await instance.prompt({ requestId: "template", text: '/review HEAD~1 "error paths" tests' });
       await instance.prompt({ requestId: "plain", text: "echo $HOME, not `$deploy`" });
+      await instance.prompt({ requestId: "reference", text: "Ship it with $deploy." });
 
       return instance.rootEntries();
     });
@@ -105,6 +106,11 @@ describe("a message that names a Skill or a template", () => {
         text: "Review HEAD~1, focusing on error paths tests.",
       },
       { kind: "pi.user", data: undefined, text: "echo $HOME, not `$deploy`" },
+      {
+        kind: "cloudpid.user",
+        data: { display: "Ship it with $deploy.", skills: [] },
+        text: "Ship it with [$deploy](/workspace/demo/.agents/skills/deploy/SKILL.md).",
+      },
     ]);
 
     // The model got the expansion.

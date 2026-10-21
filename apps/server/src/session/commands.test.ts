@@ -75,8 +75,11 @@ describe("exportMarkdown", () => {
         entry({
           id: 1,
           kind: "cloudpid.user",
-          data: { display: "$review it", skills: [{ name: "review", location: "/s/SKILL.md" }] },
-          model: [{ role: "user", content: "<skill …>\n\n$review it", timestamp: 1 }],
+          data: {
+            display: "/skill:review it",
+            skills: [{ name: "review", location: "/s/SKILL.md" }],
+          },
+          model: [{ role: "user", content: "<skill …>\n\nit", timestamp: 1 }],
         }),
         entry({
           id: 2,
@@ -123,7 +126,7 @@ describe("exportMarkdown", () => {
         "# Conversation 1",
         "_Exported 2026-01-02T00:00:00.000Z_",
         "## Owner",
-        "$review it",
+        "/skill:review it",
         "_Skills: `review`_",
         "## Agent",
         "<details><summary>Thinking</summary>\n\nHmm\n\n</details>",

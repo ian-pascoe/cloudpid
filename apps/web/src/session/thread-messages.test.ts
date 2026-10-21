@@ -69,14 +69,14 @@ describe("the thread messages of a view", () => {
       view({
         messages: [
           {
-            ...user("1", "$deploy now"),
+            ...user("1", "/skill:deploy now"),
             skills: [{ name: "deploy", location: "/s/SKILL.md", text: "<skill>…</skill>" }],
           },
         ],
       }),
     );
 
-    expect(message?.content).toEqual([{ type: "text", text: "$deploy now" }]);
+    expect(message?.content).toEqual([{ type: "text", text: "/skill:deploy now" }]);
     expect(shownSkills(message?.metadata?.custom)).toEqual([
       { name: "deploy", text: "<skill>…</skill>" },
     ]);

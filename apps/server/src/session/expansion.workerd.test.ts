@@ -68,13 +68,13 @@ describe("a submitted message", () => {
 
     await runInDurableObject(stub, async (instance: TestSubagentSession) => {
       instance.useWorkspace({ skills: [deploy], files: [DEPLOY_FILE], readDelayMs: 200 });
-      await Promise.all([instance.submit("$deploy now"), instance.submit("Then this")]);
+      await Promise.all([instance.submit("/skill:deploy now"), instance.submit("Then this")]);
     });
     await eventually(stub, (instance) => instance.idle());
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
-    ).toEqual([`${block}\n\n$deploy now`, "Then this"]);
+    ).toEqual([`${block}\n\nnow`, "Then this"]);
   });
 
   it("goes as typed when the Workspace cannot be asked", async () => {
@@ -89,9 +89,9 @@ describe("a submitted message", () => {
     ]);
   });
 
-  it("goes as typed when its Skill cannot be read, or is too big to expand", async () => {
-    expect(await submitted({ skills: [deploy] }, "$deploy now")).toEqual([
-      { kind: "pi.user", data: undefined, text: "$deploy now" },
+  it("goes as typed when its /skill: cannot be read, or is too big to expand", async () => {
+    expect(await submitted({ skills: [deploy] }, "/skill:deploy now")).toEqual([
+      { kind: "pi.user", data: undefined, text: "/skill:deploy now" },
     ]);
 
     const big = { path: DEPLOY, text: "x".repeat(MAX_EXPANDED_FILE_BYTES + 1) };
@@ -102,11 +102,24 @@ describe("a submitted message", () => {
   });
 
   it("is expanded with what it names when the Workspace answers", async () => {
-    expect(await submitted({ skills: [deploy], files: [DEPLOY_FILE] }, "$deploy now")).toEqual([
+    expect(
+      await submitted({ skills: [deploy], files: [DEPLOY_FILE] }, "/skill:deploy now"),
+    ).toEqual([
       {
         kind: "cloudpid.user",
-        data: { display: "$deploy now", skills: [{ name: "deploy", location: DEPLOY }] },
-        text: `${block}\n\n$deploy now`,
+        data: { display: "/skill:deploy now", skills: [{ name: "deploy", location: DEPLOY }] },
+        text: `${block}\n\nnow`,
+      },
+    ]);
+  });
+
+  it("links a $ reference to a known Skill in place, reading no file for it", async () => {
+    // The Skill's file cannot be read: a reference does not need it.
+    expect(await submitted({ skills: [deploy] }, "use $deploy now")).toEqual([
+      {
+        kind: "cloudpid.user",
+        data: { display: "use $deploy now", skills: [] },
+        text: `use [$deploy](${DEPLOY}) now`,
       },
     ]);
   });

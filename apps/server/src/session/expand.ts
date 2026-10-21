@@ -1,7 +1,7 @@
 // Expanding the owner's message at submit (docs/adr/0001-expand-skills-and-prompt-templates-at-submit.md): a message
-// that names a Skill (`/skill:name` at its start, `$name` anywhere outside code) or starts with a Prompt template's
-// `/name` reaches the model as its expansion, the way local pi expands it (`_expandSkillCommand` and
-// `expandPromptTemplate` of pi's coding agent), while the entry keeps what the owner typed.
+// that starts with `/skill:name` or a Prompt template's `/name` reaches the model as its expansion, the way local pi
+// expands it (`_expandSkillCommand` and `expandPromptTemplate` of pi's coding agent), and a `$name` naming a Skill
+// becomes a link to it, as the owner's pi-skills-selector makes it; the entry keeps what the owner typed.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off -- string functions over the typed text, and a Promise reader the host provides.
 import {
   byteLength,
@@ -11,7 +11,8 @@ import {
   substituteArgs,
   templateCall,
 } from "@cloudpid/extensions/prompt-templates";
-import { type ExpandedSkill, skillBlock, type UserEntryData } from "@cloudpid/protocol";
+import { skillBlock, type UserEntryData } from "@cloudpid/protocol";
+import { linkSkillReferences } from "./skill-references.ts";
 
 /**
  * The most an expanded message may hold, in UTF-8 bytes: the expansion and the typed text it keeps, both stored in its
@@ -40,64 +41,7 @@ export type ExpandOptions = {
 
 /** Whether `text` may name a Skill or a template at all, so a plain message costs no lookup. */
 export const mayExpand = (text: string): boolean =>
-  text.startsWith("/") || /(?:^|\s)\$[\w-]/.test(text);
-
-/** A fenced block's opening line: up to three spaces, then three or more backticks or tildes. */
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-
-/** An indented code block's line: four spaces or a tab, then something. */
-const INDENTED = /^(?: {4}|\t)\S*/;
-
-/**
- * An inline code span: a backtick run that is not part of a longer one, its content, and a run of the same length that
- * is not part of a longer one either.
- */
-const SPAN = /(?<!`)(`+)(?!`)[\s\S]*?[^`]\1(?!`)/g;
-
-/**
- * `text` without its code, so a `$name` written as code is not a Skill: fenced blocks (to their closing fence, or the
- * end), indented code blocks (a line indented by four spaces or a tab after a blank line or another such line: one
- * after a paragraph's line continues the paragraph) and inline code spans. An unclosed backtick opens no span, as in
- * Markdown. It does not parse Markdown: an indented line inside a list item counts as code, as do lines indented in a
- * block quote's continuation, which leaves a `$name` there unexpanded.
- */
-export const withoutCode = (text: string): string => {
-  const kept: string[] = [];
-  let fence: string | undefined;
-  // Whether the line before was blank, the start of the text, or itself indented code.
-  let mayIndent = true;
-
-  for (const line of text.split("\n")) {
-    if (fence !== undefined) {
-      if (new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}\\s*$`).test(line)) {
-        fence = undefined;
-      }
-
-      mayIndent = true;
-      continue;
-    }
-
-    const opening = FENCE.exec(line)?.[1];
-
-    if (opening !== undefined) {
-      fence = opening;
-    } else if (mayIndent && line.trim() !== "" && INDENTED.test(line)) {
-      // Indented code: dropped, and the next indented line is code too.
-      continue;
-    } else {
-      kept.push(line);
-    }
-
-    mayIndent = line.trim() === "";
-  }
-
-  return kept.join("\n").replace(SPAN, " ");
-};
-
-/** The names after `$` at the start of a word outside code, in order, each once. */
-export const mentionedNames = (text: string): string[] => [
-  ...new Set(Array.from(withoutCode(text).matchAll(/(?:^|\s)\$([\w-]+)/g), (match) => match[1]!)),
-];
+  text.startsWith("/") || /(?<![\p{L}\p{M}\p{N}$/+-])\$[^\s$]/u.test(text);
 
 /** The text of `path`, if it can be read and is small enough to expand; else why not, for the log. */
 const readExpandable = async (
@@ -130,21 +74,22 @@ const withinLimit = (expansion: Expansion, unexpanded: ReadonlyArray<string>): E
  * The expansion of the owner's `text`, or none when it names no Skill or template the conversation has:
  *
  * - `/skill:name args` at the start: the Skill's block, then the arguments, as local pi's `/skill:` does.
- * - `$name` at the start of a word outside code, for each known Skill once: its block, before the typed text, which is
- *   kept as it is. A `$` that names no Skill (`$HOME`) is left alone.
  * - `/name args` naming a Prompt template: the template, its arguments substituted.
+ * - `$name` naming a known Skill, in the prose of the message or of a `/skill:`'s arguments: a link to the Skill's
+ *   `SKILL.md`, in place (`linkSkillReferences`), which the model reads when it needs it. No file is read for it.
  *
  * A name nothing knows is left as typed. So is a Skill or template whose file cannot be read or is over
- * `MAX_EXPANDED_FILE_BYTES`, and the whole message when its expansion would be over `MAX_EXPANSION_BYTES`: those say why
- * in `unexpanded`.
+ * `MAX_EXPANDED_FILE_BYTES` (a `/skill:` so left keeps its references linked), and the whole message when its expansion
+ * would be over `MAX_EXPANSION_BYTES`: those say why in `unexpanded`. Only an embedded Skill is in the data's `skills`.
  */
 export const expandMessage = async (
   text: string,
   options: ExpandOptions,
 ): Promise<ExpandResult> => {
-  const byName = new Map(options.skills.map((skill) => [skill.name, skill]));
   const lead = /^\/skill:(\S+)(?:\s+([\s\S]*))?$/.exec(text);
-  const leading = lead === null ? undefined : byName.get(lead[1]!);
+  const leading = lead === null ? undefined : options.skills.find(({ name }) => name === lead[1]);
+  const linked = (part: string) => linkSkillReferences(part, options.skills);
+  const unexpanded: string[] = [];
 
   if (lead === null) {
     const call = templateCall(text, options.templates);
@@ -168,49 +113,33 @@ export const expandMessage = async (
     }
   }
 
-  const rest = leading === undefined ? text : (lead?.[2] ?? "").trim();
+  if (leading !== undefined) {
+    const read = await readExpandable(options, leading.filePath, `Skill ${leading.name}`);
 
-  const named = [
-    ...(leading === undefined ? [] : [leading]),
-    ...mentionedNames(rest).flatMap((name) => {
-      const skill = byName.get(name);
+    if (!("unexpanded" in read)) {
+      const block = skillBlock({
+        name: leading.name,
+        location: leading.filePath,
+        body: stripFrontmatter(read.text).trim(),
+      });
 
-      return skill === undefined || skill === leading ? [] : [skill];
-    }),
-  ];
+      const args = linked((lead?.[2] ?? "").trim());
 
-  const blocks: string[] = [];
-  const skills: ExpandedSkill[] = [];
-  const unexpanded: string[] = [];
-
-  for (const skill of named) {
-    const read = await readExpandable(options, skill.filePath, `Skill ${skill.name}`);
-
-    if ("unexpanded" in read) {
-      unexpanded.push(read.unexpanded);
-      continue;
+      return withinLimit(
+        {
+          content: args === "" ? block : `${block}\n\n${args}`,
+          data: { display: text, skills: [{ name: leading.name, location: leading.filePath }] },
+        },
+        [],
+      );
     }
 
-    blocks.push(
-      skillBlock({
-        name: skill.name,
-        location: skill.filePath,
-        body: stripFrontmatter(read.text).trim(),
-      }),
-    );
-    skills.push({ name: skill.name, location: skill.filePath });
+    unexpanded.push(read.unexpanded);
   }
 
-  if (skills.length === 0) return { expansion: undefined, unexpanded };
+  const content = linked(text);
 
-  // A `/skill:` that could not be read is left as typed, with the Skills its arguments name before it.
-  const typed = leading !== undefined && skills[0]?.name !== leading.name ? text : rest;
-
-  return withinLimit(
-    {
-      content: [...blocks, typed].filter((part) => part !== "").join("\n\n"),
-      data: { display: text, skills },
-    },
-    unexpanded,
-  );
+  return content === text
+    ? { expansion: undefined, unexpanded }
+    : withinLimit({ content, data: { display: text, skills: [] } }, unexpanded);
 };

@@ -273,7 +273,7 @@ Above the box, the queue lanes (Sending, Steering, Next up) as dashed 8 px rows 
 
 ### Transcript
 
-The owner's message is right-aligned on Tinted Wash (10 px radius, at most 85% wide), as typed; each Skill expanded into it follows the text as a closed disclosure labelled "Skill · name" (12 px Faded Ink, 14 px chevron), opening on the block the model got, mono on the page color and capped at 288 px high. The agent's message is unboxed prose. Thinking and tool calls are bordered disclosures, closed once done; output inside is mono on Tinted Wash, capped at 288 px high. Notices (Handoffs, compactions, Rollover requests) are a centered 12 px label between two hairlines, opening on demand.
+The owner's message is right-aligned on Tinted Wash (10 px radius, at most 85% wide), as typed; the Skill a `/skill:` embedded in it follows the text as a closed disclosure labelled "Skill · name" (12 px Faded Ink, 14 px chevron), opening on the block the model got, mono on the page color and capped at 288 px high. The agent's message is unboxed prose. Thinking and tool calls are bordered disclosures, closed once done; output inside is mono on Tinted Wash, capped at 288 px high. Notices (Handoffs, compactions, Rollover requests) are a centered 12 px label between two hairlines, opening on demand.
 
 ### Waiting-On-You Card
 

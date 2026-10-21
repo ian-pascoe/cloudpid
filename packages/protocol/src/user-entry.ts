@@ -57,11 +57,14 @@ const typedTails = (display: string): readonly string[] => {
   return lead === null ? [display] : [(lead[1] ?? "").trim(), display];
 };
 
+/** `text` with the links its `$name` Skill references became put back as typed. */
+const unlinked = (text: string): string => text.replace(/\[(\$[^\]\s]+)\]\(\/[^\s()]*\)/g, "$1");
+
 /**
  * The block of each Skill of `data` in `text`, the expansion the model got, in the order of `data.skills`; undefined for
  * one that is not there. The expansion is the blocks, in that order, each separated from the next by a blank line, then
- * the typed text: a block ends where the next one starts, and the last where the typed text does, so a body that holds
- * `</skill>` itself is not cut short.
+ * the typed text, its `$name` references linked: a block ends where the next one starts, and the last where the typed
+ * text does, so a body that holds `</skill>` itself is not cut short.
  */
 export const skillBlocksIn = (
   text: string,
@@ -78,19 +81,24 @@ export const skillBlocksIn = (
     if (start !== -1) from = start + openingOf(skill).length;
   }
 
-  const lastEnd = (start: number): number | undefined => {
-    const ends = [
-      ...typedTails(data.display).flatMap((tail) =>
-        tail === "" ? [] : [text.length - tail.length - 2],
-      ),
-      text.length,
-    ];
+  const tails = typedTails(data.display);
 
-    return ends.find(
-      (end) =>
-        end > start &&
-        text.startsWith(CLOSE, end - CLOSE.length) &&
-        (end === text.length || text.startsWith("\n\n", end)),
+  const lastEnd = (start: number): number | undefined => {
+    const ends: number[] = [];
+
+    for (let end = text.indexOf(CLOSE, start); end !== -1; end = text.indexOf(CLOSE, end + 1)) {
+      const after = end + CLOSE.length;
+
+      if (after === text.length || text.startsWith("\n\n", after)) ends.push(after);
+    }
+
+    // Where what follows is the typed text; else the last end, a typed text holding `</skill>` being rarer than a body.
+    return (
+      ends.find((end) => {
+        const rest = text.slice(end + 2);
+
+        return tails.some((tail) => tail === rest || tail === unlinked(rest));
+      }) ?? ends.at(-1)
     );
   };
 

@@ -621,14 +621,14 @@ describe("the transcript projection", () => {
         conversationId: 1,
         kind: "cloudpid.user",
         data: {
-          display: "$review the diff",
+          display: "/skill:review the diff",
           skills: [{ name: "review", location: "/workspace/.agents/skills/review/SKILL.md" }],
         },
         model: [
           {
             role: "user",
             content: [
-              { type: "text", text: `${block}\n\n$review the diff` },
+              { type: "text", text: `${block}\n\nthe diff` },
               { type: "image", data: "AAAA", mimeType: "image/png" },
             ],
             timestamp: 1,
@@ -643,7 +643,7 @@ describe("the transcript projection", () => {
         role: "user",
         timestamp: 1,
         parts: [
-          { type: "text", text: "$review the diff" },
+          { type: "text", text: "/skill:review the diff" },
           { type: "image", data: "AAAA", mimeType: "image/png" },
         ],
         skills: [
@@ -660,11 +660,9 @@ describe("the transcript projection", () => {
     );
   });
 
-  it("finds each Skill's block whole, though a body holds </skill>, and keeps the message's other text parts", () => {
+  it("finds the Skill's block whole, though its body or the linked arguments hold </skill>, and keeps the other parts", () => {
     const one = { name: "one", location: "/workspace/.agents/skills/one/SKILL.md" };
-    const two = { name: "two", location: "/workspace/.agents/skills/two/SKILL.md" };
-    const first = skillBlock({ ...one, body: "Close with\n</skill>\nwhen done." });
-    const second = skillBlock({ ...two, body: "Two.\n</skill>" });
+    const first = skillBlock({ ...one, body: "Close with\n</skill>\n\nwhen done." });
 
     const project = (display: string, typed: string) =>
       projectEntries([
@@ -672,12 +670,12 @@ describe("the transcript projection", () => {
           id: 1,
           conversationId: 1,
           kind: "cloudpid.user",
-          data: { display, skills: [one, two] },
+          data: { display, skills: [one] },
           model: [
             {
               role: "user",
               content: [
-                { type: "text", text: [first, second, typed].filter(Boolean).join("\n\n") },
+                { type: "text", text: [first, typed].filter(Boolean).join("\n\n") },
                 { type: "text", text: "A second part" },
               ],
               timestamp: 1,
@@ -686,7 +684,12 @@ describe("the transcript projection", () => {
         }),
       ]);
 
-    expect(project("/skill:one use $two\n</skill>", "use $two\n</skill>")).toEqual([
+    expect(
+      project(
+        "/skill:one use $two\n</skill>",
+        "use [$two](/workspace/.agents/skills/two/SKILL.md)\n</skill>",
+      ),
+    ).toEqual([
       {
         id: "1",
         role: "user",
@@ -695,20 +698,40 @@ describe("the transcript projection", () => {
           { type: "text", text: "/skill:one use $two\n</skill>" },
           { type: "text", text: "A second part" },
         ],
-        skills: [
-          { ...one, text: first },
-          { ...two, text: second },
-        ],
+        skills: [{ ...one, text: first }],
       },
     ]);
 
-    // A `/skill:` with nothing after it leaves only the blocks.
-    expect(project("/skill:one", "")[0]).toMatchObject({
-      skills: [
-        { ...one, text: first },
-        { ...two, text: second },
-      ],
-    });
+    // A `/skill:` with nothing after it is the block alone.
+    expect(project("/skill:one", "")[0]).toMatchObject({ skills: [{ ...one, text: first }] });
+  });
+
+  it("shows an owner's message whose $ references became links as typed, with no Skill beside it", () => {
+    expect(
+      projectEntries([
+        asEntry({
+          id: 1,
+          conversationId: 1,
+          kind: "cloudpid.user",
+          data: { display: "use $tdd", skills: [] },
+          model: [
+            {
+              role: "user",
+              content: "use [$tdd](/workspace/.agents/skills/tdd/SKILL.md)",
+              timestamp: 1,
+            },
+          ],
+        }),
+      ]),
+    ).toEqual([
+      {
+        id: "1",
+        role: "user",
+        timestamp: 1,
+        parts: [{ type: "text", text: "use $tdd" }],
+        skills: [],
+      },
+    ]);
   });
 
   it("shows a cloudpid.user entry whose data it cannot read as the model's message", () => {

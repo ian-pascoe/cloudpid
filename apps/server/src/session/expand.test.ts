@@ -7,9 +7,7 @@ import {
   type ExpandOptions,
   MAX_EXPANSION_BYTES,
   mayExpand,
-  mentionedNames,
   type NamedSkill,
-  withoutCode,
 } from "./expand.ts";
 
 const review = { name: "review", filePath: "/workspace/app/.agents/skills/review/SKILL.md" };
@@ -51,6 +49,9 @@ const expand = async (text: string, using: ExpandOptions = options) =>
 const block = (skill: NamedSkill) =>
   skillBlock({ name: skill.name, location: skill.filePath, body: BODIES.get(skill.filePath)! });
 
+/** The link a `$name` reference to `skill` becomes. */
+const link = (skill: NamedSkill) => `[$${skill.name}](${skill.filePath})`;
+
 const expanded = (skills: ReadonlyArray<NamedSkill>) =>
   skills.map(({ name, filePath }) => ({ name, location: filePath }));
 
@@ -74,51 +75,49 @@ describe("expandMessage", () => {
     expect(await expand("/skill:broken do it", options)).toBeUndefined();
   });
 
-  it("puts a block for each Skill named with $ before the typed text, each once", async () => {
+  it("links each known Skill named with $ in place, reading no file", async () => {
+    reads.length = 0;
+
     const text = "Use $review, then $deploy and $review again.";
 
     expect(await expand(text, options)).toEqual({
-      content: `${block(review)}\n\n${block(deploy)}\n\n${text}`,
-      data: { display: text, skills: expanded([review, deploy]) },
+      content: `Use ${link(review)}, then ${link(deploy)} and ${link(review)} again.`,
+      data: { display: text, skills: [] },
     });
-  });
-
-  it("expands the Skills a /skill:'s arguments name with $ after it", async () => {
-    expect((await expand("/skill:review then $deploy", options))?.content).toBe(
-      `${block(review)}\n\n${block(deploy)}\n\nthen $deploy`,
-    );
-    expect((await expand("/skill:broken then $deploy", options))?.content).toBe(
-      `${block(deploy)}\n\n/skill:broken then $deploy`,
-    );
-  });
-
-  it("leaves $ that names no Skill alone, $HOME included", async () => {
-    expect(await expand("echo $HOME and $nope", options)).toBeUndefined();
-    expect((await expand("echo $HOME, $deploy", options))?.data.skills).toEqual(expanded([deploy]));
-  });
-
-  it("does not take $ inside a word, inline code or a fenced block", async () => {
-    reads.length = 0;
-
-    const text = [
-      "a$review `$review` ``x $deploy``",
-      "```sh",
-      "echo $deploy",
-      "```",
-      "~~~",
-      "$review",
-      "~~~",
-    ].join("\n");
-
-    expect(await expand(text, options)).toBeUndefined();
     expect(reads).toEqual([]);
   });
 
-  it("takes $ after a fenced block is closed, and after an unclosed backtick", async () => {
-    expect((await expand("```\n$deploy\n```\nnow $review", options))?.data.skills).toEqual(
-      expanded([review]),
+  it("links the Skills a /skill:'s arguments name with $ after its block", async () => {
+    expect(await expand("/skill:review then $deploy", options)).toEqual({
+      content: `${block(review)}\n\nthen ${link(deploy)}`,
+      data: { display: "/skill:review then $deploy", skills: expanded([review]) },
+    });
+    // A `/skill:` that cannot be read is left as typed, its references linked.
+    expect(await expandMessage("/skill:broken then $deploy", options)).toEqual({
+      expansion: {
+        content: `/skill:broken then ${link(deploy)}`,
+        data: { display: "/skill:broken then $deploy", skills: [] },
+      },
+      unexpanded: [`Skill broken: ${broken.filePath} cannot be read`],
+    });
+  });
+
+  it("leaves $ that names no Skill alone, $HOME included, and $ in a word or code", async () => {
+    expect(await expand("echo $HOME and $nope", options)).toBeUndefined();
+    expect((await expand("echo $HOME, $deploy", options))?.content).toBe(
+      `echo $HOME, ${link(deploy)}`,
     );
-    expect((await expand("a ` stray $deploy", options))?.data.skills).toEqual(expanded([deploy]));
+
+    const text = [
+      "a$review `$review` ``x $deploy`` \\$deploy",
+      "```sh",
+      "echo $deploy",
+      "```",
+      "",
+      "    $review",
+    ].join("\n");
+
+    expect(await expand(text, options)).toBeUndefined();
   });
 
   it("expands a Prompt template's Slash command with its arguments", async () => {
@@ -136,11 +135,8 @@ describe("expandMessage", () => {
       read: (path) => Promise.resolve(path === deploy.filePath ? big : FILES.get(path)),
     };
 
-    expect(await expandMessage("use $deploy and $review", sized)).toEqual({
-      expansion: {
-        content: `${block(review)}\n\nuse $deploy and $review`,
-        data: { display: "use $deploy and $review", skills: expanded([review]) },
-      },
+    expect(await expandMessage("/skill:deploy now", sized)).toEqual({
+      expansion: undefined,
       unexpanded: [`Skill deploy: ${deploy.filePath} is over 256 KiB`],
     });
     expect(await expandMessage("/fix 1", { ...options, read: () => Promise.resolve(big) })).toEqual(
@@ -157,22 +153,14 @@ describe("expandMessage", () => {
   it("leaves the whole message as typed when its expansion would be over 1 MiB", async () => {
     const body = "y".repeat(MAX_EXPANDED_FILE_BYTES - 100);
 
-    const many = Array.from({ length: 5 }, (_, index) => ({
-      name: `s${index}`,
-      filePath: `/workspace/.agents/skills/s${index}/SKILL.md`,
-    }));
+    const args = "z".repeat(MAX_EXPANSION_BYTES);
 
-    const result = await expandMessage("$s0 $s1 $s2 $s3 $s4", {
-      skills: many,
-      templates: [],
-      read: () => Promise.resolve(body),
-    });
-
-    expect(5 * body.length).toBeGreaterThan(MAX_EXPANSION_BYTES);
-    expect(result).toEqual({
-      expansion: undefined,
-      unexpanded: ["the expanded message is over 1 MiB"],
-    });
+    expect(
+      await expandMessage(`/skill:deploy ${args}`, {
+        ...options,
+        read: () => Promise.resolve(body),
+      }),
+    ).toEqual({ expansion: undefined, unexpanded: ["the expanded message is over 1 MiB"] });
   });
 
   it("leaves other Slash commands and plain text alone", async () => {
@@ -186,26 +174,8 @@ describe("mayExpand", () => {
   it("looks only at messages that start with / or hold a $ word", () => {
     expect(mayExpand("/skill:x")).toBe(true);
     expect(mayExpand("use $x")).toBe(true);
+    expect(mayExpand("use ($x)")).toBe(true);
     expect(mayExpand("costs 5$")).toBe(false);
     expect(mayExpand("plain")).toBe(false);
-  });
-});
-
-describe("withoutCode", () => {
-  it("drops fenced blocks to their end, and inline spans", () => {
-    expect(withoutCode("a `b` c\n```\nd\n").trim()).toBe("a   c");
-    expect(mentionedNames("$a `$b` $c $a")).toEqual(["a", "c"]);
-  });
-
-  it("closes a span only with a run of its own length", () => {
-    expect(mentionedNames("``a` $b")).toEqual(["b"]);
-    expect(mentionedNames("``a` $b``")).toEqual([]);
-    expect(mentionedNames("`a``b` $c")).toEqual(["c"]);
-  });
-
-  it("drops indented code after a blank line, and keeps an indented line that continues a paragraph", () => {
-    expect(mentionedNames("Run:\n\n    echo $a\n    $b\n\n$c")).toEqual(["c"]);
-    expect(mentionedNames("    $a\nthen $b")).toEqual(["b"]);
-    expect(mentionedNames("- item\n    with $a")).toEqual(["a"]);
   });
 });
