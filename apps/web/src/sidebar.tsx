@@ -1,14 +1,14 @@
-// @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics globalDate:off preferEffectArray:off -- a list's relative times are read against the wall clock as it renders, and its rows are JSX lists over native arrays.
 
 import type { SessionRecord } from "@cloudpid/protocol";
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ChevronRight, FolderGit2, Plus, Settings as SettingsIcon, X } from "lucide-react";
-import { useState } from "react";
 import { Button } from "./components/ui/button.tsx";
+import { callOf } from "./calls.ts";
 import { relativeTime } from "./format.ts";
 import { cn } from "./lib/utils.ts";
 import { navigate, SETTINGS_PATH, sessionPath, WORKSPACES_PATH } from "./router.ts";
-import { noticeAtom } from "./app-state.ts";
+import { listProblemAtom, noticeAtom } from "./app-state.ts";
 import { failureOf } from "./registry.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { type SessionActions, SessionMenu } from "./session-menu.tsx";
@@ -65,40 +65,33 @@ const SessionItem = ({
   session,
   active,
   workspaceName,
-  menu,
+  actions,
 }: {
   session: SessionRecord;
   active: boolean;
   workspaceName: string;
-  menu: ItemMenu;
+  actions: SessionActions;
 }) => (
   <li className="group relative">
     <SessionLink session={session} active={active} className="pr-10" />
     <SessionMenu
       session={session}
       workspaceName={workspaceName}
-      actions={menu.actions}
-      onFailure={menu.onFailure}
+      actions={actions}
       className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 group-has-[:popover-open]:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
     />
   </li>
 );
 
-/** What every item's menu does in the list: the actions, and where a failure goes. */
-type ItemMenu = {
-  readonly actions: SessionActions;
-  readonly onFailure: (message: string) => void;
-};
-
 /** Sessions grouped under their Workspace's name. */
 const SessionGroups = ({
   groups,
   activeId,
-  menu,
+  actions,
 }: {
   groups: readonly WorkspaceGroup[];
   activeId: string | undefined;
-  menu: ItemMenu;
+  actions: SessionActions;
 }) => (
   <div className="flex flex-col gap-3">
     {groups.map((group) => (
@@ -113,7 +106,7 @@ const SessionGroups = ({
               session={session}
               active={session.id === activeId}
               workspaceName={group.name}
-              menu={menu}
+              actions={actions}
             />
           ))}
         </ul>
@@ -123,14 +116,11 @@ const SessionGroups = ({
 );
 
 export const Sidebar = ({
-  actions,
   activeId,
   settingsActive,
   workspacesActive,
   className,
 }: {
-  /** What each item's menu does. */
-  actions: SessionActions;
   activeId: string | undefined;
   settingsActive: boolean;
   workspacesActive: boolean;
@@ -143,35 +133,10 @@ export const Sidebar = ({
   // Why the last new Session could not be created, here or by the composer's `/new`.
   const created = useAtomValue(createSessionAtom);
   const createError = failureOf(created);
-  const { create: createSession } = useSessionActions();
-  const [creating, setCreating] = useState(false);
+  const createSession = useAtomSet(createSessionAtom);
   // An archive or unarchive from an item's menu that failed: shown with the list's own error.
-  const [problem, setProblem] = useState<string | null>(null);
-
-  const menu: ItemMenu = {
-    actions: {
-      archive: (id) => {
-        setProblem(null);
-
-        return actions.archive(id);
-      },
-      unarchive: (id) => {
-        setProblem(null);
-
-        return actions.unarchive(id);
-      },
-      delete: actions.delete,
-    },
-    onFailure: setProblem,
-  };
-
-  const create = async () => {
-    setCreating(true);
-
-    await createSession();
-
-    setCreating(false);
-  };
+  const problem = useAtomValue(listProblemAtom);
+  const actions = useSessionActions(listProblemAtom);
 
   const { active, archived } = splitArchived(sessions ?? []);
   const error = problem ?? createError ?? listError;
@@ -180,7 +145,14 @@ export const Sidebar = ({
     <nav aria-label="Sessions" className={cn("flex w-full flex-col border-r md:w-72", className)}>
       <div className="flex items-center justify-between gap-2 p-3">
         <h1 className="text-sm font-semibold">Sessions</h1>
-        <Button size="sm" variant="outline" disabled={creating} onClick={() => void create()}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={created.waiting}
+          onClick={() => {
+            createSession(callOf({}));
+          }}
+        >
           <Plus />
           New session
         </Button>
@@ -221,7 +193,7 @@ export const Sidebar = ({
               <SessionGroups
                 groups={groupByWorkspace(active, names)}
                 activeId={activeId}
-                menu={menu}
+                actions={actions}
               />
             )}
             {archived.length > 0 && (
@@ -240,7 +212,7 @@ export const Sidebar = ({
                   <SessionGroups
                     groups={groupByWorkspace(archived, names)}
                     activeId={activeId}
-                    menu={menu}
+                    actions={actions}
                   />
                 </div>
               </details>

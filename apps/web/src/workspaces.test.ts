@@ -1,4 +1,5 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
+// @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
+
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {

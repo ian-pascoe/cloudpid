@@ -2,7 +2,7 @@
 // is typed after `/`, a command's argument values, the Skills after `$`, or the files and folders after `@`. Pure, so
 // the composer only renders it.
 
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays are the platform here, and these are plain functions, not combinators.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over native arrays, not combinators.
 
 import { type CatalogEntry, rank } from "@cloudpid/protocol";
 import type { ComposerCommand } from "./commands.ts";

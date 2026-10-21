@@ -1,4 +1,5 @@
-// @effect-diagnostics asyncFunction:off -- browser code with no Effect runtime: promises are the platform here.
+// @effect-diagnostics asyncFunction:off -- a command's run is a promise, awaited as the composer does.
+
 import { sessionCommandsFor } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";

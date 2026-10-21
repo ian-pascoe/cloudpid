@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { afterEach, beforeEach, vi } from "vitest";
+import { callOf } from "../calls.ts";
 import { exitFailure } from "../registry.ts";
 import { settled } from "../registry.testing.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
@@ -183,7 +184,7 @@ describe("a composer's Attachments", () => {
         yield* add(file("a.txt"));
         yield* uploads.started[0]!.finish();
 
-        registry.set(sendAttachedAtom(ROOT), { typed: "look", whenBusy: "followUp" });
+        registry.set(sendAttachedAtom(ROOT), callOf({ typed: "look", whenBusy: "followUp" }));
         yield* settle;
 
         // Off the composer while the Session answers.
@@ -206,7 +207,7 @@ describe("a composer's Attachments", () => {
         ).toBe("Too big");
         expect(summary()).toEqual(["a.txt uploaded"]);
 
-        registry.set(sendAttachedAtom(ROOT), { typed: "look again", whenBusy: "followUp" });
+        registry.set(sendAttachedAtom(ROOT), callOf({ typed: "look again", whenBusy: "followUp" }));
         yield* settle;
 
         const again = sent(latest(), "submit").at(-1);

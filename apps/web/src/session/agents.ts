@@ -1,6 +1,6 @@
 // What the task graph says about the Session's subagents, for the cards, the panel, and the stop buttons.
 
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- browser code in a React app with no Effect runtime.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over native arrays, not combinators.
 
 import type { GraphAgent, TaskGraphSummary } from "@cloudpid/protocol";
 

@@ -5,9 +5,18 @@ import type { SettingsState } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { describe, expect, it } from "@effect/vitest";
+import { offeredToText } from "./offered-tools.ts";
 import { failureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
-import { settingsAtom, updateSettingsAtom } from "./settings.ts";
+import { spendLimitToText } from "./spend-limit.ts";
+import {
+  justSavedAtom,
+  limitTextAtom,
+  offeredTextAtom,
+  settingsAtom,
+  settingsDraftAtom,
+  updateSettingsAtom,
+} from "./settings.ts";
 
 const stateOf = (settings: Settings): SettingsState => ({
   settings,
@@ -95,5 +104,76 @@ describe("the settings", () => {
           DEFAULT_SETTINGS,
         );
       }),
+  );
+});
+
+describe("the settings form", () => {
+  /** The atoms the form reads, mounted once the settings have loaded. */
+  const opened = (settings: Settings) =>
+    Effect.gen(function* () {
+      const held = holding(settings);
+
+      yield* settled(held.registry, settingsAtom);
+      held.registry.mount(settingsDraftAtom);
+      held.registry.mount(offeredTextAtom);
+      held.registry.mount(limitTextAtom);
+      held.registry.mount(justSavedAtom);
+
+      return held.registry;
+    });
+
+  it.effect("starts as the settings in force, with the text boxes saying the same", () =>
+    Effect.gen(function* () {
+      const registry = yield* opened(DEFAULT_SETTINGS);
+
+      expect(registry.get(settingsDraftAtom)).toEqual(DEFAULT_SETTINGS);
+      expect(registry.get(offeredTextAtom)).toBe(offeredToText(DEFAULT_SETTINGS.tools.offered));
+      expect(registry.get(limitTextAtom)).toBe(
+        spendLimitToText(DEFAULT_SETTINGS.spendLimit.perSession),
+      );
+    }),
+  );
+
+  it.effect("keeps what was typed when the settings are loaded again", () =>
+    Effect.gen(function* () {
+      const registry = yield* opened(DEFAULT_SETTINGS);
+
+      registry.set(settingsDraftAtom, { ...DEFAULT_SETTINGS, thinkingLevel: "low" });
+      registry.set(limitTextAtom, "12.50");
+      registry.refresh(settingsAtom);
+      yield* settled(registry, settingsAtom);
+
+      expect(registry.get(settingsDraftAtom).thinkingLevel).toBe("low");
+      expect(registry.get(limitTextAtom)).toBe("12.50");
+    }),
+  );
+
+  it.effect("says it saved once a save works, until the draft changes", () =>
+    Effect.gen(function* () {
+      const registry = yield* opened(DEFAULT_SETTINGS);
+
+      registry.set(settingsDraftAtom, { ...DEFAULT_SETTINGS, thinkingLevel: "high" });
+      registry.set(updateSettingsAtom, registry.get(settingsDraftAtom));
+      yield* settled(registry, updateSettingsAtom);
+
+      expect(registry.get(justSavedAtom)).toBe(true);
+
+      registry.set(settingsDraftAtom, { ...DEFAULT_SETTINGS, thinkingLevel: "low" });
+
+      expect(registry.get(justSavedAtom)).toBe(false);
+    }),
+  );
+
+  it.effect("does not say it saved when the save was refused", () =>
+    Effect.gen(function* () {
+      const registry = yield* opened(DEFAULT_SETTINGS);
+
+      registry.set(updateSettingsAtom, { ...DEFAULT_SETTINGS, thinkingLevel: "high" });
+      yield* settled(registry, updateSettingsAtom);
+      registry.set(updateSettingsAtom, { ...DEFAULT_SETTINGS, thinkingLevel: "max" });
+      yield* settled(registry, updateSettingsAtom);
+
+      expect(registry.get(justSavedAtom)).toBe(false);
+    }),
   );
 });

@@ -19,6 +19,7 @@ import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { messageOf } from "../registry.ts";
+import { replying } from "../calls.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
 import {
@@ -394,7 +395,7 @@ export interface AttachedMessage {
  */
 export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
   appRuntime.fn(
-    ({ typed, whenBusy }: AttachedMessage, get) =>
+    replying(({ typed, whenBusy }: AttachedMessage, get: Atom.FnContext) =>
       Effect.gen(function* () {
         const attachments = yield* get.result(attachmentsProgramAtom(key));
         const client = yield* get.result(sessionClientAtom(key.sessionId));
@@ -418,6 +419,7 @@ export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
 
         yield* held.release;
       }),
+    ),
     { concurrent: true },
   ),
 );

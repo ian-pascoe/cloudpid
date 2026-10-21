@@ -1,6 +1,6 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
 // What the Session has spent, in the header: its cost, and against its limit when the settings set one.
 
+import * as Arr from "effect/Array";
 import { useAtomValue } from "@effect/atom-react";
 import { Coins } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -16,12 +16,15 @@ export const UsageBadge = () => {
 
   const level = spendLevel(usage.cost, usage.limit);
 
-  const detail = [
-    `${tokenCount(usage.totalTokens)} tokens`,
-    `${tokenCount(usage.input)} in, ${tokenCount(usage.output)} out`,
-    `${tokenCount(usage.cacheRead)} cached`,
-    usage.limit === null ? "no spend limit" : `limit ${dollars(usage.limit)}`,
-  ].join(" · ");
+  const detail = Arr.join(
+    [
+      `${tokenCount(usage.totalTokens)} tokens`,
+      `${tokenCount(usage.input)} in, ${tokenCount(usage.output)} out`,
+      `${tokenCount(usage.cacheRead)} cached`,
+      usage.limit === null ? "no spend limit" : `limit ${dollars(usage.limit)}`,
+    ],
+    " · ",
+  );
 
   return (
     <span

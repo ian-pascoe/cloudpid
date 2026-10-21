@@ -1,7 +1,7 @@
 // What the composer completes as the owner types: a Slash command at the start of the message and its argument, a
 // Skill after `$`, and a file after `@`. Pure text functions, so the composer's menu only renders their answers.
 
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays are the platform here, and these are plain functions, not combinators.
+// @effect-diagnostics missingPipeableSignature:off -- plain functions over strings, not combinators.
 
 /** What is being completed: a Slash command's name, its argument, a Skill, or a file path. */
 export type TriggerKind = "command" | "argument" | "skill" | "file";

@@ -1,4 +1,4 @@
-import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as Match from "effect/Match";
 import { pageProblemAtom } from "./app-state.ts";
 import { SessionChat } from "./chat/session-chat.tsx";
@@ -13,35 +13,13 @@ import { Sidebar, sessionTitle } from "./sidebar.tsx";
 import { WorkspacesPage } from "./workspaces-page.tsx";
 import { workspaceNamesAtom } from "./workspaces-state.ts";
 
-/** The Session page's actions: a failure is shown on the page. */
-const usePageActions = () => {
-  const actions = useSessionActions();
-  const setProblem = useAtomSet(pageProblemAtom);
-
-  const shown = (action: (id: string) => Promise<string | null>) => (id: string) => {
-    setProblem(null);
-
-    return action(id).then((failure) => {
-      setProblem(failure);
-
-      return failure;
-    });
-  };
-
-  return {
-    ...actions,
-    archive: shown(actions.archive),
-    unarchive: shown(actions.unarchive),
-  };
-};
-
 /** Session `sessionId`'s page: its chat, with what the list knows of it. */
 const SessionPage = ({ sessionId }: { sessionId: string }) => {
   const session = useAtomValue(currentSessionAtom);
   const names = useAtomValue(workspaceNamesAtom);
   const problem = useAtomValue(pageProblemAtom);
-  const setProblem = useAtomSet(pageProblemAtom);
-  const actions = usePageActions();
+  // The page shows the failure of an archive or unarchive, the menu's or the composer's.
+  const actions = useSessionActions(pageProblemAtom);
 
   const workspaceName =
     session === undefined ? undefined : (names[session.workspace] ?? session.workspace);
@@ -84,12 +62,7 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
       }
       menu={
         session === undefined || workspaceName === undefined ? undefined : (
-          <SessionMenu
-            session={session}
-            workspaceName={workspaceName}
-            actions={actions}
-            onFailure={setProblem}
-          />
+          <SessionMenu session={session} workspaceName={workspaceName} actions={actions} />
         )
       }
     />
@@ -101,7 +74,6 @@ export const App = () => {
   useAtomMount(pushSyncAtom);
 
   const page = useAtomValue(pageAtom);
-  const { archive, unarchive, delete: deleteSession } = useSessionActions();
   // On a narrow screen the list is shown alone; any other page takes its place.
   const listOnly = page.kind === "empty";
 
@@ -109,7 +81,6 @@ export const App = () => {
     <div className="flex h-dvh">
       {/* On a narrow screen the list and the chat take turns. */}
       <Sidebar
-        actions={{ archive, unarchive, delete: deleteSession }}
         activeId={page.kind === "session" ? page.sessionId : undefined}
         settingsActive={page.kind === "settings"}
         workspacesActive={page.kind === "workspaces"}

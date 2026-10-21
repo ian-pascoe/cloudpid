@@ -1,5 +1,3 @@
-// @effect-diagnostics preferEffectArray:off -- tests of browser code with no Effect runtime.
-
 import { describe, expect, it } from "vitest";
 import { detectTrigger, parseCommand, replaceTrigger } from "./completion.ts";
 

@@ -1,5 +1,7 @@
-// @effect-diagnostics preferEffectArray:off globalDate:off -- browser code in a React app with no Effect runtime: native arrays and Date are the platform here.
+// @effect-diagnostics globalDate:off -- a handoff's deadline is shown in the browser's own time of day format.
+
 import type { BrowserHandoffRequest } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import { useAtomValue } from "@effect/atom-react";
 import { ExternalLink, Hand } from "lucide-react";
 import { buttonVariants } from "../components/ui/button.tsx";
@@ -58,7 +60,7 @@ export const BrowserHandoffRequests = () => {
   const requests = useAtomValue(browserHandoffRequestsAtom(sessionId));
   const graph = useAtomValue(taskGraphAtom(sessionId));
 
-  return requests.map((request) => (
+  return Arr.map(requests, (request) => (
     <BrowserHandoffPrompt
       key={request.id}
       request={request}

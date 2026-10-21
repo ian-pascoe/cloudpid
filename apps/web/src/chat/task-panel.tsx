@@ -1,12 +1,12 @@
 // The Session's live work: its subagents, each openable into its thread, and the background tasks running, from the
 // task graph the Session streams.
 
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
-
+import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
+import * as Atom from "effect/reactivity/Atom";
 import { ListTree, Square, X } from "lucide-react";
-import { useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
 import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
@@ -21,6 +21,7 @@ import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
 import { AgentStatus, shortModel } from "./subagent-card.tsx";
+import { taskPanelOpenAtom } from "./thread-state.ts";
 import { TodoList } from "./todo-list.tsx";
 import { todoProgress } from "../session/todos.ts";
 
@@ -28,9 +29,14 @@ import { todoProgress } from "../session/todos.ts";
 const kindLabel = (kind: string): string =>
   kind === "pi.compaction" ? "Compacting context" : kind;
 
-const AgentRow = ({ agent, depth }: { agent: GraphAgent; depth: number }) => {
+type RowProps = { agent: GraphAgent; depth: number };
+
+/** Whether one agent's row is open into its thread. */
+const RowOpen = ScopedAtom.make(() => Atom.make(false));
+
+const Row = ({ agent, depth }: RowProps) => {
   const abort = useAtomSet(abortAtom(useShownSessionId()));
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useAtom(RowOpen.use());
 
   return (
     <li>
@@ -77,6 +83,12 @@ const AgentRow = ({ agent, depth }: { agent: GraphAgent; depth: number }) => {
   );
 };
 
+const AgentRow = (props: RowProps) => (
+  <RowOpen.Provider>
+    <Row {...props} />
+  </RowOpen.Provider>
+);
+
 const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   <li className="flex items-center gap-2 py-1 text-sm">
     <span className="min-w-0 flex-1 truncate">{kindLabel(task.kind)}</span>
@@ -88,8 +100,9 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
 );
 
 /** The button that shows or hides the panel, with how many agents are working and how far the Todo List is. */
-export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: () => void }) => {
+export const TaskPanelToggle = () => {
   const sessionId = useShownSessionId();
+  const [open, setOpen] = useAtom(taskPanelOpenAtom(sessionId));
 
   const working = useAtomValue(
     taskGraphAtom(sessionId),
@@ -106,7 +119,9 @@ export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: (
       size="sm"
       aria-pressed={open}
       aria-label="Tasks"
-      onClick={onToggle}
+      onClick={() => {
+        setOpen(!open);
+      }}
     >
       <ListTree />
       <span className="hidden sm:inline">Tasks</span>
@@ -121,8 +136,9 @@ export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: (
 };
 
 /** The task graph panel: shown beside the thread on a wide screen, over it on a narrow one. */
-export const TaskPanel = ({ onClose, className }: { onClose: () => void; className?: string }) => {
+export const TaskPanel = ({ className }: { className?: string }) => {
   const sessionId = useShownSessionId();
+  const setOpen = useAtomSet(taskPanelOpenAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));
   const graph = useAtomValue(taskGraphAtom(sessionId));
   const todos = useAtomValue(todosAtom(sessionId));
@@ -157,7 +173,9 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
           size="sm"
           className="size-8 px-0"
           aria-label="Close"
-          onClick={onClose}
+          onClick={() => {
+            setOpen(false);
+          }}
         >
           <X />
         </Button>
@@ -176,7 +194,7 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
               <section aria-label="Subagents">
                 <h4 className="text-xs font-medium text-muted-foreground">Subagents</h4>
                 <ul className="mt-1">
-                  {graph.agents.map((agent) => (
+                  {Arr.map(graph.agents, (agent) => (
                     <AgentRow key={agent.id} agent={agent} depth={depthOf(graph, agent)} />
                   ))}
                 </ul>
@@ -186,7 +204,7 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
               <section aria-label="Background work" className="mt-4">
                 <h4 className="text-xs font-medium text-muted-foreground">Background work</h4>
                 <ul className="mt-1">
-                  {graph.background.map((task) => (
+                  {Arr.map(graph.background, (task) => (
                     <BackgroundRow key={task.id} task={task} />
                   ))}
                 </ul>

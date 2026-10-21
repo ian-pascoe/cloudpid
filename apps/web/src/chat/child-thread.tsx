@@ -1,8 +1,6 @@
 // A subagent's live thread: its conversation, watched on the Session's socket, with a composer to steer or queue input
 // and to stop it. It is a nested assistant-ui runtime of its own, so it has its own messages, running state and queue.
 
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
-
 import {
   AssistantRuntimeProvider,
   ThreadPrimitive,
@@ -10,7 +8,7 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { useMemo, useRef, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import {
   abortAtom,
@@ -20,10 +18,10 @@ import {
   threadAtom,
 } from "../session/atoms.ts";
 import { type ThreadState } from "../session/state.ts";
-import { toThreadMessages } from "../session/thread-messages.ts";
 import { Composer } from "./composer.tsx";
-import { useShownSessionId } from "./conversation.ts";
-import { queueAdapter, textOf } from "./queue-adapter.ts";
+import { conversationKey, useShownSessionId } from "./conversation.ts";
+import { textOf } from "./queue-adapter.ts";
+import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { TodoList } from "./todo-list.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
@@ -47,20 +45,9 @@ const LiveChildThread = ({
   const stopAll = canStopAllBelow(graph, agent?.id ?? "", thread.view.running);
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
 
-  const threadMessages = useMemo(() => toThreadMessages(thread.view), [thread.view]);
-
-  const queue = useMemo(
-    () =>
-      queueAdapter(
-        {
-          submit: (text, whenBusy) => {
-            submit({ message: text, whenBusy, conversationId });
-          },
-        },
-        thread.queue,
-      ),
-    [submit, conversationId, thread.queue],
-  );
+  const key = conversationKey(sessionId, conversationId);
+  const threadMessages = useAtomValue(threadMessagesAtom(key));
+  const queue = useAtomValue(threadQueueAtom(key));
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: threadMessages,

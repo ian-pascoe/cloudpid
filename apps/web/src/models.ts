@@ -1,4 +1,5 @@
-// @effect-diagnostics preferEffectArray:off -- browser code with no Effect runtime: native arrays are the platform here.
+// @effect-diagnostics preferEffectArray:off -- plain functions over native arrays.
+
 // How the web app names and offers the models and thinking levels the settings accept.
 import { SUPPORTED_MODELS } from "@cloudpid/config";
 

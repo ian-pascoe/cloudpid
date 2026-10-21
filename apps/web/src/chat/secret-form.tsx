@@ -1,9 +1,11 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 import type { SecretRequest } from "@cloudpid/protocol";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Arr from "effect/Array";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Predicate from "effect/Predicate";
+import * as Atom from "effect/reactivity/Atom";
 import { KeyRound } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import type { FormEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import {
   answerSecretsAtom,
@@ -15,6 +17,17 @@ import { useShownSessionId } from "./conversation.ts";
 
 /** Values shorter than this are redacted only as written, so redacting them may also hide unrelated output. */
 const SHORT_SECRET_LENGTH = 8;
+
+/**
+ * One form's state: how long each typed value is, for the short-value warning (never the value itself), and whether the
+ * form was answered.
+ */
+const FormState = ScopedAtom.make(() =>
+  Atom.make<{ readonly lengths: Readonly<Record<string, number>>; readonly sent: boolean }>({
+    lengths: {},
+    sent: false,
+  }),
+);
 
 /**
  * The masked form for one Secret request (`docs/spec.md` → Secrets): a password field per name. The values are read
@@ -32,9 +45,7 @@ const SecretForm = ({
   disabled: boolean;
   onAnswer: (request: string, values: Readonly<Record<string, string>> | null) => void;
 }) => {
-  /** How long each typed value is, for the short-value warning; never the value itself. */
-  const [lengths, setLengths] = useState<Readonly<Record<string, number>>>({});
-  const [sent, setSent] = useState(false);
+  const [{ lengths, sent }, setState] = useAtom(FormState.use());
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -49,8 +60,7 @@ const SecretForm = ({
     }
 
     event.currentTarget.reset();
-    setLengths({});
-    setSent(true);
+    setState({ lengths: {}, sent: true });
     onAnswer(request.id, values);
   };
 
@@ -68,7 +78,7 @@ const SecretForm = ({
         <p className="mt-1 text-sm break-words text-muted-foreground">{request.reason}</p>
       )}
       <div className="mt-3 flex flex-col gap-3">
-        {request.names.map((name, index) => (
+        {Arr.map(request.names, (name, index) => (
           <label key={name} className="flex flex-col gap-1 text-sm">
             <span className="font-mono text-xs">{name}</span>
             <input
@@ -82,7 +92,10 @@ const SecretForm = ({
               onChange={(event) => {
                 const length = event.currentTarget.value.length;
 
-                setLengths((previous) => ({ ...previous, [name]: length }));
+                setState((previous) => ({
+                  ...previous,
+                  lengths: { ...previous.lengths, [name]: length },
+                }));
               }}
               className="h-9 rounded-md border border-input bg-background px-3 font-mono focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             />
@@ -106,7 +119,7 @@ const SecretForm = ({
           size="sm"
           disabled={disabled || sent}
           onClick={() => {
-            setSent(true);
+            setState((previous) => ({ ...previous, sent: true }));
             onAnswer(request.id, null);
           }}
         >
@@ -129,16 +142,17 @@ export const SecretRequests = () => {
   const disabled = useAtomValue(sessionStatusAtom(sessionId), (status) => status !== "live");
   const answer = useAtomSet(answerSecretsAtom(sessionId));
 
-  return requests.map((request) => (
+  return Arr.map(requests, (request) => (
     // Keyed by request, so each form starts empty.
-    <SecretForm
-      key={request.id}
-      request={request}
-      lifetimeMinutes={lifetimeMinutes}
-      disabled={disabled}
-      onAnswer={(id, values) => {
-        answer({ request: id, values });
-      }}
-    />
+    <FormState.Provider key={request.id}>
+      <SecretForm
+        request={request}
+        lifetimeMinutes={lifetimeMinutes}
+        disabled={disabled}
+        onAnswer={(id, values) => {
+          answer({ request: id, values });
+        }}
+      />
+    </FormState.Provider>
   ));
 };

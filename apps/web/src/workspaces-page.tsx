@@ -1,44 +1,49 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics preferEffectArray:off -- JSX lists of cards, repos and Sessions are native arrays.
 
-import {
-  INSTANCE_DESCRIPTIONS,
-  INSTANCE_TYPES,
-  type InstanceType,
-  type WorkspaceSettings,
-} from "@cloudpid/config";
+import { INSTANCE_DESCRIPTIONS, INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
 import {
   DEFAULT_WORKSPACE,
   MAX_WORKSPACE_NAME_LENGTH,
   type SessionRecord,
   type WorkspaceRecord,
-  type WorkspaceSettingsState,
 } from "@cloudpid/protocol";
-import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as Atom from "effect/reactivity/Atom";
 import { ArrowLeft, GitBranch, Pencil, Play, Trash2 } from "lucide-react";
-import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { useEffect, useState, type FormEvent } from "react";
+import {
+  useAtom,
+  useAtomMount,
+  useAtomRefresh,
+  useAtomSet,
+  useAtomValue,
+} from "@effect/atom-react";
+import type { FormEvent } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
+import { callOf } from "./calls.ts";
 import { navigate } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
-import { exitFailure, failureOf, settledFailureOf } from "./registry.ts";
-import { useSessionActions } from "./session-actions.ts";
-import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
+import { failureOf, settledFailureOf } from "./registry.ts";
+import { createSessionAtom, sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import {
   cloneRepoAtom,
+  cloneSourceAtom,
   createWorkspaceAtom,
+  deleteTypedAtom,
   deleteWorkspaceAtom,
-  renameWorkspaceAtom,
+  newWorkspaceSlugAtom,
   reposAtom,
-  updateWorkspaceSettingsAtom,
+  saveWorkspaceAtom,
+  workspaceDialogAtom,
+  workspaceDraftAtom,
   workspaceListAtom,
   workspaceSettingsAtom,
   workspacesErrorAtom,
+  type WorkspaceDialog,
 } from "./workspaces-state.ts";
 import {
   deleteConfirmed,
@@ -48,79 +53,21 @@ import {
   workspaceNameProblem,
 } from "./workspaces.ts";
 
-interface Repos {
-  /** The directories of the repos the Workspace holds; null until the first answer. */
-  readonly repos: readonly string[] | null;
-  /** Why the repos could not be listed, or why a clone failed (git's message). */
-  readonly error: string | null;
-  /** A clone is running. It can take a minute: the Container starts, and the repo is downloaded. */
-  readonly cloning: boolean;
-  /** Clone `source` into the Workspace and list its repos again; resolves to the directory it went to, or undefined. */
-  readonly clone: (source: string) => Promise<string | undefined>;
-}
-
-/** The repos of Workspace `slug`, listed once and again after each clone. */
-const useRepos = (slug: string): Repos => {
-  const listed = useAtomValue(reposAtom(slug));
-  const [cloned, cloneRepo] = useAtom(cloneRepoAtom(slug), { mode: "promiseExit" });
-
-  return {
-    repos: listed.pipe(AsyncResult.value, Option.getOrNull),
-    // A clone's failure shows until the next clone starts.
-    error: settledFailureOf(cloned) ?? failureOf(listed),
-    cloning: cloned.waiting,
-    clone: (source) =>
-      cloneRepo(source).then((exit) => (Exit.isSuccess(exit) ? exit.value : undefined)),
-  };
-};
-
-interface WorkspaceSettingsStore {
-  /** The Workspace's settings in force; null until the first answer. */
-  readonly state: WorkspaceSettingsState | null;
-  /** Why the settings could not load, or why `save` was refused: the Workspace's own message. */
-  readonly error: string | null;
-  readonly saving: boolean;
-  /** Save `settings` as overrides of the defaults; resolves to whether the Workspace accepted them. */
-  readonly save: (settings: WorkspaceSettings) => Promise<boolean>;
-  /** Ask for the settings again, after a failure to load them (one call to a cold Durable Object can fail). */
-  readonly retry: () => void;
-}
-
-/** The Container size and idle time of Workspace `slug`, which apply at its next Container launch. */
-const useWorkspaceSettings = (slug: string): WorkspaceSettingsStore => {
-  const loaded = useAtomValue(workspaceSettingsAtom(slug));
-  const [saved, update] = useAtom(updateWorkspaceSettingsAtom(slug), { mode: "promiseExit" });
-  const retry = useAtomRefresh(workspaceSettingsAtom(slug));
-
-  return {
-    state: loaded.pipe(AsyncResult.value, Option.getOrNull),
-    // A refused save shows until the next save answers; a failed load until it is asked for again.
-    error: failureOf(saved) ?? settledFailureOf(loaded),
-    saving: saved.waiting,
-    save: (settings) => update(settings).then(Exit.isSuccess),
-    retry,
-  };
-};
-
-const NewWorkspaceForm = ({ onCreate }: { onCreate: (slug: string) => Promise<boolean> }) => {
-  const [slug, setSlug] = useState("");
-  const [busy, setBusy] = useState(false);
+const NewWorkspaceForm = () => {
+  const [slug, setSlug] = useAtom(newWorkspaceSlugAtom);
+  const [created, create] = useAtom(createWorkspaceAtom);
   const problem = slug === "" ? null : slugProblem(slug);
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault();
 
     if (slug === "" || problem !== null) return;
 
-    setBusy(true);
-
-    if (await onCreate(slug)) setSlug("");
-
-    setBusy(false);
+    create(slug);
   };
 
   return (
-    <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-1.5">
+    <form onSubmit={submit} className="flex flex-col gap-1.5">
       <label htmlFor="new-workspace" className="text-sm font-medium">
         New workspace
       </label>
@@ -138,7 +85,7 @@ const NewWorkspaceForm = ({ onCreate }: { onCreate: (slug: string) => Promise<bo
           aria-invalid={problem !== null}
           className="flex-1 font-mono"
         />
-        <Button type="submit" disabled={busy || slug === "" || problem !== null}>
+        <Button type="submit" disabled={created.waiting || slug === "" || problem !== null}>
           Create
         </Button>
       </div>
@@ -147,21 +94,24 @@ const NewWorkspaceForm = ({ onCreate }: { onCreate: (slug: string) => Promise<bo
   );
 };
 
-const CloneForm = ({ slug, repos }: { slug: string; repos: Repos }) => {
-  const [source, setSource] = useState("");
+const CloneForm = ({ slug }: { slug: string }) => {
+  const [source, setSource] = useAtom(cloneSourceAtom(slug));
+  // A clone can take a minute: the Container starts, and the repo is downloaded.
+  const [cloned, clone] = useAtom(cloneRepoAtom(slug));
+  const cloning = cloned.waiting;
   const problem = source.trim() === "" ? null : sourceProblem(source);
   const id = `clone-${slug}`;
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (source.trim() === "" || problem !== null || repos.cloning) return;
+    if (source.trim() === "" || problem !== null || cloning) return;
 
-    if ((await repos.clone(source)) !== undefined) setSource("");
+    clone(source);
   };
 
   return (
-    <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-1.5">
+    <form onSubmit={submit} className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-sm font-medium">
         Clone a repo
       </label>
@@ -176,21 +126,21 @@ const CloneForm = ({ slug, repos }: { slug: string; repos: Repos }) => {
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
-          disabled={repos.cloning}
+          disabled={cloning}
           aria-invalid={problem !== null}
           className="flex-1 font-mono"
         />
         <Button
           type="submit"
           variant="outline"
-          disabled={repos.cloning || source.trim() === "" || problem !== null}
+          disabled={cloning || source.trim() === "" || problem !== null}
         >
           <GitBranch />
-          {repos.cloning ? "Cloning…" : "Clone"}
+          {cloning ? "Cloning…" : "Clone"}
         </Button>
       </div>
       {problem !== null && <p className="text-xs text-destructive">{problem}</p>}
-      {repos.cloning && (
+      {cloning && (
         <p role="status" className="text-xs text-muted-foreground">
           Cloning into /workspace. The first command of a Workspace starts its Container, which
           takes a little while.
@@ -263,39 +213,33 @@ const ContainerFields = ({
   </fieldset>
 );
 
-/** A dialog's form is saving: the card holds it, so the dialog stays open until the request answers. */
-type DialogBusy = { busy: boolean; setBusy: (busy: boolean) => void };
-
 /** Edit a Workspace: its name, and its Container's size and idle time. Its slug never changes. */
 const EditWorkspaceDialog = ({
   workspace,
   otherNames,
-  container,
-  onRename,
-  onClose,
-  busy,
-  setBusy,
 }: {
   workspace: WorkspaceRecord;
   otherNames: readonly string[];
-  container: WorkspaceSettingsStore;
-  onRename: (name: string) => Promise<string | null>;
-  onClose: () => void;
-} & DialogBusy) => {
-  const saved = container.state?.settings;
-  const [name, setName] = useState(workspace.name);
-  const [instance, setInstance] = useState<InstanceType | undefined>(saved?.instance);
-  const [idle, setIdle] = useState(saved === undefined ? "" : String(saved.idleMinutes));
-  const [problem, setProblem] = useState<string | null>(null);
+}) => {
+  const { slug } = workspace;
+  const loaded = useAtomValue(workspaceSettingsAtom(slug));
+  // Ask for the settings again, after a failure to load them (one call to a cold Durable Object can fail).
+  const retry = useAtomRefresh(workspaceSettingsAtom(slug));
+  const [draft, setDraft] = useAtom(workspaceDraftAtom(slug));
+  const [edited, save] = useAtom(saveWorkspaceAtom(slug));
+  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const { name, instance, idle } = draft;
 
-  // The settings may answer after the dialog opened.
-  useEffect(() => {
-    if (saved === undefined) return;
+  const saved = loaded.pipe(
+    AsyncResult.value,
+    Option.map((state) => state.settings),
+    Option.getOrUndefined,
+  );
 
-    setInstance((current) => current ?? saved.instance);
-    setIdle((current) => (current === "" ? String(saved.idleMinutes) : current));
-  }, [saved]);
-
+  const saving = edited.waiting;
+  // A refused save shows until the next save starts; a failed load until it is asked for again.
+  const loadError = settledFailureOf(loaded);
+  const saveError = settledFailureOf(edited);
   const nameProblem = workspaceNameProblem(name, otherNames);
   const idleProblem = saved === undefined ? null : idleMinutesProblem(idle);
   const renamed = name.trim() !== workspace.name;
@@ -305,39 +249,32 @@ const EditWorkspaceDialog = ({
     instance !== undefined &&
     (instance !== saved.instance || idle !== String(saved.idleMinutes));
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (nameProblem !== null || idleProblem !== null || busy) return;
+    if (nameProblem !== null || idleProblem !== null || saving) return;
 
-    setBusy(true);
-    setProblem(null);
-
-    const failure = renamed ? await onRename(name.trim()) : null;
-
-    const settingsSaved =
-      failure === null && resized && instance !== undefined
-        ? await container.save({ instance, idleMinutes: Number(idle) })
-        : true;
-
-    setBusy(false);
-
-    if (failure !== null) setProblem(failure);
-    else if (settingsSaved) onClose();
+    save({
+      name: renamed ? name.trim() : undefined,
+      settings:
+        resized && instance !== undefined ? { instance, idleMinutes: Number(idle) } : undefined,
+    });
   };
 
+  const problem = saveError ?? (saved === undefined ? null : loadError);
+
   return (
-    <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-5">
+    <form onSubmit={submit} className="flex flex-col gap-5">
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={`name-${workspace.slug}`} className="text-sm font-medium">
+        <label htmlFor={`name-${slug}`} className="text-sm font-medium">
           Name
         </label>
         <Input
-          id={`name-${workspace.slug}`}
+          id={`name-${slug}`}
           value={name}
           maxLength={MAX_WORKSPACE_NAME_LENGTH}
           onChange={(event) => {
-            setName(event.target.value);
+            setDraft((current) => ({ ...current, name: event.target.value }));
           }}
           autoComplete="off"
           data-1p-ignore
@@ -345,7 +282,7 @@ const EditWorkspaceDialog = ({
         />
         {nameProblem === null ? (
           <p className="text-xs text-muted-foreground">
-            Its slug, <span className="font-mono">{workspace.slug}</span>, stays the same.
+            Its slug, <span className="font-mono">{slug}</span>, stays the same.
           </p>
         ) : (
           <p className="text-xs text-destructive">{nameProblem}</p>
@@ -353,39 +290,50 @@ const EditWorkspaceDialog = ({
       </div>
       {saved !== undefined && instance !== undefined ? (
         <ContainerFields
-          slug={workspace.slug}
+          slug={slug}
           instance={instance}
           idle={idle}
           idleProblem={idleProblem}
-          onInstance={setInstance}
-          onIdle={setIdle}
+          onInstance={(picked) => {
+            setDraft((current) => ({ ...current, instance: picked }));
+          }}
+          onIdle={(typed) => {
+            setDraft((current) => ({ ...current, idle: typed }));
+          }}
         />
-      ) : container.error === null ? (
+      ) : loadError === null ? (
         <p className="text-sm text-muted-foreground">Loading the Container's settings…</p>
       ) : (
         <div className="flex items-center gap-3">
           <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-            {container.error}
+            {loadError}
           </p>
-          <Button type="button" variant="outline" size="sm" onClick={container.retry}>
+          <Button type="button" variant="outline" size="sm" onClick={retry}>
             Try again
           </Button>
         </div>
       )}
-      {(problem ?? (saved === undefined ? null : container.error)) !== null && (
+      {problem !== null && (
         <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {problem ?? container.error}
+          {problem}
         </p>
       )}
       <DialogActions>
-        <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={saving}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
           Cancel
         </Button>
         <Button
           type="submit"
-          disabled={busy || nameProblem !== null || idleProblem !== null || !(renamed || resized)}
+          disabled={saving || nameProblem !== null || idleProblem !== null || !(renamed || resized)}
         >
-          {busy ? "Saving…" : "Save"}
+          {saving ? "Saving…" : "Save"}
         </Button>
       </DialogActions>
     </form>
@@ -396,39 +344,29 @@ const EditWorkspaceDialog = ({
 const DeleteWorkspaceDialog = ({
   workspace,
   sessions,
-  onDelete,
-  onClose,
-  busy,
-  setBusy,
 }: {
   workspace: WorkspaceRecord;
   sessions: readonly SessionRecord[];
-  onDelete: () => Promise<string | null>;
-  onClose: () => void;
-} & DialogBusy) => {
-  const [typed, setTyped] = useState("");
-  const [problem, setProblem] = useState<string | null>(null);
+}) => {
+  const { slug } = workspace;
+  const [typed, setTyped] = useAtom(deleteTypedAtom(slug));
+  const [deleted, remove] = useAtom(deleteWorkspaceAtom(slug));
+  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const busy = deleted.waiting;
+  const problem = settledFailureOf(deleted);
   const archived = sessions.filter((session) => session.archivedAt !== null).length;
-  const confirmed = deleteConfirmed(workspace.slug, typed);
+  const confirmed = deleteConfirmed(slug, typed);
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault();
 
     if (!confirmed || busy) return;
 
-    setBusy(true);
-    setProblem(null);
-
-    const failure = await onDelete();
-
-    setBusy(false);
-
-    if (failure === null) onClose();
-    else setProblem(failure);
+    remove();
   };
 
   return (
-    <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-4">
+    <form onSubmit={submit} className="flex flex-col gap-4">
       <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
         <li>
           {sessions.length === 0
@@ -441,11 +379,11 @@ const DeleteWorkspaceDialog = ({
         <li>Its Container, and its Container settings.</li>
       </ul>
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={`confirm-${workspace.slug}`} className="text-sm">
-          Type <span className="font-mono font-medium">{workspace.slug}</span> to confirm
+        <label htmlFor={`confirm-${slug}`} className="text-sm">
+          Type <span className="font-mono font-medium">{slug}</span> to confirm
         </label>
         <Input
-          id={`confirm-${workspace.slug}`}
+          id={`confirm-${slug}`}
           value={typed}
           onChange={(event) => {
             setTyped(event.target.value);
@@ -470,7 +408,14 @@ const DeleteWorkspaceDialog = ({
         </p>
       )}
       <DialogActions>
-        <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
           Cancel
         </Button>
         <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
@@ -487,8 +432,6 @@ const WorkspaceCard = ({
   sessions,
   starting,
   onStart,
-  onRename,
-  onDelete,
 }: {
   workspace: WorkspaceRecord;
   /** The names of the other Workspaces, which this one cannot take. */
@@ -497,15 +440,30 @@ const WorkspaceCard = ({
   sessions: readonly SessionRecord[];
   starting: boolean;
   onStart: (workspace: string, repo?: string) => void;
-  onRename: (name: string) => Promise<string | null>;
-  onDelete: () => Promise<string | null>;
 }) => {
   const { slug } = workspace;
-  const repos = useRepos(slug);
-  const container = useWorkspaceSettings(slug);
-  const [dialog, setDialog] = useState<"edit" | "delete" | null>(null);
-  const [busy, setBusy] = useState(false);
+  const listed = useAtomValue(reposAtom(slug));
+  const cloned = useAtomValue(cloneRepoAtom(slug));
+  // The Container's settings are asked for with the card, so the Edit dialog has them when it opens.
+  useAtomMount(workspaceSettingsAtom(slug));
+  const [dialog, setDialog] = useAtom(workspaceDialogAtom(slug));
+  const edited = useAtomValue(saveWorkspaceAtom(slug));
+  const deleted = useAtomValue(deleteWorkspaceAtom(slug));
+  const forgetEdit = useAtomSet(saveWorkspaceAtom(slug));
+  const forgetDelete = useAtomSet(deleteWorkspaceAtom(slug));
   const shown = sessions.filter((session) => session.archivedAt === null);
+  const repos = listed.pipe(AsyncResult.value, Option.getOrNull);
+  // A dialog's form is saving: the card holds it, so the dialog stays open until the request answers.
+  const busy = edited.waiting || deleted.waiting;
+  // A clone's failure shows until the next clone starts.
+  const reposError = settledFailureOf(cloned) ?? failureOf(listed);
+
+  const open = (next: WorkspaceDialog) => {
+    // A failure of an earlier save or delete shows no more once its dialog is opened again.
+    forgetEdit(Atom.Reset);
+    forgetDelete(Atom.Reset);
+    setDialog(next);
+  };
 
   const close = () => {
     setDialog(null);
@@ -523,7 +481,7 @@ const WorkspaceCard = ({
         <Menu label={`Actions for the ${workspace.name} workspace`} className="-mt-1.5 -mr-1.5">
           <MenuItem
             onSelect={() => {
-              setDialog("edit");
+              open("edit");
             }}
           >
             <Pencil aria-hidden />
@@ -533,7 +491,7 @@ const WorkspaceCard = ({
             <MenuItem
               destructive
               onSelect={() => {
-                setDialog("delete");
+                open("delete");
               }}
             >
               <Trash2 aria-hidden />
@@ -559,7 +517,7 @@ const WorkspaceCard = ({
               Start
             </Button>
           </li>
-          {(repos.repos ?? []).map((repo) => (
+          {(repos ?? []).map((repo) => (
             <li key={repo} className="flex items-center justify-between gap-2">
               <span className="truncate font-mono text-sm">/workspace/{repo}</span>
               <Button
@@ -576,17 +534,17 @@ const WorkspaceCard = ({
             </li>
           ))}
         </ul>
-        {repos.repos === null && repos.error === null && (
+        {repos === null && reposError === null && (
           <p className="text-xs text-muted-foreground">Looking for repos…</p>
         )}
-        {repos.repos?.length === 0 && (
+        {repos?.length === 0 && (
           <p className="text-xs text-muted-foreground">No repos yet. Clone one below.</p>
         )}
       </div>
-      <CloneForm slug={slug} repos={repos} />
-      {repos.error !== null && (
+      <CloneForm slug={slug} />
+      {reposError !== null && (
         <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {repos.error}
+          {reposError}
         </p>
       )}
       {shown.length > 0 && (
@@ -607,15 +565,7 @@ const WorkspaceCard = ({
         dismissible={!busy}
         title={`Edit ${workspace.name}`}
       >
-        <EditWorkspaceDialog
-          workspace={workspace}
-          otherNames={otherNames}
-          container={container}
-          onRename={onRename}
-          onClose={close}
-          busy={busy}
-          setBusy={setBusy}
-        />
+        <EditWorkspaceDialog workspace={workspace} otherNames={otherNames} />
       </Dialog>
       <Dialog
         open={dialog === "delete"}
@@ -624,14 +574,7 @@ const WorkspaceCard = ({
         title={`Delete the ${workspace.name} workspace?`}
         description="Everything below is deleted for good. Its saved Container disk expires on its own within 30 days."
       >
-        <DeleteWorkspaceDialog
-          workspace={workspace}
-          sessions={sessions}
-          onDelete={onDelete}
-          onClose={close}
-          busy={busy}
-          setBusy={setBusy}
-        />
+        <DeleteWorkspaceDialog workspace={workspace} sessions={sessions} />
       </Dialog>
     </section>
   );
@@ -643,28 +586,14 @@ export const WorkspacesPage = () => {
   const sessionsError = useAtomValue(sessionsErrorAtom);
   const workspaces = useAtomValue(workspaceListAtom);
   const listError = useAtomValue(workspacesErrorAtom);
-  const createWorkspace = useAtomSet(createWorkspaceAtom, { mode: "promiseExit" });
-  const renameWorkspace = useAtomSet(renameWorkspaceAtom, { mode: "promiseExit" });
-  const deleteWorkspace = useAtomSet(deleteWorkspaceAtom, { mode: "promiseExit" });
-  const { create: createSession } = useSessionActions();
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const error = createError ?? listError;
+  const createdWorkspace = useAtomValue(createWorkspaceAtom);
+  const createSession = useAtomSet(createSessionAtom);
+  // Starting a Session holds every Start button until the new Session is registered and opened.
+  const starting = useAtomValue(createSessionAtom).waiting;
+  const error = failureOf(createdWorkspace) ?? listError;
 
-  const create = async (slug: string) => {
-    const failure = exitFailure(await createWorkspace(slug));
-
-    setCreateError(failure);
-
-    return failure === null;
-  };
-
-  const start = async (workspace: string, repo?: string) => {
-    setStarting(true);
-
-    await createSession(repo === undefined ? { workspace } : { workspace, repo });
-
-    setStarting(false);
+  const start = (workspace: string, repo?: string) => {
+    createSession(callOf(repo === undefined ? { workspace } : { workspace, repo }));
   };
 
   return (
@@ -687,7 +616,7 @@ export const WorkspacesPage = () => {
           A workspace holds the files of one or more repos, shared by every session that works in
           it. A session started in a repo has its directory as the working directory.
         </p>
-        <NewWorkspaceForm onCreate={create} />
+        <NewWorkspaceForm />
         {(error ?? sessionsError) !== null && (
           <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
             {error ?? sessionsError}
@@ -708,11 +637,7 @@ export const WorkspacesPage = () => {
                   (session) => session.workspace === workspace.slug,
                 )}
                 starting={starting}
-                onStart={(slug, repo) => void start(slug, repo)}
-                onRename={async (name) =>
-                  exitFailure(await renameWorkspace({ workspace: workspace.slug, name }))
-                }
-                onDelete={async () => exitFailure(await deleteWorkspace(workspace.slug))}
+                onStart={start}
               />
             ))}
           </div>

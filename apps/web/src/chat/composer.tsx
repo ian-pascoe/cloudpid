@@ -1,9 +1,12 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off -- assistant-ui's messages and the lanes are native arrays,
+// and a command's run, awaited in an event handler, is a promise.
 
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
+import * as Atom from "effect/reactivity/Atom";
 import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Paperclip, Square } from "lucide-react";
 import {
   type ClipboardEvent,
@@ -11,18 +14,15 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
-  startTransition,
-  useEffect,
   useId,
-  useMemo,
   useRef,
-  useState,
 } from "react";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
 import { sessionCommandsFor, type WhenBusy } from "@cloudpid/protocol";
 import { messageOf } from "../registry.ts";
 import type { QueuedEntry, SendingEntry } from "../session/state.ts";
+import { useCall } from "../calls.ts";
 import { AttachmentTiles } from "./attachment-tiles.tsx";
 import {
   addAttachmentsAtom,
@@ -32,14 +32,21 @@ import {
   sentAttachments,
   waitingFor,
 } from "./attachments-state.ts";
-import { askCatalogAtom, catalogAtom } from "./catalog.ts";
+import { catalogAtom } from "./catalog.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu, rowId } from "./completion-menu.tsx";
-import { detectTrigger, type Edited, replaceTrigger } from "./completion.ts";
-import { copyAtom, sessionCommandAtom, wideAtom } from "./composer-state.ts";
-import { conversationKey, useShownSessionId } from "./conversation.ts";
+import { type Edited, replaceTrigger } from "./completion.ts";
+import {
+  type ComposerSource,
+  composerState,
+  copyAtom,
+  type Note,
+  sessionCommandAtom,
+  wideAtom,
+} from "./composer-state.ts";
+import { type ConversationKey, conversationKey, useShownSessionId } from "./conversation.ts";
 import { fileDragAtom, useFileDropZone } from "./file-drop.ts";
-import { fileResults, fileSearchAtom, searchFilesAtom } from "./file-search.ts";
+import { fileResults, fileSearchAtom } from "./file-search.ts";
 import { completionFor, menuKey } from "./menu.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
 
@@ -70,42 +77,13 @@ const Lane = ({
     </section>
   );
 
-/** A line under the composer: why a command failed, or what one did. */
-type Note = { readonly tone: "error" | "info"; readonly text: string };
+/** One composer's state (`composerState`), kept while it is shown. */
+const ComposerScope = ScopedAtom.make((source: ComposerSource) => Atom.make(composerState(source)));
 
 const roundButton =
   "touch-target inline-flex size-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none";
 
-/**
- * The composer: one bordered box holding the input and a toolbar, with `tools` (the model and thinking pickers) on the
- * left and the send controls on the right. While a Run is in progress a message is a steer by default (it joins the
- * Run at its next boundary, after the tool calls in progress) and Alt+Enter, or the Queue button, makes it a follow-up
- * (it waits for the next Run); with nothing typed, the main button stops the Run instead. Messages waiting in the
- * Session's inbox show above the box, by lane, after the ones still being sent.
- *
- * A `/` at the start of the message opens a menu of the Slash commands: `commands`, the ones of any conversation
- * (`/stop`, `/stop-all`, `/copy`) and the Session's (`/compact`, `/rollover`, `/todo`, `/export`, run on this
- * conversation), then the Prompt templates and Skills of the conversation's directory; `$` opens one of the Skills, and
- * `@` one of the files and folders of the conversation's directory, picked as `@path` text (a folder keeps the menu open
- * to narrow into it). A submitted `/name` the composer does not know is sent as written, for the Session to expand or
- * the model to read.
- *
- * Files attach with the Attach button, a paste, or a drop anywhere on `dropZone` (the thread), and upload at once
- * (`attachments-state.ts`). A message with Attachments is sent by the composer itself, once every one is uploaded and
- * every picture fitted (Send waits until then): its text names each one's `@path`, and the pictures go inline.
- */
-export const Composer = ({
-  steerLane,
-  followUpLane,
-  sending,
-  onStopAll,
-  tools,
-  commands = [],
-  compact = false,
-  who = "the session",
-  conversationId,
-  dropZone,
-}: {
+type ComposerProps = {
   steerLane: readonly QueuedEntry[];
   followUpLane: readonly QueuedEntry[];
   sending: readonly SendingEntry[];
@@ -123,36 +101,55 @@ export const Composer = ({
   conversationId?: number | undefined;
   /** Where a dropped file attaches to this composer: its thread. */
   dropZone?: RefObject<HTMLElement | null> | undefined;
+};
+
+const ComposerBox = ({
+  steerLane,
+  followUpLane,
+  sending,
+  onStopAll,
+  tools,
+  commands = [],
+  compact = false,
+  who = "the session",
+  conversationId,
+  dropZone,
+  conversation: key,
+  input,
+}: ComposerProps & {
+  /** This composer's conversation, which its catalog, `@` menu and Attachments belong to. */
+  conversation: ConversationKey;
+  input: RefObject<HTMLTextAreaElement | null>;
 }) => {
   // On a touch screen, focusing the input opens the keyboard over the transcript.
   const autoFocus = !compact && window.matchMedia("(pointer: fine)").matches;
   const wide = useAtomValue(wideAtom);
   const menuId = useId();
-  const input = useRef<HTMLTextAreaElement>(null);
 
   const aui = useAui();
   const running = useAuiState((state) => state.thread.isRunning);
   const canSend = useAuiState((state) => state.composer.canSend);
-  const text = useAuiState((state) => state.composer.text);
 
-  const [caret, setCaret] = useState(0);
-  const [focused, setFocused] = useState(false);
-  // The start of a trigger the owner dismissed with Escape: its menu stays closed until the trigger moves.
-  const [dismissed, setDismissed] = useState<number | null>(null);
-  // The highlighted row's id: it stays on that row when the rows change under it (the `@` menu's, as answers come).
-  const [highlighted, setHighlighted] = useState<string | null>(null);
-  const [note, setNote] = useState<Note | null>(null);
-  const [busy, setBusy] = useState(false);
-  // This composer's conversation, which its catalog, `@` menu and Attachments belong to.
-  const key = conversationKey(useShownSessionId(), conversationId);
+  const state = useAtomValue(ComposerScope.use());
+  const text = useAtomValue(state.text);
+  const trigger = useAtomValue(state.trigger);
+  const setCaret = useAtomSet(state.caret);
+  const setFocused = useAtomSet(state.focused);
+  const [dismissed, setDismissed] = useAtom(state.dismissed);
+  const [highlighted, setHighlighted] = useAtom(state.highlighted);
+  const [note, setNote] = useAtom(state.note);
+  const [busy, setBusy] = useAtom(state.busy);
+  const fileQuery = useAtomValue(state.fileQuery);
+
+  useAtomMount(state.effects);
+
   const catalog = useAtomValue(catalogAtom(key));
-  const askCatalog = useAtomSet(askCatalogAtom(key));
-  const runSessionCommand = useAtomSet(sessionCommandAtom(key), { mode: "promiseExit" });
-  const copy = useAtomSet(copyAtom, { mode: "promiseExit" });
+  const runSessionCommand = useCall(sessionCommandAtom(key));
+  const copy = useCall(copyAtom);
   const attachments = useAtomValue(attachmentsAtom(key));
   const addAttachments = useAtomSet(addAttachmentsAtom(key));
   const removeAttachment = useAtomSet(removeAttachmentAtom(key));
-  const sendAttached = useAtomSet(sendAttachedAtom(key), { mode: "promiseExit" });
+  const sendAttached = useCall(sendAttachedAtom(key));
   const picker = useRef<HTMLInputElement>(null);
 
   useFileDropZone(dropZone, key);
@@ -168,94 +165,79 @@ export const Composer = ({
   const shownNote: Note | null =
     note ?? (waiting === null ? null : { tone: "info", text: waiting });
 
-  // The Session's commands run on this composer's conversation; what they did shows under the box.
-  const session = useMemo(
-    () =>
-      // Known before the catalog arrives, so `/compact` typed first, or after the catalog could not be had, still runs.
-      sessionCommands(
-        catalog?.commands ?? sessionCommandsFor(conversationId === undefined),
-        (name, args) =>
-          runSessionCommand({ name, args }).then((exit) => {
-            if (Exit.isFailure(exit)) return messageOf(exit.cause);
+  // The Session's commands run on this composer's conversation; what they did shows under the box. They are known
+  // before the catalog arrives, so `/compact` typed first, or after the catalog could not be had, still runs.
+  const session = sessionCommands(
+    catalog?.commands ?? sessionCommandsFor(conversationId === undefined),
+    (name, args) =>
+      runSessionCommand({ name, args }).then((exit) => {
+        if (Exit.isFailure(exit)) return messageOf(exit.cause);
 
-            if (exit.value !== null) setNote({ tone: "info", text: exit.value });
+        if (exit.value !== null) setNote({ tone: "info", text: exit.value });
 
-            return null;
-          }),
-      ),
-    [catalog, runSessionCommand, conversationId],
+        return null;
+      }),
   );
 
-  const allCommands = useMemo(() => {
-    const own: ComposerCommand[] = [
-      {
-        name: "stop",
-        description: "Stop the run",
-        argument: "none",
-        run: () => {
-          if (!aui.thread.getState().isRunning) return "Nothing is running.";
+  const own: ComposerCommand[] = [
+    {
+      name: "stop",
+      description: "Stop the run",
+      argument: "none",
+      run: () => {
+        if (!aui.thread.getState().isRunning) return "Nothing is running.";
 
-          aui.thread.cancelRun();
+        aui.thread.cancelRun();
+
+        return null;
+      },
+    },
+    {
+      name: "copy",
+      description: "Copy the last answer",
+      argument: "none",
+      run: () => {
+        const last = aui
+          .thread()
+          .getState()
+          .messages.findLast((message) => message.role === "assistant");
+
+        const answer = (last?.content ?? [])
+          .flatMap((part) => (part.type === "text" ? [part.text] : []))
+          .join("\n\n")
+          .trim();
+
+        if (answer === "") return "There is no answer to copy yet.";
+
+        return copy(answer).then((exit) => {
+          if (Exit.isFailure(exit)) return "The browser did not allow copying.";
+
+          setNote({ tone: "info", text: "Copied the last answer." });
 
           return null;
-        },
+        });
       },
-      {
-        name: "copy",
-        description: "Copy the last answer",
-        argument: "none",
-        run: () => {
-          const last = aui
-            .thread()
-            .getState()
-            .messages.findLast((message) => message.role === "assistant");
+    },
+  ];
 
-          const answer = (last?.content ?? [])
-            .flatMap((part) => (part.type === "text" ? [part.text] : []))
-            .join("\n\n")
-            .trim();
+  if (onStopAll !== undefined) {
+    own.push({
+      name: "stop-all",
+      description: "Stop the run and every subagent below it",
+      argument: "none",
+      run: () => {
+        onStopAll();
 
-          if (answer === "") return "There is no answer to copy yet.";
-
-          return copy(answer).then((exit) => {
-            if (Exit.isFailure(exit)) return "The browser did not allow copying.";
-
-            setNote({ tone: "info", text: "Copied the last answer." });
-
-            return null;
-          });
-        },
+        return null;
       },
-    ];
+    });
+  }
 
-    if (onStopAll !== undefined) {
-      own.push({
-        name: "stop-all",
-        description: "Stop the run and every subagent below it",
-        argument: "none",
-        run: () => {
-          onStopAll();
-
-          return null;
-        },
-      });
-    }
-
-    return [...commands, ...session, ...own].toSorted((a, b) => a.name.localeCompare(b.name));
-  }, [aui, commands, session, onStopAll, copy]);
-
-  const trigger = focused ? detectTrigger(text, caret) : null;
-
-  // The `@` menu asks the Session for the files that match while it is open.
-  const fileQuery = trigger?.kind === "file" && trigger.start !== dismissed ? trigger.query : null;
+  const allCommands = [...commands, ...session, ...own].toSorted((a, b) =>
+    a.name.localeCompare(b.name),
+  );
 
   const fileSearch = useAtomValue(fileSearchAtom(key));
-  const searchFiles = useAtomSet(searchFilesAtom(key));
-
-  useEffect(() => {
-    searchFiles(fileQuery);
-  }, [searchFiles, fileQuery]);
-
   const files = fileResults(fileSearch, fileQuery);
 
   const completion =
@@ -280,28 +262,11 @@ export const Composer = ({
     setHighlighted(entries[index]?.id ?? null);
   };
 
-  // A new menu, or a changed query, starts from its first row.
-  const menuKeyOf = trigger === null ? "" : `${trigger.kind}:${trigger.start}:${trigger.query}`;
-
-  useEffect(() => {
-    setHighlighted(null);
-  }, [menuKeyOf]);
-
-  // The catalog is asked for when a menu that lists it first opens, and again once it is stale.
-  const listsCatalog = trigger?.kind === "command" || trigger?.kind === "skill";
-
-  useEffect(() => {
-    if (listsCatalog) askCatalog();
-  }, [listsCatalog, askCatalog]);
-
-  // A dismissed trigger that is gone (deleted, or the caret left it) no longer holds its menu closed.
-  useEffect(() => {
-    if (dismissed !== null && trigger?.start !== dismissed) setDismissed(null);
-  }, [dismissed, trigger?.start]);
-
   const edit = (next: Edited) => {
-    aui.composer.setText(next.text);
-    setCaret(next.caret);
+    Atom.batch(() => {
+      aui.composer.setText(next.text);
+      setCaret(next.caret);
+    });
 
     requestAnimationFrame(() => {
       input.current?.focus();
@@ -506,16 +471,9 @@ export const Composer = ({
             aria-expanded={open && entries.length > 0}
             aria-activedescendant={open && entries.length > 0 ? rowId(menuId, active) : undefined}
             onKeyDown={onKeyDown}
-            onChange={(event) => {
-              const element = event.target;
-
-              // Runs before assistant-ui stores the new text: an urgent update here would render the input with the
-              // text before the edit, which puts the caret at the end. As a transition it renders after.
-              startTransition(() => {
-                setNote(null);
-                trackCaret(element);
-              });
-            }}
+            // No onChange: it runs before assistant-ui stores the new text, and an update there would render the input with
+            // the text before the edit, which puts the caret at its end. The composer's state hears the edit once the
+            // text is stored (`composerState`).
             onSelect={(event) => {
               trackCaret(event.currentTarget);
             }}
@@ -631,5 +589,44 @@ export const Composer = ({
         </p>
       )}
     </ComposerPrimitive.Root>
+  );
+};
+
+/**
+ * The composer: one bordered box holding the input and a toolbar, with `tools` (the model and thinking pickers) on the
+ * left and the send controls on the right. While a Run is in progress a message is a steer by default (it joins the
+ * Run at its next boundary, after the tool calls in progress) and Alt+Enter, or the Queue button, makes it a follow-up
+ * (it waits for the next Run); with nothing typed, the main button stops the Run instead. Messages waiting in the
+ * Session's inbox show above the box, by lane, after the ones still being sent.
+ *
+ * A `/` at the start of the message opens a menu of the Slash commands: `commands`, the ones of any conversation
+ * (`/stop`, `/stop-all`, `/copy`) and the Session's (`/compact`, `/rollover`, `/todo`, `/export`, run on this
+ * conversation), then the Prompt templates and Skills of the conversation's directory; `$` opens one of the Skills, and
+ * `@` one of the files and folders of the conversation's directory, picked as `@path` text (a folder keeps the menu open
+ * to narrow into it). A submitted `/name` the composer does not know is sent as written, for the Session to expand or
+ * the model to read.
+ *
+ * Files attach with the Attach button, a paste, or a drop anywhere on `dropZone` (the thread), and upload at once
+ * (`attachments-state.ts`). A message with Attachments is sent by the composer itself, once every one is uploaded and
+ * every picture fitted (Send waits until then): its text names each one's `@path`, and the pictures go inline.
+ */
+export const Composer = (props: ComposerProps) => {
+  const aui = useAui();
+  const input = useRef<HTMLTextAreaElement>(null);
+  const key = conversationKey(useShownSessionId(), props.conversationId);
+
+  return (
+    // Another conversation's composer starts over.
+    <ComposerScope.Provider
+      key={`${key.sessionId}/${key.conversationId}`}
+      value={{
+        key,
+        text: () => aui.composer.getState().text,
+        subscribe: (listener) => aui.subscribe(listener),
+        input: () => input.current,
+      }}
+    >
+      <ComposerBox {...props} conversation={key} input={input} />
+    </ComposerScope.Provider>
   );
 };
