@@ -3,7 +3,7 @@
 // Registry so Sessions can notify it, and turned on and off from the settings page. The browser and the Registry are
 // passed in, so the logic runs without either.
 import type { PushSubscription } from "@cloudpid/protocol";
-import type { RegistryApi } from "./registry.ts";
+import type { RegistryApi } from "./legacy-registry.ts";
 
 /** What the settings page shows of this device's notifications. */
 export type PushStatus =

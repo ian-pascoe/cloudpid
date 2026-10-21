@@ -22,6 +22,7 @@
         "allowedUnstableApis": [
           "@effect/atom-react",
           "@effect/platform-browser",
+          "@effect/vitest",
           "effect/http",
           "effect/reactivity",
           "effect/rpc",

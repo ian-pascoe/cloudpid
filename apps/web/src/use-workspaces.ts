@@ -1,85 +1,9 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import { workspaceOverridesFrom, type WorkspaceSettings } from "@cloudpid/config";
-import type { WorkspaceRecord, WorkspaceSettingsState } from "@cloudpid/protocol";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { connectRegistry, type RegistryApi } from "./registry.ts";
-
-export interface Workspaces {
-  readonly registry: RegistryApi;
-  /** Newest first; null until the first answer. */
-  readonly workspaces: readonly WorkspaceRecord[] | null;
-  /** Why the list could not load or a Workspace could not be created. */
-  readonly error: string | null;
-  /** Register a Workspace and refresh the list; resolves to whether it was created. */
-  readonly create: (slug: string) => Promise<boolean>;
-  /** Name a Workspace and refresh the list; resolves to null when it worked, or to why not. */
-  readonly rename: (slug: string, name: string) => Promise<string | null>;
-  /** Delete a Workspace and its Sessions for good, and refresh the list; null when it worked, or why not. */
-  readonly delete: (slug: string) => Promise<string | null>;
-}
-
-export const useWorkspaces = (): Workspaces => {
-  const registry = useMemo(() => connectRegistry(window.location.origin), []);
-  const [workspaces, setWorkspaces] = useState<readonly WorkspaceRecord[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    const answer = await registry.listWorkspaces();
-
-    if (answer.ok) setWorkspaces(answer.value);
-
-    setError(answer.ok ? null : answer.message);
-  }, [registry]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const create = useCallback(
-    async (slug: string) => {
-      const answer = await registry.createWorkspace(slug);
-
-      if (!answer.ok) {
-        setError(answer.message);
-
-        return false;
-      }
-
-      await refresh();
-
-      return true;
-    },
-    [registry, refresh],
-  );
-
-  const rename = useCallback(
-    async (slug: string, name: string) => {
-      const answer = await registry.renameWorkspace(slug, name);
-
-      if (!answer.ok) return answer.message;
-
-      await refresh();
-
-      return null;
-    },
-    [registry, refresh],
-  );
-
-  const deleteWorkspace = useCallback(
-    async (slug: string) => {
-      const answer = await registry.deleteWorkspace(slug);
-
-      // A delete that stopped partway deleted some Sessions: the list shows what is left either way.
-      await refresh();
-
-      return answer.ok ? null : answer.message;
-    },
-    [registry, refresh],
-  );
-
-  return { registry, workspaces, error, create, rename, delete: deleteWorkspace };
-};
+import type { WorkspaceSettingsState } from "@cloudpid/protocol";
+import { useCallback, useEffect, useState } from "react";
+import type { RegistryApi } from "./legacy-registry.ts";
 
 export interface Repos {
   /** The directories of the repos the Workspace holds; null until the first answer. */

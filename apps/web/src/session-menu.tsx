@@ -7,10 +7,10 @@ import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { sessionTitle } from "./sidebar.tsx";
-import type { Sessions } from "./use-sessions.ts";
+import type { SessionActions as AllSessionActions } from "./session-actions.ts";
 
 /** What a Session's menu does: archive, unarchive and delete, through the Session list. */
-export type SessionActions = Pick<Sessions, "archive" | "unarchive" | "delete">;
+export type SessionActions = Pick<AllSessionActions, "archive" | "unarchive" | "delete">;
 
 /**
  * Confirm deleting a Session: what goes (its conversations and history) and what stays (its files). Deleting a running

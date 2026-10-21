@@ -3,7 +3,7 @@
 import { overridesFrom, type Settings } from "@cloudpid/config";
 import type { SettingsState } from "@cloudpid/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { connectRegistry } from "./registry.ts";
+import { connectRegistry } from "./legacy-registry.ts";
 
 export interface SettingsStore {
   /** The settings in force; null until the first answer. */

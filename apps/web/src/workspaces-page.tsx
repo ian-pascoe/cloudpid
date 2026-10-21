@@ -8,7 +8,8 @@ import {
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import { ArrowLeft, GitBranch, Pencil, Play, Trash2 } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
@@ -16,15 +17,23 @@ import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { navigate, sessionPath } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
-import type { Sessions } from "./use-sessions.ts";
-import type { RegistryApi } from "./registry.ts";
+import { connectRegistry, type RegistryApi } from "./legacy-registry.ts";
+import { exitFailure } from "./registry.ts";
+import { useSessionActions } from "./session-actions.ts";
+import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import {
   type Repos,
   useRepos,
   useWorkspaceSettings,
-  type Workspaces,
   type WorkspaceSettingsStore,
 } from "./use-workspaces.ts";
+import {
+  createWorkspaceAtom,
+  deleteWorkspaceAtom,
+  renameWorkspaceAtom,
+  workspaceListAtom,
+  workspacesErrorAtom,
+} from "./workspaces-state.ts";
 import {
   deleteConfirmed,
   idleMinutesProblem,
@@ -571,19 +580,32 @@ const WorkspaceCard = ({
 };
 
 /** The Workspaces page: create a Workspace, clone repos into it, and start Sessions in a repo or at its root. */
-export const WorkspacesPage = ({
-  sessions,
-  workspaces: { registry, workspaces, error, create, rename, delete: deleteWorkspace },
-}: {
-  sessions: Sessions;
-  workspaces: Workspaces;
-}) => {
+export const WorkspacesPage = () => {
+  const registry = useMemo(() => connectRegistry(window.location.origin), []);
+  const sessions = useAtomValue(sessionListAtom);
+  const sessionsError = useAtomValue(sessionsErrorAtom);
+  const workspaces = useAtomValue(workspaceListAtom);
+  const listError = useAtomValue(workspacesErrorAtom);
+  const createWorkspace = useAtomSet(createWorkspaceAtom, { mode: "promiseExit" });
+  const renameWorkspace = useAtomSet(renameWorkspaceAtom, { mode: "promiseExit" });
+  const deleteWorkspace = useAtomSet(deleteWorkspaceAtom, { mode: "promiseExit" });
+  const { create: createSession } = useSessionActions();
+  const [createError, setCreateError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const error = createError ?? listError;
+
+  const create = async (slug: string) => {
+    const failure = exitFailure(await createWorkspace(slug));
+
+    setCreateError(failure);
+
+    return failure === null;
+  };
 
   const start = async (workspace: string, repo?: string) => {
     setStarting(true);
 
-    const session = await sessions.create(repo === undefined ? { workspace } : { workspace, repo });
+    const session = await createSession(repo === undefined ? { workspace } : { workspace, repo });
 
     setStarting(false);
 
@@ -611,9 +633,9 @@ export const WorkspacesPage = ({
           it. A session started in a repo has its directory as the working directory.
         </p>
         <NewWorkspaceForm onCreate={create} />
-        {(error ?? sessions.error) !== null && (
+        {(error ?? sessionsError) !== null && (
           <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-            {error ?? sessions.error}
+            {error ?? sessionsError}
           </p>
         )}
         {workspaces === null ? (
@@ -627,20 +649,16 @@ export const WorkspacesPage = ({
                 otherNames={workspaces
                   .filter((other) => other.slug !== workspace.slug)
                   .map((other) => other.name)}
-                sessions={(sessions.sessions ?? []).filter(
+                sessions={(sessions ?? []).filter(
                   (session) => session.workspace === workspace.slug,
                 )}
                 registry={registry}
                 starting={starting}
                 onStart={(slug, repo) => void start(slug, repo)}
-                onRename={(name) => rename(workspace.slug, name)}
-                onDelete={async () => {
-                  const failure = await deleteWorkspace(workspace.slug);
-
-                  await sessions.refresh();
-
-                  return failure;
-                }}
+                onRename={async (name) =>
+                  exitFailure(await renameWorkspace({ workspace: workspace.slug, name }))
+                }
+                onDelete={async () => exitFailure(await deleteWorkspace(workspace.slug))}
               />
             ))}
           </div>

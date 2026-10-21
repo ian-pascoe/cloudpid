@@ -18,7 +18,7 @@ Consult this while doing the steps; it is the single source for the patterns eve
 
 ### Packages and the unstable flag
 
-- Atom is in `effect@4.0.5` under **`effect/reactivity`** (`Atom`, `AtomRegistry`, `AtomRpc`, `AsyncResult`, `Reactivity`); source in `.repos/effect/packages/effect/src/reactivity/`, tests worth reading in `.repos/effect/packages/effect/test/reactivity/`.
+- Atom is in `effect@4.0.5` under **`effect/reactivity`** (`Atom`, `AtomRegistry`, `AtomRpc`, `AsyncResult`, `Reactivity`); read the installed source, `node_modules/.pnpm/effect@4.0.5/node_modules/effect/src/reactivity/`. `.repos/effect` is ahead of 4.0.5 and documents APIs the installed version lacks (typed `Reactivity.Keys`, `InitialValueOptions`); its `packages/effect/test/reactivity/` tests are still worth reading for patterns.
 - React bindings: **`@effect/atom-react@4.0.5`** (`RegistryProvider`, `useAtomValue`, `useAtomSet`, `useAtom`, `useAtomMount`, `useAtomRefresh`, `ScopedAtom.make`); source in `.repos/effect/packages/atom/react/src/`.
 - Browser services: **`@effect/platform-browser@4.0.5`** (`BrowserSocket.layerWebSocketConstructor`, `Clipboard`); source in `.repos/effect/packages/platform/browser/src/`.
 - The socket is **`effect/socket/Socket`** (`makeWebSocket`, `fromWebSocket`, `WebSocketConstructor`).
