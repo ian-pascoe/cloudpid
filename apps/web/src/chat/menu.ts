@@ -3,10 +3,10 @@
 
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays are the platform here, and these are plain functions, not combinators.
 
-import type { CatalogEntry } from "@cloudpid/protocol";
+import { type CatalogEntry, rank } from "@cloudpid/protocol";
 import type { ComposerCommand } from "./commands.ts";
 import type { CompletionRow, CompletionSection } from "./completion-menu.tsx";
-import { rank, type Trigger } from "./completion.ts";
+import type { Trigger } from "./completion.ts";
 
 /** What a pick from the menu does: put text in place of the trigger, or run a command at once. */
 export type MenuPick =

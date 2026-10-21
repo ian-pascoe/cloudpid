@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- tests of browser code with no Effect runtime.
 
 import { describe, expect, it } from "vitest";
-import { detectTrigger, parseCommand, rank, replaceTrigger } from "./completion.ts";
+import { detectTrigger, parseCommand, replaceTrigger } from "./completion.ts";
 
 describe("detecting a trigger before the caret", () => {
   it("finds a command at the start of the message", () => {
@@ -87,40 +87,6 @@ describe("detecting a trigger before the caret", () => {
   it("finds nothing inside inline code", () => {
     expect(detectTrigger("run `$HOM", 9)).toBeNull();
     expect(detectTrigger("`a` $td", 7)).toEqual({ kind: "skill", start: 4, end: 7, query: "td" });
-  });
-});
-
-describe("ranking candidates for a query", () => {
-  const names = ["model", "name", "new", "archive", "stop", "stop-all", "settings", "skill:tdd"];
-
-  const ranked = (query: string, candidates = names) =>
-    rank(query, candidates, (name) => name).map((name) => name);
-
-  it("keeps every candidate, in order, for an empty query", () => {
-    expect(ranked("")).toEqual(names);
-  });
-
-  it("puts an exact match, then prefixes, then word starts, then substrings, then subsequences", () => {
-    expect(ranked("stop")).toEqual(["stop", "stop-all"]);
-    expect(ranked("all")).toEqual(["stop-all"]);
-    expect(ranked("tdd")).toEqual(["skill:tdd"]);
-    expect(ranked("n")).toEqual(["name", "new", "settings"]);
-    expect(ranked("stg")).toEqual(["settings"]);
-  });
-
-  it("ignores case", () => {
-    expect(ranked("MOD")).toEqual(["model"]);
-  });
-
-  it("drops what does not match", () => {
-    expect(ranked("xyz")).toEqual([]);
-  });
-
-  it("ranks a match in the last path segment above one in a directory", () => {
-    expect(ranked("app", ["apps/web/index.ts", "src/app.tsx"])).toEqual([
-      "src/app.tsx",
-      "apps/web/index.ts",
-    ]);
   });
 });
 
