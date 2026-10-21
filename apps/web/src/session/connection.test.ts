@@ -1251,9 +1251,12 @@ describe("the catalog and Slash commands", () => {
     watching(latest());
 
     const waiting = connection.catalog();
+    const running = connection.command("todo", "clear");
 
     latest().drop();
 
-    await expect(waiting).rejects.toThrow(/connection was lost/);
+    await expect(waiting).rejects.toThrow("The connection was lost; try again once it is back.");
+    // A command may have reached the Session before the socket went.
+    await expect(running).rejects.toThrow(/the command may have run/);
   });
 });

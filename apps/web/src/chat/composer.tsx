@@ -15,7 +15,7 @@ import {
 } from "react";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
-import type { CommandOutcome } from "@cloudpid/protocol";
+import { type CommandOutcome, sessionCommandsFor } from "@cloudpid/protocol";
 import type { QueuedEntry, SendingEntry } from "../session/connection.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu, rowId } from "./completion-menu.tsx";
@@ -68,6 +68,9 @@ const subscribeWide = (listener: () => void) => {
 const useWide = (): boolean =>
   useSyncExternalStore(subscribeWide, () => window.matchMedia(WIDE_QUERY).matches);
 
+/** How long a download's link to its file is kept: Safari on iOS reads the file after the click returns. */
+const DOWNLOAD_LINK_MS = 30_000;
+
 /** Hand the owner `file` as a download, as a link to it would. */
 const download = (file: NonNullable<CommandOutcome["file"]>) => {
   const url = URL.createObjectURL(new Blob([file.content], { type: file.mimeType }));
@@ -75,11 +78,14 @@ const download = (file: NonNullable<CommandOutcome["file"]>) => {
 
   link.href = url;
   link.download = file.name;
+  link.hidden = true;
+  // In the document, as Safari clicks only a link that is.
+  document.body.append(link);
   link.click();
-  // After the click has started the download.
+  link.remove();
   setTimeout(() => {
     URL.revokeObjectURL(url);
-  }, 0);
+  }, DOWNLOAD_LINK_MS);
 };
 
 /** A line under the composer: why a command failed, or what one did. */
@@ -151,21 +157,25 @@ export const Composer = ({
   // The Session's commands run on this composer's conversation; what they did shows under the box.
   const session = useMemo(
     () =>
-      sessionCommands(catalog?.commands ?? [], async (name, args) => {
-        let outcome: CommandOutcome;
+      // Known before the catalog arrives, so `/compact` typed first, or after the catalog could not be had, still runs.
+      sessionCommands(
+        catalog?.commands ?? sessionCommandsFor(conversationId === undefined),
+        async (name, args) => {
+          let outcome: CommandOutcome;
 
-        try {
-          outcome = await connection.command(name, args, conversationId);
-        } catch (error) {
-          return error instanceof Error ? error.message : String(error);
-        }
+          try {
+            outcome = await connection.command(name, args, conversationId);
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
 
-        if (outcome.file !== undefined) download(outcome.file);
+          if (outcome.file !== undefined) download(outcome.file);
 
-        if (outcome.notice !== undefined) setNote({ tone: "info", text: outcome.notice });
+          if (outcome.notice !== undefined) setNote({ tone: "info", text: outcome.notice });
 
-        return null;
-      }),
+          return null;
+        },
+      ),
     [catalog, connection, conversationId],
   );
 

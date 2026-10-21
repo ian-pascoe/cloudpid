@@ -5,7 +5,7 @@
 // @effect-diagnostics globalDate:off missingPipeableSignature:off -- browser code in a React app with no Effect runtime: Date is the platform here.
 
 import type { Catalog } from "@cloudpid/protocol";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionConnection } from "../session/connection.ts";
 
 /** How long a catalog is fresh. */
@@ -19,34 +19,58 @@ export type CatalogState = { readonly catalog: Catalog | null; readonly refresh:
 
 /**
  * The catalog of the root conversation, or of subagent conversation `conversationId`: null until the Session first
- * answered, and `refresh`, which asks the Session unless the catalog is fresh or a request is out.
+ * answered, and `refresh`, which asks the Session unless the catalog is fresh or a request is out. Another
+ * `conversationId` starts over: its catalog is asked for afresh, and an answer for the one before is dropped.
  */
 export const useCatalog = (
   connection: Pick<SessionConnection, "catalog">,
   conversationId: number | undefined,
 ): CatalogState => {
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const asking = useRef(false);
-  // When the catalog may be asked for again.
+  // The catalog with the conversation it is for, so one for another conversation is never shown.
+  const [held, setHeld] = useState<{
+    readonly conversationId: number | undefined;
+    readonly catalog: Catalog;
+  } | null>(null);
+
+  // The conversation whose catalog is being asked for, if any.
+  const asking = useRef<number | undefined | null>(null);
+  // When the catalog of `conversationId` may be asked for again.
   const nextAt = useRef(0);
+  const current = useRef(conversationId);
+
+  // Another conversation: its catalog has not been asked for. Before the composer's effects, which may ask for it.
+  useEffect(() => {
+    if (current.current === conversationId) return;
+
+    current.current = conversationId;
+    asking.current = null;
+    nextAt.current = 0;
+  }, [conversationId]);
 
   const refresh = useCallback(() => {
-    if (asking.current || Date.now() < nextAt.current) return;
+    if (asking.current === conversationId || Date.now() < nextAt.current) return;
 
-    asking.current = true;
+    asking.current = conversationId;
     connection.catalog(conversationId).then(
       (answer) => {
-        asking.current = false;
+        if (current.current !== conversationId) return;
+
+        asking.current = null;
         nextAt.current = Date.now() + CATALOG_TTL_MS;
-        setCatalog(answer);
+        setHeld({ conversationId, catalog: answer });
       },
       () => {
+        if (current.current !== conversationId) return;
+
         // The menu keeps what it had, and the composer's own commands; the next opening asks again.
-        asking.current = false;
+        asking.current = null;
         nextAt.current = Date.now() + RETRY_MS;
       },
     );
   }, [connection, conversationId]);
 
-  return { catalog, refresh };
+  return {
+    catalog: held !== null && held.conversationId === conversationId ? held.catalog : null,
+    refresh,
+  };
 };

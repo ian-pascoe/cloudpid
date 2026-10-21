@@ -184,6 +184,8 @@ type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
 interface PendingRequest {
   readonly answer: (result: ResultValue) => void;
   readonly fail: (message: string) => void;
+  /** Whether it changes the Session, so one whose answer was lost may have run all the same. */
+  readonly acts: boolean;
 }
 
 /** Why a request cannot be answered while the socket is down. */
@@ -446,7 +448,12 @@ export class SessionConnection {
       message.conversationId = conversation(conversationId);
     }
 
-    return this.request(id, message, (result) => Option.getOrUndefined(decodeOutcome(result)));
+    return this.request(
+      id,
+      message,
+      (result) => Option.getOrUndefined(decodeOutcome(result)),
+      true,
+    );
   }
 
   dispose(): void {
@@ -789,11 +796,15 @@ export class SessionConnection {
     }
   }
 
-  /** Send `message` and wait for its answer, read by `read` (undefined: an answer it cannot read). */
+  /**
+   * Send `message` and wait for its answer, read by `read` (undefined: an answer it cannot read). `acts` says whether it
+   * changes the Session, as a command does and a catalog request does not.
+   */
   private request<A>(
     id: string,
     message: ClientMessage,
     read: (result: ResultValue) => A | undefined,
+    acts = false,
   ): Promise<A> {
     return new Promise<A>((resolve, reject) => {
       if (!this.opened) {
@@ -812,18 +823,22 @@ export class SessionConnection {
         fail: (failure) => {
           reject(new Error(failure));
         },
+        acts,
       });
       this.send(message);
     });
   }
 
-  /** Fail every request still waiting for an answer: the socket that carried them is gone. */
-  private failRequests(failure: string): void {
+  /**
+   * Fail every request still waiting for an answer: the socket that carried them is gone. One that changes the Session
+   * fails with `acted` when given: it may have reached the Session, and run, before the socket went.
+   */
+  private failRequests(failure: string, acted = failure): void {
     const waiting = [...this.requests.values()];
 
     this.requests.clear();
 
-    for (const request of waiting) request.fail(failure);
+    for (const request of waiting) request.fail(request.acts ? acted : failure);
   }
 
   private send(message: ClientMessage): void {
@@ -858,7 +873,10 @@ export class SessionConnection {
     // What was sent went with the socket; the answers will not come.
     for (const submit of this.pending) submit.sent = false;
 
-    this.failRequests("The connection was lost; try again once it is back.");
+    this.failRequests(
+      "The connection was lost; try again once it is back.",
+      "The connection was lost before the Session answered; the command may have run, so check before running it again.",
+    );
 
     for (const watch of this.threadWatches.values()) {
       watch.watched = false;

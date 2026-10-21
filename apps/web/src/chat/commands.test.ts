@@ -1,4 +1,5 @@
 // @effect-diagnostics asyncFunction:off -- browser code with no Effect runtime: promises are the platform here.
+import { sessionCommandsFor } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 
@@ -72,5 +73,18 @@ describe("the Session's Slash commands in the composer", () => {
       kind: "refuse",
       message: "/todo needs clear.",
     });
+  });
+
+  it("are known without the catalog: a subagent's composer runs /compact and sends /rollover as written", () => {
+    const run = () => Promise.resolve(null);
+    const child = sessionCommands(sessionCommandsFor(false), run);
+    const root = sessionCommands(sessionCommandsFor(true), run);
+
+    expect(resolveCommand(child, "/compact the API")).toMatchObject({
+      kind: "run",
+      args: "the API",
+    });
+    expect(resolveCommand(child, "/rollover")).toEqual({ kind: "send" });
+    expect(resolveCommand(root, "/rollover")).toMatchObject({ kind: "run", args: "" });
   });
 });
