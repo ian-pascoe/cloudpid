@@ -415,7 +415,6 @@ export class TestSession extends DurableObject {
       destroySession({
         state: this.ctx,
         closeBrowser: testBrowserHost(this.ctx.storage.kv).close,
-        reset: (reason) => this.ctx.abort(reason),
       }),
     );
   }
