@@ -220,6 +220,9 @@ importers:
       '@cloudpid/extensions':
         specifier: workspace:*
         version: link:../../packages/extensions
+      '@cloudpid/telemetry':
+        specifier: workspace:*
+        version: link:../../packages/telemetry
       agents:
         specifier: 0.28.1
         version: 0.28.1(98be3a8c1999e6119447f8fceb399642)
@@ -239,6 +242,9 @@ importers:
 
   apps/codemode-sandbox:
     dependencies:
+      '@cloudpid/telemetry':
+        specifier: workspace:*
+        version: link:../../packages/telemetry
       '@earendil-works/pi-codemode':
         specifier: ^1.3.0
         version: 1.3.0

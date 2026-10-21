@@ -2,6 +2,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import * as Arr from "effect/Array";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { REQUEST_COST, type TestSession } from "./host.fixture.ts";
@@ -750,5 +751,63 @@ describe("a Session's spend limit", () => {
     expect(
       await runInDurableObject(session.stub, (instance: TestSession) => instance.spent()),
     ).toBeCloseTo(2 * REQUEST_COST);
+  });
+});
+
+describe("a Session's spans", () => {
+  const spansOf = (stub: DurableObjectStub<TestSession>, name: string) =>
+    runInDurableObject(stub, (instance: TestSession) =>
+      Arr.filter(instance.spans(), (span) => span.name === name),
+    );
+
+  const prompt = (stub: DurableObjectStub<TestSession>, n: number) =>
+    runInDurableObject(stub, (instance: TestSession) =>
+      instance.prompt({ requestId: `turn-${n}`, text: "hi" }),
+    );
+
+  it("makes each Run a session.run span that ends with its outcome", async () => {
+    const { stub } = await registered();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["one", "two"]));
+    await prompt(stub, 1);
+    await prompt(stub, 2);
+
+    await settles(async () => {
+      const runs = await spansOf(stub, "session.run");
+
+      expect(runs).toHaveLength(2);
+      expect(Arr.every(runs, (run) => run.ended)).toBe(true);
+    });
+
+    const [first] = await spansOf(stub, "session.run");
+
+    expect(first?.attributes).toMatchObject({ "run.outcome": "done" });
+  });
+
+  it("ends the span of a Run the spend limit stopped, with the reason", async () => {
+    const { stub, registry } = await registered();
+
+    await registry.updateSettings({ spendLimit: { perSession: REQUEST_COST } }, 1);
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script(['call:echo:{"text":"one"}', "never sent"]),
+    );
+    await prompt(stub, 1);
+
+    await settles(async () =>
+      expect((await spansOf(stub, "session.run"))[0]).toMatchObject({
+        ended: true,
+        attributes: { "run.outcome": "model_error" },
+      }),
+    );
+  });
+
+  it("makes resuming work after an eviction a session.resume span", async () => {
+    const { stub } = await registered();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["hi"]));
+    await prompt(stub, 1);
+    await evictDurableObject(stub);
+    await runDurableObjectAlarm(stub);
+    expect(await spansOf(stub, "session.resume")).not.toHaveLength(0);
   });
 });

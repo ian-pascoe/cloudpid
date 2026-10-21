@@ -1,3 +1,4 @@
+import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { CODEMODE_SANDBOX_BINDING } from "./binding.ts";
 
@@ -12,6 +13,7 @@ export const CodemodeSandboxes = Cloudflare.Worker("CodemodeSandboxes", {
   main: new URL("./worker.ts", import.meta.url).href,
   compatibility: { date: "2026-08-31" },
   workersDev: false,
+  observability: WORKER_OBSERVABILITY,
   env: {
     [CODEMODE_SANDBOX_BINDING]: Cloudflare.DurableObject("CodemodeSandbox"),
   },

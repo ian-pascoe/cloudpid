@@ -48,6 +48,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -56,6 +57,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import type * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
 import {
@@ -697,10 +699,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     );
   });
 
-  // Armed before `resume()` runs anything, as for any call that can start work.
+  // Armed before `resume()` runs anything, as for any call that can start work. The work it resumes runs under its span.
   const wakeAndResume = wake.pipe(
     Effect.flatMap(arm),
-    Effect.andThen(harness.resume),
+    Effect.andThen(harness.resume.pipe(Effect.withSpan("session.resume"))),
     Effect.andThen(settleWhenIdle),
     serially,
   );
@@ -732,6 +734,41 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         );
 
+  /** End `span` as `exit` says. */
+  const endSpan = (span: Tracer.Span, exit: Exit.Exit<unknown, unknown>) =>
+    Clock.currentTimeNanos.pipe(Effect.map((now) => span.end(now, exit)));
+
+  /**
+   * Admit a submission as the `session.run` span: it starts with the submission and ends when the submission settles,
+   * and the Run's work (its requests and tool calls) is started under it, so a trace shows the Run whole. A Run an
+   * eviction cuts off has no end; its resumed work is under `session.resume`.
+   */
+  const tracedRun = (
+    conversationId: ConversationId,
+    submit: Effect.Effect<Submission, SessionError>,
+  ) =>
+    Effect.makeSpan("session.run", { attributes: { "conversation.id": conversationId } }).pipe(
+      Effect.flatMap((span) =>
+        submit.pipe(
+          Effect.withParentSpan(span),
+          Effect.tap((submission) =>
+            attempt("wait", () => submission.wait(context)).pipe(
+              Effect.tap((settled) =>
+                Effect.sync(() => {
+                  span.attribute("submission.id", submission.id);
+                  span.attribute("run.outcome", settled.reason ?? settled.status);
+                }),
+              ),
+              Effect.exit,
+              Effect.flatMap((exit) => endSpan(span, exit)),
+              Effect.forkIn(scope),
+            ),
+          ),
+          Effect.onError((cause) => endSpan(span, Exit.failCause(cause))),
+        ),
+      ),
+    );
+
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> => {
     const { conversationId, input, ...options } = prompt;
     const toRoot = conversationId === undefined || conversationId === ROOT_CONVERSATION_ID;
@@ -749,8 +786,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         arm({ active: true }).pipe(
           Effect.andThen(resolved),
           Effect.flatMap((conversation) =>
-            attempt("submit", () =>
-              conversation.submit({ type: "input", content: input, ...options }, context),
+            tracedRun(
+              conversation.id,
+              attempt("submit", () =>
+                conversation.submit({ type: "input", content: input, ...options }, context),
+              ),
             ),
           ),
           // The owner hears how this Run ends, even after an eviction: the submission is kept until it is told.

@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { BROWSER_HOST_BINDING, Browsers } from "@cloudpid/browser";
 import { WebConfigLive } from "@cloudpid/extensions/web";
+import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry";
 import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
 import * as Alchemy from "alchemy";
 import * as Command from "alchemy/Command";
@@ -114,6 +115,7 @@ const props = Effect.gen(function* () {
     main: import.meta.url,
     compatibility: { date: "2026-08-31" },
     ...deployment(stage),
+    observability: WORKER_OBSERVABILITY,
     assets: yield* webAssets,
     env: {
       ...(yield* workspaceBinding),

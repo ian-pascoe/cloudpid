@@ -1,3 +1,4 @@
+import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { BROWSER_HOST_BINDING } from "./binding.ts";
 
@@ -13,6 +14,7 @@ export const Browsers = Cloudflare.Worker("Browsers", {
   main: new URL("./worker.ts", import.meta.url).href,
   compatibility: { date: "2026-08-31", flags: ["nodejs_compat"] },
   workersDev: false,
+  observability: WORKER_OBSERVABILITY,
   env: {
     [BROWSER_HOST_BINDING]: Cloudflare.DurableObject("BrowserHost"),
     BROWSER: Cloudflare.Browser(),

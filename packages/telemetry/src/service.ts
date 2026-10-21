@@ -23,17 +23,13 @@ export const telemetryService = (tracer: Tracer.Tracer): TelemetryService => ({
   context: effectTelemetry(tracer),
 });
 
-/**
- * The `Telemetry` service over Workers Observability, and Effect's `Tracer` as the same tracer, so every Effect run with
- * the layer's services makes its spans there. `tracing` is `cloudflare:workers`'s; undefined keeps spans in Effect.
- */
-export const workersTelemetryLayer = (
-  tracing: WorkersTracing | undefined,
-): Layer.Layer<Telemetry> => {
-  const service = telemetryService(workersTracer(tracing));
+/** `service` as the `Telemetry` service, and its tracer as Effect's `Tracer`, so every Effect run with the layer's services makes its spans there. */
+export const telemetryLayer = (service: TelemetryService): Layer.Layer<Telemetry> =>
+  Layer.merge(Layer.succeed(Telemetry, service), Layer.succeed(Tracer.Tracer, service.tracer));
 
-  return Layer.merge(
-    Layer.succeed(Telemetry, service),
-    Layer.succeed(Tracer.Tracer, service.tracer),
-  );
-};
+/**
+ * The telemetry of a Durable Object over Workers Observability. `tracing` is `cloudflare:workers`'s; undefined keeps spans
+ * in Effect.
+ */
+export const workersTelemetry = (tracing: WorkersTracing | undefined): TelemetryService =>
+  telemetryService(workersTracer(tracing));

@@ -15,9 +15,10 @@ export { WORKER_OBSERVABILITY } from "./observability.ts";
 
 export {
   Telemetry,
+  telemetryLayer,
   type TelemetryService,
   telemetryService,
-  workersTelemetryLayer,
+  workersTelemetry,
 } from "./service.ts";
 
 export { tracingTools } from "./tools.ts";
