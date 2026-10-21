@@ -1,5 +1,5 @@
 // The Registry operations (`RegistryRpcs`, Effect RPC over HTTP) as promises, for the Session list.
-import type { SettingsOverrides } from "@cloudpid/config";
+import type { SettingsOverrides, WorkspaceSettingsOverrides } from "@cloudpid/config";
 import {
   type PushState,
   type PushSubscription,
@@ -8,6 +8,7 @@ import {
   type SessionRecord,
   type SettingsState,
   type WorkspaceRecord,
+  type WorkspaceSettingsState,
 } from "@cloudpid/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -44,6 +45,13 @@ export interface RegistryApi {
   readonly listRepos: (workspace: string) => Promise<Answer<readonly string[]>>;
   /** Clone `source` (owner/repo or an https URL) into a Workspace; resolves to the directory it went to. */
   readonly cloneRepo: (workspace: string, source: string) => Promise<Answer<string>>;
+  /** A Workspace's own settings (Container size and idle time) in force, and the overrides saved over the defaults. */
+  readonly getWorkspaceSettings: (workspace: string) => Promise<Answer<WorkspaceSettingsState>>;
+  /** Replace a Workspace's saved overrides; they apply at its next Container launch. */
+  readonly updateWorkspaceSettings: (
+    workspace: string,
+    overrides: WorkspaceSettingsOverrides,
+  ) => Promise<Answer<WorkspaceSettingsState>>;
   /** The settings in force, and the overrides saved over the defaults. */
   readonly getSettings: () => Promise<Answer<SettingsState>>;
   /** Replace the saved overrides; overrides that do not resolve fail with a readable message, and nothing is saved. */
@@ -88,6 +96,12 @@ export const connectRegistry = (origin: string): RegistryApi => {
     listRepos: (workspace) => answer(Registry.use((registry) => registry.listRepos({ workspace }))),
     cloneRepo: (workspace, source) =>
       answer(Registry.use((registry) => registry.cloneRepo({ workspace, source }))),
+    getWorkspaceSettings: (workspace) =>
+      answer(Registry.use((registry) => registry.getWorkspaceSettings({ workspace }))),
+    updateWorkspaceSettings: (workspace, overrides) =>
+      answer(
+        Registry.use((registry) => registry.updateWorkspaceSettings({ workspace, overrides })),
+      ),
     getSettings: () => answer(Registry.use((registry) => registry.getSettings())),
     updateSettings: (overrides) =>
       answer(Registry.use((registry) => registry.updateSettings({ overrides }))),

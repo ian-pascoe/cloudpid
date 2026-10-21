@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { groupByWorkspace, slugProblem, sourceProblem } from "./workspaces.ts";
+import { groupByWorkspace, idleMinutesProblem, slugProblem, sourceProblem } from "./workspaces.ts";
 
 const session = (id: string, workspace: string, repo: string | null = null): SessionRecord => ({
   id,
@@ -49,5 +49,18 @@ describe("sourceProblem", () => {
     expect(sourceProblem("https://github.com/octocat/Hello-World.git")).toBeNull();
     expect(sourceProblem("file:///etc/passwd")).toContain("https");
     expect(sourceProblem("")).not.toBeNull();
+  });
+});
+
+describe("idleMinutesProblem", () => {
+  it("accepts a whole number of minutes from 1 to a day and says what is wrong with anything else", () => {
+    expect(idleMinutesProblem("15")).toBeNull();
+    expect(idleMinutesProblem("1")).toBeNull();
+    expect(idleMinutesProblem("1440")).toBeNull();
+    expect(idleMinutesProblem("")).not.toBeNull();
+    expect(idleMinutesProblem("0")).not.toBeNull();
+    expect(idleMinutesProblem("1441")).not.toBeNull();
+    expect(idleMinutesProblem("2.5")).not.toBeNull();
+    expect(idleMinutesProblem("soon")).not.toBeNull();
   });
 });

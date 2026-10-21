@@ -1,6 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import { parseRepoSource, type SessionRecord, WorkspaceSlug } from "@cloudpid/protocol";
+import { MAX_IDLE_MINUTES } from "@cloudpid/config";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -40,4 +41,16 @@ export const sourceProblem = (text: string): string | null => {
   const parsed = parseRepoSource(text);
 
   return Result.isFailure(parsed) ? parsed.failure : null;
+};
+
+/** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
+export const idleMinutesProblem = (text: string): string | null => {
+  const minutes = Number(text);
+
+  return text.trim() !== "" &&
+    Number.isInteger(minutes) &&
+    minutes >= 1 &&
+    minutes <= MAX_IDLE_MINUTES
+    ? null
+    : `Use a whole number of minutes from 1 to ${MAX_IDLE_MINUTES}`;
 };

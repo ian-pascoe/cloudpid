@@ -1,6 +1,7 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
-import type { WorkspaceRecord } from "@cloudpid/protocol";
+import { workspaceOverridesFrom, type WorkspaceSettings } from "@cloudpid/config";
+import type { WorkspaceRecord, WorkspaceSettingsState } from "@cloudpid/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectRegistry, type RegistryApi } from "./registry.ts";
 
@@ -103,4 +104,58 @@ export const useRepos = (registry: RegistryApi, slug: string): Repos => {
   );
 
   return { repos, error, cloning, clone };
+};
+
+export interface WorkspaceSettingsStore {
+  /** The Workspace's settings in force; null until the first answer. */
+  readonly state: WorkspaceSettingsState | null;
+  /** Why the settings could not load, or why `save` was refused: the Workspace's own message. */
+  readonly error: string | null;
+  readonly saving: boolean;
+  /** Save `settings` as overrides of the defaults; resolves to whether the Workspace accepted them. */
+  readonly save: (settings: WorkspaceSettings) => Promise<boolean>;
+}
+
+/** The Container size and idle time of Workspace `slug`, which apply at its next Container launch. */
+export const useWorkspaceSettings = (
+  registry: RegistryApi,
+  slug: string,
+): WorkspaceSettingsStore => {
+  const [state, setState] = useState<WorkspaceSettingsState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+
+    void registry.getWorkspaceSettings(slug).then((answer) => {
+      if (!current) return;
+
+      if (answer.ok) setState(answer.value);
+      else setError(answer.message);
+    });
+
+    return () => {
+      current = false;
+    };
+  }, [registry, slug]);
+
+  const save = useCallback(
+    async (settings: WorkspaceSettings) => {
+      setSaving(true);
+
+      const answer = await registry.updateWorkspaceSettings(slug, workspaceOverridesFrom(settings));
+
+      setSaving(false);
+
+      if (answer.ok) setState(answer.value);
+
+      setError(answer.ok ? null : answer.message);
+
+      return answer.ok;
+    },
+    [registry, slug],
+  );
+
+  return { state, error, saving, save };
 };
