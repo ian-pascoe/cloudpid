@@ -183,6 +183,38 @@ describe("the Session socket messages", () => {
     expect(await readServer(text)).toEqual(JSON.parse(text));
   });
 
+  it("read a request to watch the Session's usage, and to stop watching it", async () => {
+    expect(await readClient('{"type":"watch_usage","id":"u"}')).toEqual(
+      Option.some({ type: "watch_usage", id: "u" }),
+    );
+    expect(await readClient('{"type":"unwatch_usage"}')).toEqual(
+      Option.some({ type: "unwatch_usage" }),
+    );
+  });
+
+  it("carry the Session's token and cost totals, and its spend limit or null for none", async () => {
+    const usage = {
+      input: 1200,
+      output: 340,
+      cacheRead: 9000,
+      cacheWrite: 800,
+      totalTokens: 11340,
+      cost: 0.4321,
+    };
+
+    for (const limit of [null, 5]) {
+      const text = JSON.stringify({ type: "usage", ...usage, limit });
+
+      expect(await readServer(text)).toEqual(JSON.parse(text));
+    }
+
+    expect(
+      await Schema.decodeEffect(ServerMessageJson)(
+        JSON.stringify({ type: "usage", ...usage, cost: "free", limit: null }),
+      ).pipe(Effect.option, Effect.runPromise),
+    ).toEqual(Option.none());
+  });
+
   it("carry a conversation's whole Todo List", async () => {
     const text = JSON.stringify({
       type: "todos",

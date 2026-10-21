@@ -137,6 +137,21 @@ export const UnwatchTaskGraph = Schema.Struct({
   id: CommandId,
 });
 
+/**
+ * Stream the Session's token and cost totals on this socket (`usage`). The first message follows at once, and the watch
+ * outlives hibernation like a conversation's. Answered with `null`.
+ */
+export const WatchUsage = Schema.Struct({
+  type: Schema.Literal("watch_usage"),
+  id: CommandId,
+});
+
+/** Stop streaming the Session's usage on this socket. Answered with `null`. */
+export const UnwatchUsage = Schema.Struct({
+  type: Schema.Literal("unwatch_usage"),
+  id: CommandId,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   Submit,
@@ -147,6 +162,8 @@ export const ClientMessage = Schema.Union([
   SecretAnswer,
   WatchTaskGraph,
   UnwatchTaskGraph,
+  WatchUsage,
+  UnwatchUsage,
 ]);
 
 export type ClientMessage = typeof ClientMessage.Type;
@@ -274,6 +291,30 @@ export const TaskGraphMessage = Schema.Struct({
   ...TaskGraphSummary.fields,
 });
 
+/**
+ * What the Session has spent on model requests (`docs/spec.md` → Telemetry), as pi-durable's `pi.usage` counts it:
+ * every conversation of the Session, subagents' included, and the title call, which has no conversation. Token counts
+ * are as the provider reported them; `cost` is in US dollars, as the model catalog prices the tokens.
+ */
+export const SessionUsage = Schema.Struct({
+  input: Schema.Finite,
+  output: Schema.Finite,
+  cacheRead: Schema.Finite,
+  cacheWrite: Schema.Finite,
+  totalTokens: Schema.Finite,
+  cost: Schema.Finite,
+  /** The Session's spend limit in US dollars, or null when it has none. A Session at it stops before its next request. */
+  limit: Schema.NullOr(Schema.Finite),
+});
+
+export type SessionUsage = typeof SessionUsage.Type;
+
+/** The Session's usage, sent to a client that watches it (`watch_usage`) whenever it changes; each replaces the last. */
+export const UsageMessage = Schema.Struct({
+  type: Schema.Literal("usage"),
+  ...SessionUsage.fields,
+});
+
 /** A Task of a conversation's Todo List: flat, in the order of its ID. */
 export const TodoTask = Schema.Struct({
   id: Schema.Int,
@@ -343,6 +384,7 @@ export const ServerMessage = Schema.Union([
   SecretRequests,
   BrowserHandoffRequests,
   TaskGraphMessage,
+  UsageMessage,
   TodosMessage,
 ]);
 
