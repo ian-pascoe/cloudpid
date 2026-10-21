@@ -50,6 +50,7 @@ import {
   type EnvTarget,
   type Extension,
   type HarnessOptions,
+  InboxDoc,
   type InputSubmissionDraft,
   LiveDoc,
   ROOT_CONVERSATION_ID,
@@ -102,6 +103,7 @@ import {
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
+import { inputProblem, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -1083,8 +1085,36 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     );
   };
 
+  /**
+   * Refuse `draft` when the Session could not store it: an image the providers do not take, or a message that would not
+   * fit one row, alone or in the conversation's inbox beside the messages waiting there (`input-guard.ts`). Its
+   * expansion is in it, so what is measured is what would be written. Run in arrival order, so the inbox read is not
+   * outgrown by a message admitted meanwhile.
+   */
+  const guard = (conversationId: ConversationId | undefined, draft: InputSubmissionDraft) =>
+    Effect.suspend(() => {
+      const refused = (message: string) => SessionError.make({ operation: "submit", message });
+
+      const alone = inputProblem(draft, 0);
+
+      if (alone !== undefined) return Effect.fail(refused(alone));
+
+      return addressed(conversationId).pipe(
+        Effect.flatMap((conversation) =>
+          attempt("snapshot", () => harness.harness.snapshot(InboxDoc, conversation.id, context)),
+        ),
+        Effect.flatMap((inbox) => {
+          const queued = inbox === undefined || inbox.items.length === 0 ? 0 : storedBytes(inbox);
+          const problem = inputProblem(draft, queued);
+
+          return problem === undefined ? Effect.void : Effect.fail(refused(problem));
+        }),
+      );
+    });
+
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
     draftOf(prompt).pipe(
+      Effect.tap((draft) => guard(prompt.conversationId, draft)),
       Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)),
       inArrivalOrder,
     );
