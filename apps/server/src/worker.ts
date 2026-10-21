@@ -10,13 +10,15 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import { serveRegistryRpc, type SessionObjects } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
-import { isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { serveAttachment } from "./serve-attachment.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
@@ -138,6 +140,10 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (above), a raw namespace.
     const repos = workspaceRepos(worker[WORKSPACE_BINDING] as WorkspaceNamespace);
 
+    // SAFETY: the same binding; Attachments are written through the file operations a Session's environment uses.
+    const attachmentFiles = (slug: string) =>
+      workspaceAttachmentFiles(worker[WORKSPACE_BINDING] as WorkspaceNamespace, slug);
+
     // SAFETY: the same binding; the Workspace DO answers the settings methods `SettingsHost` names.
     const workspaceSettings = workspaceSettingsRemote(
       worker[WORKSPACE_BINDING] as Parameters<typeof workspaceSettingsRemote>[0],
@@ -168,6 +174,12 @@ export default class Server extends Cloudflare.Worker<Server>()(
         const sessionId = sessionSocketId(request);
 
         if (sessionId !== undefined) return yield* connectSession(sessions, registries, sessionId);
+
+        const attachment = attachmentRoute(request);
+
+        if (attachment !== undefined) {
+          return yield* serveAttachment(registries, attachmentFiles, attachment);
+        }
 
         if (isRegistryRpc(request))
           return yield* serveRegistryRpc(registries, {
