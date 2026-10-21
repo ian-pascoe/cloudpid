@@ -57,6 +57,26 @@ describe("the files the @ menu offers", () => {
     expect(answer).toEqual({ failure: expect.stringContaining("The Workspace is unreachable") });
   });
 
+  it("fail when the Workspace does not answer in time, and are listed again at the next request", async () => {
+    const stub = fresh();
+
+    const hung = await runInDurableObject(stub, (instance: TestSubagentSession) => {
+      instance.useWorkspace({ hanging: true });
+
+      return instance.files("app");
+    });
+
+    expect(hung).toEqual({ failure: expect.stringContaining("took longer than 10s") });
+
+    const answer = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      instance.useWorkspace({ trees: { "/workspace": ROOT_TREE } });
+
+      return { paths: await instance.files("app"), listed: instance.listedDirectories() };
+    });
+
+    expect(answer).toEqual({ paths: { paths: ["src/app.ts"] }, listed: ["/workspace"] });
+  });
+
   it("are none without a Workspace, and refused for a conversation that is not the Session's", async () => {
     const answers = await runInDurableObject(fresh(), async (instance: TestSubagentSession) => ({
       none: await instance.files(""),

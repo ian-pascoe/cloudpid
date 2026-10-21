@@ -43,7 +43,10 @@ const connect = async (stub: DurableObjectStub<TestWorkspaceSession>) => {
   };
 };
 
-/** A Workspace whose repo `demo` is a git work tree with a `.gitignore`, built ignored files and a `node_modules`. */
+/**
+ * A Workspace whose repo `demo` is a git work tree with a `.gitignore` (and a nested one with a negation), built ignored
+ * files and a `node_modules`, beside a file and another Session's Attachment outside it.
+ */
 const workspaceWithRepo = async () => {
   const slug = uniqueWorkspace();
 
@@ -57,7 +60,11 @@ const workspaceWithRepo = async () => {
     "demo/dist/app.js": "built\n",
     "demo/debug.log": "noise\n",
     "demo/node_modules/left-pad/index.js": "module.exports = 1;\n",
+    "demo/src/.gitignore": "*.gen.ts\n!keep.gen.ts\n",
+    "demo/src/drop.gen.ts": "export {};\n",
+    "demo/src/keep.gen.ts": "export {};\n",
     "outside.ts": "export {};\n",
+    ".uploads/other-session/shot.png": "png\n",
   };
 
   const writes = Object.entries(files).map(([path, content]) => call("write", { path, content }));
@@ -70,29 +77,39 @@ const workspaceWithRepo = async () => {
   return slug;
 };
 
+/** A socket to a new Session on Workspace `slug`, in its repo `repo` if any, and a way to ask it for files. */
+const sessionAsking = async (slug: string, repo: string | null) => {
+  const stub = env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId());
+
+  await runInDurableObject(stub, (instance: TestWorkspaceSession) => {
+    instance.bindWorkspace(slug, repo);
+  });
+
+  const client = await connect(stub);
+
+  const ask = async (id: string, query: string) => {
+    client.send({ type: "files", id, query });
+
+    return client.answer(id);
+  };
+
+  return { client, ask };
+};
+
+/** The paths a `files` answer holds. */
+const pathsOf = (answer: ServerMessage): readonly string[] =>
+  // SAFETY: a `files` request is answered with `FileMatches`; the tests compare what it holds.
+  answer.type === "result" ? (answer.result as { paths: string[] }).paths : [];
+
 describe("a files request", () => {
   it("answers the repo directory's files and folders that match, without what git ignores", async () => {
-    const slug = await workspaceWithRepo();
-    const stub = env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId());
-
-    await runInDurableObject(stub, (instance: TestWorkspaceSession) => {
-      instance.bindWorkspace(slug, "demo");
-    });
-
-    const client = await connect(stub);
-
-    const ask = async (id: string, query: string) => {
-      client.send({ type: "files", id, query });
-
-      return client.answer(id);
-    };
+    const { client, ask } = await sessionAsking(await workspaceWithRepo(), "demo");
 
     const all = await ask("all", "");
 
     expect(all).toMatchObject({ type: "result", id: "all" });
 
-    // SAFETY: a `files` request is answered with `FileMatches`, checked by the expectations below.
-    const paths = all.type === "result" ? (all.result as { paths: string[] }).paths : [];
+    const paths = pathsOf(all);
 
     expect(paths).toEqual(
       expect.arrayContaining([
@@ -108,7 +125,7 @@ describe("a files request", () => {
     // The top level first.
     expect(paths.indexOf("src/")).toBeLessThan(paths.indexOf("src/app.ts"));
 
-    for (const absent of ["dist/", "dist/app.js", "debug.log", "outside.ts"]) {
+    for (const absent of ["dist/", "dist/app.js", "debug.log", "outside.ts", "src/drop.gen.ts"]) {
       expect(paths).not.toContain(absent);
     }
 
@@ -126,6 +143,30 @@ describe("a files request", () => {
       // Siblings in the listing's byte order.
       result: { paths: ["src/chat/", "src/chat/composer.tsx", "src/chat/menu.ts"] },
     });
+
+    // A nested `.gitignore` applies below its directory, its negation included.
+    expect(pathsOf(await ask("gen", "gen.ts"))).toEqual(["src/keep.gen.ts"]);
+
+    client.close();
+  });
+
+  it("applies a repo's ignore rules from a directory outside any work tree, and leaves out Attachments and Skills", async () => {
+    const { client, ask } = await sessionAsking(await workspaceWithRepo(), null);
+
+    const top = pathsOf(await ask("top", ""));
+
+    expect(top).toEqual(expect.arrayContaining(["demo/", "outside.ts"]));
+    expect(top.some((path) => path.startsWith(".uploads"))).toBe(false);
+
+    const generated = pathsOf(await ask("gen", "gen.ts"));
+
+    expect(generated).toContain("demo/src/keep.gen.ts");
+    expect(generated).not.toContain("demo/src/drop.gen.ts");
+    expect(pathsOf(await ask("log", "debug.log"))).toEqual([]);
+    expect(pathsOf(await ask("dist", "demo/dist"))).toEqual([]);
+    expect(pathsOf(await ask("shot", "shot.png"))).toEqual([]);
+    // The bundled Skills are mounted at `/workspace/.agents/skills`.
+    expect(pathsOf(await ask("skill", "SKILL.md"))).toEqual([]);
 
     client.close();
   });

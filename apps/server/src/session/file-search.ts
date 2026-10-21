@@ -2,7 +2,14 @@
 // gitignore-aware `ExecutionEnv.listFiles` walk, held for `LISTING_TTL` so typing a mention asks the Workspace once, and
 // the best of them for what follows the `@`, ranked as the menu ranks (`rank` in `@cloudpid/protocol`).
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions and loops over tens of thousands of paths, per request.
-import { MAX_FILE_MATCHES, rank } from "@cloudpid/protocol";
+import {
+  bestMatches,
+  MAX_FILE_MATCHES,
+  type RankCandidate,
+  rankCandidate,
+  UPLOADS_ROOT,
+  WORKSPACE_ROOT,
+} from "@cloudpid/protocol";
 import type { FileListEntry } from "@earendil-works/pi-durable/env";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -13,6 +20,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
 /** How long a directory's listing answers `files` before it is made again. */
 export const LISTING_TTL: Duration.Input = "30 seconds";
@@ -26,8 +34,23 @@ export const MAX_CACHED_DIRECTORIES = 4;
 /** The most paths the Session holds across its listings: two directories at the bound of one. */
 export const MAX_CACHED_ENTRIES = 2 * MAX_LISTED_ENTRIES;
 
+/** How long the walk of a directory may take (`ListFilesOptions.timeoutMs`); past it, it is cut off. */
+export const LISTING_WALK_TIMEOUT_MS = 8_000;
+
+/** How long a listing may take, the Workspace's answer included, before it fails and the next request lists again. */
+export const LISTING_TIMEOUT: Duration.Input = "10 seconds";
+
+/** The most listings made at once; more wait for one of them to end. */
+export const MAX_LISTINGS_IN_FLIGHT = 2;
+
 /** Names skipped with everything below them, besides `.git`, which a listing never holds. */
 export const EXCLUDED_NAMES: readonly string[] = ["node_modules"];
+
+/**
+ * Directories never offered, wherever the conversation works: every Session's Attachments, and the bundled Skills,
+ * mounted read-only into every Workspace (AGENTS.md → Skills).
+ */
+export const EXCLUDED_ROOTS: readonly string[] = [UPLOADS_ROOT, `${WORKSPACE_ROOT}/.agents/skills`];
 
 const depth = (path: string): number => {
   let slashes = 0;
@@ -43,13 +66,19 @@ const depth = (path: string): number => {
   return slashes;
 };
 
+/** Whether the absolute `path` is `root` or below it. */
+const under = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
+
 /**
- * The paths a listing offers the menu: a folder's ends in `/`, and the folders above a path the listing does not hold
- * itself are added (a listing holds every folder before what is in it, so only a cut-off one lacks any). A symbolic link
- * is offered as a file, since it is not followed. Shallower paths come first, the listing's order kept among those as
- * deep, so an empty query offers the top level and, among equal matches, the nearer path wins.
+ * The paths the listing of `directory` offers the menu: a folder's ends in `/`, and the folders above a path the listing
+ * does not hold itself are added (a listing holds every folder before what is in it, so only a cut-off one lacks any).
+ * A symbolic link is offered as a file, since it is not followed. Left out: a path holding whitespace, which a mention
+ * could not hold (it ends at the first space, and the agent reads no quoting), and what is under `EXCLUDED_ROOTS`.
+ * Shallower paths come first, the listing's order kept among those as deep, so an empty query offers the top level and,
+ * among equal matches, the nearer path wins.
  */
-export const fileCandidates = (entries: readonly FileListEntry[]): string[] => {
+export const fileCandidates = (entries: readonly FileListEntry[], directory: string): string[] => {
+  const prefix = directory === "/" ? "/" : `${directory}/`;
   const seen = new Set<string>();
   const paths: string[] = [];
 
@@ -61,6 +90,10 @@ export const fileCandidates = (entries: readonly FileListEntry[]): string[] => {
   };
 
   for (const { path, kind } of entries) {
+    const absolute = `${prefix}${path}`;
+
+    if (/\s/.test(path) || EXCLUDED_ROOTS.some((root) => under(absolute, root))) continue;
+
     for (let at = path.indexOf("/"); at > 0; at = path.indexOf("/", at + 1)) {
       add(path.slice(0, at + 1));
     }
@@ -74,9 +107,15 @@ export const fileCandidates = (entries: readonly FileListEntry[]): string[] => {
     .map(({ path }) => path);
 };
 
-/** The best `MAX_FILE_MATCHES` of `candidates` for `query`, as the menu ranks them. */
-export const matchFiles = (query: string, candidates: readonly string[]): string[] =>
-  rank(query, candidates, (path) => path).slice(0, MAX_FILE_MATCHES);
+/** A directory's paths, each made ready to rank once (`rankCandidate`). */
+export type FileIndex = ReadonlyArray<RankCandidate>;
+
+/** `paths` made ready to rank. */
+export const fileIndex = (paths: readonly string[]): FileIndex => paths.map(rankCandidate);
+
+/** The best `MAX_FILE_MATCHES` of `index` for `query`, as the menu ranks them. */
+export const matchFiles = (query: string, index: FileIndex): string[] =>
+  bestMatches(query, index, MAX_FILE_MATCHES);
 
 export type FileListingsOptions = {
   /** Defaults to `LISTING_TTL`. */
@@ -85,6 +124,10 @@ export type FileListingsOptions = {
   readonly maxDirectories?: number;
   /** Defaults to `MAX_CACHED_ENTRIES`. */
   readonly maxEntries?: number;
+  /** Defaults to `LISTING_TIMEOUT`. */
+  readonly timeout?: Duration.Input;
+  /** Defaults to `MAX_LISTINGS_IN_FLIGHT`. */
+  readonly maxInFlight?: number;
 };
 
 /** A directory could not be listed. */
@@ -96,12 +139,12 @@ export class FileListingError extends Schema.TaggedError<
 export type FileListingsService = {
   /**
    * The paths of `directory`: the listing held for it while fresh, the one being made when a request already started
-   * it, else `list`'s, held from then on. A failed listing is not held.
+   * it, else `list`'s, held from then on. A listing that fails, or takes longer than its timeout, is not held.
    */
   readonly get: (
     directory: string,
-    list: Effect.Effect<readonly string[], FileListingError>,
-  ) => Effect.Effect<readonly string[], FileListingError>;
+    list: Effect.Effect<FileIndex, FileListingError>,
+  ) => Effect.Effect<FileIndex, FileListingError>;
   /** The directories held now, least recently asked first. */
   readonly held: Effect.Effect<readonly string[]>;
 };
@@ -112,7 +155,7 @@ export class FileListings extends Context.Service<FileListings, FileListingsServ
 ) {}
 
 type Held = {
-  readonly done: Deferred.Deferred<readonly string[], FileListingError>;
+  readonly done: Deferred.Deferred<FileIndex, FileListingError>;
   /** When it goes stale; undefined while it is being made. */
   expiresAt: number | undefined;
   /** How many paths it holds; 0 while it is being made. */
@@ -121,8 +164,9 @@ type Held = {
 
 /**
  * Listings held per directory for `ttl`, at most `maxDirectories` of them and `maxEntries` paths in all: past either, the
- * least recently asked go first. Requests that come while a directory is listed wait for that listing, which runs in the
- * layer's scope, so a request given up on does not cancel it for the others.
+ * least recently asked settled ones go first (one being made is never dropped). Requests that come while a directory is
+ * listed wait for that listing, which runs in the layer's scope, so a request given up on does not cancel it for the
+ * others. At most `maxInFlight` listings run at once, and one that has not ended within `timeout` fails.
  */
 export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Layer<FileListings> =>
   Layer.effect(
@@ -132,10 +176,16 @@ export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Laye
       const ttl = Duration.toMillis(options.ttl ?? LISTING_TTL);
       const maxDirectories = options.maxDirectories ?? MAX_CACHED_DIRECTORIES;
       const maxEntries = options.maxEntries ?? MAX_CACHED_ENTRIES;
+      const timeout = options.timeout ?? LISTING_TIMEOUT;
+
+      const inFlight = Semaphore.withPermit(
+        yield* Semaphore.make(options.maxInFlight ?? MAX_LISTINGS_IN_FLIGHT),
+      );
+
       // In the order they were last asked for: a Map iterates in insertion order.
       const held = new Map<string, Held>();
 
-      /** Drop what is stale, then the least recently asked until the bounds hold, never `keep`. */
+      /** Drop what is stale, then the least recently asked until the bounds hold, never `keep` nor one being made. */
       const evict = (now: number, keep: string) => {
         let total = 0;
 
@@ -147,7 +197,7 @@ export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Laye
         for (const [directory, listing] of held) {
           if (held.size <= maxDirectories && total <= maxEntries) break;
 
-          if (directory === keep) continue;
+          if (directory === keep || listing.expiresAt === undefined) continue;
 
           held.delete(directory);
           total -= listing.entries;
@@ -174,7 +224,7 @@ export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Laye
         return { listing, fresh: true };
       };
 
-      const settle = (directory: string, listing: Held, paths: readonly string[]) =>
+      const settle = (directory: string, listing: Held, paths: FileIndex) =>
         Clock.currentTimeMillis.pipe(
           Effect.map((now) => {
             listing.expiresAt = now + ttl;
@@ -191,12 +241,22 @@ export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Laye
           if (held.get(directory) === listing) held.delete(directory);
         });
 
-      const get = (directory: string, list: Effect.Effect<readonly string[], FileListingError>) =>
+      const timedOut = Effect.suspend(() =>
+        Effect.fail(
+          FileListingError.make({
+            message: `Listing the files took longer than ${Duration.format(Duration.fromInputUnsafe(timeout))}`,
+          }),
+        ),
+      );
+
+      const get = (directory: string, list: Effect.Effect<FileIndex, FileListingError>) =>
         Clock.currentTimeMillis.pipe(
           Effect.map((now) => claim(directory, now)),
           Effect.tap(({ listing, fresh }) =>
             fresh
               ? list.pipe(
+                  inFlight,
+                  Effect.timeoutOrElse({ duration: timeout, orElse: () => timedOut }),
                   Effect.flatMap((paths) => settle(directory, listing, paths)),
                   // Whatever ends it, interruption included, ends it for every request waiting.
                   Effect.onExit((exit) =>
@@ -208,6 +268,8 @@ export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Laye
                 )
               : Effect.void,
           ),
+          // A request interrupted between claiming a listing and starting it would leave it claimed and never made.
+          Effect.uninterruptible,
           Effect.flatMap(({ listing }) => Deferred.await(listing.done)),
         );
 

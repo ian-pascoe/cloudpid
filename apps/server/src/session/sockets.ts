@@ -4,10 +4,10 @@
 // hibernation restarts them, each with a fresh snapshot, on sockets that never closed.
 import {
   type Catalog,
-  type FileMatches,
   type CommandOutcome,
   ConversationId,
   decodeClientMessage,
+  type FileMatches,
   HEARTBEAT,
   type ClientMessage,
   type ServerMessage,

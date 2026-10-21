@@ -12,6 +12,8 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
 import {
   fileCandidates,
+  type FileIndex,
+  fileIndex,
   FileListingError,
   FileListings,
   type FileListingsOptions,
@@ -23,6 +25,11 @@ import {
 const test = (name: string, body: () => Effect.Effect<void, unknown, Scope.Scope>) =>
   it(name, () => Effect.runPromise(body().pipe(Effect.scoped, Effect.provide(TestClock.layer()))));
 
+const REPO = "/workspace/repo";
+
+/** The paths of an index. */
+const names = (index: FileIndex) => index.map(({ name }) => name);
+
 const file = (path: string): FileListEntry => ({ path, kind: "file" });
 
 const dir = (path: string): FileListEntry => ({ path, kind: "directory" });
@@ -30,36 +37,36 @@ const dir = (path: string): FileListEntry => ({ path, kind: "directory" });
 describe("the paths a listing offers", () => {
   it("ends each folder in a slash, and keeps files and links as they are", () => {
     expect(
-      fileCandidates([dir("src"), file("src/app.ts"), { path: "latest", kind: "symlink" }]),
+      fileCandidates([dir("src"), file("src/app.ts"), { path: "latest", kind: "symlink" }], REPO),
     ).toEqual(["src/", "latest", "src/app.ts"]);
   });
 
   it("adds the folders of a path the listing does not hold itself", () => {
-    expect(fileCandidates([file("README.md"), file("apps/web/index.ts")])).toEqual([
+    expect(fileCandidates([file("README.md"), file("apps/web/index.ts")], REPO)).toEqual([
       "README.md",
       "apps/",
       "apps/web/",
       "apps/web/index.ts",
     ]);
-    expect(fileCandidates([dir("apps"), file("apps/web/index.ts"), file("apps/a.ts")])).toEqual([
-      "apps/",
-      "apps/web/",
-      "apps/a.ts",
-      "apps/web/index.ts",
-    ]);
+    expect(
+      fileCandidates([dir("apps"), file("apps/web/index.ts"), file("apps/a.ts")], REPO),
+    ).toEqual(["apps/", "apps/web/", "apps/a.ts", "apps/web/index.ts"]);
   });
 
   it("puts shallower paths first, keeping the listing's order among those as deep", () => {
     expect(
-      fileCandidates([
-        dir(".agents"),
-        dir(".agents/skills"),
-        file(".agents/skills/a.md"),
-        file(".gitignore"),
-        dir("src"),
-        file("src/index.ts"),
-        file("index.ts"),
-      ]),
+      fileCandidates(
+        [
+          dir(".agents"),
+          dir(".agents/skills"),
+          file(".agents/skills/a.md"),
+          file(".gitignore"),
+          dir("src"),
+          file("src/index.ts"),
+          file("index.ts"),
+        ],
+        REPO,
+      ),
     ).toEqual([
       ".agents/",
       ".gitignore",
@@ -72,22 +79,53 @@ describe("the paths a listing offers", () => {
   });
 });
 
+describe("the paths a listing leaves out", () => {
+  it("leaves out paths holding whitespace, which a mention could not hold", () => {
+    expect(
+      fileCandidates([file("my notes.md"), dir("a b"), file("a b/c.ts"), file("ok.ts")], REPO),
+    ).toEqual(["ok.ts"]);
+  });
+
+  it("leaves out the Attachments and the bundled Skills, from wherever it is listed", () => {
+    expect(
+      fileCandidates(
+        [
+          dir(".agents"),
+          dir(".agents/prompts"),
+          dir(".agents/skills"),
+          file(".agents/skills/tdd/SKILL.md"),
+          dir(".uploads"),
+          file(".uploads/s1/a.png"),
+          dir("repo"),
+        ],
+        "/workspace",
+      ),
+    ).toEqual([".agents/", "repo/", ".agents/prompts/"]);
+    expect(fileCandidates([dir("s1"), file("s1/a.png")], "/workspace/.uploads")).toEqual([]);
+    // A repo's own `.agents/skills` is its own.
+    expect(fileCandidates([dir(".agents/skills")], REPO)).toEqual([".agents/", ".agents/skills/"]);
+  });
+});
+
 describe("the paths that match a query", () => {
-  const candidates = fileCandidates([
-    dir("src"),
-    dir("src/chat"),
-    file("src/chat/menu.ts"),
-    file("src/chat/composer.tsx"),
-    file("src/index.ts"),
-    file("index.ts"),
-    file("docs/menu.md"),
-  ]);
+  const candidates = fileCandidates(
+    [
+      dir("src"),
+      dir("src/chat"),
+      file("src/chat/menu.ts"),
+      file("src/chat/composer.tsx"),
+      file("src/index.ts"),
+      file("index.ts"),
+      file("docs/menu.md"),
+    ],
+    REPO,
+  );
 
   it("ranks them as the menu does, the shallower first among equals", () => {
-    expect(matchFiles("menu", candidates)).toEqual(["docs/menu.md", "src/chat/menu.ts"]);
-    expect(matchFiles("index", candidates)).toEqual(["index.ts", "src/index.ts"]);
+    expect(matchFiles("menu", fileIndex(candidates))).toEqual(["docs/menu.md", "src/chat/menu.ts"]);
+    expect(matchFiles("index", fileIndex(candidates))).toEqual(["index.ts", "src/index.ts"]);
     // A folder's own name first, then what is in it.
-    expect(matchFiles("chat", candidates)).toEqual([
+    expect(matchFiles("chat", fileIndex(candidates))).toEqual([
       "src/chat/",
       "src/chat/menu.ts",
       "src/chat/composer.tsx",
@@ -95,7 +133,7 @@ describe("the paths that match a query", () => {
   });
 
   it("narrows into a folder once the query names it", () => {
-    expect(matchFiles("src/chat/", candidates)).toEqual([
+    expect(matchFiles("src/chat/", fileIndex(candidates))).toEqual([
       "src/chat/",
       "src/chat/menu.ts",
       "src/chat/composer.tsx",
@@ -105,9 +143,10 @@ describe("the paths that match a query", () => {
   it("answers the top level first for an empty query, and at most 50", () => {
     const many = fileCandidates(
       Array.from({ length: 80 }, (_, index) => file(`deep/f${String(index)}.ts`)),
+      REPO,
     );
 
-    const paths = matchFiles("", many);
+    const paths = matchFiles("", fileIndex(many));
 
     expect(paths).toHaveLength(50);
     expect(paths[0]).toBe("deep/");
@@ -123,9 +162,14 @@ const lister = (delay: Duration.Input = "1 second") => {
     list: (paths: readonly string[]) =>
       Effect.sync(() => {
         calls += 1;
-      }).pipe(Effect.andThen(Effect.sleep(delay)), Effect.as(paths)),
+      }).pipe(Effect.andThen(Effect.sleep(delay)), Effect.as(fileIndex(paths))),
   };
 };
+
+/** Let the forked fibers run until they wait. */
+const settled = Effect.forEach(Array.from({ length: 10 }), () => Effect.yieldNow, {
+  discard: true,
+});
 
 /** The listings, made fresh with `options` in the test's scope. */
 const listings = (options?: FileListingsOptions) =>
@@ -144,8 +188,8 @@ describe("the listings the Session holds", () => {
 
       yield* TestClock.adjust("1 second");
 
-      expect(yield* Fiber.join(first)).toEqual(["x"]);
-      expect(yield* Fiber.join(second)).toEqual(["x"]);
+      expect(names(yield* Fiber.join(first))).toEqual(["x"]);
+      expect(names(yield* Fiber.join(second))).toEqual(["x"]);
       expect(calls()).toBe(1);
     }));
 
@@ -154,16 +198,16 @@ describe("the listings the Session holds", () => {
       const cache = yield* listings();
       const { calls, list } = lister("0 millis");
 
-      expect(yield* cache.get("/workspace/a", list(["old"]))).toEqual(["old"]);
+      expect(names(yield* cache.get("/workspace/a", list(["old"])))).toEqual(["old"]);
 
       yield* TestClock.adjust(Duration.toMillis(LISTING_TTL) - 1);
 
-      expect(yield* cache.get("/workspace/a", list(["new"]))).toEqual(["old"]);
+      expect(names(yield* cache.get("/workspace/a", list(["new"])))).toEqual(["old"]);
       expect(calls()).toBe(1);
 
       yield* TestClock.adjust("1 millis");
 
-      expect(yield* cache.get("/workspace/a", list(["new"]))).toEqual(["new"]);
+      expect(names(yield* cache.get("/workspace/a", list(["new"])))).toEqual(["new"]);
       expect(calls()).toBe(2);
     }));
 
@@ -175,7 +219,7 @@ describe("the listings the Session holds", () => {
       yield* cache.get("/workspace/a", list(["a"]));
       yield* TestClock.adjust("29 seconds");
 
-      expect(yield* cache.get("/workspace/a", list(["b"]))).toEqual(["a"]);
+      expect(names(yield* cache.get("/workspace/a", list(["b"])))).toEqual(["a"]);
       expect(calls()).toBe(1);
 
       yield* TestClock.adjust("1 second");
@@ -227,7 +271,7 @@ describe("the listings the Session holds", () => {
 
       expect((yield* Effect.flip(cache.get("/a", failing))).message).toBe("unreachable");
       expect(yield* cache.held).toEqual([]);
-      expect(yield* cache.get("/a", Effect.succeed(["back"]))).toEqual(["back"]);
+      expect(names(yield* cache.get("/a", Effect.succeed(fileIndex(["back"]))))).toEqual(["back"]);
       expect(calls).toBe(1);
     }));
 
@@ -243,7 +287,72 @@ describe("the listings the Session holds", () => {
       yield* Fiber.interrupt(first);
       yield* TestClock.adjust("1 second");
 
-      expect(yield* Fiber.join(second)).toEqual(["x"]);
+      expect(names(yield* Fiber.join(second))).toEqual(["x"]);
       expect(calls()).toBe(1);
+    }));
+
+  test("fails a listing that takes too long, and lists again at the next request", () =>
+    Effect.gen(function* () {
+      const cache = yield* listings({ timeout: "10 seconds" });
+      let calls = 0;
+
+      const hanging = Effect.suspend(() => {
+        calls += 1;
+
+        return Effect.never;
+      });
+
+      const first = yield* Effect.forkChild(cache.get("/a", hanging));
+
+      yield* TestClock.adjust("10 seconds");
+
+      expect((yield* Fiber.join(first).pipe(Effect.flip)).message).toMatch(/took longer than 10s/);
+      expect(yield* cache.held).toEqual([]);
+      expect(names(yield* cache.get("/a", Effect.succeed(fileIndex(["back"]))))).toEqual(["back"]);
+      expect(calls).toBe(1);
+    }));
+
+  test("never drops a listing being made to keep its bounds", () =>
+    Effect.gen(function* () {
+      const cache = yield* listings({ maxDirectories: 1, maxInFlight: 2 });
+      const { calls, list } = lister();
+
+      const slow = yield* Effect.forkChild(cache.get("/a", list(["a"])));
+
+      yield* Effect.yieldNow;
+      yield* Effect.forkChild(cache.get("/b", list(["b"])));
+      yield* Effect.yieldNow;
+
+      // `/a` is still being made: a request for it waits for that listing rather than starting another.
+      const again = yield* Effect.forkChild(cache.get("/a", list(["a2"])));
+
+      yield* TestClock.adjust("1 second");
+
+      expect(names(yield* Fiber.join(slow))).toEqual(["a"]);
+      expect(names(yield* Fiber.join(again))).toEqual(["a"]);
+      expect(calls()).toBe(2);
+    }));
+
+  test("makes at most so many listings at once", () =>
+    Effect.gen(function* () {
+      const cache = yield* listings({ maxInFlight: 1 });
+      const { calls, list } = lister();
+
+      const a = yield* Effect.forkChild(cache.get("/a", list(["a"])));
+      const b = yield* Effect.forkChild(cache.get("/b", list(["b"])));
+
+      yield* settled;
+
+      expect(calls()).toBe(1);
+
+      yield* TestClock.adjust("1 second");
+      yield* settled;
+
+      expect(calls()).toBe(2);
+
+      yield* TestClock.adjust("1 second");
+
+      expect(names(yield* Fiber.join(a))).toEqual(["a"]);
+      expect(names(yield* Fiber.join(b))).toEqual(["b"]);
     }));
 });

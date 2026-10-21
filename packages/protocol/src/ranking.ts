@@ -36,6 +36,35 @@ const tier = (query: string, candidate: string): number | null => {
   return 4;
 };
 
+/** A name made ready to rank many times: lower-cased, with its last segment apart. */
+export type RankCandidate = {
+  readonly name: string;
+  readonly lower: string;
+  /** The lower-cased last segment (a folder's keeps its trailing `/`); `lower` itself when it has no other. */
+  readonly base: string;
+};
+
+/** `name` made ready to rank: done once per name, so ranking a long list again for each query costs only the matching. */
+export const rankCandidate = (name: string): RankCandidate => {
+  const lower = name.toLowerCase();
+  const trimmed = lower.endsWith("/") ? lower.slice(0, -1) : lower;
+
+  return { name, lower, base: lower.slice(trimmed.lastIndexOf("/") + 1) };
+};
+
+/** How well the lower-cased `query` matches `candidate`: lower is better, null is no match. */
+const score = (query: string, { lower, base }: RankCandidate): number | null => {
+  if (base === lower) return tier(query, lower);
+
+  const inBase = tier(query, base);
+
+  if (inBase !== null) return inBase;
+
+  const whole = tier(query, lower);
+
+  return whole === null ? null : whole + 5;
+};
+
 /**
  * `candidates` that match `query`, best first: an exact match, then a prefix, a word start, a substring, and the
  * query's letters in order. For a path, a match in its last segment (a folder's name, before its trailing `/`) beats
@@ -52,16 +81,44 @@ export const rank = <A>(
   const scored: { candidate: A; score: number; index: number }[] = [];
 
   candidates.forEach((candidate, index) => {
-    const name = key(candidate).toLowerCase();
-    const base = name.slice(name.replace(/\/$/, "").lastIndexOf("/") + 1);
-    const inBase = base === name ? null : tier(lower, base);
-    const whole = inBase === null ? tier(lower, name) : null;
-    const score = inBase ?? (whole === null ? null : whole + (base === name ? 0 : 5));
+    const found = score(lower, rankCandidate(key(candidate)));
 
-    if (score !== null) scored.push({ candidate, score, index });
+    if (found !== null) scored.push({ candidate, score: found, index });
   });
 
   return scored
     .toSorted((a, b) => a.score - b.score || a.index - b.index)
     .map(({ candidate }) => candidate);
+};
+
+/**
+ * The names of the best `limit` of `candidates` for `query`, in `rank`'s order, kept as they are found: it holds no more
+ * than `limit` at a time, however many match.
+ */
+export const bestMatches = (
+  query: string,
+  candidates: readonly RankCandidate[],
+  limit: number,
+): string[] => {
+  if (query === "") return candidates.slice(0, limit).map(({ name }) => name);
+
+  const lower = query.toLowerCase();
+  // Best first; among equals, earlier first, so a later equal never displaces one already held.
+  const best: { name: string; score: number }[] = [];
+
+  for (const candidate of candidates) {
+    const found = score(lower, candidate);
+
+    if (found === null || (best.length === limit && found >= (best.at(-1)?.score ?? 0))) continue;
+
+    let at = best.length;
+
+    while (at > 0 && (best[at - 1]?.score ?? 0) > found) at -= 1;
+
+    best.splice(at, 0, { name: candidate.name, score: found });
+
+    if (best.length > limit) best.pop();
+  }
+
+  return best.map(({ name }) => name);
 };

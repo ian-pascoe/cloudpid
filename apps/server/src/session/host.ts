@@ -107,9 +107,12 @@ import { expandMessage, mayExpand } from "./expand.ts";
 import {
   EXCLUDED_NAMES,
   fileCandidates,
+  type FileIndex,
+  fileIndex,
   FileListingError,
   FileListings,
   fileListingsLayer,
+  LISTING_WALK_TIMEOUT_MS,
   matchFiles,
   MAX_LISTED_ENTRIES,
 } from "./file-search.ts";
@@ -1021,17 +1024,32 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const pathsIn = (env: ExecutionEnv) => {
     const list = env.listFiles?.bind(env);
 
-    if (list === undefined) return Effect.succeed<readonly string[]>([]);
+    if (list === undefined) return Effect.succeed<FileIndex>([]);
+
+    const options = {
+      exclude: EXCLUDED_NAMES,
+      maxEntries: MAX_LISTED_ENTRIES,
+      timeoutMs: LISTING_WALK_TIMEOUT_MS,
+    };
 
     const listed = Effect.tryPromise({
-      try: () => list(".", { exclude: EXCLUDED_NAMES, maxEntries: MAX_LISTED_ENTRIES }, context),
+      try: () => list(".", options, context),
       catch: (cause) => FileListingError.make({ message: String(cause) }),
     }).pipe(
       Effect.flatMap((result) =>
         result.ok
-          ? Effect.succeed(fileCandidates(result.value.entries))
+          ? Effect.succeed(result.value)
           : Effect.fail(FileListingError.make({ message: result.error.message })),
       ),
+      Effect.tap(({ entries, truncated }) =>
+        truncated
+          ? Effect.logWarning("The @ menu's listing of a directory was cut off at its bounds", {
+              directory: env.cwd,
+              entries: entries.length,
+            })
+          : Effect.void,
+      ),
+      Effect.map(({ entries }) => fileIndex(fileCandidates(entries, env.cwd))),
     );
 
     return listings

@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain array functions.
 import { describe, expect, it } from "vitest";
-import { rank } from "./ranking.ts";
+import { bestMatches, rank, rankCandidate } from "./ranking.ts";
 
 describe("ranking candidates for a query", () => {
   const names = ["model", "name", "new", "archive", "stop", "stop-all", "settings", "skill:tdd"];
@@ -61,5 +61,31 @@ describe("ranking candidates for a query", () => {
       "index.ts",
       "b/index.ts",
     ]);
+  });
+});
+
+describe("the best matches among prepared candidates", () => {
+  const paths = [
+    "src/",
+    "src/chat/",
+    "src/app.tsx",
+    "apps/web/index.ts",
+    "src/chat/menu.ts",
+    "docs/chatting.md",
+    "README.md",
+  ];
+
+  const prepared = paths.map(rankCandidate);
+
+  it("ranks as rank does", () => {
+    for (const query of ["", "app", "chat", "src/chat/", "md", "zz", "SRC"]) {
+      expect(bestMatches(query, prepared, 100)).toEqual(rank(query, paths, (path) => path));
+    }
+  });
+
+  it("keeps only the best, the earlier among equals", () => {
+    expect(bestMatches("chat", prepared, 2)).toEqual(["src/chat/", "docs/chatting.md"]);
+    expect(bestMatches("", prepared, 2)).toEqual(["src/", "src/chat/"]);
+    expect(bestMatches("s", prepared, 0)).toEqual([]);
   });
 });
