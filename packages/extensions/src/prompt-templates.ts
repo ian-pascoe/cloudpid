@@ -6,6 +6,7 @@
 // own the Workspaces Worker loads without the harness.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain string functions, ported as pi wrote them.
 import type { Context } from "@earendil-works/chord";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -23,7 +24,10 @@ import {
   type SkillsError,
 } from "./skills-discovery.ts";
 
-/** A Prompt template: `/name` expands into `content`, its arguments substituted. */
+/**
+ * A Prompt template as discovery lists it: `/name` expands into its file's body, its arguments substituted. The body is
+ * read when a message uses the template, so a listing stays small whatever the templates hold.
+ */
 export type PromptTemplate = {
   /** The file's name without `.md`. */
   readonly name: string;
@@ -31,17 +35,24 @@ export type PromptTemplate = {
   readonly description: string;
   /** The `argument-hint` frontmatter, shown after the name: `<file> [focus]`. */
   readonly argumentHint?: string;
-  /** The body, without the frontmatter. */
-  readonly content: string;
   /** The absolute path of its file. */
   readonly filePath: string;
 };
 
+/** A template with its body, without the frontmatter, as a file is parsed. */
+export type ParsedTemplate = PromptTemplate & { readonly content: string };
+
+/**
+ * The largest template or Skill file a message is expanded with, in bytes: an expansion is stored in one entry, whose
+ * row SQLite holds to 2 MB. A bigger template is not listed; a bigger Skill is left unexpanded.
+ */
+export const MAX_EXPANDED_FILE_BYTES = 256 * 1024;
+
 /** Where the Prompt templates of a directory are, below it. */
-export const PROMPTS_DIRECTORY = ".agents/prompts";
+const PROMPTS_DIRECTORY = ".agents/prompts";
 
 /** The most templates found, nearest first. */
-export const MAX_TEMPLATES = 100;
+const MAX_TEMPLATES = 100;
 
 /** The most entries listed in a `.agents/prompts` directory. */
 const MAX_ENTRIES = 1000;
@@ -50,10 +61,10 @@ const MAX_ENTRIES = 1000;
 const DESCRIPTION_LINE = 60;
 
 /** A Markdown file split as pi's `parseFrontmatter` splits it: its frontmatter's YAML, if any, and its body. */
-export type Frontmatter = { readonly yaml: string | undefined; readonly body: string };
+type Frontmatter = { readonly yaml: string | undefined; readonly body: string };
 
 /** `content` split into its frontmatter's YAML and its body, trimmed when there is a frontmatter, as pi splits it. */
-export const splitFrontmatter = (content: string): Frontmatter => {
+const splitFrontmatter = (content: string): Frontmatter => {
   const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const end = normalized.startsWith("---") ? normalized.indexOf("\n---", 3) : -1;
 
@@ -85,7 +96,7 @@ const fieldsOf = (yaml: string | undefined): typeof TemplateFields.Type | undefi
 };
 
 /** The template a file at `filePath` holds, or undefined when its frontmatter is not YAML (pi skips such a file). */
-export const parseTemplate = (filePath: string, text: string): PromptTemplate | undefined => {
+export const parseTemplate = (filePath: string, text: string): ParsedTemplate | undefined => {
   const { yaml, body } = splitFrontmatter(text);
   const fields = fieldsOf(yaml);
 
@@ -103,7 +114,7 @@ export const parseTemplate = (filePath: string, text: string): PromptTemplate | 
     }
   }
 
-  const template: Types.Mutable<PromptTemplate> = {
+  const template: Types.Mutable<ParsedTemplate> = {
     name: (filePath.split("/").at(-1) ?? "").replace(/\.md$/, ""),
     description,
     content: body,
@@ -195,27 +206,78 @@ export const substituteArgs = (content: string, args: readonly string[]): string
 };
 
 /**
+ * The template of `templates` whose Slash command `text` starts with, and the arguments after its name. Undefined for
+ * any other text.
+ */
+export const templateCall = <T extends { readonly name: string }>(
+  text: string,
+  templates: ReadonlyArray<T>,
+): { readonly template: T; readonly args: readonly string[] } | undefined => {
+  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+  const template = match === null ? undefined : templates.find(({ name }) => name === match[1]);
+
+  return template === undefined
+    ? undefined
+    : { template, args: parseCommandArgs(match?.[2] ?? "") };
+};
+
+/**
  * The expansion of `text` when it starts with the Slash command of one of `templates`: the template, with the arguments
  * after its name substituted. Undefined for any other text.
  */
 export const expandTemplate = (
   text: string,
-  templates: ReadonlyArray<Pick<PromptTemplate, "name" | "content">>,
+  templates: ReadonlyArray<Pick<ParsedTemplate, "name" | "content">>,
 ): string | undefined => {
-  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+  const call = templateCall(text, templates);
 
-  if (match === null) return undefined;
-
-  const template = templates.find(({ name }) => name === match[1]);
-
-  return template === undefined
-    ? undefined
-    : substituteArgs(template.content, parseCommandArgs(match[2] ?? ""));
+  return call === undefined ? undefined : substituteArgs(call.template.content, call.args);
 };
 
-/** The templates in one `.agents/prompts` directory, in name order: its `.md` files, not those of directories below it. */
+/** What discovering templates uses of an environment: what skills discovery does, and a file's size where it can. */
+export type PromptsEnv = SkillsEnv & Partial<Pick<ExecutionEnv, "fileInfo">>;
+
+/** Whether the file at `path` is small enough to be a template; one whose size cannot be had is read and checked after. */
+const smallEnough = (env: PromptsEnv, path: string): Effect.Effect<boolean, SkillsError> =>
+  env.fileInfo === undefined
+    ? Effect.succeed(true)
+    : attempt(`Cannot read ${path}`, () => env.fileInfo!(path, BACKGROUND_CONTEXT)).pipe(
+        Effect.map((info) => !info.ok || info.value.size <= MAX_EXPANDED_FILE_BYTES),
+      );
+
+/** The UTF-8 length of `text`, in bytes. */
+export const byteLength = (text: string): number => new TextEncoder().encode(text).length;
+
+/** The template in the file at `path`, if it is one: a `.md` file small enough to expand, whose frontmatter is YAML. */
+const templateAt = (
+  env: PromptsEnv,
+  path: string,
+): Effect.Effect<Option.Option<PromptTemplate>, SkillsError> =>
+  Effect.gen(function* () {
+    if (!(yield* smallEnough(env, path))) return Option.none();
+
+    const read = yield* attempt(`Cannot read ${path}`, () =>
+      env.readTextFile(path, BACKGROUND_CONTEXT),
+    );
+
+    // A link to nothing, or to a directory, is not a template.
+    if (!read.ok || byteLength(read.value) > MAX_EXPANDED_FILE_BYTES) return Option.none();
+
+    const parsed = parseTemplate(path, read.value);
+
+    if (parsed === undefined) return Option.none();
+
+    const { content: _content, ...template } = parsed;
+
+    return Option.some(template);
+  });
+
+/**
+ * The templates in one `.agents/prompts` directory, in name order: its `.md` files, not those of directories below it.
+ * A file whose name holds whitespace is not one: its Slash command would end at the space.
+ */
 const templatesIn = (
-  env: SkillsEnv,
+  env: PromptsEnv,
   root: string,
 ): Effect.Effect<ReadonlyArray<PromptTemplate>, SkillsError> =>
   Effect.gen(function* () {
@@ -225,25 +287,20 @@ const templatesIn = (
       Arr.filter(
         entries,
         (entry) =>
-          entry.kind !== "directory" && !entry.path.includes("/") && entry.path.endsWith(".md"),
+          entry.kind !== "directory" &&
+          !entry.path.includes("/") &&
+          !/\s/.test(entry.path) &&
+          entry.path.endsWith(".md"),
       ),
       MAX_TEMPLATES,
     );
 
     const templates = yield* Effect.forEach(
       files,
-      ({ path }) =>
-        attempt(`Cannot read ${path}`, () =>
-          env.readTextFile(join(root, path), BACKGROUND_CONTEXT),
-        ).pipe(
-          // A link to nothing, or to a directory, is not a template.
-          Effect.map((read) =>
-            read.ok
-              ? Option.fromNullishOr(parseTemplate(join(root, path), read.value))
-              : Option.none(),
-          ),
-        ),
-      { concurrency: 8 },
+      ({ path }) => templateAt(env, join(root, path)),
+      {
+        concurrency: 8,
+      },
     );
 
     return Arr.getSomes(templates);
@@ -254,7 +311,7 @@ const templatesIn = (
  * directory above it up to the Workspace root, nearest first, and where two have one name the nearest wins, as skills.
  */
 export const discoverPrompts = (
-  env: SkillsEnv,
+  env: PromptsEnv,
 ): Effect.Effect<ReadonlyArray<PromptTemplate>, SkillsError> =>
   Effect.forEach(
     skillDirectories(env.cwd),

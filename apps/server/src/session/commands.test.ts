@@ -1,7 +1,8 @@
 // @effect-diagnostics preferEffectArray:off
 import type { EntryRecord } from "@earendil-works/pi-durable";
+import { SESSION_COMMANDS } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { catalogOf, exportMarkdown, SERVER_COMMANDS } from "./commands.ts";
+import { catalogOf, exportMarkdown, markdownExport } from "./commands.ts";
 
 /** The parts of pi's entries a fixture sets. */
 type FixtureValue =
@@ -38,14 +39,14 @@ describe("catalogOf", () => {
             name: "fix",
             description: "Fix it",
             argumentHint: "<issue>",
-            content: "x",
             filePath: "/p/fix.md",
           },
-          { name: "plan", description: "Plan", content: "y", filePath: "/p/plan.md" },
+          { name: "plan", description: "Plan", filePath: "/p/plan.md" },
         ],
+        true,
       ),
     ).toEqual({
-      commands: SERVER_COMMANDS,
+      commands: SESSION_COMMANDS,
       templates: [
         { name: "fix", description: "Fix it", argumentHint: "<issue>" },
         { name: "plan", description: "Plan" },
@@ -57,10 +58,9 @@ describe("catalogOf", () => {
     });
   });
 
-  it("offers /compact, /rollover, /todo clear and /export", () => {
-    expect(SERVER_COMMANDS.map(({ name }) => name)).toEqual([
+  it("leaves /rollover out where the agent cannot roll over", () => {
+    expect(catalogOf([], [], false).commands.map(({ name }) => name)).toEqual([
       "compact",
-      "rollover",
       "todo",
       "export",
     ]);
@@ -134,5 +134,37 @@ describe("exportMarkdown", () => {
         "Handoff text",
       ].join("\n\n") + "\n",
     );
+  });
+});
+
+describe("markdownExport", () => {
+  const said = (id: number, text: string) =>
+    entry({ id, kind: "pi.user", model: [{ role: "user", content: text, timestamp: id }] });
+
+  it("counts each part as its JSON string weighs, escapes included, and stops past the limit", () => {
+    const header = exportMarkdown(1, [], "now");
+    // The header's JSON weight: newlines are two bytes there, as are the quotes and backslashes of the text below.
+    const base = JSON.stringify(header).length - 2;
+    const part = `## Owner\n\n${'"'.repeat(10)}`;
+    const weight = JSON.stringify(`\n\n${part}`).length - 2;
+
+    const fits = markdownExport(1, "now", base + weight);
+
+    expect(fits.add([said(1, '"'.repeat(10))])).toBe(true);
+    expect(JSON.stringify(fits.markdown()).length - 2).toBe(base + weight);
+
+    const over = markdownExport(1, "now", base + weight - 1);
+
+    expect(over.add([said(1, '"'.repeat(10))])).toBe(false);
+    // Multi-byte text counts in UTF-8 bytes.
+    expect(markdownExport(1, "now", base + 20).add([said(1, "é".repeat(10))])).toBe(false);
+  });
+
+  it("builds the export a page at a time", () => {
+    const built = markdownExport(1, "now");
+
+    expect(built.add([said(1, "One")])).toBe(true);
+    expect(built.add([said(2, "Two")])).toBe(true);
+    expect(built.markdown()).toBe(exportMarkdown(1, [said(1, "One"), said(2, "Two")], "now"));
   });
 });

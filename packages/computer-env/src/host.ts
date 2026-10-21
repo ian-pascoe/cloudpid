@@ -93,8 +93,9 @@ const concat = (chunks: readonly Uint8Array[]): Uint8Array => {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
 
-/** The part of an environment that reads files, which code running next to them (skill discovery) needs. */
-export type ReadEnv = Pick<ExecutionEnv, "cwd" | "listFiles" | "readTextFile">;
+/** The part of an environment that reads files, which code running next to them (the discovery of skills
+ * and Prompt templates) needs. */
+export type ReadEnv = Pick<ExecutionEnv, "cwd" | "fileInfo" | "listFiles" | "readTextFile">;
 
 /**
  * `fs.mkdir(path, { recursive: true })`, except that a directory that is already there is left alone. computer refuses
@@ -142,6 +143,7 @@ export class WorkspaceEnvHost {
   readEnv(cwd: string): ReadEnv {
     return {
       cwd,
+      fileInfo: async (path) => fromResult(await this.#operations.info(resolve(cwd, path), true)),
       listFiles: async (path, options) =>
         fromResult(await this.#operations.listFiles(resolve(cwd, path), options ?? {})),
       readTextFile: async (path) => {

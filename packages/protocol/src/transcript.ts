@@ -36,7 +36,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
-import { skillBlockIn, userEntryData } from "./user-entry.ts";
+import { skillBlocksIn, userEntryData } from "./user-entry.ts";
 
 /**
  * The display model of a transcript. The Session returns pi's own entries; the UI folds them into these messages, in
@@ -164,8 +164,8 @@ const noticeTitle = (entry: EntryRecord): string | undefined => {
 };
 
 /**
- * An owner's message the Session expanded, as the owner typed it: the typed text in place of the expansion's text, the
- * images as they were, and each expanded Skill with the block the model got.
+ * An owner's message the Session expanded, as the owner typed it: the typed text in place of the expansion, which is the
+ * message's first text part, its other parts as they were, and each expanded Skill with the block the model got.
  */
 const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
   const data = userEntryData(entry);
@@ -174,15 +174,21 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
   if (data === undefined || message?.role !== "user") return undefined;
 
   const parts = userParts(message.content);
-
-  const sent = parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+  const first = parts.findIndex((part) => part.type === "text");
+  const expanded = parts[first];
+  const blocks = skillBlocksIn(expanded?.type === "text" ? expanded.text : "", data);
 
   return {
     id: String(entry.id),
     role: "user",
-    parts: [{ type: "text", text: data.display }, ...parts.filter((part) => part.type !== "text")],
+    parts:
+      first === -1
+        ? [{ type: "text", text: data.display }, ...parts]
+        : parts.map((part, index) =>
+            index === first ? { type: "text" as const, text: data.display } : part,
+          ),
     timestamp: message.timestamp,
-    skills: data.skills.map((skill) => ({ ...skill, text: skillBlockIn(sent, skill) ?? "" })),
+    skills: data.skills.map((skill, index) => ({ ...skill, text: blocks[index] ?? "" })),
   };
 };
 

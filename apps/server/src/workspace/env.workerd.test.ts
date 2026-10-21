@@ -375,7 +375,7 @@ describe("skill discovery on the Workspace DO", () => {
     );
   });
 
-  it("answers the Prompt templates of a directory in one RPC call, nearest first, as a walk of the files finds them", async () => {
+  it("answers the Prompt templates of a directory in one RPC call, nearest first, as a walk of the files finds them, without their bodies", async () => {
     const workspace = env.WORKSPACES.getByName("prompts-discovery");
     const { calls, env: executionEnv } = countingEnv(workspace, "/workspace/repo/app");
 
@@ -384,6 +384,8 @@ describe("skill discovery on the Workspace DO", () => {
       ["/workspace/repo/.agents/prompts/review.md", "Far review"],
       ["/workspace/repo/.agents/prompts/ship.md", "---\nargument-hint: <tag>\n---\nShip $1"],
       ["/workspace/.agents/prompts/root.md", "At the root"],
+      // Too big to expand: not listed, and found so by its size.
+      ["/workspace/.agents/prompts/big.md", "x".repeat(256 * 1024 + 1)],
     ] as const) {
       getOrThrow(await executionEnv.writeFile(path, text, context));
     }
@@ -397,20 +399,17 @@ describe("skill discovery on the Workspace DO", () => {
       {
         name: "review",
         description: "Near",
-        content: "Review $1",
         filePath: "/workspace/repo/app/.agents/prompts/review.md",
       },
       {
         name: "ship",
         description: "Ship $1",
         argumentHint: "<tag>",
-        content: "Ship $1",
         filePath: "/workspace/repo/.agents/prompts/ship.md",
       },
       {
         name: "root",
         description: "At the root",
-        content: "At the root",
         filePath: "/workspace/.agents/prompts/root.md",
       },
     ]);

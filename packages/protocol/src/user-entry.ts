@@ -2,7 +2,7 @@
 // message that names a Skill (`/skill:name`, `$name`) or starts with a Prompt template's `/name` is submitted as a
 // `cloudpid.user` entry whose model message is the expansion and whose data keeps what the owner typed, which the
 // transcript and the Session's title show instead.
-// @effect-diagnostics missingPipeableSignature:off -- plain functions over an entry's JSON.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over an entry's JSON and its text.
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -42,13 +42,66 @@ export const skillBlock = (skill: {
   return `<skill name="${skill.name}" location="${skill.location}">\nReferences are relative to ${baseDir}.\n\n${skill.body}\n</skill>`;
 };
 
-/** The block of `skill` in the text the model got, or undefined when it is not there. */
-export const skillBlockIn = (text: string, skill: ExpandedSkill): string | undefined => {
-  const start = text.indexOf(`<skill name="${skill.name}" location="${skill.location}">`);
+const CLOSE = "\n</skill>";
 
-  if (start === -1) return undefined;
+const openingOf = (skill: ExpandedSkill): string =>
+  `<skill name="${skill.name}" location="${skill.location}">`;
 
-  const end = text.indexOf("\n</skill>", start);
+/**
+ * The text after the blocks of an expansion whose owner typed `display`: the typed text itself, or what follows a
+ * leading `/skill:name`. Empty when the owner typed nothing more.
+ */
+const typedTails = (display: string): readonly string[] => {
+  const lead = /^\/skill:\S+(?:\s+([\s\S]*))?$/.exec(display);
 
-  return end === -1 ? undefined : text.slice(start, end + "\n</skill>".length);
+  return lead === null ? [display] : [(lead[1] ?? "").trim(), display];
+};
+
+/**
+ * The block of each Skill of `data` in `text`, the expansion the model got, in the order of `data.skills`; undefined for
+ * one that is not there. The expansion is the blocks, in that order, each separated from the next by a blank line, then
+ * the typed text: a block ends where the next one starts, and the last where the typed text does, so a body that holds
+ * `</skill>` itself is not cut short.
+ */
+export const skillBlocksIn = (
+  text: string,
+  data: UserEntryData,
+): ReadonlyArray<string | undefined> => {
+  const starts: number[] = [];
+  let from = 0;
+
+  for (const skill of data.skills) {
+    const start = text.indexOf(openingOf(skill), from);
+
+    starts.push(start);
+
+    if (start !== -1) from = start + openingOf(skill).length;
+  }
+
+  const lastEnd = (start: number): number | undefined => {
+    const ends = [
+      ...typedTails(data.display).flatMap((tail) =>
+        tail === "" ? [] : [text.length - tail.length - 2],
+      ),
+      text.length,
+    ];
+
+    return ends.find(
+      (end) =>
+        end > start &&
+        text.startsWith(CLOSE, end - CLOSE.length) &&
+        (end === text.length || text.startsWith("\n\n", end)),
+    );
+  };
+
+  return starts.map((start, index) => {
+    if (start === -1) return undefined;
+
+    const next = starts.slice(index + 1).find((later) => later !== -1);
+    const end = next === undefined ? lastEnd(start) : next - 2;
+
+    return end === undefined || !text.startsWith(CLOSE, end - CLOSE.length)
+      ? undefined
+      : text.slice(start, end);
+  });
 };

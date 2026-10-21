@@ -4,6 +4,7 @@ import {
   FileError,
   ok,
   type ExecutionEnv,
+  type FileInfo,
   type FileListEntry,
 } from "@earendil-works/pi-durable/env";
 import * as Effect from "effect/Effect";
@@ -11,10 +12,12 @@ import { describe, expect, it } from "vitest";
 import {
   discoverPrompts,
   expandTemplate,
+  MAX_EXPANDED_FILE_BYTES,
   parseCommandArgs,
   parseTemplate,
   stripFrontmatter,
   substituteArgs,
+  templateCall,
 } from "./prompt-templates.ts";
 
 /** An environment holding `files` (absolute path to text), answering what discovery asks of one. */
@@ -144,6 +147,14 @@ describe("expandTemplate", () => {
     expect(expandTemplate("/review\nmain", templates)).toBe("Review main, focusing on .");
   });
 
+  it("names the template a message calls, with its arguments", () => {
+    expect(templateCall(`/review a "b c"`, templates)).toEqual({
+      template: templates[0],
+      args: ["a", "b c"],
+    });
+    expect(templateCall("/ship", templates)).toBeUndefined();
+  });
+
   it("leaves other text alone", () => {
     expect(expandTemplate("/reviewer x", templates)).toBeUndefined();
     expect(expandTemplate("review x", templates)).toBeUndefined();
@@ -175,6 +186,47 @@ describe("discoverPrompts", () => {
       { name: "ship", description: "Ship it", filePath: "/workspace/app/.agents/prompts/ship.md" },
       { name: "root", description: "Root", filePath: "/workspace/.agents/prompts/root.md" },
     ]);
+  });
+
+  it("lists no body, and skips a file too big to expand or whose name holds whitespace", async () => {
+    const big = "x".repeat(MAX_EXPANDED_FILE_BYTES + 1);
+
+    const env = envOf("/workspace", {
+      "/workspace/.agents/prompts/plan.md": "Plan it",
+      "/workspace/.agents/prompts/big.md": big,
+      "/workspace/.agents/prompts/my plan.md": "Spaced",
+    });
+
+    expect(await Effect.runPromise(discoverPrompts(env))).toEqual([
+      { name: "plan", description: "Plan it", filePath: "/workspace/.agents/prompts/plan.md" },
+    ]);
+
+    // Where the size can be had, a big file is not read at all.
+    const read: string[] = [];
+
+    const sized = {
+      ...env,
+      readTextFile: (path: string, context: Parameters<typeof env.readTextFile>[1]) => {
+        read.push(path);
+
+        return env.readTextFile(path, context);
+      },
+      fileInfo: (path: string) =>
+        Promise.resolve(
+          ok<FileInfo, FileError>({
+            name: path.split("/").at(-1) ?? "",
+            path,
+            kind: "file" as const,
+            size: path.endsWith("big.md") ? big.length : 7,
+            mtimeMs: 0,
+          }),
+        ),
+    };
+
+    expect((await Effect.runPromise(discoverPrompts(sized))).map(({ name }) => name)).toEqual([
+      "plan",
+    ]);
+    expect(read).toEqual(["/workspace/.agents/prompts/plan.md"]);
   });
 
   it("finds none where there is no prompts directory", async () => {

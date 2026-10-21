@@ -17,7 +17,6 @@ import {
   discoverPrompts,
   isPromptSource,
   type PromptTemplate,
-  stripFrontmatter,
 } from "@cloudpid/extensions/prompt-templates";
 import {
   discoverSkills,
@@ -49,7 +48,6 @@ import {
   type ConversationId,
   type Cursor,
   type EnvTarget,
-  type EntryRecord,
   type Extension,
   type HarnessOptions,
   type InputSubmissionDraft,
@@ -102,7 +100,7 @@ import {
   sessionTotals,
   usageMessage,
 } from "./spend.ts";
-import { catalogOf, exportMarkdown, MAX_EXPORT_CHARACTERS } from "./commands.ts";
+import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
@@ -130,6 +128,15 @@ const COMPACT_KEY = "pending-compactions";
 
 /** How many entries `/export` reads at a time. */
 const EXPORT_PAGE = 500;
+
+/**
+ * How long finding the Skills and templates a submitted message names, and reading them, may take before the message
+ * goes as typed: the owner's message waits on it, and so do the messages sent after it.
+ */
+export const EXPAND_TIMEOUT: Duration.Input = "5 seconds";
+
+/** The longest focus `/compact` takes, as long as a Rollover's: it is added to the summarizer's instructions. */
+const MAX_COMPACT_FOCUS = MAX_ROLLOVER_FOCUS;
 
 /** Why a submission went unanswered by the owner's own doing: stopping a Run is not news. */
 const SILENT_REASONS: ReadonlySet<string> = new Set(["aborted", "reset"]);
@@ -219,6 +226,8 @@ export type SessionHostOptions<R = never> = {
   readonly env?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
+  /** How long a submitted message's expansion may take before it goes as typed. Defaults to `EXPAND_TIMEOUT`. */
+  readonly expandTimeout?: Duration.Input;
 };
 
 /** User input for the root conversation, or for the conversation of one of its subagents. */
@@ -333,7 +342,7 @@ export type SessionHostService = {
    * Slash commands, and the Prompt templates and Skills of the conversation's directory, nearest first.
    */
   readonly catalog: (conversationId?: ConversationId) => Effect.Effect<Catalog, SessionError>;
-  /** Run one of the Session's Slash commands (`SERVER_COMMANDS`); one that cannot run fails with why, for the owner. */
+  /** Run one of the Session's Slash commands (`SESSION_COMMANDS`); one that cannot run fails with why, for the owner. */
   readonly command: (command: SlashCommand) => Effect.Effect<CommandOutcome, SessionError>;
 };
 
@@ -510,6 +519,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   // Alarm decisions run one at a time, so an idle check never deletes the heartbeat a concurrent submit just armed.
   const serially = Semaphore.withPermit(yield* Semaphore.make(1));
+
+  // Submissions are admitted in the order they arrive: a message that waits on its expansion's Workspace calls holds back
+  // the ones sent after it, which would otherwise be admitted first.
+  const inArrivalOrder = Semaphore.withPermit(yield* Semaphore.make(1));
 
   const { kv } = storage;
 
@@ -928,17 +941,53 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ? attempt("prompts", () => env.discoverPrompts(context))
       : discoverPrompts(env).pipe(fromDiscovery);
 
-  /** What `conversation`'s composer offers: the Session's commands, and its directory's templates and Skills. */
-  const catalogFor = (conversation: Conversation) =>
-    environment(conversation).pipe(
-      Effect.flatMap((env) =>
-        env === undefined
-          ? Effect.succeed(catalogOf([], []))
-          : Effect.all([skillsIn(env), templatesIn(env)], { concurrency: 2 }).pipe(
-              Effect.map(([skills, templates]) => catalogOf(skills, templates)),
-            ),
+  /** Whether `conversation`'s agent can roll over: it has the `context_rollover` tool, which a subagent never has. */
+  const canRollOver = (conversation: Conversation) =>
+    attempt("agent", () => conversation.agent(context)).pipe(
+      Effect.map((agent) => Arr.some(agent.tools, (tool) => tool.name === "context_rollover")),
+    );
+
+  /** `found`, or none when it fails: the composer still offers the rest. */
+  const orNone = <A>(what: string, found: Effect.Effect<ReadonlyArray<A>, SessionError>) =>
+    found.pipe(
+      Effect.catch((error) =>
+        Effect.logWarning(`Listing the ${what} for the composer failed`, error).pipe(
+          Effect.as<ReadonlyArray<A>>([]),
+        ),
       ),
     );
+
+  /**
+   * What `conversation`'s composer offers: the Session's commands, and its directory's templates and Skills. A Workspace
+   * that cannot be asked leaves the templates or Skills out, not the commands.
+   */
+  const catalogFor = (conversation: Conversation) =>
+    Effect.all(
+      [
+        canRollOver(conversation),
+        environment(conversation).pipe(
+          Effect.flatMap((env) =>
+            env === undefined
+              ? Effect.succeed<readonly [ReadonlyArray<Skill>, ReadonlyArray<PromptTemplate>]>([
+                  [],
+                  [],
+                ])
+              : Effect.all(
+                  [orNone("Skills", skillsIn(env)), orNone("templates", templatesIn(env))],
+                  {
+                    concurrency: 2,
+                  },
+                ),
+          ),
+          Effect.catch((error) =>
+            Effect.logWarning("Listing the composer's templates and Skills failed", error).pipe(
+              Effect.as<readonly [ReadonlyArray<Skill>, ReadonlyArray<PromptTemplate>]>([[], []]),
+            ),
+          ),
+        ),
+      ],
+      { concurrency: 2 },
+    ).pipe(Effect.map(([rollover, [skills, templates]]) => catalogOf(skills, templates, rollover)));
 
   /** The typed text of `input`: the text itself, or its first text block. */
   const typedText = (input: UserInput): string | undefined =>
@@ -984,17 +1033,31 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                     expandMessage(typed, {
                       skills,
                       templates,
-                      body: async (skill) => {
-                        const read = await env.readTextFile(skill.filePath, context);
+                      read: async (path) => {
+                        const read = await env.readTextFile(path, context);
 
-                        return read.ok ? stripFrontmatter(read.value).trim() : undefined;
+                        return read.ok ? read.value : undefined;
                       },
                     }),
                   ),
                 ),
+                // What it named but could not expand is in the log: the owner sees no Skill beside the message.
+                Effect.tap(({ unexpanded }) =>
+                  Effect.forEach(unexpanded, (why) =>
+                    Effect.logWarning(`A message was not expanded with what it names: ${why}`),
+                  ),
+                ),
+                Effect.map(({ expansion }) => expansion),
               ),
         ),
-        // The Workspace could not be asked: the message goes as typed rather than not at all.
+        Effect.timeoutOrElse({
+          duration: options.expandTimeout ?? EXPAND_TIMEOUT,
+          orElse: () =>
+            Effect.fail(
+              SessionError.make({ operation: "expand", message: "The Workspace took too long" }),
+            ),
+        }),
+        // The Workspace could not be asked in time: the message goes as typed rather than not at all.
         Effect.catch((error) =>
           Effect.logWarning("Expanding a message failed; it goes as typed", error).pipe(
             Effect.as(undefined),
@@ -1021,7 +1084,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   };
 
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
-    draftOf(prompt).pipe(Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)));
+    draftOf(prompt).pipe(
+      Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)),
+      inArrivalOrder,
+    );
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {
     const submission = yield* admit(prompt);
@@ -1066,19 +1132,20 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /** Admit a manual compaction of `conversationId`, with `focus` as its summary's additional focus. */
   const startCompaction = (conversationId: ConversationId, focus: string) =>
-    arm({ active: true }).pipe(
-      Effect.andThen(
-        attempt("compact", async () => {
-          const conversation = await harness.harness.conversation(conversationId, context);
-
-          if (conversation === undefined) {
-            throw new Error(`Conversation ${conversationId} does not exist`);
-          }
-
-          await conversation.compact(focus === "" ? undefined : focus, context);
-        }),
+    attempt("conversation", () => harness.harness.conversation(conversationId, context)).pipe(
+      Effect.filterOrFail(Predicate.isNotUndefined, () =>
+        refuse(`Conversation ${conversationId} does not exist.`),
       ),
-      serially,
+      Effect.flatMap((conversation) =>
+        arm({ active: true }).pipe(
+          Effect.andThen(
+            attempt("compact", () =>
+              conversation.compact(focus === "" ? undefined : focus, context),
+            ),
+          ),
+          serially,
+        ),
+      ),
       Effect.tap(settleWhenIdle),
     );
 
@@ -1108,6 +1175,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /** `/compact [focus]`: now when the conversation is idle, otherwise once its Run ends. */
   const compact = (conversation: Conversation, focus: string) =>
+    focus.length > MAX_COMPACT_FOCUS
+      ? Effect.fail(refuse(`Keep the compaction focus to ${MAX_COMPACT_FOCUS} characters.`))
+      : compactChecked(conversation, focus);
+
+  const compactChecked = (conversation: Conversation, focus: string) =>
     attempt("snapshot", () => harness.harness.snapshot(LiveDoc, conversation.id, context)).pipe(
       Effect.flatMap((live): Effect.Effect<CommandOutcome, SessionError> => {
         if (live?.run === undefined) {
@@ -1129,14 +1201,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const rollover = (conversation: Conversation, focus: string) =>
     focus.length > MAX_ROLLOVER_FOCUS
       ? Effect.fail(refuse(`Keep the Rollover focus to ${MAX_ROLLOVER_FOCUS} characters.`))
-      : attempt("agent", () => conversation.agent(context)).pipe(
+      : canRollOver(conversation).pipe(
           Effect.filterOrFail(
-            (agent) => Arr.some(agent.tools, (tool) => tool.name === "context_rollover"),
+            (can) => can,
             () => refuse("This conversation cannot roll over: it has no context_rollover tool."),
           ),
           Effect.andThen(Effect.all([Clock.currentTimeMillis, Random.nextInt])),
           Effect.flatMap(([now, random]) =>
-            admitDraft(conversation.id, ownerRollover(focus, `${now}-${random}`), false),
+            admitDraft(conversation.id, ownerRollover(focus, `${now}-${random}`), false).pipe(
+              inArrivalOrder,
+            ),
           ),
           Effect.as({ notice: "Asked the agent to roll over." } satisfies CommandOutcome),
         );
@@ -1156,10 +1230,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         )
       : Effect.fail(refuse("/todo takes clear."));
 
-  /** Every entry of `conversation`'s History, oldest first, across its Context Windows. */
-  const historyOf = (conversation: Conversation) =>
+  /**
+   * `conversation`'s whole History as Markdown, oldest first, across its Context Windows: each page is rendered as it is
+   * read, and an export that grows past `MAX_EXPORT_BYTES` is given up before the rest is read.
+   */
+  const historyMarkdown = (conversation: Conversation) =>
     Effect.gen(function* () {
-      const entries: EntryRecord[] = [];
+      const built = markdownExport(conversation.id, DateTime.formatIso(yield* DateTime.now));
       let cursor: Cursor | undefined;
 
       do {
@@ -1167,23 +1244,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           conversation.entries({ order: "ascending" }, EXPORT_PAGE, cursor, context),
         );
 
-        entries.push(...page.items);
+        if (!built.add(page.items)) {
+          return yield* refuse(
+            `The History is over ${MAX_EXPORT_BYTES / 1024 / 1024} MiB, too large to export in one file.`,
+          );
+        }
+
         cursor = page.next;
       } while (cursor !== undefined);
 
-      return entries;
+      return built.markdown();
     });
 
   /** `/export`: the whole History as Markdown, for the client to download. */
   const exportHistory = (conversation: Conversation) =>
-    Effect.all([historyOf(conversation), DateTime.now]).pipe(
-      Effect.map(([entries, now]) =>
-        exportMarkdown(conversation.id, entries, DateTime.formatIso(now)),
-      ),
-      Effect.filterOrFail(
-        (markdown) => markdown.length <= MAX_EXPORT_CHARACTERS,
-        () => refuse("The History is too large to export in one file."),
-      ),
+    historyMarkdown(conversation).pipe(
       Effect.map((content): CommandOutcome => ({
         notice: "Exported the History.",
         file: {

@@ -45,9 +45,7 @@ export type WirePrompt = {
   readonly name: string;
   readonly description: string;
   readonly argumentHint?: string;
-  /** Its body, without the frontmatter. */
-  readonly content: string;
-  /** The absolute path of its file. */
+  /** The absolute path of its file, which holds its body: read when a message uses it. */
   readonly filePath: string;
 };
 

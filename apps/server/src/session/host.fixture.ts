@@ -551,6 +551,24 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /**
+   * Watch the root conversation's Todo List as a client does: `lists` gets the titles of each list sent, the first being
+   * how it stands, until `stop`.
+   */
+  watchTodos() {
+    const lists: (readonly string[])[] = [];
+
+    const fiber = this.#runtime.runFork(
+      Stream.runForEach(this.#host.todos(ROOT_CONVERSATION_ID), (tasks) =>
+        Effect.sync(() => {
+          lists.push(Arr.map(tasks, (task) => task.title));
+        }),
+      ),
+    );
+
+    return { lists, stop: () => void fiber.pipe(Fiber.interrupt, Effect.runFork) };
+  }
+
   /** The tasks of the root conversation's Todo List. */
   todoTitles(): Promise<readonly string[]> {
     return this.#runtime.runPromise(

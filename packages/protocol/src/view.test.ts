@@ -660,6 +660,57 @@ describe("the transcript projection", () => {
     );
   });
 
+  it("finds each Skill's block whole, though a body holds </skill>, and keeps the message's other text parts", () => {
+    const one = { name: "one", location: "/workspace/.agents/skills/one/SKILL.md" };
+    const two = { name: "two", location: "/workspace/.agents/skills/two/SKILL.md" };
+    const first = skillBlock({ ...one, body: "Close with\n</skill>\nwhen done." });
+    const second = skillBlock({ ...two, body: "Two.\n</skill>" });
+
+    const project = (display: string, typed: string) =>
+      projectEntries([
+        asEntry({
+          id: 1,
+          conversationId: 1,
+          kind: "cloudpid.user",
+          data: { display, skills: [one, two] },
+          model: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: [first, second, typed].filter(Boolean).join("\n\n") },
+                { type: "text", text: "A second part" },
+              ],
+              timestamp: 1,
+            },
+          ],
+        }),
+      ]);
+
+    expect(project("/skill:one use $two\n</skill>", "use $two\n</skill>")).toEqual([
+      {
+        id: "1",
+        role: "user",
+        timestamp: 1,
+        parts: [
+          { type: "text", text: "/skill:one use $two\n</skill>" },
+          { type: "text", text: "A second part" },
+        ],
+        skills: [
+          { ...one, text: first },
+          { ...two, text: second },
+        ],
+      },
+    ]);
+
+    // A `/skill:` with nothing after it leaves only the blocks.
+    expect(project("/skill:one", "")[0]).toMatchObject({
+      skills: [
+        { ...one, text: first },
+        { ...two, text: second },
+      ],
+    });
+  });
+
   it("shows a cloudpid.user entry whose data it cannot read as the model's message", () => {
     expect(
       projectEntries([
