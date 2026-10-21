@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { ComposerCommand } from "./commands.ts";
 import { detectTrigger } from "./completion.ts";
-import { completionFor, type FileResults } from "./menu.ts";
+import { completionFor, type FileResults, menuKey } from "./menu.ts";
 
 const run = () => null;
 
@@ -113,7 +113,7 @@ describe("the @ menu", () => {
     const completion = completionFor(detectTrigger(text, text.length)!, commands, catalog, files);
 
     return {
-      rows: completion?.entries.map((entry) => entry.label),
+      rows: completion?.entries.map((entry) => `${entry.detail ?? ""}${entry.label}`),
       notice: completion?.notice,
     };
   };
@@ -165,5 +165,49 @@ describe("the @ menu", () => {
       rows: [],
       notice: "Could not search the files.",
     });
+  });
+});
+
+describe("a file row", () => {
+  it("shows the name first, a folder's with its slash, and the folder it is in apart", () => {
+    const files: FileResults = {
+      query: "",
+      paths: ["README.md", "src/", "src/chat/", "src/chat/menu.ts"],
+      searching: false,
+      failed: false,
+    };
+
+    const completion = completionFor(detectTrigger("@", 1)!, commands, catalog, files);
+
+    expect(completion?.entries.map(({ label, detail }) => [label, detail])).toEqual([
+      ["README.md", undefined],
+      ["src/", undefined],
+      ["chat/", "src/"],
+      ["menu.ts", "src/chat/"],
+    ]);
+  });
+});
+
+describe("the keys an open menu takes", () => {
+  const press = (key: string, rows: number, more: { shiftKey?: boolean; altKey?: boolean } = {}) =>
+    menuKey({ key, shiftKey: more.shiftKey ?? false, altKey: more.altKey ?? false }, rows);
+
+  it("moves, picks and closes while it has rows", () => {
+    expect(press("ArrowDown", 2)).toBe("next");
+    expect(press("ArrowUp", 2)).toBe("previous");
+    expect(press("Enter", 2)).toBe("pick");
+    expect(press("Tab", 2)).toBe("pick");
+    expect(press("Escape", 2)).toBe("close");
+    // Shift+Enter is a new line, Alt+Enter a follow-up.
+    expect(press("Enter", 2, { shiftKey: true })).toBeNull();
+    expect(press("Enter", 2, { altKey: true })).toBeNull();
+  });
+
+  it("leaves Enter to send and the arrows to the caret with only its notice", () => {
+    expect(press("Enter", 0)).toBeNull();
+    expect(press("Tab", 0)).toBeNull();
+    expect(press("ArrowDown", 0)).toBeNull();
+    expect(press("ArrowUp", 0)).toBeNull();
+    expect(press("Escape", 0)).toBe("close");
   });
 });

@@ -24,7 +24,7 @@ import { outgoingMessage } from "./attachments.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu, rowId } from "./completion-menu.tsx";
 import { detectTrigger, type Edited, replaceTrigger } from "./completion.ts";
-import { completionFor } from "./menu.ts";
+import { completionFor, menuKey } from "./menu.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
 import { useConnection, useSessionId } from "./session-context.tsx";
 import { useAttachments } from "./use-attachments.ts";
@@ -164,7 +164,8 @@ export const Composer = ({
   const [focused, setFocused] = useState(false);
   // The start of a trigger the owner dismissed with Escape: its menu stays closed until the trigger moves.
   const [dismissed, setDismissed] = useState<number | null>(null);
-  const [highlighted, setHighlighted] = useState(0);
+  // The highlighted row's id: it stays on that row when the rows change under it (the `@` menu's, as answers come).
+  const [highlighted, setHighlighted] = useState<string | null>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [busy, setBusy] = useState(false);
   const connection = useConnection();
@@ -285,15 +286,24 @@ export const Composer = ({
     completion !== null &&
     (completion.entries.length > 0 || completion.notice !== undefined);
 
-  // The highlighted row, within the rows there are: the `@` menu's change when the Session answers.
-  const active = Math.max(0, Math.min(highlighted, (completion?.entries.length ?? 0) - 1));
+  const entries = completion?.entries ?? [];
+
+  // The highlighted row's index; the first row when it is gone.
+  const active = Math.max(
+    0,
+    entries.findIndex((entry) => entry.id === highlighted),
+  );
+
+  const highlight = (index: number) => {
+    setHighlighted(entries[index]?.id ?? null);
+  };
 
   // A new menu, or a changed query, starts from its first row.
-  const menuKey = trigger === null ? "" : `${trigger.kind}:${trigger.start}:${trigger.query}`;
+  const menuKeyOf = trigger === null ? "" : `${trigger.kind}:${trigger.start}:${trigger.query}`;
 
   useEffect(() => {
-    setHighlighted(0);
-  }, [menuKey]);
+    setHighlighted(null);
+  }, [menuKeyOf]);
 
   // The catalog is asked for when a menu that lists it first opens, and again once it is stale.
   const listsCatalog = trigger?.kind === "command" || trigger?.kind === "skill";
@@ -435,32 +445,17 @@ export const Composer = ({
     if (event.nativeEvent.isComposing) return;
 
     if (open) {
-      const count = completion.entries.length;
+      const count = entries.length;
+      const action = menuKey(event, count);
 
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setDismissed(trigger.start);
+      if (action !== null) event.preventDefault();
 
-        return;
-      }
+      if (action === "close") setDismissed(trigger.start);
+      else if (action === "next" || action === "previous") {
+        highlight((active + (action === "next" ? 1 : count - 1)) % count);
+      } else if (action === "pick") pick(active);
 
-      // A menu with only its notice has nothing to pick: the keys type and send as usual.
-      if (count > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-        event.preventDefault();
-        setHighlighted((active + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
-
-        return;
-      }
-
-      if (
-        count > 0 &&
-        ((event.key === "Enter" && !event.shiftKey && !event.altKey) || event.key === "Tab")
-      ) {
-        event.preventDefault();
-        pick(active);
-
-        return;
-      }
+      if (action !== null) return;
     }
 
     if (event.key === "Enter" && event.altKey) {
@@ -506,7 +501,7 @@ export const Composer = ({
             sections={completion.sections}
             notice={completion.notice}
             highlighted={active}
-            onHighlight={setHighlighted}
+            onHighlight={highlight}
             onPick={pick}
           />
         )}
@@ -531,11 +526,9 @@ export const Composer = ({
             placeholder={placeholder}
             aria-label="Message"
             aria-autocomplete="list"
-            aria-controls={open ? menuId : undefined}
-            aria-expanded={open}
-            aria-activedescendant={
-              open && completion.entries.length > 0 ? rowId(menuId, active) : undefined
-            }
+            aria-controls={open && entries.length > 0 ? menuId : undefined}
+            aria-expanded={open && entries.length > 0}
+            aria-activedescendant={open && entries.length > 0 ? rowId(menuId, active) : undefined}
             onKeyDown={onKeyDown}
             onChange={(event) => {
               setNote(null);

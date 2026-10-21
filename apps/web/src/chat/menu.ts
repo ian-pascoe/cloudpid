@@ -61,10 +61,14 @@ const filesMenu = (query: string, files: FileResults): Completion => {
 
   const rows = paths.map((path): MenuEntry => {
     const folder = path.endsWith("/");
+    // The name, a folder's with its `/`, and the folder it is in, which gives way first to a narrow menu.
+    const split = path.slice(0, folder ? -1 : undefined).lastIndexOf("/") + 1;
+    const directory = path.slice(0, split);
 
     return {
       id: `file:${path}`,
-      label: path,
+      label: path.slice(split),
+      detail: directory === "" ? undefined : directory,
       pick: folder
         ? { kind: "insert", text: `@${path}`, continues: true }
         : { kind: "insert", text: `@${path}` },
@@ -188,4 +192,26 @@ export const completionFor = (
   }
 
   return filesMenu(trigger.query, files);
+};
+
+/** What a key does in an open menu with `rows` rows: move the highlight, pick, close it, or nothing (it types on). */
+export type MenuKey = "next" | "previous" | "pick" | "close" | null;
+
+/**
+ * The menu's part in `key`: ↑ and ↓ move, Enter (without Shift or Alt) and Tab pick, Escape closes. A menu with no rows,
+ * only its notice, takes Escape alone, so Enter sends and the arrows move the caret as they would without it.
+ */
+export const menuKey = (
+  key: { readonly key: string; readonly shiftKey: boolean; readonly altKey: boolean },
+  rows: number,
+): MenuKey => {
+  if (key.key === "Escape") return "close";
+
+  if (rows === 0) return null;
+
+  if (key.key === "ArrowDown") return "next";
+
+  if (key.key === "ArrowUp") return "previous";
+
+  return (key.key === "Enter" && !key.shiftKey && !key.altKey) || key.key === "Tab" ? "pick" : null;
 };
