@@ -38,7 +38,7 @@ import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import { codingTools } from "../coding-tools.ts";
+import { codingToolsWith } from "../coding-tools.ts";
 import { secretsExtension } from "./extension.ts";
 import { scrubbingModels } from "./models.ts";
 import { type SecretAsk, Secrets, secretsLayer, type SecretStorage } from "./store.ts";
@@ -197,7 +197,7 @@ export const openSecretsHarness = async (
   );
 
   const resolving = usingSecrets(recorded);
-  const coding = codingTools();
+  const coding = codingToolsWith({});
 
   const extensions = await runtime.runPromise(
     Effect.all([

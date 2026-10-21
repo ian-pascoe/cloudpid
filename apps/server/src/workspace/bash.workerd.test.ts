@@ -4,7 +4,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
-import { codingTools } from "@cloudpid/extensions/coding-tools";
+import { codingToolsWith } from "@cloudpid/extensions/coding-tools";
 import { WORKER_SHELL_BUILTINS, WORKER_SHELL_COMMANDS } from "@cloudpid/extensions/bash-routing";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
@@ -24,7 +24,7 @@ declare global {
 
 const context = BACKGROUND_CONTEXT;
 
-const bash = codingTools().tools?.find((tool) => tool.name === "bash");
+const bash = codingToolsWith({}).tools?.find((tool) => tool.name === "bash");
 
 /** One Workspace for every case (each Workspace loads its own Worker Shell); each case gets a directory of its own. */
 const shared = env.WORKSPACES.getByName("bash-routing");

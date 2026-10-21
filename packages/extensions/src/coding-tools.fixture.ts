@@ -31,7 +31,7 @@ import {
 } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import { type BashBackend, codingTools } from "./coding-tools.ts";
+import { type BashBackend, codingToolsWith } from "./coding-tools.ts";
 import type { ImagesService } from "./images.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -178,7 +178,7 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
   const reads: FileReads = { largest: 0 };
   const files = options.files ?? {};
   const exitCode = options.exitCode ?? 0;
-  const tools = codingTools(options.images === undefined ? {} : { images: options.images });
+  const tools = codingToolsWith(options.images === undefined ? {} : { images: options.images });
   const faux = fauxProvider();
   const models = createModels();
   const registry = createRegistry();

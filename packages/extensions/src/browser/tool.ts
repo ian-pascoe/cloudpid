@@ -19,12 +19,6 @@ import {
 import { BrowserSession } from "./session.ts";
 import { MAX_IMAGE_CHARACTERS } from "../images.ts";
 
-/**
- * The longest screenshot kept, in base64 characters (about 560 KB): the bound every image in a conversation is held to
- * (`../images.ts`). A viewport screenshot as a JPEG is far under it; a full-page PNG often is not.
- */
-export { MAX_IMAGE_CHARACTERS };
-
 /** The image types a screenshot may be: the UI shows them in an `<img>`, and an SVG or other type from a page is not one. */
 const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/webp"]);
 
@@ -61,6 +55,7 @@ const keep = (part: BrowserOutputPart): BrowserOutputPart => {
     );
   }
 
+  // The bound every image in a conversation is held to: a viewport JPEG is far under it, a full-page PNG often is not.
   if (part.data.length > MAX_IMAGE_CHARACTERS) {
     const kilobytes = Math.round((part.data.length * 3) / 4 / 1000);
 

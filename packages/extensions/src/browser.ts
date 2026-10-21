@@ -61,7 +61,7 @@ export {
   SNAPSHOT_IMAGES,
 } from "./browser/images.ts";
 
-export { describeBrowser, describeOutcome, MAX_IMAGE_CHARACTERS } from "./browser/tool.ts";
+export { describeBrowser, describeOutcome } from "./browser/tool.ts";
 
 /** How long the host may take to describe the tool before the Session starts without its description. */
 const DESCRIBE_TIMEOUT = "5 seconds";

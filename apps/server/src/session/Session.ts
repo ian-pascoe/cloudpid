@@ -241,6 +241,10 @@ export const SessionLive = Session.make(
           name ?? state.raw.id.toString(),
         );
 
+        // The Images binding `read` prepares images with, so each fits the conversation.
+        // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
+        const images = worker[IMAGES_BINDING] as ImagesBinding;
+
         // When the browser was last used is kept in this object's storage; the host's alarm closes it once idle.
         const sessionBrowser = browserSessionLayer({ host: browser, storage: kv });
 
@@ -304,8 +308,7 @@ export const SessionLive = Session.make(
                   ]),
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
-                  // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
-                  Effect.provideService(Images, worker[IMAGES_BINDING] as ImagesBinding),
+                  Effect.provideService(Images, images),
                   // For extensions that need the owner (a Live View link, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
                   Effect.provideService(CodemodeSandbox, sandbox),

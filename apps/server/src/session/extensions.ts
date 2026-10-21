@@ -8,7 +8,7 @@ import {
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContextManagement } from "@cloudpid/extensions/context";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
-import type { Images } from "@cloudpid/extensions/images";
+import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Skills } from "@cloudpid/extensions/skills";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
@@ -64,6 +64,8 @@ export const sessionExtensions: Effect.Effect<
   Todo,
   Browser,
   Skills,
+  // Every tool result's images held to one result's budget before it is stored.
+  Effect.succeed(ResultImages),
 ]).pipe(
   // Last, so its hooks see every other extension's results; only these tools' arguments resolve Secrets.
   Effect.flatMap((extensions) => {

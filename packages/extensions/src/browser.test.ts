@@ -15,9 +15,9 @@ import {
   type BrowserRun,
   BrowserSession,
   type BrowserSessionService,
-  MAX_IMAGE_CHARACTERS,
 } from "./browser.ts";
 import { fakeHandoffHost, LIVE_VIEW_URL } from "./browser/host.fixture.ts";
+import { MAX_IMAGE_CHARACTERS } from "./images.ts";
 import { secretReference } from "./secrets/references.ts";
 import { call as secretsCall, openSecretsHarness } from "./secrets/harness.fixture.ts";
 import { answer, call, openSubagentHarness } from "./subagents/harness.fixture.ts";

@@ -122,7 +122,7 @@ describe("read", () => {
 
     const { call } = await openCodingHarness({
       backends: true,
-      files: { [PHOTO]: fakeImage(4000, 3000, 3_000_000, true) },
+      files: { [PHOTO]: fakeImage(4000, 3000, { size: 3_000_000, header: "jpeg" }) },
       images,
     });
 
@@ -139,7 +139,7 @@ describe("read", () => {
 
     const { call } = await openCodingHarness({
       backends: true,
-      files: { [PHOTO]: fakeImage(4000, 3000, 3_000_000, true) },
+      files: { [PHOTO]: fakeImage(4000, 3000, { size: 3_000_000, header: "jpeg" }) },
       images,
     });
 
@@ -157,7 +157,7 @@ describe("read", () => {
 
     const { call } = await openCodingHarness({
       backends: true,
-      files: { [PHOTO]: fakeImage(4000, 3000, 3_000_000, true) },
+      files: { [PHOTO]: fakeImage(4000, 3000, { size: 3_000_000, header: "jpeg" }) },
       images,
     });
 
@@ -174,7 +174,7 @@ describe("read", () => {
 
     const { call, reads } = await openCodingHarness({
       backends: true,
-      files: { [PHOTO]: fakeImage(8000, 6000, 25 * 1024 * 1024, true) },
+      files: { [PHOTO]: fakeImage(8000, 6000, { size: 25 * 1024 * 1024, header: "jpeg" }) },
       images,
     });
 
@@ -186,5 +186,42 @@ describe("read", () => {
     );
     expect(reads.largest).toBeLessThan(MAX_IMAGE_FILE_BYTES);
     expect(outputs).toEqual([]);
+  });
+
+  it("offers the formats the Images binding takes, and leaves out a BMP saying how to read it", async () => {
+    const { images } = fakeImages();
+
+    const { call, tool } = await openCodingHarness({
+      backends: true,
+      files: { "/workspace/scan.bmp": fakeImage(800, 600, { size: 2000, header: "bmp" }) },
+      images,
+    });
+
+    expect(tool("read")?.description).toContain("(jpg, png, gif, webp)");
+
+    const result = await call("read", { path: "scan.bmp" });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(
+      "scan.bmp is an image (image/bmp) that was left out: BMP images are not supported; convert it to PNG first and read that.",
+    );
+  });
+
+  it("says when an image was only re-encoded to fit", async () => {
+    // 1.5 megapixels: 600 KB (800,000 base64 characters) at quality 80, 450 KB at 60.
+    const { images } = fakeImages({ bytesPerPixel: (quality) => quality / 200 });
+
+    const { call } = await openCodingHarness({
+      backends: true,
+      files: { [PHOTO]: fakeImage(1500, 1000, { size: 1_000_000, header: "jpeg" }) },
+      images,
+    });
+
+    const result = await call("read", { path: "photo.jpg" });
+
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain(
+      "Re-encoded at quality 60 to fit the conversation's limit of 750,000 base64 characters.",
+    );
   });
 });
