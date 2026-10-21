@@ -19,7 +19,7 @@ import {
   fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { ConversationId, UserInput } from "@earendil-works/pi-durable";
 import type { Catalog, CommandOutcome, TaskGraphSummary } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -241,6 +241,34 @@ export class TestSubagentSession extends DurableObject {
   submit(text: string): Promise<number> {
     return this.#runtime.runPromise(
       Effect.flatMap(SessionHost, (host) => host.submit({ requestId: text, input: text })),
+    );
+  }
+
+  /** Submit `input`, text and images, to the root, as the web app sends a message with Attachments. */
+  submitInput(input: UserInput, requestId: string): Promise<number> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.submit({ requestId, input })),
+    );
+  }
+
+  /** The kind, data and content of each owner message of the root, as stored, oldest first. */
+  ownerMessages(): Promise<
+    ReadonlyArray<{ readonly kind: string; readonly data: unknown; readonly content: unknown }>
+  > {
+    return this.#runtime.runPromise(
+      Effect.flatMap(Harness, ({ harness }) =>
+        callDurable("entries", async (context) => {
+          const page = await (
+            await harness.root(context)
+          ).entries({ order: "ascending" }, 200, undefined, context);
+
+          return page.items.flatMap((entry) =>
+            entry.kind === "pi.user" || entry.kind === "cloudpid.user"
+              ? [{ kind: entry.kind, data: entry.data, content: entry.model?.[0]?.content }]
+              : [],
+          );
+        }),
+      ),
     );
   }
 

@@ -53,11 +53,16 @@ const shownImages = (
       : [],
   );
 
+/** A user message's parts: its text parts (what was typed, then any Attachments' paths) as one text, a paragraph apart. */
 const userContent = (parts: readonly TranscriptPart[]): ContentPart[] => {
   const content: ContentPart[] = [];
 
   for (const part of parts) {
-    if (part.type === "text") content.push({ type: "text", text: part.text });
+    const last = content.at(-1);
+
+    if (part.type === "text" && last?.type === "text") {
+      content[content.length - 1] = { type: "text", text: `${last.text}\n\n${part.text}` };
+    } else if (part.type === "text") content.push({ type: "text", text: part.text });
     else if (part.type === "image") {
       content.push({ type: "image", image: `data:${part.mimeType};base64,${part.data}` });
     }

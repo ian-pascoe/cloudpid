@@ -4,6 +4,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { MAX_EXPANDED_FILE_BYTES } from "@cloudpid/extensions/prompt-templates";
 import { sessionCommandsFor, skillBlock } from "@cloudpid/protocol";
+import type { UserInput } from "@earendil-works/pi-durable";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -134,6 +135,79 @@ describe("the composer's catalog", () => {
     });
 
     expect(catalog).toEqual({ commands: sessionCommandsFor(false), templates: [], skills: [] });
+  });
+});
+
+describe("a message with Attachments", () => {
+  const paths = {
+    type: "text" as const,
+    text: "@/workspace/.uploads/s/a.png\n@/workspace/.uploads/s/notes.md",
+  };
+
+  const image = { type: "image" as const, mimeType: "image/png", data: "iVBO" };
+
+  const REVIEW = "/workspace/.agents/prompts/review.md";
+
+  const review = { name: "review", description: "Review it.", filePath: REVIEW };
+
+  /** The owner messages of a Session on `workspace` after `input` was submitted to it. */
+  const stored = async (workspace: FakeWorkspace, input: UserInput) => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+      instance.useWorkspace(workspace);
+      await instance.submitInput(input, "attached");
+    });
+    await eventually(stub, (instance) => instance.idle());
+
+    return runInDurableObject(stub, (instance: TestSubagentSession) => instance.ownerMessages());
+  };
+
+  it("keeps the Attachments' paths and images when a Prompt template expands its text", async () => {
+    const messages = await stored(
+      { templates: [review], files: [{ path: REVIEW, text: "Review $1 then $2." }] },
+      [{ type: "text", text: "/review first second" }, paths, image],
+    );
+
+    expect(messages).toEqual([
+      {
+        kind: "cloudpid.user",
+        data: { display: "/review first second", skills: [] },
+        content: [{ type: "text", text: "Review first then second." }, paths, image],
+      },
+    ]);
+  });
+
+  it("keeps the Attachments' paths and images when a /skill: expands its text", async () => {
+    const messages = await stored({ skills: [deploy], files: [DEPLOY_FILE] }, [
+      { type: "text", text: "/skill:deploy now" },
+      paths,
+      image,
+    ]);
+
+    expect(messages).toEqual([
+      {
+        kind: "cloudpid.user",
+        data: { display: "/skill:deploy now", skills: [{ name: "deploy", location: DEPLOY }] },
+        content: [{ type: "text", text: `${block}\n\nnow` }, paths, image],
+      },
+    ]);
+  });
+
+  it("keeps the Attachments' paths and images when a $ reference becomes a link", async () => {
+    const messages = await stored({ skills: [deploy] }, [
+      { type: "text", text: "$deploy now" },
+      paths,
+      image,
+    ]);
+
+    expect(messages).toEqual([
+      {
+        kind: "cloudpid.user",
+        data: { display: "$deploy now", skills: [] },
+        content: [{ type: "text", text: `[$deploy](${DEPLOY}) now` }, paths, image],
+      },
+    ]);
   });
 });
 

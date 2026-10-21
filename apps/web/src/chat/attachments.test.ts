@@ -25,21 +25,24 @@ describe("outgoingMessage", () => {
     expect(outgoingMessage("hello", [])).toEqual({ input: "hello", display: "hello" });
   });
 
-  it("names every Attachment's path after the text, and lists their names in the lanes", () => {
+  it("names every Attachment's path in a part after the text, and lists their names in the lanes", () => {
     expect(
       outgoingMessage("read these", [
         { name: "a.pdf", path: `${uploads}/a.pdf` },
         { name: "b.txt", path: `${uploads}/b.txt` },
       ]),
     ).toEqual({
-      input: `read these\n\n@${uploads}/a.pdf\n@${uploads}/b.txt`,
+      input: [
+        { type: "text", text: "read these" },
+        { type: "text", text: `@${uploads}/a.pdf\n@${uploads}/b.txt` },
+      ],
       display: "read these · Attached: a.pdf, b.txt",
     });
   });
 
   it("sends the paths alone when nothing is typed", () => {
     expect(outgoingMessage("  ", [{ name: "a.pdf", path: `${uploads}/a.pdf` }])).toEqual({
-      input: `@${uploads}/a.pdf`,
+      input: [{ type: "text", text: `@${uploads}/a.pdf` }],
       display: "Attached: a.pdf",
     });
   });
@@ -56,10 +59,8 @@ describe("outgoingMessage", () => {
       ]),
     ).toEqual({
       input: [
-        {
-          type: "text",
-          text: `look\n\n@${uploads}/a.png\n@${uploads}/notes.md\n@${uploads}/b.jpg`,
-        },
+        { type: "text", text: "look" },
+        { type: "text", text: `@${uploads}/a.png\n@${uploads}/notes.md\n@${uploads}/b.jpg` },
         { type: "image", ...png },
         { type: "image", ...jpeg },
       ],

@@ -30,8 +30,10 @@ export const laneText = (typed: string, names: readonly string[]): string => {
 };
 
 /**
- * The message to submit for `typed` and `attachments`: the text with each Attachment's `@path` on a line of its own
- * after it, then the inline images in order (plain text when there are none), and what the lanes show of it.
+ * The message to submit for `typed` and `attachments`: the typed text as it is, then a text part of each Attachment's
+ * `@path` on a line of its own, then the inline images in order, and what the lanes show of it. The paths are a part
+ * of their own, so a Prompt template or a Skill the Session expands from the typed text (its first text part) neither
+ * takes them for arguments nor drops them.
  */
 export const outgoingMessage = (
   typed: string,
@@ -45,14 +47,15 @@ export const outgoingMessage = (
   if (attachments.length === 0) return { input: typed, display };
 
   const paths = attachments.map((attachment) => `@${attachment.path}`).join("\n");
-  const text = typed.trim() === "" ? paths : `${typed.trimEnd()}\n\n${paths}`;
-  const images: UserInput = [];
+  const input: UserInput = typed.trim() === "" ? [] : [{ type: "text", text: typed }];
+
+  input.push({ type: "text", text: paths });
 
   for (const attachment of attachments) {
-    if (attachment.inline !== undefined) images.push({ type: "image", ...attachment.inline });
+    if (attachment.inline !== undefined) input.push({ type: "image", ...attachment.inline });
   }
 
-  return { input: images.length === 0 ? text : [{ type: "text", text }, ...images], display };
+  return { input, display };
 };
 
 const KIB = 1024;
