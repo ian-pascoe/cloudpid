@@ -1,14 +1,16 @@
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
 // What the Session has spent, in the header: its cost, and against its limit when the settings set one.
 
+import { useAtomValue } from "@effect/atom-react";
 import { Coins } from "lucide-react";
 import { cn } from "../lib/utils.ts";
 import { dollars, spendLevel, tokenCount } from "../format.ts";
-import { useSession } from "./session-context.tsx";
+import { usageAtom } from "../session/atoms.ts";
+import { useShownSessionId } from "./conversation.ts";
 
 /** The Session's cost so far, with its tokens on hover, turning to a warning near the spend limit and to an error at it. */
 export const UsageBadge = () => {
-  const usage = useSession((state) => state.usage);
+  const usage = useAtomValue(usageAtom(useShownSessionId()));
 
   if (usage === null) return null;
 

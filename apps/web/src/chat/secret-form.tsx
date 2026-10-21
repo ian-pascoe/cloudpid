@@ -1,9 +1,17 @@
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 import type { SecretRequest } from "@cloudpid/protocol";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Predicate from "effect/Predicate";
 import { KeyRound } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
+import {
+  answerSecretsAtom,
+  secretLifetimeMinutesAtom,
+  secretRequestsAtom,
+  sessionStatusAtom,
+} from "../session/atoms.ts";
+import { useShownSessionId } from "./conversation.ts";
 
 /** Values shorter than this are redacted only as written, so redacting them may also hide unrelated output. */
 const SHORT_SECRET_LENGTH = 8;
@@ -112,25 +120,25 @@ const SecretForm = ({
   );
 };
 
-/** The masked forms for the Secret requests waiting for the owner, oldest first. */
-export const SecretRequests = ({
-  requests,
-  lifetimeMinutes,
-  disabled,
-  onAnswer,
-}: {
-  requests: readonly SecretRequest[];
-  lifetimeMinutes: number;
-  disabled: boolean;
-  onAnswer: (request: string, values: Readonly<Record<string, string>> | null) => void;
-}) =>
-  requests.map((request) => (
+/** The masked forms for the Secret requests waiting for the owner in the Session shown, oldest first. */
+export const SecretRequests = () => {
+  const sessionId = useShownSessionId();
+  const requests = useAtomValue(secretRequestsAtom(sessionId));
+  const lifetimeMinutes = useAtomValue(secretLifetimeMinutesAtom(sessionId));
+  // Answered only over a live socket.
+  const disabled = useAtomValue(sessionStatusAtom(sessionId), (status) => status !== "live");
+  const answer = useAtomSet(answerSecretsAtom(sessionId));
+
+  return requests.map((request) => (
     // Keyed by request, so each form starts empty.
     <SecretForm
       key={request.id}
       request={request}
       lifetimeMinutes={lifetimeMinutes}
       disabled={disabled}
-      onAnswer={onAnswer}
+      onAnswer={(id, values) => {
+        answer({ request: id, values });
+      }}
     />
   ));
+};

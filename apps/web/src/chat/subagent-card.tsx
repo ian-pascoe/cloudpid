@@ -5,12 +5,14 @@
 
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { GraphAgent } from "@cloudpid/protocol";
+import { useAtomValue } from "@effect/atom-react";
 import * as Predicate from "effect/Predicate";
 import { Bot, ChevronRight, Loader } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { agentOfConversation } from "../session/agents.ts";
+import { taskGraphAtom } from "../session/atoms.ts";
 import { ChildThread } from "./child-thread.tsx";
-import { useSession } from "./session-context.tsx";
+import { useShownSessionId } from "./conversation.ts";
 import type { StartedSubagent } from "./subagent.ts";
 
 /** How an agent is doing, as the card and the panel say it. */
@@ -45,8 +47,8 @@ export const SubagentCard = ({
 }) => {
   const [open, setOpen] = useState(false);
 
-  const agent = useSession((state) =>
-    agentOfConversation(state.taskGraph, subagent.conversationId),
+  const agent = useAtomValue(taskGraphAtom(useShownSessionId()), (graph) =>
+    agentOfConversation(graph, subagent.conversationId),
   );
 
   const named = args.role;

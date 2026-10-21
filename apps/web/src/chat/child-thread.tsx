@@ -9,45 +9,57 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useMemo, useRef, type ReactNode } from "react";
+import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
+import {
+  abortAtom,
+  sessionStatusAtom,
+  submitAtom,
+  taskGraphAtom,
+  threadAtom,
+} from "../session/atoms.ts";
 import { type ThreadState } from "../session/state.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
-import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import { Composer } from "./composer.tsx";
+import { useShownSessionId } from "./conversation.ts";
 import { queueAdapter, textOf } from "./queue-adapter.ts";
-import { useConnection, useSession } from "./session-context.tsx";
 import { TodoList } from "./todo-list.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
 const LiveChildThread = ({
+  sessionId,
   conversationId,
   thread,
   messages,
 }: {
+  sessionId: string;
   conversationId: number;
   thread: ThreadState;
   /** The transcript's messages, rendered inside this thread's own runtime. */
   messages: ReactNode;
 }) => {
-  const connection = useConnection();
-  const agent = useSession((state) => agentOfConversation(state.taskGraph, conversationId));
-
-  const stopAll = useSession((state) =>
-    canStopAllBelow(state.taskGraph, agent?.id ?? "", thread.view.running),
-  );
-
-  const live = useSession((state) => state.status === "live");
+  const submit = useAtomSet(submitAtom(sessionId));
+  const abort = useAtomSet(abortAtom(sessionId));
+  const graph = useAtomValue(taskGraphAtom(sessionId));
+  const agent = agentOfConversation(graph, conversationId);
+  const stopAll = canStopAllBelow(graph, agent?.id ?? "", thread.view.running);
+  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
 
   const threadMessages = useMemo(() => toThreadMessages(thread.view), [thread.view]);
 
   const queue = useMemo(
     () =>
       queueAdapter(
-        { submit: (text, whenBusy) => connection.submit(text, whenBusy, conversationId) },
+        {
+          submit: (text, whenBusy) => {
+            submit({ message: text, whenBusy, conversationId });
+          },
+        },
         thread.queue,
       ),
-    [connection, conversationId, thread.queue],
+    [submit, conversationId, thread.queue],
   );
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
@@ -56,12 +68,12 @@ const LiveChildThread = ({
     isRunning: thread.view.running,
     queue,
     onNew: (message) => {
-      connection.submit(textOf(message), "followUp", conversationId);
+      submit({ message: textOf(message), whenBusy: "followUp", conversationId });
 
       return Promise.resolve();
     },
     onCancel: () => {
-      connection.abort({ conversationId });
+      abort({ conversationId });
 
       return Promise.resolve();
     },
@@ -99,7 +111,7 @@ const LiveChildThread = ({
           onStopAll={
             stopAll
               ? () => {
-                  connection.abort({ conversationId, subagents: true });
+                  abort({ conversationId, subagents: true });
                 }
               : undefined
           }
@@ -117,12 +129,11 @@ export const ChildThread = ({
   conversationId: number;
   messages: ReactNode;
 }) => {
-  const connection = useConnection();
-  const thread = useSession((state) => state.threads[String(conversationId)]);
+  const sessionId = useShownSessionId();
+  // Reading the thread watches it on the Session's socket, for as long as this is shown.
+  const thread = useAtomValue(threadAtom({ sessionId, conversationId }));
 
-  useEffect(() => connection.watchThread(conversationId), [connection, conversationId]);
-
-  if (thread === undefined || thread.status === "loading") {
+  if (thread === null || thread.status === "loading") {
     return <p className="py-2 text-sm text-muted-foreground">Loading…</p>;
   }
 
@@ -134,5 +145,12 @@ export const ChildThread = ({
     );
   }
 
-  return <LiveChildThread conversationId={conversationId} thread={thread} messages={messages} />;
+  return (
+    <LiveChildThread
+      sessionId={sessionId}
+      conversationId={conversationId}
+      thread={thread}
+      messages={messages}
+    />
+  );
 };

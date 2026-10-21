@@ -4,14 +4,22 @@
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
 
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ListTree, Square, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
 import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
+import {
+  abortAtom,
+  sessionStatusAtom,
+  sessionViewAtom,
+  taskGraphAtom,
+  todosAtom,
+} from "../session/atoms.ts";
 import { ChildThread } from "./child-thread.tsx";
+import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
-import { useConnection, useSession } from "./session-context.tsx";
 import { AgentStatus, shortModel } from "./subagent-card.tsx";
 import { TodoList } from "./todo-list.tsx";
 import { todoProgress } from "../session/todos.ts";
@@ -21,7 +29,7 @@ const kindLabel = (kind: string): string =>
   kind === "pi.compaction" ? "Compacting context" : kind;
 
 const AgentRow = ({ agent, depth }: { agent: GraphAgent; depth: number }) => {
-  const connection = useConnection();
+  const abort = useAtomSet(abortAtom(useShownSessionId()));
   const [open, setOpen] = useState(false);
 
   return (
@@ -53,7 +61,7 @@ const AgentRow = ({ agent, depth }: { agent: GraphAgent; depth: number }) => {
             aria-label={`Stop ${agent.id}`}
             title={`Stop ${agent.id}`}
             onClick={() => {
-              connection.abort({ conversationId: agent.conversationId });
+              abort({ conversationId: agent.conversationId });
             }}
           >
             <Square />
@@ -81,8 +89,14 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
 
 /** The button that shows or hides the panel, with how many agents are working and how far the Todo List is. */
 export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: () => void }) => {
-  const working = useSession((state) => workingBelow(state.taskGraph, "root").length);
-  const todos = useSession((state) => state.todos);
+  const sessionId = useShownSessionId();
+
+  const working = useAtomValue(
+    taskGraphAtom(sessionId),
+    (graph) => workingBelow(graph, "root").length,
+  );
+
+  const todos = useAtomValue(todosAtom(sessionId));
   const { total, completed } = todoProgress(todos);
 
   return (
@@ -108,14 +122,13 @@ export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: (
 
 /** The task graph panel: shown beside the thread on a wide screen, over it on a narrow one. */
 export const TaskPanel = ({ onClose, className }: { onClose: () => void; className?: string }) => {
-  const connection = useConnection();
-  const graph = useSession((state) => state.taskGraph);
-  const todos = useSession((state) => state.todos);
-  const live = useSession((state) => state.status === "live");
-
-  const stoppable = useSession((state) =>
-    canStopAllBelow(state.taskGraph, "root", state.view.running),
-  );
+  const sessionId = useShownSessionId();
+  const abort = useAtomSet(abortAtom(sessionId));
+  const graph = useAtomValue(taskGraphAtom(sessionId));
+  const todos = useAtomValue(todosAtom(sessionId));
+  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+  const running = useAtomValue(sessionViewAtom(sessionId), (view) => view.running);
+  const stoppable = canStopAllBelow(graph, "root", running);
 
   return (
     <aside
@@ -131,7 +144,7 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
             size="sm"
             title="Stop every subagent"
             onClick={() => {
-              connection.abort({ subagents: true });
+              abort({ subagents: true });
             }}
           >
             <Square />

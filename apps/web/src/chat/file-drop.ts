@@ -1,11 +1,18 @@
-// Files dragged over a thread attach to its composer: while a drag that carries files is over `zone`, `active` is true
-// (the composer shows it), and a drop hands the files over. A zone inside another (a subagent's thread in the Session's)
-// keeps its drags to itself. While it is enabled, a file dropped anywhere else on the page is refused rather than opened
-// by the browser in place of the app.
+// Files dragged over a thread attach to its composer: while a drag that carries files is over the zone,
+// `fileDragAtom` is true (the composer shows it), and a drop attaches the files. A zone inside another (a subagent's
+// thread in the Session's) keeps its drags to itself. While a zone is listening, a file dropped anywhere else on the
+// page is refused rather than opened by the browser in place of the app.
 
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code in a React app with no Effect runtime.
+// @effect-diagnostics missingPipeableSignature:off -- a React hook, not a combinator.
 
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { useAtomSet } from "@effect/atom-react";
+import * as Atom from "effect/reactivity/Atom";
+import { type RefObject, useEffect } from "react";
+import { addAttachmentsAtom } from "./attachments-state.ts";
+import type { ConversationKey } from "./conversation.ts";
+
+/** Whether files are being dragged over the thread of the conversation's composer. */
+export const fileDragAtom = Atom.family((_key: ConversationKey) => Atom.make(false));
 
 const carriesFiles = (event: DragEvent): boolean =>
   event.dataTransfer?.types.includes("Files") === true;
@@ -19,21 +26,18 @@ const refuse = (event: DragEvent) => {
   if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "none";
 };
 
-/** Whether files are being dragged over `zone`; `onFiles` gets the ones dropped on it. */
-export const useFileDrop = (
+/** Listen for files dragged over `zone` while mounted: they attach to the conversation's composer when dropped. */
+export const useFileDropZone = (
   zone: RefObject<HTMLElement | null> | undefined,
-  onFiles: (files: File[]) => void,
-  enabled: boolean,
-): boolean => {
-  const [active, setActive] = useState(false);
-  const latest = useRef(onFiles);
-
-  latest.current = onFiles;
+  key: ConversationKey,
+): void => {
+  const setActive = useAtomSet(fileDragAtom(key));
+  const attach = useAtomSet(addAttachmentsAtom(key));
 
   useEffect(() => {
     const element = zone?.current;
 
-    if (!enabled || element === null || element === undefined) return;
+    if (element === null || element === undefined) return;
 
     // Enter and leave fire for every element inside the zone: the drag is over it while more were entered than left.
     let depth = 0;
@@ -72,7 +76,7 @@ export const useFileDrop = (
       event.stopPropagation();
       depth = 0;
       setActive(false);
-      latest.current(Array.from(event.dataTransfer?.files ?? []));
+      attach(Array.from(event.dataTransfer?.files ?? []));
     };
 
     element.addEventListener("dragenter", enter);
@@ -91,7 +95,5 @@ export const useFileDrop = (
       window.removeEventListener("drop", refuse);
       setActive(false);
     };
-  }, [zone, enabled]);
-
-  return active;
+  }, [zone, setActive, attach]);
 };

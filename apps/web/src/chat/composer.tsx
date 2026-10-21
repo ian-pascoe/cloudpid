@@ -1,6 +1,9 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off globalTimers:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Paperclip, Square } from "lucide-react";
 import {
   type ClipboardEvent,
@@ -14,24 +17,31 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
-import { type CommandOutcome, sessionCommandsFor, type WhenBusy } from "@cloudpid/protocol";
+import { sessionCommandsFor, type WhenBusy } from "@cloudpid/protocol";
+import { messageOf } from "../registry.ts";
 import type { QueuedEntry, SendingEntry } from "../session/state.ts";
 import { AttachmentTiles } from "./attachment-tiles.tsx";
-import { outgoingMessage } from "./attachments.ts";
+import {
+  addAttachmentsAtom,
+  attachmentsAtom,
+  removeAttachmentAtom,
+  sendAttachedAtom,
+  sentAttachments,
+  waitingFor,
+} from "./attachments-state.ts";
+import { askCatalogAtom, catalogAtom } from "./catalog.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu, rowId } from "./completion-menu.tsx";
 import { detectTrigger, type Edited, replaceTrigger } from "./completion.ts";
+import { copyAtom, sessionCommandAtom, wideAtom } from "./composer-state.ts";
+import { conversationKey, useShownSessionId } from "./conversation.ts";
+import { fileDragAtom, useFileDropZone } from "./file-drop.ts";
+import { fileResults, fileSearchAtom, searchFilesAtom } from "./file-search.ts";
 import { completionFor, menuKey } from "./menu.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
-import { useConnection, useSessionId } from "./session-context.tsx";
-import { useAttachments } from "./use-attachments.ts";
-import { useCatalog } from "./use-catalog.ts";
-import { useFileSearch } from "./use-file-search.ts";
-import { useFileDrop } from "./use-file-drop.ts";
 
 const Lane = ({
   label,
@@ -60,42 +70,6 @@ const Lane = ({
     </section>
   );
 
-const WIDE_QUERY = "(min-width: 640px)";
-
-const subscribeWide = (listener: () => void) => {
-  const query = window.matchMedia(WIDE_QUERY);
-
-  query.addEventListener("change", listener);
-
-  return () => {
-    query.removeEventListener("change", listener);
-  };
-};
-
-/** Whether the screen has room for the long placeholder; on a phone it would wrap. */
-const useWide = (): boolean =>
-  useSyncExternalStore(subscribeWide, () => window.matchMedia(WIDE_QUERY).matches);
-
-/** How long a download's link to its file is kept: Safari on iOS reads the file after the click returns. */
-const DOWNLOAD_LINK_MS = 30_000;
-
-/** Hand the owner `file` as a download, as a link to it would. */
-const download = (file: NonNullable<CommandOutcome["file"]>) => {
-  const url = URL.createObjectURL(new Blob([file.content], { type: file.mimeType }));
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = file.name;
-  link.hidden = true;
-  // In the document, as Safari clicks only a link that is.
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, DOWNLOAD_LINK_MS);
-};
-
 /** A line under the composer: why a command failed, or what one did. */
 type Note = { readonly tone: "error" | "info"; readonly text: string };
 
@@ -117,8 +91,8 @@ const roundButton =
  * the model to read.
  *
  * Files attach with the Attach button, a paste, or a drop anywhere on `dropZone` (the thread), and upload at once
- * (`use-attachments.ts`). A message with Attachments is sent by the composer itself, once every one is uploaded and every
- * picture fitted (Send waits until then): its text names each one's `@path`, and the pictures go inline.
+ * (`attachments-state.ts`). A message with Attachments is sent by the composer itself, once every one is uploaded and
+ * every picture fitted (Send waits until then): its text names each one's `@path`, and the pictures go inline.
  */
 export const Composer = ({
   steerLane,
@@ -152,7 +126,7 @@ export const Composer = ({
 }) => {
   // On a touch screen, focusing the input opens the keyboard over the transcript.
   const autoFocus = !compact && window.matchMedia("(pointer: fine)").matches;
-  const wide = useWide();
+  const wide = useAtomValue(wideAtom);
   const menuId = useId();
   const input = useRef<HTMLTextAreaElement>(null);
 
@@ -169,17 +143,26 @@ export const Composer = ({
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [busy, setBusy] = useState(false);
-  const connection = useConnection();
-  const { catalog, refresh } = useCatalog(connection, conversationId);
-  const sessionId = useSessionId();
-  const attachments = useAttachments(sessionId);
+  // This composer's conversation, which its catalog, `@` menu and Attachments belong to.
+  const key = conversationKey(useShownSessionId(), conversationId);
+  const catalog = useAtomValue(catalogAtom(key));
+  const askCatalog = useAtomSet(askCatalogAtom(key));
+  const runSessionCommand = useAtomSet(sessionCommandAtom(key), { mode: "promiseExit" });
+  const copy = useAtomSet(copyAtom, { mode: "promiseExit" });
+  const attachments = useAtomValue(attachmentsAtom(key));
+  const addAttachments = useAtomSet(addAttachmentsAtom(key));
+  const removeAttachment = useAtomSet(removeAttachmentAtom(key));
+  const sendAttached = useAtomSet(sendAttachedAtom(key), { mode: "promiseExit" });
   const picker = useRef<HTMLInputElement>(null);
-  const dragging = useFileDrop(dropZone, attachments.add, sessionId !== null);
+
+  useFileDropZone(dropZone, key);
+
+  const dragging = useAtomValue(fileDragAtom(key));
   const attached = attachments.items.length > 0;
   // Attachments alone make a message.
   const hasMessage = canSend || attached;
   // Why Send waits, shown under the box while no other note is.
-  const waiting = attached ? attachments.waiting : null;
+  const waiting = attached ? waitingFor(attachments) : null;
   const noteId = useId();
 
   const shownNote: Note | null =
@@ -191,23 +174,16 @@ export const Composer = ({
       // Known before the catalog arrives, so `/compact` typed first, or after the catalog could not be had, still runs.
       sessionCommands(
         catalog?.commands ?? sessionCommandsFor(conversationId === undefined),
-        async (name, args) => {
-          let outcome: CommandOutcome;
+        (name, args) =>
+          runSessionCommand({ name, args }).then((exit) => {
+            if (Exit.isFailure(exit)) return messageOf(exit.cause);
 
-          try {
-            outcome = await connection.command(name, args, conversationId);
-          } catch (error) {
-            return error instanceof Error ? error.message : String(error);
-          }
+            if (exit.value !== null) setNote({ tone: "info", text: exit.value });
 
-          if (outcome.file !== undefined) download(outcome.file);
-
-          if (outcome.notice !== undefined) setNote({ tone: "info", text: outcome.notice });
-
-          return null;
-        },
+            return null;
+          }),
       ),
-    [catalog, connection, conversationId],
+    [catalog, runSessionCommand, conversationId],
   );
 
   const allCommands = useMemo(() => {
@@ -228,7 +204,7 @@ export const Composer = ({
         name: "copy",
         description: "Copy the last answer",
         argument: "none",
-        run: async () => {
+        run: () => {
           const last = aui
             .thread()
             .getState()
@@ -241,15 +217,13 @@ export const Composer = ({
 
           if (answer === "") return "There is no answer to copy yet.";
 
-          try {
-            await navigator.clipboard.writeText(answer);
-          } catch {
-            return "The browser did not allow copying.";
-          }
+          return copy(answer).then((exit) => {
+            if (Exit.isFailure(exit)) return "The browser did not allow copying.";
 
-          setNote({ tone: "info", text: "Copied the last answer." });
+            setNote({ tone: "info", text: "Copied the last answer." });
 
-          return null;
+            return null;
+          });
         },
       },
     ];
@@ -268,14 +242,21 @@ export const Composer = ({
     }
 
     return [...commands, ...session, ...own].toSorted((a, b) => a.name.localeCompare(b.name));
-  }, [aui, commands, session, onStopAll]);
+  }, [aui, commands, session, onStopAll, copy]);
 
   const trigger = focused ? detectTrigger(text, caret) : null;
 
   // The `@` menu asks the Session for the files that match while it is open.
   const fileQuery = trigger?.kind === "file" && trigger.start !== dismissed ? trigger.query : null;
 
-  const files = useFileSearch(connection, conversationId, fileQuery);
+  const fileSearch = useAtomValue(fileSearchAtom(key));
+  const searchFiles = useAtomSet(searchFilesAtom(key));
+
+  useEffect(() => {
+    searchFiles(fileQuery);
+  }, [searchFiles, fileQuery]);
+
+  const files = fileResults(fileSearch, fileQuery);
 
   const completion =
     trigger === null || trigger.start === dismissed
@@ -310,8 +291,8 @@ export const Composer = ({
   const listsCatalog = trigger?.kind === "command" || trigger?.kind === "skill";
 
   useEffect(() => {
-    if (listsCatalog) refresh();
-  }, [listsCatalog, refresh]);
+    if (listsCatalog) askCatalog();
+  }, [listsCatalog, askCatalog]);
 
   // A dismissed trigger that is gone (deleted, or the caret left it) no longer holds its menu closed.
   useEffect(() => {
@@ -378,42 +359,36 @@ export const Composer = ({
    * Send what is typed with the Attachments, once they are all uploaded and fitted; else say what it waits for. Should
    * the Session refuse the message, its text and Attachments come back to the composer, with why under it.
    */
-  const sendAttached = (whenBusy: WhenBusy) => {
-    const sent = attachments.sent();
-
-    if (sent === undefined) {
-      setNote({ tone: "info", text: attachments.waiting ?? "The attachments are not ready." });
+  const sendWithAttachments = (whenBusy: WhenBusy) => {
+    if (sentAttachments(attachments) === undefined) {
+      setNote({
+        tone: "info",
+        text: waitingFor(attachments) ?? "The attachments are not ready.",
+      });
 
       return;
     }
 
     const typed = text;
-    const held = attachments.hold();
 
-    aui.composer.setText("");
-    setNote(null);
-
-    connection.submit(outgoingMessage(typed, sent), whenBusy, conversationId, (failure) => {
-      if (failure === null) {
-        held.release();
-
-        return;
-      }
-
-      held.restore();
+    // The Attachments leave the composer with the text, as the send takes them.
+    void sendAttached({ typed, whenBusy }).then((exit) => {
+      if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
 
       // What was typed since goes after it, so nothing is lost.
       const since = aui.composer.getState().text;
 
       aui.composer.setText(since.trim() === "" ? typed : `${typed}\n\n${since}`);
-      setNote({ tone: "error", text: failure });
+      setNote({ tone: "error", text: messageOf(exit.cause) });
     });
+    aui.composer.setText("");
+    setNote(null);
   };
 
   const queue = () => {
     if (!hasMessage || handled()) return;
 
-    if (attached) sendAttached("followUp");
+    if (attached) sendWithAttachments("followUp");
     else aui.composer.send({ steer: false });
   };
 
@@ -427,7 +402,7 @@ export const Composer = ({
     // assistant-ui sends text only: a message with Attachments is the composer's to send.
     if (attached) {
       event.preventDefault();
-      sendAttached(running ? "steer" : "followUp");
+      sendWithAttachments(running ? "steer" : "followUp");
     }
   };
 
@@ -435,11 +410,11 @@ export const Composer = ({
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(event.clipboardData.files);
 
-    if (files.length === 0 || sessionId === null) return;
+    if (files.length === 0) return;
 
     if (!event.clipboardData.types.includes("text/plain")) event.preventDefault();
 
-    attachments.add(files);
+    addAttachments(files);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -470,7 +445,7 @@ export const Composer = ({
     if (attached && event.key === "Enter" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
 
-      if (!busy && !handled()) sendAttached("steer");
+      if (!busy && !handled()) sendWithAttachments("steer");
     }
   };
 
@@ -515,7 +490,7 @@ export const Composer = ({
           <AttachmentTiles
             items={attachments.items}
             fits={attachments.fits}
-            onRemove={attachments.remove}
+            onRemove={removeAttachment}
           />
           <ComposerPrimitive.Input
             ref={input}
@@ -556,32 +531,28 @@ export const Composer = ({
           <div className="flex items-center gap-2 px-1.5 pb-1.5">
             <div className="flex min-w-0 flex-1 items-center gap-0.5">{tools}</div>
             <div className="flex shrink-0 items-center gap-1">
-              {sessionId !== null && (
-                <>
-                  <input
-                    ref={picker}
-                    type="file"
-                    multiple
-                    hidden
-                    tabIndex={-1}
-                    onChange={(event) => {
-                      attachments.add(Array.from(event.target.files ?? []));
-                      event.target.value = "";
-                    }}
-                  />
-                  <button
-                    type="button"
-                    aria-label="Attach files"
-                    title="Attach files"
-                    onClick={() => {
-                      picker.current?.click();
-                    }}
-                    className="touch-target inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
-                  >
-                    <Paperclip aria-hidden />
-                  </button>
-                </>
-              )}
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                hidden
+                tabIndex={-1}
+                onChange={(event) => {
+                  addAttachments(Array.from(event.target.files ?? []));
+                  event.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                aria-label="Attach files"
+                title="Attach files"
+                onClick={() => {
+                  picker.current?.click();
+                }}
+                className="touch-target inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
+              >
+                <Paperclip aria-hidden />
+              </button>
               {running && hasMessage && (
                 <button
                   type="button"

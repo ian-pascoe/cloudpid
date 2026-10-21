@@ -2,16 +2,27 @@
 
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { isModelId, THINKING_LEVELS } from "@cloudpid/config";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
-import { MAX_TITLE_LENGTH } from "@cloudpid/protocol";
+import { MAX_TITLE_LENGTH, type SessionView } from "@cloudpid/protocol";
 import { type ReactNode, type RefObject, useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { modelChoices, modelName } from "../models.ts";
 import { navigate, SETTINGS_PATH } from "../router.ts";
-import type { ConfigureChange, QueuedEntry, SessionState } from "../session/state.ts";
+import {
+  configureAtom,
+  sessionFailureAtom,
+  sessionPickedAtom,
+  sessionQueueAtom,
+  sessionSendingAtom,
+  sessionStatusAtom,
+  sessionViewAtom,
+} from "../session/atoms.ts";
+import type { ConfigureChange } from "../session/state.ts";
 import type { ComposerCommand } from "./commands.ts";
 import { Composer } from "./composer.tsx";
+import { useShownSessionId } from "./conversation.ts";
 import { isLevel, ModelPicker, type PickerHandle } from "./model-picker.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
@@ -196,20 +207,20 @@ const NOT_LIVE = "The session is not connected; try again once it is.";
  * opened without one), its title, a new Session beside it, archiving it, and the Settings.
  */
 const sessionCommands = ({
-  state,
+  live,
+  view,
   picker,
   rename,
   actions,
   onConfigure,
 }: {
-  state: SessionState;
+  live: boolean;
+  view: SessionView;
   picker: RefObject<PickerHandle | null>;
   rename: Rename | undefined;
   actions: SessionCommandActions;
   onConfigure: (change: ConfigureChange) => void;
 }): ComposerCommand[] => {
-  const live = state.status === "live";
-  const { view } = state;
   const model = view.model === null ? null : `${view.model.provider}/${view.model.modelId}`;
   const models = modelChoices(model);
 
@@ -330,17 +341,12 @@ const sessionCommands = ({
   return commands;
 };
 
-/** The chat of one Session: its transcript with live progress, a notice when disconnected, and the composer. */
+/** The chat of the Session shown: its transcript with live progress, a notice when disconnected, and the composer. */
 export const Thread = ({
   title,
   rename,
   archived,
-  state,
   notice,
-  steerLane,
-  followUpLane,
-  onConfigure,
-  onAnswerSecrets,
   onStopAll,
   actions,
   commandActions = NO_ACTIONS,
@@ -350,21 +356,24 @@ export const Thread = ({
   rename?: Rename | undefined;
   /** Set while the Session is archived: no composer, a banner to unarchive it instead. */
   archived?: Archived | undefined;
-  state: SessionState;
   /** Stop the run and every subagent; given while a subagent is working. */
   onStopAll?: (() => void) | undefined;
   /** Buttons in the header, after the title. */
   actions?: ReactNode;
   /** What the Session-wide Slash commands do. */
   commandActions?: SessionCommandActions | undefined;
-  onConfigure: (change: ConfigureChange) => void;
-  onAnswerSecrets: (request: string, values: Readonly<Record<string, string>> | null) => void;
   notice: ReactNode;
-  steerLane: readonly QueuedEntry[];
-  followUpLane: readonly QueuedEntry[];
 }) => {
-  const { view } = state;
-  const problem = state.failure ?? view.error;
+  const sessionId = useShownSessionId();
+  const status = useAtomValue(sessionStatusAtom(sessionId));
+  const view = useAtomValue(sessionViewAtom(sessionId));
+  const lanes = useAtomValue(sessionQueueAtom(sessionId));
+  const sending = useAtomValue(sessionSendingAtom(sessionId));
+  const failure = useAtomValue(sessionFailureAtom(sessionId));
+  const picked = useAtomValue(sessionPickedAtom(sessionId));
+  const onConfigure = useAtomSet(configureAtom(sessionId));
+  const live = status === "live";
+  const problem = failure ?? view.error;
   const picker = useRef<PickerHandle>(null);
   // A file dropped anywhere on the thread attaches to its composer.
   const dropZone = useRef<HTMLDivElement>(null);
@@ -372,13 +381,14 @@ export const Thread = ({
   const commands = useMemo(
     () =>
       sessionCommands({
-        state,
+        live,
+        view,
         picker,
         rename,
         actions: commandActions,
         onConfigure,
       }),
-    [state, rename, commandActions, onConfigure],
+    [live, view, rename, commandActions, onConfigure],
   );
 
   // assistant-ui shows its own placeholder while the answer to the last user message has not started.
@@ -403,7 +413,7 @@ export const Thread = ({
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
           <ThreadPrimitive.Empty>
             <p className="py-16 text-center text-muted-foreground">
-              {state.status === "live" ? "Send a message to start the conversation." : null}
+              {live ? "Send a message to start the conversation." : null}
             </p>
           </ThreadPrimitive.Empty>
           <Messages />
@@ -426,19 +436,14 @@ export const Thread = ({
         </p>
       )}
       <div className="px-4">
-        <BrowserHandoffRequests requests={state.browserHandoffRequests} graph={state.taskGraph} />
-        <SecretRequests
-          requests={state.secretRequests}
-          lifetimeMinutes={state.secretLifetimeMinutes}
-          disabled={state.status !== "live"}
-          onAnswer={onAnswerSecrets}
-        />
+        <BrowserHandoffRequests />
+        <SecretRequests />
       </div>
       {archived === undefined ? (
         <Composer
-          steerLane={steerLane}
-          followUpLane={followUpLane}
-          sending={state.sending}
+          steerLane={lanes.steer}
+          followUpLane={lanes.followUp}
+          sending={sending}
           onStopAll={onStopAll}
           commands={commands}
           dropZone={dropZone}
@@ -446,8 +451,8 @@ export const Thread = ({
             <ModelPicker
               ref={picker}
               view={view}
-              picked={state.picked}
-              disabled={state.status !== "live"}
+              picked={picked}
+              disabled={!live}
               onConfigure={onConfigure}
             />
           }

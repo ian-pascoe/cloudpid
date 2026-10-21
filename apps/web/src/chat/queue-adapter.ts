@@ -8,8 +8,13 @@ import type {
   ExternalThreadQueueAdapter,
   QueueItemState,
 } from "@assistant-ui/react";
+import type { WhenBusy } from "@cloudpid/protocol";
 import type { QueuedEntry, QueueLanes } from "../session/state.ts";
-import type { Connection } from "./session-context.tsx";
+
+/** Where the lanes send what is typed: a submit to the conversation (`submitAtom`). */
+export interface QueueTarget {
+  readonly submit: (text: string, whenBusy: WhenBusy) => void;
+}
 
 /** What the user typed, as text. */
 export const textOf = (message: AppendMessage): string => {
@@ -34,16 +39,16 @@ const queueItem = (entry: QueuedEntry): QueueItemState => {
  * `remove` do nothing and the UI offers none of them.
  */
 export const queueAdapter = (
-  connection: Pick<Connection, "submit">,
+  target: QueueTarget,
   lanes: QueueLanes,
 ): ExternalThreadQueueAdapter => ({
   items: lanes.followUp.map(queueItem),
   steerItems: lanes.steer.map(queueItem),
   enqueue: (message) => {
-    connection.submit(textOf(message), "followUp");
+    target.submit(textOf(message), "followUp");
   },
   steer: (message) => {
-    connection.submit(textOf(message), "steer");
+    target.submit(textOf(message), "steer");
   },
   move: () => {},
   edit: () => {},

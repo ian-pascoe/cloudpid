@@ -9,7 +9,7 @@ import { useState } from "react";
 import { cn } from "../lib/utils.ts";
 import { formatSize } from "./attachments.ts";
 import type { Fit } from "./image-budget.ts";
-import type { AttachmentItem } from "./use-attachments.ts";
+import type { AttachmentItem } from "./attachments-state.ts";
 
 const Progress = ({ item }: { item: AttachmentItem }) =>
   item.status === "uploading" ? (
