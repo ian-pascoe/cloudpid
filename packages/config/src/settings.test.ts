@@ -73,8 +73,28 @@ describe("the defaults", () => {
     expect(DEFAULT_SETTINGS.tools.offered).not.toContain("subagent");
   });
 
+  it("leave the spend limit off", () => {
+    expect(DEFAULT_SETTINGS.spendLimit).toEqual({ perSession: null });
+  });
+
   it("offer only models the proxy serves", () => {
     expect(SUPPORTED_MODELS).toContain(DEFAULT_SETTINGS.model);
+  });
+});
+
+describe("the spend limit", () => {
+  it("is a positive amount in USD per Session, or null for none", () => {
+    expect(resolved({ spendLimit: { perSession: 12.5 } }).spendLimit.perSession).toBe(12.5);
+    expect(resolved({ spendLimit: { perSession: null } }).spendLimit.perSession).toBeNull();
+    expect(rejected({ spendLimit: { perSession: 0 } })).toContain("spendLimit.perSession");
+    expect(rejected({ spendLimit: { perSession: -3 } })).toContain("spendLimit.perSession");
+  });
+
+  it("is saved only when it differs from the default", () => {
+    expect(overridesFrom(resolved({ spendLimit: { perSession: null } }))).toEqual({});
+    expect(overridesFrom(resolved({ spendLimit: { perSession: 5 } }))).toEqual({
+      spendLimit: { perSession: 5 },
+    });
   });
 });
 

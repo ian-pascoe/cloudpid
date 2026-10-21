@@ -48,8 +48,11 @@ import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
+import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
+import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import {
   reloadSessionExtensions,
@@ -146,6 +149,8 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
 
 /** The models the test provider serves: those the default settings and a Session's choice may name. */
 const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as const;
+
+export { REQUEST_COST };
 
 /** The model and thinking level a request asked for. */
 export type TestRequest = { readonly model: string; readonly thinking: string | undefined };
@@ -244,6 +249,8 @@ export class TestSession extends DurableObject {
     return undefined;
   }
 
+  /** The spans this instance's Effects made, in the order they started. */
+  readonly #spans: Tracer.NativeSpan[] = [];
   #host!: SessionHostService;
   #sockets!: SessionSocketsService;
   #runtime!: ManagedRuntime.ManagedRuntime<
@@ -280,7 +287,7 @@ export class TestSession extends DurableObject {
               storage: ctx.storage,
               // As the Session DO's: every model call is scrubbed of the Secrets the Session holds.
               models: Effect.map(Effect.service(Secrets), (held) =>
-                scrubbingModels(imageLimitedModels(models), held),
+                scrubbingModels(imageLimitedModels(pricedModels(models, REQUEST_COST)), held),
               ),
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
@@ -360,6 +367,21 @@ export class TestSession extends DurableObject {
               notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
             }),
           ),
+          // The spans this instance's Effects make, kept to read.
+          Layer.provideMerge(
+            Layer.succeed(
+              Tracer.Tracer,
+              Tracer.make({
+                span: (options) => {
+                  const span = new Tracer.NativeSpan(options);
+
+                  this.#spans.push(span);
+
+                  return span;
+                },
+              }),
+            ),
+          ),
         ),
       );
 
@@ -409,17 +431,43 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /** What the Session has spent, in US dollars: every conversation's requests and the title calls'. */
+  spent(): Promise<number> {
+    const { kv } = this.ctx.storage;
+
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        return (yield* Effect.promise(() => sessionTotals(harness.harness, kv))).cost;
+      }),
+    );
+  }
+
   /** Whether no work is live; reads only, so it never runs work itself. */
   idle(): Promise<boolean> {
     return Effect.runPromise(this.#host.idle);
   }
 
   submit({ requestId, text }: TestPrompt): Promise<number> {
-    return Effect.runPromise(this.#host.submit({ requestId, input: text }));
+    return this.#runtime.runPromise(this.#host.submit({ requestId, input: text }));
   }
 
   prompt({ requestId, text }: TestPrompt): Promise<Answer> {
-    return Effect.runPromise(this.#host.prompt({ requestId, input: text }));
+    return this.#runtime.runPromise(this.#host.prompt({ requestId, input: text }));
+  }
+
+  /** The spans of this instance's Effects, as a test reads them: their names and attributes, and whether they ended. */
+  spans(): ReadonlyArray<{
+    readonly name: string;
+    readonly attributes: Readonly<Record<string, unknown>>;
+    readonly ended: boolean;
+  }> {
+    return Arr.map(this.#spans, (span) => ({
+      name: span.name,
+      attributes: Object.fromEntries(span.attributes),
+      ended: Predicate.isTagged(span.status, "Ended"),
+    }));
   }
 
   /** The text of each tool result in the root transcript, oldest first. */

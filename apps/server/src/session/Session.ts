@@ -13,7 +13,15 @@ import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
 import { ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
+import {
+  telemetryLayer,
+  tracingModels,
+  tracingTools,
+  workersTelemetry,
+  type WorkersTracing,
+} from "@cloudpid/telemetry";
 import * as Cloudflare from "alchemy/Cloudflare";
+import * as Arr from "effect/Array";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -23,6 +31,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
+import * as Tracer from "effect/Tracer";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
@@ -48,6 +57,16 @@ import {
   type WorkspaceNamespace,
 } from "./workspace.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
+
+/**
+ * Workers' tracing API (`cloudflare:workers`), where the runtime has one. It is read when an object is built, not when
+ * the module loads: the stack imports this module under Node, which has no such module.
+ */
+const workersTracing = (): Promise<WorkersTracing | undefined> =>
+  import("cloudflare:workers").then(
+    (workers) => workers.tracing,
+    () => undefined,
+  );
 
 /** The key the Session's name is kept under, for instances that are not told it. */
 const NAME_KEY = "session-name";
@@ -114,6 +133,16 @@ export const SessionLive = Session.make(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
     Effect.map(({ proxy, registries, secrets, state, web, worker }) =>
       Effect.gen(function* () {
+        // One tracer for the object's life: its spans are custom spans of the Worker's trace (`docs/spec.md` → Telemetry).
+        const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
+
+        /** `effect` as an invocation of the object: a span of its own, under the tracer every Session span is made by. */
+        const invoked = <A, E, R>(name: string, effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.withSpan(name),
+            Effect.provideService(Tracer.Tracer, telemetry.tracer),
+          );
+
         const models = proxyModels({
           url: Redacted.value(proxy.url),
           apiKey: Redacted.value(proxy.apiKey),
@@ -244,11 +273,23 @@ export const SessionLive = Session.make(
               sessionHostLayer({
                 storage: state.raw.storage,
                 // Every model call (generations, summaries) is scrubbed of the Secrets this Session holds.
+                // Each request is a span too, measured where it leaves for the proxy.
                 models: Effect.map(Effect.service(Secrets), (held) =>
-                  scrubbingModels(imageLimitedModels(models), held),
+                  tracingModels(
+                    scrubbingModels(imageLimitedModels(models), held),
+                    telemetry.context,
+                  ),
                 ),
                 reset: (reason) => state.raw.abort(reason),
                 extensions: sessionExtensions.pipe(
+                  // After every other extension, so each of their tools is named and its call is a span.
+                  Effect.map((installed) => [
+                    ...installed,
+                    tracingTools(
+                      telemetry.context,
+                      Arr.flatMap(installed, (extension) => extension.tools ?? []),
+                    ),
+                  ]),
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   // For extensions that need the owner (a Live View link, say): pushes through the Registry.
@@ -281,6 +322,8 @@ export const SessionLive = Session.make(
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),
             Layer.provide(Layer.mergeAll(registry, settings)),
+            // Last, so the object's own Effects (those the host and the sockets run) make their spans there too.
+            Layer.provideMerge(telemetryLayer(telemetry)),
           ),
         );
 
@@ -292,30 +335,35 @@ export const SessionLive = Session.make(
 
         return {
           // A failed alarm is retried by the runtime. Expired Secrets are deleted first.
-          alarm: () => Effect.orDie(held.sweep.pipe(Effect.andThen(host.alarm))),
-          fetch: Effect.gen(function* () {
-            const request = yield* HttpServerRequest.HttpServerRequest;
+          alarm: () =>
+            invoked("session.alarm", Effect.orDie(held.sweep.pipe(Effect.andThen(host.alarm)))),
+          fetch: invoked(
+            "session.connect",
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
 
-            if (request.headers.upgrade?.toLowerCase() !== "websocket") {
-              return HttpServerResponse.empty({ status: 426, headers: { upgrade: "websocket" } });
-            }
+              if (request.headers.upgrade?.toLowerCase() !== "websocket") {
+                return HttpServerResponse.empty({ status: 426, headers: { upgrade: "websocket" } });
+              }
 
-            const client = yield* sockets.connect;
+              const client = yield* sockets.connect;
 
-            return HttpServerResponse.setBody(
-              HttpServerResponse.empty({ status: 101 }),
-              HttpBody.raw(new Response(null, { status: 101, webSocket: client })),
-            );
-          }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logError("Session socket upgrade failed", cause).pipe(
-                Effect.as(HttpServerResponse.empty({ status: 503 })),
+              return HttpServerResponse.setBody(
+                HttpServerResponse.empty({ status: 101 }),
+                HttpBody.raw(new Response(null, { status: 101, webSocket: client })),
+              );
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("Session socket upgrade failed", cause).pipe(
+                  Effect.as(HttpServerResponse.empty({ status: 503 })),
+                ),
               ),
             ),
           ),
-          webSocketMessage: (socket, message) => sockets.receive(socket.ws, message),
-          webSocketClose: (socket) => sockets.drop(socket.ws),
-          webSocketError: (socket) => sockets.drop(socket.ws),
+          webSocketMessage: (socket, message) =>
+            invoked("session.message", sockets.receive(socket.ws, message)),
+          webSocketClose: (socket) => invoked("session.close", sockets.drop(socket.ws)),
+          webSocketError: (socket) => invoked("session.close", sockets.drop(socket.ws)),
         };
       }),
     ),

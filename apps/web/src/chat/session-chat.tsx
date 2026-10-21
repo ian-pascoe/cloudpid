@@ -12,6 +12,7 @@ import { queueAdapter, textOf } from "./queue-adapter.ts";
 import { SessionProvider } from "./session-context.tsx";
 import { TaskPanel, TaskPanelToggle } from "./task-panel.tsx";
 import { type Rename, Thread } from "./thread.tsx";
+import { UsageBadge } from "./usage-badge.tsx";
 
 const socketUrl = (sessionId: string): string => {
   const url = new URL(sessionSocketPath(sessionId), window.location.href);
@@ -57,9 +58,11 @@ const LiveSession = ({
   const [panelOpen, setPanelOpen] = useState(false);
   const stoppable = canStopAllBelow(state.taskGraph, "root", state.view.running);
 
-  // The cards and the panel read the task graph, so it is watched for as long as the Session is shown.
+  // The cards and the panel read the task graph, and the header what the Session has spent, so both are watched for as
+  // long as the Session is shown.
   useEffect(() => {
     connection.watchTaskGraph();
+    connection.watchUsage();
   }, [connection]);
 
   const messages = useMemo(() => toThreadMessages(state.view), [state.view]);
@@ -109,12 +112,15 @@ const LiveSession = ({
                   : undefined
               }
               actions={
-                <TaskPanelToggle
-                  open={panelOpen}
-                  onToggle={() => {
-                    setPanelOpen(!panelOpen);
-                  }}
-                />
+                <>
+                  <UsageBadge />
+                  <TaskPanelToggle
+                    open={panelOpen}
+                    onToggle={() => {
+                      setPanelOpen(!panelOpen);
+                    }}
+                  />
+                </>
               }
             />
           </AssistantRuntimeProvider>

@@ -17,6 +17,7 @@ import { NativeSelect } from "./components/ui/native-select.tsx";
 import { modelName } from "./models.ts";
 import { badOfferedEntries, offeredFromText, offeredToText } from "./offered-tools.ts";
 import { navigate } from "./router.ts";
+import { spendLimitFromText, spendLimitToText } from "./spend-limit.ts";
 import { usePush } from "./use-push.ts";
 import { useSettings } from "./use-settings.ts";
 
@@ -172,6 +173,8 @@ const SettingsForm = ({
   const [justSaved, setJustSaved] = useState(false);
   // The text box keeps what is typed; the draft holds what it parses to.
   const [offeredText, setOfferedText] = useState(offeredToText(saved.tools.offered));
+  const [limitText, setLimitText] = useState(spendLimitToText(saved.spendLimit.perSession));
+  const badLimit = spendLimitFromText(limitText) === undefined;
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   const badOffered = badOfferedEntries(draft.tools.offered);
 
@@ -276,13 +279,42 @@ const SettingsForm = ({
           </p>
         )}
       </Section>
+      <Section title="Spend limit">
+        <p className="text-sm text-muted-foreground">
+          The most a session may spend on model requests, in US dollars, its subagents and its title
+          included. A session at its limit refuses its next request and ends the run with a message;
+          raise or clear the limit and prompt again to go on. Leave it empty for no limit.
+        </p>
+        <Field label="Per session (USD)" htmlFor="spend-limit">
+          <input
+            id="spend-limit"
+            inputMode="decimal"
+            value={limitText}
+            placeholder="No limit"
+            onChange={(event) => {
+              setLimitText(event.target.value);
+
+              const perSession = spendLimitFromText(event.target.value);
+
+              if (perSession !== undefined) edit({ ...draft, spendLimit: { perSession } });
+            }}
+            className="min-w-0 rounded-md border border-input bg-background px-2.5 py-2 text-sm focus-visible:outline-2 focus-visible:outline-ring sm:max-w-48"
+          />
+        </Field>
+        {badLimit && (
+          <p role="alert" className="text-sm text-destructive">
+            Enter an amount above zero, such as <code>5</code> or <code>12.50</code>, or leave it
+            empty for no limit.
+          </p>
+        )}
+      </Section>
       {error !== null && (
         <p role="alert" className="mb-4 text-sm whitespace-pre-wrap text-destructive">
           {error}
         </p>
       )}
       <div className="flex items-center gap-3 border-t py-4">
-        <Button type="submit" disabled={!dirty || saving || badOffered.length > 0}>
+        <Button type="submit" disabled={!dirty || saving || badOffered.length > 0 || badLimit}>
           {saving ? "Saving…" : "Save"}
         </Button>
         <Button
@@ -292,6 +324,7 @@ const SettingsForm = ({
           onClick={() => {
             edit(DEFAULT_SETTINGS);
             setOfferedText(offeredToText(DEFAULT_SETTINGS.tools.offered));
+            setLimitText(spendLimitToText(DEFAULT_SETTINGS.spendLimit.perSession));
           }}
         >
           Reset to defaults
@@ -306,7 +339,7 @@ const SettingsForm = ({
   );
 };
 
-/** The settings page: the default model and thinking level, the model roles, the offered tools, and this device's notifications. */
+/** The settings page: the default model and thinking level, the model roles, the offered tools, the spend limit, and this device's notifications. */
 export const SettingsPage = () => {
   const settings = useSettings();
 

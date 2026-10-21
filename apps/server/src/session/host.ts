@@ -12,7 +12,7 @@ import {
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
 import { TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
-import type { TaskGraphSummary, TodoTask } from "@cloudpid/protocol";
+import type { SessionUsage, TaskGraphSummary, TodoTask } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { formatModelId, isModelId } from "@cloudpid/config";
@@ -48,6 +48,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -56,6 +57,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import type * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
 import {
@@ -64,6 +66,13 @@ import {
   type SessionSettingsValues,
   type SettingsKv,
 } from "./settings.ts";
+import {
+  type Ledger,
+  limitingModels,
+  recordTitleUsage,
+  sessionTotals,
+  usageMessage,
+} from "./spend.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -197,6 +206,9 @@ export type AbortOptions = {
 /** The longest a change to the task graph waits before it is sent. */
 export const TASK_GRAPH_INTERVAL: Duration.Input = "250 millis";
 
+/** The longest a change to the Session's usage waits before it is sent. */
+export const USAGE_INTERVAL: Duration.Input = "500 millis";
+
 /** How long to wait before reading the Subagents document again after a read failed. */
 const TASK_GRAPH_RETRY: Duration.Input = "1 second";
 
@@ -246,6 +258,11 @@ export type SessionHostService = {
    * every `TASK_GRAPH_INTERVAL`. Fails when the Harness ends its watch.
    */
   readonly taskGraph: Stream.Stream<TaskGraphSummary, SessionError>;
+  /**
+   * What the Session has spent (every conversation's, subagents' and the title call's) and its limit: how it stands,
+   * then each change, at most one every `USAGE_INTERVAL`. Fails when the Harness ends its watch.
+   */
+  readonly usage: Stream.Stream<SessionUsage, SessionError>;
   /**
    * Conversation `conversationId`'s agent events, unchanged: a batch holding its `snapshot`, then a batch per commit.
    * Fails when the conversation cannot be watched, and when the Harness ends the watch.
@@ -335,12 +352,34 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
   );
 
   const models = Effect.isEffect(options.models) ? yield* options.models : options.models;
-  const harnessOptions = { models, settings: harnessSettings(settings) };
+
+  /** The open Harness, once it is: a request made before that, by nothing yet, is not held to the limit. */
+  let opened: Ledger | undefined;
+
+  // Every request the Harness makes (generations, summaries, a subagent's) is held to the Session's spend limit, read at
+  // the request. The title call is not: it goes through `options.models` as they are, and its cost is counted.
+  const run = Effect.runForkWith(yield* Effect.context<never>());
+
+  const limited = limitingModels(models, {
+    // The limit is off while the ledgers cannot be read: say so, or it would be off without a trace.
+    failed: (reason) => {
+      run(
+        Effect.logWarning("Reading the Session's spend failed; the request goes through", reason),
+      );
+    },
+    limit: () => settings.current().spendLimit,
+    spent: async () =>
+      opened === undefined ? undefined : (await sessionTotals(opened, storage.kv)).cost,
+  });
+
+  const harnessOptions = { models: limited, settings: harnessSettings(settings) };
 
   const harness = yield* openHarness(
     piStorage,
     options.env === undefined ? harnessOptions : { ...harnessOptions, env: options.env },
   ).pipe(fromHarness);
+
+  opened = harness.harness;
 
   // A storage error closes the Harness for good; reset the object so the next event reopens it.
   yield* Effect.sync(
@@ -382,17 +421,27 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   /** The settings the extensions were last built for. */
   let built = settings.current();
 
+  /** What watches of the Session's usage run when it or its limit changes outside the Harness's ledgers. */
+  const usageListeners = new Set<() => void>();
+
   /** Read the settings, and install the extensions that follow them again when they changed. */
   const refreshSettings = settings.refresh.pipe(
     Effect.andThen(
       Effect.gen(function* () {
         const values = settings.current();
 
-        if (options.reload === undefined || values === built) return;
+        if (values === built) return;
 
         const previous = built;
 
         built = values;
+
+        // A limit changed in the settings reaches the clients that watch the usage even if the Session sits idle.
+        if (values.spendLimit !== previous.spendLimit) {
+          for (const listener of usageListeners) listener();
+        }
+
+        if (options.reload === undefined) return;
 
         for (const extension of options.reload(installed, values, previous)) {
           yield* harness.install(extension);
@@ -450,6 +499,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const titles = titleTask({
     kv,
     models,
+    // The call is counted in the Session's spend, though no conversation holds it.
+    onUsage: (usage) => {
+      recordTitleUsage(kv, usage);
+
+      for (const listener of usageListeners) listener();
+    },
     // The `small` role's model; the Session's own (its pick, else the default) when the roles hold none.
     model: () =>
       settings.current().subagents.roles.small?.model ??
@@ -659,10 +714,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     );
   });
 
-  // Armed before `resume()` runs anything, as for any call that can start work.
+  // Armed before `resume()` runs anything, as for any call that can start work. The work it resumes runs under its span.
   const wakeAndResume = wake.pipe(
     Effect.flatMap(arm),
-    Effect.andThen(harness.resume),
+    Effect.andThen(harness.resume.pipe(Effect.withSpan("session.resume"))),
     Effect.andThen(settleWhenIdle),
     serially,
   );
@@ -694,6 +749,41 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         );
 
+  /** End `span` as `exit` says. */
+  const endSpan = (span: Tracer.Span, exit: Exit.Exit<unknown, unknown>) =>
+    Clock.currentTimeNanos.pipe(Effect.map((now) => span.end(now, exit)));
+
+  /**
+   * Admit a submission as the `session.run` span: it starts with the submission and ends when the submission settles,
+   * and the Run's work (its requests and tool calls) is started under it, so a trace shows the Run whole. A Run an
+   * eviction cuts off has no end; its resumed work is under `session.resume`.
+   */
+  const tracedRun = (
+    conversationId: ConversationId,
+    submit: Effect.Effect<Submission, SessionError>,
+  ) =>
+    Effect.makeSpan("session.run", { attributes: { "conversation.id": conversationId } }).pipe(
+      Effect.flatMap((span) =>
+        submit.pipe(
+          Effect.withParentSpan(span),
+          Effect.tap((submission) =>
+            attempt("wait", () => submission.wait(context)).pipe(
+              Effect.tap((settled) =>
+                Effect.sync(() => {
+                  span.attribute("submission.id", submission.id);
+                  span.attribute("run.outcome", settled.reason ?? settled.status);
+                }),
+              ),
+              Effect.exit,
+              Effect.flatMap((exit) => endSpan(span, exit)),
+              Effect.forkIn(scope),
+            ),
+          ),
+          Effect.onError((cause) => endSpan(span, Exit.failCause(cause))),
+        ),
+      ),
+    );
+
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> => {
     const { conversationId, input, ...options } = prompt;
     const toRoot = conversationId === undefined || conversationId === ROOT_CONVERSATION_ID;
@@ -711,8 +801,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         arm({ active: true }).pipe(
           Effect.andThen(resolved),
           Effect.flatMap((conversation) =>
-            attempt("submit", () =>
-              conversation.submit({ type: "input", content: input, ...options }, context),
+            tracedRun(
+              conversation.id,
+              attempt("submit", () =>
+                conversation.submit({ type: "input", content: input, ...options }, context),
+              ),
             ),
           ),
           // The owner hears how this Run ends, even after an eviction: the submission is kept until it is told.
@@ -848,6 +941,88 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
   );
 
+  /** The Session's usage and limit; one per change, the first being how it stands. */
+  const usageUpdates = Stream.callback<SessionUsage, SessionError>((queue) =>
+    Effect.flatMap(Effect.context<never>(), (services) =>
+      Effect.acquireRelease(
+        attempt("watchUsage", async () => {
+          const run = Effect.runForkWith(services);
+          // Usage is committed with each response, so a request that ends changes the task graph after it.
+          const graph = await harness.harness.watchTaskGraph(context);
+          let stopped = false;
+          // One read of the ledgers at a time: a change that comes meanwhile asks for one more read when this ends, however
+          // many came, so a burst of work costs one scan at a time and never a backlog.
+          let reading = false;
+          let changed = false;
+
+          const publish = (): void => {
+            if (stopped) return;
+
+            if (reading) {
+              changed = true;
+
+              return;
+            }
+
+            reading = true;
+            void (async () => {
+              try {
+                do {
+                  changed = false;
+
+                  try {
+                    const totals = await sessionTotals(harness.harness, kv);
+
+                    if (!stopped) {
+                      Queue.offerUnsafe(queue, usageMessage(totals, settings.current().spendLimit));
+                    }
+                  } catch (error) {
+                    // One failed read must not stop the watch: the next change reads again.
+                    run(Effect.logWarning("Usage read failed", error));
+                  }
+                } while (changed && !stopped);
+              } finally {
+                reading = false;
+              }
+            })();
+          };
+
+          usageListeners.add(publish);
+          publish();
+          graph.start(() => {
+            publish();
+
+            return Promise.resolve();
+          });
+          void graph.closed.then((end) =>
+            Queue.failCauseUnsafe(
+              queue,
+              Cause.fail(SessionError.make({ operation: "watchUsage", message: watchEnded(end) })),
+            ),
+          );
+
+          return {
+            graph,
+            stop: () => {
+              stopped = true;
+              usageListeners.delete(publish);
+            },
+          };
+        }),
+        (watch) =>
+          Effect.promise(async () => {
+            watch.stop();
+            await watch.graph.stop();
+          }),
+      ),
+    ),
+  ).pipe(
+    // A burst of changes is one message, and a change that alters nothing a client shows is none.
+    Stream.groupedWithin(Number.MAX_SAFE_INTEGER, USAGE_INTERVAL),
+    Stream.map((updates) => updates[updates.length - 1]!),
+    Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
+  );
+
   const events = (conversationId: ConversationId) =>
     Stream.callback<ReadonlyArray<AgentEvent>, SessionError>((queue) =>
       Effect.acquireRelease(
@@ -965,6 +1140,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ),
       ),
     taskGraph: taskGraphSummaries,
+    usage: usageUpdates,
     events,
     todos,
   } satisfies SessionHostService;

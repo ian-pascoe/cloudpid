@@ -110,6 +110,18 @@ const Tools = Schema.Struct({
   ),
 });
 
+/**
+ * What a Session may spend (`docs/spec.md` → Settings). A Session over it stops before its next model request. Off by
+ * default: the amount a Session is worth depends on the work, and the model proxy's own key limits bound a runaway.
+ */
+const SpendLimit = Schema.Struct({
+  /** US dollars one Session (its root conversation and every subagent) may spend on model requests; `null` for no limit. */
+  perSession: Schema.Finite.check(Schema.isGreaterThan(0)).pipe(
+    Schema.NullOr,
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+});
+
 /** The role hints are those of `~/.pi/agent/settings.json`. */
 const Roles = Schema.Struct({
   small: role(
@@ -141,6 +153,7 @@ export const Settings = Schema.Struct({
   roles: Roles.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   compaction: Compaction.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   tools: Tools.pipe(Schema.withDecodingDefaultKey(allDefaults)),
+  spendLimit: SpendLimit.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   extensions: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Json)).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed({})),
   ),

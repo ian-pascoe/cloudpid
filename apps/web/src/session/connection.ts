@@ -14,6 +14,7 @@ import {
   type BrowserHandoffRequest,
   type SecretRequest,
   type ServerMessage,
+  type SessionUsage,
   type SessionView,
   type TaskGraphSummary,
   type TodoTask,
@@ -134,6 +135,8 @@ export interface SessionState {
   readonly threads: Readonly<Record<string, ThreadState>>;
   /** The Session's subagents and background work, as of the last summary; null until it sends one. */
   readonly taskGraph: TaskGraphSummary | null;
+  /** What the Session has spent and its spend limit, as of the last message; null until it sends one. */
+  readonly usage: SessionUsage | null;
   /** The root conversation's Todo List, as of the last one the Session sent; empty until it sends one. */
   readonly todos: readonly TodoTask[];
 }
@@ -223,6 +226,7 @@ export class SessionConnection {
     { readonly inbox: SessionView["inbox"]; readonly version: number; readonly queue: QueueLanes }
   >();
   private graphWanted = false;
+  private usageWanted = false;
   private root: ConversationId | null = null;
   private watchId: string | null = null;
   private watched = false;
@@ -247,6 +251,7 @@ export class SessionConnection {
     browserHandoffRequests: [],
     threads: {},
     taskGraph: null,
+    usage: null,
     todos: NO_TODOS,
   };
 
@@ -329,6 +334,15 @@ export class SessionConnection {
     this.graphWanted = true;
 
     if (this.root !== null) this.send({ type: "watch_task_graph", id: this.nextCommandId() });
+  }
+
+  /** Stream what the Session has spent into `usage`: once is enough, and a new socket asks again. */
+  watchUsage(): void {
+    if (this.usageWanted) return;
+
+    this.usageWanted = true;
+
+    if (this.root !== null) this.send({ type: "watch_usage", id: this.nextCommandId() });
   }
 
   /**
@@ -434,11 +448,21 @@ export class SessionConnection {
 
         if (this.graphWanted) this.send({ type: "watch_task_graph", id: this.nextCommandId() });
 
+        if (this.usageWanted) this.send({ type: "watch_usage", id: this.nextCommandId() });
+
         return;
       case "task_graph":
         this.update({ taskGraph: { agents: message.agents, background: message.background } });
 
         return;
+      case "usage": {
+        const { type: _type, ...usage } = message;
+
+        this.update({ usage });
+
+        return;
+      }
+
       case "todos": {
         if (message.conversationId === this.root) {
           this.update({ todos: message.tasks });
@@ -777,6 +801,7 @@ export class SessionConnection {
         | "secretLifetimeMinutes"
         | "browserHandoffRequests"
         | "taskGraph"
+        | "usage"
         | "todos"
       >
     >,

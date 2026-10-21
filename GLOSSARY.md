@@ -107,8 +107,16 @@ A Web Push to the owner's subscribed devices when a Session's Run ends, fails, o
 _Avoid_: Alert, push message (for the user-facing thing)
 
 **Settings**:
-The typed configuration with defaults (default model and thinking level, Roles, compaction, extension options). The overrides the user saves live in the Registry, and each Session reads them before its next request.
+The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options). The overrides the user saves live in the Registry, and each Session reads them before its next request.
 _Avoid_: Config, preferences
+
+**Usage**:
+What a Session has spent on model requests: tokens by kind and the cost in US dollars, summed over its root conversation, its subagents and its title call. Shown in the Session's header.
+_Avoid_: Billing, tokens (for the whole figure)
+
+**Spend limit**:
+The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on.
+_Avoid_: Budget, quota, cap
 
 ## Credentials and the browser
 

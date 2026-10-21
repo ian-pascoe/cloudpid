@@ -179,6 +179,22 @@ describe("the offered tools", () => {
   });
 });
 
+describe("the spend limit", () => {
+  it("is off until the Registry has been read, and follows its overrides after", async () => {
+    const source = registry({ spendLimit: { perSession: 2.5 } });
+    const settings = open(source);
+
+    expect(settings.current().spendLimit).toBeNull();
+
+    await Effect.runPromise(settings.refresh);
+    expect(settings.current().spendLimit).toBe(2.5);
+
+    source.state.overrides = {};
+    await Effect.runPromise(settings.refresh);
+    expect(settings.current().spendLimit).toBeNull();
+  });
+});
+
 describe("the Harness's settings", () => {
   it("read the compaction policy live, so a refresh changes the next resolution", async () => {
     const source = registry();

@@ -7,6 +7,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Tracer from "effect/Tracer";
+import { CallerFrame, captureFrame } from "./frame.ts";
 
 /** The Chord `Context` of the pi-durable invocation this fiber runs for; outside one, the background context. */
 export const ChordContext = Context.Reference<Chord.Context>(
@@ -17,16 +18,21 @@ export const ChordContext = Context.Reference<Chord.Context>(
 /**
  * Runs Effects with `services` for pi-durable invocations: each fiber sees the invocation's Chord `Context` as
  * `ChordContext` and is interrupted when that Context is cancelled. The span `services` were captured in, such as the
- * startup span that built a tool, is dropped: an invocation is not part of it.
+ * startup span that built a tool, is dropped: an invocation is not part of it. It runs in the async context it is called
+ * from (`CallerFrame`), so the spans it makes nest under the one active where pi-durable called it (a `pi.tool` span, say).
  */
 export const invoker = <R>(services: Context.Context<R>) => {
   // SAFETY: Effects read the parent span optionally, for tracing; none needs it as a service of its own.
   const detached = Context.omit(Tracer.ParentSpan)(services) as Context.Context<R>;
 
   return <A, E>(effect: Effect.Effect<A, E, R>, context: Chord.Context): Promise<Exit.Exit<A, E>> =>
-    Effect.runPromiseExitWith(detached)(Effect.provideService(effect, ChordContext, context), {
-      signal: context.abortSignal,
-    });
+    Effect.runPromiseExitWith(detached)(
+      effect.pipe(
+        Effect.provideService(ChordContext, context),
+        Effect.provideService(CallerFrame, captureFrame()),
+      ),
+      { signal: context.abortSignal },
+    );
 };
 
 /** An invocation's value, or its failure, defect, or interruption thrown, for pi-durable code that awaits it. */

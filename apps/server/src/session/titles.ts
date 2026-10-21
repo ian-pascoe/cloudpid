@@ -10,6 +10,7 @@ import type {
   TextContent,
   ThinkingContent,
   ToolCall,
+  Usage,
 } from "@earendil-works/pi-ai";
 import type { EntryRecord, ModelRef } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -165,11 +166,15 @@ export class TitleError extends Schema.TaggedError<TitleError, { readonly brand:
   { message: Schema.String },
 ) {}
 
-/** Ask `model` of `models` to name `exchange`: a sanitized title, or a failure. */
+/**
+ * Ask `model` of `models` to name `exchange`: a sanitized title, or a failure. `onUsage` is told what the call cost,
+ * as no conversation's ledger holds it.
+ */
 export const generateTitle = (
   models: Models,
   model: ModelRef,
   exchange: Exchange,
+  onUsage?: (usage: Usage) => void,
 ): Effect.Effect<string, TitleError> =>
   Effect.gen(function* () {
     const found = models.getModel(model.provider, model.modelId);
@@ -191,7 +196,8 @@ export const generateTitle = (
       catch: (cause) => TitleError.make({ message: `The title request failed: ${String(cause)}` }),
     });
 
-    // The call's cost is not in `pi.usage` yet (telemetry): log it, so the spend of naming Sessions can be told.
+    // The call is in no conversation's `pi.usage`: the Session keeps it itself, and logs it.
+    yield* Effect.sync(() => onUsage?.(reply.usage));
     yield* Effect.logInfo("Session title request", {
       model: `${model.provider}/${model.modelId}`,
       input: reply.usage.input,
@@ -219,6 +225,8 @@ export type TitleTaskOptions<E> = {
   readonly kv: SettingsKv;
   /** The Session's models: the ones every request goes through, so a request is scrubbed of the Session's Secrets. */
   readonly models: Models;
+  /** Told what each call cost, for the Session's spend. */
+  readonly onUsage?: (usage: Usage) => void;
   /** The model that names the Session: the `small` role's. */
   readonly model: () => ModelRef;
   readonly registry: SessionRegistry["Service"];
@@ -263,7 +271,7 @@ export const titleTask = <E>(options: TitleTaskOptions<E>): TitleTask => {
 
     const model = options.model();
 
-    const title = yield* generateTitle(options.models, model, exchange).pipe(
+    const title = yield* generateTitle(options.models, model, exchange, options.onUsage).pipe(
       Effect.timeout(TITLE_TIMEOUT),
     );
 

@@ -47,10 +47,14 @@ export type SocketState = {
 
 type ErrorMessage = Extract<ServerMessage, { type: "error" }>;
 
-/** What a socket keeps across hibernation: the conversations it watches, and whether it watches the task graph. */
+/**
+ * What a socket keeps across hibernation: the conversations it watches, and whether it watches the task graph and the
+ * Session's usage.
+ */
 const Attachment = Schema.Struct({
   watches: Schema.Array(ConversationId),
   taskGraph: Schema.optionalKey(Schema.Boolean),
+  usage: Schema.optionalKey(Schema.Boolean),
 });
 
 type Attachment = typeof Attachment.Type;
@@ -152,10 +156,22 @@ const setGraphWatched = (socket: WebSocket, watched: boolean) =>
     } satisfies Attachment);
   });
 
+/** Record that `socket` watches the Session's usage, or no longer does. */
+const setUsageWatched = (socket: WebSocket, watched: boolean) =>
+  Effect.sync(() => {
+    socket.serializeAttachment({
+      ...readAttachment(socket),
+      usage: watched,
+    } satisfies Attachment);
+  });
+
 /** The key of a socket's task graph watch among its watches. */
 const TASK_GRAPH = "task_graph";
 
-type WatchKey = ConversationId | typeof TASK_GRAPH;
+/** The key of a socket's usage watch among its watches. */
+const USAGE = "usage";
+
+type WatchKey = ConversationId | typeof TASK_GRAPH | typeof USAGE;
 
 /**
  * The Session's sockets over the object's `state`. Building it restarts the watches of sockets that outlived the last
@@ -294,6 +310,37 @@ export const sessionSocketsLayer = (
           );
         });
 
+      /** Stream the Session's usage to `socket`, replacing a watch it already has; one that fails is dropped and the client told. */
+      const watchUsage = (socket: WebSocket) =>
+        Effect.gen(function* () {
+          const fibers = yield* watchesOf(socket);
+
+          yield* setUsageWatched(socket, true);
+          yield* host.usage.pipe(
+            Stream.runForEach((usage) => send(socket, { type: "usage", ...usage })),
+            Effect.catch((error) =>
+              setUsageWatched(socket, false).pipe(
+                Effect.andThen(
+                  send(socket, {
+                    type: "error",
+                    message: `Usage watch ended: ${error.message}`,
+                  }),
+                ),
+              ),
+            ),
+            FiberMap.run(fibers, USAGE),
+          );
+        });
+
+      const unwatchUsage = (socket: WebSocket) =>
+        Effect.suspend(() => {
+          const fibers = watching.get(socket);
+
+          return (fibers === undefined ? Effect.void : FiberMap.remove(fibers, USAGE)).pipe(
+            Effect.andThen(setUsageWatched(socket, false)),
+          );
+        });
+
       const unwatch = (socket: WebSocket, conversationId: ConversationId) =>
         Effect.suspend(() => {
           const fibers = watching.get(socket);
@@ -333,6 +380,10 @@ export const sessionSocketsLayer = (
             return watchGraph(socket).pipe(Effect.as(null));
           case "unwatch_task_graph":
             return unwatchGraph(socket).pipe(Effect.as(null));
+          case "watch_usage":
+            return watchUsage(socket).pipe(Effect.as(null));
+          case "unwatch_usage":
+            return unwatchUsage(socket).pipe(Effect.as(null));
           case "secret_answer":
             return secrets.answer(message.request, message.values).pipe(Effect.as(null));
         }
@@ -430,6 +481,8 @@ export const sessionSocketsLayer = (
       // Sockets that outlived the last instance keep their watches, each from a fresh snapshot.
       for (const socket of state.getWebSockets()) {
         if (readAttachment(socket).taskGraph === true) yield* watchGraph(socket);
+
+        if (readAttachment(socket).usage === true) yield* watchUsage(socket);
 
         for (const conversationId of readAttachment(socket).watches) {
           yield* watch(socket, conversationId).pipe(

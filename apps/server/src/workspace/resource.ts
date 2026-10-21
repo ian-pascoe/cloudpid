@@ -1,4 +1,5 @@
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
+import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
@@ -38,6 +39,7 @@ export const Workspaces = Effect.gen(function* () {
     main: new URL("./worker.ts", import.meta.url).href,
     compatibility: { date: "2026-08-31" },
     workersDev: false,
+    observability: WORKER_OBSERVABILITY,
     env: {
       [WORKSPACE_BINDING]: Cloudflare.DurableObject<Workspace>("Workspace", {
         containers: [WorkspaceContainer],
