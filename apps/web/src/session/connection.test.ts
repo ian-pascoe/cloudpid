@@ -1060,6 +1060,58 @@ describe("the task graph on a Session connection", () => {
   });
 });
 
+describe("the usage on a Session connection", () => {
+  const usage = {
+    type: "usage",
+    input: 100,
+    output: 20,
+    cacheRead: 0,
+    cacheWrite: 5,
+    totalTokens: 125,
+    cost: 0.5,
+    limit: 2,
+  } as const;
+
+  it("is watched once asked, and again after a reconnect, and keeps the last message", () => {
+    const { connection, sockets, latest } = setup();
+
+    connection.watchUsage();
+    watching(latest());
+    connection.watchUsage();
+
+    expect(
+      latest()
+        .commands()
+        .filter((command) => command.type === "watch_usage"),
+    ).toEqual([{ type: "watch_usage", id: expect.any(String) }]);
+    expect(connection.getState().usage).toBeNull();
+
+    latest().say(usage);
+    expect(connection.getState().usage).toEqual({
+      input: 100,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 5,
+      totalTokens: 125,
+      cost: 0.5,
+      limit: 2,
+    });
+
+    latest().say({ ...usage, cost: 0.75 });
+    expect(connection.getState().usage?.cost).toBe(0.75);
+
+    latest().drop();
+    expect(connection.getState().usage?.cost).toBe(0.75);
+    vi.advanceTimersByTime(1_000);
+    sockets[1]!.open();
+    sockets[1]!.say({ type: "hello", root: 1 });
+
+    expect(sockets[1]!.commands().filter((command) => command.type === "watch_usage")).toHaveLength(
+      1,
+    );
+  });
+});
+
 describe("Todo Lists on a Session connection", () => {
   const tasks = (...titles: string[]) =>
     titles.map((title, index) => ({ id: index + 1, title, status: "pending" }));
