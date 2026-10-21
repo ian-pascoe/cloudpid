@@ -32,6 +32,23 @@ const SkillDisclosure = ({ skill }: { skill: ShownSkill }) => (
   </details>
 );
 
+/** An image in the owner's message (an Attachment's), at most 256 px high. */
+const UserImage = () => {
+  const image = useAuiState((state) =>
+    state.part.type === "image" ? state.part.image : undefined,
+  );
+
+  return image === undefined ? null : (
+    <img
+      src={image}
+      alt="Attached image"
+      className="my-1 max-h-64 max-w-full rounded-md border object-contain"
+    />
+  );
+};
+
+const USER_PARTS = { Image: UserImage };
+
 const UserMessage = () => {
   const custom = useAuiState((state) => state.message.metadata.custom);
   const skills = useMemo(() => shownSkills(custom), [custom]);
@@ -39,7 +56,7 @@ const UserMessage = () => {
   return (
     <MessagePrimitive.Root className="flex justify-end">
       <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
-        <MessagePrimitive.Parts />
+        <MessagePrimitive.Parts components={USER_PARTS} />
         {Arr.map(skills, (skill) => (
           <SkillDisclosure key={skill.name} skill={skill} />
         ))}

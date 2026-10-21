@@ -103,6 +103,30 @@ describe("the thread messages of a view", () => {
     expect(message?.content).toEqual([{ type: "image", image: "data:image/png;base64,AAAA" }]);
   });
 
+  it("shows a user message's text parts (the typed text, its Attachments' paths) as one text, its images after", () => {
+    const [message] = toThreadMessages(
+      view({
+        messages: [
+          {
+            id: "1",
+            role: "user",
+            timestamp: 1,
+            parts: [
+              { type: "text", text: "look" },
+              { type: "text", text: "@/workspace/.uploads/s/a.png" },
+              { type: "image", data: "AAAA", mimeType: "image/png" },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(message?.content).toEqual([
+      { type: "text", text: "look\n\n@/workspace/.uploads/s/a.png" },
+      { type: "image", image: "data:image/png;base64,AAAA" },
+    ]);
+  });
+
   it("merges a tool-calling answer, its results, and the answer that follows into one assistant message", () => {
     const messages = toThreadMessages(
       view({

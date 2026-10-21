@@ -1,6 +1,6 @@
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { expect, it } from "vitest";
-import { isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 
 const request = (method: string, path: string) =>
   HttpServerRequest.fromWeb(new Request(`http://worker.test${path}`, { method }));
@@ -19,4 +19,32 @@ it("routes Registry RPC calls", () => {
   expect(isRegistryRpc(request("POST", "/rpc/"))).toBe(true);
   expect(isRegistryRpc(request("GET", "/rpc"))).toBe(false);
   expect(isRegistryRpc(request("POST", "/sessions"))).toBe(false);
+});
+
+it("routes an upload or a removal of a Session's Attachment, its name decoded", () => {
+  expect(attachmentRoute(request("PUT", `/sessions/${session}/attachments/a%20b.png`))).toEqual({
+    method: "PUT",
+    sessionId: session,
+    name: "a b.png",
+  });
+  expect(attachmentRoute(request("DELETE", `/sessions/${session}/attachments/a.png`))).toEqual({
+    method: "DELETE",
+    sessionId: session,
+    name: "a.png",
+  });
+  // An escaped slash stays in the one name, which the upload then sanitises.
+  expect(attachmentRoute(request("PUT", `/sessions/${session}/attachments/..%2F..%2Fx`))).toEqual({
+    method: "PUT",
+    sessionId: session,
+    name: "../../x",
+  });
+  expect(attachmentRoute(request("GET", `/sessions/${session}/attachments/a.png`))).toBeUndefined();
+  expect(attachmentRoute(request("PUT", `/sessions/${session}/attachments/a/b`))).toBeUndefined();
+  expect(attachmentRoute(request("PUT", `/sessions/${session}/attachments/`))).toBeUndefined();
+  expect(attachmentRoute(request("PUT", "/sessions/nope/attachments/a.png"))).toBeUndefined();
+  expect(attachmentRoute(request("PUT", `/sessions/${session}/attachments/%E0%A4%A`))).toEqual({
+    method: "PUT",
+    sessionId: session,
+    name: undefined,
+  });
 });

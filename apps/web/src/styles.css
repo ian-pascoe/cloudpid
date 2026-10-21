@@ -125,15 +125,18 @@
   }
 }
 
-/* A small control keeps its look but takes a 44 px touch on a touch screen. */
-@media (pointer: coarse) {
-  .touch-target {
-    position: relative;
-  }
+/* A small control keeps its look but takes a 44 px touch on a touch screen (from 32 px, as `size-8` is). In the
+   components layer, so a utility on the control (`absolute`, say) wins over its `position`. */
+@layer components {
+  @media (pointer: coarse) {
+    .touch-target {
+      position: relative;
+    }
 
-  .touch-target::after {
-    content: "";
-    position: absolute;
-    inset: -6px;
+    .touch-target::after {
+      content: "";
+      position: absolute;
+      inset: -6px;
+    }
   }
 }

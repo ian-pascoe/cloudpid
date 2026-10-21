@@ -456,6 +456,92 @@ describe("input submitted while a Run is in progress", () => {
   });
 });
 
+describe("a submit the Session cannot store", () => {
+  it("is refused with why, and the Session keeps running for the next one", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["Still here"]));
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+
+    const instances = constructions.get(stub.id.toString());
+
+    // Over the 2 MB a row holds: without the guard, the commit fails and takes the Session down with it.
+    client.send({
+      type: "submit",
+      id: "big",
+      input: [
+        { type: "text", text: "look" },
+        { type: "image", mimeType: "image/png", data: "A".repeat(2_200_000) },
+      ],
+      requestId: "big",
+    });
+    expect(await client.answer("big")).toMatchObject({
+      type: "error",
+      message: expect.stringMatching(/^This message is 2\.21 MB, and one holds at most 1\.9 MB/u),
+    });
+
+    client.send({
+      type: "submit",
+      id: "svg",
+      input: [{ type: "image", mimeType: "image/svg+xml", data: "PHN2Zz4=" }],
+      requestId: "svg",
+    });
+    expect(await client.answer("svg")).toMatchObject({
+      type: "error",
+      message: "An image must be PNG, JPEG, WebP or GIF to go to the model, not image/svg+xml.",
+    });
+
+    client.send({ type: "submit", id: "ok", input: "hi", requestId: "ok" });
+    await submitted(client, "ok");
+
+    const events = eventsOf(await client.until((messages) => runEnds(root)(messages) === 1), root);
+
+    expect(answers(events)).toEqual(["Still here"]);
+    expect(constructions.get(stub.id.toString())).toBe(instances);
+  });
+
+  it("is refused when it would not fit beside the messages already waiting for the run", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script(["gate:first", "queued"]),
+    );
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+    client.send({ type: "submit", id: "a", input: "start", requestId: "a" });
+    await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
+
+    // Images, which the model's context counts by the image, not by their size.
+    const half = [
+      { type: "text" as const, text: "and this" },
+      { type: "image" as const, mimeType: "image/png", data: "A".repeat(1_000_000) },
+    ];
+
+    client.send({ type: "submit", id: "b", input: half, requestId: "b", whenBusy: "followUp" });
+    await submitted(client, "b");
+    client.send({ type: "submit", id: "c", input: half, requestId: "c", whenBusy: "followUp" });
+    expect(await client.answer("c")).toMatchObject({
+      type: "error",
+      message: expect.stringMatching(/^The messages waiting for the run and this one are/u),
+    });
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.open());
+
+    const events = eventsOf(await client.until((messages) => runEnds(root)(messages) === 2), root);
+
+    expect(answers(events)).toEqual(["first", "queued"]);
+  });
+});
+
 describe("an abort", () => {
   it("ends the running Run and leaves the submission unanswered", async () => {
     const stub = fresh();

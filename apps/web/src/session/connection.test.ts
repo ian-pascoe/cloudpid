@@ -253,6 +253,37 @@ describe("a Session connection", () => {
     });
   });
 
+  it("sends a message with images as its input, and shows what it was given to show in the lanes", () => {
+    const { connection, latest } = setup();
+
+    const input = [
+      { type: "text" as const, text: "look\n\n@/workspace/.uploads/s/a.png" },
+      { type: "image" as const, mimeType: "image/jpeg", data: "/9j/" },
+    ];
+
+    watching(latest());
+    connection.submit({ input, display: "look · Attached: a.png" }, "followUp");
+
+    expect(connection.getState().sending.map((entry) => entry.text)).toEqual([
+      "look · Attached: a.png",
+    ]);
+
+    const submit = latest().commands().at(-1);
+
+    expect(submit).toMatchObject({ type: "submit", input, whenBusy: "followUp" });
+
+    latest().say({ type: "result", id: submit?.id, result: { submissionId: "sub-1" } });
+    latest().say({
+      type: "events",
+      conversationId: 1,
+      events: [{ type: "inbox_update", items: [{ id: "sub-1", mode: "followUp" }] }],
+    });
+
+    expect(connection.getState().queue.followUp).toEqual([
+      { id: "sub-1", text: "look · Attached: a.png" },
+    ]);
+  });
+
   it("lists queued inputs by lane, and shows one it has no text for (sent before a reload) as such", () => {
     const { connection, latest } = setup();
 
@@ -424,6 +455,42 @@ describe("a Session connection", () => {
         .commands()
         .filter((command) => command.type === "submit"),
     ).toEqual([]);
+  });
+
+  it("tells whoever submitted a message how it ended (taken, or refused and why), and leaves showing it to them", () => {
+    const { connection, latest } = setup();
+    const outcomes: Array<string | null> = [];
+
+    watching(latest());
+    connection.submit("taken", "followUp", undefined, (failure) => outcomes.push(failure));
+    latest().say({
+      type: "result",
+      id: latest().commands().at(-1)?.id,
+      result: { submissionId: "sub-1" },
+    });
+
+    connection.submit("too big", "followUp", undefined, (failure) => outcomes.push(failure));
+    latest().say({ type: "error", id: latest().commands().at(-1)?.id, message: "Too big" });
+
+    expect(outcomes).toEqual([null, "Too big"]);
+    expect(connection.getState().failure).toBeNull();
+  });
+
+  it("tells nobody of a submit sent again after a reconnect until it is answered", () => {
+    const { connection, latest } = setup();
+    const outcomes: Array<string | null> = [];
+
+    watching(latest());
+    connection.submit("hi", "followUp", undefined, (failure) => outcomes.push(failure));
+
+    // A reconnect sends it again.
+    latest().drop();
+    vi.advanceTimersByTime(60_000);
+    watching(latest());
+    expect(outcomes).toEqual([]);
+
+    latest().say({ type: "error", id: latest().commands().at(-1)?.id, message: "busy" });
+    expect(outcomes).toEqual(["busy"]);
   });
 
   it("ignores the heartbeat's pong and text it cannot read", () => {
