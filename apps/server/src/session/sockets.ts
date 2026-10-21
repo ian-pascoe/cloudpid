@@ -155,10 +155,7 @@ const setGraphWatched = (socket: WebSocket, watched: boolean) =>
 /** The key of a socket's task graph watch among its watches. */
 const TASK_GRAPH = "task_graph";
 
-/** The key of a socket's watch of a conversation's Todo List among its watches. */
-const todosKey = (conversationId: ConversationId) => `todos:${conversationId}` as const;
-
-type WatchKey = ConversationId | typeof TASK_GRAPH | ReturnType<typeof todosKey>;
+type WatchKey = ConversationId | typeof TASK_GRAPH;
 
 /**
  * The Session's sockets over the object's `state`. Building it restarts the watches of sockets that outlived the last
@@ -204,11 +201,24 @@ export const sessionSocketsLayer = (
         Effect.gen(function* () {
           const fibers = yield* watchesOf(socket);
           const started = yield* Deferred.make<void, SessionError>();
+          let todosStarted = false;
 
           yield* setWatched(socket, conversationId, true);
           yield* host.events(conversationId).pipe(
             Stream.runForEach((events) =>
               send(socket, { type: "events", conversationId, events }).pipe(
+                // After the first batch, the snapshot, so the client has the conversation before its list.
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    if (todosStarted) return Effect.void;
+
+                    todosStarted = true;
+
+                    return Effect.forkChild(streamTodos(socket, conversationId)).pipe(
+                      Effect.asVoid,
+                    );
+                  }),
+                ),
                 Effect.andThen(Deferred.succeed(started, undefined)),
               ),
             ),
@@ -227,24 +237,28 @@ export const sessionSocketsLayer = (
           );
 
           yield* Deferred.await(started);
-          yield* watchTodos(socket, conversationId);
         });
 
       /**
-       * Stream `conversationId`'s Todo List to `socket`, replacing a watch it already has. It goes with the watch of the
-       * conversation, after its snapshot. The list is not what the watch is for: one that fails is logged and the
-       * client keeps the last list it was sent.
+       * Stream `conversationId`'s Todo List to `socket`. It runs as a child of the conversation's watch, so it ends with
+       * it: whenever the watch is replaced, unwatched, fails or its socket closes. The list is not what the watch is for:
+       * one that fails does not end the conversation's watch. It is logged and the client is told, and keeps the last
+       * list it was sent.
        */
-      const watchTodos = (socket: WebSocket, conversationId: ConversationId) =>
-        Effect.gen(function* () {
-          const fibers = yield* watchesOf(socket);
-
-          yield* host.todos(conversationId).pipe(
-            Stream.runForEach((tasks) => send(socket, { type: "todos", conversationId, tasks })),
-            Effect.catch((error) => Effect.logWarning("Todo List watch ended", error)),
-            FiberMap.run(fibers, todosKey(conversationId)),
-          );
-        });
+      const streamTodos = (socket: WebSocket, conversationId: ConversationId) =>
+        host.todos(conversationId).pipe(
+          Stream.runForEach((tasks) => send(socket, { type: "todos", conversationId, tasks })),
+          Effect.catch((error) =>
+            Effect.logWarning("Todo List watch ended", error).pipe(
+              Effect.andThen(
+                send(socket, {
+                  type: "error",
+                  message: `Todo List updates stopped: ${error.message}`,
+                }),
+              ),
+            ),
+          ),
+        );
 
       /**
        * Stream the task graph's summaries to `socket`, replacing a watch it already has. The first summary follows
@@ -284,11 +298,7 @@ export const sessionSocketsLayer = (
         Effect.suspend(() => {
           const fibers = watching.get(socket);
 
-          return fibers === undefined
-            ? Effect.void
-            : FiberMap.remove(fibers, conversationId).pipe(
-                Effect.andThen(FiberMap.remove(fibers, todosKey(conversationId))),
-              );
+          return fibers === undefined ? Effect.void : FiberMap.remove(fibers, conversationId);
         });
 
       const command = (

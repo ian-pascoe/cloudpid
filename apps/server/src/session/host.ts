@@ -847,11 +847,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Stream.callback<ReadonlyArray<TodoTask>, SessionError>((queue) =>
       Effect.acquireRelease(
         attempt("watchTodos", async () => {
-          // A document exists once its conversation first used it, and only an existing one can be watched: make the
-          // empty list now, which also fails for a conversation the Harness does not have.
-          await harness.harness.commit(async (tx) => {
-            await tx.doc(TodoDoc, conversationId);
-          }, context);
+          // A document exists once its conversation first used it, and only an existing one can be watched. Most watches
+          // find it; the first of a conversation that never used the tool makes the empty list.
+          if ((await harness.harness.snapshot(TodoDoc, conversationId, context)) === undefined) {
+            await harness.harness.commit(async (tx) => {
+              await tx.doc(TodoDoc, conversationId);
+            }, context);
+          }
 
           const watch = await harness.harness.watchDoc(TodoDoc, conversationId, context);
 

@@ -17,6 +17,15 @@ export const MAX_TITLE_CHARACTERS = 300;
 
 export const MAX_DESCRIPTION_CHARACTERS = 2_000;
 
+/**
+ * The longest a list may be as the model reads it, in characters and in lines. A result shows the whole list and
+ * pi-durable keeps at most 50 KB and 2,000 lines of a result, so a longer list could be cut off in the very result that
+ * says it shows the list.
+ */
+export const MAX_LIST_CHARACTERS = 20_000;
+
+export const MAX_LIST_LINES = 500;
+
 /** The list as the actions see it: the Tasks in ID order and the ID the next one gets. */
 export type TodoList = {
   readonly nextId: number;
@@ -302,8 +311,8 @@ const updateMany = (
   };
 };
 
-/** Apply one call of the `todo` tool to `list`. */
-export const applyTodo = (list: TodoList, input: TodoInput): TodoOutcome => {
+/** Apply one call of the `todo` tool to `list`, other than the size of the result. */
+const applyAction = (list: TodoList, input: TodoInput): TodoOutcome => {
   switch (input.action) {
     case "list":
       return {
@@ -369,4 +378,25 @@ export const applyTodo = (list: TodoList, input: TodoInput): TodoOutcome => {
       };
     }
   }
+};
+
+/** Whether the list fits in what the model reads of a result. */
+const fits = (tasks: ReadonlyArray<TodoTask>): boolean => {
+  const text = formatTasks(tasks);
+
+  return text.length <= MAX_LIST_CHARACTERS && text.split("\n").length <= MAX_LIST_LINES;
+};
+
+/** Apply one call of the `todo` tool to `list`. */
+export const applyTodo = (list: TodoList, input: TodoInput): TodoOutcome => {
+  const outcome = applyAction(list, input);
+
+  if (outcome.ok && outcome.list !== list && !fits(outcome.list.tasks)) {
+    return failure(
+      input.action,
+      `the list would be over ${MAX_LIST_CHARACTERS} characters or ${MAX_LIST_LINES} lines; shorten descriptions or remove Tasks`,
+    );
+  }
+
+  return outcome;
 };

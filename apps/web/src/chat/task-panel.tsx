@@ -111,6 +111,7 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
   const connection = useConnection();
   const graph = useSession((state) => state.taskGraph);
   const todos = useSession((state) => state.todos);
+  const live = useSession((state) => state.status === "live");
 
   const stoppable = useSession((state) =>
     canStopAllBelow(state.taskGraph, "root", state.view.running),
@@ -149,7 +150,7 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
         </Button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <TodoList tasks={todos} className="mb-4" />
+        <TodoList tasks={todos} stale={!live} className="mb-4" />
         {graph === null ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : graph.agents.length === 0 && graph.background.length === 0 ? (

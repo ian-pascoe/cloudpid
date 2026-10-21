@@ -18,6 +18,15 @@ export type TodoTask = {
   status: TodoStatus;
 };
 
+/** The list as the head of a Context Window shows it (`./projection.ts`), kept so that every request of the window sends the same text. */
+export type ShownList = {
+  /** The window it is for: the timestamp of the window's first message, which a Handoff or compaction gives it once. */
+  window: number;
+  /** The revision of the list it shows. */
+  rev: number;
+  text: string;
+};
+
 export type TodoState = {
   /** The ID the next Task gets. */
   nextId: number;
@@ -25,7 +34,14 @@ export type TodoState = {
   rev: number;
   /** In ID order. */
   tasks: TodoTask[];
+  /** The list the current Context Window's head shows, if it needed one. */
+  shown: ShownList | null;
+  /** The calls whose nested `todo` calls changed the list, latest last: their results then show the list (`./projection.ts`). */
+  changedBy: string[];
 };
+
+/** How many of those calls the document remembers. */
+export const MAX_CHANGED_BY = 16;
 
 export const TodoDoc = defineDoc<TodoState>({
   kind: "cloudpid.todo",
@@ -33,7 +49,7 @@ export const TodoDoc = defineDoc<TodoState>({
   scope: "conversation",
   history: "latest",
   fork: "current",
-  initial: () => ({ nextId: 1, rev: 0, tasks: [] }),
+  initial: () => ({ nextId: 1, rev: 0, tasks: [], shown: null, changedBy: [] }),
 });
 
 /** The state as read outside a commit: the initial one until the first change. */

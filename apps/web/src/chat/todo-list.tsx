@@ -41,9 +41,12 @@ const TaskRow = ({ task }: { task: TodoTask }) => {
 /** The Tasks of a Todo List, headed by how many are done; nothing for an empty list. */
 export const TodoList = ({
   tasks,
+  stale = false,
   className,
 }: {
   tasks: readonly TodoTask[];
+  /** The list may be behind: the socket is not live, so changes may be missing until it is. */
+  stale?: boolean;
   className?: string;
 }) => {
   if (tasks.length === 0) return null;
@@ -54,7 +57,12 @@ export const TodoList = ({
         <span>Todo</span>
         <span className="tabular-nums">{todoProgressLabel(tasks)}</span>
       </h4>
-      <ul className="mt-1">
+      {stale && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Reconnecting: this list may be out of date.
+        </p>
+      )}
+      <ul className="mt-1 max-h-64 overflow-y-auto">
         {tasks.map((task) => (
           <TaskRow key={task.id} task={task} />
         ))}

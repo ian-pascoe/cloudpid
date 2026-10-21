@@ -798,6 +798,30 @@ describe("a Todo List watch", () => {
     expect(lists[0]).toHaveLength(2);
   });
 
+  it("does not outlive an unwatch that comes while the snapshot is being made", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script([ADD_TASKS, "Done."]),
+    );
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    // Both commands are on the socket before the first snapshot is sent.
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    client.send({ type: "unwatch", id: "unwatch", conversationId: root });
+    await client.answer("unwatch");
+    await client.answer("watch");
+    client.send({ type: "submit", id: "submit", input: "plan it", requestId: "turn-1" });
+    await submitted(client, "submit");
+    await idle(stub);
+
+    // Whatever list was sent before the unwatch, none of the agent's changes came after it.
+    expect(todoLists(client.received, root).flat()).toEqual([]);
+    expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
+  });
+
   it("stops once the conversation is unwatched", async () => {
     const stub = fresh();
 

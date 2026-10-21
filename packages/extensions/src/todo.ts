@@ -4,7 +4,8 @@
 import { defineExtension, section, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import { TODO_GUIDELINE, TodoProjection } from "./todo/projection.ts";
+import type { Harness } from "@cloudpid/effect-durable";
+import { TODO_GUIDELINE, TodoResult, TodoWindow } from "./todo/projection.ts";
 import { TodoTool } from "./todo/tool.ts";
 
 export const extensionName = "todo";
@@ -17,13 +18,13 @@ const Guideline = section("todo", (input) =>
 );
 
 /** The `todo` extension: the tool, its prompt guideline, and the hook that keeps the list in front of the model. */
-export const Todo: Effect.Effect<Extension> = Effect.map(
-  Effect.all([TodoTool, TodoProjection]),
-  ([tool, projection]) =>
+export const Todo: Effect.Effect<Extension, never, Harness> = Effect.map(
+  Effect.all([TodoTool, TodoWindow, TodoResult]),
+  ([tool, window, result]) =>
     defineExtension({
       name: extensionName,
       tools: [tool],
-      hooks: [projection],
+      hooks: [window, result],
       sections: [Guideline],
     }),
 );

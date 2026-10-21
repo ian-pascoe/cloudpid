@@ -31,8 +31,10 @@ export type SubagentOptions = {
 /** pi-minimal-subagents' defaults: root → child → grandchild, and its read and modify presets. */
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 2;
 
+/** Every child may keep its own Todo List, whatever preset it was given. */
+
 export const DEFAULT_TOOLSETS: Toolsets = {
-  baseToolset: [],
+  baseToolset: ["todo"],
   readToolset: ["read", "grep", "find", "ls"],
   modifyToolset: ["bash", "edit", "write"],
 };

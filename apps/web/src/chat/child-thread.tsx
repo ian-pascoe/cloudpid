@@ -37,6 +37,8 @@ const LiveChildThread = ({
     canStopAllBelow(state.taskGraph, agent?.id ?? "", thread.view.running),
   );
 
+  const live = useSession((state) => state.status === "live");
+
   const threadMessages = useMemo(() => toThreadMessages(thread.view), [thread.view]);
 
   const queue = useMemo(
@@ -83,7 +85,7 @@ const LiveChildThread = ({
             {problem}
           </p>
         )}
-        <TodoList tasks={thread.todos} className="border-t pt-2" />
+        <TodoList tasks={thread.todos} stale={!live} className="border-t pt-2" />
         <Composer
           compact
           who={agent?.id ?? "the agent"}

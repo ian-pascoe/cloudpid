@@ -15,7 +15,7 @@ import {
 } from "./context/harness.fixture.ts";
 import { SubagentsDoc } from "./subagents.ts";
 import { Todo, TodoDoc } from "./todo.ts";
-import { RECONCILE_INSTRUCTION, SNAPSHOT_HEADER } from "./todo/projection.ts";
+import { CHANGED_HEADER, RECONCILE_INSTRUCTION, SNAPSHOT_HEADER } from "./todo/projection.ts";
 
 /** Calls `todo` with a nested `executeTool`, as a code mode script does, and returns what the script gets. */
 const Scripts = defineExtension({
@@ -34,22 +34,12 @@ const Scripts = defineExtension({
   ],
 });
 
-const open = async (
-  script: (request: Request) => ReturnType<typeof answer>,
-  contextWindow?: number,
-) => {
-  const todo = await Effect.runPromise(Todo);
-
-  return openContextHarness(script, contextWindow, [todo, Scripts]);
-};
+const open = (script: (request: Request) => ReturnType<typeof answer>, contextWindow?: number) =>
+  openContextHarness(script, contextWindow, [Todo, Effect.succeed(Scripts)]);
 
 /** The root conversation's list, as the document holds it. */
 const listOf = async (session: Awaited<ReturnType<typeof open>>, id = ROOT_CONVERSATION_ID) =>
   (await session.harness.snapshot(TodoDoc, id, context))?.tasks ?? [];
-
-/** What the user asked: the last message of the request that is not the list shown to the model. */
-const asked = (request: Request) =>
-  request.transcript.findLast((text) => !text.startsWith(SNAPSHOT_HEADER)) ?? "";
 
 const isBig = (text: string) => text.startsWith("xxxx");
 
@@ -149,10 +139,56 @@ describe("todo", () => {
     );
   });
 
+  it("takes a null for a field the model leaves out, as pi-todo does", async () => {
+    const session = await open((request) => {
+      switch (request.text) {
+        case "Add":
+          return call([
+            "todo",
+            { action: "add", title: "One", description: null, id: null, tasks: null, status: null },
+          ]);
+        case "Batch":
+          return call(["todo", { action: "add", tasks: [{ title: "Two", description: null }] }]);
+        case "Update":
+          return call([
+            "todo",
+            { action: "update", id: 1, status: "completed", title: null, updates: null },
+          ]);
+        default:
+          return answer("Done.");
+      }
+    });
+
+    for (const turn of ["Add", "Batch", "Update"]) await session.prompt(turn);
+
+    expect(await listOf(session)).toEqual([
+      { id: 1, title: "One", status: "completed" },
+      { id: 2, title: "Two", status: "pending" },
+    ]);
+  });
+
+  it("refuses a list too long for a result to show whole, and keeps the one it had", async () => {
+    const long = { title: "Long", description: "d".repeat(2_000) };
+
+    const adding = (count: number) =>
+      call(["todo", { action: "add", tasks: Array.from({ length: count }, () => long) }]);
+
+    const session = await open((request) => {
+      if (request.text === "Fill") return adding(5);
+
+      return request.text === "Overfill" ? adding(6) : answer("Done.");
+    });
+
+    await session.prompt("Fill");
+    await session.prompt("Overfill");
+
+    expect((await session.results()).at(-1)).toMatch(/^Todo add failed: the list would be over/);
+    expect(await listOf(session)).toHaveLength(5);
+  });
+
   it("gives programs the structured output", async () => {
     const session = await open((request) => {
-      // A script's change is shown after the user's message (see below), so the message is the one before it.
-      switch (asked(request)) {
+      switch (request.text) {
         case "Run":
           return call([
             "run_todo",
@@ -169,7 +205,7 @@ describe("todo", () => {
 
     for (const turn of ["Run", "Run again", "Run last"]) await session.prompt(turn);
 
-    expect((await session.results()).map((text) => JSON.parse(text))).toEqual([
+    expect((await session.results()).map((text) => JSON.parse(text.split("\n\n")[0]!))).toEqual([
       {
         action: "add",
         tasks: [
@@ -210,6 +246,23 @@ describe("todo", () => {
     ]);
   });
 
+  it("gives a subagent started with a preset a Todo List too", async () => {
+    const session = await open((request) =>
+      request.agent === "agent-1"
+        ? answer("Done.")
+        : request.text === "Delegate it"
+          ? call(["subagent", { task: "Read only", tools: "read" }])
+          : answer("Done."),
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    expect(session.requests.find((request) => request.agent === "agent-1")!.tools).toContain(
+      "todo",
+    );
+  });
+
   describe("in the model's context", () => {
     /**
      * Plans two Tasks, finishes one, and then fills the context until the agent is asked to roll over, which it does. After
@@ -248,10 +301,12 @@ describe("todo", () => {
         return call(["noop", {}]);
       };
 
-    it("puts the list back after a Handoff, asking the agent to reconcile it", async () => {
+    it("puts the list into the window's first message after a Handoff, the same in every request", async () => {
       const session = await open(
         longTask((request) =>
-          request.text.includes(SNAPSHOT_HEADER) ? answer("Done.") : answer("No list shown."),
+          request.text.startsWith("Updated")
+            ? answer("Done.")
+            : call(["todo", { action: "update", id: 2, status: "active" }]),
         ),
       );
 
@@ -259,19 +314,39 @@ describe("todo", () => {
       await session.settle();
 
       const kinds = (await session.entries()).map((entry) => entry.kind);
-      const after = session.requests.at(-1)!;
+
+      const rolled = session.requests.findIndex((request) =>
+        request.transcript[0]?.includes("Continue with the second Task"),
+      );
+
+      const window = session.requests.slice(rolled);
 
       expect(kinds).toContain("pi.reset");
-      // The Handoff took the results of the `todo` calls out of the context; the document still had the list.
-      expect(after.transcript[0]).toContain("Continue with the second Task");
-      expect(after.transcript.filter((text) => text.includes("Added 2 Tasks"))).toEqual([]);
-      expect(after.text).toBe(
+      expect(window.length).toBeGreaterThanOrEqual(2);
+      // The Handoff took the `todo` results out of the context; the document still had the list, which the window's
+      // first message now holds, as the first request of the window found it.
+      expect(window[0]!.transcript[0]).toContain("Continue with the second Task of the long task.");
+      expect(window[0]!.transcript[0]).toContain(
         `${SNAPSHOT_HEADER}\n[x] #1 First\n[ ] #2 Second\n\n${RECONCILE_INSTRUCTION}`,
       );
-      expect((await session.results()).at(-1)).not.toContain("No list shown");
+      expect(
+        window
+          .flatMap((request) => request.transcript)
+          .filter((text) => text.includes("Added 2 Tasks")),
+      ).toEqual([]);
+      // The provider caches the messages up to the last one, so none before it may change between requests: the agent
+      // changed the list in between, and the first message still says what it said.
+      expect(window.map((request) => request.transcript[0])).toEqual(
+        window.map(() => window[0]!.transcript[0]),
+      );
+      expect(window.at(-1)!.text).toContain("[>] #2 Second");
+      // No message of its own: two user messages in a row are not valid for every provider.
+      expect(window[0]!.transcript.filter((text) => text.includes(SNAPSHOT_HEADER))).toHaveLength(
+        1,
+      );
     });
 
-    it("puts the list back after a compaction took the results out", async () => {
+    it("puts the list into the first message after a compaction took the results out", async () => {
       const session = await open((request) => {
         if (request.transcript.some((text) => text.includes("Emergency Rollover"))) {
           return answer("Recovered.");
@@ -296,7 +371,7 @@ describe("todo", () => {
       // Nobody rolled over: the blocking threshold took the Emergency Rollover, which drops the `todo` result too.
       expect(kinds).toContain("pi.compaction");
       expect(after.transcript.filter((text) => text.includes("Added 2 Tasks"))).toEqual([]);
-      expect(after.text).toBe(
+      expect(after.transcript[0]).toContain(
         `${SNAPSHOT_HEADER}\n[ ] #1 First\n[ ] #2 Second\n\n${RECONCILE_INSTRUCTION}`,
       );
     });
@@ -317,7 +392,7 @@ describe("todo", () => {
       expect(sent.filter((text) => text.includes(SNAPSHOT_HEADER))).toEqual([]);
     });
 
-    it("shows the list when a script changed it behind the last result the context holds", async () => {
+    it("commits the list into the result of a call whose script changed it", async () => {
       const session = await open((request) => {
         switch (request.text) {
           case "Plan":
@@ -330,12 +405,18 @@ describe("todo", () => {
       });
 
       await session.prompt("Plan");
+
+      const before = session.requests.length;
+
       await session.prompt("Script");
 
       const last = session.requests.at(-1)!;
 
-      // The script's call left no `todo` result in the context, so the list it changed is shown after it.
-      expect(last.text).toBe(`${SNAPSHOT_HEADER}\n[x] #1 A\n[ ] #2 B`);
+      // The script's nested call left no `todo` result in the context, so the result of the call that ran it shows the
+      // list, where it stays: nothing before the result changed, and the first message did not get a copy.
+      expect(last.text).toContain(`${CHANGED_HEADER}\n[x] #1 A\n[ ] #2 B`);
+      expect(last.transcript.filter((text) => text.includes(SNAPSHOT_HEADER))).toEqual([]);
+      expect(session.requests[before]!.transcript.slice(0, 3)).toEqual(last.transcript.slice(0, 3));
     });
 
     it("says nothing about a list that was never used", async () => {
@@ -346,7 +427,7 @@ describe("todo", () => {
       expect(session.requests.flatMap((request) => request.transcript)).toEqual(["Hi"]);
     });
 
-    it("tells the agent when a list it saw is now empty", async () => {
+    it("tells the agent when a script emptied a list it saw", async () => {
       const session = await open((request) => {
         switch (request.text) {
           case "Plan":
@@ -361,7 +442,7 @@ describe("todo", () => {
       await session.prompt("Plan");
       await session.prompt("Script");
 
-      expect(session.requests.at(-1)!.text).toBe(`${SNAPSHOT_HEADER}\nTodo List is empty`);
+      expect(session.requests.at(-1)!.text).toContain(`${CHANGED_HEADER}\nTodo List is empty`);
     });
   });
 });
