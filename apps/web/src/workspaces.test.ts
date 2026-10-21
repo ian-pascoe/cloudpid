@@ -1,7 +1,15 @@
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { groupByWorkspace, idleMinutesProblem, slugProblem, sourceProblem } from "./workspaces.ts";
+import {
+  deleteConfirmed,
+  groupByWorkspace,
+  idleMinutesProblem,
+  slugProblem,
+  sourceProblem,
+  splitArchived,
+  workspaceNameProblem,
+} from "./workspaces.ts";
 
 const session = (id: string, workspace: string, repo: string | null = null): SessionRecord => ({
   id,
@@ -12,6 +20,7 @@ const session = (id: string, workspace: string, repo: string | null = null): Ses
   status: "idle",
   createdAt: 1,
   updatedAt: 1,
+  archivedAt: null,
 });
 
 describe("groupByWorkspace", () => {
@@ -30,6 +39,56 @@ describe("groupByWorkspace", () => {
 
   it("is empty without Sessions", () => {
     expect(groupByWorkspace([])).toEqual([]);
+  });
+});
+
+describe("groupByWorkspace with names", () => {
+  it("labels each group with its Workspace's name, and with the slug for a Workspace it does not know", () => {
+    const groups = groupByWorkspace([session("a", "pi"), session("b", "gone")], {
+      pi: "Pi on Cloudflare",
+    });
+
+    expect(groups.map((group) => [group.workspace, group.name])).toEqual([
+      ["pi", "Pi on Cloudflare"],
+      ["gone", "gone"],
+    ]);
+  });
+});
+
+describe("splitArchived", () => {
+  it("separates archived Sessions from the rest, keeping their order", () => {
+    const archived = { ...session("b", "pi"), archivedAt: 5 };
+
+    const { active, archived: put } = splitArchived([
+      session("a", "pi"),
+      archived,
+      session("c", "x"),
+    ]);
+
+    expect(active.map((s) => s.id)).toEqual(["a", "c"]);
+    expect(put.map((s) => s.id)).toEqual(["b"]);
+  });
+});
+
+describe("workspaceNameProblem", () => {
+  it("accepts a name another Workspace does not have, in any case, and says what is wrong otherwise", () => {
+    const others = ["Pi on Cloudflare"];
+
+    expect(workspaceNameProblem("  Docs ", others)).toBeNull();
+    expect(workspaceNameProblem("   ", others)).toBe("Give the workspace a name");
+    expect(workspaceNameProblem("a".repeat(81), others)).toBe("Use at most 80 characters");
+    expect(workspaceNameProblem("pi on cloudflare", others)).toBe(
+      "Another workspace is already named that",
+    );
+  });
+});
+
+describe("deleteConfirmed", () => {
+  it("holds only when the slug is typed exactly", () => {
+    expect(deleteConfirmed("cloudpid", "cloudpid")).toBe(true);
+    expect(deleteConfirmed("cloudpid", " cloudpid ")).toBe(true);
+    expect(deleteConfirmed("cloudpid", "CloudPid")).toBe(false);
+    expect(deleteConfirmed("cloudpid", "")).toBe(false);
   });
 });
 

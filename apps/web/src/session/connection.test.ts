@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
-import { EMPTY_VIEW } from "@cloudpid/protocol";
+import { EMPTY_VIEW, SESSION_DELETED_CLOSE_CODE } from "@cloudpid/protocol";
 import * as Predicate from "effect/Predicate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -58,9 +58,9 @@ class FakeSocket implements SessionSocket {
     return this.sent.filter((text) => text !== "ping").map((text) => JSON.parse(text));
   }
 
-  /** The network drops the socket. */
-  drop() {
-    this.onclose?.(new CloseEvent("close"));
+  /** The network drops the socket, or the Session closes it with `code`. */
+  drop(code?: number) {
+    this.onclose?.(new CloseEvent("close", code === undefined ? {} : { code }));
   }
 }
 
@@ -581,6 +581,23 @@ describe("a Session connection", () => {
 
       expect(sockets).toHaveLength(2);
       expect(connection.getState().status).toBe("missing");
+    });
+
+    it("stops at once, without a probe, when the Session closes the socket because it was deleted", async () => {
+      let probes = 0;
+
+      const { connection, sockets, latest } = setup(() => {
+        probes += 1;
+
+        return Promise.resolve("reachable");
+      });
+
+      latest().drop(SESSION_DELETED_CLOSE_CODE);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(sockets).toHaveLength(1);
+      expect(probes).toBe(0);
+      expect(connection.getState().status).toBe("deleted");
     });
 
     it("keeps reconnecting while the probe finds the Session reachable", async () => {

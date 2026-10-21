@@ -1,28 +1,37 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
+import { INSTANCE_DESCRIPTIONS, INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
 import {
-  INSTANCE_DESCRIPTIONS,
-  INSTANCE_TYPES,
-  type InstanceType,
-  type WorkspaceSettings,
-} from "@cloudpid/config";
-import type { SessionRecord } from "@cloudpid/protocol";
-import { ArrowLeft, GitBranch, Play } from "lucide-react";
-import { useState, type FormEvent } from "react";
+  DEFAULT_WORKSPACE,
+  MAX_WORKSPACE_NAME_LENGTH,
+  type SessionRecord,
+  type WorkspaceRecord,
+} from "@cloudpid/protocol";
+import { ArrowLeft, GitBranch, Pencil, Play, Trash2 } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "./components/ui/button.tsx";
+import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
+import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { navigate, sessionPath } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
 import type { Sessions } from "./use-sessions.ts";
+import type { RegistryApi } from "./registry.ts";
 import {
   type Repos,
   useRepos,
-  useWorkspaces,
   useWorkspaceSettings,
+  type Workspaces,
   type WorkspaceSettingsStore,
 } from "./use-workspaces.ts";
-import { idleMinutesProblem, slugProblem, sourceProblem } from "./workspaces.ts";
+import {
+  deleteConfirmed,
+  idleMinutesProblem,
+  slugProblem,
+  sourceProblem,
+  workspaceNameProblem,
+} from "./workspaces.ts";
 
 const NewWorkspaceForm = ({ onCreate }: { onCreate: (slug: string) => Promise<boolean> }) => {
   const [slug, setSlug] = useState("");
@@ -122,124 +131,350 @@ const CloneForm = ({ slug, repos }: { slug: string; repos: Repos }) => {
   );
 };
 
-const ContainerSettingsForm = ({
+/** The Container fields of the Edit dialog: size and idle time, saved together with the name. */
+const ContainerFields = ({
   slug,
-  store,
-  saved,
+  instance,
+  idle,
+  idleProblem,
+  onInstance,
+  onIdle,
 }: {
   slug: string;
-  store: WorkspaceSettingsStore;
-  saved: WorkspaceSettings;
-}) => {
-  const [instance, setInstance] = useState<InstanceType>(saved.instance);
-  const [idle, setIdle] = useState(String(saved.idleMinutes));
-  const [justSaved, setJustSaved] = useState(false);
-  const problem = idleMinutesProblem(idle);
-  const dirty = instance !== saved.instance || idle !== String(saved.idleMinutes);
+  instance: InstanceType;
+  idle: string;
+  idleProblem: string | null;
+  onInstance: (instance: InstanceType) => void;
+  onIdle: (idle: string) => void;
+}) => (
+  <fieldset className="flex min-w-0 flex-col gap-3">
+    <legend className="mb-2 text-xs font-medium text-muted-foreground">Container</legend>
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={`instance-${slug}`} className="text-sm font-medium">
+        Size
+      </label>
+      <NativeSelect
+        id={`instance-${slug}`}
+        value={instance}
+        onChange={(event) => {
+          const picked = INSTANCE_TYPES.find((type) => type === event.target.value);
+
+          if (picked !== undefined) onInstance(picked);
+        }}
+      >
+        {INSTANCE_TYPES.map((type) => (
+          <option key={type} value={type}>
+            {type}: {INSTANCE_DESCRIPTIONS[type]}
+          </option>
+        ))}
+      </NativeSelect>
+    </div>
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={`idle-${slug}`} className="text-sm font-medium">
+        Stop after (minutes without a command)
+      </label>
+      <Input
+        id={`idle-${slug}`}
+        type="number"
+        inputMode="numeric"
+        min={1}
+        value={idle}
+        onChange={(event) => {
+          onIdle(event.target.value);
+        }}
+        aria-invalid={idleProblem !== null}
+      />
+      {idleProblem !== null && <p className="text-xs text-destructive">{idleProblem}</p>}
+    </div>
+    <p className="text-xs text-muted-foreground">
+      Size and idle time apply the next time the Container starts: a running one keeps what it
+      started with. A saved disk larger than a smaller size's disk cannot be restored there, and the
+      Container then starts from scratch.
+    </p>
+  </fieldset>
+);
+
+/** A dialog's form is saving: the card holds it, so the dialog stays open until the request answers. */
+type DialogBusy = { busy: boolean; setBusy: (busy: boolean) => void };
+
+/** Edit a Workspace: its name, and its Container's size and idle time. Its slug never changes. */
+const EditWorkspaceDialog = ({
+  workspace,
+  otherNames,
+  container,
+  onRename,
+  onClose,
+  busy,
+  setBusy,
+}: {
+  workspace: WorkspaceRecord;
+  otherNames: readonly string[];
+  container: WorkspaceSettingsStore;
+  onRename: (name: string) => Promise<string | null>;
+  onClose: () => void;
+} & DialogBusy) => {
+  const saved = container.state?.settings;
+  const [name, setName] = useState(workspace.name);
+  const [instance, setInstance] = useState<InstanceType | undefined>(saved?.instance);
+  const [idle, setIdle] = useState(saved === undefined ? "" : String(saved.idleMinutes));
+  const [problem, setProblem] = useState<string | null>(null);
+
+  // The settings may answer after the dialog opened.
+  useEffect(() => {
+    if (saved === undefined) return;
+
+    setInstance((current) => current ?? saved.instance);
+    setIdle((current) => (current === "" ? String(saved.idleMinutes) : current));
+  }, [saved]);
+
+  const nameProblem = workspaceNameProblem(name, otherNames);
+  const idleProblem = saved === undefined ? null : idleMinutesProblem(idle);
+  const renamed = name.trim() !== workspace.name;
+
+  const resized =
+    saved !== undefined &&
+    instance !== undefined &&
+    (instance !== saved.instance || idle !== String(saved.idleMinutes));
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
 
-    if (problem !== null || !dirty || store.saving) return;
+    if (nameProblem !== null || idleProblem !== null || busy) return;
 
-    setJustSaved(await store.save({ instance, idleMinutes: Number(idle) }));
+    setBusy(true);
+    setProblem(null);
+
+    const failure = renamed ? await onRename(name.trim()) : null;
+
+    const settingsSaved =
+      failure === null && resized && instance !== undefined
+        ? await container.save({ instance, idleMinutes: Number(idle) })
+        : true;
+
+    setBusy(false);
+
+    if (failure !== null) setProblem(failure);
+    else if (settingsSaved) onClose();
   };
 
   return (
-    <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-2">
-      <h3 className="text-xs font-medium text-muted-foreground">Container</h3>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor={`instance-${slug}`} className="text-sm font-medium">
-            Size
-          </label>
-          <NativeSelect
-            id={`instance-${slug}`}
-            value={instance}
-            onChange={(event) => {
-              const picked = INSTANCE_TYPES.find((type) => type === event.target.value);
-
-              if (picked !== undefined) {
-                setInstance(picked);
-                setJustSaved(false);
-              }
-            }}
-          >
-            {INSTANCE_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {type}: {INSTANCE_DESCRIPTIONS[type]}
-              </option>
-            ))}
-          </NativeSelect>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor={`idle-${slug}`} className="text-sm font-medium">
-            Stop after (minutes without a command)
-          </label>
-          <Input
-            id={`idle-${slug}`}
-            type="number"
-            inputMode="numeric"
-            min={1}
-            value={idle}
-            onChange={(event) => {
-              setIdle(event.target.value);
-              setJustSaved(false);
-            }}
-            aria-invalid={problem !== null}
-          />
-        </div>
-      </div>
-      {problem !== null && <p className="text-xs text-destructive">{problem}</p>}
-      <p className="text-xs text-muted-foreground">
-        Applies the next time the Container starts: a running one keeps the size and idle time it
-        started with. The Container's disk is saved when it stops, so its tools come back without
-        downloading; a saved disk larger than a smaller size's disk cannot be restored there, and
-        the Container then starts from scratch.
-      </p>
-      {store.error !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {store.error}
-        </p>
-      )}
-      <div className="flex items-center gap-3">
-        <Button
-          type="submit"
-          variant="outline"
-          size="sm"
-          disabled={!dirty || problem !== null || store.saving}
-        >
-          {store.saving ? "Saving…" : "Save"}
-        </Button>
-        {justSaved && !dirty && (
-          <span role="status" className="text-xs text-muted-foreground">
-            Saved. It applies at the next start.
-          </span>
+    <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-5">
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor={`name-${workspace.slug}`} className="text-sm font-medium">
+          Name
+        </label>
+        <Input
+          id={`name-${workspace.slug}`}
+          value={name}
+          maxLength={MAX_WORKSPACE_NAME_LENGTH}
+          onChange={(event) => {
+            setName(event.target.value);
+          }}
+          autoComplete="off"
+          data-1p-ignore
+          aria-invalid={nameProblem !== null}
+        />
+        {nameProblem === null ? (
+          <p className="text-xs text-muted-foreground">
+            Its slug, <span className="font-mono">{workspace.slug}</span>, stays the same.
+          </p>
+        ) : (
+          <p className="text-xs text-destructive">{nameProblem}</p>
         )}
       </div>
+      {saved !== undefined && instance !== undefined ? (
+        <ContainerFields
+          slug={workspace.slug}
+          instance={instance}
+          idle={idle}
+          idleProblem={idleProblem}
+          onInstance={setInstance}
+          onIdle={setIdle}
+        />
+      ) : container.error === null ? (
+        <p className="text-sm text-muted-foreground">Loading the Container's settings…</p>
+      ) : (
+        <div className="flex items-center gap-3">
+          <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+            {container.error}
+          </p>
+          <Button type="button" variant="outline" size="sm" onClick={container.retry}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {(problem ?? (saved === undefined ? null : container.error)) !== null && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {problem ?? container.error}
+        </p>
+      )}
+      <DialogActions>
+        <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          disabled={busy || nameProblem !== null || idleProblem !== null || !(renamed || resized)}
+        >
+          {busy ? "Saving…" : "Save"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/** Confirm deleting a Workspace by typing its slug, after saying everything that goes with it. */
+const DeleteWorkspaceDialog = ({
+  workspace,
+  sessions,
+  onDelete,
+  onClose,
+  busy,
+  setBusy,
+}: {
+  workspace: WorkspaceRecord;
+  sessions: readonly SessionRecord[];
+  onDelete: () => Promise<string | null>;
+  onClose: () => void;
+} & DialogBusy) => {
+  const [typed, setTyped] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  const archived = sessions.filter((session) => session.archivedAt !== null).length;
+  const confirmed = deleteConfirmed(workspace.slug, typed);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!confirmed || busy) return;
+
+    setBusy(true);
+    setProblem(null);
+
+    const failure = await onDelete();
+
+    setBusy(false);
+
+    if (failure === null) onClose();
+    else setProblem(failure);
+  };
+
+  return (
+    <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-4">
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        <li>
+          {sessions.length === 0
+            ? "It has no sessions."
+            : `${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}${
+                archived > 0 ? ` (${archived} archived)` : ""
+              }, with their conversations and history. Running ones stop first.`}
+        </li>
+        <li>Every repo and file in it, including work that was not pushed.</li>
+        <li>Its Container, and its Container settings.</li>
+      </ul>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor={`confirm-${workspace.slug}`} className="text-sm">
+          Type <span className="font-mono font-medium">{workspace.slug}</span> to confirm
+        </label>
+        <Input
+          id={`confirm-${workspace.slug}`}
+          value={typed}
+          onChange={(event) => {
+            setTyped(event.target.value);
+          }}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          data-1p-ignore
+          spellCheck={false}
+          disabled={busy}
+          className="font-mono"
+        />
+      </div>
+      {busy && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Deleting its sessions, then its files. This can take a little while.
+        </p>
+      )}
+      {problem !== null && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {problem}
+        </p>
+      )}
+      <DialogActions>
+        <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
+          {busy ? "Deleting…" : "Delete workspace"}
+        </Button>
+      </DialogActions>
     </form>
   );
 };
 
 const WorkspaceCard = ({
-  slug,
+  workspace,
+  otherNames,
   sessions,
   registry,
   starting,
   onStart,
+  onRename,
+  onDelete,
 }: {
-  slug: string;
+  workspace: WorkspaceRecord;
+  /** The names of the other Workspaces, which this one cannot take. */
+  otherNames: readonly string[];
+  /** Every Session bound to the Workspace, archived ones included. */
   sessions: readonly SessionRecord[];
-  registry: ReturnType<typeof useWorkspaces>["registry"];
+  registry: RegistryApi;
   starting: boolean;
   onStart: (workspace: string, repo?: string) => void;
+  onRename: (name: string) => Promise<string | null>;
+  onDelete: () => Promise<string | null>;
 }) => {
+  const { slug } = workspace;
   const repos = useRepos(registry, slug);
   const container = useWorkspaceSettings(registry, slug);
+  const [dialog, setDialog] = useState<"edit" | "delete" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const shown = sessions.filter((session) => session.archivedAt === null);
+
+  const close = () => {
+    setDialog(null);
+  };
 
   return (
-    <section aria-label={slug} className="flex flex-col gap-4 rounded-lg border p-4">
-      <h2 className="font-mono text-sm font-semibold">{slug}</h2>
+    <section aria-label={workspace.name} className="flex flex-col gap-4 rounded-lg border p-4">
+      <div className="flex items-start gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+          <h2 className="truncate text-sm font-semibold">{workspace.name}</h2>
+          {workspace.name !== slug && (
+            <span className="truncate font-mono text-xs text-muted-foreground">{slug}</span>
+          )}
+        </div>
+        <Menu label={`Actions for the ${workspace.name} workspace`} className="-mt-1.5 -mr-1.5">
+          <MenuItem
+            onSelect={() => {
+              setDialog("edit");
+            }}
+          >
+            <Pencil aria-hidden />
+            Edit…
+          </MenuItem>
+          {slug !== DEFAULT_WORKSPACE && (
+            <MenuItem
+              destructive
+              onSelect={() => {
+                setDialog("delete");
+              }}
+            >
+              <Trash2 aria-hidden />
+              Delete…
+            </MenuItem>
+          )}
+        </Menu>
+      </div>
       <div className="flex flex-col gap-2">
         <h3 className="text-xs font-medium text-muted-foreground">Start a session in</h3>
         <ul className="flex flex-col gap-1.5">
@@ -282,29 +517,16 @@ const WorkspaceCard = ({
         )}
       </div>
       <CloneForm slug={slug} repos={repos} />
-      {container.state !== null && (
-        <ContainerSettingsForm slug={slug} store={container} saved={container.state.settings} />
-      )}
-      {container.state === null && container.error !== null && (
-        <div className="flex items-center gap-3">
-          <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-            {container.error}
-          </p>
-          <Button type="button" variant="outline" size="sm" onClick={container.retry}>
-            Try again
-          </Button>
-        </div>
-      )}
       {repos.error !== null && (
         <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
           {repos.error}
         </p>
       )}
-      {sessions.length > 0 && (
+      {shown.length > 0 && (
         <div className="flex flex-col gap-1">
           <h3 className="text-xs font-medium text-muted-foreground">Sessions</h3>
           <ul className="flex flex-col gap-0.5">
-            {sessions.map((session) => (
+            {shown.map((session) => (
               <li key={session.id}>
                 <SessionLink session={session} active={false} />
               </li>
@@ -312,13 +534,50 @@ const WorkspaceCard = ({
           </ul>
         </div>
       )}
+      <Dialog
+        open={dialog === "edit"}
+        onClose={close}
+        dismissible={!busy}
+        title={`Edit ${workspace.name}`}
+      >
+        <EditWorkspaceDialog
+          workspace={workspace}
+          otherNames={otherNames}
+          container={container}
+          onRename={onRename}
+          onClose={close}
+          busy={busy}
+          setBusy={setBusy}
+        />
+      </Dialog>
+      <Dialog
+        open={dialog === "delete"}
+        onClose={close}
+        dismissible={!busy}
+        title={`Delete the ${workspace.name} workspace?`}
+        description="Everything below is deleted for good. Its saved Container disk expires on its own within 30 days."
+      >
+        <DeleteWorkspaceDialog
+          workspace={workspace}
+          sessions={sessions}
+          onDelete={onDelete}
+          onClose={close}
+          busy={busy}
+          setBusy={setBusy}
+        />
+      </Dialog>
     </section>
   );
 };
 
 /** The Workspaces page: create a Workspace, clone repos into it, and start Sessions in a repo or at its root. */
-export const WorkspacesPage = ({ sessions }: { sessions: Sessions }) => {
-  const { registry, workspaces, error, create } = useWorkspaces();
+export const WorkspacesPage = ({
+  sessions,
+  workspaces: { registry, workspaces, error, create, rename, delete: deleteWorkspace },
+}: {
+  sessions: Sessions;
+  workspaces: Workspaces;
+}) => {
   const [starting, setStarting] = useState(false);
 
   const start = async (workspace: string, repo?: string) => {
@@ -364,13 +623,24 @@ export const WorkspacesPage = ({ sessions }: { sessions: Sessions }) => {
             {workspaces.map((workspace) => (
               <WorkspaceCard
                 key={workspace.slug}
-                slug={workspace.slug}
+                workspace={workspace}
+                otherNames={workspaces
+                  .filter((other) => other.slug !== workspace.slug)
+                  .map((other) => other.name)}
                 sessions={(sessions.sessions ?? []).filter(
                   (session) => session.workspace === workspace.slug,
                 )}
                 registry={registry}
                 starting={starting}
                 onStart={(slug, repo) => void start(slug, repo)}
+                onRename={(name) => rename(workspace.slug, name)}
+                onDelete={async () => {
+                  const failure = await deleteWorkspace(workspace.slug);
+
+                  await sessions.refresh();
+
+                  return failure;
+                }}
               />
             ))}
           </div>

@@ -255,6 +255,24 @@ export class Workspace extends ContainerHost {
     return this.#settings.write(overrides);
   }
 
+  /**
+   * Delete the Workspace's own state (`LifecycleHost`): stop its Container, then wipe the storage (files, settings, the
+   * snapshot and launch records) and the alarm. The disk snapshot itself expires on Cloudflare's side; there is no API to
+   * delete it. The object resets once the call has answered, so the next call to this slug opens an empty Workspace.
+   */
+  async destroy(): Promise<void> {
+    if (this.ctx.container?.running === true) await this.ctx.container.destroy();
+
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+
+    // After the reply: an abort now would fail the call that asked for the deletion.
+    // @effect-diagnostics-next-line globalTimers:off
+    setTimeout(() => {
+      this.ctx.abort("Workspace deleted");
+    }, 0);
+  }
+
   /** The idle stop's alarm. */
   alarm(): Promise<void> {
     return this.#idle.alarm();

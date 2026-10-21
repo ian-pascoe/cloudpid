@@ -14,12 +14,13 @@ import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
-import { serveRegistryRpc } from "./registry/rpc.ts";
+import { serveRegistryRpc, type SessionObjects } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
 import { isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
+import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import { workspaceRepos } from "./workspace/repos.ts";
 import { workspaceSettingsRemote } from "./workspace/settings.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
@@ -142,6 +143,17 @@ export default class Server extends Cloudflare.Worker<Server>()(
       worker[WORKSPACE_BINDING] as Parameters<typeof workspaceSettingsRemote>[0],
     );
 
+    // SAFETY: the same binding; the Workspace DO answers `LifecycleHost.destroy`.
+    const workspaces = workspaceObjectsRemote(
+      worker[WORKSPACE_BINDING] as Parameters<typeof workspaceObjectsRemote>[0],
+    );
+
+    // A Session's object is found anew for each call; any failure of the call is a defect the endpoint reports.
+    const sessionObjects: SessionObjects = {
+      stop: (id) => Effect.orDie(sessions.getByName(id).stopAll()),
+      destroy: (id) => Effect.orDie(sessions.getByName(id).destroy()),
+    };
+
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -150,7 +162,12 @@ export default class Server extends Cloudflare.Worker<Server>()(
         if (sessionId !== undefined) return yield* connectSession(sessions, registries, sessionId);
 
         if (isRegistryRpc(request))
-          return yield* serveRegistryRpc(registries, repos, workspaceSettings);
+          return yield* serveRegistryRpc(registries, {
+            repos,
+            workspaceSettings,
+            workspaces,
+            sessions: sessionObjects,
+          });
 
         return hello;
       }),

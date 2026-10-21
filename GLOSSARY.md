@@ -8,6 +8,14 @@ A personal coding agent on Cloudflare: pi's harness running durably in Durable O
 One agent workspace-of-work the user opens: a root conversation, its subagents, and their history, bound to one Workspace.
 _Avoid_: Chat, thread, conversation (for the whole unit)
 
+**Archived Session**:
+A Session the owner has put away: kept whole, listed apart under _Archived_ rather than with the others, and read-only until it is unarchived.
+_Avoid_: Hidden, closed, deleted (for an archived one)
+
+**Deleted Session**:
+A Session deleted for good, with everything it held; the files it wrote in its Workspace stay.
+_Avoid_: Archived (for a deleted one), removed
+
 **Conversation**:
 One transcript inside a Session: the root conversation or a subagent's.
 _Avoid_: Session (for a single transcript), thread
@@ -65,6 +73,14 @@ _Avoid_: Task (alone, in prose about the product), to-do
 **Workspace**:
 A persistent project file tree, holding one or more repos, shared by every Session bound to it.
 _Avoid_: Sandbox, project directory, box
+
+**Slug**:
+A Workspace's fixed identifier, chosen when it is created; it never changes, and a deleted Workspace's slug may be used again.
+_Avoid_: ID, key (for the Workspace's identifier)
+
+**Workspace name**:
+The label the owner gives a Workspace and may rename, shown in place of its Slug; unique among Workspaces.
+_Avoid_: Title, display name, slug (for the label)
 
 **Backend**:
 A place a Workspace runs commands: the Worker Shell or the Container.

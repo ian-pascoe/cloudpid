@@ -1,0 +1,540 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T10:31:27.952145Z",
+  "title": "Design System: Pi on Cloudflare",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Slate Ink",
+        "canonical": "oklch(0.32 0.06 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.06 255)",
+          "oklch(0.27 0.06 255)",
+          "oklch(0.39 0.06 255)",
+          "oklch(0.5 0.06 255)",
+          "oklch(0.62 0.06 255)",
+          "oklch(0.74 0.06 255)",
+          "oklch(0.85 0.06 255)",
+          "oklch(0.95 0.06 255)"
+        ]
+      },
+      "primary-dark": {
+        "role": "primary",
+        "displayName": "Slate Ink (dark)",
+        "canonical": "oklch(0.9 0.03 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.03 255)",
+          "oklch(0.27 0.03 255)",
+          "oklch(0.39 0.03 255)",
+          "oklch(0.5 0.03 255)",
+          "oklch(0.62 0.03 255)",
+          "oklch(0.74 0.03 255)",
+          "oklch(0.85 0.03 255)",
+          "oklch(0.95 0.03 255)"
+        ]
+      },
+      "ring": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "oklch(0.55 0.12 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.12 255)",
+          "oklch(0.27 0.12 255)",
+          "oklch(0.39 0.12 255)",
+          "oklch(0.5 0.12 255)",
+          "oklch(0.62 0.12 255)",
+          "oklch(0.74 0.12 255)",
+          "oklch(0.85 0.12 255)",
+          "oklch(0.95 0.12 255)"
+        ]
+      },
+      "ring-dark": {
+        "role": "primary",
+        "displayName": "Signal Blue (dark)",
+        "canonical": "oklch(0.7 0.11 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.11 255)",
+          "oklch(0.27 0.11 255)",
+          "oklch(0.39 0.11 255)",
+          "oklch(0.5 0.11 255)",
+          "oklch(0.62 0.11 255)",
+          "oklch(0.74 0.11 255)",
+          "oklch(0.85 0.11 255)",
+          "oklch(0.95 0.11 255)"
+        ]
+      },
+      "background": {
+        "role": "neutral",
+        "displayName": "Blue-Gray Paper",
+        "canonical": "oklch(0.992 0.002 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.006 250)",
+          "oklch(0.27 0.006 250)",
+          "oklch(0.39 0.006 250)",
+          "oklch(0.5 0.006 250)",
+          "oklch(0.62 0.006 250)",
+          "oklch(0.74 0.006 250)",
+          "oklch(0.85 0.006 250)",
+          "oklch(0.95 0.006 250)"
+        ]
+      },
+      "background-dark": {
+        "role": "neutral",
+        "displayName": "Night Slate",
+        "canonical": "oklch(0.2 0.012 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.012 250)",
+          "oklch(0.27 0.012 250)",
+          "oklch(0.39 0.012 250)",
+          "oklch(0.5 0.012 250)",
+          "oklch(0.62 0.012 250)",
+          "oklch(0.74 0.012 250)",
+          "oklch(0.85 0.012 250)",
+          "oklch(0.95 0.012 250)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(0.2 0.02 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.02 250)",
+          "oklch(0.27 0.02 250)",
+          "oklch(0.39 0.02 250)",
+          "oklch(0.5 0.02 250)",
+          "oklch(0.62 0.02 250)",
+          "oklch(0.74 0.02 250)",
+          "oklch(0.85 0.02 250)",
+          "oklch(0.95 0.02 250)"
+        ]
+      },
+      "foreground-dark": {
+        "role": "neutral",
+        "displayName": "Ink (dark)",
+        "canonical": "oklch(0.95 0.005 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.005 250)",
+          "oklch(0.27 0.005 250)",
+          "oklch(0.39 0.005 250)",
+          "oklch(0.5 0.005 250)",
+          "oklch(0.62 0.005 250)",
+          "oklch(0.74 0.005 250)",
+          "oklch(0.85 0.005 250)",
+          "oklch(0.95 0.005 250)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Tinted Wash",
+        "canonical": "oklch(0.962 0.006 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.006 250)",
+          "oklch(0.27 0.006 250)",
+          "oklch(0.39 0.006 250)",
+          "oklch(0.5 0.006 250)",
+          "oklch(0.62 0.006 250)",
+          "oklch(0.74 0.006 250)",
+          "oklch(0.85 0.006 250)",
+          "oklch(0.95 0.006 250)"
+        ]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "Tinted Wash (dark)",
+        "canonical": "oklch(0.25 0.014 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.014 250)",
+          "oklch(0.27 0.014 250)",
+          "oklch(0.39 0.014 250)",
+          "oklch(0.5 0.014 250)",
+          "oklch(0.62 0.014 250)",
+          "oklch(0.74 0.014 250)",
+          "oklch(0.85 0.014 250)",
+          "oklch(0.95 0.014 250)"
+        ]
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "Faded Ink",
+        "canonical": "oklch(0.48 0.02 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.02 250)",
+          "oklch(0.27 0.02 250)",
+          "oklch(0.39 0.02 250)",
+          "oklch(0.5 0.02 250)",
+          "oklch(0.62 0.02 250)",
+          "oklch(0.74 0.02 250)",
+          "oklch(0.85 0.02 250)",
+          "oklch(0.95 0.02 250)"
+        ]
+      },
+      "muted-foreground-dark": {
+        "role": "neutral",
+        "displayName": "Faded Ink (dark)",
+        "canonical": "oklch(0.72 0.015 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.015 250)",
+          "oklch(0.27 0.015 250)",
+          "oklch(0.39 0.015 250)",
+          "oklch(0.5 0.015 250)",
+          "oklch(0.62 0.015 250)",
+          "oklch(0.74 0.015 250)",
+          "oklch(0.85 0.015 250)",
+          "oklch(0.95 0.015 250)"
+        ]
+      },
+      "accent": {
+        "role": "neutral",
+        "displayName": "Tinted Wash (hover)",
+        "canonical": "oklch(0.945 0.012 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.012 250)",
+          "oklch(0.27 0.012 250)",
+          "oklch(0.39 0.012 250)",
+          "oklch(0.5 0.012 250)",
+          "oklch(0.62 0.012 250)",
+          "oklch(0.74 0.012 250)",
+          "oklch(0.85 0.012 250)",
+          "oklch(0.95 0.012 250)"
+        ]
+      },
+      "accent-dark": {
+        "role": "neutral",
+        "displayName": "Tinted Wash (hover, dark)",
+        "canonical": "oklch(0.29 0.02 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.02 250)",
+          "oklch(0.27 0.02 250)",
+          "oklch(0.39 0.02 250)",
+          "oklch(0.5 0.02 250)",
+          "oklch(0.62 0.02 250)",
+          "oklch(0.74 0.02 250)",
+          "oklch(0.85 0.02 250)",
+          "oklch(0.95 0.02 250)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Ruled Line",
+        "canonical": "oklch(0.915 0.008 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.008 250)",
+          "oklch(0.27 0.008 250)",
+          "oklch(0.39 0.008 250)",
+          "oklch(0.5 0.008 250)",
+          "oklch(0.62 0.008 250)",
+          "oklch(0.74 0.008 250)",
+          "oklch(0.85 0.008 250)",
+          "oklch(0.95 0.008 250)"
+        ]
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "Ruled Line (dark)",
+        "canonical": "oklch(0.32 0.016 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.016 250)",
+          "oklch(0.27 0.016 250)",
+          "oklch(0.39 0.016 250)",
+          "oklch(0.5 0.016 250)",
+          "oklch(0.62 0.016 250)",
+          "oklch(0.74 0.016 250)",
+          "oklch(0.85 0.016 250)",
+          "oklch(0.95 0.016 250)"
+        ]
+      },
+      "input": {
+        "role": "neutral",
+        "displayName": "Input Line",
+        "canonical": "oklch(0.88 0.01 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.01 250)",
+          "oklch(0.27 0.01 250)",
+          "oklch(0.39 0.01 250)",
+          "oklch(0.5 0.01 250)",
+          "oklch(0.62 0.01 250)",
+          "oklch(0.74 0.01 250)",
+          "oklch(0.85 0.01 250)",
+          "oklch(0.95 0.01 250)"
+        ]
+      },
+      "input-dark": {
+        "role": "neutral",
+        "displayName": "Input Line (dark)",
+        "canonical": "oklch(0.36 0.018 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.018 250)",
+          "oklch(0.27 0.018 250)",
+          "oklch(0.39 0.018 250)",
+          "oklch(0.5 0.018 250)",
+          "oklch(0.62 0.018 250)",
+          "oklch(0.74 0.018 250)",
+          "oklch(0.85 0.018 250)",
+          "oklch(0.95 0.018 250)"
+        ]
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "Run Green",
+        "canonical": "oklch(0.55 0.13 150)",
+        "tonalRamp": [
+          "oklch(0.15 0.13 150)",
+          "oklch(0.27 0.13 150)",
+          "oklch(0.39 0.13 150)",
+          "oklch(0.5 0.13 150)",
+          "oklch(0.62 0.13 150)",
+          "oklch(0.74 0.13 150)",
+          "oklch(0.85 0.13 150)",
+          "oklch(0.95 0.13 150)"
+        ]
+      },
+      "success-dark": {
+        "role": "tertiary",
+        "displayName": "Run Green (dark)",
+        "canonical": "oklch(0.74 0.14 150)",
+        "tonalRamp": [
+          "oklch(0.15 0.14 150)",
+          "oklch(0.27 0.14 150)",
+          "oklch(0.39 0.14 150)",
+          "oklch(0.5 0.14 150)",
+          "oklch(0.62 0.14 150)",
+          "oklch(0.74 0.14 150)",
+          "oklch(0.85 0.14 150)",
+          "oklch(0.95 0.14 150)"
+        ]
+      },
+      "destructive": {
+        "role": "tertiary",
+        "displayName": "Brick Red",
+        "canonical": "oklch(0.53 0.2 27)",
+        "tonalRamp": [
+          "oklch(0.15 0.2 27)",
+          "oklch(0.27 0.2 27)",
+          "oklch(0.39 0.2 27)",
+          "oklch(0.5 0.2 27)",
+          "oklch(0.62 0.2 27)",
+          "oklch(0.74 0.2 27)",
+          "oklch(0.85 0.2 27)",
+          "oklch(0.95 0.2 27)"
+        ]
+      },
+      "destructive-dark": {
+        "role": "tertiary",
+        "displayName": "Brick Red (dark)",
+        "canonical": "oklch(0.7 0.17 25)",
+        "tonalRamp": [
+          "oklch(0.15 0.17 25)",
+          "oklch(0.27 0.17 25)",
+          "oklch(0.39 0.17 25)",
+          "oklch(0.5 0.17 25)",
+          "oklch(0.62 0.17 25)",
+          "oklch(0.74 0.17 25)",
+          "oklch(0.85 0.17 25)",
+          "oklch(0.95 0.17 25)"
+        ]
+      },
+      "backdrop": {
+        "role": "neutral",
+        "displayName": "Backdrop",
+        "canonical": "oklch(0.2 0.02 250 / 0.4)"
+      },
+      "backdrop-dark": {
+        "role": "neutral",
+        "displayName": "Backdrop (dark)",
+        "canonical": "oklch(0.1 0.01 250 / 0.6)"
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page titles (Workspaces, Settings) and empty states."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Session header, Workspace card name, section headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Transcript prose and the page base."
+      },
+      "body-sm": {
+        "displayName": "Body small",
+        "purpose": "All interface text: buttons, list items, forms, cards."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Small Faded Ink section labels, hints, field errors, timestamps."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Slugs, repo paths, model IDs, code and command output."
+      }
+    },
+    "shadows": [
+      {
+        "name": "waiting-on-you",
+        "value": "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
+        "purpose": "Only under what waits on the owner: the Secret request and Browser Handoff cards, an open menu, a dialog."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "150ms cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Colour transitions on hover (buttons, list items, selects)."
+      },
+      {
+        "name": "pulse-dot",
+        "value": "1.4s ease-in-out infinite (opacity to 0.35)",
+        "purpose": "A running Session status dot; only under prefers-reduced-motion: no-preference."
+      },
+      {
+        "name": "disclosure-turn",
+        "value": "rotate(90deg), 150ms",
+        "purpose": "The chevron of an open disclosure."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "md",
+        "value": "768px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single main action of a view.",
+      "html": "<button class=\"ds-btn-primary\">New session</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border:0;border-radius:8px;background:var(--primary);color:var(--primary-foreground);font:500 14px/1 system-ui,sans-serif;transition:background-color 150ms cubic-bezier(.4,0,.2,1)}.ds-btn-primary:hover{background:color-mix(in oklch,var(--primary) 90%,transparent)}.ds-btn-primary:focus-visible{outline:2px solid var(--ring);outline-offset:2px}"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Default action in cards and lists.",
+      "html": "<button class=\"ds-btn-outline\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polygon points=\"6 3 20 12 6 21 6 3\"/></svg>Start</button>",
+      "css": ".ds-btn-outline{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border:1px solid var(--input);border-radius:8px;background:var(--background);color:var(--foreground);font:500 14px/1 system-ui,sans-serif;transition:background-color 150ms cubic-bezier(.4,0,.2,1)}.ds-btn-outline:hover{background:var(--accent);color:var(--accent-foreground)}.ds-btn-outline:focus-visible{outline:2px solid var(--ring);outline-offset:2px}"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "An action that deletes or stops; never filled.",
+      "html": "<button class=\"ds-btn-destructive\">Delete</button>",
+      "css": ".ds-btn-destructive{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border:1px solid color-mix(in oklch,var(--destructive) 40%,transparent);border-radius:8px;background:transparent;color:var(--destructive);font:500 14px/1 system-ui,sans-serif;transition:background-color 150ms cubic-bezier(.4,0,.2,1)}.ds-btn-destructive:hover{background:color-mix(in oklch,var(--destructive) 10%,transparent)}.ds-btn-destructive:focus-visible{outline:2px solid var(--ring);outline-offset:2px}"
+    },
+    {
+      "name": "Identifier Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "A field for a slug or repo source, in mono.",
+      "html": "<input class=\"ds-input\" placeholder=\"owner/repo\">",
+      "css": ".ds-input{height:36px;padding:0 12px;border:1px solid var(--input);border-radius:8px;background:var(--background);color:var(--foreground);font:400 14px/1 ui-monospace,Menlo,monospace}.ds-input::placeholder{color:var(--muted-foreground)}.ds-input:focus-visible{outline:none;box-shadow:0 0 0 2px var(--ring)}"
+    },
+    {
+      "name": "Session Link",
+      "kind": "nav",
+      "refersTo": "session-link",
+      "description": "A Session in the sidebar: title, then repo and status.",
+      "html": "<a class=\"ds-session\" href=\"#\"><span class=\"ds-session-title\">Explaining the architecture</span><span class=\"ds-session-meta\"><span class=\"ds-mono\">cloudpid</span><span class=\"ds-dot\"></span>Running</span></a>",
+      "css": ".ds-session{display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-radius:8px;color:var(--foreground);text-decoration:none;font:400 14px/1.43 system-ui,sans-serif;transition:background-color 150ms}.ds-session:hover{background:var(--accent)}.ds-session:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-session-title{font-weight:500}.ds-session-meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted-foreground)}.ds-mono{font-family:ui-monospace,Menlo,monospace}.ds-dot{width:6px;height:6px;border-radius:9999px;background:var(--success)}"
+    },
+    {
+      "name": "Workspace Card",
+      "kind": "card",
+      "refersTo": "owner-action-card",
+      "description": "A flat bordered container with labelled sections.",
+      "html": "<section class=\"ds-card\"><h2 class=\"ds-card-title\">default</h2><h3 class=\"ds-label\">Start a session in</h3><p class=\"ds-mono\">/workspace/cloudpid</p></section>",
+      "css": ".ds-card{display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--background);color:var(--foreground)}.ds-card-title{margin:0;font:600 14px/1.43 ui-monospace,Menlo,monospace}.ds-label{margin:0;font:500 12px/1.33 system-ui,sans-serif;color:var(--muted-foreground)}.ds-mono{margin:0;font:400 14px/1.43 ui-monospace,Menlo,monospace}"
+    },
+    {
+      "name": "Waiting-On-You Card",
+      "kind": "custom",
+      "refersTo": "owner-action-card",
+      "description": "A request that needs the owner; the only shadowed surface.",
+      "html": "<section class=\"ds-wait\"><div class=\"ds-wait-head\">The agent needs you in its browser</div><p class=\"ds-wait-body\">Sign in to the dashboard, then press Done.</p></section>",
+      "css": ".ds-wait{padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:var(--background);box-shadow:0 1px 3px 0 rgb(0 0 0/.1),0 1px 2px -1px rgb(0 0 0/.1);color:var(--foreground);font:400 14px/1.43 system-ui,sans-serif}.ds-wait-head{font-weight:600}.ds-wait-body{margin:4px 0 0}"
+    },
+    {
+      "name": "Owner Message",
+      "kind": "custom",
+      "refersTo": "user-message",
+      "description": "The owner's message in the transcript.",
+      "html": "<div class=\"ds-user\">Explain the architecture</div>",
+      "css": ".ds-user{max-width:85%;margin-left:auto;padding:8px 16px;border-radius:10px;background:var(--muted);color:var(--foreground);font:400 15px/1.55 system-ui,sans-serif}"
+    },
+    {
+      "name": "Menu",
+      "kind": "menu",
+      "refersTo": "menu",
+      "description": "A ghost ⋯ trigger opening a popover of actions; a destructive item is Brick Red.",
+      "html": "<div class=\"ds-menu\" role=\"menu\"><button class=\"ds-menu-item\" role=\"menuitem\">Archive</button><button class=\"ds-menu-item ds-menu-item-destructive\" role=\"menuitem\">Delete…</button></div>",
+      "css": ".ds-menu{display:flex;flex-direction:column;min-width:176px;padding:4px;border:1px solid var(--border);border-radius:10px;background:var(--background);box-shadow:0 1px 3px 0 rgb(0 0 0 / 0.1),0 1px 2px -1px rgb(0 0 0 / 0.1)}.ds-menu-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:var(--foreground);font:400 14px/1.43 system-ui,sans-serif;text-align:left}.ds-menu-item:hover,.ds-menu-item:focus-visible{background:var(--accent);outline:none}.ds-menu-item-destructive{color:var(--destructive)}.ds-menu-item-destructive:hover,.ds-menu-item-destructive:focus-visible{background:color-mix(in oklch,var(--destructive) 10%,transparent)}"
+    },
+    {
+      "name": "Dialog",
+      "kind": "dialog",
+      "refersTo": "dialog",
+      "description": "A modal confirm over the Backdrop: a question, what is lost, then Cancel and the action.",
+      "html": "<div class=\"ds-dialog\" role=\"dialog\"><h2 class=\"ds-dialog-title\">Delete this session?</h2><p class=\"ds-dialog-desc\">Its conversation and history are deleted for good.</p><div class=\"ds-dialog-actions\"><button>Cancel</button><button>Delete session</button></div></div>",
+      "css": ".ds-dialog{display:flex;flex-direction:column;gap:16px;max-width:448px;padding:20px;border:1px solid var(--border);border-radius:10px;background:var(--background);color:var(--foreground);box-shadow:0 1px 3px 0 rgb(0 0 0 / 0.1),0 1px 2px -1px rgb(0 0 0 / 0.1)}.ds-dialog-title{margin:0;font:600 16px/1.5 system-ui,sans-serif}.ds-dialog-desc{margin:-10px 0 0;color:var(--muted-foreground);font:400 14px/1.43 system-ui,sans-serif}.ds-dialog-actions{display:flex;justify-content:flex-end;gap:8px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lab Notebook",
+    "overview": "The app is a written record of work. A Session's transcript is the page: the agent's prose, its tool calls folded into bordered entries, the owner's messages set apart on a tinted wash, and notices ruled across the page like a dated margin note. Everything around the page (sidebar, header, composer) is quiet chrome in the same ink, there to find and steer the record, never to compete with it.\n\nThe palette is one hue: every gray, surface and accent is tinted toward blue-slate (hue 250–255), so light and dark themes read as the same notebook under different light. Structure comes from ruled lines and tonal steps, not shadows. The density is that of a working tool: 14 px interface text around a 15 px reading body, monospace for anything that is an identifier (slugs, repo paths, model IDs, code).\n\nColor is scarce and always means something: Slate Ink marks the one main action, Signal Blue marks focus, Run Green marks work in progress, Brick Red marks failure and destruction.",
+    "keyCharacteristics": [
+      "One blue-slate hue across every neutral, in both themes, following the system setting.",
+      "Flat surfaces separated by 1 px borders and tonal washes.",
+      "14 px interface text, 15 px reading text, monospace for identifiers.",
+      "Outline and ghost controls by default; a filled button is the exception.",
+      "A shadow means \"this is waiting on you\"."
+    ],
+    "rules": [
+      {
+        "name": "The One Hue Rule",
+        "body": "Every neutral is tinted to hue 250. A pure gray (`zinc`, `neutral`, `#888`) does not belong on any surface.",
+        "section": "colors"
+      },
+      {
+        "name": "The Signals Mean Something Rule",
+        "body": "Green is only \"running\", red only \"failed or destroys\". Neither is decoration, and neither is used for emphasis.",
+        "section": "colors"
+      },
+      {
+        "name": "The Identifier Rule",
+        "body": "A value the owner could paste into a shell or a URL (slug, path, model ID, repo) is set in mono. A name meant for people (a Session title, a Workspace name) is not.",
+        "section": "typography"
+      },
+      {
+        "name": "The Two Sizes Rule",
+        "body": "Interface text is 14 px or 12 px. Reach for weight (500, 600) and Faded Ink before a new size.",
+        "section": "typography"
+      },
+      {
+        "name": "The Waiting-On-You Rule",
+        "body": "A shadow means the owner has to act. Anything that does not wait on the owner (cards, panels, lists, tool calls) stays flat. A menu or dialog waits on the owner while it is open.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** tint every new neutral to hue 250 in OKLCH, and give it a light and a dark value.",
+      "**Do** use outline buttons for actions in lists and cards, and keep a filled Slate Ink button for the single main action of a view.",
+      "**Do** set slugs, paths, repo names and model IDs in mono, and names meant for people in the UI font.",
+      "**Do** style destructive actions as Brick Red text with a 40% border, and confirm them in words that say what will be lost.",
+      "**Do** give every control a visible 2 px Signal Blue focus outline, and wrap any animation in `prefers-reduced-motion: no-preference`.",
+      "**Do** make every view work at 390 px wide: one column, no sideways scroll."
+    ],
+    "donts": [
+      "**Don't** add shadows to anything that is not waiting on the owner.",
+      "**Don't** use Run Green or Brick Red for emphasis or decoration.",
+      "**Don't** use raw Tailwind palette colors (`amber-500`, `zinc-*`): add a token in `styles.css` with light and dark values instead. The usage badge's `amber` \"near limit\" state is a known exception still to be turned into a warning token.",
+      "**Don't** reference a color utility with no token behind it. `bg-card` is used by the Waiting-On-You cards but `--card` is not defined, so they currently render with no fill; define the token before relying on it.",
+      "**Don't** let a header's controls push its title off screen on a phone: the Session header moves its model and thinking pickers to a second row below `md`."
+    ]
+  }
+}

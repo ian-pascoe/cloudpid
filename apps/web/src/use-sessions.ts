@@ -2,7 +2,7 @@
 
 import type { SessionRecord } from "@cloudpid/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { connectRegistry } from "./registry.ts";
+import { type Answer, connectRegistry } from "./registry.ts";
 
 /** How often the list refreshes while the page is visible, so a running Session shows as it starts and ends. */
 const REFRESH_MS = 5_000;
@@ -22,6 +22,15 @@ export interface Sessions {
   }) => Promise<SessionRecord | undefined>;
   /** Name a Session and refresh the list; resolves to null when it worked, or to why it did not. */
   readonly rename: (id: string, title: string) => Promise<string | null>;
+  /**
+   * Archive a Session (stopping what it runs) and refresh the list; resolves to null when it worked, or to why not,
+   * which the caller shows where the owner asked.
+   */
+  readonly archive: (id: string) => Promise<string | null>;
+  /** Put an archived Session back in the list; resolves to null when it worked, or to why not. */
+  readonly unarchive: (id: string) => Promise<string | null>;
+  /** Delete a Session for good and refresh the list; resolves to null when it worked, or to why not. */
+  readonly delete: (id: string) => Promise<string | null>;
   readonly refresh: () => Promise<void>;
 }
 
@@ -67,9 +76,10 @@ export const useSessions = (): Sessions => {
     [registry, refresh],
   );
 
-  const rename = useCallback(
-    async (id: string, title: string) => {
-      const answer = await registry.renameSession(id, title);
+  /** Run `call`, then refresh the list once it worked; null, or why it did not. */
+  const changed = useCallback(
+    async (call: Promise<Answer<unknown>>) => {
+      const answer = await call;
 
       if (!answer.ok) return answer.message;
 
@@ -77,8 +87,37 @@ export const useSessions = (): Sessions => {
 
       return null;
     },
-    [registry, refresh],
+    [refresh],
   );
 
-  return { sessions, error, create, rename, refresh };
+  const rename = useCallback(
+    (id: string, title: string) => changed(registry.renameSession(id, title)),
+    [registry, changed],
+  );
+
+  const archive = useCallback(
+    (id: string) => changed(registry.archiveSession(id)),
+    [registry, changed],
+  );
+
+  const unarchive = useCallback(
+    (id: string) => changed(registry.unarchiveSession(id)),
+    [registry, changed],
+  );
+
+  const deleteSession = useCallback(
+    (id: string) => changed(registry.deleteSession(id)),
+    [registry, changed],
+  );
+
+  return {
+    sessions,
+    error,
+    create,
+    rename,
+    archive,
+    unarchive,
+    delete: deleteSession,
+    refresh,
+  };
 };

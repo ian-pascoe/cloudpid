@@ -49,6 +49,7 @@ import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
+import { destroySession, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
 import {
   cachedPlacement,
@@ -111,6 +112,10 @@ export type SessionMethods = {
   ) => Effect.Effect<void>;
   readonly webSocketClose: (socket: Cloudflare.WebSocket) => Effect.Effect<void>;
   readonly webSocketError: (socket: Cloudflare.WebSocket) => Effect.Effect<void>;
+  /** Stop everything the Session runs (its root and every subagent): the owner archived it. */
+  readonly stopAll: () => Effect.Effect<void, SessionError>;
+  /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
+  readonly destroy: () => Effect.Effect<void>;
 };
 
 /** One Session: a pi-durable Harness over this object's SQLite storage (`docs/spec.md` → Session host). */
@@ -364,6 +369,17 @@ export const SessionLive = Session.make(
             invoked("session.message", sockets.receive(socket.ws, message)),
           webSocketClose: (socket) => invoked("session.close", sockets.drop(socket.ws)),
           webSocketError: (socket) => invoked("session.close", sockets.drop(socket.ws)),
+          stopAll: () =>
+            invoked("session.stop", stopSession.pipe(Effect.provideService(SessionHost, host))),
+          destroy: () =>
+            invoked(
+              "session.destroy",
+              destroySession({
+                state: state.raw,
+                closeBrowser: browser.close,
+                reset: (reason) => state.raw.abort(reason),
+              }).pipe(Effect.provideService(SessionHost, host)),
+            ),
         };
       }),
     ),

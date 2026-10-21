@@ -54,6 +54,8 @@ export const SessionRecord = Schema.Struct({
   createdAt: Schema.Finite,
   /** When the Session was created or its status last changed. */
   updatedAt: Schema.Finite,
+  /** When the owner archived the Session (out of the Session list, read-only until unarchived), or null. */
+  archivedAt: Schema.NullOr(Schema.Finite),
 });
 
 export type SessionRecord = typeof SessionRecord.Type;
@@ -66,8 +68,31 @@ export class SessionNotFound extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
+/** A Session action that reached the Session but did not finish there, such as stopping or wiping it. */
+export class SessionActionError extends Schema.TaggedError<
+  SessionActionError,
+  { readonly brand: unique symbol }
+>()("SessionActionError", {
+  message: Schema.String,
+}) {}
+
+/** The longest Workspace name. */
+export const MAX_WORKSPACE_NAME_LENGTH = 80;
+
+/** A Workspace name: trimmed, then neither empty nor longer than `MAX_WORKSPACE_NAME_LENGTH`. */
+export const WorkspaceName = Schema.Trim.check(
+  Schema.isNonEmpty(),
+  Schema.isMaxLength(MAX_WORKSPACE_NAME_LENGTH),
+);
+
 /** A Workspace as the Registry lists it. */
-export const WorkspaceRecord = Schema.Struct({ slug: Schema.String, createdAt: Schema.Finite });
+export const WorkspaceRecord = Schema.Struct({
+  /** Its fixed identifier: the Workspace DO's name, and what its Sessions are bound to. */
+  slug: Schema.String,
+  /** The owner's label for it, unique among Workspaces whatever the case. It starts as the slug. */
+  name: Schema.String,
+  createdAt: Schema.Finite,
+});
 
 export type WorkspaceRecord = typeof WorkspaceRecord.Type;
 
@@ -192,9 +217,51 @@ export class RegistryRpcs extends RpcGroup.make(
     success: SessionRecord,
     error: SessionNotFound,
   }),
+  /**
+   * Archive a Session: stop everything it runs (its root and every subagent), then take it out of the Session list.
+   * It is kept whole and can be unarchived. Fails with a `SessionNotFound` when the Registry has no Session `id`, and
+   * with a `SessionActionError` when the Session could not be stopped (it is then not archived).
+   */
+  Rpc.make("archiveSession", {
+    payload: { id: Schema.String },
+    success: SessionRecord,
+    error: Schema.Union([SessionNotFound, SessionActionError]),
+  }),
+  /** Put an archived Session back in the Session list. */
+  Rpc.make("unarchiveSession", {
+    payload: { id: Schema.String },
+    success: SessionRecord,
+    error: SessionNotFound,
+  }),
+  /**
+   * Delete a Session for good: stop everything it runs, close its browser and its clients' sockets, wipe its storage,
+   * then forget it. The files it wrote in its Workspace stay. A `SessionActionError` leaves it listed, to try again.
+   */
+  Rpc.make("deleteSession", {
+    payload: { id: Schema.String },
+    error: Schema.Union([SessionNotFound, SessionActionError]),
+  }),
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
   /** Register a Workspace by slug; one already registered keeps its record. */
   Rpc.make("createWorkspace", { payload: { slug: WorkspaceSlug }, success: WorkspaceRecord }),
+  /**
+   * Name a Workspace. Its slug never changes. Fails with a `WorkspaceError` when the Registry does not list it or another
+   * Workspace has the name, whatever the case.
+   */
+  Rpc.make("renameWorkspace", {
+    payload: { workspace: WorkspaceSlug, name: WorkspaceName },
+    success: WorkspaceRecord,
+    error: WorkspaceError,
+  }),
+  /**
+   * Delete a Workspace for good: every Session bound to it (archived ones too, each as `deleteSession`), then its files,
+   * Container and settings, then its record. The default Workspace cannot be deleted. A failure partway leaves what is
+   * not yet deleted listed, to try again.
+   */
+  Rpc.make("deleteWorkspace", {
+    payload: { workspace: WorkspaceSlug },
+    error: WorkspaceError,
+  }),
   /** The repos a Workspace holds: the directories below `/workspace` that are git repositories, by name. */
   Rpc.make("listRepos", {
     payload: { workspace: WorkspaceSlug },

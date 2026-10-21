@@ -21,6 +21,7 @@
   --accent-foreground: oklch(0.25 0.03 250);
   --destructive: oklch(0.53 0.2 27);
   --success: oklch(0.55 0.13 150);
+  --backdrop: oklch(0.2 0.02 250 / 0.4);
   color-scheme: light;
 }
 
@@ -39,6 +40,7 @@
     --accent-foreground: oklch(0.95 0.005 250);
     --destructive: oklch(0.7 0.17 25);
     --success: oklch(0.74 0.14 150);
+    --backdrop: oklch(0.1 0.01 250 / 0.6);
     color-scheme: dark;
   }
 }
@@ -57,6 +59,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-success: var(--success);
+  --color-backdrop: var(--backdrop);
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);

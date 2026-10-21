@@ -1,9 +1,10 @@
 // @effect-diagnostics asyncFunction:off -- browser code in a React app with no Effect runtime: promises are the platform here.
 
 import { ThreadPrimitive } from "@assistant-ui/react";
-import { ArrowLeft, Pencil } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
 import { MAX_TITLE_LENGTH } from "@cloudpid/protocol";
 import { type ReactNode, useRef, useState } from "react";
+import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { navigate } from "../router.ts";
 import type { ConfigureChange, QueuedEntry, SessionState } from "../session/connection.ts";
@@ -12,6 +13,42 @@ import { ModelPicker } from "./model-picker.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
+
+/** An archived Session: read-only until the owner unarchives it, which resolves to null or why it failed. */
+export type Archived = { readonly unarchive: () => Promise<string | null> };
+
+/** In place of the composer while the Session is archived: say so, and offer to unarchive it. */
+const ArchivedBanner = ({ archived }: { archived: Archived }) => {
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="px-4 pb-4">
+      <div
+        role="status"
+        className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3"
+      >
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Archive className="size-4 shrink-0" aria-hidden />
+          This session is archived. Unarchive it to send messages.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void archived.unarchive().finally(() => {
+              setBusy(false);
+            });
+          }}
+        >
+          <ArchiveRestore />
+          {busy ? "Unarchiving…" : "Unarchive"}
+        </Button>
+      </div>
+    </div>
+  );
+};
 
 /** Naming the Session: its title now ("" while it has none), and how to save a new one. */
 export type Rename = {
@@ -121,7 +158,8 @@ const Header = ({
   picker: ReactNode;
   actions: ReactNode;
 }) => (
-  <header className="flex items-center gap-2 border-b px-4 py-2.5">
+  // On a phone the pickers take a second row, so the title keeps its room and nothing scrolls sideways.
+  <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
     <button
       type="button"
       onClick={() => {
@@ -137,8 +175,8 @@ const Header = ({
     ) : (
       <EditableTitle title={title} rename={rename} />
     )}
-    {picker}
-    {actions}
+    <div className="order-last flex w-full min-w-0 md:order-none md:w-auto">{picker}</div>
+    <div className="flex shrink-0 items-center gap-2">{actions}</div>
   </header>
 );
 
@@ -146,6 +184,7 @@ const Header = ({
 export const Thread = ({
   title,
   rename,
+  archived,
   state,
   notice,
   steerLane,
@@ -158,6 +197,8 @@ export const Thread = ({
   title: string | undefined;
   /** Lets the owner rename the Session from its header. */
   rename?: Rename | undefined;
+  /** Set while the Session is archived: no composer, a banner to unarchive it instead. */
+  archived?: Archived | undefined;
   state: SessionState;
   /** Stop the run and every subagent; given while a subagent is working. */
   onStopAll?: (() => void) | undefined;
@@ -237,12 +278,16 @@ export const Thread = ({
           onAnswer={onAnswerSecrets}
         />
       </div>
-      <Composer
-        steerLane={steerLane}
-        followUpLane={followUpLane}
-        sending={state.sending}
-        onStopAll={onStopAll}
-      />
+      {archived === undefined ? (
+        <Composer
+          steerLane={steerLane}
+          followUpLane={followUpLane}
+          sending={state.sending}
+          onStopAll={onStopAll}
+        />
+      ) : (
+        <ArchivedBanner archived={archived} />
+      )}
     </ThreadPrimitive.Root>
   );
 };

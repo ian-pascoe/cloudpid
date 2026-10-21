@@ -43,6 +43,7 @@ const setup = async (endpoints: Readonly<Record<string, number>>) => {
             status: "idle" as const,
             createdAt: 1,
             updatedAt: 1,
+            archivedAt: null,
           }
         : null,
     listPushSubscriptions: () => subscriptions,
@@ -107,6 +108,7 @@ describe("the notifier", () => {
           status: "idle",
           createdAt: 1,
           updatedAt: 1,
+          archivedAt: null,
         }),
         listPushSubscriptions: () => [
           { endpoint: "https://push.a.example/1", keys: { p256dh: "not a key", auth: "x" } },

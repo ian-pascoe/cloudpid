@@ -14,6 +14,12 @@ import * as Schema from "effect/Schema";
 export const HEARTBEAT = { request: "ping", response: "pong" } as const;
 
 /**
+ * The close code a Session's socket ends with when the owner deleted the Session: the client stops reconnecting and
+ * leaves the Session's page.
+ */
+export const SESSION_DELETED_CLOSE_CODE = 4404;
+
+/**
  * What input submitted while the conversation is busy does. `steer` joins the running Run at its next boundary, after
  * the tool calls in progress; one that finds the Run producing its final answer starts the next Run instead.
  * `followUp`, pi-durable's default, waits for the next Run; `reject` fails the command.

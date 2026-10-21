@@ -32,7 +32,7 @@ export const ModelPicker = ({
   const levelSelect = agentSelect(view.thinkingLevel, picked.thinkingLevel);
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-1 items-center gap-2">
       <NativeSelect
         aria-label="Model"
         disabled={disabled || model === null}
@@ -44,7 +44,7 @@ export const ModelPicker = ({
           // Only the models the settings accept can be picked: the Session refuses any other.
           else if (isModelId(value)) onConfigure({ model: value });
         }}
-        className="h-8 font-mono text-xs"
+        className="h-8 min-w-0 flex-1 font-mono text-xs md:flex-none"
       >
         <option value={FOLLOW_DEFAULT}>{modelSelect.defaultLabel}</option>
         {modelChoices(model).map((choice) => (
@@ -63,7 +63,7 @@ export const ModelPicker = ({
           if (value === FOLLOW_DEFAULT) onConfigure({ thinkingLevel: null });
           else if (isLevel(value)) onConfigure({ thinkingLevel: value });
         }}
-        className="h-8 text-xs"
+        className="h-8 min-w-0 shrink-0 text-xs"
       >
         <option value={FOLLOW_DEFAULT}>{levelSelect.defaultLabel}</option>
         {THINKING_LEVELS.map((level) => (
