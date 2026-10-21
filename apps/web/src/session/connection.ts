@@ -8,6 +8,7 @@ import {
   EMPTY_VIEW,
   HEARTBEAT,
   reduceEvents,
+  SESSION_DELETED_CLOSE_CODE,
   ServerMessageJson,
   type ClientMessage,
   type ConversationId,
@@ -50,7 +51,8 @@ export type SessionSocketFactory = (url: string) => SessionSocket;
  * `connecting`: no snapshot yet. `live`: the view is current. `reconnecting`: the socket closed; the view is the
  * last one seen, until a fresh snapshot replaces it. `signed-out` and `missing`: reconnecting is pointless, because
  * Access no longer lets the page through, or the Session does not exist (found out by asking over HTTP after a few
- * failed attempts, as a WebSocket cannot see why it failed). `closed`: disposed.
+ * failed attempts, as a WebSocket cannot see why it failed). `deleted`: the owner deleted the Session, which closed
+ * the socket saying so. `closed`: disposed.
  */
 export type ConnectionStatus =
   | "connecting"
@@ -58,6 +60,7 @@ export type ConnectionStatus =
   | "reconnecting"
   | "signed-out"
   | "missing"
+  | "deleted"
   | "closed";
 
 /** What `configure` changes: the fields of the `configure` command, without its `type` and `id`. */
@@ -419,10 +422,12 @@ export class SessionConnection {
       this.hear(message.data);
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (this.socket !== socket) return;
 
-      this.lost();
+      // The owner deleted the Session: there is nothing to reconnect to.
+      if (event.code === SESSION_DELETED_CLOSE_CODE) this.deleted();
+      else this.lost();
     };
   }
 
@@ -713,6 +718,15 @@ export class SessionConnection {
     this.commands += 1;
 
     return `c${this.commands}`;
+  }
+
+  /** The Session was deleted: stop for good, as `dispose` does, and say so. */
+  private deleted(): void {
+    this.socket = null;
+    this.stopTimers();
+    clearTimeout(this.reconnectTimer);
+    this.disposed = true;
+    this.update({ status: "deleted" });
   }
 
   /** The socket closed or went silent: start over on a new one after a pause. */

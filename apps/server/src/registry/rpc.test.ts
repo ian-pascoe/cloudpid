@@ -5,7 +5,13 @@ import {
   SettingsError,
   type WorkspaceSettings,
 } from "@cloudpid/config";
-import { RegistryRpcs, RPC_PATH, SessionNotFound, WorkspaceError } from "@cloudpid/protocol";
+import {
+  RegistryRpcs,
+  RPC_PATH,
+  SessionActionError,
+  SessionNotFound,
+  WorkspaceError,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -20,9 +26,10 @@ import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { expect, it } from "vitest";
 import { isRegistryRpc } from "../routes.ts";
-import { serveRegistryRpc } from "./rpc.ts";
+import { serveRegistryRpc, type SessionObjects } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type { Repos } from "../workspace/repos.ts";
+import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { WorkspaceSettingsRemote } from "../workspace/settings.ts";
 import type { SessionRecord, WorkspaceRecord } from "./store.ts";
 
@@ -33,12 +40,98 @@ const asSettings = (overrides: Schema.Json) => overrides as Partial<WorkspaceSet
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
   const sessions: SessionRecord[] = [];
-  const workspaces: WorkspaceRecord[] = [];
+  const workspaces: WorkspaceRecord[] = [{ slug: "default", name: "default", createdAt: 0 }];
   const names: string[] = [];
   /** The endpoints of the Web Push subscriptions kept. */
   const pushes = new Set<string>();
   /** The Registry methods called, in order. */
   const calls: string[] = [];
+
+  const registerWorkspace = (slug: string): WorkspaceRecord =>
+    Option.getOrElse(
+      Arr.findFirst(workspaces, (workspace) => workspace.slug === slug),
+      () => {
+        const record: WorkspaceRecord = { slug, name: slug, createdAt: 1 };
+
+        workspaces.push(record);
+
+        return record;
+      },
+    );
+
+  /** Replace the first of `list` that `matches` with what `change` makes of it; the changed one, or null. */
+  const replace = <A>(list: A[], matches: (item: A) => boolean, change: (item: A) => A) =>
+    Option.getOrNull(
+      Option.map(Arr.findFirstIndex(list, matches), (index) => {
+        // SAFETY: the index was just found in `list`.
+        const changed = change(list[index] as A);
+
+        list.splice(index, 1, changed);
+
+        return changed;
+      }),
+    );
+
+  /** Remove the first of `list` that `matches`; says whether there was one. */
+  const remove = <A>(list: A[], matches: (item: A) => boolean) =>
+    Option.match(Arr.findFirstIndex(list, matches), {
+      onNone: () => false,
+      onSome: (index) => {
+        list.splice(index, 1);
+
+        return true;
+      },
+    });
+
+  const setArchived = (id: string, archivedAt: number | null, call: string) =>
+    Effect.sync(() => {
+      calls.push(call);
+
+      return replace(
+        sessions,
+        (session) => session.id === id,
+        (session): SessionRecord => ({ ...session, archivedAt }),
+      );
+    });
+
+  /** The Sessions whose object fails every call, with the message it fails with. */
+  const brokenSessions = new Map<string, string>();
+
+  /** The objects behind the Sessions: what was asked of each, in `calls`. */
+  const sessionObjects: SessionObjects = {
+    stop: (id) =>
+      Effect.suspend(() => {
+        calls.push(`stop:${id}`);
+
+        const broken = brokenSessions.get(id);
+
+        // An object that throws, or cannot be reached, is a defect of the call.
+        return broken === undefined ? Effect.void : Effect.die(new Error(broken));
+      }),
+    destroy: (id) =>
+      Effect.suspend(() => {
+        calls.push(`destroy:${id}`);
+
+        const broken = brokenSessions.get(id);
+
+        // An object that throws, or cannot be reached, is a defect of the call.
+        return broken === undefined ? Effect.void : Effect.die(new Error(broken));
+      }),
+  };
+
+  /** Runs once, the next time a Workspace's object is wiped: what happens meanwhile. */
+  let duringDestroy: (() => void) | undefined;
+
+  /** The objects behind the Workspaces. */
+  const workspaceObjects: WorkspaceObjects = {
+    destroy: (slug) => {
+      calls.push(`destroyWorkspace:${slug}`);
+      duringDestroy?.();
+      duringDestroy = undefined;
+
+      return Promise.resolve();
+    },
+  };
 
   const registry = {
     createSession: ({
@@ -52,6 +145,7 @@ const fakeRegistries = () => {
     }) =>
       Effect.sync(() => {
         calls.push("createSession");
+        registerWorkspace(workspace ?? "default");
 
         const record: SessionRecord = {
           id: `session-${sessions.length + 1}`,
@@ -62,6 +156,7 @@ const fakeRegistries = () => {
           status: "idle",
           createdAt: 1,
           updatedAt: 1,
+          archivedAt: null,
         };
 
         sessions.unshift(record);
@@ -69,6 +164,16 @@ const fakeRegistries = () => {
         return record;
       }),
     listSessions: () => Effect.sync(() => [...sessions]),
+    getSession: ({ id }: { id: string }) =>
+      Effect.sync(() => Option.getOrNull(Arr.findFirst(sessions, (session) => session.id === id))),
+    archiveSession: ({ id }: { id: string }) => setArchived(id, 7, "archiveSession"),
+    unarchiveSession: ({ id }: { id: string }) => setArchived(id, null, "unarchiveSession"),
+    deleteSession: ({ id }: { id: string }) =>
+      Effect.sync(() => {
+        calls.push(`deleteSession:${id}`);
+
+        return remove(sessions, (session) => session.id === id);
+      }),
     renameSession: ({ id, title }: { id: string; title: string }) =>
       Effect.sync(() => {
         calls.push("renameSession");
@@ -87,13 +192,40 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         calls.push("createWorkspace");
 
-        const record: WorkspaceRecord = { slug, createdAt: 1 };
-
-        workspaces.push(record);
-
-        return record;
+        return registerWorkspace(slug);
       }),
     listWorkspaces: () => Effect.sync(() => [...workspaces]),
+    renameWorkspace: ({ slug, name }: { slug: string; name: string }) =>
+      Effect.sync(() => {
+        calls.push("renameWorkspace");
+
+        const taken = Arr.some(
+          workspaces,
+          (other) => other.slug !== slug && other.name.toLowerCase() === name.toLowerCase(),
+        );
+
+        if (taken) return { status: "taken" as const };
+
+        const renamed = replace(
+          workspaces,
+          (workspace) => workspace.slug === slug,
+          (workspace): WorkspaceRecord => ({ ...workspace, name }),
+        );
+
+        return renamed === null
+          ? { status: "missing" as const }
+          : { status: "renamed" as const, workspace: renamed };
+      }),
+    deleteWorkspace: ({ slug }: { slug: string }) =>
+      Effect.sync(() => {
+        calls.push(`deleteWorkspace:${slug}`);
+
+        if (Arr.some(sessions, (session) => session.workspace === slug)) return "in-use" as const;
+
+        return remove(workspaces, (workspace) => workspace.slug === slug)
+          ? ("deleted" as const)
+          : ("missing" as const);
+      }),
     getSettings: () =>
       Effect.sync(() => {
         calls.push("getSettings");
@@ -187,6 +319,17 @@ const fakeRegistries = () => {
     names,
     calls,
     repos,
+    sessionObjects,
+    workspaceObjects,
+    breakSession: (id: string, message: string) => {
+      brokenSessions.set(id, message);
+    },
+    /** Register `session` while the next Workspace object is wiped, as a client starting one then would. */
+    startDuringDestroy: (session: SessionRecord) => {
+      duringDestroy = () => {
+        sessions.push(session);
+      };
+    },
     workspaceSettings,
     saved,
     clones,
@@ -217,7 +360,12 @@ const worker =
     // Routed as the main Worker routes it.
     if (!isRegistryRpc(request)) return Promise.resolve(new Response(null, { status: 404 }));
 
-    return serveRegistryRpc(fake.registries, fake.repos, fake.workspaceSettings).pipe(
+    return serveRegistryRpc(fake.registries, {
+      repos: fake.repos,
+      workspaceSettings: fake.workspaceSettings,
+      sessions: fake.sessionObjects,
+      workspaces: fake.workspaceObjects,
+    }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
       Effect.map(HttpServerResponse.toWeb),
       Effect.runPromise,
@@ -370,7 +518,10 @@ it("creates and lists Workspaces", async () => {
     }),
   );
 
-  expect(workspaces).toEqual([{ slug: "cloudpid", createdAt: 1 }]);
+  expect(workspaces).toEqual([
+    { slug: "default", name: "default", createdAt: 0 },
+    { slug: "cloudpid", name: "cloudpid", createdAt: 1 },
+  ]);
 });
 
 it("subscribes a browser to Web Push, tells it so, and forgets it when it unsubscribes", async () => {
@@ -701,4 +852,224 @@ it("fails an update the Registry rejects with the Registry's readable message", 
 
   expect(error).toBeInstanceOf(SettingsError);
   expect(error.message).toBe("model: Expected an object");
+});
+
+/** A client of the endpoint, as `withClient` gives it. */
+const call = <A, E>(
+  fake: ReturnType<typeof fakeRegistries>,
+  use: (registry: Registry["Service"]) => Effect.Effect<A, E>,
+) => withClient(Effect.flatMap(Registry, use), fake);
+
+/** The calls that reached a Session's or a Workspace's object, or forgot or archived one, in order. */
+const lifecycle = (fake: ReturnType<typeof fakeRegistries>) =>
+  Arr.filter(fake.calls, (name) =>
+    /^(stop|destroy|destroyWorkspace|deleteSession|deleteWorkspace):|^(archive|unarchive)Session$/.test(
+      name,
+    ),
+  );
+
+it("archives a Session after stopping everything it runs, and unarchives it", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  const archived = await call(fake, (registry) => registry.archiveSession({ id: session.id }));
+
+  expect(archived).toEqual({ ...session, archivedAt: 7 });
+  expect(lifecycle(fake)).toEqual([`stop:${session.id}`, "archiveSession"]);
+
+  const restored = await call(fake, (registry) => registry.unarchiveSession({ id: session.id }));
+
+  expect(restored).toEqual(session);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
+});
+
+it("leaves a Session unarchived when it cannot be stopped", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.breakSession(session.id, "object unreachable");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.archiveSession({ id: session.id })),
+  );
+
+  expect(error).toBeInstanceOf(SessionActionError);
+  expect(error.message).toContain("object unreachable");
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
+});
+
+it("archives, unarchives and deletes no Session the Registry does not know, and wakes no object", async () => {
+  const fake = fakeRegistries();
+
+  for (const attempt of [
+    (registry: Registry["Service"]) => Effect.flip(registry.archiveSession({ id: "ghost" })),
+    (registry: Registry["Service"]) => Effect.flip(registry.unarchiveSession({ id: "ghost" })),
+    (registry: Registry["Service"]) => Effect.flip(registry.deleteSession({ id: "ghost" })),
+  ]) {
+    const error = await call(fake, attempt);
+
+    expect(error).toBeInstanceOf(SessionNotFound);
+    expect(error.message).toContain("ghost");
+  }
+
+  expect(Arr.filter(fake.calls, (name) => /^(stop|destroy):/.test(name))).toEqual([]);
+});
+
+it("deletes a Session: wipes its object, then forgets it", async () => {
+  const fake = fakeRegistries();
+  const kept = await call(fake, (registry) => registry.createSession({}));
+  const doomed = await call(fake, (registry) => registry.createSession({}));
+
+  await call(fake, (registry) => registry.deleteSession({ id: doomed.id }));
+
+  expect(lifecycle(fake)).toEqual([`destroy:${doomed.id}`, `deleteSession:${doomed.id}`]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([kept]);
+});
+
+it("keeps a Session listed when its object could not be wiped, to try again", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.breakSession(session.id, "storage error");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.deleteSession({ id: session.id })),
+  );
+
+  expect(error).toBeInstanceOf(SessionActionError);
+  expect(error.message).toContain("storage error");
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
+});
+
+it("renames a Workspace, keeping its slug, and refuses a name another Workspace has in any case", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.createWorkspace({ slug: "cloudpid" }));
+  await call(fake, (registry) => registry.createWorkspace({ slug: "pi" }));
+
+  const renamed = await call(fake, (registry) =>
+    registry.renameWorkspace({ workspace: "cloudpid", name: "Pi on Cloudflare" }),
+  );
+
+  expect(renamed).toEqual({ slug: "cloudpid", name: "Pi on Cloudflare", createdAt: 1 });
+
+  const taken = await call(fake, (registry) =>
+    Effect.flip(registry.renameWorkspace({ workspace: "pi", name: "pi on cloudflare" })),
+  );
+
+  expect(taken).toBeInstanceOf(WorkspaceError);
+  expect(taken.message).toContain("pi on cloudflare");
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.renameWorkspace({ workspace: "ghost", name: "Anything" })),
+  );
+
+  expect(missing.message).toContain("ghost");
+});
+
+it("rejects a Workspace name that is blank or longer than 80 characters, before it reaches the Registry", async () => {
+  for (const name of ["   ", "a".repeat(81)]) {
+    const { text, calls } = await callRaw("renameWorkspace", { workspace: "default", name });
+
+    expect(text).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+});
+
+it("deletes a Workspace: every Session bound to it, archived ones too, then its object, then its record", async () => {
+  const fake = fakeRegistries();
+  const elsewhere = await call(fake, (registry) => registry.createSession({}));
+  const first = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+  const second = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteWorkspace({ workspace: "cloudpid" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${second.id}`,
+    `deleteSession:${second.id}`,
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    "destroyWorkspace:cloudpid",
+    "deleteWorkspace:cloudpid",
+  ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
+  expect(
+    Arr.map(
+      await call(fake, (registry) => registry.listWorkspaces()),
+      (workspace) => workspace.slug,
+    ),
+  ).toEqual(["default"]);
+});
+
+it("deletes a Session started in a Workspace while it was being deleted, before its record goes", async () => {
+  const fake = fakeRegistries();
+  const first = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  fake.startDuringDestroy({ ...first, id: "late" });
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteWorkspace({ workspace: "cloudpid" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    "destroyWorkspace:cloudpid",
+    "deleteWorkspace:cloudpid",
+    "destroy:late",
+    "deleteSession:late",
+    "destroyWorkspace:cloudpid",
+    "deleteWorkspace:cloudpid",
+  ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
+});
+
+it("refuses to delete the default Workspace, and touches nothing", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.createSession({}));
+  fake.calls.length = 0;
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.deleteWorkspace({ workspace: "default" })),
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toContain("default");
+  expect(lifecycle(fake)).toEqual([]);
+});
+
+it("refuses to delete a Workspace the Registry does not list, and touches no object", async () => {
+  const fake = fakeRegistries();
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.deleteWorkspace({ workspace: "typo" })),
+  );
+
+  expect(error.message).toContain("typo");
+  expect(lifecycle(fake)).toEqual([]);
+});
+
+it("stops a Workspace delete at a Session that cannot be wiped, keeping the Workspace listed", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  fake.breakSession(session.id, "storage error");
+  fake.calls.length = 0;
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.deleteWorkspace({ workspace: "cloudpid" })),
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toContain("storage error");
+  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`]);
+  expect(
+    Arr.map(
+      await call(fake, (registry) => registry.listWorkspaces()),
+      (workspace) => workspace.slug,
+    ),
+  ).toContain("cloudpid");
 });

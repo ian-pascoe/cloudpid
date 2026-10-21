@@ -14,6 +14,8 @@ import {
   type SessionRecord,
   type SessionStatus,
   type WorkspaceRecord,
+  type WorkspaceDeletion,
+  type WorkspaceRename,
 } from "./store.ts";
 
 /** The Registry is a singleton: every caller addresses the object with this name. */
@@ -49,9 +51,24 @@ export type RegistryMethods = {
     readonly id: string;
     readonly title: string;
   }) => Effect.Effect<boolean>;
-  /** Register a Workspace by slug; one already registered keeps its record. */
+  /** Archive a Session; one already archived keeps the time it was. Null when the Session is not registered. */
+  readonly archiveSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
+  /** Put an archived Session back in the list; null when the Session is not registered. */
+  readonly unarchiveSession: (input: {
+    readonly id: string;
+  }) => Effect.Effect<SessionRecord | null>;
+  /** Forget a Session, once its object is wiped; says whether it was registered. */
+  readonly deleteSession: (input: { readonly id: string }) => Effect.Effect<boolean>;
+  /** Register a Workspace by slug, named after it; one already registered keeps its record. */
   readonly createWorkspace: (input: { readonly slug: string }) => Effect.Effect<WorkspaceRecord>;
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
+  /** Give a Workspace a new name, which no other Workspace may have in any case. */
+  readonly renameWorkspace: (input: {
+    readonly slug: string;
+    readonly name: string;
+  }) => Effect.Effect<WorkspaceRename>;
+  /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
+  readonly deleteWorkspace: (input: { readonly slug: string }) => Effect.Effect<WorkspaceDeletion>;
   /** The settings in force and the overrides saved over the defaults. */
   readonly getSettings: () => Effect.Effect<SettingsState>;
   /** Save `overrides` in place of the saved ones if they resolve; otherwise say why not, and save nothing. */
@@ -109,9 +126,15 @@ export const RegistryLive = Registry.make(
           renameSession: ({ id, title }) => Effect.sync(() => store.renameSession(id, title)),
           setGeneratedTitle: ({ id, title }) =>
             Effect.sync(() => store.setGeneratedTitle(id, title)),
+          archiveSession: ({ id }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => store.archiveSession(id, now))),
+          unarchiveSession: ({ id }) => Effect.sync(() => store.unarchiveSession(id)),
+          deleteSession: ({ id }) => Effect.sync(() => store.deleteSession(id)),
           createWorkspace: ({ slug }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => store.createWorkspace(slug, now))),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
+          renameWorkspace: ({ slug, name }) => Effect.sync(() => store.renameWorkspace(slug, name)),
+          deleteWorkspace: ({ slug }) => Effect.sync(() => store.deleteWorkspace(slug)),
           getSettings: () => Effect.sync(() => readSettings(store)),
           updateSettings: ({ overrides }) =>
             Clock.currentTimeMillis.pipe(

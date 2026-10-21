@@ -254,6 +254,11 @@ export type SessionHostService = {
    */
   readonly abort: (options?: AbortOptions) => Effect.Effect<void, SessionError>;
   /**
+   * Close the Harness: admission is sealed and the commits it admitted settle, so nothing writes the storage after. Every
+   * later call fails; the object is reset before it serves another. For a Session being deleted.
+   */
+  readonly close: Effect.Effect<void, SessionError>;
+  /**
    * A summary of the Session's task graph: the current one first, then one after each change that alters it, at most one
    * every `TASK_GRAPH_INTERVAL`. Fails when the Harness ends its watch.
    */
@@ -1139,6 +1144,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         ),
       ),
+    close: attempt("close", () => harness.harness.close(context)),
     taskGraph: taskGraphSummaries,
     usage: usageUpdates,
     events,

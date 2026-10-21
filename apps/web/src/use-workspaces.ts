@@ -13,6 +13,10 @@ export interface Workspaces {
   readonly error: string | null;
   /** Register a Workspace and refresh the list; resolves to whether it was created. */
   readonly create: (slug: string) => Promise<boolean>;
+  /** Name a Workspace and refresh the list; resolves to null when it worked, or to why not. */
+  readonly rename: (slug: string, name: string) => Promise<string | null>;
+  /** Delete a Workspace and its Sessions for good, and refresh the list; null when it worked, or why not. */
+  readonly delete: (slug: string) => Promise<string | null>;
 }
 
 export const useWorkspaces = (): Workspaces => {
@@ -49,7 +53,32 @@ export const useWorkspaces = (): Workspaces => {
     [registry, refresh],
   );
 
-  return { registry, workspaces, error, create };
+  const rename = useCallback(
+    async (slug: string, name: string) => {
+      const answer = await registry.renameWorkspace(slug, name);
+
+      if (!answer.ok) return answer.message;
+
+      await refresh();
+
+      return null;
+    },
+    [registry, refresh],
+  );
+
+  const deleteWorkspace = useCallback(
+    async (slug: string) => {
+      const answer = await registry.deleteWorkspace(slug);
+
+      // A delete that stopped partway deleted some Sessions: the list shows what is left either way.
+      await refresh();
+
+      return answer.ok ? null : answer.message;
+    },
+    [registry, refresh],
+  );
+
+  return { registry, workspaces, error, create, rename, delete: deleteWorkspace };
 };
 
 export interface Repos {

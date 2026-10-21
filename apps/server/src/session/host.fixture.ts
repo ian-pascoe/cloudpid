@@ -61,6 +61,7 @@ import {
   toolSearchSettings,
 } from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
+import { destroySession } from "./lifecycle.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
@@ -406,6 +407,17 @@ export class TestSession extends DurableObject {
 
   override async webSocketClose(socket: WebSocket): Promise<void> {
     await Effect.runPromise(this.#sockets.drop(socket));
+  }
+
+  /** Delete the Session's own state, as the Session DO's `destroy` does. */
+  destroy(): Promise<void> {
+    return this.#runtime.runPromise(
+      destroySession({
+        state: this.ctx,
+        closeBrowser: testBrowserHost(this.ctx.storage.kv).close,
+        reset: (reason) => this.ctx.abort(reason),
+      }),
+    );
   }
 
   /** Let this instance's `gate:` responses through. */

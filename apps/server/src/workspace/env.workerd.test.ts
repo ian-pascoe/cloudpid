@@ -478,3 +478,43 @@ describe("a Workspace that had files at the bundled skills' mount before it was 
     }
   });
 });
+
+describe("deleting a Workspace", () => {
+  it("wipes its files and its settings, so its slug starts afresh", async () => {
+    const workspace = env.WORKSPACES.getByName("delete-me");
+
+    const executionEnv = new ComputerExecutionEnv({
+      workspace,
+      id: "computer:test",
+      cwd: "/workspace",
+    });
+
+    getOrThrow(await executionEnv.createDir("/workspace/repo", { recursive: true }, context));
+    getOrThrow(await executionEnv.writeFile("/workspace/repo/notes.md", "kept?", context));
+    expect(
+      await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 5 }),
+    ).toMatchObject({ ok: true });
+
+    await workspace.destroy();
+
+    // The instance resets once the call has answered, which breaks the stub that saw it, as a reset does; the next
+    // stub, as each call of the main Worker takes one, reaches a new instance over the wiped storage.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const again = env.WORKSPACES.getByName("delete-me");
+
+    const after = new ComputerExecutionEnv({
+      workspace: again,
+      id: "computer:test",
+      cwd: "/workspace",
+    });
+
+    const read = await after.readTextFile("/workspace/repo/notes.md", context);
+
+    expect(read.ok ? read.value : read.error.code).toBe("not_found");
+    expect(await again.containerSettings()).toEqual({
+      settings: DEFAULT_WORKSPACE_SETTINGS,
+      overrides: {},
+    });
+  });
+});

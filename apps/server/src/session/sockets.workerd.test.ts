@@ -7,6 +7,7 @@ import {
   type ClientMessage,
   ConversationId,
   HEARTBEAT,
+  SESSION_DELETED_CLOSE_CODE,
   ServerMessageJson,
   type ServerMessage,
 } from "@cloudpid/protocol";
@@ -943,5 +944,36 @@ describe("owner commands addressed to a conversation", () => {
 
     expect(await client.answer("submit")).toMatchObject({ type: "error", id: "submit" });
     expect(await client.answer("abort")).toMatchObject({ type: "error", id: "abort" });
+  });
+});
+
+describe("deleting a Session", () => {
+  it("stops its Run and subagents, closes its clients' sockets as deleted, and wipes its storage", async () => {
+    const stub = env.SESSIONS.getByName("delete-me");
+    const client = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["hang"]);
+      await instance.submit({ requestId: "turn-1", text: "hi" });
+      await instance.hanging.promise;
+    });
+
+    // Read in the instance that deleted it: a later call would start a new instance, which opens a fresh Session.
+    const left = await runInDurableObject(stub, async (instance: TestSession, state) => {
+      await instance.destroy();
+
+      return {
+        tables: state.storage.sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_cf_%'",
+          )
+          .toArray(),
+        keys: [...state.storage.kv.list()],
+        alarm: await state.storage.getAlarm(),
+      };
+    });
+
+    expect(left).toEqual({ tables: [], keys: [], alarm: null });
+    expect((await client.closed).code).toBe(SESSION_DELETED_CLOSE_CODE);
   });
 });

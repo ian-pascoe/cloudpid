@@ -39,10 +39,20 @@ export interface RegistryApi {
   }) => Promise<Answer<SessionRecord>>;
   /** Name a Session: the title is the owner's from then on, and generation never replaces it. */
   readonly renameSession: (id: string, title: string) => Promise<Answer<SessionRecord>>;
+  /** Stop everything a Session runs and take it out of the Session list; it is kept whole. */
+  readonly archiveSession: (id: string) => Promise<Answer<SessionRecord>>;
+  /** Put an archived Session back in the Session list. */
+  readonly unarchiveSession: (id: string) => Promise<Answer<SessionRecord>>;
+  /** Delete a Session for good; the files it wrote in its Workspace stay. */
+  readonly deleteSession: (id: string) => Promise<Answer<void>>;
   /** Every Workspace, newest first. */
   readonly listWorkspaces: () => Promise<Answer<readonly WorkspaceRecord[]>>;
   /** Register a Workspace by slug; one already registered keeps its record. */
   readonly createWorkspace: (slug: string) => Promise<Answer<WorkspaceRecord>>;
+  /** Name a Workspace; its slug never changes. */
+  readonly renameWorkspace: (slug: string, name: string) => Promise<Answer<WorkspaceRecord>>;
+  /** Delete a Workspace for good: its Sessions, files, Container and settings. */
+  readonly deleteWorkspace: (slug: string) => Promise<Answer<void>>;
   /** The repos a Workspace holds, by directory name. */
   readonly listRepos: (workspace: string) => Promise<Answer<readonly string[]>>;
   /** Clone `source` (owner/repo or an https URL) into a Workspace; resolves to the directory it went to. */
@@ -94,7 +104,14 @@ export const connectRegistry = (origin: string): RegistryApi => {
       answer(Registry.use((registry) => registry.createSession(where))),
     renameSession: (id, title) =>
       answer(Registry.use((registry) => registry.renameSession({ id, title }))),
+    archiveSession: (id) => answer(Registry.use((registry) => registry.archiveSession({ id }))),
+    unarchiveSession: (id) => answer(Registry.use((registry) => registry.unarchiveSession({ id }))),
+    deleteSession: (id) => answer(Registry.use((registry) => registry.deleteSession({ id }))),
     listWorkspaces: () => answer(Registry.use((registry) => registry.listWorkspaces())),
+    renameWorkspace: (workspace, name) =>
+      answer(Registry.use((registry) => registry.renameWorkspace({ workspace, name }))),
+    deleteWorkspace: (workspace) =>
+      answer(Registry.use((registry) => registry.deleteWorkspace({ workspace }))),
     createWorkspace: (slug) =>
       answer(Registry.use((registry) => registry.createWorkspace({ slug }))),
     listRepos: (workspace) => answer(Registry.use((registry) => registry.listRepos({ workspace }))),

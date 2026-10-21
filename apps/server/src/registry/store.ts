@@ -24,13 +24,27 @@ export type SessionRecord = {
   readonly createdAt: number;
   /** When the Session was created or its status last changed. */
   readonly updatedAt: number;
+  /** When the owner archived the Session, or null while it is not archived. */
+  readonly archivedAt: number | null;
 };
 
-/** A Workspace as the Registry lists it. The Workspace DO behind the slug comes later. */
+/** A Workspace as the Registry lists it. */
 export type WorkspaceRecord = {
+  /** Its fixed identifier: the Workspace DO's name, and what its Sessions are bound to. */
   readonly slug: string;
+  /** The owner's label for it, unique among Workspaces whatever the case. It starts as the slug. */
+  readonly name: string;
   readonly createdAt: number;
 };
+
+/** How renaming a Workspace went. */
+export type WorkspaceRename =
+  | { readonly status: "renamed"; readonly workspace: WorkspaceRecord }
+  | { readonly status: "missing" }
+  | { readonly status: "taken" };
+
+/** What became of a Workspace's record: deleted, not registered, or kept because a Session is still bound to it. */
+export type WorkspaceDeletion = "deleted" | "missing" | "in-use";
 
 export type RegistryStore = {
   /** Register a Session, idle, bound to `workspace` (default `DEFAULT_WORKSPACE`), which is registered too. */
@@ -56,9 +70,24 @@ export type RegistryStore = {
    * title. Says whether the title was set.
    */
   readonly setGeneratedTitle: (id: string, title: string) => boolean;
-  /** Register a Workspace by slug; one that is already registered keeps its record. */
+  /** Archive a Session; one already archived keeps the time it was. Null when the Session is not registered. */
+  readonly archiveSession: (id: string, now: number) => SessionRecord | null;
+  /** Put an archived Session back in the list; null when the Session is not registered. */
+  readonly unarchiveSession: (id: string) => SessionRecord | null;
+  /** Forget a Session; says whether it was registered. */
+  readonly deleteSession: (id: string) => boolean;
+  /**
+   * Register a Workspace by slug, named after it; one that is already registered keeps its record. When another
+   * Workspace already has that name, the new one is named `<slug> 2` (or 3, …).
+   */
   readonly createWorkspace: (slug: string, now: number) => WorkspaceRecord;
+  /** The Workspace registered under `slug`, or null. */
+  readonly getWorkspace: (slug: string) => WorkspaceRecord | null;
   readonly listWorkspaces: () => WorkspaceRecord[];
+  /** Give a Workspace a new name, which no other Workspace may have in any case. */
+  readonly renameWorkspace: (slug: string, name: string) => WorkspaceRename;
+  /** Forget a Workspace's record, only while no Session is bound to it (they are never touched). */
+  readonly deleteWorkspace: (slug: string) => WorkspaceDeletion;
   /** The JSON text of the document called `name`, or null. Documents hold the Registry's own settings. */
   readonly getDocument: (name: string) => string | null;
   /** Save a document, replacing the one with its name. */
@@ -84,9 +113,11 @@ type SessionRow = {
   status: string;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
 };
 
-type WorkspaceRow = { slug: string; created_at: number };
+/** `name` is null only between migration 8's two statements. */
+type WorkspaceRow = { slug: string; name: string | null; created_at: number };
 
 type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
 
@@ -121,10 +152,12 @@ const toSession = (row: SessionRow): SessionRecord => ({
   status: checkedStatus(row.status),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+  archivedAt: row.archived_at,
 });
 
 const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => ({
   slug: row.slug,
+  name: row.name ?? row.slug,
   createdAt: row.created_at,
 });
 
@@ -196,6 +229,17 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("ALTER TABLE sessions ADD COLUMN title_source TEXT");
     sql.exec("UPDATE sessions SET title_source = 'owner' WHERE title IS NOT NULL");
   },
+  // 8: the owner's name for a Workspace, unique whatever the case. Each is named after its slug, and slugs are unique
+  // lowercase text, so no two collide.
+  (sql) => {
+    sql.exec("ALTER TABLE workspaces ADD COLUMN name TEXT");
+    sql.exec("UPDATE workspaces SET name = slug");
+    sql.exec("CREATE UNIQUE INDEX workspaces_by_name ON workspaces (name COLLATE NOCASE)");
+  },
+  // 9: when the owner archived a Session. Null for Sessions stored before, which are not archived.
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN archived_at INTEGER");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -226,12 +270,45 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
   const { sql } = storage;
 
-  const createWorkspace = (slug: string, now: number): WorkspaceRecord => {
-    sql.exec("INSERT OR IGNORE INTO workspaces (slug, created_at) VALUES (?, ?)", slug, now);
+  const getWorkspace = (slug: string): WorkspaceRecord | null => {
+    const [row] = sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE slug = ?", slug).toArray();
 
-    return toWorkspace(
-      sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE slug = ?", slug).one(),
+    return row === undefined ? null : toWorkspace(row);
+  };
+
+  /**
+   * Whether a Workspace other than `slug` is named `name`, whatever the case. The names are compared here, folded as
+   * the web app folds them (`toLowerCase`), since the index's `NOCASE` folds only ASCII letters; there are few.
+   */
+  const nameTaken = (name: string, slug: string): boolean => {
+    const folded = name.toLowerCase();
+
+    return Arr.some(
+      sql
+        .exec<{ name: string | null }>("SELECT name FROM workspaces WHERE slug != ?", slug)
+        .toArray(),
+      (row) => row.name?.toLowerCase() === folded,
     );
+  };
+
+  const createWorkspace = (slug: string, now: number): WorkspaceRecord => {
+    const known = getWorkspace(slug);
+
+    if (known !== null) return known;
+
+    let name = slug;
+
+    for (let suffix = 2; nameTaken(name, slug); suffix++) name = `${slug} ${suffix}`;
+
+    sql.exec("INSERT INTO workspaces (slug, name, created_at) VALUES (?, ?, ?)", slug, name, now);
+
+    return { slug, name, createdAt: now };
+  };
+
+  const getSession = (id: string): SessionRecord | null => {
+    const [row] = sql.exec<SessionRow>("SELECT * FROM sessions WHERE id = ?", id).toArray();
+
+    return row === undefined ? null : toSession(row);
   };
 
   return {
@@ -259,14 +336,11 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         status: "idle",
         createdAt: now,
         updatedAt: now,
+        archivedAt: null,
       };
     },
 
-    getSession: (id) => {
-      const [row] = sql.exec<SessionRow>("SELECT * FROM sessions WHERE id = ?", id).toArray();
-
-      return row === undefined ? null : toSession(row);
-    },
+    getSession,
 
     listSessions: () =>
       Arr.map(
@@ -288,10 +362,22 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     renameSession: (id, title) => {
       sql.exec("UPDATE sessions SET title = ?, title_source = 'owner' WHERE id = ?", title, id);
 
-      const [row] = sql.exec<SessionRow>("SELECT * FROM sessions WHERE id = ?", id).toArray();
-
-      return row === undefined ? null : toSession(row);
+      return getSession(id);
     },
+
+    archiveSession: (id, now) => {
+      sql.exec("UPDATE sessions SET archived_at = ? WHERE id = ? AND archived_at IS NULL", now, id);
+
+      return getSession(id);
+    },
+
+    unarchiveSession: (id) => {
+      sql.exec("UPDATE sessions SET archived_at = NULL WHERE id = ?", id);
+
+      return getSession(id);
+    },
+
+    deleteSession: (id) => sql.exec("DELETE FROM sessions WHERE id = ?", id).rowsWritten > 0,
 
     setGeneratedTitle: (id, title) =>
       sql.exec(
@@ -302,11 +388,39 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
     createWorkspace,
 
+    getWorkspace,
+
     listWorkspaces: () =>
       Arr.map(
         sql.exec<WorkspaceRow>("SELECT * FROM workspaces ORDER BY created_at DESC, slug").toArray(),
         toWorkspace,
       ),
+
+    renameWorkspace: (slug, name) => {
+      const known = getWorkspace(slug);
+
+      if (known === null) return { status: "missing" };
+
+      if (nameTaken(name, slug)) return { status: "taken" };
+
+      sql.exec("UPDATE workspaces SET name = ? WHERE slug = ?", name, slug);
+
+      return { status: "renamed", workspace: { ...known, name } };
+    },
+
+    deleteWorkspace: (slug) => {
+      if (getWorkspace(slug) === null) return "missing";
+
+      if (
+        sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", slug).toArray().length > 0
+      ) {
+        return "in-use";
+      }
+
+      sql.exec("DELETE FROM workspaces WHERE slug = ?", slug);
+
+      return "deleted";
+    },
 
     getDocument: (name) => {
       const [row] = sql
