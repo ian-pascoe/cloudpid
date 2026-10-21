@@ -52,6 +52,14 @@ _Avoid_: Memory, scratchpad
 The list of Note names and references a new Context Window starts with, so the agent can read its Notes instead of carrying them.
 _Avoid_: Note list, memory dump
 
+**Todo List**:
+The flat list of Todo Items an agent keeps in its conversation to track what it means to do. Every conversation has its own, and it outlives every Handoff.
+_Avoid_: Plan, checklist, task list
+
+**Todo Item**:
+One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Tasks panel lists.
+_Avoid_: Task (alone, in prose about the product), to-do
+
 ## Workspaces and execution
 
 **Workspace**:

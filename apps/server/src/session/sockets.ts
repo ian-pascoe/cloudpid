@@ -201,11 +201,24 @@ export const sessionSocketsLayer = (
         Effect.gen(function* () {
           const fibers = yield* watchesOf(socket);
           const started = yield* Deferred.make<void, SessionError>();
+          let todosStarted = false;
 
           yield* setWatched(socket, conversationId, true);
           yield* host.events(conversationId).pipe(
             Stream.runForEach((events) =>
               send(socket, { type: "events", conversationId, events }).pipe(
+                // After the first batch, the snapshot, so the client has the conversation before its list.
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    if (todosStarted) return Effect.void;
+
+                    todosStarted = true;
+
+                    return Effect.forkChild(streamTodos(socket, conversationId)).pipe(
+                      Effect.asVoid,
+                    );
+                  }),
+                ),
                 Effect.andThen(Deferred.succeed(started, undefined)),
               ),
             ),
@@ -225,6 +238,27 @@ export const sessionSocketsLayer = (
 
           yield* Deferred.await(started);
         });
+
+      /**
+       * Stream `conversationId`'s Todo List to `socket`. It runs as a child of the conversation's watch, so it ends with
+       * it: whenever the watch is replaced, unwatched, fails or its socket closes. The list is not what the watch is for:
+       * one that fails does not end the conversation's watch. It is logged and the client is told, and keeps the last
+       * list it was sent.
+       */
+      const streamTodos = (socket: WebSocket, conversationId: ConversationId) =>
+        host.todos(conversationId).pipe(
+          Stream.runForEach((tasks) => send(socket, { type: "todos", conversationId, tasks })),
+          Effect.catch((error) =>
+            Effect.logWarning("Todo List watch ended", error).pipe(
+              Effect.andThen(
+                send(socket, {
+                  type: "error",
+                  message: `Todo List updates stopped: ${error.message}`,
+                }),
+              ),
+            ),
+          ),
+        );
 
       /**
        * Stream the task graph's summaries to `socket`, replacing a watch it already has. The first summary follows

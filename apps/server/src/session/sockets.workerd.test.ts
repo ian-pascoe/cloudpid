@@ -715,6 +715,137 @@ describe("a task graph watch", () => {
   });
 });
 
+/** The Todo Lists among `messages`, of conversation `conversationId`, in order. */
+const todoLists = (messages: readonly ServerMessage[], conversationId: ConversationId) =>
+  Arr.flatMap(messages, (message) =>
+    message.type === "todos" && message.conversationId === conversationId ? [message.tasks] : [],
+  );
+
+const ADD_TASKS = `call:todo:${JSON.stringify({
+  action: "add",
+  tasks: [{ title: "Write the tool" }, { title: "Test it", description: "Through runs" }],
+})}`;
+
+describe("a Todo List watch", () => {
+  it("sends the list after the snapshot, and again each time the agent changes it", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script([
+        ADD_TASKS,
+        `call:todo:${JSON.stringify({ action: "update", id: 1, status: "completed" })}`,
+        "Done.",
+      ]),
+    );
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+
+    // Empty until the agent first uses the tool, and sent after the conversation's snapshot.
+    await client.until((messages) => todoLists(messages, root).length === 1);
+    expect(todoLists(client.received, root)).toEqual([[]]);
+    const order = Arr.map(client.received, (message) => message.type);
+
+    expect(order.indexOf("todos")).toBeGreaterThan(order.indexOf("events"));
+
+    client.send({ type: "submit", id: "submit", input: "plan it", requestId: "turn-1" });
+
+    const lists = todoLists(await client.until((m) => todoLists(m, root).length === 3), root);
+
+    expect(lists.slice(1)).toEqual([
+      [
+        { id: 1, title: "Write the tool", status: "pending" },
+        { id: 2, title: "Test it", description: "Through runs", status: "pending" },
+      ],
+      [
+        { id: 1, title: "Write the tool", status: "completed" },
+        { id: 2, title: "Test it", description: "Through runs", status: "pending" },
+      ],
+    ]);
+  });
+
+  it("survives hibernation: the woken Session sends the list again on the same socket", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script([ADD_TASKS, "Done."]),
+    );
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.until((messages) => todoLists(messages, root).length === 1);
+    client.send({ type: "submit", id: "submit", input: "plan it", requestId: "turn-1" });
+    await client.until((messages) => todoLists(messages, root).length === 2);
+    await idle(stub);
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    // A message wakes it, and the watch it restarts sends the list as it stands.
+    client.send({ type: "abort", id: "wake" });
+    await client.answer("wake");
+
+    const lists = todoLists(
+      await client.until((messages) => todoLists(messages, root).length === 1, before),
+      root,
+    );
+
+    expect(lists[0]).toHaveLength(2);
+  });
+
+  it("does not outlive an unwatch that comes while the snapshot is being made", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script([ADD_TASKS, "Done."]),
+    );
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    // Both commands are on the socket before the first snapshot is sent.
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    client.send({ type: "unwatch", id: "unwatch", conversationId: root });
+    await client.answer("unwatch");
+    await client.answer("watch");
+    client.send({ type: "submit", id: "submit", input: "plan it", requestId: "turn-1" });
+    await submitted(client, "submit");
+    await idle(stub);
+
+    // Whatever list was sent before the unwatch, none of the agent's changes came after it.
+    expect(todoLists(client.received, root).flat()).toEqual([]);
+    expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
+  });
+
+  it("stops once the conversation is unwatched", async () => {
+    const stub = fresh();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script([ADD_TASKS, "Done."]),
+    );
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
+    await client.until((messages) => todoLists(messages, root).length === 1);
+
+    client.send({ type: "unwatch", id: "unwatch", conversationId: root });
+    await client.answer("unwatch");
+    client.send({ type: "submit", id: "submit", input: "plan it", requestId: "turn-1" });
+    await submitted(client, "submit");
+    await idle(stub);
+
+    expect(todoLists(client.received, root)).toEqual([[]]);
+  });
+});
+
 describe("owner commands addressed to a conversation", () => {
   it("are refused, with the command's id, when it is neither the root nor a subagent's", async () => {
     const client = await connect(fresh());

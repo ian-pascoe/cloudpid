@@ -274,6 +274,27 @@ export const TaskGraphMessage = Schema.Struct({
   ...TaskGraphSummary.fields,
 });
 
+/** A Task of a conversation's Todo List: flat, in the order of its ID. */
+export const TodoTask = Schema.Struct({
+  id: Schema.Int,
+  title: Schema.String,
+  description: Schema.optionalKey(Schema.String),
+  status: Schema.Literals(["pending", "active", "completed"]),
+});
+
+export type TodoTask = typeof TodoTask.Type;
+
+/**
+ * A watched conversation's Todo List, whole. The Session sends one after the snapshot of each conversation a client
+ * `watch`es, the root's and a subagent's alike, and another each time the list changes; each replaces the last one of
+ * that conversation. A conversation that never used the tool has an empty list.
+ */
+export const TodosMessage = Schema.Struct({
+  type: Schema.Literal("todos"),
+  conversationId: ConversationId,
+  tasks: Schema.Array(TodoTask),
+});
+
 /** One of pi's agent events, passed through unchanged; only its `type` is checked. */
 export const AgentEventSchema = Schema.declare(
   (input): input is AgentEvent =>
@@ -322,6 +343,7 @@ export const ServerMessage = Schema.Union([
   SecretRequests,
   BrowserHandoffRequests,
   TaskGraphMessage,
+  TodosMessage,
 ]);
 
 export type ServerMessage = typeof ServerMessage.Type;

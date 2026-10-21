@@ -16,6 +16,7 @@ import {
   type ServerMessage,
   type SessionView,
   type TaskGraphSummary,
+  type TodoTask,
   type WhenBusy,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
@@ -95,6 +96,8 @@ export interface ThreadState {
   readonly queue: QueueLanes;
   /** Submits to this conversation the Session has not answered. */
   readonly sending: readonly SendingEntry[];
+  /** Its Todo List, as of the last one the Session sent; empty until it sends one. */
+  readonly todos: readonly TodoTask[];
   /** Why the watch failed, or the last submit to it did; until the next submit. */
   readonly failure: string | null;
 }
@@ -131,6 +134,8 @@ export interface SessionState {
   readonly threads: Readonly<Record<string, ThreadState>>;
   /** The Session's subagents and background work, as of the last summary; null until it sends one. */
   readonly taskGraph: TaskGraphSummary | null;
+  /** The root conversation's Todo List, as of the last one the Session sent; empty until it sends one. */
+  readonly todos: readonly TodoTask[];
 }
 
 /** A watch of a subagent's conversation, shared by everything that shows it. */
@@ -143,6 +148,7 @@ interface ThreadWatch {
   status: ThreadState["status"];
   view: SessionView;
   failure: string | null;
+  todos: readonly TodoTask[];
 }
 
 /** A submit not yet answered. Its `requestId` makes sending it again safe. */
@@ -172,6 +178,8 @@ const submissionIdOf = (result: ServerMessage & { type: "result" }): string | un
 const EMPTY_QUEUE: QueueLanes = { steer: [], followUp: [] };
 
 const NO_SENDING: readonly SendingEntry[] = [];
+
+const NO_TODOS: readonly TodoTask[] = [];
 
 /** What asking the Session over HTTP shows about why its socket does not open. */
 export type Reachability = "reachable" | "signed-out" | "missing";
@@ -239,6 +247,7 @@ export class SessionConnection {
     browserHandoffRequests: [],
     threads: {},
     taskGraph: null,
+    todos: NO_TODOS,
   };
 
   constructor(
@@ -297,6 +306,7 @@ export class SessionConnection {
         status: "loading",
         view: EMPTY_VIEW,
         failure: null,
+        todos: NO_TODOS,
       });
       this.startThreadWatch(conversationId);
       this.update({});
@@ -429,6 +439,23 @@ export class SessionConnection {
         this.update({ taskGraph: { agents: message.agents, background: message.background } });
 
         return;
+      case "todos": {
+        if (message.conversationId === this.root) {
+          this.update({ todos: message.tasks });
+
+          return;
+        }
+
+        const thread = this.threadWatches.get(message.conversationId);
+
+        if (thread !== undefined) {
+          thread.todos = message.tasks;
+          this.update({}, message.conversationId);
+        }
+
+        return;
+      }
+
       case "picked":
         this.update({ picked: { model: message.model, thinkingLevel: message.thinkingLevel } });
 
@@ -750,6 +777,7 @@ export class SessionConnection {
         | "secretLifetimeMinutes"
         | "browserHandoffRequests"
         | "taskGraph"
+        | "todos"
       >
     >,
     thread?: number,
@@ -804,11 +832,19 @@ export class SessionConnection {
         previous.view === watch.view &&
         previous.queue === queue &&
         previous.sending === sending &&
-        previous.failure === watch.failure;
+        previous.failure === watch.failure &&
+        previous.todos === watch.todos;
 
       threads[key] = unchanged
         ? previous
-        : { status: watch.status, view: watch.view, queue, sending, failure: watch.failure };
+        : {
+            status: watch.status,
+            view: watch.view,
+            queue,
+            sending,
+            failure: watch.failure,
+            todos: watch.todos,
+          };
       same = same && unchanged;
     }
 

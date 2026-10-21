@@ -19,6 +19,7 @@ import {
   defineExtension,
   defineTool,
   type EntryRecord,
+  type Extension,
   MemoryStorage,
   ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
@@ -134,6 +135,8 @@ const toolsOf = (messages: readonly Message[]): string[] => {
 export const openContextHarness = async (
   script: (request: Request) => AssistantMessage | Promise<AssistantMessage>,
   contextWindow = CONTEXT_WINDOW,
+  /** More extensions to install, after the others. */
+  more: ReadonlyArray<Effect.Effect<Extension, never, Harness>> = [],
 ) => {
   const faux = fauxProvider({ models: [{ id: "faux-1", contextWindow }] });
   const models = createModels();
@@ -169,7 +172,7 @@ export const openContextHarness = async (
   );
 
   const extensions = await Effect.runPromise(
-    Effect.all([ContextManagement, Subagents]).pipe(
+    Effect.all([ContextManagement, Subagents, ...more]).pipe(
       Effect.provide(Context.make(Harness, service)),
       Effect.provide(defaultSubagentSettings()),
     ),

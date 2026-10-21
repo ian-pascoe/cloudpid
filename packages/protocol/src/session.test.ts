@@ -182,4 +182,22 @@ describe("the Session socket messages", () => {
 
     expect(await readServer(text)).toEqual(JSON.parse(text));
   });
+
+  it("carry a conversation's whole Todo List", async () => {
+    const text = JSON.stringify({
+      type: "todos",
+      conversationId: 2,
+      tasks: [
+        { id: 1, title: "Write the tool", status: "completed" },
+        { id: 3, title: "Test it", description: "Through runs", status: "active" },
+      ],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+    expect(
+      await Schema.decodeEffect(ServerMessageJson)(
+        '{"type":"todos","conversationId":2,"tasks":[{"id":1,"title":"A","status":"done"}]}',
+      ).pipe(Effect.option, Effect.runPromise),
+    ).toEqual(Option.none());
+  });
 });

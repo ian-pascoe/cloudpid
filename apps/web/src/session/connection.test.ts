@@ -1059,3 +1059,55 @@ describe("the task graph on a Session connection", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("Todo Lists on a Session connection", () => {
+  const tasks = (...titles: string[]) =>
+    titles.map((title, index) => ({ id: index + 1, title, status: "pending" }));
+
+  it("keeps the root's list as the Session sends it, each list replacing the last", () => {
+    const { connection, latest } = setup();
+
+    expect(connection.getState().todos).toEqual([]);
+
+    watching(latest());
+    latest().say({ type: "todos", conversationId: 1, tasks: tasks("Write it") });
+    expect(connection.getState().todos).toEqual(tasks("Write it"));
+
+    latest().say({
+      type: "todos",
+      conversationId: 1,
+      tasks: [{ id: 1, title: "Write it", description: "Soon", status: "completed" }],
+    });
+    expect(connection.getState().todos).toEqual([
+      { id: 1, title: "Write it", description: "Soon", status: "completed" },
+    ]);
+  });
+
+  it("keeps the last list while reconnecting, until the new socket sends one", () => {
+    const { connection, sockets, latest } = setup();
+
+    watching(latest());
+    latest().say({ type: "todos", conversationId: 1, tasks: tasks("Write it") });
+    latest().drop();
+    expect(connection.getState().todos).toEqual(tasks("Write it"));
+
+    vi.advanceTimersByTime(1_000);
+    watching(sockets[1]!);
+    sockets[1]!.say({ type: "todos", conversationId: 1, tasks: [] });
+
+    expect(connection.getState().todos).toEqual([]);
+  });
+
+  it("keeps a subagent thread's list on the thread, apart from the root's", () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+    watchingThread(latest(), 2);
+    latest().say({ type: "todos", conversationId: 2, tasks: tasks("Child task") });
+    latest().say({ type: "todos", conversationId: 1, tasks: tasks("Root task") });
+
+    expect(connection.getState().threads["2"]?.todos).toEqual(tasks("Child task"));
+    expect(connection.getState().todos).toEqual(tasks("Root task"));
+  });
+});

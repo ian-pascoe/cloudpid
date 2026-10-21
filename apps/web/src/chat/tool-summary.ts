@@ -37,6 +37,24 @@ const script = (args: Args): Option.Option<string> =>
 const firstLine = (args: Args, key: string): Option.Option<string> =>
   Option.map(text(args, key), (value) => value.split("\n")[0] ?? value);
 
+/** What a `todo` call does: its action, and the Task it names or how many it takes. */
+const todo = (args: Args): Option.Option<string> =>
+  Option.map(text(args, "action"), (action) => {
+    const batch = Arr.isArray(args.tasks)
+      ? args.tasks.length
+      : Arr.isArray(args.updates)
+        ? args.updates.length
+        : undefined;
+
+    const id = Predicate.isNumber(args.id) ? ` #${args.id}` : "";
+
+    return Option.match(firstLine(args, "title"), {
+      onNone: () =>
+        batch === undefined ? `${action}${id}` : `${action} ${batch} Task${batch === 1 ? "" : "s"}`,
+      onSome: (title) => `${action}${id}: ${title}`,
+    });
+  });
+
 /** `line`, after the agent a call names when it names one. */
 const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string> =>
   Option.map(line, (value) =>
@@ -68,6 +86,8 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return firstLine(args, "command");
       case "browser_handoff":
         return firstLine(args, "instructions");
+      case "todo":
+        return todo(args);
       case "subagent":
         return toAgent(args, firstLine(args, "task"));
       case "agent_message":

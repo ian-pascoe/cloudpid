@@ -11,6 +11,7 @@ import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Skills } from "@cloudpid/extensions/skills";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
+import { Todo } from "@cloudpid/extensions/todo";
 import { Web, WebConfig, WebNetworkLive } from "@cloudpid/extensions/web";
 import type { Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -23,7 +24,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * builds for each call and the `WorkspaceFiles` they need; `web_search` and `web_fetch`; `codemode`, whose scripts call
  * the tools above and run in the `CodemodeSandbox` (`./codemode.ts`); the subagent tools, which read their roles,
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
- * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; and the secret tools
+ * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; the `todo` tool,
+ * whose list is a conversation document that a hook puts back in front of the model after a Handoff or compaction; and the secret tools
  * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
  * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query); the `skills` section, which lists
  * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); and `browser`, which drives the
@@ -51,6 +53,7 @@ export const sessionExtensions: Effect.Effect<
   Codemode,
   Subagents,
   ContextManagement,
+  Todo,
   Browser,
   Skills,
 ]).pipe(
