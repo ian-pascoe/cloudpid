@@ -226,6 +226,9 @@ importers:
       alchemy:
         specifier: 2.0.0-beta.83
         version: 2.0.0-beta.83(patch_hash=5c9a5bc12e095b54c98fd8955d5a679a25a18824556b973ce734faf7eaee07e8)(@effect/platform-node@4.0.5(effect@4.0.5)(redis@6.3.0))(@types/node@26.6.5)(@types/react@19.3.0)(effect@4.0.5)(hono@4.11.4)(typescript@5.9.3)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(ws@8.22.0)
+      effect:
+        specifier: ^4.0.5
+        version: 4.0.5
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.5

@@ -11,6 +11,7 @@ import {
   ServerMessageJson,
   type ClientMessage,
   type ConversationId,
+  type HandoffRequest,
   type SecretRequest,
   type ServerMessage,
   type SessionView,
@@ -124,6 +125,8 @@ export interface SessionState {
   readonly secretRequests: readonly SecretRequest[];
   /** How long an entered Secret is held, as the Session says. */
   readonly secretLifetimeMinutes: number;
+  /** Browser Handoffs waiting for the owner, each with the Live View link to open; never shown in the chat. */
+  readonly handoffRequests: readonly HandoffRequest[];
   /** The subagent threads being watched, by conversation ID. */
   readonly threads: Readonly<Record<string, ThreadState>>;
   /** The Session's subagents and background work, as of the last summary; null until it sends one. */
@@ -233,6 +236,7 @@ export class SessionConnection {
     failure: null,
     secretRequests: [],
     secretLifetimeMinutes: 15,
+    handoffRequests: [],
     threads: {},
     taskGraph: null,
   };
@@ -434,6 +438,10 @@ export class SessionConnection {
           secretRequests: message.requests,
           secretLifetimeMinutes: message.lifetimeMinutes,
         });
+
+        return;
+      case "handoff_requests":
+        this.update({ handoffRequests: message.requests });
 
         return;
       case "events": {
@@ -673,8 +681,8 @@ export class SessionConnection {
       watch.commandId = null;
     }
 
-    // The next socket says again which Secret requests wait.
-    this.state = { ...this.state, secretRequests: [] };
+    // The next socket says again which Secret requests and Browser Handoffs wait.
+    this.state = { ...this.state, secretRequests: [], handoffRequests: [] };
 
     // An unanswered close may leave the socket open at this end.
     socket?.close();
@@ -740,6 +748,7 @@ export class SessionConnection {
         | "picked"
         | "secretRequests"
         | "secretLifetimeMinutes"
+        | "handoffRequests"
         | "taskGraph"
       >
     >,

@@ -4,10 +4,12 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off strictEffectProvide:off
 import { type EntryRecord, ToolResultEntry } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   Browser,
   BrowserError,
+  Handoffs,
+  makeHandoffs,
   BrowserHost,
   type BrowserHostService,
   type BrowserRun,
@@ -15,17 +17,31 @@ import {
   type BrowserSessionService,
   MAX_IMAGE_CHARACTERS,
 } from "./browser.ts";
+import { fakeHandoffHost, LIVE_VIEW_URL } from "./browser/host.fixture.ts";
 import { secretReference } from "./secrets/references.ts";
 import { call as secretsCall, openSecretsHarness } from "./secrets/harness.fixture.ts";
 import { answer, call, openSubagentHarness } from "./subagents/harness.fixture.ts";
 
 const DESCRIPTION = "Run JavaScript that drives a persistent Chrome browser.";
 
+/** Key-value storage in memory. */
+const memoryStorage = () => {
+  const map = new Map<string, unknown>();
+
+  return {
+    // SAFETY: a test's own keys, read back as what was put.
+    get: <T>(key: string) => map.get(key) as T | undefined,
+    put: <T>(key: string, value: T) => void map.set(key, value),
+    delete: (key: string) => map.delete(key),
+  };
+};
+
 /** A fake browser host: it records every run it is asked for and answers with `reply`. */
 const fakeHost = (reply: (code: string) => Effect.Effect<BrowserRun, BrowserError>) => {
   const runs: { code: string; conversationId: number }[] = [];
 
   const host: BrowserHostService = {
+    ...fakeHandoffHost().host,
     describe: Effect.succeed(DESCRIPTION),
     run: (input) =>
       Effect.suspend(() => {
@@ -63,6 +79,12 @@ const extensionOver = (host: BrowserHostService, session = fakeSession().session
     Browser.pipe(
       Effect.provideService(BrowserHost, host),
       Effect.provideService(BrowserSession, session),
+      Effect.provideService(
+        Handoffs,
+        makeHandoffs({ host, storage: memoryStorage(), announce: () => Effect.void }, session, {
+          notify: () => Effect.void,
+        }),
+      ),
     ),
   );
 
@@ -264,6 +286,150 @@ describe("the browser extension", () => {
     // Used before each run began, so a Session evicted during the first still has a time to close the browser from.
     expect(usesAtRun).toEqual([1, 3]);
     expect(uses.count).toBe(4);
+  });
+});
+
+describe("browser_handoff", () => {
+  /** The Browser extension over a host whose handoffs go as `waits` scripts, with what the owner was shown and pushed. */
+  const handingOver = async (waits: Parameters<typeof fakeHandoffHost>[0]) => {
+    const { host, calls } = fakeHandoffHost(waits);
+    const announced: unknown[] = [];
+    const notices: unknown[] = [];
+    const keepAlive = fakeSession().session;
+
+    const handoffs = makeHandoffs(
+      {
+        host,
+        storage: memoryStorage(),
+        announce: (requests) =>
+          Effect.sync(() => {
+            announced.push(requests);
+          }),
+      },
+      keepAlive,
+      {
+        notify: (event) =>
+          Effect.sync(() => {
+            notices.push(event);
+          }),
+      },
+    );
+
+    const extension = await Effect.runPromise(
+      Browser.pipe(
+        Effect.provideService(BrowserHost, host),
+        Effect.provideService(BrowserSession, keepAlive),
+        Effect.provideService(Handoffs, handoffs),
+      ),
+    );
+
+    return { extension, calls, announced, notices };
+  };
+
+  const handoffScript = (request: { readonly text: string }) =>
+    request.text === "Log me in"
+      ? call(["browser_handoff", { instructions: "Sign in, then press Done" }])
+      : answer("Back.");
+
+  it("gives the owner the link and the instructions, and resumes the model with only how it ended", async () => {
+    const { extension, calls, announced, notices } = await handingOver([
+      { state: "complete", success: true },
+    ]);
+
+    const session = await openSubagentHarness(handoffScript, {}, [extension]);
+
+    await session.prompt("Log me in");
+
+    expect(calls.started).toMatchObject([
+      { conversationId: 1, instructions: "Sign in, then press Done" },
+    ]);
+    expect(announced[0]).toMatchObject([
+      { conversationId: 1, instructions: "Sign in, then press Done", url: LIVE_VIEW_URL },
+    ]);
+    // In the background: the call does not wait for the push.
+    await vi.waitFor(() => expect(notices).toMatchObject([{ kind: "notice", url: LIVE_VIEW_URL }]));
+
+    const [result] = toolResults(await session.entries());
+
+    expect(result?.isError).toBe(false);
+    expect(result?.content).toEqual([
+      { type: "text", text: expect.stringMatching(/The user finished the handoff/) },
+    ]);
+    expect(result?.details).toEqual({ status: "completed" });
+  });
+
+  it("tells the model when the owner could not do it", async () => {
+    const { extension } = await handingOver([
+      { state: "complete", success: false, reason: "The code never came" },
+    ]);
+
+    const session = await openSubagentHarness(handoffScript, {}, [extension]);
+
+    await session.prompt("Log me in");
+
+    const [result] = toolResults(await session.entries());
+
+    expect(result?.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining("could not complete the handoff: The code never came"),
+      },
+    ]);
+    expect(result?.details).toEqual({ status: "failed" });
+  });
+
+  it("reports a browser that cannot hand over a tab as an error result", async () => {
+    const { host } = fakeHandoffHost([], {
+      start: () => Effect.fail(BrowserError.make({ message: "The conversation has no tab open" })),
+    });
+
+    const keepAlive = fakeSession().session;
+
+    const extension = await Effect.runPromise(
+      Browser.pipe(
+        Effect.provideService(BrowserHost, host),
+        Effect.provideService(BrowserSession, keepAlive),
+        Effect.provideService(
+          Handoffs,
+          makeHandoffs({ host, storage: memoryStorage(), announce: () => Effect.void }, keepAlive, {
+            notify: () => Effect.void,
+          }),
+        ),
+      ),
+    );
+
+    const session = await openSubagentHarness(handoffScript, {}, [extension]);
+
+    await session.prompt("Log me in");
+
+    const [result] = toolResults(await session.entries());
+
+    expect(result?.isError).toBe(true);
+    expect(result?.content).toEqual([
+      { type: "text", text: "The browser handoff failed: The conversation has no tab open" },
+    ]);
+  });
+
+  it("never lets the Live View link into the transcript or a model request", async () => {
+    const { extension } = await handingOver([{ state: "complete", success: true }]);
+    const session = await openSubagentHarness(handoffScript, {}, [extension]);
+
+    await session.prompt("Log me in");
+    await session.prompt("Anything else?");
+
+    const [token] = LIVE_VIEW_URL.split("jwt=").slice(1);
+
+    // The call reached the model's next requests as its result, and the whole transcript holds only that.
+    expect(session.requests.length).toBeGreaterThanOrEqual(3);
+
+    for (const surface of [
+      JSON.stringify(await session.entries()),
+      JSON.stringify(session.requests.map((request) => request.messages)),
+      JSON.stringify(session.requests.map((request) => request.system)),
+    ]) {
+      expect(surface).not.toContain(token);
+      expect(surface).not.toContain("live.browser.run");
+    }
   });
 });
 

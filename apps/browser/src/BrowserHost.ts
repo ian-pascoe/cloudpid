@@ -10,6 +10,9 @@ import {
   BROWSER_KEEP_ALIVE_MS,
   type BrowserHostRpc,
   type BrowserRun,
+  type HandoffStarted,
+  type HandoffStartInput,
+  type HandoffStatus,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -19,6 +22,8 @@ import {
 } from "agents/browser";
 import { browserTool, type PiBrowserTool } from "agents/browser/pi";
 import { DurableObject } from "cloudflare:workers";
+import { openCdpSocket } from "./cdp-socket.ts";
+import { HandoffHost } from "./handoff.ts";
 
 /** What the browser Worker binds (`resource.ts`). */
 export type BrowserHostEnv = {
@@ -43,6 +48,7 @@ type ConversationTool = {
 export class BrowserHost extends DurableObject<BrowserHostEnv> implements BrowserHostRpc {
   readonly #browser: Browser;
   readonly #tool: PiBrowserTool;
+  readonly #handoffs: HandoffHost;
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
@@ -51,6 +57,25 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
       store: new DurableBrowserSessionStore(ctx.storage),
     });
     this.#tool = browserTool({ ctx, browser: this.#browser, loader: env.LOADER });
+    this.#handoffs = new HandoffHost({
+      records: ctx.storage.kv,
+      browser: {
+        // The tab a conversation works in is the `browserTool`'s scope for it (`conversation:<id>`).
+        tabOf: async (conversationId) => {
+          const connection = await this.#browser.connect({
+            scope: `conversation:${conversationId}`,
+          });
+
+          // Only the tab and the session are wanted: the handoff opens a connection of its own, which hears its events.
+          connection.cdp.close();
+
+          return connection.activeTargetId === undefined
+            ? undefined
+            : { browserSessionId: connection.sessionId, targetId: connection.activeTargetId };
+        },
+        connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
+      },
+    });
   }
 
   /** The tool's description: how the model drives the browser. */
@@ -69,6 +94,24 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     const { output, content, ...rest } = await tool.execute({ code }, { conversationId });
 
     return { ...rest, output: output ?? content ?? [] };
+  }
+
+  /**
+   * Hand conversation `input.conversationId`'s tab to the owner (`Cloudflare.handoff`) and mint the Live View link. The
+   * link is for the owner alone and goes only to the Session DO, which shows it to the owner's clients.
+   */
+  startHandoff(input: HandoffStartInput): Promise<HandoffStarted> {
+    return this.#handoffs.start(input);
+  }
+
+  /** Wait up to `maxMs` for the handoff `requestId` to end, and say where it stands. */
+  waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus> {
+    return this.#handoffs.wait(requestId, maxMs);
+  }
+
+  /** Finish handoff `requestId`, ending it in Browser Run if the owner has not, and forget it. */
+  endHandoff(requestId: string): Promise<void> {
+    return this.#handoffs.end(requestId);
   }
 
   /** Close the browser: its record is retired and its Browser Run session ends. False when there was none. */

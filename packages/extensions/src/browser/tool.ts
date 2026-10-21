@@ -7,7 +7,15 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { BrowserError, BrowserHost, type BrowserOutputPart, type BrowserRun } from "./host.ts";
+import { Handoffs, type HandoffOutcome } from "./handoff.ts";
+import {
+  BrowserError,
+  BrowserHost,
+  type BrowserOutputPart,
+  type BrowserRun,
+  HANDOFF_TIMEOUT_MS,
+  MAX_HANDOFF_INSTRUCTIONS,
+} from "./host.ts";
 import { BrowserSession } from "./session.ts";
 
 /**
@@ -32,6 +40,7 @@ const SESSION_NOTES = Arr.join(
     "",
     "- The Session has one browser. Each conversation (you, and each subagent) works in a tab of its own; cookies and logins are shared.",
     "- Secret references are not resolved in browser code, which is stored with the run. Page text that matches a Secret's value comes back redacted.",
+    "- A step only the user can do (signing in, a CAPTCHA, multi-factor authentication) is `browser_handoff`: it gives them live control of your tab and waits.",
     "- Every screenshot is kept in the conversation and shown to the user, so take few, of the viewport, as `format: 'jpeg', quality: 60`. One over about 500 KB is left out.",
   ],
   "\n",
@@ -113,3 +122,73 @@ export const browserTool = (description: string) =>
         ),
       ),
   });
+
+/** What `browser_handoff` tells the model of how a handoff ended. It never holds the Live View link. */
+export const describeOutcome = (outcome: HandoffOutcome): string => {
+  const look = "The page may have changed: look at it with `browser` before you continue.";
+
+  switch (outcome.status) {
+    case "completed":
+      return `The user finished the handoff. ${look}`;
+    case "failed":
+      return `The user reported that they could not complete the handoff${outcome.reason === undefined ? "" : `: ${outcome.reason}`}. ${look}`;
+    case "timeout":
+      return `The handoff timed out after ${HANDOFF_TIMEOUT_MS / 60_000} minutes without the user finishing it. Do not assume the step was done; ${look}`;
+    case "ended":
+      return `The handoff ended, but Browser Run did not say how. ${look}`;
+  }
+};
+
+const HandoffParameters = Schema.Struct({
+  instructions: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(MAX_HANDOFF_INSTRUCTIONS),
+  ).annotate({
+    description:
+      "What the user should do in the browser, and when to press Done: specific and actionable, such as 'Log in to GitHub, complete the two-factor prompt, then press Done'",
+  }),
+});
+
+/**
+ * `browser_handoff`: give the user live control of the calling conversation's tab and wait for them to finish. The user
+ * gets the Live View link in the UI and by push; the model never does. The wait is durable: a call cut off by an
+ * eviction reruns and waits for the same handoff, so it is `safe` to replay.
+ */
+export const browserHandoffTool = defineEffectTool({
+  name: "browser_handoff",
+  description: Arr.join(
+    [
+      `Hand the browser to the user for a step you cannot do, such as signing in, a CAPTCHA, or multi-factor authentication, and wait until they are done (at most ${HANDOFF_TIMEOUT_MS / 60_000} minutes).`,
+      "The user gets a private Live View link for your current tab, in their app and as a push notification, and sees your instructions there; you never see the link. Open the page you need done with `browser` first.",
+      "Never ask the user to type a password or code to you in the chat. Say what to do in `instructions` and where to press Done. Afterwards take a look at the page: the result says only how the handoff ended.",
+    ],
+    "\n\n",
+  ),
+  parameters: HandoffParameters,
+  executionMode: "sequential",
+  replay: "safe",
+  execute: ({ instructions }, api) =>
+    Effect.gen(function* () {
+      const handoffs = yield* Handoffs;
+      const session = yield* BrowserSession;
+
+      yield* session.touch;
+
+      const outcome = yield* handoffs
+        .request({
+          id: String(api.taskId),
+          conversationId: Number(api.conversationId),
+          instructions,
+        })
+        .pipe(Effect.ensuring(session.touch));
+
+      return {
+        output: [{ type: "text" as const, text: describeOutcome(outcome) }],
+        details: { status: outcome.status },
+      };
+    }).pipe(
+      Effect.mapError((error) =>
+        BrowserError.make({ message: `The browser handoff failed: ${error.message}` }),
+      ),
+    ),
+});

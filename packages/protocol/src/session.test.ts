@@ -80,6 +80,27 @@ describe("the Session socket messages", () => {
     expect(await readServer(text)).toEqual(JSON.parse(text));
   });
 
+  it("carry the Browser Handoffs waiting for the owner, with the link they open", async () => {
+    const text = JSON.stringify({
+      type: "handoff_requests",
+      requests: [
+        {
+          id: "12",
+          conversationId: 1,
+          instructions: "Log in, then press Done",
+          url: "https://live.browser.run/ui/view?mode=tab",
+          deadline: 1_800_000,
+        },
+      ],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+    expect(await readServer('{"type":"handoff_requests","requests":[]}')).toEqual({
+      type: "handoff_requests",
+      requests: [],
+    });
+  });
+
   it("read the owner's answer to a Secret request, or its cancellation", async () => {
     expect(
       await readClient(

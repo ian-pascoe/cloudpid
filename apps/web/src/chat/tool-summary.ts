@@ -48,7 +48,7 @@ const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string>
 
 /**
  * The one thing about a call worth showing beside its name: the path a file tool works on, what a search looks for,
- * the command a shell runs, the task a subagent starts with, the message an agent sends, or the agent a call addresses. Nothing for a tool the page does not know, or arguments that do not have it.
+ * the command a shell runs, the task a subagent starts with, the instructions of a browser handoff, the message an agent sends, or the agent a call addresses. Nothing for a tool the page does not know, or arguments that do not have it.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const toolSummary = (toolName: string, args: Args): string | undefined => {
@@ -66,6 +66,8 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return script(args);
       case "bash":
         return firstLine(args, "command");
+      case "browser_handoff":
+        return firstLine(args, "instructions");
       case "subagent":
         return toAgent(args, firstLine(args, "task"));
       case "agent_message":

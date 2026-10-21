@@ -18,6 +18,7 @@ const test = (name: string, body: () => Effect.Effect<void, unknown>) =>
 class Probe {
   closes = 0;
   dropped = 0;
+  handoffsDropped = 0;
   stored: number | undefined = undefined;
 }
 
@@ -27,6 +28,9 @@ const setup = (nextExpiry?: number) => {
   const host: BrowserHostService = {
     describe: Effect.succeed(""),
     run: () => Effect.succeed({ output: [] }),
+    startHandoff: () => Effect.die("no handoff"),
+    waitHandoff: () => Effect.die("no handoff"),
+    endHandoff: () => Effect.void,
     close: Effect.sync(() => {
       state.closes += 1;
 
@@ -57,7 +61,13 @@ const setup = (nextExpiry?: number) => {
     }),
   };
 
-  return { state, browser, secrets };
+  const handoffs = {
+    dropAbandoned: Effect.sync(() => {
+      state.handoffsDropped += 1;
+    }),
+  };
+
+  return { state, browser, secrets, handoffs };
 };
 
 describe("earliest", () => {
@@ -98,19 +108,19 @@ describe("what wakes an idle Session", () => {
 });
 
 describe("what a Session does when it settles", () => {
-  test("closes the browser once the Session has been idle past its keep-alive, and clears abandoned Secret requests", () =>
+  test("closes the browser once the Session has been idle past its keep-alive, and clears abandoned Secret requests and Browser Handoffs", () =>
     Effect.gen(function* () {
-      const { state, browser, secrets } = setup();
+      const { state, browser, secrets, handoffs } = setup();
 
       yield* browser.touch;
-      yield* onIdle(secrets, browser);
+      yield* onIdle(secrets, browser, handoffs);
 
-      expect(state).toMatchObject({ closes: 0, dropped: 1 });
+      expect(state).toMatchObject({ closes: 0, dropped: 1, handoffsDropped: 1 });
 
       yield* TestClock.adjust(BROWSER_IDLE_MS);
-      yield* onIdle(secrets, browser);
+      yield* onIdle(secrets, browser, handoffs);
 
-      expect(state).toMatchObject({ closes: 1, dropped: 2 });
+      expect(state).toMatchObject({ closes: 1, dropped: 2, handoffsDropped: 2 });
       expect(yield* wakeAt(secrets, browser)).toBeUndefined();
     }));
 });

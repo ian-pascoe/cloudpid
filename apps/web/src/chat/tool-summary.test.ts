@@ -40,6 +40,9 @@ describe("toolSummary", () => {
     );
     expect(toolSummary("agent_message", { message: "Done early" })).toBe("Done early");
     expect(toolSummary("subagent_wait", { agent_id: "agent-1" })).toBe("agent-1");
+    expect(toolSummary("browser_handoff", { instructions: "Log in\nthen press Done" })).toBe(
+      "Log in",
+    );
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");

@@ -4,7 +4,7 @@
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
-import { BrowserHost, BrowserSession } from "@cloudpid/extensions/browser";
+import { BrowserHost, BrowserSession, type Handoffs } from "@cloudpid/extensions/browser";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
@@ -53,7 +53,7 @@ export class TestWorkspaceSession extends TestSession {
   protected override hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets
+    Harness | Secrets | Handoffs
   > {
     return sessionExtensions.pipe(
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
@@ -63,6 +63,9 @@ export class TestWorkspaceSession extends TestSession {
         describe: Effect.succeed(""),
         run: () => Effect.succeed({ output: [] }),
         close: Effect.succeed(false),
+        startHandoff: () => Effect.die("No browser"),
+        waitHandoff: () => Effect.die("No browser"),
+        endHandoff: () => Effect.void,
       }),
       Effect.provideService(BrowserSession, {
         touch: Effect.void,
