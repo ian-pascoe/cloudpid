@@ -1,5 +1,10 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off -- browser code in a React app with no Effect runtime: native arrays and promises are the platform here.
-import { afterEach, describe, expect, it, vi } from "vitest";
+// @effect-diagnostics preferEffectArray:off newSchemaClass:off strictEffectProvide:off newPromise:off -- in-memory fakes of the browser and the Registry over native arrays and sets; each test provides its fakes, and one needs a promise that never settles.
+import { describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
+import { afterEach, vi } from "vitest";
 import {
   type BrowserSubscription,
   decodeKey,
@@ -8,11 +13,15 @@ import {
   loadPushStatus,
   pageBrowser,
   type PushBrowser,
+  PushManager,
+  type PushStatus,
   syncPush,
 } from "./push.ts";
-import type { Answer } from "./legacy-registry.ts";
+import { fakeRegistryLayer } from "./registry.testing.ts";
+import type { RegistryClient } from "./registry.ts";
 
-const ENDPOINT = "https://push.example.net/wpush/v2/abc";
+// At a known push service: the fake Registry validates what it is sent, as the real one does.
+const ENDPOINT = "https://fcm.googleapis.com/fcm/send/abc";
 
 /** A browser subscription that records whether it was unsubscribed. */
 const subscription = (endpoint = ENDPOINT, key = "PUBLIC") => {
@@ -21,11 +30,11 @@ const subscription = (endpoint = ENDPOINT, key = "PUBLIC") => {
   const value: BrowserSubscription = {
     applicationServerKey: () => decodeKey(key),
     toJSON: () => ({ endpoint, keys: { p256dh: "P256", auth: "AUTH" } }),
-    unsubscribe: () => {
+    unsubscribe: Effect.sync(() => {
       state.unsubscribed = true;
 
-      return Promise.resolve(true);
-    },
+      return true;
+    }),
   };
 
   return { value, state };
@@ -47,229 +56,286 @@ const fakeBrowser = (options: BrowserOptions = {}) => {
   const made = { value: subscription().value, state: { unsubscribed: false } };
 
   const browser: PushBrowser = {
-    supported: options.supported ?? true,
-    permission: () => permission,
-    requestPermission: () => {
+    supported: Effect.succeed(options.supported ?? true),
+    permission: Effect.sync(() => permission),
+    requestPermission: Effect.sync(() => {
       permission = options.grants ?? "granted";
 
-      return Promise.resolve(permission);
-    },
-    getSubscription: () => Promise.resolve(current),
-    subscribe: (publicKey) => {
-      const fresh = subscription(ENDPOINT, publicKey);
+      return permission;
+    }),
+    getSubscription: Effect.sync(() => current),
+    subscribe: (publicKey) =>
+      Effect.sync(() => {
+        const fresh = subscription(ENDPOINT, publicKey);
 
-      subscribed.push(publicKey);
-      made.value = fresh.value;
-      made.state = fresh.state;
-      current = fresh.value;
+        subscribed.push(publicKey);
+        made.value = fresh.value;
+        made.state = fresh.state;
+        current = fresh.value;
 
-      return Promise.resolve(fresh.value);
-    },
+        return fresh.value;
+      }),
   };
 
   return { browser, subscribed, made };
 };
 
-const ok = <A>(value: A): Answer<A> => ({ ok: true, value });
-const refused = (message: string): Answer<never> => ({ ok: false, message });
-
 /** A Registry keeping subscriptions by endpoint; `failing` names the calls it refuses. */
 const fakeRegistry = (initial: readonly string[] = [], failing: readonly string[] = []) => {
   const kept = new Set(initial);
+  const refuse = (call: string) => failing.includes(call);
 
-  return {
-    kept,
-    registry: {
-      getPush: (endpoint?: string) =>
-        Promise.resolve(
-          failing.includes("getPush")
-            ? refused("Registry is down")
-            : ok({ publicKey: "PUBLIC", subscribed: endpoint !== undefined && kept.has(endpoint) }),
-        ),
-      subscribePush: (subscribed: { endpoint: string }) => {
-        if (failing.includes("subscribePush")) return Promise.resolve(refused("Registry is down"));
+  const layer = fakeRegistryLayer({
+    getPush: ({ endpoint }) =>
+      refuse("getPush")
+        ? Effect.die(new Error("Registry is down"))
+        : Effect.succeed({
+            publicKey: "PUBLIC",
+            subscribed: endpoint !== undefined && kept.has(endpoint),
+          }),
+    subscribePush: ({ subscription: subscribed }) =>
+      refuse("subscribePush")
+        ? Effect.die(new Error("Registry is down"))
+        : Effect.sync(() => {
+            kept.add(subscribed.endpoint);
+          }),
+    unsubscribePush: ({ endpoint }) =>
+      refuse("unsubscribePush")
+        ? Effect.die(new Error("Registry is down"))
+        : Effect.sync(() => {
+            kept.delete(endpoint);
+          }),
+  });
 
-        kept.add(subscribed.endpoint);
-
-        return Promise.resolve(ok(undefined));
-      },
-      unsubscribePush: (endpoint: string) => {
-        if (failing.includes("unsubscribePush"))
-          return Promise.resolve(refused("Registry is down"));
-
-        kept.delete(endpoint);
-
-        return Promise.resolve(ok(undefined));
-      },
-    },
-  };
+  return { kept, layer };
 };
 
+/** Run a push operation against `browser` and the Registry `layer`. */
+const running = <A>(
+  operation: Effect.Effect<A, never, PushManager | RegistryClient>,
+  browser: PushBrowser,
+  registry: Layer.Layer<RegistryClient>,
+) => operation.pipe(Effect.provide(Layer.mergeAll(Layer.succeed(PushManager, browser), registry)));
+
 describe("loadPushStatus", () => {
-  it("says a browser without Web Push is unsupported", async () => {
-    expect(
-      await loadPushStatus(fakeBrowser({ supported: false }).browser, fakeRegistry().registry),
-    ).toEqual({ kind: "unsupported" });
-  });
+  it.effect("says a browser without Web Push is unsupported", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* running(
+          loadPushStatus,
+          fakeBrowser({ supported: false }).browser,
+          fakeRegistry().layer,
+        ),
+      ).toEqual({ kind: "unsupported" });
+    }),
+  );
 
-  it("says a device with no subscription is off, or blocked when the browser blocks notifications", async () => {
-    expect(await loadPushStatus(fakeBrowser().browser, fakeRegistry().registry)).toEqual({
-      kind: "off",
-    });
-    expect(
-      await loadPushStatus(fakeBrowser({ permission: "denied" }).browser, fakeRegistry().registry),
-    ).toEqual({ kind: "denied" });
-  });
+  it.effect(
+    "says a device with no subscription is off, or blocked when the browser blocks notifications",
+    () =>
+      Effect.gen(function* () {
+        expect(yield* running(loadPushStatus, fakeBrowser().browser, fakeRegistry().layer)).toEqual(
+          { kind: "off" },
+        );
+        expect(
+          yield* running(
+            loadPushStatus,
+            fakeBrowser({ permission: "denied" }).browser,
+            fakeRegistry().layer,
+          ),
+        ).toEqual({ kind: "denied" });
+      }),
+  );
 
-  it("says a device the Registry holds is on", async () => {
-    const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
+  it.effect("says a device the Registry holds is on", () =>
+    Effect.gen(function* () {
+      const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
 
-    expect(await loadPushStatus(browser, fakeRegistry([ENDPOINT]).registry)).toEqual({
-      kind: "on",
-    });
-  });
+      expect(yield* running(loadPushStatus, browser, fakeRegistry([ENDPOINT]).layer)).toEqual({
+        kind: "on",
+      });
+    }),
+  );
 
-  it("gives the Registry back a subscription it lost, so the device is on", async () => {
-    const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
-    const { registry, kept } = fakeRegistry();
+  it.effect("gives the Registry back a subscription it lost, so the device is on", () =>
+    Effect.gen(function* () {
+      const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
+      const { layer, kept } = fakeRegistry();
 
-    expect(await loadPushStatus(browser, registry)).toEqual({ kind: "on" });
-    expect(kept.has(ENDPOINT)).toBe(true);
-  });
+      expect(yield* running(loadPushStatus, browser, layer)).toEqual({ kind: "on" });
+      expect(kept.has(ENDPOINT)).toBe(true);
+    }),
+  );
 
-  it("reports a Registry that cannot be reached", async () => {
-    const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
+  it.effect("reports a Registry that cannot be reached", () =>
+    Effect.gen(function* () {
+      const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
 
-    expect(await loadPushStatus(browser, fakeRegistry([], ["getPush"]).registry)).toEqual({
-      kind: "error",
-      message: "Registry is down",
-    });
-  });
+      expect(yield* running(loadPushStatus, browser, fakeRegistry([], ["getPush"]).layer)).toEqual({
+        kind: "error",
+        message: "Registry is down",
+      });
+    }),
+  );
 });
 
 describe("a VAPID key that was rotated", () => {
-  it("replaces a subscription made with the old key, so the device keeps getting pushes", async () => {
-    const old = subscription(ENDPOINT, "OLDKEY1");
+  it.effect(
+    "replaces a subscription made with the old key, so the device keeps getting pushes",
+    () =>
+      Effect.gen(function* () {
+        const old = subscription(ENDPOINT, "OLDKEY1");
 
-    const { browser, subscribed, made } = fakeBrowser({
-      permission: "granted",
-      existing: old.value,
-    });
+        const { browser, subscribed, made } = fakeBrowser({
+          permission: "granted",
+          existing: old.value,
+        });
 
-    const { registry, kept } = fakeRegistry([ENDPOINT]);
+        const { layer, kept } = fakeRegistry([ENDPOINT]);
 
-    expect(await loadPushStatus(browser, registry)).toEqual({ kind: "on" });
-    expect(old.state.unsubscribed).toBe(true);
-    expect(subscribed).toEqual(["PUBLIC"]);
-    expect(made.value.applicationServerKey()).toEqual(decodeKey("PUBLIC"));
-    expect([...kept]).toEqual([ENDPOINT]);
-  });
+        expect(yield* running(loadPushStatus, browser, layer)).toEqual({ kind: "on" });
+        expect(old.state.unsubscribed).toBe(true);
+        expect(subscribed).toEqual(["PUBLIC"]);
+        expect(made.value.applicationServerKey()).toEqual(decodeKey("PUBLIC"));
+        expect([...kept]).toEqual([ENDPOINT]);
+      }),
+  );
 
-  it("drops the old subscription and shows the device off when notifications are no longer allowed", async () => {
-    const old = subscription(ENDPOINT, "OLDKEY1");
-    const { browser, subscribed } = fakeBrowser({ permission: "granted", existing: old.value });
-    const { registry, kept } = fakeRegistry([ENDPOINT]);
+  it.effect(
+    "drops the old subscription and shows the device off when notifications are no longer allowed",
+    () =>
+      Effect.gen(function* () {
+        const old = subscription(ENDPOINT, "OLDKEY1");
+        const { browser, subscribed } = fakeBrowser({ permission: "granted", existing: old.value });
+        const { layer, kept } = fakeRegistry([ENDPOINT]);
 
-    // The browser reports permission lost between reading the subscription and replacing it.
-    let reads = 0;
+        // The browser reports permission lost between reading the subscription and replacing it.
+        let reads = 0;
 
-    const revoked: PushBrowser = {
-      ...browser,
-      permission: () => (reads++ < 1 ? "granted" : "denied"),
-    };
+        const revoked: PushBrowser = {
+          ...browser,
+          permission: Effect.sync(() => (reads++ < 1 ? "granted" : "denied")),
+        };
 
-    expect(await loadPushStatus(revoked, registry)).toEqual({ kind: "off" });
-    expect(old.state.unsubscribed).toBe(true);
-    expect(subscribed).toEqual([]);
-    expect(kept.size).toBe(0);
-  });
+        expect(yield* running(loadPushStatus, revoked, layer)).toEqual({ kind: "off" });
+        expect(old.state.unsubscribed).toBe(true);
+        expect(subscribed).toEqual([]);
+        expect(kept.size).toBe(0);
+      }),
+  );
 
-  it("is replaced at startup too", async () => {
-    const old = subscription(ENDPOINT, "OLDKEY1");
-    const { browser, subscribed } = fakeBrowser({ permission: "granted", existing: old.value });
+  it.effect("is replaced at startup too", () =>
+    Effect.gen(function* () {
+      const old = subscription(ENDPOINT, "OLDKEY1");
+      const { browser, subscribed } = fakeBrowser({ permission: "granted", existing: old.value });
 
-    await syncPush(browser, fakeRegistry([ENDPOINT]).registry);
-    expect(subscribed).toEqual(["PUBLIC"]);
-  });
+      yield* running(syncPush, browser, fakeRegistry([ENDPOINT]).layer);
+      expect(subscribed).toEqual(["PUBLIC"]);
+    }),
+  );
 });
 
 describe("enablePush", () => {
-  it("asks permission, subscribes with the deployment's key, and has the Registry keep it", async () => {
-    const { browser, subscribed } = fakeBrowser();
-    const { registry, kept } = fakeRegistry();
+  it.effect(
+    "asks permission, subscribes with the deployment's key, and has the Registry keep it",
+    () =>
+      Effect.gen(function* () {
+        const { browser, subscribed } = fakeBrowser();
+        const { layer, kept } = fakeRegistry();
 
-    expect(await enablePush(browser, registry)).toEqual({ kind: "on" });
-    expect(subscribed).toEqual(["PUBLIC"]);
-    expect([...kept]).toEqual([ENDPOINT]);
-  });
+        expect(yield* running(enablePush, browser, layer)).toEqual({ kind: "on" });
+        expect(subscribed).toEqual(["PUBLIC"]);
+        expect([...kept]).toEqual([ENDPOINT]);
+      }),
+  );
 
-  it("does not subscribe when the user refuses permission", async () => {
-    const { browser, subscribed } = fakeBrowser({ grants: "denied" });
-    const { registry, kept } = fakeRegistry();
+  it.effect("does not subscribe when the user refuses permission", () =>
+    Effect.gen(function* () {
+      const { browser, subscribed } = fakeBrowser({ grants: "denied" });
+      const { layer, kept } = fakeRegistry();
 
-    expect(await enablePush(browser, registry)).toEqual({ kind: "denied" });
-    expect(subscribed).toEqual([]);
-    expect(kept.size).toBe(0);
-  });
+      expect(yield* running(enablePush, browser, layer)).toEqual({ kind: "denied" });
+      expect(subscribed).toEqual([]);
+      expect(kept.size).toBe(0);
+    }),
+  );
 
-  it("stays off when the permission prompt is dismissed", async () => {
-    const { browser } = fakeBrowser({ grants: "default" });
+  it.effect("stays off when the permission prompt is dismissed", () =>
+    Effect.gen(function* () {
+      const { browser } = fakeBrowser({ grants: "default" });
 
-    expect(await enablePush(browser, fakeRegistry().registry)).toEqual({ kind: "off" });
-  });
+      expect(yield* running(enablePush, browser, fakeRegistry().layer)).toEqual({ kind: "off" });
+    }),
+  );
 
-  it("unsubscribes the browser when the Registry will not keep the subscription", async () => {
-    const { browser, made } = fakeBrowser();
+  it.effect("unsubscribes the browser when the Registry will not keep the subscription", () =>
+    Effect.gen(function* () {
+      const { browser, made } = fakeBrowser();
 
-    expect(await enablePush(browser, fakeRegistry([], ["subscribePush"]).registry)).toEqual({
-      kind: "error",
-      message: "Registry is down",
-    });
-    expect(made.state.unsubscribed).toBe(true);
-  });
+      expect(
+        yield* running(enablePush, browser, fakeRegistry([], ["subscribePush"]).layer),
+      ).toEqual({
+        kind: "error",
+        message: "Registry is down",
+      });
+      expect(made.state.unsubscribed).toBe(true);
+    }),
+  );
 });
 
 describe("disablePush", () => {
-  it("has the Registry forget the device and unsubscribes the browser", async () => {
-    const existing = subscription();
-    const { browser } = fakeBrowser({ permission: "granted", existing: existing.value });
-    const { registry, kept } = fakeRegistry([ENDPOINT]);
+  it.effect("has the Registry forget the device and unsubscribes the browser", () =>
+    Effect.gen(function* () {
+      const existing = subscription();
+      const { browser } = fakeBrowser({ permission: "granted", existing: existing.value });
+      const { layer, kept } = fakeRegistry([ENDPOINT]);
 
-    expect(await disablePush(browser, registry)).toEqual({ kind: "off" });
-    expect(kept.size).toBe(0);
-    expect(existing.state.unsubscribed).toBe(true);
-  });
+      expect(yield* running(disablePush, browser, layer)).toEqual({ kind: "off" });
+      expect(kept.size).toBe(0);
+      expect(existing.state.unsubscribed).toBe(true);
+    }),
+  );
 
-  it("keeps the browser subscribed when the Registry could not forget it, so the page tells the truth", async () => {
-    const existing = subscription();
-    const { browser } = fakeBrowser({ permission: "granted", existing: existing.value });
+  it.effect(
+    "keeps the browser subscribed when the Registry could not forget it, so the page tells the truth",
+    () =>
+      Effect.gen(function* () {
+        const existing = subscription();
+        const { browser } = fakeBrowser({ permission: "granted", existing: existing.value });
 
-    expect(
-      await disablePush(browser, fakeRegistry([ENDPOINT], ["unsubscribePush"]).registry),
-    ).toEqual({ kind: "error", message: "Registry is down" });
-    expect(existing.state.unsubscribed).toBe(false);
-  });
+        expect(
+          yield* running(disablePush, browser, fakeRegistry([ENDPOINT], ["unsubscribePush"]).layer),
+        ).toEqual({ kind: "error", message: "Registry is down" });
+        expect(existing.state.unsubscribed).toBe(false);
+      }),
+  );
 });
 
 describe("syncPush", () => {
-  it("re-tells the Registry about an existing subscription", async () => {
-    const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
-    const { registry, kept } = fakeRegistry();
+  it.effect("re-tells the Registry about an existing subscription", () =>
+    Effect.gen(function* () {
+      const { browser } = fakeBrowser({ permission: "granted", existing: subscription().value });
+      const { layer, kept } = fakeRegistry();
 
-    await syncPush(browser, registry);
-    expect(kept.has(ENDPOINT)).toBe(true);
-  });
+      yield* running(syncPush, browser, layer);
+      expect(kept.has(ENDPOINT)).toBe(true);
+    }),
+  );
 
-  it("never subscribes a device that is not, or one that has not allowed notifications", async () => {
-    const granted = fakeBrowser({ permission: "granted" });
-    const asked = fakeBrowser({ existing: subscription().value });
-    const { registry, kept } = fakeRegistry();
+  it.effect(
+    "never subscribes a device that is not, or one that has not allowed notifications",
+    () =>
+      Effect.gen(function* () {
+        const granted = fakeBrowser({ permission: "granted" });
+        const asked = fakeBrowser({ existing: subscription().value });
+        const { layer, kept } = fakeRegistry();
 
-    await syncPush(granted.browser, registry);
-    await syncPush(asked.browser, registry);
-    expect(kept.size).toBe(0);
-    expect(granted.subscribed).toEqual([]);
-  });
+        yield* running(syncPush, granted.browser, layer);
+        yield* running(syncPush, asked.browser, layer);
+        expect(kept.size).toBe(0);
+        expect(granted.subscribed).toEqual([]);
+      }),
+  );
 });
 
 describe("decodeKey", () => {
@@ -281,23 +347,29 @@ describe("decodeKey", () => {
 
 describe("the page's browser", () => {
   afterEach(() => {
-    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  it("says why when the service worker never becomes active, instead of waiting forever", async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("navigator", { serviceWorker: { ready: new Promise(() => undefined) } });
-    vi.stubGlobal("window", { PushManager: {}, Notification: {} });
-    vi.stubGlobal("Notification", { permission: "granted" });
+  it.effect(
+    "says why when the service worker never becomes active, instead of waiting forever",
+    () =>
+      Effect.gen(function* () {
+        vi.stubGlobal("navigator", { serviceWorker: { ready: new Promise(() => undefined) } });
+        vi.stubGlobal("window", { PushManager: {}, Notification: {} });
+        vi.stubGlobal("Notification", { permission: "granted" });
 
-    const status = loadPushStatus(pageBrowser(), fakeRegistry().registry);
+        const status = yield* running(loadPushStatus, pageBrowser(), fakeRegistry().layer).pipe(
+          Effect.forkChild,
+        );
 
-    await vi.advanceTimersByTimeAsync(5_000);
+        yield* TestClock.adjust(5_000);
 
-    expect(await status).toMatchObject({
-      kind: "error",
-      message: expect.stringContaining("service worker is not running"),
-    });
-  });
+        const loaded: PushStatus = yield* Fiber.join(status);
+
+        expect(loaded).toMatchObject({
+          kind: "error",
+          message: expect.stringContaining("service worker is not running"),
+        });
+      }),
+  );
 });

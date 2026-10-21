@@ -1,15 +1,24 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
-import { INSTANCE_DESCRIPTIONS, INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
+import {
+  INSTANCE_DESCRIPTIONS,
+  INSTANCE_TYPES,
+  type InstanceType,
+  type WorkspaceSettings,
+} from "@cloudpid/config";
 import {
   DEFAULT_WORKSPACE,
   MAX_WORKSPACE_NAME_LENGTH,
   type SessionRecord,
   type WorkspaceRecord,
+  type WorkspaceSettingsState,
 } from "@cloudpid/protocol";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { ArrowLeft, GitBranch, Pencil, Play, Trash2 } from "lucide-react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
@@ -17,21 +26,18 @@ import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { navigate, sessionPath } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
-import { connectRegistry, type RegistryApi } from "./legacy-registry.ts";
-import { exitFailure } from "./registry.ts";
+import { exitFailure, failureOf, settledFailureOf } from "./registry.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import {
-  type Repos,
-  useRepos,
-  useWorkspaceSettings,
-  type WorkspaceSettingsStore,
-} from "./use-workspaces.ts";
-import {
+  cloneRepoAtom,
   createWorkspaceAtom,
   deleteWorkspaceAtom,
   renameWorkspaceAtom,
+  reposAtom,
+  updateWorkspaceSettingsAtom,
   workspaceListAtom,
+  workspaceSettingsAtom,
   workspacesErrorAtom,
 } from "./workspaces-state.ts";
 import {
@@ -41,6 +47,60 @@ import {
   sourceProblem,
   workspaceNameProblem,
 } from "./workspaces.ts";
+
+interface Repos {
+  /** The directories of the repos the Workspace holds; null until the first answer. */
+  readonly repos: readonly string[] | null;
+  /** Why the repos could not be listed, or why a clone failed (git's message). */
+  readonly error: string | null;
+  /** A clone is running. It can take a minute: the Container starts, and the repo is downloaded. */
+  readonly cloning: boolean;
+  /** Clone `source` into the Workspace and list its repos again; resolves to the directory it went to, or undefined. */
+  readonly clone: (source: string) => Promise<string | undefined>;
+}
+
+/** The repos of Workspace `slug`, listed once and again after each clone. */
+const useRepos = (slug: string): Repos => {
+  const listed = useAtomValue(reposAtom(slug));
+  const [cloned, cloneRepo] = useAtom(cloneRepoAtom(slug), { mode: "promiseExit" });
+
+  return {
+    repos: listed.pipe(AsyncResult.value, Option.getOrNull),
+    // A clone's failure shows until the next clone starts.
+    error: settledFailureOf(cloned) ?? failureOf(listed),
+    cloning: cloned.waiting,
+    clone: (source) =>
+      cloneRepo(source).then((exit) => (Exit.isSuccess(exit) ? exit.value : undefined)),
+  };
+};
+
+interface WorkspaceSettingsStore {
+  /** The Workspace's settings in force; null until the first answer. */
+  readonly state: WorkspaceSettingsState | null;
+  /** Why the settings could not load, or why `save` was refused: the Workspace's own message. */
+  readonly error: string | null;
+  readonly saving: boolean;
+  /** Save `settings` as overrides of the defaults; resolves to whether the Workspace accepted them. */
+  readonly save: (settings: WorkspaceSettings) => Promise<boolean>;
+  /** Ask for the settings again, after a failure to load them (one call to a cold Durable Object can fail). */
+  readonly retry: () => void;
+}
+
+/** The Container size and idle time of Workspace `slug`, which apply at its next Container launch. */
+const useWorkspaceSettings = (slug: string): WorkspaceSettingsStore => {
+  const loaded = useAtomValue(workspaceSettingsAtom(slug));
+  const [saved, update] = useAtom(updateWorkspaceSettingsAtom(slug), { mode: "promiseExit" });
+  const retry = useAtomRefresh(workspaceSettingsAtom(slug));
+
+  return {
+    state: loaded.pipe(AsyncResult.value, Option.getOrNull),
+    // A refused save shows until the next save answers; a failed load until it is asked for again.
+    error: failureOf(saved) ?? settledFailureOf(loaded),
+    saving: saved.waiting,
+    save: (settings) => update(settings).then(Exit.isSuccess),
+    retry,
+  };
+};
 
 const NewWorkspaceForm = ({ onCreate }: { onCreate: (slug: string) => Promise<boolean> }) => {
   const [slug, setSlug] = useState("");
@@ -425,7 +485,6 @@ const WorkspaceCard = ({
   workspace,
   otherNames,
   sessions,
-  registry,
   starting,
   onStart,
   onRename,
@@ -436,15 +495,14 @@ const WorkspaceCard = ({
   otherNames: readonly string[];
   /** Every Session bound to the Workspace, archived ones included. */
   sessions: readonly SessionRecord[];
-  registry: RegistryApi;
   starting: boolean;
   onStart: (workspace: string, repo?: string) => void;
   onRename: (name: string) => Promise<string | null>;
   onDelete: () => Promise<string | null>;
 }) => {
   const { slug } = workspace;
-  const repos = useRepos(registry, slug);
-  const container = useWorkspaceSettings(registry, slug);
+  const repos = useRepos(slug);
+  const container = useWorkspaceSettings(slug);
   const [dialog, setDialog] = useState<"edit" | "delete" | null>(null);
   const [busy, setBusy] = useState(false);
   const shown = sessions.filter((session) => session.archivedAt === null);
@@ -581,7 +639,6 @@ const WorkspaceCard = ({
 
 /** The Workspaces page: create a Workspace, clone repos into it, and start Sessions in a repo or at its root. */
 export const WorkspacesPage = () => {
-  const registry = useMemo(() => connectRegistry(window.location.origin), []);
   const sessions = useAtomValue(sessionListAtom);
   const sessionsError = useAtomValue(sessionsErrorAtom);
   const workspaces = useAtomValue(workspaceListAtom);
@@ -652,7 +709,6 @@ export const WorkspacesPage = () => {
                 sessions={(sessions ?? []).filter(
                   (session) => session.workspace === workspace.slug,
                 )}
-                registry={registry}
                 starting={starting}
                 onStart={(slug, repo) => void start(slug, repo)}
                 onRename={async (name) =>
