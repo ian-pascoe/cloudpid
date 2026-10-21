@@ -17,14 +17,7 @@ import {
   MAX_HANDOFF_INSTRUCTIONS,
 } from "./host.ts";
 import { BrowserSession } from "./session.ts";
-
-/**
- * The longest screenshot kept, in base64 characters (about 560 KB). A screenshot enters the conversation, so it is stored
- * in the Session's SQLite, sent to the model with every later request, and sent to each client in the transcript's
- * snapshot: the bound keeps a few of them from outgrowing any of the three. A viewport screenshot as a JPEG is far under
- * it; a full-page PNG often is not.
- */
-export const MAX_IMAGE_CHARACTERS = 750_000;
+import { MAX_IMAGE_CHARACTERS } from "../images.ts";
 
 /** The image types a screenshot may be: the UI shows them in an `<img>`, and an SVG or other type from a page is not one. */
 const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -62,6 +55,7 @@ const keep = (part: BrowserOutputPart): BrowserOutputPart => {
     );
   }
 
+  // The bound every image in a conversation is held to: a viewport JPEG is far under it, a full-page PNG often is not.
   if (part.data.length > MAX_IMAGE_CHARACTERS) {
     const kilobytes = Math.round((part.data.length * 3) / 4 / 1000);
 

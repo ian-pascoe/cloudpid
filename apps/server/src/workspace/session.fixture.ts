@@ -6,6 +6,7 @@ import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
 import { BrowserHost, BrowserSession, type BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
+import { Images } from "@cloudpid/extensions/images";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
 import { fixedToolSearchSettings } from "@cloudpid/extensions/tool-search";
@@ -27,6 +28,8 @@ declare global {
     interface Env {
       readonly WORKSPACES: DurableObjectNamespace<TestWorkspace>;
       readonly CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
+      /** The Images binding, which miniflare emulates with sharp. */
+      readonly IMAGES: ImagesBinding;
     }
   }
 }
@@ -59,6 +62,7 @@ export class TestWorkspaceSession extends TestSession {
   > {
     return sessionExtensions.pipe(
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
+      Effect.provideService(Images, this.env.IMAGES),
       Effect.provideService(CodemodeSandbox, this.sandbox()),
       // No browser: the tests script the model, and none drives one.
       Effect.provideService(BrowserHost, {

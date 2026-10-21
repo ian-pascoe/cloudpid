@@ -2,8 +2,11 @@
 // tools as nested calls. The QuickJS VM runs in a Durable Object of the separately deployed codemode sandbox Worker, one
 // object per Session; the tools and the journal that makes a script survive an eviction stay in the Session's Harness.
 // @effect-diagnostics missingPipeableSignature:off
+import { boundImages } from "@cloudpid/extensions/images";
 import {
   type CodemodeRemote,
+  type CodemodeRun,
+  type CodemodeRunOptions,
   type CodemodeSandboxBase,
   RemoteCodemodeSandbox,
 } from "@earendil-works/pi-codemode/portable";
@@ -23,14 +26,39 @@ export class CodemodeSandbox extends Context.Service<CodemodeSandbox, CodemodeSa
 ) {}
 
 /**
+ * A remote sandbox whose runs' images are held to one tool result's budget (`boundImages`) before pi-durable sees them:
+ * code mode stores a script's result in its run's document before the `afterTool` hooks run, and that is one SQLite row
+ * too.
+ */
+class ImageBoundedSandbox extends RemoteCodemodeSandbox {
+  override start(code: string, options: CodemodeRunOptions): CodemodeRun {
+    const run = super.start(code, options);
+
+    const result = run.result.then((outcome) => {
+      const output = boundImages(outcome.output);
+
+      return output === outcome.output ? outcome : { ...outcome, output: [...output] };
+    });
+
+    return {
+      result,
+      deliver: (seq, now, id, outcome) => run.deliver(seq, now, id, outcome),
+      get finished() {
+        return run.finished;
+      },
+    };
+  }
+}
+
+/**
  * A sandbox that runs each script in the namespace's object named `name`: one per Session, so a Session's scripts take
  * turns on one object, in the sandbox Worker's isolates rather than the Session DO's. Objects of different Sessions may
- * share an isolate, and so its thread and memory.
+ * share an isolate, and so its thread and memory. A script's images are held to one tool result's budget.
  */
 export const remoteSandbox = (
   namespace: CodemodeSandboxNamespace,
   name: string,
-): CodemodeSandboxBase => new RemoteCodemodeSandbox({ remote: () => namespace.getByName(name) });
+): CodemodeSandboxBase => new ImageBoundedSandbox({ remote: () => namespace.getByName(name) });
 
 /**
  * The `codemode` tool and its prompt section, over the Session's sandbox. Scripts get no `models.*`: the model proxy

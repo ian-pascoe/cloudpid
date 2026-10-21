@@ -19,8 +19,11 @@ import {
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import {
+  type BinaryReader,
+  err,
   type ExecutionEnv,
   type ExecutionError,
+  FileError,
   ok,
   type Result,
   type ShellExecOptions,
@@ -28,7 +31,8 @@ import {
 } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import { type BashBackend, CodingTools } from "./coding-tools.ts";
+import { type BashBackend, codingToolsWith } from "./coding-tools.ts";
+import type { ImagesService } from "./images.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -44,29 +48,85 @@ export type CodingHarnessOptions = {
   /** Whether the environment can run on a chosen backend. */
   readonly backends: boolean;
   readonly exitCode?: number;
+  /** The files the environment holds, by absolute path, for `read`. */
+  readonly files?: Readonly<Record<string, Uint8Array>>;
+  /** The Images binding `read` prepares images with; none by default. */
+  readonly images?: ImagesService;
 };
+
+/** What the model saw of a call: the text, whether it was an error, and the images, when there were any. */
+export type CallResult = {
+  text: string;
+  isError: boolean;
+  images?: ReadonlyArray<{ readonly mimeType: string; readonly data: string }>;
+};
+
+/** What the environment's file reads did: the most bytes one read asked for. */
+export type FileReads = { largest: number };
 
 const callTool = (name: string, args: ToolCall["arguments"]): AssistantMessage =>
   fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${name}` })], {
     stopReason: "toolUse",
   });
 
-type FakeShell = Pick<ExecutionEnv, "cwd" | "exec">;
+type FakeShell = Pick<
+  ExecutionEnv,
+  "cwd" | "exec" | "absolutePath" | "exists" | "openBinaryReader"
+>;
 
-// SAFETY: the tools under test use only `cwd` and `exec`, which the fake answers.
+// SAFETY: the tools under test use only `cwd`, `exec` and the file reads `read` makes, which the fake answers.
 const asEnv = (fake: FakeShell): ExecutionEnv => fake as ExecutionEnv;
 
-/** An environment whose commands only report where they ran. */
+/** A reader of `bytes` that records the largest read in `reads`. */
+const readerOf = (path: string, bytes: Uint8Array, reads: FileReads): BinaryReader => ({
+  info: async () =>
+    ok({ name: path, path, kind: "file" as const, size: bytes.byteLength, mtimeMs: 0 }),
+  read: async (offset, length) => {
+    reads.largest = Math.max(reads.largest, length);
+
+    return ok(bytes.slice(offset, offset + length));
+  },
+  scanLines: async () => err(new FileError("not_supported", "Not a text file", path)),
+  close: async () => {},
+});
+
+/** An environment whose commands only report where they ran, and whose files are `files`. */
 class FakeEnv implements FakeShell {
   readonly cwd = "/workspace";
   readonly #calls: BackendCall[];
   readonly #backend: BashBackend | undefined;
   readonly #exitCode: number;
+  readonly #files: Readonly<Record<string, Uint8Array>>;
+  readonly #reads: FileReads;
 
-  constructor(calls: BackendCall[], exitCode: number, backend?: BashBackend) {
+  constructor(
+    calls: BackendCall[],
+    exitCode: number,
+    files: Readonly<Record<string, Uint8Array>>,
+    reads: FileReads,
+    backend?: BashBackend,
+  ) {
     this.#calls = calls;
     this.#exitCode = exitCode;
+    this.#files = files;
+    this.#reads = reads;
     this.#backend = backend;
+  }
+
+  async absolutePath(path: string): Promise<Result<string, FileError>> {
+    return ok(path.startsWith("/") ? path : `${this.cwd}/${path}`);
+  }
+
+  async exists(path: string): Promise<Result<boolean, FileError>> {
+    return ok(path in this.#files);
+  }
+
+  async openBinaryReader(path: string): Promise<Result<BinaryReader, FileError>> {
+    const bytes = this.#files[path];
+
+    return bytes === undefined
+      ? err(new FileError("not_found", "No such file", path))
+      : ok(readerOf(path, bytes, this.#reads));
   }
 
   async exec(
@@ -91,28 +151,40 @@ class FakeEnv implements FakeShell {
 class FakeBackendEnv extends FakeEnv {
   readonly #calls: BackendCall[];
   readonly #exitCode: number;
+  readonly #files: Readonly<Record<string, Uint8Array>>;
+  readonly #reads: FileReads;
 
-  constructor(calls: BackendCall[], exitCode: number) {
-    super(calls, exitCode);
+  constructor(
+    calls: BackendCall[],
+    exitCode: number,
+    files: Readonly<Record<string, Uint8Array>>,
+    reads: FileReads,
+  ) {
+    super(calls, exitCode, files, reads);
     this.#calls = calls;
     this.#exitCode = exitCode;
+    this.#files = files;
+    this.#reads = reads;
   }
 
   onBackend(backend: BashBackend): ExecutionEnv {
-    return asEnv(new FakeEnv(this.#calls, this.#exitCode, backend));
+    return asEnv(new FakeEnv(this.#calls, this.#exitCode, this.#files, this.#reads, backend));
   }
 }
 
 /** Open a Harness whose conversations run the coding tools in a fake environment. */
 export const openCodingHarness = async (options: CodingHarnessOptions) => {
   const calls: BackendCall[] = [];
+  const reads: FileReads = { largest: 0 };
+  const files = options.files ?? {};
   const exitCode = options.exitCode ?? 0;
+  const tools = codingToolsWith(options.images === undefined ? {} : { images: options.images });
   const faux = fauxProvider();
   const models = createModels();
   const registry = createRegistry();
 
   models.setProvider(faux.provider);
-  registry.install(CodingTools);
+  registry.install(tools);
 
   const harness = await Harness.open(
     new MemoryStorage(),
@@ -121,7 +193,9 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
       registry,
       env: () =>
         asEnv(
-          options.backends ? new FakeBackendEnv(calls, exitCode) : new FakeEnv(calls, exitCode),
+          options.backends
+            ? new FakeBackendEnv(calls, exitCode, files, reads)
+            : new FakeEnv(calls, exitCode, files, reads),
         ),
     },
     context,
@@ -131,7 +205,10 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
     agent: { model: { provider: "faux", modelId: "faux-1" } },
   });
 
-  /** Call `tool` with `args` as the model, and give the text it saw and whether it was an error. */
+  /**
+   * Call `tool` with `args` as the model, and give the text it saw and whether it was an error; and the images it saw,
+   * when there were any.
+   */
   const call = async (name: string, args: ToolCall["arguments"]) => {
     faux.setResponses([() => callTool(name, args), () => fauxAssistantMessage("done")]);
     await (await root.submit({ type: "input", content: "go" }, context)).wait(context);
@@ -141,19 +218,28 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
     const message = Option.getOrUndefined(entry)?.model?.[0];
     const content = message?.role === "toolResult" ? message.content : [];
 
-    return {
+    const images = Arr.flatMap(content, (block) =>
+      block.type === "image" ? [{ mimeType: block.mimeType, data: block.data }] : [],
+    );
+
+    const result: CallResult = {
       text: Arr.join(
         Arr.map(content, (block) => (block.type === "text" ? block.text : "")),
         "",
       ),
       isError: message?.role === "toolResult" && message.isError,
     };
+
+    if (images.length > 0) result.images = images;
+
+    return result;
   };
 
   return {
     call,
     calls,
+    reads,
     /** The registration of tool `name`, as the model is offered it. */
-    tool: (name: string) => CodingTools.tools?.find((tool) => tool.name === name),
+    tool: (name: string) => tools.tools?.find((tool) => tool.name === name),
   };
 };

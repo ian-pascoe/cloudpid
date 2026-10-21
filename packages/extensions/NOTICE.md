@@ -56,3 +56,27 @@ TUI widget and renderers, and the troubleshooting Skill are not ported (the web 
 | `doc.ts`        | `pi-todo-state` session entries           | a conversation document instead of journal entries, with a revision counter                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `tool.ts`       | `pi-todo-extension.ts` (tool)             | Effect Schema parameters, `null` accepted for omitted fields; every result's text ends with the whole list, and its `details` carry the revision it shows                                                                                                                                                                                                                                                                                                                   |
 | `projection.ts` | `todo-context.ts`, `pi-todo-extension.ts` | a `beforeRequest` hook puts the list into the first message of a Context Window that holds no `todo` result, once, with the text recorded in the document, and ends a request whose shown list is behind with a short note asking for `todo list`; an `afterTool` hook appends the list to the result of a call whose script changed it, instead of re-placing hidden snapshots at journal positions; the reconcile instruction follows a context that holds no list at all |
+
+The image header reading in `src/images/dimensions.ts` (`imageDimensions`) is ported from
+[`@earendil-works/pi-durable`](https://github.com/earendil-works/pi/tree/main/packages/durable)'s `src/tools/image.ts`
+(version 1.3.0), which does not export it, under the MIT licence:
+
+> MIT License
+>
+> Copyright (c) 2025 Mario Zechner
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+> documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+> rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+> persons to whom the Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+> Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+> WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+> COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+> OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+It checks each format's signature before reading its size, and its integer helpers are arrow functions; the rest is
+as it was.

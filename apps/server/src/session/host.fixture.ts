@@ -303,7 +303,10 @@ export class TestSession extends DurableObject {
               extensions: this.hostExtensions(),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               env: this.hostEnv(),
-              reportTimeout: "200 millis",
+              // Short only for a Registry that hangs; a loaded runner can take longer than that for a report that
+              // lands, which would count it failed and report it again.
+              reportTimeout:
+                ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
               onIdle: Effect.flatMap(
                 Effect.all([Effect.service(Secrets), Effect.service(BrowserHandoffs)]),
@@ -609,6 +612,59 @@ export class TestSession extends DurableObject {
               ]
             : [];
         });
+      }),
+    );
+  }
+
+  /** The images of the tool results in the root transcript, as stored, oldest first: each one's type and base64 length. */
+  toolResultImages(): Promise<
+    ReadonlyArray<{ readonly mimeType: string; readonly characters: number }>
+  > {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+        const root = yield* harness.root({});
+
+        const page = yield* callDurable("entries", (context) =>
+          root.entries({ order: "ascending" }, 100, undefined, context),
+        );
+
+        return Arr.flatMap(page.items, (entry) => {
+          const message = ToolResultEntry.is(entry) ? entry.model?.[0] : undefined;
+
+          return message?.role === "toolResult"
+            ? Arr.flatMap(message.content, (block) =>
+                block.type === "image"
+                  ? [{ mimeType: block.mimeType, characters: block.data.length }]
+                  : [],
+              )
+            : [];
+        });
+      }),
+    );
+  }
+
+  /** The length of the longest row of the Harness's own storage, as JSON: what one SQLite row of it holds. */
+  longestHarnessRow(): number {
+    const { sql } = this.ctx.storage;
+
+    const tables = sql
+      .exec(
+        "select name from sqlite_master where type = 'table' and name like 'pi\\_%' escape '\\'",
+      )
+      .toArray();
+
+    return Math.max(
+      0,
+      ...tables.flatMap((table) => {
+        const name = table["name"];
+
+        return Predicate.isString(name)
+          ? sql
+              .exec(`select * from "${name}"`)
+              .toArray()
+              .map((row) => JSON.stringify(row).length)
+          : [];
       }),
     );
   }

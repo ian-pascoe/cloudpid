@@ -8,6 +8,7 @@ import {
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContextManagement } from "@cloudpid/extensions/context";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
+import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Skills } from "@cloudpid/extensions/skills";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
@@ -20,8 +21,9 @@ import * as Effect from "effect/Effect";
 import { Codemode, CodemodeSandbox } from "./codemode.ts";
 
 /**
- * The extensions every Session's conversations run with: pi-durable's `read`, `write`, and `edit`, and a `bash` that can run on the Worker Shell or the Container, and `ls`,
- * `find`, and `grep`, which work on the Session's Workspace (`./workspace.ts`) through the environment the Harness
+ * The extensions every Session's conversations run with: pi-durable's `read` (whose images the Session's `Images`
+ * binding holds to the conversation's bound), `write`, and `edit`, and a `bash` that can run on the Worker Shell or the
+ * Container, and `ls`, `find`, and `grep`, which work on the Session's Workspace (`./workspace.ts`) through the environment the Harness
  * builds for each call and the `WorkspaceFiles` they need; `web_search` and `web_fetch`; `codemode`, whose scripts call
  * the tools above and run in the `CodemodeSandbox` (`./codemode.ts`); the subagent tools, which read their roles,
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
@@ -42,6 +44,7 @@ export const sessionExtensions: Effect.Effect<
   readonly Extension[],
   never,
   | WorkspaceFiles
+  | Images
   | WebConfig
   | CodemodeSandbox
   | SubagentSettings
@@ -52,7 +55,7 @@ export const sessionExtensions: Effect.Effect<
   | BrowserSession
   | BrowserHandoffs
 > = Effect.all([
-  Effect.succeed(CodingTools),
+  CodingTools,
   Files,
   Web,
   Codemode,
@@ -61,6 +64,8 @@ export const sessionExtensions: Effect.Effect<
   Todo,
   Browser,
   Skills,
+  // Every tool result's images held to one result's budget before it is stored.
+  Effect.succeed(ResultImages),
 ]).pipe(
   // Last, so its hooks see every other extension's results; only these tools' arguments resolve Secrets.
   Effect.flatMap((extensions) => {
