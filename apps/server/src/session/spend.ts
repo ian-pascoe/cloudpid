@@ -102,7 +102,9 @@ export const usageMessage = (totals: Totals, limit: number | null): SessionUsage
 /** Whether `spent` has reached `limit`. */
 export const isOverLimit = (spent: number, limit: number): boolean => spent >= limit;
 
-const dollars = (amount: number): string => `${amount.toFixed(2)} US dollars`;
+/** Cents, or the first digit of an amount under a cent, so a small limit does not read as zero. */
+const dollars = (amount: number): string =>
+  `${amount > 0 && amount < 0.01 ? amount.toPrecision(1) : amount.toFixed(2)} US dollars`;
 
 /**
  * What a refused request ends with, and so what the owner reads (in the assistant message and in the push of the failed

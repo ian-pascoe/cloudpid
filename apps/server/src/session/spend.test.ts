@@ -58,6 +58,10 @@ describe("the refusal message", () => {
     );
   });
 
+  it("shows an amount under a cent with its first digit, so a small limit does not read as zero", () => {
+    expect(spendMessage(0.0029, 0.002)).toContain("spent 0.003 US dollars of its 0.002 US dollars");
+  });
+
   it("is never taken for a transient failure or a context overflow, whatever the amounts", () => {
     for (const [spent, limit] of [
       [5, 5],
