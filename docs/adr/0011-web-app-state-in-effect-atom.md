@@ -1,0 +1,13 @@
+# The web app's state lives in Effect Atom over one Effect runtime
+
+The web app began as "a React app with no Effect runtime": its Registry hooks and smaller stores each held their own state with `useState`, `useEffect`, promises and timers, each Registry hook built a `ManagedRuntime` of its own that was never disposed, and the Session socket was a plain class read through `useSyncExternalStore`. A change made in one view reached another only through a manual `refresh()`. Polling, retries, debounces and TTLs lived in effects that could not be tested without React. The app now keeps all of its state in atoms (`effect/reactivity`, with `@effect/atom-react`), as if it had been written with them from the start. One `Atom.runtime` holds the app's services: the Registry client (`AtomRpc` over `RegistryRpcs`, whose mutations invalidate reactivity keys in place of refreshes), the WebSocket constructor, the clipboard, uploads and push. The Session socket is an Effect program (`SessionClient`, one per Session through `Atom.family`) that keeps its `SessionState` in a `SubscriptionRef`, which atoms project into narrow slices. State that belongs to an entity is an atom family keyed by that entity's ID, and per-instance UI state is a `ScopedAtom`. React keeps only DOM refs, `useId`, and the state assistant-ui owns: the composer's text, and the thread runtime that `useExternalStoreRuntime` builds from our atoms. Pure helpers stay plain functions.
+
+## Considered Options
+
+- **Atoms over the existing promise APIs and the `SessionConnection` class.** This gives the shared cache but leaves retries, timers and the socket's I/O outside Effect, untestable with `TestClock`, and keeps a second error shape (`Answer<A>`) beside `AsyncResult`.
+- **Atoms only for shared and remote state, with `useState` for local UI state.** This costs less to write, but the app would have two ways to hold state, and a choice to make each time a piece of local state became shared.
+- **Replacing assistant-ui's runtime with our own atoms.** Rejected: assistant-ui's composer and thread primitives depend on its runtime, and we feed that runtime rather than own it.
+
+## Consequences
+
+The Session socket's wire protocol is unchanged (ADR-0009). The rewrite of the socket is held to the behaviour that the ported `connection.test.ts` scenarios pin down: reconnect backoff from 500 ms to 10 s, a ping every 25 s with a 10 s pong timeout, an HTTP probe after 2 failed attempts, refcounted thread watches, and submits sent again under the same `requestId`. `effect/reactivity` and `effect/socket` are unstable APIs, enabled through `allowedUnstableApis`.
