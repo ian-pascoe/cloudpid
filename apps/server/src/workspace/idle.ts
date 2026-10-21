@@ -17,7 +17,9 @@ export type IdleStopDeps = {
   readonly load: () => Promise<number | undefined>;
   readonly save: (at: number) => Promise<void>;
   readonly setAlarm: (at: number) => Promise<void>;
-  /** Snapshot the Container, then stop it. */
+  /** Snapshot the Container's disk. It takes seconds, in which a command may arrive. */
+  readonly snapshot: () => Promise<void>;
+  /** Stop the Container. */
   readonly stop: () => Promise<void>;
 };
 
@@ -101,9 +103,15 @@ export class IdleStop {
       return;
     }
 
-    // Forgotten before the stop, not after: a use while the Container stops is remembered and arms the next alarm.
+    // Forgotten before the snapshot, not after: a use while it is taken is remembered and arms the next alarm.
     this.#lastUse = undefined;
     this.#saved = undefined;
+    await this.#deps.snapshot();
+
+    // A command that arrived during the snapshot connected to this Container, and stopping it now would kill the
+    // command. The use re-armed the alarm, which takes over.
+    if (this.#lastUse !== undefined || this.#running > 0) return;
+
     await this.#deps.stop();
   }
 }

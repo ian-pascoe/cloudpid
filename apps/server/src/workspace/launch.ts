@@ -7,7 +7,10 @@
 //   saved meanwhile must not reach a reconnect to it: it applies at the next launch;
 // - the idle time is kept the same way, for the idle stop;
 // - the latest snapshot is restored when there is one. A Container that does not come up from it is started again from
-//   the image (computer's one restart), and the snapshot is forgotten.
+//   the image (computer's one restart), and the snapshot is forgotten when the Container died, not when it was slow. A
+//   start the platform rejects outright for a snapshot (an expired handle) is retried once from the image;
+// - the image the Container runs is recorded per launch (the image of the snapshot it restored, else the deployed one),
+//   because Containers outlive a deploy: a snapshot is labelled with that, never with the image a launch would run now.
 // @effect-diagnostics asyncFunction:off
 import type {
   ContainerInstanceSize,
@@ -15,7 +18,7 @@ import type {
   IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
 import { DEFAULT_WORKSPACE_SETTINGS, type WorkspaceSettings } from "@cloudpid/config";
-import type { ContainerSnapshots } from "./snapshots.ts";
+import type { ContainerSnapshots, SnapshotOutcome, SnapshotReason } from "./snapshots.ts";
 
 /** What the Container that is running (or was last launched) was launched with. */
 export type LaunchRecord = {
@@ -25,6 +28,8 @@ export type LaunchRecord = {
   readonly needsSnapshot: boolean;
   /** The snapshot it started from, if any. */
   readonly restoredFrom: string | undefined;
+  /** The reference of the image it runs; undefined when not known (a Container adopted with no record). */
+  readonly image: string | undefined;
   /** Epoch milliseconds. */
   readonly launchedAt: number;
 };
@@ -32,7 +37,9 @@ export type LaunchRecord = {
 export type ContainerLaunchDeps = {
   /** The Workspace's settings now. */
   readonly settings: () => Promise<WorkspaceSettings>;
-  readonly snapshots: Pick<ContainerSnapshots, "restorable" | "forget" | "take">;
+  readonly snapshots: Pick<ContainerSnapshots, "restorable" | "restored" | "forget" | "take">;
+  /** The reference of the image a Container launched now would run. */
+  readonly image: () => string | undefined;
   readonly load: () => Promise<LaunchRecord | undefined>;
   readonly save: (record: LaunchRecord) => Promise<void>;
   /** Whether a Container is running now. */
@@ -85,9 +92,21 @@ export class ContainerLaunch {
 
     if (record === undefined || !record.needsSnapshot) return;
 
-    if ((await this.#deps.snapshots.take("install")) === "taken") {
+    if ((await this.snapshot("install")) === "taken") {
       await this.#remember({ ...record, needsSnapshot: false });
     }
+  }
+
+  /**
+   * Snapshot the running Container, labelled with the image it runs. A Container with no record (adopted from before
+   * launches were recorded) has no known image, and gets no snapshot.
+   */
+  async snapshot(reason: SnapshotReason): Promise<SnapshotOutcome> {
+    const record = await this.#current();
+
+    return record?.image === undefined
+      ? "skipped"
+      : this.#deps.snapshots.take(reason, record.image);
   }
 
   async #current(): Promise<LaunchRecord | undefined> {
@@ -110,15 +129,31 @@ export class ContainerLaunch {
     const instance =
       kept?.instance ?? (running ? DEFAULT_WORKSPACE_SETTINGS.instance : settings.instance);
 
-    const snapshot = running ? undefined : await this.#deps.snapshots.restorable();
+    let snapshot = running ? undefined : await this.#deps.snapshots.restorable();
 
     this.#restoring = snapshot?.id;
 
-    const launch: ContainerLaunchSpec = { ...spec, instance };
+    let launch: ContainerLaunchSpec = { ...spec, instance };
 
-    if (snapshot !== undefined) launch.containerSnapshot = snapshot;
+    if (snapshot !== undefined) launch.containerSnapshot = { id: snapshot.id };
 
-    const info = await api.start(launch);
+    let info;
+
+    try {
+      info = await api.start(launch);
+    } catch (cause) {
+      if (snapshot === undefined) throw cause;
+
+      // The platform refused the snapshot outright (an expired or unknown handle): the image is the way forward.
+      this.#deps.warn(
+        `The Container could not be started from snapshot ${snapshot.id} (${cause instanceof Error ? cause.message : String(cause)}): starting it from the image and forgetting the snapshot`,
+      );
+      await this.#deps.snapshots.forget();
+      snapshot = undefined;
+      this.#restoring = undefined;
+      launch = { ...spec, instance };
+      info = await api.start(launch);
+    }
 
     if (info.outcome === "adopted") {
       // Nothing launched. One adopted with no record (started before launches were recorded) gets one.
@@ -130,6 +165,7 @@ export class ContainerLaunch {
           idleMinutes: settings.idleMinutes,
           needsSnapshot: false,
           restoredFrom: undefined,
+          image: undefined,
           launchedAt: this.#deps.now(),
         });
       }
@@ -142,8 +178,12 @@ export class ContainerLaunch {
       idleMinutes: settings.idleMinutes,
       needsSnapshot: snapshot === undefined,
       restoredFrom: snapshot?.id,
+      image: snapshot === undefined ? this.#deps.image() : snapshot.image,
       launchedAt: this.#deps.now(),
     });
+
+    // The restore began the snapshot's 30 days again.
+    if (snapshot !== undefined) await this.#deps.snapshots.restored();
 
     return info;
   }
@@ -155,13 +195,25 @@ export class ContainerLaunch {
     this.#restoring = undefined;
 
     if (restoring !== undefined) {
+      // A Container that is merely slow to restore (a big snapshot on a cold host) keeps its snapshot; one that died, or
+      // that the platform could not restore, does not.
+      const exited = (await api.exitInfo().catch(() => null)) !== null;
+
       this.#deps.warn(
-        `The Container did not come up from snapshot ${restoring}: starting it from the image and forgetting the snapshot`,
+        exited
+          ? `The Container exited after starting from snapshot ${restoring}: starting it from the image and forgetting the snapshot`
+          : `The Container did not answer after starting from snapshot ${restoring}: starting it from the image`,
       );
-      await this.#deps.snapshots.forget();
+
+      if (exited) await this.#deps.snapshots.forget();
 
       if (record !== undefined) {
-        await this.#remember({ ...record, needsSnapshot: true, restoredFrom: undefined });
+        await this.#remember({
+          ...record,
+          needsSnapshot: true,
+          restoredFrom: undefined,
+          image: this.#deps.image(),
+        });
       }
     }
 

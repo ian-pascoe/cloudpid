@@ -69,8 +69,20 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
-/** How long a snapshot may take: a big disk, written to the platform's storage. */
-const SNAPSHOT_TIMEOUT_MS = 2 * 60_000;
+/**
+ * How long a snapshot, its scan included, may take. The install's is short because the Container's first commands wait
+ * for it; the idle stop's can be long, since nothing waits.
+ */
+const SNAPSHOT_TIMEOUT_MS = { install: 60_000, idle: 2 * 60_000 } as const;
+
+/** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
+const SCAN_TIMEOUT_MS = 30_000;
+
+/**
+ * How long computer waits for a launched Container to answer, in all, split between its launch and its one restart.
+ * Twice the default: a snapshot restored on a cold host should not be taken for a Container that failed.
+ */
+const CONNECT_TIMEOUT_MS = 60_000;
 
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
 export const CONTAINER_BACKEND_ID = "container-shell";
@@ -102,7 +114,7 @@ export class Workspace extends ContainerHost {
       scan: (secret) => {
         if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
 
-        return scanContainerDisk(ctx.container, secret);
+        return scanContainerDisk(ctx.container, secret, SCAN_TIMEOUT_MS);
       },
       load: () => ctx.storage.get<SnapshotRecord>(SNAPSHOT_KEY),
       save: (record) => ctx.storage.put(SNAPSHOT_KEY, record),
@@ -118,6 +130,7 @@ export class Workspace extends ContainerHost {
     const launch = new ContainerLaunch({
       settings: async () => (await this.#settings.read()).settings,
       snapshots,
+      image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       load: () => ctx.storage.get<LaunchRecord>(LAUNCH_KEY),
       save: (record) => ctx.storage.put(LAUNCH_KEY, record),
       running: () => ctx.container?.running === true,
@@ -131,12 +144,13 @@ export class Workspace extends ContainerHost {
       load: () => ctx.storage.get<number>(LAST_USE_KEY),
       save: (at) => ctx.storage.put(LAST_USE_KEY, at),
       setAlarm: (at) => ctx.storage.setAlarm(at),
+      // The disk is snapshotted while the Container is idle, so the next launch restores the Toolchains. A command that
+      // arrives meanwhile keeps the Container (`IdleStop`).
+      snapshot: async () => {
+        await launch.snapshot("idle");
+      },
       stop: async () => {
-        if (ctx.container?.running !== true) return;
-
-        // The disk is snapshotted while the Container is idle, so the next launch restores the Toolchains.
-        await snapshots.take("idle");
-        await ctx.container.destroy();
+        if (ctx.container?.running === true) await ctx.container.destroy();
       },
     });
 
@@ -146,6 +160,7 @@ export class Workspace extends ContainerHost {
       container: () => ({ getWorkspaceContainer: () => launch.wrap(this.getWorkspaceContainer()) }),
       workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
       name: WORKSPACE_CONTAINER,
+      connectTimeoutMs: CONNECT_TIMEOUT_MS,
       // Unrestricted direct egress in v1, not logged (docs/spec.md → Container and Toolchains).
       egress: { mode: "direct" },
     };

@@ -215,7 +215,9 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
         return { runtimeId: "r2", clientSecret: "s", outcome: "launched" };
       },
       status: async () => ({ running: false, exit: null }),
-      exitInfo: async () => null,
+      // The Container that was started died: it is not merely slow.
+      exitInfo: async () =>
+        starts.length === 0 ? null : { reason: "exited with 1", exitedAt: Date.now() },
       interceptOutboundHttp: async () => undefined,
       interceptAllOutboundHttp: async () => undefined,
       setInactivityTimeout: async () => undefined,
@@ -230,12 +232,14 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
     const launch = new ContainerLaunch({
       settings: async () => ({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-3" }),
       snapshots: {
-        restorable: async () => ({ id: "snap-1" }),
+        restorable: async () => ({ id: "snap-1", image: undefined }),
+        restored: async () => undefined,
         forget: async () => {
           forgotten++;
         },
         take: async () => "taken",
       },
+      image: () => undefined,
       load: async () => record,
       save: async (saved) => {
         record = saved;
@@ -264,7 +268,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
     });
     expect(starts[0]?.env.MOUNT_POINT).toBe("/workspace");
 
-    // The restart kept the size, dropped the snapshot, and the snapshot was forgotten.
+    // The restart kept the size, dropped the snapshot, and the snapshot of the Container that died was forgotten.
     expect(restarts).toHaveLength(1);
     expect(restarts[0]?.instance).toBe("standard-3");
     expect(restarts[0]?.containerSnapshot).toBeUndefined();

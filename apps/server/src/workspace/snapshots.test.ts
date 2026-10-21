@@ -18,17 +18,25 @@ type Fake = {
   snapshotFails: boolean;
   /** Holds the snapshot call until released. */
   gate: Promise<void> | undefined;
+  /** Holds the scan until released. */
+  scanGate: Promise<void> | undefined;
   now: number;
 };
 
 const SECRET = "ghp_test_secret_value";
 
+const IMAGE = "registry/image@sha256:one";
+
 const open = (
-  overrides: { enabled?: boolean; secret?: string | undefined; timeoutMs?: number } = {},
+  overrides: {
+    enabled?: boolean;
+    secret?: string | undefined;
+    timeoutMs?: { install: number; idle: number };
+  } = {},
 ) => {
   const state: Fake = {
     running: true,
-    image: "registry/image@sha256:one",
+    image: IMAGE,
     stored: undefined,
     taken: [],
     scans: [],
@@ -38,13 +46,14 @@ const open = (
     scanFails: false,
     snapshotFails: false,
     gate: undefined,
+    scanGate: undefined,
     now: 5_000,
   };
 
   const snapshots = new ContainerSnapshots({
     enabled: overrides.enabled ?? true,
     secret: "secret" in overrides ? overrides.secret : SECRET,
-    timeoutMs: overrides.timeoutMs ?? 1_000,
+    timeoutMs: overrides.timeoutMs ?? { install: 1_000, idle: 1_000 },
     image: () => state.image,
     running: () => state.running,
     snapshot: async (name) => {
@@ -58,6 +67,7 @@ const open = (
     },
     scan: async (secret) => {
       state.scans.push(secret);
+      await state.scanGate;
 
       if (state.scanFails) throw new Error("exec is not available");
 
@@ -82,13 +92,14 @@ describe("ContainerSnapshots.take", () => {
   it("snapshots the running Container and keeps the handle with the image it came from", async () => {
     const { state, snapshots } = open();
 
-    expect(await snapshots.take("install")).toBe("taken");
+    expect(await snapshots.take("install", IMAGE)).toBe("taken");
 
     expect(state.taken).toHaveLength(1);
     expect(state.stored).toEqual({
       id: "snap-1",
       size: 1234,
       takenAt: 5_000,
+      refreshedAt: 5_000,
       tookMs: 0,
       image: "registry/image@sha256:one",
       reason: "install",
@@ -98,8 +109,8 @@ describe("ContainerSnapshots.take", () => {
   it("replaces the previous snapshot: only the latest is restored", async () => {
     const { state, snapshots } = open();
 
-    await snapshots.take("install");
-    await snapshots.take("idle");
+    await snapshots.take("install", IMAGE);
+    await snapshots.take("idle", IMAGE);
 
     expect(state.stored?.id).toBe("snap-2");
     expect(state.stored?.reason).toBe("idle");
@@ -110,14 +121,14 @@ describe("ContainerSnapshots.take", () => {
 
     state.running = false;
 
-    expect(await snapshots.take("idle")).toBe("skipped");
+    expect(await snapshots.take("idle", IMAGE)).toBe("skipped");
     expect(state.taken).toHaveLength(0);
   });
 
   it("does nothing where snapshots are off (the local Container has no real mount)", async () => {
     const { state, snapshots } = open({ enabled: false });
 
-    expect(await snapshots.take("install")).toBe("skipped");
+    expect(await snapshots.take("install", IMAGE)).toBe("skipped");
     expect(state.taken).toHaveLength(0);
     expect(state.scans).toHaveLength(0);
   });
@@ -127,7 +138,7 @@ describe("ContainerSnapshots.take", () => {
 
     state.leaks = ["/root/.netrc"];
 
-    expect(await snapshots.take("idle")).toBe("skipped");
+    expect(await snapshots.take("idle", IMAGE)).toBe("skipped");
 
     expect(state.scans).toEqual([SECRET]);
     expect(state.taken).toHaveLength(0);
@@ -139,9 +150,9 @@ describe("ContainerSnapshots.take", () => {
   it("keeps an earlier snapshot when a later disk holds the token, which only the newer one would have", async () => {
     const { state, snapshots } = open();
 
-    await snapshots.take("install");
+    await snapshots.take("install", IMAGE);
     state.leaks = ["/tmp/credentials"];
-    await snapshots.take("idle");
+    await snapshots.take("idle", IMAGE);
 
     expect(state.stored?.id).toBe("snap-1");
   });
@@ -151,7 +162,7 @@ describe("ContainerSnapshots.take", () => {
 
     state.scanFails = true;
 
-    expect(await snapshots.take("install")).toBe("failed");
+    expect(await snapshots.take("install", IMAGE)).toBe("failed");
     expect(state.taken).toHaveLength(0);
     expect(state.warnings.join("\n")).not.toContain(SECRET);
   });
@@ -159,27 +170,27 @@ describe("ContainerSnapshots.take", () => {
   it("needs no scan when there is no token to leak", async () => {
     const { state, snapshots } = open({ secret: undefined });
 
-    expect(await snapshots.take("install")).toBe("taken");
+    expect(await snapshots.take("install", IMAGE)).toBe("taken");
     expect(state.scans).toHaveLength(0);
   });
 
   it("reports a refused snapshot instead of throwing, and keeps the earlier one", async () => {
     const { state, snapshots } = open();
 
-    await snapshots.take("install");
+    await snapshots.take("install", IMAGE);
     state.snapshotFails = true;
 
-    expect(await snapshots.take("idle")).toBe("failed");
+    expect(await snapshots.take("idle", IMAGE)).toBe("failed");
     expect(state.stored?.id).toBe("snap-1");
     expect(state.warnings.join("\n")).toContain("the platform refused");
   });
 
   it("gives up on a snapshot that takes too long, and records nothing", async () => {
-    const { state, snapshots } = open({ timeoutMs: 20 });
+    const { state, snapshots } = open({ timeoutMs: { install: 20, idle: 20 } });
 
     state.gate = new Promise(() => undefined);
 
-    expect(await snapshots.take("idle")).toBe("failed");
+    expect(await snapshots.take("idle", IMAGE)).toBe("failed");
     expect(state.stored).toBeUndefined();
     expect(state.warnings.join("\n")).toContain("did not finish");
   });
@@ -192,13 +203,54 @@ describe("ContainerSnapshots.take", () => {
       release = resolve;
     });
 
-    const first = snapshots.take("install");
-    const second = snapshots.take("idle");
+    const first = snapshots.take("install", IMAGE);
+    const second = snapshots.take("idle", IMAGE);
 
     release();
 
     expect(await Promise.all([first, second])).toEqual(["taken", "taken"]);
     expect(state.taken).toHaveLength(1);
+  });
+});
+
+describe("ContainerSnapshots.take, for a Container of another image", () => {
+  it("does not snapshot a Container that runs an older image than the deployed one, which would be labelled as the new one", async () => {
+    const { state, snapshots } = open();
+
+    // A deploy changed the image while the Container ran on: it was adopted, and still runs the old one.
+    state.image = "registry/image@sha256:two";
+
+    expect(await snapshots.take("idle", IMAGE)).toBe("skipped");
+    expect(state.taken).toHaveLength(0);
+    expect(state.stored).toBeUndefined();
+  });
+
+  it("does not snapshot a Container whose image is not known", async () => {
+    const { state, snapshots } = open();
+
+    expect(await snapshots.take("idle", undefined)).toBe("skipped");
+    expect(state.taken).toHaveLength(0);
+  });
+});
+
+describe("ContainerSnapshots.take, within its time", () => {
+  it("gives up on a scan that does not finish, and snapshots nothing", async () => {
+    const { state, snapshots } = open({ timeoutMs: { install: 20, idle: 1_000 } });
+
+    state.scanGate = new Promise(() => undefined);
+
+    expect(await snapshots.take("install", IMAGE)).toBe("failed");
+    expect(state.taken).toHaveLength(0);
+    expect(state.warnings.join("\n")).toContain("did not finish");
+  });
+
+  it("gives the install, which commands wait for, less time than the idle stop", async () => {
+    const { state, snapshots } = open({ timeoutMs: { install: 20, idle: 1_000 } });
+
+    state.gate = new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(await snapshots.take("install", IMAGE)).toBe("failed");
+    expect(await snapshots.take("idle", IMAGE)).toBe("taken");
   });
 });
 
@@ -212,15 +264,15 @@ describe("ContainerSnapshots.restorable", () => {
   it("offers the latest snapshot of the same image", async () => {
     const { snapshots } = open();
 
-    await snapshots.take("install");
+    await snapshots.take("install", IMAGE);
 
-    expect(await snapshots.restorable()).toEqual({ id: "snap-1" });
+    expect(await snapshots.restorable()).toEqual({ id: "snap-1", image: IMAGE });
   });
 
   it("forgets a snapshot of another image: a deploy that changed it makes the snapshot useless", async () => {
     const { state, snapshots } = open();
 
-    await snapshots.take("install");
+    await snapshots.take("install", IMAGE);
     state.image = "registry/image@sha256:two";
 
     expect(await snapshots.restorable()).toBeUndefined();
@@ -230,15 +282,44 @@ describe("ContainerSnapshots.restorable", () => {
   it("offers nothing where snapshots are off", async () => {
     const { state, snapshots } = open({ enabled: false });
 
-    state.stored = { id: "x", size: 1, takenAt: 1, tookMs: 1, image: state.image, reason: "idle" };
+    state.stored = {
+      id: "x",
+      size: 1,
+      takenAt: 1,
+      refreshedAt: 1,
+      tookMs: 1,
+      image: state.image,
+      reason: "idle",
+    };
 
     expect(await snapshots.restorable()).toBeUndefined();
+  });
+
+  it("forgets a snapshot about to expire: the platform keeps one 30 days", async () => {
+    const { state, snapshots } = open();
+
+    await snapshots.take("idle", IMAGE);
+    state.now += 30 * 24 * 60 * 60_000;
+
+    expect(await snapshots.restorable()).toBeUndefined();
+    expect(state.stored).toBeUndefined();
+  });
+
+  it("counts a restore as the start of its 30 days again", async () => {
+    const { state, snapshots } = open();
+
+    await snapshots.take("idle", IMAGE);
+    state.now += 20 * 24 * 60 * 60_000;
+    await snapshots.restored();
+    state.now += 20 * 24 * 60 * 60_000;
+
+    expect(await snapshots.restorable()).toEqual({ id: "snap-1", image: IMAGE });
   });
 
   it("forget drops the record, for a restore that did not come up", async () => {
     const { state, snapshots } = open();
 
-    await snapshots.take("install");
+    await snapshots.take("install", IMAGE);
     await snapshots.forget();
 
     expect(state.stored).toBeUndefined();
@@ -273,9 +354,54 @@ describe("scanContainerDisk", () => {
     expect(found).toEqual([]);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.cmd.join(" ")).not.toContain(SECRET);
-    expect(Object.values(calls[0]?.env ?? {})).toContain(SECRET);
-    // The Workspace is a separate mount that a snapshot does not hold, so it is not searched.
-    expect(calls[0]?.cmd.join(" ")).not.toContain("/workspace");
+
+    // The token and its base64 forms go to grep as patterns.
+    const patterns = Object.values(calls[0]?.env ?? {})
+      .join("\n")
+      .split("\n");
+
+    expect(patterns).toEqual([SECRET, btoa(SECRET), btoa(`x-access-token:${SECRET}`)]);
+  });
+
+  it("searches the whole disk but the pseudo file systems and the Workspace mount, which a snapshot does not hold", async () => {
+    let script = "";
+
+    await scanContainerDisk(
+      {
+        exec: async (cmd) => {
+          script = cmd[2] ?? "";
+
+          return output("", 1);
+        },
+      },
+      SECRET,
+    );
+
+    expect(script).toContain("/*");
+
+    for (const excluded of ["/proc", "/sys", "/dev", "/run", "/workspace"]) {
+      expect(script).toContain(excluded);
+    }
+  });
+
+  it("kills the search and rejects when it does not finish in time", async () => {
+    let signal: AbortSignal | undefined;
+
+    await expect(
+      scanContainerDisk(
+        {
+          exec: async (_cmd, options) => {
+            signal = options?.signal;
+
+            return { output: () => new Promise(() => undefined) };
+          },
+        },
+        SECRET,
+        20,
+      ),
+    ).rejects.toThrow(/did not finish/);
+
+    expect(signal?.aborted).toBe(true);
   });
 
   it("lists the files grep found it in", async () => {

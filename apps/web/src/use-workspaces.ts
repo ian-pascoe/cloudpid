@@ -114,6 +114,8 @@ export interface WorkspaceSettingsStore {
   readonly saving: boolean;
   /** Save `settings` as overrides of the defaults; resolves to whether the Workspace accepted them. */
   readonly save: (settings: WorkspaceSettings) => Promise<boolean>;
+  /** Ask for the settings again, after a failure to load them (one call to a cold Durable Object can fail). */
+  readonly retry: () => void;
 }
 
 /** The Container size and idle time of Workspace `slug`, which apply at its next Container launch. */
@@ -124,6 +126,7 @@ export const useWorkspaceSettings = (
   const [state, setState] = useState<WorkspaceSettingsState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let current = true;
@@ -131,14 +134,21 @@ export const useWorkspaceSettings = (
     void registry.getWorkspaceSettings(slug).then((answer) => {
       if (!current) return;
 
-      if (answer.ok) setState(answer.value);
-      else setError(answer.message);
+      if (answer.ok) {
+        setState(answer.value);
+        setError(null);
+      } else setError(answer.message);
     });
 
     return () => {
       current = false;
     };
-  }, [registry, slug]);
+  }, [registry, slug, attempt]);
+
+  const retry = useCallback(() => {
+    setError(null);
+    setAttempt((count) => count + 1);
+  }, []);
 
   const save = useCallback(
     async (settings: WorkspaceSettings) => {
@@ -157,5 +167,5 @@ export const useWorkspaceSettings = (
     [registry, slug],
   );
 
-  return { state, error, saving, save };
+  return { state, error, saving, save, retry };
 };

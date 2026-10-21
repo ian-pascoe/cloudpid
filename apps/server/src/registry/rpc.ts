@@ -6,6 +6,7 @@ import {
   WorkspaceError,
 } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
@@ -37,6 +38,16 @@ export const serveRegistryRpc = (
         try: call,
         catch: (cause) =>
           failed(`${what}: ${cause instanceof Error ? cause.message : String(cause)}`),
+      });
+
+    /** Fails unless the Registry lists the Workspace: a setting must not wake, or leave state in, an object nobody made. */
+    const registered = (slug: string) =>
+      Effect.gen(function* () {
+        const known = yield* registry.listWorkspaces();
+
+        if (!Arr.some(known, (workspace) => workspace.slug === slug)) {
+          return yield* failed(`Workspace "${slug}" does not exist: create it first`);
+        }
       });
 
     const handlers = RegistryRpcs.toLayer({
@@ -78,11 +89,17 @@ export const serveRegistryRpc = (
           return repo.name;
         }),
       getWorkspaceSettings: ({ workspace }) =>
-        inWorkspace("Could not read the Workspace's settings", () =>
-          workspaceSettings.read(workspace),
-        ),
+        Effect.gen(function* () {
+          yield* registered(workspace);
+
+          return yield* inWorkspace("Could not read the Workspace's settings", () =>
+            workspaceSettings.read(workspace),
+          );
+        }),
       updateWorkspaceSettings: ({ workspace, overrides }) =>
         Effect.gen(function* () {
+          yield* registered(workspace);
+
           const answer = yield* inWorkspace("Could not save the Workspace's settings", () =>
             workspaceSettings.write(workspace, overrides),
           );

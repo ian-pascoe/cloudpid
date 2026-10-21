@@ -5,12 +5,18 @@
 // - A snapshot holds the Container's own disk only: `/workspace` is a separate (FUSE) mount, so the files the Workspace
 //   syncs are not in it (the Workspace DO pushes them again at every launch), and computer's `ignore` paths are as local
 //   to the Container as they ever were.
-// - It is tied to the image it was taken from, so the handle is kept with the image's reference and forgotten when a
-//   deploy changes it.
-// - Nothing holding the GitHub token is snapshotted: the disk is scanned for it first, and a snapshot that cannot be
-//   shown clean is not taken. The bootstrap keeps the token off disk (git reads it from the environment), so this is for
-//   what a command wrote.
+// - It is tied to the image it was taken from, so the handle is kept with the image of the Container it was taken
+//   from (not the one a launch would run now: Containers outlive a deploy) and forgotten when a deploy changes it. A
+//   Container on an older image than the deployed one is not snapshotted.
+// - A snapshot lives 30 days from its creation or latest restore, so one that is near that is not restored.
+// - The disk is searched for the GitHub token before a snapshot (`scanContainerDisk`: everything but the pseudo file
+//   systems and the Workspace mount, for the token and its common base64 forms), and a snapshot that cannot be shown
+//   clean is not taken. The bootstrap keeps the token off disk (git reads it from the environment), so this is for what
+//   a command wrote; a token encoded some other way is not found.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off missingPipeableSignature:off
+
+/** A snapshot lives 30 days from its creation or latest restore; one older than this is not trusted to still be there. */
+const MAX_AGE_MS = 29 * 24 * 60 * 60_000;
 
 /** Why a snapshot was taken. */
 export type SnapshotReason = "install" | "idle";
@@ -22,6 +28,8 @@ export type SnapshotRecord = {
   readonly size: number;
   /** Epoch milliseconds. */
   readonly takenAt: number;
+  /** When its 30-day lifetime last began: `takenAt`, or the latest restore. Epoch milliseconds. */
+  readonly refreshedAt: number;
   /** How long taking it took, scan included, in milliseconds. */
   readonly tookMs: number;
   /** The reference of the image the Container ran, which the snapshot is not portable beyond. */
@@ -34,14 +42,14 @@ export type ContainerSnapshotDeps = {
   readonly enabled: boolean;
   /** The GitHub token commands run with, to keep off the snapshot; none means nothing to scan for. */
   readonly secret: string | undefined;
-  /** How long a snapshot may take before it is given up on. */
-  readonly timeoutMs: number;
+  /** How long a snapshot, its scan included, may take before it is given up on. An install's is short: commands wait. */
+  readonly timeoutMs: Readonly<Record<SnapshotReason, number>>;
   /** The reference of the image a Container launched now would run. */
   readonly image: () => string | undefined;
   readonly running: () => boolean;
   /** The platform's `snapshotContainer`. */
   readonly snapshot: (name: string) => Promise<{ readonly id: string; readonly size: number }>;
-  /** The paths on the Container's disk whose content holds `secret`. */
+  /** The paths on the Container's disk whose content holds `secret`, in a few encodings. */
   readonly scan: (secret: string) => Promise<ReadonlyArray<string>>;
   readonly load: () => Promise<SnapshotRecord | undefined>;
   readonly save: (record: SnapshotRecord) => Promise<void>;
@@ -64,11 +72,14 @@ export class ContainerSnapshots {
     this.#deps = deps;
   }
 
-  /** Snapshot the running Container. Never rejects: a snapshot is an optimisation, and what failed is reported. */
-  take(reason: SnapshotReason): Promise<SnapshotOutcome> {
+  /**
+   * Snapshot the running Container, which runs `image`. Never rejects: a snapshot is an optimisation, and what failed is
+   * reported. A Container on an image other than the deployed one is not snapshotted.
+   */
+  take(reason: SnapshotReason, image: string | undefined): Promise<SnapshotOutcome> {
     if (this.#inflight !== undefined) return this.#inflight;
 
-    const inflight = this.#take(reason).finally(() => {
+    const inflight = this.#take(reason, image).finally(() => {
       this.#inflight = undefined;
     });
 
@@ -77,22 +88,32 @@ export class ContainerSnapshots {
     return inflight;
   }
 
-  /** The snapshot to start the next Container from, if there is one of the image it would run. */
-  async restorable(): Promise<{ readonly id: string } | undefined> {
+  /** The snapshot to start the next Container from, if there is a live one of the image it would run. */
+  async restorable(): Promise<
+    { readonly id: string; readonly image: string | undefined } | undefined
+  > {
     if (!this.#deps.enabled) return undefined;
 
     const record = await this.#deps.load();
 
     if (record === undefined) return undefined;
 
-    if (record.image !== this.#deps.image()) {
-      // A deploy changed the image: the snapshot is not portable to it, and a new one is taken from its Container.
+    // A deploy changed the image (the snapshot is not portable to it), or the snapshot is about to expire: a new one is
+    // taken from the next Container that starts from the image.
+    if (record.image !== this.#deps.image() || this.#deps.now() - record.refreshedAt > MAX_AGE_MS) {
       await this.#deps.clear();
 
       return undefined;
     }
 
-    return { id: record.id };
+    return { id: record.id, image: record.image };
+  }
+
+  /** A Container started from the kept snapshot, which begins its lifetime again. */
+  async restored(): Promise<void> {
+    const record = await this.#deps.load();
+
+    if (record !== undefined) await this.#deps.save({ ...record, refreshedAt: this.#deps.now() });
   }
 
   /** Drop the kept snapshot, because a Container started from it did not come up. */
@@ -100,34 +121,47 @@ export class ContainerSnapshots {
     return this.#deps.clear();
   }
 
-  async #take(reason: SnapshotReason): Promise<SnapshotOutcome> {
+  async #take(reason: SnapshotReason, image: string | undefined): Promise<SnapshotOutcome> {
     const deps = this.#deps;
 
     if (!deps.enabled || !deps.running()) return "skipped";
 
+    if (image !== deps.image()) {
+      deps.warn(
+        `Container snapshot (${reason}) skipped: the Container runs an older image than the deployed one, or its image is not known`,
+      );
+
+      return "skipped";
+    }
+
     const started = deps.now();
 
     try {
-      if (deps.secret !== undefined && deps.secret !== "") {
-        const leaks = await deps.scan(deps.secret);
+      const taken = await this.#within(reason, async () => {
+        if (deps.secret !== undefined && deps.secret !== "") {
+          const leaks = await deps.scan(deps.secret);
 
-        if (leaks.length > 0) {
-          deps.warn(
-            `Container snapshot skipped: the GitHub token is in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}`,
-          );
+          if (leaks.length > 0) {
+            deps.warn(
+              `Container snapshot skipped: the GitHub token is in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}`,
+            );
 
-          return "skipped";
+            return undefined;
+          }
         }
-      }
 
-      const taken = await this.#within(deps.snapshot(`workspace-${reason}`));
+        return deps.snapshot(`workspace-${reason}`);
+      });
+
+      if (taken === undefined) return "skipped";
 
       await deps.save({
         id: taken.id,
         size: taken.size,
         takenAt: deps.now(),
+        refreshedAt: deps.now(),
         tookMs: deps.now() - started,
-        image: deps.image(),
+        image,
         reason,
       });
 
@@ -145,9 +179,9 @@ export class ContainerSnapshots {
     }
   }
 
-  /** `work`, unless it takes longer than the timeout. */
-  #within<A>(work: Promise<A>): Promise<A> {
-    const { timeoutMs } = this.#deps;
+  /** `work`, unless it takes longer than the reason's time. */
+  #within<A>(reason: SnapshotReason, work: () => Promise<A>): Promise<A> {
+    const timeoutMs = this.#deps.timeoutMs[reason];
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const expired = new Promise<never>((_, reject) => {
@@ -156,22 +190,25 @@ export class ContainerSnapshots {
       }, timeoutMs);
     });
 
-    return Promise.race([work, expired]).finally(() => {
+    return Promise.race([work(), expired]).finally(() => {
       clearTimeout(timer);
     });
   }
 }
 
-/** The directories a snapshot holds that anything but the image writes to. Not `/workspace`, a separate mount. */
-const SCAN_ROOTS = ["/root", "/home", "/tmp", "/etc", "/var", "/opt", "/srv", "/usr/local", "/mnt"];
-
 /**
- * Looks for `secret` in `roots` (given as arguments, so only those that exist are searched) and lists the files that
- * hold it. The secret reaches grep as a pattern file on its standard input, read from the environment, so it is in no
- * command line.
+ * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` (one per line), anywhere on the Container's
+ * disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount (`/workspace`, which a
+ * snapshot does not hold). The patterns reach grep as a pattern file on its standard input, read from the environment, so
+ * they are in no command line.
  */
 const SCAN_SCRIPT = [
-  'roots=(); for d in "$@"; do [ -d "$d" ] && roots+=("$d"); done',
+  "roots=()",
+  "for d in /*; do",
+  '  case "$d" in /proc|/sys|/dev|/run|/workspace) continue ;; esac',
+  '  [ -L "$d" ] && continue',
+  '  [ -d "$d" ] && roots+=("$d")',
+  "done",
   'printf \'%s\\n\' "$CLOUDPID_SCAN_SECRET" | grep -rlF -f - -- "${roots[@]}"',
 ].join("\n");
 
@@ -179,7 +216,7 @@ const SCAN_SCRIPT = [
 export type ContainerExec = {
   readonly exec: (
     cmd: string[],
-    options?: { readonly env?: Record<string, string> },
+    options?: { readonly env?: Record<string, string>; readonly signal?: AbortSignal },
   ) => Promise<{
     readonly output: () => Promise<{
       readonly stdout: ArrayBuffer;
@@ -189,20 +226,44 @@ export type ContainerExec = {
   }>;
 };
 
+/** The forms of a token a tool writes: as it is, and base64 of it and of the `x-access-token:` basic-auth pair. */
+export const secretForms = (secret: string): ReadonlyArray<string> => [
+  secret,
+  btoa(secret),
+  btoa(`x-access-token:${secret}`),
+];
+
 /**
- * The files on the Container's disk whose content holds `secret`, found by a process of its own in the Container
- * (`ctx.container.exec`), so it needs no connection to computerd, which the idle stop's alarm may not have. Rejects when
- * the search could not be run to the end: a disk that could not be searched is not shown to be clean.
+ * The files on the Container's disk whose content holds `secret` (`secretForms`), found by a process of its own in the
+ * Container (`ctx.container.exec`), so it needs no connection to computerd, which the idle stop's alarm may not have.
+ * Rejects when the search could not be run to the end, or took longer than `timeoutMs` (the process is then killed): a
+ * disk that could not be searched is not shown to be clean.
  */
 export const scanContainerDisk = async (
   container: ContainerExec,
   secret: string,
+  timeoutMs = 30_000,
 ): Promise<ReadonlyArray<string>> => {
-  const process = await container.exec(["bash", "-c", SCAN_SCRIPT, "scan", ...SCAN_ROOTS], {
-    env: { CLOUDPID_SCAN_SECRET: secret },
+  const controller = new AbortController();
+
+  const process = await container.exec(["bash", "-c", SCAN_SCRIPT], {
+    env: { CLOUDPID_SCAN_SECRET: secretForms(secret).join("\n") },
+    signal: controller.signal,
   });
 
-  const { stdout, exitCode } = await process.output();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // Only while it runs: the signal of a process that has exited raises an error in the Durable Object.
+      controller.abort();
+      reject(new Error(`the scan for the token did not finish in ${timeoutMs / 1000} s`));
+    }, timeoutMs);
+  });
+
+  const { stdout, exitCode } = await Promise.race([process.output(), expired]).finally(() => {
+    clearTimeout(timer);
+  });
 
   // grep: 0 a file matched, 1 none did, 2 or more it could not read something.
   if (exitCode > 1) throw new Error(`the scan for the token ended with exit status ${exitCode}`);

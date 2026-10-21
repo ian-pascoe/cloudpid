@@ -11,6 +11,9 @@ type FakeState = {
   alarm: number | undefined;
   saved: number | undefined;
   stops: number;
+  snapshots: number;
+  /** Runs inside `snapshot`, while the Container's disk is being saved. */
+  duringSnapshot: (() => Promise<void>) | undefined;
   /** Set to make `setAlarm` reject once. */
   failNextSetAlarm: boolean;
   /** Runs inside `stop`, while the Container is being stopped. */
@@ -26,6 +29,8 @@ const open = (initialIdleMs = 15 * MINUTE) => {
     alarm: undefined,
     saved: undefined,
     stops: 0,
+    snapshots: 0,
+    duringSnapshot: undefined,
     failNextSetAlarm: false,
     duringStop: undefined,
   };
@@ -45,6 +50,10 @@ const open = (initialIdleMs = 15 * MINUTE) => {
         }
 
         state.alarm = at;
+      },
+      snapshot: async () => {
+        await state.duringSnapshot?.();
+        state.snapshots++;
       },
       stop: async () => {
         await state.duringStop?.();
@@ -240,6 +249,59 @@ describe("IdleStop", () => {
     state.duringStop = undefined;
     await fire(idle);
     expect(state.stops).toBe(2);
+  });
+
+  it("snapshots the Container before it stops it", async () => {
+    const { state, idle, fire } = open();
+
+    await idle.touch();
+    await fire(idle);
+
+    expect(state.snapshots).toBe(1);
+    expect(state.stops).toBe(1);
+  });
+
+  it("keeps the Container when a command arrives while its disk is being snapshotted, which stopping would kill", async () => {
+    const { state, idle, fire } = open();
+
+    await idle.touch();
+    state.duringSnapshot = async () => {
+      state.now += 5_000;
+      await idle.begin();
+    };
+
+    await fire(idle);
+
+    expect(state.snapshots).toBe(1);
+    expect(state.stops).toBe(0);
+
+    // The command is still running: the next alarm waits again, and stops nothing until it ends.
+    state.duringSnapshot = undefined;
+    await fire(idle);
+    expect(state.stops).toBe(0);
+
+    await idle.end();
+    await fire(idle);
+    expect(state.stops).toBe(1);
+  });
+
+  it("keeps the Container when a use arrives during the snapshot, and the next alarm counts from it", async () => {
+    const { state, idle, fire } = open();
+
+    await idle.touch();
+    state.duringSnapshot = async () => {
+      state.now += 5_000;
+      await idle.touch();
+    };
+
+    await fire(idle);
+
+    expect(state.stops).toBe(0);
+    expect(state.alarm).toBe(state.now + 15 * MINUTE);
+
+    state.duringSnapshot = undefined;
+    await fire(idle);
+    expect(state.stops).toBe(1);
   });
 
   it("keeps the Container, waiting again at each alarm, while a command runs", async () => {

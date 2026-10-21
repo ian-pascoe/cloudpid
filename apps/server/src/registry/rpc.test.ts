@@ -435,13 +435,15 @@ it("reads a Workspace's own settings from its object, not the Registry", async (
 
   const state = await withClient(
     Effect.flatMap(Registry, (registry) =>
-      registry.getWorkspaceSettings({ workspace: "cloudpid" }),
+      registry
+        .createWorkspace({ slug: "cloudpid" })
+        .pipe(Effect.andThen(registry.getWorkspaceSettings({ workspace: "cloudpid" }))),
     ),
     fake,
   );
 
   expect(state.settings).toEqual(DEFAULT_WORKSPACE_SETTINGS);
-  expect(fake.calls).toEqual(["readWorkspaceSettings"]);
+  expect(fake.calls).toEqual(["createWorkspace", "readWorkspaceSettings"]);
 });
 
 it("saves a Workspace's settings in its object and answers the state in force", async () => {
@@ -449,10 +451,14 @@ it("saves a Workspace's settings in its object and answers the state in force", 
 
   const state = await withClient(
     Effect.flatMap(Registry, (registry) =>
-      registry.updateWorkspaceSettings({
-        workspace: "cloudpid",
-        overrides: { instance: "standard-4", idleMinutes: 5 },
-      }),
+      registry.createWorkspace({ slug: "cloudpid" }).pipe(
+        Effect.andThen(
+          registry.updateWorkspaceSettings({
+            workspace: "cloudpid",
+            overrides: { instance: "standard-4", idleMinutes: 5 },
+          }),
+        ),
+      ),
     ),
     fake,
   );
@@ -464,12 +470,46 @@ it("saves a Workspace's settings in its object and answers the state in force", 
 it("answers overrides a Workspace refuses as a WorkspaceError with its message", async () => {
   const error = await withClient(
     Effect.flatMap(Registry, (registry) =>
-      registry.updateWorkspaceSettings({ workspace: "cloudpid", overrides: null }),
+      registry
+        .createWorkspace({ slug: "cloudpid" })
+        .pipe(
+          Effect.andThen(
+            registry.updateWorkspaceSettings({ workspace: "cloudpid", overrides: null }),
+          ),
+        ),
     ).pipe(Effect.flip),
   );
 
   expect(error).toBeInstanceOf(WorkspaceError);
   expect(error.message).toBe("instance: Expected a string");
+});
+
+it("refuses the settings of a Workspace the Registry does not list, and touches no object", async () => {
+  const fake = fakeRegistries();
+
+  const error = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      Effect.flip(
+        registry.updateWorkspaceSettings({ workspace: "typo", overrides: { idleMinutes: 5 } }),
+      ),
+    ),
+    fake,
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toContain("typo");
+  expect(fake.saved.size).toBe(0);
+  expect(fake.calls).not.toContain("writeWorkspaceSettings");
+
+  const read = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      Effect.flip(registry.getWorkspaceSettings({ workspace: "typo" })),
+    ),
+    fake,
+  );
+
+  expect(read.message).toContain("typo");
+  expect(fake.calls).not.toContain("readWorkspaceSettings");
 });
 
 it("lists the repos of a Workspace", async () => {

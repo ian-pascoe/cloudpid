@@ -194,7 +194,8 @@ const ContainerSettingsForm = ({
       <p className="text-xs text-muted-foreground">
         Applies the next time the Container starts: a running one keeps the size and idle time it
         started with. The Container's disk is saved when it stops, so its tools come back without
-        downloading.
+        downloading; a saved disk larger than a smaller size's disk cannot be restored there, and
+        the Container then starts from scratch.
       </p>
       {store.error !== null && (
         <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
@@ -285,9 +286,14 @@ const WorkspaceCard = ({
         <ContainerSettingsForm slug={slug} store={container} saved={container.state.settings} />
       )}
       {container.state === null && container.error !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {container.error}
-        </p>
+        <div className="flex items-center gap-3">
+          <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+            {container.error}
+          </p>
+          <Button type="button" variant="outline" size="sm" onClick={container.retry}>
+            Try again
+          </Button>
+        </div>
       )}
       {repos.error !== null && (
         <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">

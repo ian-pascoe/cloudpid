@@ -16,7 +16,15 @@ type Fake = {
   running: boolean;
   /** What the platform answers `start` with. */
   outcome: "launched" | "adopted" | "relaunched";
-  restorable: { id: string } | undefined;
+  restorable: { id: string; image: string | undefined } | undefined;
+  /** The image a launch would run now. */
+  image: string | undefined;
+  /** What `exitInfo` answers: the Container died, or null. */
+  exit: { reason: string; exitedAt: number } | null;
+  /** Makes `start` reject once for a snapshot. */
+  rejectSnapshotStart: boolean;
+  restores: number;
+  takeImages: Array<string | undefined>;
   record: LaunchRecord | undefined;
   starts: Spec[];
   restarts: Spec[];
@@ -33,6 +41,11 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
     running: false,
     outcome: "launched",
     restorable: undefined,
+    image: "img-1",
+    exit: null,
+    rejectSnapshotStart: false,
+    restores: 0,
+    takeImages: [],
     record: undefined,
     starts: [],
     restarts: [],
@@ -47,6 +60,10 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
     start: async (spec: Spec) => {
       state.starts.push(spec);
 
+      if (state.rejectSnapshotStart && spec.containerSnapshot !== undefined) {
+        throw new Error("snapshot not found");
+      }
+
       return { runtimeId: "r", clientSecret: "s", outcome: state.outcome };
     },
     restart: async (spec: Spec) => {
@@ -55,7 +72,7 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
       return { runtimeId: "r2", clientSecret: "s", outcome: "launched" as const };
     },
     status: async () => ({ running: state.running, exit: null }),
-    exitInfo: async () => null,
+    exitInfo: async () => state.exit,
     interceptOutboundHttp: async () => undefined,
     interceptAllOutboundHttp: async () => undefined,
     setInactivityTimeout: async () => undefined,
@@ -70,14 +87,19 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
   const make = () =>
     new ContainerLaunch({
       settings: async () => state.settings,
+      image: () => state.image,
       snapshots: {
         restorable: async () => state.restorable,
         forget: async () => {
           state.forgotten++;
           state.restorable = undefined;
         },
-        take: async (reason) => {
+        restored: async () => {
+          state.restores++;
+        },
+        take: async (reason, image) => {
           state.takes.push(reason);
+          state.takeImages.push(image);
 
           return state.takeOutcome;
         },
@@ -120,7 +142,7 @@ describe("a launch", () => {
   it("restores the snapshot when there is one, and then needs none after the install", async () => {
     const { state, container } = open();
 
-    state.restorable = { id: "snap-7" };
+    state.restorable = { id: "snap-7", image: "img-1" };
     await container.start(SPEC);
 
     expect(state.starts[0]?.containerSnapshot).toEqual({ id: "snap-7" });
@@ -194,11 +216,12 @@ describe("a launch", () => {
 });
 
 describe("a restart after the Container did not come up", () => {
-  it("starts it from the image again, on the same instance, and forgets the snapshot it was restored from", async () => {
+  it("starts it from the image again, on the same instance, and forgets the snapshot of a Container that died", async () => {
     const { state, container } = open({ instance: "standard-3" });
 
-    state.restorable = { id: "snap-bad" };
+    state.restorable = { id: "snap-bad", image: "img-1" };
     await container.start(SPEC);
+    state.exit = { reason: "exited with 1", exitedAt: 1 };
     await container.restart(SPEC);
 
     expect(state.restarts[0]?.instance).toBe("standard-3");
@@ -206,6 +229,19 @@ describe("a restart after the Container did not come up", () => {
     expect(state.forgotten).toBe(1);
     expect(state.record?.needsSnapshot).toBe(true);
     expect(state.warnings.join("\n")).toContain("snap-bad");
+  });
+
+  it("keeps the snapshot of a Container that was only slow to answer, and still starts from the image", async () => {
+    const { state, container } = open();
+
+    state.restorable = { id: "snap-slow", image: "img-1" };
+    await container.start(SPEC);
+    await container.restart(SPEC);
+
+    expect(state.restarts[0]?.containerSnapshot).toBeUndefined();
+    expect(state.forgotten).toBe(0);
+    expect(state.record?.needsSnapshot).toBe(true);
+    expect(state.record?.restoredFrom).toBeUndefined();
   });
 
   it("forgets nothing when the first start was from the image", async () => {
@@ -216,6 +252,108 @@ describe("a restart after the Container did not come up", () => {
 
     expect(state.forgotten).toBe(0);
     expect(state.restarts[0]?.containerSnapshot).toBeUndefined();
+  });
+});
+
+describe("a start the platform rejects for the snapshot", () => {
+  it("is retried once from the image, and the snapshot is forgotten", async () => {
+    const { state, container } = open({ instance: "standard-3" });
+
+    state.restorable = { id: "snap-gone", image: "img-1" };
+    state.rejectSnapshotStart = true;
+
+    await container.start(SPEC);
+
+    expect(state.starts).toHaveLength(2);
+    expect(state.starts[1]?.containerSnapshot).toBeUndefined();
+    expect(state.starts[1]?.instance).toBe("standard-3");
+    expect(state.forgotten).toBe(1);
+    expect(state.record).toMatchObject({ needsSnapshot: true, image: "img-1" });
+    expect(state.record?.restoredFrom).toBeUndefined();
+    expect(state.warnings.join("\n")).toContain("snap-gone");
+  });
+
+  it("is not retried when it was a start from the image that was rejected", async () => {
+    const { state, api } = open();
+
+    api.start = async () => {
+      throw new Error("no capacity");
+    };
+
+    await expect(
+      new ContainerLaunch({
+        settings: async () => state.settings,
+        image: () => state.image,
+        snapshots: {
+          restorable: async () => undefined,
+          restored: async () => undefined,
+          forget: async () => undefined,
+          take: async () => "taken",
+        },
+        load: async () => undefined,
+        save: async () => undefined,
+        running: () => false,
+        now: () => 1,
+        warn: () => undefined,
+      })
+        .wrap(api)
+        .start(SPEC),
+    ).rejects.toThrow("no capacity");
+  });
+});
+
+describe("the image a Container runs", () => {
+  it("is the deployed one for a launch from the image", async () => {
+    const { state, container } = open();
+
+    await container.start(SPEC);
+
+    expect(state.record?.image).toBe("img-1");
+  });
+
+  it("is the snapshot's for a restore, and the restore begins the snapshot's lifetime again", async () => {
+    const { state, container } = open();
+
+    state.restorable = { id: "snap-1", image: "img-1" };
+    await container.start(SPEC);
+
+    expect(state.record?.image).toBe("img-1");
+    expect(state.restores).toBe(1);
+  });
+
+  it("is the deployed one again after a restart from the image", async () => {
+    const { state, container } = open();
+
+    state.restorable = { id: "snap-1", image: "img-1" };
+    await container.start(SPEC);
+    state.image = "img-2";
+    await container.restart(SPEC);
+
+    expect(state.record?.image).toBe("img-2");
+  });
+
+  it("is what a snapshot of a Container that outlived a deploy is labelled with, not the deployed image", async () => {
+    const { state, container, make } = open();
+
+    await container.start(SPEC);
+    state.running = true;
+    // A deploy changed the image; the Container is still on img-1.
+    state.image = "img-2";
+
+    await make().snapshot("idle");
+
+    expect(state.takeImages).toEqual(["img-1"]);
+  });
+
+  it("is not known for a Container found running with no launch on record, which gets no snapshot", async () => {
+    const { state, container, launch } = open();
+
+    state.running = true;
+    state.outcome = "adopted";
+    await container.start(SPEC);
+
+    expect(await launch.snapshot("idle")).toBe("skipped");
+    expect(state.takes).toEqual([]);
   });
 });
 
@@ -243,7 +381,7 @@ describe("afterInstall", () => {
   it("leaves a Container restored from a snapshot to the idle stop's", async () => {
     const { state, container, launch } = open();
 
-    state.restorable = { id: "snap-1" };
+    state.restorable = { id: "snap-1", image: "img-1" };
     await container.start(SPEC);
     await launch.afterInstall();
 
