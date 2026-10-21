@@ -9,15 +9,7 @@ import { TodoTool } from "./todo/tool.ts";
 
 export const extensionName = "todo";
 
-export {
-  EMPTY_TODO_STATE,
-  type TodoState,
-  TodoDoc,
-  type TodoStatus,
-  type TodoTask,
-} from "./todo/doc.ts";
-
-export { MAX_TASKS, TODO_ACTIONS } from "./todo/list.ts";
+export { TodoDoc, type TodoState, type TodoStatus, type TodoTask } from "./todo/doc.ts";
 
 /** The one line pi-todo adds to the prompt's tools and its guideline, fixed text so it never moves the cache prefix. */
 const Guideline = section("todo", (input) =>
