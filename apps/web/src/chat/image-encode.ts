@@ -1,12 +1,13 @@
 // The browser's side of an attached image going inline (`image-budget.ts` fits them): decode the file, scale it to a
 // 1568 px long edge on a canvas and encode it as JPEG, or WebP (PNG where the browser cannot encode WebP) when it has
-// transparency. Encodings are kept per file and quality, so fitting a changed set of images again costs no new work;
-// the canvas is dropped after each encoding, so attached images do not each hold one.
+// transparency. Each file is decoded and drawn once, and the drawing kept until the file is sent or removed; encodings
+// are kept per file and quality, so fitting a changed set of images again costs no new work.
 
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off newPromise:off -- browser code with no Effect runtime: promises and canvas callbacks are the platform here.
 
 import * as Predicate from "effect/Predicate";
-import { type Encoded, fitLongEdge } from "./image-budget.ts";
+import { INLINE_IMAGE_BUDGET } from "@cloudpid/protocol";
+import { type Encoded, fitLongEdge, QUALITIES } from "./image-budget.ts";
 
 type Picture = ImageBitmap | HTMLImageElement;
 
@@ -85,7 +86,7 @@ const toBlob = (canvas: HTMLCanvasElement, type: string, quality: number) =>
     );
   });
 
-const base64Of = (blob: Blob) =>
+const base64Of = (blob: Blob): Promise<string> =>
   new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
 
@@ -101,62 +102,103 @@ const base64Of = (blob: Blob) =>
     reader.readAsDataURL(blob);
   });
 
-/** What is known of a file once decoded: whether it has transparency, and its encodings by quality. */
-type Known = { readonly transparent: boolean; readonly encodings: Map<number, Promise<Encoded>> };
+/**
+ * What is known of a file once decoded: its picture at the size the model gets, whether it has transparency, and its
+ * encodings by quality (a lossless PNG once, as it is the same at each).
+ */
+type Known = {
+  readonly canvas: HTMLCanvasElement;
+  readonly transparent: boolean;
+  readonly encodings: Map<number, Promise<Encoded>>;
+  png: Promise<Encoded> | undefined;
+};
 
 const known = new WeakMap<File, Promise<Known>>();
 
 /** Whether types of this kind can hold transparency at all; a JPEG never does. */
 const mayBeTransparent = (file: File) => file.type !== "image/jpeg";
 
+/** The base64 characters `bytes` bytes take. */
+const base64Length = (bytes: number) => Math.ceil(bytes / 3) * 4;
+
 /**
- * Decode `file` once, to learn whether it can be sent inline: rejects when the browser cannot read it (some HEIC, a
- * corrupt file).
+ * Decode `file` once and draw it at the size the model gets, to learn whether it can be sent inline: rejects when the
+ * browser cannot read it (some HEIC, a corrupt file). The drawing is kept for `encodeImage` until `releaseImage`.
  */
 export const probeImage = (file: File): Promise<Known> => {
   const earlier = known.get(file);
 
   if (earlier !== undefined) return earlier;
 
-  const probed = draw(file).then((canvas) => {
-    const transparent = mayBeTransparent(file) && hasTransparency(canvas);
-
-    canvas.width = 0;
-    canvas.height = 0;
-
-    return { transparent, encodings: new Map<number, Promise<Encoded>>() };
-  });
+  const probed = draw(file).then((canvas) => ({
+    canvas,
+    transparent: mayBeTransparent(file) && hasTransparency(canvas),
+    encodings: new Map<number, Promise<Encoded>>(),
+    png: undefined,
+  }));
 
   known.set(file, probed);
+  probed.catch(() => known.delete(file));
 
   return probed;
 };
 
-/** `file` for the model at `quality`: JPEG, or WebP (else PNG) when it has transparency. */
+/** Drop what was kept of `file` for encoding: its message was sent, or it was removed. */
+export const releaseImage = (file: File): void => {
+  const earlier = known.get(file);
+
+  known.delete(file);
+  void earlier?.then(
+    ({ canvas }) => {
+      canvas.width = 0;
+      canvas.height = 0;
+    },
+    () => {},
+  );
+};
+
+/**
+ * `file` for the model at `quality`: JPEG, or WebP (else PNG) when it has transparency. A GIF goes unchanged at the
+ * best quality when it fits the budget alone, so it stays animated; at the others it is a still like any picture.
+ */
 export const encodeImage = async (file: File, quality: number): Promise<Encoded> => {
-  const { transparent, encodings } = await probeImage(file);
-  const earlier = encodings.get(quality);
+  if (
+    file.type === "image/gif" &&
+    quality === QUALITIES[0] &&
+    base64Length(file.size) <= INLINE_IMAGE_BUDGET
+  ) {
+    return { mimeType: file.type, data: await base64Of(file) };
+  }
+
+  const image = await probeImage(file);
+  const earlier = image.encodings.get(quality);
 
   if (earlier !== undefined) return earlier;
 
   const encoded = (async () => {
-    const canvas = await draw(file);
+    if (image.png !== undefined) return image.png;
 
-    try {
-      let blob = await toBlob(canvas, transparent ? "image/webp" : "image/jpeg", quality);
+    const blob = await toBlob(
+      image.canvas,
+      image.transparent ? "image/webp" : "image/jpeg",
+      quality,
+    );
 
-      // A browser that cannot encode WebP gives PNG for it, as for any type it does not know.
-      if (transparent && blob.type !== "image/webp") blob = await toBlob(canvas, "image/png", 1);
+    // A browser that cannot encode WebP gives PNG for it, as for any type it does not know: lossless, so kept once.
+    if (image.transparent && blob.type !== "image/webp") {
+      image.png = toBlob(image.canvas, "image/png", 1).then(async (png) => ({
+        mimeType: png.type,
+        data: await base64Of(png),
+      }));
 
-      return { mimeType: blob.type, data: await base64Of(blob) };
-    } finally {
-      canvas.width = 0;
-      canvas.height = 0;
+      return image.png;
     }
+
+    return { mimeType: blob.type, data: await base64Of(blob) };
   })();
 
-  encodings.set(quality, encoded);
-  encoded.catch(() => encodings.delete(quality));
+  image.encodings.set(quality, encoded);
+  encoded.catch(() => image.encodings.delete(quality));
 
   return encoded;
 };

@@ -173,6 +173,12 @@ export const Composer = ({
   const attached = attachments.items.length > 0;
   // Attachments alone make a message.
   const hasMessage = canSend || attached;
+  // Why Send waits, shown under the box while no other note is.
+  const waiting = attached ? attachments.waiting : null;
+  const noteId = useId();
+
+  const shownNote: Note | null =
+    note ?? (waiting === null ? null : { tone: "info", text: waiting });
 
   // The Session's commands run on this composer's conversation; what they did shows under the box.
   const session = useMemo(
@@ -339,7 +345,10 @@ export const Composer = ({
     return true;
   };
 
-  /** Send what is typed with the Attachments, once they are all uploaded and fitted; else say what it waits for. */
+  /**
+   * Send what is typed with the Attachments, once they are all uploaded and fitted; else say what it waits for. Should
+   * the Session refuse the message, its text and Attachments come back to the composer, with why under it.
+   */
   const sendAttached = (whenBusy: WhenBusy) => {
     const sent = attachments.sent();
 
@@ -349,10 +358,27 @@ export const Composer = ({
       return;
     }
 
-    connection.submit(outgoingMessage(text, sent), whenBusy, conversationId);
+    const typed = text;
+    const held = attachments.hold();
+
     aui.composer.setText("");
-    attachments.clear();
     setNote(null);
+
+    connection.submit(outgoingMessage(typed, sent), whenBusy, conversationId, (failure) => {
+      if (failure === null) {
+        held.release();
+
+        return;
+      }
+
+      held.restore();
+
+      // What was typed since goes after it, so nothing is lost.
+      const since = aui.composer.getState().text;
+
+      aui.composer.setText(since.trim() === "" ? typed : `${typed}\n\n${since}`);
+      setNote({ tone: "error", text: failure });
+    });
   };
 
   const queue = () => {
@@ -574,11 +600,12 @@ export const Composer = ({
               ) : (
                 <button
                   type="submit"
-                  disabled={!hasMessage || busy || (attached && attachments.waiting !== null)}
+                  disabled={!hasMessage || busy || waiting !== null}
                   aria-label={running ? "Steer" : "Send"}
+                  aria-describedby={waiting === null ? undefined : noteId}
                   title={
-                    attached && attachments.waiting !== null
-                      ? attachments.waiting
+                    waiting !== null
+                      ? waiting
                       : running
                         ? "Steer: joins the run after its tool calls (Enter)"
                         : "Send (Enter)"
@@ -595,15 +622,16 @@ export const Composer = ({
           </div>
         </div>
       </div>
-      {note !== null && (
+      {shownNote !== null && (
         <p
-          role={note.tone === "error" ? "alert" : "status"}
+          id={noteId}
+          role={shownNote.tone === "error" ? "alert" : "status"}
           className={cn(
             "px-1 text-xs",
-            note.tone === "error" ? "text-destructive" : "text-muted-foreground",
+            shownNote.tone === "error" ? "text-destructive" : "text-muted-foreground",
           )}
         >
-          {note.text}
+          {shownNote.text}
         </p>
       )}
     </ComposerPrimitive.Root>

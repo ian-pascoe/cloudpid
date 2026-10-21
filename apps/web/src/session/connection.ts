@@ -179,6 +179,8 @@ interface PendingSubmit {
   readonly conversationId: number | undefined;
   /** Whether it went out on the current socket. */
   sent: boolean;
+  /** Tell whoever submitted it how it ended: null once the Session took it, else why it did not. */
+  readonly settle: ((failure: string | null) => void) | undefined;
 }
 
 const decodeServerMessage = Schema.decodeOption(ServerMessageJson);
@@ -312,8 +314,15 @@ export class SessionConnection {
    * Submit `message`: text, or an input with images and what its lane shows. Idle, it starts a Run; busy, `steer`
    * joins the running Run at its next boundary and `followUp` waits for the next Run. Held until the watch is answered
    * (a submit sent before it can land before the snapshot), and sent again after a reconnect if no answer came.
+   * `onOutcome` hears null once the Session took it, or why it refused it, which it then shows itself: the refusal is not
+   * the view's `failure`.
    */
-  submit(message: string | OutgoingMessage, whenBusy: WhenBusy, conversationId?: number): void {
+  submit(
+    message: string | OutgoingMessage,
+    whenBusy: WhenBusy,
+    conversationId?: number,
+    onOutcome?: (failure: string | null) => void,
+  ): void {
     const { input, display } = Predicate.isString(message)
       ? { input: message, display: message }
       : message;
@@ -326,6 +335,7 @@ export class SessionConnection {
       whenBusy,
       conversationId: this.isRoot(conversationId) ? undefined : conversationId,
       sent: false,
+      settle: onOutcome,
     });
     this.flush();
 
@@ -669,14 +679,15 @@ export class SessionConnection {
         } else if (failed !== undefined) {
           this.threadFailed(failed.conversationId, message.message);
         } else if (message.id !== undefined) {
-          const conversationId = this.pending.find(
-            (submit) => submit.commandId === message.id,
-          )?.conversationId;
+          const submit = this.pending.find((pending) => pending.commandId === message.id);
 
-          this.answered(message.id, undefined);
+          this.answered(message.id, undefined, message.message);
 
-          if (conversationId === undefined) this.update({ failure: message.message });
-          else this.update({}, conversationId, { failure: message.message });
+          // A submitter told how it ended shows the refusal itself.
+          if (submit?.settle !== undefined) return;
+
+          if (submit?.conversationId === undefined) this.update({ failure: message.message });
+          else this.update({}, submit.conversationId, { failure: message.message });
         } else if (message.conversationId !== undefined) {
           // The watch ended and is dropped: the root's starts over, after the backoff, to resume it.
           if (message.conversationId === this.root) this.lost(message.message);
@@ -730,7 +741,10 @@ export class SessionConnection {
     for (let index = this.pending.length - 1; index >= 0; index -= 1) {
       const submit = this.pending[index];
 
-      if (submit?.conversationId === conversationId && !submit.sent) this.pending.splice(index, 1);
+      if (submit?.conversationId === conversationId && !submit.sent) {
+        this.pending.splice(index, 1);
+        submit.settle?.("The conversation was closed before the message was sent.");
+      }
     }
 
     if (this.opened) {
@@ -757,14 +771,22 @@ export class SessionConnection {
     this.update({}, conversationId);
   }
 
-  /** A command's answer: a submit that has one is done, and a successful one has a submission ID to remember. */
-  private answered(commandId: string, submissionId: string | undefined): void {
+  /**
+   * A command's answer: a submit that has one is done, and a successful one has a submission ID to remember; `failure`
+   * is why the Session refused it.
+   */
+  private answered(
+    commandId: string,
+    submissionId: string | undefined,
+    failure: string | null = null,
+  ): void {
     const index = this.pending.findIndex((submit) => submit.commandId === commandId);
     const submit = this.pending[index];
 
     if (submit === undefined) return;
 
     this.pending.splice(index, 1);
+    submit.settle?.(failure);
 
     if (submissionId !== undefined) {
       this.texts.set(submissionId, submit.text);

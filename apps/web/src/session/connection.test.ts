@@ -457,6 +457,42 @@ describe("a Session connection", () => {
     ).toEqual([]);
   });
 
+  it("tells whoever submitted a message how it ended (taken, or refused and why), and leaves showing it to them", () => {
+    const { connection, latest } = setup();
+    const outcomes: Array<string | null> = [];
+
+    watching(latest());
+    connection.submit("taken", "followUp", undefined, (failure) => outcomes.push(failure));
+    latest().say({
+      type: "result",
+      id: latest().commands().at(-1)?.id,
+      result: { submissionId: "sub-1" },
+    });
+
+    connection.submit("too big", "followUp", undefined, (failure) => outcomes.push(failure));
+    latest().say({ type: "error", id: latest().commands().at(-1)?.id, message: "Too big" });
+
+    expect(outcomes).toEqual([null, "Too big"]);
+    expect(connection.getState().failure).toBeNull();
+  });
+
+  it("tells nobody of a submit sent again after a reconnect until it is answered", () => {
+    const { connection, latest } = setup();
+    const outcomes: Array<string | null> = [];
+
+    watching(latest());
+    connection.submit("hi", "followUp", undefined, (failure) => outcomes.push(failure));
+
+    // A reconnect sends it again.
+    latest().drop();
+    vi.advanceTimersByTime(60_000);
+    watching(latest());
+    expect(outcomes).toEqual([]);
+
+    latest().say({ type: "error", id: latest().commands().at(-1)?.id, message: "busy" });
+    expect(outcomes).toEqual(["busy"]);
+  });
+
   it("ignores the heartbeat's pong and text it cannot read", () => {
     const { connection, latest } = setup();
 

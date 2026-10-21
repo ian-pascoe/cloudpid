@@ -1,14 +1,16 @@
-// A composer's Attachments: each file uploads as soon as it is attached, with its progress; removing one before it is
-// sent stops its upload or deletes the stored file; and the pictures among them are fitted, while the owner writes, into
-// what one message may hold (`image-budget.ts`), so each tile says before sending whether its image goes inline.
+// A composer's Attachments: each file uploads once it is attached, one at a time in the order they came, with its
+// progress; removing one before it is sent stops its upload or deletes the stored file; and the pictures among them are
+// fitted, while the owner writes, into what one message may hold (`image-budget.ts`), so each tile says before sending
+// whether its image goes inline.
 
 // @effect-diagnostics asyncFunction:off preferEffectArray:off cryptoRandomUUID:off -- browser code in a React app with no Effect runtime: native arrays, promises and crypto are the platform here.
 
 import type { StoredAttachment } from "@cloudpid/protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isPictureType, requestedName, type SentAttachment } from "./attachments.ts";
-import { type Fit, fitImages } from "./image-budget.ts";
-import { encodeImage, probeImage } from "./image-encode.ts";
+import { MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
+import { type Fit, fitImages, UNPREPARED } from "./image-budget.ts";
+import { encodeImage, probeImage, releaseImage } from "./image-encode.ts";
 import { removeAttachment, type Upload, UploadAborted, uploadAttachment } from "./uploads.ts";
 
 export type AttachmentStatus = "uploading" | "uploaded" | "failed";
@@ -43,13 +45,26 @@ export type Attachments = {
   readonly waiting: string | null;
   /** The Attachments as the message sends them; undefined while `waiting`. */
   readonly sent: () => readonly SentAttachment[] | undefined;
-  /** Forget them once the message is sent; their files stay in the Workspace. */
-  readonly clear: () => void;
+  /**
+   * Take them off the composer while their message is submitted: `restore` puts them back when the Session refuses it,
+   * and `release` forgets them once it took it (their files stay in the Workspace).
+   */
+  readonly hold: () => Held;
 };
+
+/** Attachments taken off the composer by `hold`. */
+export type Held = { readonly restore: () => void; readonly release: () => void };
 
 const UNREADABLE = "This browser cannot read it; it goes as a file only.";
 
-const UNPREPARED = "The image could not be prepared for the model; it goes as a file only.";
+const TOO_BIG = "Too big to attach.";
+
+/** Let go of what the page keeps of `item`: its thumbnail's link and its drawing for the model. */
+const forget = (item: AttachmentItem) => {
+  if (item.preview !== undefined) URL.revokeObjectURL(item.preview);
+
+  if (item.picture) releaseImage(item.file);
+};
 
 /** The Attachments of a composer writing to Session `sessionId`. */
 export const useAttachments = (sessionId: string | null): Attachments => {
@@ -58,7 +73,11 @@ export const useAttachments = (sessionId: string | null): Attachments => {
   // The pictures `fits` was made for: a set that changed since is being fitted again.
   const [fitted, setFitted] = useState("");
   const current = useRef(items);
-  const uploads = useRef(new Map<string, Upload>());
+  // Attachments held off the composer while their message is submitted: their names are still taken.
+  const held = useRef(new Set<AttachmentItem>());
+  // The one upload under way, and the Attachments waiting their turn.
+  const uploading = useRef<{ readonly id: string; readonly upload: Upload } | null>(null);
+  const queued = useRef<AttachmentItem[]>([]);
 
   current.current = items;
 
@@ -66,32 +85,48 @@ export const useAttachments = (sessionId: string | null): Attachments => {
     setItems((all) => all.map((item) => (item.id === id ? { ...item, ...change } : item)));
   }, []);
 
-  /** Wait for `upload` of Attachment `id`, and note how it ended. */
-  const settle = useCallback(
-    async (id: string, upload: Upload) => {
-      try {
-        const stored = await upload.done;
+  /** Upload the next Attachment waiting, unless one is uploading; once it ends, note how, and start the one after. */
+  const startNext = useCallback(
+    function startNext() {
+      if (uploading.current !== null || sessionId === null) return;
 
-        update(id, { status: "uploaded", progress: 1, stored });
-      } catch (error) {
-        if (!(error instanceof UploadAborted)) {
-          update(id, {
-            status: "failed",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      } finally {
-        uploads.current.delete(id);
-      }
+      const item = queued.current.shift();
+
+      if (item === undefined) return;
+
+      const upload = uploadAttachment(sessionId, item.name, item.file, (progress) => {
+        update(item.id, { progress });
+      });
+
+      uploading.current = { id: item.id, upload };
+
+      void upload.done
+        .then(
+          (stored) => {
+            update(item.id, { status: "uploaded", progress: 1, stored });
+          },
+          (error: Error) => {
+            if (error instanceof UploadAborted) return;
+
+            update(item.id, {
+              status: "failed",
+              error: error.message,
+            });
+          },
+        )
+        .finally(() => {
+          uploading.current = null;
+          startNext();
+        });
     },
-    [update],
+    [sessionId, update],
   );
 
   const add = useCallback(
     (files: Iterable<File>) => {
       if (sessionId === null) return;
 
-      const taken = current.current.flatMap((item) =>
+      const taken = [...current.current, ...held.current].flatMap((item) =>
         item.stored === undefined ? [item.name] : [item.name, item.stored.name],
       );
 
@@ -116,17 +151,10 @@ export const useAttachments = (sessionId: string | null): Attachments => {
       }
 
       setItems((all) => [...all, ...added]);
-
-      for (const item of added) {
-        const upload = uploadAttachment(sessionId, item.name, item.file, (progress) => {
-          update(item.id, { progress });
-        });
-
-        uploads.current.set(item.id, upload);
-        void settle(item.id, upload);
-      }
+      queued.current.push(...added);
+      startNext();
     },
-    [sessionId, settle, update],
+    [sessionId, startNext],
   );
 
   const remove = useCallback(
@@ -135,36 +163,59 @@ export const useAttachments = (sessionId: string | null): Attachments => {
 
       if (item === undefined) return;
 
-      uploads.current.get(id)?.abort();
-      uploads.current.delete(id);
+      queued.current = queued.current.filter((candidate) => candidate.id !== id);
 
-      if (item.stored !== undefined && sessionId !== null) {
+      const active = uploading.current;
+
+      if (active?.id === id && sessionId !== null) {
+        active.upload.abort();
+        // An upload that ended before the abort could stop it stored the file: it is deleted once its name is known.
+        void active.upload.done.then(
+          (stored) => removeAttachment(sessionId, stored.name),
+          () => {},
+        );
+      } else if (item.stored !== undefined && sessionId !== null) {
         void removeAttachment(sessionId, item.stored.name);
       }
 
-      if (item.preview !== undefined) URL.revokeObjectURL(item.preview);
+      forget(item);
 
       setItems((all) => all.filter((candidate) => candidate.id !== id));
     },
     [sessionId],
   );
 
-  const clear = useCallback(() => {
-    for (const item of current.current) {
-      if (item.preview !== undefined) URL.revokeObjectURL(item.preview);
-    }
+  const hold = useCallback((): Held => {
+    const taken = current.current;
+
+    for (const item of taken) held.current.add(item);
 
     setItems([]);
+
+    const unhold = () => {
+      for (const item of taken) held.current.delete(item);
+    };
+
+    return {
+      restore: () => {
+        unhold();
+        setItems((all) => [...taken, ...all]);
+      },
+      release: () => {
+        unhold();
+
+        for (const item of taken) forget(item);
+      },
+    };
   }, []);
 
   // Leaving the page stops what is still uploading; what was stored stays, as a sent file does.
   useEffect(
     () => () => {
-      for (const upload of uploads.current.values()) upload.abort();
+      queued.current = [];
+      uploading.current?.upload.abort();
 
-      for (const item of current.current) {
-        if (item.preview !== undefined) URL.revokeObjectURL(item.preview);
-      }
+      for (const item of [...current.current, ...held.current]) forget(item);
     },
     [],
   );
@@ -180,6 +231,12 @@ export const useAttachments = (sessionId: string | null): Attachments => {
       const readable: AttachmentItem[] = [];
 
       for (const item of shown) {
+        if (item.file.size > MAX_ATTACHMENT_BYTES) {
+          next.set(item.id, { kind: "file", reason: TOO_BIG });
+
+          continue;
+        }
+
         try {
           await probeImage(item.file);
           readable.push(item);
@@ -248,5 +305,5 @@ export const useAttachments = (sessionId: string | null): Attachments => {
     return message;
   }, [waiting, items, fits]);
 
-  return { items, fits, add, remove, waiting, sent, clear };
+  return { items, fits, add, remove, waiting, sent, hold };
 };

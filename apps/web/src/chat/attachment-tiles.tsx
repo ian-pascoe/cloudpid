@@ -1,6 +1,6 @@
 // The composer's Attachments, above its input: a picture as a 64 px thumbnail, any other file as a row with its name and
-// size; each with its upload's progress and a labelled remove button. A tile that has something to say (the upload
-// failed, or the picture goes as a file only) widens to say it.
+// size; each with its upload's progress and a labelled remove button, which takes a 44 px touch. A tile that has
+// something to say (the upload failed, the picture goes as a file only, a GIF goes as a still) widens to say it.
 
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
 
@@ -22,19 +22,30 @@ const Progress = ({ item }: { item: AttachmentItem }) =>
       className="absolute inset-x-0 bottom-0 h-1 overflow-hidden rounded-b-md bg-muted"
     >
       <div
-        className="h-full bg-primary motion-safe:transition-[width] motion-safe:duration-150"
+        className="h-full bg-muted-foreground motion-safe:transition-[width] motion-safe:duration-150"
         style={{ width: `${Math.max(item.progress, 0.04) * 100}%` }}
       />
     </div>
   ) : null;
 
-/** What the tile says besides the name: why it failed, why its picture goes as a file, else its size. */
+/**
+ * What the tile says besides the name: why it failed, why its picture goes as a file, that a GIF goes without its
+ * animation, else its size.
+ */
 const noteOf = (item: AttachmentItem, fit: Fit | undefined) => {
   if (item.status === "failed") {
     return { tone: "error", text: item.error ?? "It did not upload." } as const;
   }
 
   if (fit?.kind === "file") return { tone: "info", text: fit.reason } as const;
+
+  if (
+    item.file.type === "image/gif" &&
+    fit?.kind === "inline" &&
+    fit.encoded.mimeType !== "image/gif"
+  ) {
+    return { tone: "info", text: "Too big to animate; the model sees a still." } as const;
+  }
 
   return undefined;
 };
@@ -93,7 +104,11 @@ const Tile = ({
             {name}
           </p>
           {note === undefined ? (
-            <p className="text-xs text-muted-foreground tabular">
+            // The progress bar says how far an upload is; its share here would be read out at every step.
+            <p
+              aria-hidden={item.status === "uploading"}
+              className="text-xs text-muted-foreground tabular"
+            >
               {item.status === "uploading"
                 ? `${Math.round(item.progress * 100)}% of ${formatSize(item.file.size)}`
                 : formatSize(item.file.size)}
@@ -116,6 +131,7 @@ const Tile = ({
           )}
         </div>
       )}
+      {/* A 44 px button around the 20 px circle it shows; a fine pointer hits the circle only. */}
       <button
         type="button"
         aria-label={`Remove ${name}`}
@@ -124,11 +140,13 @@ const Tile = ({
           onRemove(item.id);
         }}
         className={cn(
-          "touch-target absolute inline-flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
-          thumbnailOnly ? "-top-1.5 -right-1.5" : "top-1.5 right-1.5",
+          "group absolute z-10 inline-flex size-11 items-center justify-center text-muted-foreground outline-none pointer-fine:pointer-events-none",
+          thumbnailOnly ? "-top-[18px] -right-[18px]" : "-top-1.5 -right-1.5",
         )}
       >
-        <X className="size-3" aria-hidden />
+        <span className="pointer-events-auto inline-flex size-5 items-center justify-center rounded-full border bg-background transition-colors group-hover:bg-accent group-hover:text-accent-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring">
+          <X className="size-3" aria-hidden />
+        </span>
       </button>
       <Progress item={item} />
     </li>
@@ -145,7 +163,12 @@ export const AttachmentTiles = ({
   onRemove: (id: string) => void;
 }) =>
   items.length === 0 ? null : (
-    <ul aria-label="Attachments" className="flex flex-wrap gap-2 px-2.5 pt-2.5">
+    <ul
+      aria-label="Attachments"
+      aria-live="polite"
+      aria-relevant="additions"
+      className="flex flex-wrap gap-2 px-2.5 pt-2.5"
+    >
       {items.map((item) => (
         <Tile key={item.id} item={item} fit={fits.get(item.id)} onRemove={onRemove} />
       ))}

@@ -1,7 +1,14 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off -- tests of a Promise-based module.
 
 import { describe, expect, it } from "vitest";
-import { type Encoder, fitImages, fitLongEdge, MAX_IMAGE_EDGE, QUALITIES } from "./image-budget.ts";
+import {
+  type Encoder,
+  fitImages,
+  fitLongEdge,
+  MAX_IMAGE_EDGE,
+  QUALITIES,
+  UNPREPARED,
+} from "./image-budget.ts";
 
 /** A fake image: its name, and how many base64 characters it encodes to at full quality. */
 type Fake = { readonly name: string; readonly size: number };
@@ -98,6 +105,33 @@ describe("fitImages", () => {
     );
 
     expect(new Set(calls).size).toBe(calls.length);
+  });
+
+  it("sends an image that fails to encode as a file only, and fits the others without it", async () => {
+    const { encode: fake } = fakeEncoder();
+
+    // `broken` encodes at the best quality, then fails at the next, once the three are over the budget together.
+    const encode: Encoder<Fake> = async (image, quality) => {
+      if (image.name === "broken" && quality < top) throw new Error("No canvas");
+
+      return fake(image, quality);
+    };
+
+    const fits = await fitImages(
+      [
+        { name: "a", size: 400 },
+        { name: "broken", size: 400 },
+        { name: "b", size: 400 },
+      ],
+      encode,
+      1_000,
+    );
+
+    expect(summary(fits)).toEqual([
+      `inline ${400 * top}`,
+      `file: ${UNPREPARED}`,
+      `inline ${400 * top}`,
+    ]);
   });
 
   it("fits nothing to an empty list, and drops everything for no budget", async () => {
