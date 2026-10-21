@@ -29,6 +29,7 @@ import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
 import { useConnection, useSessionId } from "./session-context.tsx";
 import { useAttachments } from "./use-attachments.ts";
 import { useCatalog } from "./use-catalog.ts";
+import { useFileSearch } from "./use-file-search.ts";
 import { useFileDrop } from "./use-file-drop.ts";
 
 const Lane = ({
@@ -109,8 +110,10 @@ const roundButton =
  *
  * A `/` at the start of the message opens a menu of the Slash commands: `commands`, the ones of any conversation
  * (`/stop`, `/stop-all`, `/copy`) and the Session's (`/compact`, `/rollover`, `/todo`, `/export`, run on this
- * conversation), then the Prompt templates and Skills of the conversation's directory; `$` opens one of the Skills. A
- * submitted `/name` the composer does not know is sent as written, for the Session to expand or the model to read.
+ * conversation), then the Prompt templates and Skills of the conversation's directory; `$` opens one of the Skills, and
+ * `@` one of the files and folders of the conversation's directory, picked as `@path` text (a folder keeps the menu open
+ * to narrow into it). A submitted `/name` the composer does not know is sent as written, for the Session to expand or
+ * the model to read.
  *
  * Files attach with the Attach button, a paste, or a drop anywhere on `dropZone` (the thread), and upload at once
  * (`use-attachments.ts`). A message with Attachments is sent by the composer itself, once every one is uploaded and every
@@ -267,12 +270,23 @@ export const Composer = ({
 
   const trigger = focused ? detectTrigger(text, caret) : null;
 
+  // The `@` menu asks the Session for the files that match while it is open.
+  const fileQuery = trigger?.kind === "file" && trigger.start !== dismissed ? trigger.query : null;
+
+  const files = useFileSearch(connection, conversationId, fileQuery);
+
   const completion =
     trigger === null || trigger.start === dismissed
       ? null
-      : completionFor(trigger, allCommands, catalog ?? undefined);
+      : completionFor(trigger, allCommands, catalog ?? undefined, files);
 
-  const open = trigger !== null && completion !== null && completion.entries.length > 0;
+  const open =
+    trigger !== null &&
+    completion !== null &&
+    (completion.entries.length > 0 || completion.notice !== undefined);
+
+  // The highlighted row, within the rows there are: the `@` menu's change when the Session answers.
+  const active = Math.max(0, Math.min(highlighted, (completion?.entries.length ?? 0) - 1));
 
   // A new menu, or a changed query, starts from its first row.
   const menuKey = trigger === null ? "" : `${trigger.kind}:${trigger.start}:${trigger.query}`;
@@ -327,7 +341,11 @@ export const Composer = ({
     if (entry === undefined || trigger === null) return;
 
     if (entry.pick.kind === "run") void run(entry.pick.command, entry.pick.args);
-    else edit(replaceTrigger(text, trigger, entry.pick.text));
+    else {
+      edit(
+        replaceTrigger(text, trigger, entry.pick.text, { space: entry.pick.continues !== true }),
+      );
+    }
   };
 
   /**
@@ -419,23 +437,27 @@ export const Composer = ({
     if (open) {
       const count = completion.entries.length;
 
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        setHighlighted((highlighted + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
-
-        return;
-      }
-
-      if ((event.key === "Enter" && !event.shiftKey && !event.altKey) || event.key === "Tab") {
-        event.preventDefault();
-        pick(highlighted);
-
-        return;
-      }
-
       if (event.key === "Escape") {
         event.preventDefault();
         setDismissed(trigger.start);
+
+        return;
+      }
+
+      // A menu with only its notice has nothing to pick: the keys type and send as usual.
+      if (count > 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+        event.preventDefault();
+        setHighlighted((active + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
+
+        return;
+      }
+
+      if (
+        count > 0 &&
+        ((event.key === "Enter" && !event.shiftKey && !event.altKey) || event.key === "Tab")
+      ) {
+        event.preventDefault();
+        pick(active);
 
         return;
       }
@@ -460,7 +482,7 @@ export const Composer = ({
     setCaret(element.selectionStart);
   };
 
-  const hints = "/ commands · $ skills";
+  const hints = "/ commands · $ skills · @ files";
 
   const placeholder = running
     ? "Steer the run, or queue a follow-up…"
@@ -482,7 +504,8 @@ export const Composer = ({
             id={menuId}
             label={completion.label}
             sections={completion.sections}
-            highlighted={highlighted}
+            notice={completion.notice}
+            highlighted={active}
             onHighlight={setHighlighted}
             onPick={pick}
           />
@@ -510,7 +533,9 @@ export const Composer = ({
             aria-autocomplete="list"
             aria-controls={open ? menuId : undefined}
             aria-expanded={open}
-            aria-activedescendant={open ? rowId(menuId, highlighted) : undefined}
+            aria-activedescendant={
+              open && completion.entries.length > 0 ? rowId(menuId, active) : undefined
+            }
             onKeyDown={onKeyDown}
             onChange={(event) => {
               setNote(null);

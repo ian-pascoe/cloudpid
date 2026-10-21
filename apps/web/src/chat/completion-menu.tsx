@@ -23,12 +23,14 @@ export const rowId = (menuId: string, index: number): string => `${menuId}-row-$
 /**
  * The composer's completion menu: a listbox that rises from the composer's top edge, at its width. The input keeps the
  * focus throughout (the owner types on while it is open), so a row is picked with the keys the composer handles, or a
- * click that does not take the focus from the input.
+ * click that does not take the focus from the input. With no rows, it shows `notice` (searching, nothing found) as a
+ * row that cannot be picked.
  */
 export const CompletionMenu = ({
   id,
   label,
   sections,
+  notice,
   highlighted,
   onHighlight,
   onPick,
@@ -37,6 +39,8 @@ export const CompletionMenu = ({
   /** What the list holds, for assistive technology: "Commands", "Skills", "Files". */
   label: string;
   sections: readonly CompletionSection[];
+  /** What the menu says in place of rows when it has none. */
+  notice?: string | undefined;
   /** The highlighted row, counted across sections. */
   highlighted: number;
   onHighlight: (index: number) => void;
@@ -62,6 +66,16 @@ export const CompletionMenu = ({
         "motion-safe:transition-[opacity,translate] motion-safe:duration-150 motion-safe:ease-out motion-safe:starting:translate-y-1 motion-safe:starting:opacity-0",
       )}
     >
+      {sections.length === 0 && notice !== undefined && (
+        <div
+          role="option"
+          aria-disabled
+          aria-selected={false}
+          className="px-2.5 py-1.5 text-xs text-muted-foreground select-none pointer-coarse:flex pointer-coarse:min-h-11 pointer-coarse:items-center"
+        >
+          {notice}
+        </div>
+      )}
       {sections.map((section) => (
         <div key={section.label} role="group" aria-label={section.label}>
           <div

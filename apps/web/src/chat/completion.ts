@@ -85,18 +85,22 @@ export const detectTrigger = (text: string, caret: number): Trigger | null => {
 /** Text, and where the caret goes in it. */
 export type Edited = { readonly text: string; readonly caret: number };
 
-/** The text with `pick` and a space in place of the trigger's span, and where the caret goes: after the space. */
+/**
+ * The text with `pick` and a space in place of the trigger's span, and where the caret goes: after the space. Without
+ * the space (`space: false`, for a folder), the caret stays right after the pick, in the trigger, which stays open.
+ */
 export const replaceTrigger = (
   text: string,
   span: Pick<Trigger, "start" | "end">,
   pick: string,
+  { space = true }: { readonly space?: boolean } = {},
 ): Edited => {
   const after = text.slice(span.end);
-  const spaced = after.startsWith(" ") ? pick : `${pick} `;
+  const spaced = !space || after.startsWith(" ") ? pick : `${pick} `;
 
   return {
     text: `${text.slice(0, span.start)}${spaced}${after}`,
-    caret: span.start + pick.length + 1,
+    caret: span.start + pick.length + (space ? 1 : 0),
   };
 };
 

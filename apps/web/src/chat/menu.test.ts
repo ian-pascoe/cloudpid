@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { ComposerCommand } from "./commands.ts";
 import { detectTrigger } from "./completion.ts";
-import { completionFor } from "./menu.ts";
+import { completionFor, type FileResults } from "./menu.ts";
 
 const run = () => null;
 
@@ -97,5 +97,73 @@ describe("the composer's menu", () => {
       "Commands",
     ]);
     expect(completionFor(detectTrigger("$", 1)!, commands)).toBeNull();
+  });
+});
+
+describe("the @ menu", () => {
+  const found = (query: string, paths: readonly string[]): FileResults => ({
+    query,
+    paths,
+    searching: false,
+    failed: false,
+  });
+
+  /** The menu for `text` with the caret at its end and `files` as the Session answered: its rows' labels and notice. */
+  const filesMenu = (text: string, files: FileResults | undefined) => {
+    const completion = completionFor(detectTrigger(text, text.length)!, commands, catalog, files);
+
+    return {
+      rows: completion?.entries.map((entry) => entry.label),
+      notice: completion?.notice,
+    };
+  };
+
+  it("lists the files and folders the Session answered for the query, inserting @path", () => {
+    const files = found("src", ["src/", "src/app.ts"]);
+
+    expect(filesMenu("see @src", files)).toEqual({
+      rows: ["src/", "src/app.ts"],
+      notice: undefined,
+    });
+
+    const completion = completionFor(detectTrigger("@src", 4)!, commands, catalog, files);
+
+    // A file ends the mention; a folder keeps it open, so typing on narrows into it.
+    expect(completion?.entries.map((entry) => entry.pick)).toEqual([
+      { kind: "insert", text: "@src/", continues: true },
+      { kind: "insert", text: "@src/app.ts" },
+    ]);
+    expect(completion?.label).toBe("Files");
+  });
+
+  it("says it is searching until the Session first answers", () => {
+    expect(filesMenu("@", undefined)).toEqual({ rows: [], notice: "Searching files…" });
+    expect(filesMenu("@ap", { query: null, paths: [], searching: true, failed: false })).toEqual({
+      rows: [],
+      notice: "Searching files…",
+    });
+  });
+
+  it("narrows the last answer while the Session searches for the new query", () => {
+    const files: FileResults = {
+      query: "s",
+      paths: ["src/", "src/app.ts", "src/menu.ts"],
+      searching: true,
+      failed: false,
+    };
+
+    expect(filesMenu("@src/ap", files)).toEqual({ rows: ["src/app.ts"], notice: undefined });
+    expect(filesMenu("@zzz", files)).toEqual({ rows: [], notice: "Searching files…" });
+  });
+
+  it("says when nothing matches, and when the Session could not search", () => {
+    expect(filesMenu("@zzz", found("zzz", []))).toEqual({
+      rows: [],
+      notice: "No matching files or folders.",
+    });
+    expect(filesMenu("@ap", { query: "ap", paths: [], searching: false, failed: true })).toEqual({
+      rows: [],
+      notice: "Could not search the files.",
+    });
   });
 });

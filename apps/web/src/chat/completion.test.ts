@@ -91,6 +91,17 @@ describe("detecting a trigger before the caret", () => {
 });
 
 describe("replacing a trigger with a pick", () => {
+  it("can leave the trigger open, with no space and the caret right after the pick", () => {
+    expect(replaceTrigger("see @sr now", { start: 4, end: 7 }, "@src/", { space: false })).toEqual({
+      text: "see @src/ now",
+      caret: 9,
+    });
+    expect(replaceTrigger("@sr", { start: 0, end: 3 }, "@src/", { space: false })).toEqual({
+      text: "@src/",
+      caret: 5,
+    });
+  });
+
   it("puts the pick and a space in place of the trigger, and the caret after them", () => {
     expect(replaceTrigger("/mo", { start: 0, end: 3 }, "/model")).toEqual({
       text: "/model ",
