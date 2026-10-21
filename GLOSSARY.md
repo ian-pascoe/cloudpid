@@ -82,10 +82,6 @@ _Avoid_: Prompt, snippet, macro
 A file the owner gives with a message, stored in the Workspace and pointed at by its path; an attached image is also shown to the model.
 _Avoid_: Upload (for the file), file mention
 
-**File mention**:
-An `@path` in the owner's message naming a file or folder of the conversation's directory, picked from the composer's `@` menu; it stays plain text, which the agent opens with its own tools.
-_Avoid_: Attachment (for a file already in the Workspace), reference
-
 ## Workspaces and execution
 
 **Workspace**:
