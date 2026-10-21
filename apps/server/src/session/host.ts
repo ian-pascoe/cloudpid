@@ -147,8 +147,10 @@ export type SessionHostOptions<R = never> = {
    * Extensions that follow the settings: after a read that brought new values, given the extensions installed, the
    * values now and those before, it returns the ones to install over those of the same name (none when what they follow
    * did not change). pi-durable's wraps are pure, so a setting that decides what an extension wraps (the offered
-   * tools) is applied by installing it again, which takes effect from the next phase pi-durable starts and never in
-   * the middle of one.
+   * tools) is applied by installing it again, which takes effect from the next phase pi-durable starts, never in the
+   * middle of one. A model's tool call spans two phases, though (the generation, then the call), so a read that lands
+   * between them can defer a tool the request offered: that call fails as unavailable, and the model can load the tool
+   * with `tool_search` and call it again.
    */
   readonly reload?:
     | ((
