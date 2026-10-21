@@ -1,0 +1,100 @@
+import * as Result from "effect/Result";
+import type * as Schema from "effect/Schema";
+import { describe, expect, it } from "vitest";
+import {
+  DEFAULT_WORKSPACE_SETTINGS,
+  INSTANCE_TYPES,
+  resolveWorkspaceSettings,
+  resolveWorkspaceSettingsLeniently,
+  workspaceOverridesFrom,
+  type WorkspaceSettings,
+} from "./workspace-settings.ts";
+
+const resolved = (overrides: Schema.Json): WorkspaceSettings => {
+  const result = resolveWorkspaceSettings(overrides);
+
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+
+  return result.success;
+};
+
+const rejected = (overrides: Schema.Json): string => {
+  const result = resolveWorkspaceSettings(overrides);
+
+  if (Result.isSuccess(result)) throw new Error("Expected the overrides to be rejected");
+
+  return result.failure.message;
+};
+
+describe("the defaults", () => {
+  it("are standard-2 and a 15-minute idle stop, as the spec says", () => {
+    expect(DEFAULT_WORKSPACE_SETTINGS).toEqual({ instance: "standard-2", idleMinutes: 15 });
+  });
+
+  it("are what no overrides resolve to", () => {
+    expect(resolved({})).toEqual(DEFAULT_WORKSPACE_SETTINGS);
+  });
+});
+
+describe("resolveWorkspaceSettings", () => {
+  it("gives each override over the default, and leaves the rest", () => {
+    expect(resolved({ instance: "basic" })).toEqual({ instance: "basic", idleMinutes: 15 });
+    expect(resolved({ idleMinutes: 90 })).toEqual({ instance: "standard-2", idleMinutes: 90 });
+  });
+
+  it("accepts every instance type Cloudflare Containers offers", () => {
+    for (const instance of INSTANCE_TYPES) expect(resolved({ instance }).instance).toBe(instance);
+  });
+
+  it("rejects an instance type Cloudflare does not offer", () => {
+    expect(rejected({ instance: "standard-9" })).toContain("instance");
+  });
+
+  it("rejects an idle time that is not a whole number of minutes between 1 and a day", () => {
+    expect(rejected({ idleMinutes: 0 })).toContain("idleMinutes");
+    expect(rejected({ idleMinutes: -5 })).toContain("idleMinutes");
+    expect(rejected({ idleMinutes: 1.5 })).toContain("idleMinutes");
+    expect(rejected({ idleMinutes: 1441 })).toContain("idleMinutes");
+    expect(resolved({ idleMinutes: 1 }).idleMinutes).toBe(1);
+    expect(resolved({ idleMinutes: 1440 }).idleMinutes).toBe(1440);
+  });
+
+  it("rejects a key it does not know, so a typo is not silently ignored", () => {
+    expect(rejected({ idleMinute: 5 })).toContain("idleMinute");
+  });
+
+  it("lists every problem, one per line", () => {
+    expect(rejected({ instance: "huge", idleMinutes: 0 }).split("\n")).toHaveLength(2);
+  });
+});
+
+describe("workspaceOverridesFrom", () => {
+  it("keeps only what differs from the defaults, so a setting left alone follows later defaults", () => {
+    expect(workspaceOverridesFrom(DEFAULT_WORKSPACE_SETTINGS)).toEqual({});
+    expect(workspaceOverridesFrom({ instance: "standard-4", idleMinutes: 15 })).toEqual({
+      instance: "standard-4",
+    });
+    expect(workspaceOverridesFrom({ instance: "standard-2", idleMinutes: 5 })).toEqual({
+      idleMinutes: 5,
+    });
+  });
+});
+
+describe("resolveWorkspaceSettingsLeniently", () => {
+  it("drops a stale override and keeps the rest", () => {
+    const { settings, dropped } = resolveWorkspaceSettingsLeniently({
+      instance: "retired-9",
+      idleMinutes: 30,
+    });
+
+    expect(settings).toEqual({ instance: "standard-2", idleMinutes: 30 });
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("instance");
+  });
+
+  it("gives the defaults for overrides that are not an object", () => {
+    expect(resolveWorkspaceSettingsLeniently("nonsense").settings).toEqual(
+      DEFAULT_WORKSPACE_SETTINGS,
+    );
+  });
+});

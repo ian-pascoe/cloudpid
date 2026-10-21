@@ -141,6 +141,61 @@ describe("the Container's backend as the Workspace sees it", () => {
   });
 });
 
+describe("the hook after a successful install", () => {
+  it("runs once the bootstrap succeeded, before the command that waited for it is sent", async () => {
+    const container = fakeContainer();
+    const seen: number[] = [];
+
+    const { toolchains } = open(container, {
+      afterInstall: async () => {
+        seen.push(container.execs.length);
+      },
+    });
+
+    const handle = await toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "git --version" });
+    await handle.rpc.shell.exec({ source: "git status" });
+
+    // Only the bootstrap had been sent when it ran, and it ran once.
+    expect(seen).toEqual([1]);
+  });
+
+  it("does not run when the bootstrap failed", async () => {
+    const container = fakeContainer((input) => (isBootstrap(input) ? { code: 1 } : {}));
+    let runs = 0;
+
+    const { toolchains } = open(container, {
+      afterInstall: async () => {
+        runs++;
+      },
+    });
+
+    const handle = await toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "true" });
+
+    expect(runs).toBe(0);
+  });
+
+  it("does not fail the bootstrap or the command when it throws", async () => {
+    const container = fakeContainer();
+
+    const { toolchains, warnings } = open(container, {
+      afterInstall: async () => {
+        throw new Error("no snapshots here");
+      },
+    });
+
+    const handle = await toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "git --version" });
+
+    expect(commands(container.execs).map((input) => input.source)).toEqual(["git --version"]);
+    expect(warnings.join("\n")).toContain("no snapshots here");
+  });
+});
+
 describe("the bootstrap", () => {
   it("runs before the first command of a Container start, which waits for it", async () => {
     let finish!: () => void;

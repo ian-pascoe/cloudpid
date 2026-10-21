@@ -1,6 +1,6 @@
 // The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions and Workspaces. They
 // hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import { Settings, SettingsError } from "@cloudpid/config";
+import { Settings, SettingsError, WorkspaceSettings } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -62,6 +62,19 @@ export const SettingsState = Schema.Struct({
 });
 
 export type SettingsState = typeof SettingsState.Type;
+
+/**
+ * A Workspace's own settings in force (`docs/spec.md` → Container and Toolchains → Size and idle), and the overrides
+ * they come from. They apply at the Workspace's next Container launch.
+ */
+export const WorkspaceSettingsState = Schema.Struct({
+  settings: WorkspaceSettings,
+  overrides: Schema.Json,
+  /** Why the saved overrides were only partly used, when some no longer resolve: the rest still apply. */
+  problem: Schema.optionalKey(Schema.String),
+});
+
+export type WorkspaceSettingsState = typeof WorkspaceSettingsState.Type;
 
 /** The hosts of the push services browsers use: Google's FCM, Mozilla's autopush, Apple's and Windows'. */
 const PUSH_SERVICE_HOSTS: ReadonlyArray<(host: string) => boolean> = [
@@ -174,6 +187,22 @@ export class RegistryRpcs extends RpcGroup.make(
       name: Schema.optionalKey(RepoName),
     },
     success: RepoName,
+    error: WorkspaceError,
+  }),
+  /** A Workspace's own settings (Container size and idle time) in force, and the overrides they come from. */
+  Rpc.make("getWorkspaceSettings", {
+    payload: { workspace: WorkspaceSlug },
+    success: WorkspaceSettingsState,
+    error: WorkspaceError,
+  }),
+  /**
+   * Replace a Workspace's saved overrides, a partial of its settings that differs from the defaults. Overrides that do
+   * not resolve fail with a `WorkspaceError` whose message lists each problem, and nothing is saved. The Workspace
+   * applies them at its next Container launch: a running Container keeps the size and idle time it started with.
+   */
+  Rpc.make("updateWorkspaceSettings", {
+    payload: { workspace: WorkspaceSlug, overrides: Schema.Json },
+    success: WorkspaceSettingsState,
     error: WorkspaceError,
   }),
   /** The settings in force and the overrides they come from. */

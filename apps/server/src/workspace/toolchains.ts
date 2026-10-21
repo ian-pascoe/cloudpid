@@ -50,6 +50,11 @@ export type ToolchainOptions = {
   readonly githubToken?: string | undefined;
   /** The identity of commits the agent makes, where the Container has no other; unset parts take the bootstrap's own. */
   readonly git: { readonly name?: string | undefined; readonly email?: string | undefined };
+  /**
+   * Runs once a bootstrap has succeeded, before the commands that waited for it are sent: the Workspace snapshots the
+   * Container's disk here, while nothing else is writing to it. A failure is reported and changes nothing.
+   */
+  readonly afterInstall?: (() => Promise<void>) | undefined;
   /** Where a failed bootstrap is reported (never with the token). */
   readonly warn: (message: string) => void;
   readonly now: () => number;
@@ -151,6 +156,19 @@ export class ToolchainBackend implements WorkspaceBackend {
     };
   }
 
+  /** The after-install hook, which never throws: a snapshot is an optimisation. */
+  async #installed(): Promise<void> {
+    const { afterInstall, warn } = this.#options;
+
+    try {
+      await afterInstall?.();
+    } catch (cause) {
+      warn(
+        `After the Toolchain install: ${String(cause instanceof Error ? cause.message : cause)}`,
+      );
+    }
+  }
+
   /** Run the bootstrap on `shell`; what went wrong, if anything. It reports a failure itself and never throws. */
   async #bootstrap(shell: Shell): Promise<Failure | undefined> {
     const { git, warn } = this.#options;
@@ -176,7 +194,11 @@ export class ToolchainBackend implements WorkspaceBackend {
 
       await shell.disposeExec({ id: execution.id }).catch(() => undefined);
 
-      if (code === 0) return undefined;
+      if (code === 0) {
+        await this.#installed();
+
+        return undefined;
+      }
 
       const reason =
         code === undefined ? "its output ended without an exit status" : `exit status ${code}`;

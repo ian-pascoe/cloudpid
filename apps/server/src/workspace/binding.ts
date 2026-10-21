@@ -18,6 +18,3 @@ export const SKILLS_MOUNT = "/workspace/.agents/skills";
  * `ctx.container.images` (alchemy names each Container's image by its id).
  */
 export const WORKSPACE_CONTAINER = "WorkspaceContainer";
-
-/** The instance type a Workspace's Container starts on (docs/spec.md → Container and Toolchains). */
-export const DEFAULT_INSTANCE = "standard-2";

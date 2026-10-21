@@ -1,5 +1,10 @@
 // @effect-diagnostics asyncFunction:off
-import { DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_WORKSPACE_SETTINGS,
+  SettingsError,
+  type WorkspaceSettings,
+} from "@cloudpid/config";
 import { RegistryRpcs, RPC_PATH, WorkspaceError } from "@cloudpid/protocol";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -16,7 +21,12 @@ import { isRegistryRpc } from "../routes.ts";
 import { serveRegistryRpc } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type { Repos } from "../workspace/repos.ts";
+import type { WorkspaceSettingsRemote } from "../workspace/settings.ts";
 import type { SessionRecord, WorkspaceRecord } from "./store.ts";
+
+/** The overrides the fake saved, as the fields of the settings they replace. */
+// SAFETY: the tests only save overrides of the settings' own shape.
+const asSettings = (overrides: Schema.Json) => overrides as Partial<WorkspaceSettings>;
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
@@ -127,10 +137,41 @@ const fakeRegistries = () => {
     },
   };
 
+  /** The Workspaces' own settings: the overrides saved per slug. */
+  const saved = new Map<string, Schema.Json>();
+
+  const workspaceSettings: WorkspaceSettingsRemote = {
+    read: (slug) => {
+      calls.push("readWorkspaceSettings");
+
+      const overrides = saved.get(slug) ?? {};
+
+      return Promise.resolve({
+        settings: { ...DEFAULT_WORKSPACE_SETTINGS, ...asSettings(overrides) },
+        overrides,
+      });
+    },
+    write: (slug, overrides) => {
+      calls.push("writeWorkspaceSettings");
+
+      if (overrides === null)
+        return Promise.resolve({ ok: false, message: "instance: Expected a string" });
+
+      saved.set(slug, overrides);
+
+      return Promise.resolve({
+        ok: true,
+        state: { settings: { ...DEFAULT_WORKSPACE_SETTINGS, ...asSettings(overrides) }, overrides },
+      });
+    },
+  };
+
   return {
     names,
     calls,
     repos,
+    workspaceSettings,
+    saved,
     clones,
     failClones: (message: string) => {
       cloneFails = message;
@@ -159,7 +200,7 @@ const worker =
     // Routed as the main Worker routes it.
     if (!isRegistryRpc(request)) return Promise.resolve(new Response(null, { status: 404 }));
 
-    return serveRegistryRpc(fake.registries, fake.repos).pipe(
+    return serveRegistryRpc(fake.registries, fake.repos, fake.workspaceSettings).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
       Effect.map(HttpServerResponse.toWeb),
       Effect.runPromise,
@@ -387,6 +428,88 @@ it("accepts the endpoints the browsers' push services give out", async () => {
 
     expect(calls, endpoint).toEqual(["subscribePush"]);
   }
+});
+
+it("reads a Workspace's own settings from its object, not the Registry", async () => {
+  const fake = fakeRegistries();
+
+  const state = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      registry
+        .createWorkspace({ slug: "cloudpid" })
+        .pipe(Effect.andThen(registry.getWorkspaceSettings({ workspace: "cloudpid" }))),
+    ),
+    fake,
+  );
+
+  expect(state.settings).toEqual(DEFAULT_WORKSPACE_SETTINGS);
+  expect(fake.calls).toEqual(["createWorkspace", "readWorkspaceSettings"]);
+});
+
+it("saves a Workspace's settings in its object and answers the state in force", async () => {
+  const fake = fakeRegistries();
+
+  const state = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      registry.createWorkspace({ slug: "cloudpid" }).pipe(
+        Effect.andThen(
+          registry.updateWorkspaceSettings({
+            workspace: "cloudpid",
+            overrides: { instance: "standard-4", idleMinutes: 5 },
+          }),
+        ),
+      ),
+    ),
+    fake,
+  );
+
+  expect(state.settings).toEqual({ instance: "standard-4", idleMinutes: 5 });
+  expect(fake.saved.get("cloudpid")).toEqual({ instance: "standard-4", idleMinutes: 5 });
+});
+
+it("answers overrides a Workspace refuses as a WorkspaceError with its message", async () => {
+  const error = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      registry
+        .createWorkspace({ slug: "cloudpid" })
+        .pipe(
+          Effect.andThen(
+            registry.updateWorkspaceSettings({ workspace: "cloudpid", overrides: null }),
+          ),
+        ),
+    ).pipe(Effect.flip),
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toBe("instance: Expected a string");
+});
+
+it("refuses the settings of a Workspace the Registry does not list, and touches no object", async () => {
+  const fake = fakeRegistries();
+
+  const error = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      Effect.flip(
+        registry.updateWorkspaceSettings({ workspace: "typo", overrides: { idleMinutes: 5 } }),
+      ),
+    ),
+    fake,
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toContain("typo");
+  expect(fake.saved.size).toBe(0);
+  expect(fake.calls).not.toContain("writeWorkspaceSettings");
+
+  const read = await withClient(
+    Effect.flatMap(Registry, (registry) =>
+      Effect.flip(registry.getWorkspaceSettings({ workspace: "typo" })),
+    ),
+    fake,
+  );
+
+  expect(read.message).toContain("typo");
+  expect(fake.calls).not.toContain("readWorkspaceSettings");
 });
 
 it("lists the repos of a Workspace", async () => {
