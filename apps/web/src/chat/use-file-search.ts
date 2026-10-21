@@ -7,7 +7,7 @@
 
 import type { FileMatches } from "@cloudpid/protocol";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import type { SessionConnection } from "../session/connection.ts";
+import type { Connection } from "./session-context.tsx";
 import type { FileResults } from "./menu.ts";
 
 /** How long the owner pauses typing before the query is sent. */
@@ -202,7 +202,7 @@ export const fileResults = (
  * subagent conversation `conversationId`'s.
  */
 export const useFileSearch = (
-  connection: Pick<SessionConnection, "files">,
+  connection: Pick<Connection, "files">,
   conversationId: number | undefined,
   query: string | null,
 ): FileResults => {

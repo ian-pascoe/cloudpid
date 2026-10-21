@@ -19,7 +19,7 @@ import {
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
 import { type CommandOutcome, sessionCommandsFor, type WhenBusy } from "@cloudpid/protocol";
-import type { QueuedEntry, SendingEntry } from "../session/connection.ts";
+import type { QueuedEntry, SendingEntry } from "../session/state.ts";
 import { AttachmentTiles } from "./attachment-tiles.tsx";
 import { outgoingMessage } from "./attachments.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";

@@ -7,11 +7,13 @@ import * as Layer from "effect/Layer";
 import * as Atom from "effect/reactivity/Atom";
 import { PushManagerLive } from "./push.ts";
 import { RegistryClient } from "./registry.ts";
+import { layerSessionProbe } from "./session/client.ts";
 
-/** The browser's own services: the WebSocket constructor and the clipboard. */
+/** The browser's own services: the WebSocket constructor, the clipboard, and the Session probe over `fetch`. */
 export const BrowserLayer = Layer.mergeAll(
   BrowserSocket.layerWebSocketConstructor,
   Clipboard.layer,
+  layerSessionProbe,
 );
 
 /**

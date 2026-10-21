@@ -10,7 +10,7 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { type ThreadState } from "../session/connection.ts";
+import { type ThreadState } from "../session/state.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
 import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import { Composer } from "./composer.tsx";

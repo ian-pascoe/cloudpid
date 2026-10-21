@@ -4,7 +4,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays.
 
 import { freeAttachmentName, sanitizeAttachmentName, type UserInput } from "@cloudpid/protocol";
-import type { OutgoingMessage } from "../session/connection.ts";
+import type { OutgoingMessage } from "../session/state.ts";
 import type { Encoded } from "./image-budget.ts";
 
 /** An uploaded Attachment as a message sends it: its stored name and path, and its image when it goes inline. */
