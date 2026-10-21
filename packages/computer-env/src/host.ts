@@ -256,9 +256,13 @@ export class WorkspaceEnvHost {
 
           await ensureDirectory(fs, dirname(path));
 
-          const existing = append ? await readAll(path).then((bytes) => [bytes], absent) : [];
+          // Only an append joins the file to the new bytes: a write passes them on as they are, so a large file (an
+          // Attachment of up to 25 MB) is not held twice.
+          const written = append
+            ? concat([...(await readAll(path).then((existing) => [existing], absent)), bytes])
+            : bytes;
 
-          await fs.writeFile(path, concat([...existing, bytes]));
+          await fs.writeFile(path, written);
 
           return null;
         }),

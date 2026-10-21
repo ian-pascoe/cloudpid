@@ -1095,6 +1095,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Effect.suspend(() => {
       const refused = (message: string) => SessionError.make({ operation: "submit", message });
 
+      // The row pi-durable writes is the entry (its model message, from `content`, and its kind and data, from `entry`) or
+      // the inbox document holding it, both as JSON; `{ content, entry }` is that JSON but for a few fields (IDs, the
+      // timestamp, the role), which the 100 KB between `MAX_STORED_INPUT_BYTES` and the 2 MB cap leaves room for.
       const alone = inputProblem(draft, 0);
 
       if (alone !== undefined) return Effect.fail(refused(alone));

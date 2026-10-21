@@ -112,6 +112,37 @@ describe("an upload", () => {
     expect(workspace.files.size).toBe(0);
   });
 
+  it("answers 400, storing nothing, for a body cut off or longer than its length says", async () => {
+    const workspace = memory();
+
+    const short = await call("PUT", "a.txt", workspace.api, "abc", { "content-length": "10" });
+    const long = await call("PUT", "a.txt", workspace.api, "abc", { "content-length": "2" });
+
+    const broken = await call(
+      "PUT",
+      "a.txt",
+      workspace.api,
+      new ReadableStream({
+        start: (controller) => {
+          controller.enqueue(new Uint8Array(3));
+          controller.error(new Error("the client went away"));
+        },
+      }),
+    );
+
+    expect([short.status, long.status, broken.status]).toEqual([400, 400, 400]);
+    expect(await broken.text()).toBe("The upload was cut off.");
+    expect(workspace.files.size).toBe(0);
+  });
+
+  it("stores a body that is exactly its declared length", async () => {
+    const workspace = memory();
+    const response = await call("PUT", "a.txt", workspace.api, "abc", { "content-length": "3" });
+
+    expect(response.status).toBe(201);
+    expect(workspace.files.get(`${uploads}/a.txt`)).toBe("abc");
+  });
+
   it("answers 400 for a name whose escapes cannot be read", async () => {
     expect((await call("PUT", "%E0%A4%A", memory().api, "x")).status).toBe(400);
   });

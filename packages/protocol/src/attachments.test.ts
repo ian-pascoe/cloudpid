@@ -4,6 +4,7 @@ import {
   attachmentRoutePath,
   freeAttachmentName,
   isInlineImageType,
+  MAX_ATTACHMENT_NAME_BYTES,
   MAX_ATTACHMENT_NAME_LENGTH,
   sanitizeAttachmentName,
   uploadsDirectory,
@@ -46,8 +47,30 @@ describe("sanitizeAttachmentName", () => {
     expect(sanitizeAttachmentName("b".repeat(300))).toBe("b".repeat(MAX_ATTACHMENT_NAME_LENGTH));
   });
 
+  it("cuts a name of wide characters to the byte limit, keeping its extension", () => {
+    const name = sanitizeAttachmentName(`${"図".repeat(100)}.png`);
+
+    expect(new TextEncoder().encode(name).byteLength).toBeLessThanOrEqual(
+      MAX_ATTACHMENT_NAME_BYTES,
+    );
+    expect(name).toBe(`${"図".repeat(65)}.png`);
+
+    const suffixed = freeAttachmentName(name, new Set([name]));
+
+    expect(new TextEncoder().encode(suffixed).byteLength).toBeLessThanOrEqual(
+      MAX_ATTACHMENT_NAME_BYTES,
+    );
+    expect(suffixed).toBe(`${"図".repeat(64)}-2.png`);
+  });
+
   it("is stable: a sanitised name sanitises to itself", () => {
-    for (const raw of ["My Photo (1).jpg", "../../x", `${"c".repeat(200)}.png`, ".hidden"]) {
+    for (const raw of [
+      "My Photo (1).jpg",
+      "../../x",
+      `${"c".repeat(200)}.png`,
+      ".hidden",
+      `${"図".repeat(100)}.png`,
+    ]) {
       const once = sanitizeAttachmentName(raw);
 
       expect(sanitizeAttachmentName(once)).toBe(once);

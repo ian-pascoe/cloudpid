@@ -18,6 +18,12 @@ export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 /** The longest Attachment name, in code points. */
 export const MAX_ATTACHMENT_NAME_LENGTH = 100;
 
+/**
+ * The longest Attachment name, in UTF-8 bytes: well under the 255 bytes a Linux file name may have (the Container's
+ * file system), so a name of wide characters is cut too.
+ */
+export const MAX_ATTACHMENT_NAME_BYTES = 200;
+
 /** What a name with nothing usable left becomes. */
 const FALLBACK_NAME = "attachment";
 
@@ -79,14 +85,43 @@ const splitName = (name: string): { readonly stem: string; readonly extension: s
 /** Dots and dashes a name may not start or end with: it would be hidden, read as an option, or end oddly. */
 const trimEnds = (text: string): string => text.replace(/^[.-]+/u, "").replace(/[.-]+$/u, "");
 
-/** `stem` cut to `length` code points, without a dot or dash left at its end. */
-const cutStem = (stem: string, length: number): string =>
-  trimEnds(Array.from(stem).slice(0, Math.max(length, 1)).join(""));
+const encoder = new TextEncoder();
 
-/** `stem` and `extension` together, the stem cut so the whole fits the limit. */
+const bytesOf = (text: string): number => encoder.encode(text).byteLength;
+
+/** Whether `name` is within both limits. */
+const fits = (name: string): boolean =>
+  Array.from(name).length <= MAX_ATTACHMENT_NAME_LENGTH &&
+  bytesOf(name) <= MAX_ATTACHMENT_NAME_BYTES;
+
+/** `stem` cut to at most `length` code points and `bytes` UTF-8 bytes, without a dot or dash left at its end. */
+const cutStem = (stem: string, length: number, bytes: number): string => {
+  let cut = "";
+  let used = 0;
+
+  for (const [index, character] of Array.from(stem).entries()) {
+    const size = bytesOf(character);
+
+    if (index >= length || used + size > bytes) break;
+
+    cut += character;
+    used += size;
+  }
+
+  return trimEnds(cut);
+};
+
+/** `stem` and `extension` together, the stem cut so the whole fits both limits. */
 const joinWithin = (stem: string, extension: string): string => {
-  const room = MAX_ATTACHMENT_NAME_LENGTH - Array.from(extension).length;
-  const cut = Array.from(stem).length > room ? cutStem(stem, room) : stem;
+  const whole = `${stem}${extension}`;
+
+  if (fits(whole)) return whole;
+
+  const cut = cutStem(
+    stem,
+    MAX_ATTACHMENT_NAME_LENGTH - Array.from(extension).length,
+    MAX_ATTACHMENT_NAME_BYTES - bytesOf(extension),
+  );
 
   return `${cut === "" ? FALLBACK_NAME : cut}${extension}`;
 };
@@ -94,7 +129,8 @@ const joinWithin = (stem: string, extension: string): string => {
 /**
  * `raw` as one safe path segment: letters, digits, `.`, `_` and `-`, every other run of characters (spaces, slashes,
  * quotes, controls) one dash, never starting or ending with a dot or a dash (so never `.`, `..`, hidden or an option),
- * at most `MAX_ATTACHMENT_NAME_LENGTH` code points with its extension kept, and `attachment` when nothing is left.
+ * at most `MAX_ATTACHMENT_NAME_LENGTH` code points and `MAX_ATTACHMENT_NAME_BYTES` UTF-8 bytes with its extension kept,
+ * and `attachment` when nothing is left.
  */
 export const sanitizeAttachmentName = (raw: string): string => {
   const cleaned = trimEnds(
@@ -108,7 +144,7 @@ export const sanitizeAttachmentName = (raw: string): string => {
 
   if (cleaned === "") return FALLBACK_NAME;
 
-  if (Array.from(cleaned).length <= MAX_ATTACHMENT_NAME_LENGTH) return cleaned;
+  if (fits(cleaned)) return cleaned;
 
   const { stem, extension } = splitName(cleaned);
 

@@ -71,33 +71,60 @@ export const workspaceAttachmentFiles = (
   };
 };
 
-/** The request's body, or undefined once it is over `limit` bytes (by its length header, or as it is read). */
-const readCapped = async (request: Request, limit: number): Promise<Uint8Array | undefined> => {
-  const declared = Number(request.headers.get("content-length") ?? Number.NaN);
+/** What reading an upload's body came to. */
+type Body =
+  | { readonly kind: "read"; readonly bytes: Uint8Array }
+  | { readonly kind: "too-big" }
+  /** The body was not what its length said, or the client went away while sending it. */
+  | { readonly kind: "cut-off" };
 
-  if (Number.isFinite(declared) && declared > limit) return undefined;
+const TOO_BIG_BODY: Body = { kind: "too-big" };
 
-  if (request.body === null) return new Uint8Array();
+const CUT_OFF: Body = { kind: "cut-off" };
+
+/**
+ * The request's body, refused once it is over `limit` bytes (by its length header, or as it is read). With a length the
+ * bytes are read straight into one buffer of that size, so a 25 MB file is held once; without one the chunks are kept
+ * and joined at the end.
+ */
+const readCapped = async (request: Request, limit: number): Promise<Body> => {
+  const header = request.headers.get("content-length");
+  const declared = header === null ? Number.NaN : Number(header);
+
+  if (Number.isFinite(declared) && declared > limit) return TOO_BIG_BODY;
+
+  if (request.body === null) return { kind: "read", bytes: new Uint8Array() };
 
   const reader = request.body.getReader();
+  const sized = Number.isInteger(declared) && declared >= 0;
+  const buffer = sized ? new Uint8Array(declared) : undefined;
   const chunks: Uint8Array[] = [];
   let total = 0;
 
-  for (;;) {
-    const { done, value } = await reader.read();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
 
-    if (done) break;
+      if (done) break;
 
-    total += value.byteLength;
+      if (total + value.byteLength > (buffer?.byteLength ?? limit)) {
+        await reader.cancel();
 
-    if (total > limit) {
-      await reader.cancel();
+        // Longer than its length says: not a body to trust. Without a length: over the limit.
+        return buffer === undefined ? TOO_BIG_BODY : CUT_OFF;
+      }
 
-      return undefined;
+      if (buffer === undefined) chunks.push(value);
+      else buffer.set(value, total);
+
+      total += value.byteLength;
     }
-
-    chunks.push(value);
+  } catch {
+    return CUT_OFF;
   }
+
+  if (buffer !== undefined)
+    return total === buffer.byteLength ? { kind: "read", bytes: buffer } : CUT_OFF;
 
   const bytes = new Uint8Array(total);
   let offset = 0;
@@ -107,7 +134,7 @@ const readCapped = async (request: Request, limit: number): Promise<Uint8Array |
     offset += chunk.byteLength;
   }
 
-  return bytes;
+  return { kind: "read", bytes };
 };
 
 const TOO_BIG = `An attachment is at most ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`;
@@ -120,7 +147,7 @@ const failure = (cause: unknown) =>
 
 /**
  * Answer an upload or a removal of Attachment `route.name` of Session `route.sessionId` in `files`: a `PUT` stores the
- * body (at most `MAX_ATTACHMENT_BYTES`, else 413) under the sanitised name, suffixed `-2`, `-3`, … when taken, and
+ * body (at most `MAX_ATTACHMENT_BYTES`, else 413; 400 when it was cut off) under the sanitised name, suffixed `-2`, `-3`, … when taken, and
  * answers 201 with the name and path it got; a `DELETE` removes it and answers 204. Two uploads of one name at the same
  * moment could both find it free, the later write winning: the web app names its own uploads apart, so only two pages
  * uploading the same name at once could meet that.
@@ -144,9 +171,13 @@ export const answerAttachment = async (
     return new Response(null, { status: 204 });
   }
 
-  const bytes = await readCapped(request, MAX_ATTACHMENT_BYTES);
+  const body = await readCapped(request, MAX_ATTACHMENT_BYTES);
 
-  if (bytes === undefined) return new Response(TOO_BIG, { status: 413 });
+  if (body.kind === "too-big") return new Response(TOO_BIG, { status: 413 });
+
+  if (body.kind === "cut-off") return new Response("The upload was cut off.", { status: 400 });
+
+  const { bytes } = body;
 
   try {
     const stored = freeAttachmentName(name, await files.names(uploadsDirectory(route.sessionId)));
