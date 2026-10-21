@@ -303,7 +303,10 @@ export class TestSession extends DurableObject {
               extensions: this.hostExtensions(),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               env: this.hostEnv(),
-              reportTimeout: "200 millis",
+              // Short only for a Registry that hangs; a loaded runner can take longer than that for a report that
+              // lands, which would count it failed and report it again.
+              reportTimeout:
+                ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
               onIdle: Effect.flatMap(
                 Effect.all([Effect.service(Secrets), Effect.service(BrowserHandoffs)]),
