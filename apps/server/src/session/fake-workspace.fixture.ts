@@ -5,7 +5,13 @@
 import type { PromptSource, PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import type { Skill, SkillSource } from "@cloudpid/extensions/skills-discovery";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
-import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durable/env";
+import {
+  err,
+  type ExecutionEnv,
+  FileError,
+  type FileListEntry,
+  ok,
+} from "@earendil-works/pi-durable/env";
 
 /** A file the fake Workspace holds: its path and text. */
 type FakeFile = { readonly path: string; readonly text: string };
@@ -21,16 +27,21 @@ export type FakeWorkspace = {
   readonly templates?: ReadonlyArray<PromptTemplate>;
   /** The files it can read; any other read fails. */
   readonly files?: readonly FakeFile[];
-  /** Listing its Skills and templates fails. */
+  /** Listing its Skills, templates and files fails. */
   readonly failing?: boolean;
-  /** Listing its Skills and templates never answers. */
+  /** Listing its Skills, templates and files never answers. */
   readonly hanging?: boolean;
   /** How long each file read takes. */
   readonly readDelayMs?: number;
+  /** The directory each conversation works in, when not `/workspace`. */
+  readonly cwds?: Readonly<Record<number, string>>;
+  /** What listing each directory finds (`listFiles`), relative to it; a directory not here lists nothing. */
+  readonly trees?: Readonly<Record<string, readonly FileListEntry[]>>;
 };
 
 const KEY = "fake-workspace";
 const ASKED = "fake-workspace-asked";
+const LISTED = "fake-workspace-listed";
 
 /** Make the Session's fake Workspace hold and answer what `workspace` says. */
 export const useFakeWorkspace = (kv: DurableObjectStorage["kv"], workspace: FakeWorkspace) => {
@@ -40,6 +51,10 @@ export const useFakeWorkspace = (kv: DurableObjectStorage["kv"], workspace: Fake
 /** The conversations the fake Workspace built an environment for, in order. */
 export const askedConversations = (kv: DurableObjectStorage["kv"]): readonly number[] =>
   kv.get<number[]>(ASKED) ?? [];
+
+/** The directories the fake Workspace listed, in order. */
+export const listedDirectories = (kv: DurableObjectStorage["kv"]): readonly string[] =>
+  kv.get<string[]>(LISTED) ?? [];
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -76,8 +91,20 @@ export const fakeWorkspaceEnv =
       },
     };
 
-    const files: Pick<ExecutionEnv, "cwd" | "readTextFile"> = {
-      cwd: target.cwd ?? "/workspace",
+    const cwd = workspace.cwds?.[target.conversationId] ?? target.cwd ?? "/workspace";
+
+    const files: Pick<ExecutionEnv, "id" | "cwd" | "readTextFile" | "listFiles"> = {
+      id: "fake-workspace",
+      cwd,
+      listFiles: async (path) => {
+        await listed();
+
+        const directory = path === "." ? cwd : path;
+
+        kv.put(LISTED, [...listedDirectories(kv), directory]);
+
+        return ok({ entries: [...(workspace.trees?.[directory] ?? [])], truncated: false });
+      },
       readTextFile: async (path) => {
         await pause(workspace.readDelayMs ?? 0);
 
@@ -89,7 +116,7 @@ export const fakeWorkspaceEnv =
       },
     };
 
-    // SAFETY: the host asks a conversation's environment only for its Skills and templates and for file reads, which
-    // this one answers; the scripted model calls no tool that uses it.
+    // SAFETY: the host asks a conversation's environment only for its Skills and templates, file reads and listings,
+    // which this one answers; the scripted model calls no tool that uses it.
     return Object.assign(files as ExecutionEnv, sources);
   };

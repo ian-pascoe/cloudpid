@@ -170,6 +170,24 @@ export const CatalogRequest = Schema.Struct({
   conversationId: Schema.optionalKey(ConversationId),
 });
 
+/** The most paths a `files` request is answered with. */
+export const MAX_FILE_MATCHES = 50;
+
+/** The longest `query` a `files` request may carry, in UTF-16 code units: longer than any path worth typing. */
+export const MAX_FILE_QUERY_LENGTH = 1024;
+
+/**
+ * Ask which files and folders of the root conversation's directory, or of the directory of the subagent conversation
+ * `conversationId` names, match `query` (what follows an `@` in the composer, `""` for all): the composer's `@` menu.
+ * Answered with `FileMatches`.
+ */
+export const FilesRequest = Schema.Struct({
+  type: Schema.Literal("files"),
+  id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
+  query: Schema.String.check(Schema.isMaxLength(MAX_FILE_QUERY_LENGTH)),
+});
+
 /**
  * Run the Session's Slash command `name` (without its `/`) with `args` (trimmed, `""` when none) on the root
  * conversation, or on the subagent conversation `conversationId` names. Answered with a `CommandOutcome`; a command that
@@ -188,6 +206,7 @@ export const ClientMessage = Schema.Union([
   Submit,
   Abort,
   CatalogRequest,
+  FilesRequest,
   RunCommand,
   Watch,
   Unwatch,
@@ -467,6 +486,15 @@ export const Catalog = Schema.Struct({
 });
 
 export type Catalog = typeof Catalog.Type;
+
+/**
+ * The answer to `files`: at most `MAX_FILE_MATCHES` paths relative to the conversation's directory, best match first, as
+ * `rank` orders them (shallower paths first among equals). A folder's path ends in `/`. What git ignores there, `.git`
+ * and `node_modules` are not listed.
+ */
+export const FileMatches = Schema.Struct({ paths: Schema.Array(Schema.String) });
+
+export type FileMatches = typeof FileMatches.Type;
 
 /** A file a Slash command hands the owner, such as `/export`'s transcript, for the client to download. */
 export const CommandFile = Schema.Struct({

@@ -7,6 +7,7 @@ import {
   Catalog,
   CommandOutcome,
   decodeClientMessage,
+  MAX_FILE_QUERY_LENGTH,
   ServerMessageJson,
   SESSION_COMMANDS,
   sessionCommandsFor,
@@ -193,6 +194,24 @@ describe("the Session socket messages", () => {
         )
       ).templates,
     ).toEqual([{ name: "review", description: "Review", argumentHint: "<ref>" }]);
+  });
+
+  it("read a files request, for the root or a subagent's conversation, with a bounded query", async () => {
+    expect(await readClient('{"type":"files","id":"f1","query":"src/app"}')).toEqual(
+      Option.some({ type: "files", id: "f1", query: "src/app" }),
+    );
+    expect(await readClient('{"type":"files","id":"f2","conversationId":3,"query":""}')).toEqual(
+      Option.some({ type: "files", id: "f2", conversationId: 3, query: "" }),
+    );
+    expect(await readClient('{"type":"files","id":"f3"}')).toEqual(Option.none());
+    expect(await readClient('{"type":"files","id":"f4","query":"a","limit":5}')).toEqual(
+      Option.none(),
+    );
+    expect(
+      await readClient(
+        JSON.stringify({ type: "files", id: "f5", query: "a".repeat(MAX_FILE_QUERY_LENGTH + 1) }),
+      ),
+    ).toEqual(Option.none());
   });
 
   it("name the Session's Slash commands, and leave /rollover out where the agent cannot roll over", () => {
