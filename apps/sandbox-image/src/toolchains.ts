@@ -1,3 +1,4 @@
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 // The Container's Toolchain contract (docs/spec.md → Container and Toolchains, ADR-0004), kept next to the Dockerfile it
 // must agree with. The Workspace DO imports it: no Node built-ins here, since it runs in a Worker.
 
@@ -106,6 +107,8 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  * The bash script that makes a freshly started Container ready for commands, run once per Container start before the
  * first command (`apps/server/src/workspace/toolchains.ts`). It
  *
+ * 0. makes each of `readOnlyDirectories` (absolute paths: the Workspace's read-only mounts) read-only here too, when the
+ *    Container can mount,
  * 1. writes `BASE_MISE_TOML` if the Workspace root has no mise config of any kind mise reads,
  * 2. makes sure `mise.lock` is there and current for the root's `mise.toml`, which is mise's global config
  *    (`toolchainEnv`) and so is only locked by `mise lock --global`: when the lockfile is missing or older than the
@@ -117,10 +120,25 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  *    git asks. Those go to the Container's `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds
  *    the token.
  */
-export const bootstrapScript = (root: string = WORKSPACE_ROOT): string => `
+export const bootstrapScript = (
+  root: string = WORKSPACE_ROOT,
+  readOnlyDirectories: readonly string[] = [],
+): string => `
 set -u
 root=${shellQuote(root)}
 cd "$root" || exit 1
+
+# Directories the Workspace holds read-only (the bundled skills): the Workspace DO refuses a write there, so one made
+# here would stay on this Container, which would then differ from the Workspace until it restarts. Make them read-only
+# here too, with a bind mount of each over itself, remounted read-only, which fails a write with EROFS. Best effort: a
+# Container that may not mount (\`alchemy dev\`'s, without FUSE) keeps the directory as it was, and the bootstrap goes on.
+for dir in ${readOnlyDirectories.map(shellQuote).join(" ")}; do
+  [ -d "$dir" ] || continue
+  grep -qs " $dir " /proc/self/mountinfo && continue
+  if mount --bind "$dir" "$dir" 2>/dev/null; then
+    mount -o remount,bind,ro "$dir" 2>/dev/null || umount "$dir" 2>/dev/null
+  fi
+done
 
 # Every file mise reads a Toolchain declaration from (mise.<env>.toml aside).
 has_mise_config() {

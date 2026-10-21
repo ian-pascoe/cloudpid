@@ -7,8 +7,10 @@ export {
   type ComputerWorkspaceStub,
 } from "./env.ts";
 
+export { posixCode } from "./failure.ts";
+
 export { ComputerFiles } from "./files.ts";
 
-export { ensureDirectory, READERS_DIR, WorkspaceEnvHost } from "./host.ts";
+export { ensureDirectory, READERS_DIR, type ReadEnv, WorkspaceEnvHost } from "./host.ts";
 
-export type { EnvRequest, EnvResponse, HostOperation } from "./wire.ts";
+export type { EnvRequest, EnvResponse, HostOperation, WireSkill } from "./wire.ts";

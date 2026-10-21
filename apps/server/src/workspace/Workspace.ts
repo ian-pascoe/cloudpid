@@ -25,6 +25,7 @@ import {
   type HostOperation,
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
+import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import { DurableObject } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
@@ -36,6 +37,7 @@ import {
   workspaceSettingsStore,
   type WriteAnswer,
 } from "./settings.ts";
+import { discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
 import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
@@ -93,11 +95,15 @@ export class Workspace extends ContainerHost {
   readonly #container: ContainerBackend;
   readonly #idle: IdleStop;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
+  readonly #sql: SqlStorage;
+  /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
+  #mountChecked: Promise<void> | undefined;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
 
     this.#settings = workspaceSettingsStore(ctx.storage);
+    this.#sql = ctx.storage.sql;
 
     const snapshots = new ContainerSnapshots({
       // The local Container has no real mount, and no snapshots.
@@ -257,17 +263,55 @@ export class Workspace extends ContainerHost {
     return this.#container.handleFetch(request);
   }
 
+  /**
+   * The Workspace is ready once computer has indexed its mounts, which copies the bundled skills into the files the first
+   * time. A mount replaces what is at its path, so what the Workspace had at the skills' mount before is moved aside
+   * first (`keepPriorSkills`).
+   */
+  async #ready(): Promise<void> {
+    this.#mountChecked ??= keepPriorSkills({
+      fs: this.#workspace.fs,
+      // computer records a mount in its own table when it first indexes it, and never forgets it.
+      indexed: () =>
+        this.#sql.exec("SELECT 1 FROM _vfs_mounts WHERE root = ?", SKILLS_MOUNT).toArray().length >
+        0,
+      warn: (message) => console.warn(message),
+    }).then(
+      () => undefined,
+      (cause: unknown) => {
+        // Checked again by the next call: nothing is indexed over files that could not be moved.
+        this.#mountChecked = undefined;
+
+        throw cause;
+      },
+    );
+
+    await this.#mountChecked;
+    await this.#workspace.ready();
+  }
+
+  /**
+   * The skills a conversation in `cwd` can use: the `skills` section's discovery, run next to the files, so a request
+   * costs this one call instead of a listing per directory and a read per skill. The bundled skills are known from the
+   * bundle and parsed once per version, and only the repo's own are read.
+   */
+  async skills(cwd: string): Promise<ReadonlyArray<Skill>> {
+    await this.#ready();
+
+    return discoverWorkspaceSkills(this.#host.readEnv(cwd), BUNDLED_SKILLS);
+  }
+
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */
   async __getWorkspaceStub(): Promise<WorkspaceStub> {
-    await this.#workspace.ready();
+    await this.#ready();
 
     return this.workspaceStub(this.#workspace);
   }
 
   /** One of `ComputerExecutionEnv`'s file operations, answered as plain data. */
   async fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
-    // The bundled skills are copied into the files the first time the mounts are indexed, which `ready()` does once.
-    await this.#workspace.ready();
+    // The bundled skills are copied into the files the first time the mounts are indexed, which `#ready()` does once.
+    await this.#ready();
 
     return this.#host.handle(request);
   }

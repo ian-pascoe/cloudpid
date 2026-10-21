@@ -31,6 +31,7 @@ import { join, resolve } from "./paths.ts";
 import { inBash } from "./shell.ts";
 import { ComputerBinaryReader, ComputerDirReader, ComputerTextLineReader } from "./readers.ts";
 import { type PollingOptions, PollingWatcher } from "./watch.ts";
+import type { WireSkill } from "./wire.ts";
 
 /**
  * A Workspace DO stub: computer's `__getWorkspaceStub()`, which `getWorkspace()` calls for exec, and the file operations
@@ -367,6 +368,18 @@ export class ComputerExecutionEnv implements ExecutionEnv {
       options,
       context,
     );
+  }
+
+  /**
+   * The skills a conversation in this environment's `cwd` can use, found by the Workspace DO next to the files: one
+   * RPC call however many directories and skills there are (the extensions package's `SkillSource`).
+   */
+  async discoverSkills(context: Context): Promise<ReadonlyArray<WireSkill>> {
+    if (context.abortSignal?.aborted === true) throw new Error("aborted");
+
+    // SAFETY: the Workspace DO answers `skills` with the array of plain data it found; a stub's RPC types only
+    // rewrite its declared type.
+    return (await this.#workspace.skills(this.cwd)) as ReadonlyArray<WireSkill>;
   }
 
   /** Kill the commands this environment still runs. */

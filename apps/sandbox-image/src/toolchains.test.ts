@@ -90,8 +90,8 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
   );
   chmodSync(join(bin, "mise"), 0o755);
 
-  const run = (env: Record<string, string> = {}) =>
-    spawnSync("bash", ["-c", bootstrapScript(root)], {
+  const run = (env: Record<string, string> = {}, readOnly: readonly string[] = []) =>
+    spawnSync("bash", ["-c", bootstrapScript(root, readOnly)], {
       encoding: "utf8",
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -102,7 +102,7 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
 
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 
-  return { root, home, run, calls };
+  return { base, bin, root, home, run, calls };
 };
 
 const LOCK = "mise lock --global --platform linux-x64";
@@ -219,6 +219,96 @@ describe("the bootstrap", () => {
     const { run } = sandbox({ miseExit: 3 });
 
     expect(run().status).toBe(3);
+  });
+});
+
+describe("the bootstrap's read-only directories", () => {
+  /** `mount` and `umount` on PATH that log their arguments; the nth `mount` exits with `status.mount[n]` (the last one after that). */
+  const withMount = (
+    box: ReturnType<typeof sandbox>,
+    status: { readonly mount?: ReadonlyArray<number> } = {},
+  ) => {
+    const log = join(box.base, "mount.log");
+    const codes = join(box.base, "mount.codes");
+
+    writeFileSync(codes, `${(status.mount ?? [0]).join("\n")}\n`);
+    writeFileSync(
+      join(box.bin, "mount"),
+      `#!/bin/sh\necho "mount $*" >> ${log}\nn=$(grep -c '^mount' ${log})\ncode=$(sed -n "$n"p ${codes})\n[ -n "$code" ] || code=$(tail -n 1 ${codes})\nexit "$code"\n`,
+    );
+    writeFileSync(join(box.bin, "umount"), `#!/bin/sh\necho "umount $*" >> ${log}\n`);
+    chmodSync(join(box.bin, "mount"), 0o755);
+    chmodSync(join(box.bin, "umount"), 0o755);
+
+    return () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+  };
+
+  it("remounts a directory the Workspace holds read-only as read-only, so a write inside the Container fails", () => {
+    const box = sandbox();
+    const skills = join(box.root, ".agents/skills");
+    const mounts = withMount(box);
+
+    mkdirSync(skills, { recursive: true });
+    writeFileSync(join(box.root, "mise.toml"), "[tools]\n");
+
+    const result = box.run({}, [skills]);
+
+    expect(result.status).toBe(0);
+    expect(mounts()).toEqual([
+      `mount --bind ${skills} ${skills}`,
+      `mount -o remount,bind,ro ${skills}`,
+    ]);
+    // It was done before the Toolchains, and they were installed all the same.
+    expect(box.calls()).toEqual([`${box.root}: ${LOCK}`, `${box.root}: mise install`]);
+  });
+
+  it("leaves a directory that is not there alone", () => {
+    const box = sandbox();
+    const mounts = withMount(box);
+
+    writeFileSync(join(box.root, "mise.toml"), "[tools]\n");
+
+    expect(box.run({}, [join(box.root, ".agents/skills")]).status).toBe(0);
+    expect(mounts()).toEqual([]);
+  });
+
+  it("mounts nothing where no directory is read-only", () => {
+    const box = sandbox();
+    const mounts = withMount(box);
+
+    writeFileSync(join(box.root, "mise.toml"), "[tools]\n");
+
+    expect(box.run().status).toBe(0);
+    expect(mounts()).toEqual([]);
+  });
+
+  it("does not fail the bootstrap where a Container cannot mount (no capability, or no FUSE)", () => {
+    const box = sandbox();
+    const skills = join(box.root, ".agents/skills");
+    const mounts = withMount(box, { mount: [1] });
+
+    mkdirSync(skills, { recursive: true });
+    writeFileSync(join(box.root, "mise.toml"), "[tools]\n");
+
+    expect(box.run({}, [skills]).status).toBe(0);
+    expect(mounts()).toEqual([`mount --bind ${skills} ${skills}`]);
+    expect(box.calls()).toContain(`${box.root}: mise install`);
+  });
+
+  it("takes the writable mount away when it cannot be made read-only", () => {
+    const box = sandbox();
+    const skills = join(box.root, ".agents/skills");
+    const mounts = withMount(box, { mount: [0, 1] });
+
+    mkdirSync(skills, { recursive: true });
+    writeFileSync(join(box.root, "mise.toml"), "[tools]\n");
+
+    expect(box.run({}, [skills]).status).toBe(0);
+    expect(mounts()).toEqual([
+      `mount --bind ${skills} ${skills}`,
+      `mount -o remount,bind,ro ${skills}`,
+      `umount ${skills}`,
+    ]);
   });
 });
 

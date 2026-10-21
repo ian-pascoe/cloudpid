@@ -20,6 +20,7 @@ import {
   toolchainEnv,
   WORKSPACE_ROOT,
 } from "@cloudpid/sandbox-image/toolchains";
+import { SKILLS_MOUNT } from "./binding.ts";
 import { Redactor } from "./redact.ts";
 
 type Shell = BackendHandle["rpc"]["shell"];
@@ -59,6 +60,9 @@ export type ToolchainOptions = {
   readonly warn: (message: string) => void;
   readonly now: () => number;
 };
+
+/** What the Workspace holds read-only: the Container makes it so too, or a write there would stay on the Container. */
+const READ_ONLY_DIRECTORIES = [SKILLS_MOUNT];
 
 export class ToolchainBackend implements WorkspaceBackend {
   readonly #options: ToolchainOptions;
@@ -184,7 +188,7 @@ export class ToolchainBackend implements WorkspaceBackend {
     try {
       const execution = await shell.exec({
         id: crypto.randomUUID(),
-        source: inBash(bootstrapScript(WORKSPACE_ROOT)),
+        source: inBash(bootstrapScript(WORKSPACE_ROOT, READ_ONLY_DIRECTORIES)),
         cwd: WORKSPACE_ROOT,
         timeoutMs: BOOTSTRAP_TIMEOUT_MS,
         env: { ...this.#env, ...identity },
