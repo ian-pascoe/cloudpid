@@ -26,13 +26,20 @@ import {
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
 import { DurableObject } from "cloudflare:workers";
+import type * as Schema from "effect/Schema";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { workerShellGit } from "./git.ts";
-import { IDLE_STOP_MS, IdleStop } from "./idle.ts";
+import { IdleStop } from "./idle.ts";
+import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
+import {
+  type WorkspaceSettingsAnswer,
+  workspaceSettingsStore,
+  type WriteAnswer,
+} from "./settings.ts";
+import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
 import {
-  DEFAULT_INSTANCE,
   SKILLS_MOUNT,
   WORKSPACE_CONTAINER,
   WORKSPACE_BINDING,
@@ -63,6 +70,13 @@ const ContainerHost = withWorkspaceContainer(class extends DurableObject<Workspa
 /** Where the last use of the Container is kept, for an alarm that wakes an evicted object. */
 const LAST_USE_KEY = "cloudpid:container-last-use";
 
+/** Where the Container's launch (its instance type, idle time, snapshot) and its latest snapshot are kept. */
+const LAUNCH_KEY = "cloudpid:container-launch";
+const SNAPSHOT_KEY = "cloudpid:container-snapshot";
+
+/** How long a snapshot may take: a big disk, written to the platform's storage. */
+const SNAPSHOT_TIMEOUT_MS = 2 * 60_000;
+
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
 export const CONTAINER_BACKEND_ID = "container-shell";
 
@@ -71,27 +85,72 @@ export class Workspace extends ContainerHost {
   readonly #host: WorkspaceEnvHost;
   readonly #container: ContainerBackend;
   readonly #idle: IdleStop;
+  readonly #settings: ReturnType<typeof workspaceSettingsStore>;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
 
+    this.#settings = workspaceSettingsStore(ctx.storage);
+
+    const snapshots = new ContainerSnapshots({
+      // The local Container has no real mount, and no snapshots.
+      enabled: env.CONTAINER_FUSE !== "false",
+      secret: env.CLOUDPID_GITHUB_TOKEN,
+      timeoutMs: SNAPSHOT_TIMEOUT_MS,
+      image: () => ctx.container?.images[WORKSPACE_CONTAINER],
+      running: () => ctx.container?.running === true,
+      snapshot: (name) => {
+        if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
+
+        return ctx.container.snapshotContainer({ name });
+      },
+      scan: (secret) => {
+        if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
+
+        return scanContainerDisk(ctx.container, secret);
+      },
+      load: () => ctx.storage.get<SnapshotRecord>(SNAPSHOT_KEY),
+      save: (record) => ctx.storage.put(SNAPSHOT_KEY, record),
+      clear: async () => {
+        await ctx.storage.delete(SNAPSHOT_KEY);
+      },
+      now: () => Date.now(),
+      warn: (message) => console.warn(message),
+      info: (message) => console.info(message),
+    });
+
+    // The size and idle time of each launch are the Workspace's settings at that moment, and a snapshot is restored.
+    const launch = new ContainerLaunch({
+      settings: async () => (await this.#settings.read()).settings,
+      snapshots,
+      load: () => ctx.storage.get<LaunchRecord>(LAUNCH_KEY),
+      save: (record) => ctx.storage.put(LAUNCH_KEY, record),
+      running: () => ctx.container?.running === true,
+      now: () => Date.now(),
+      warn: (message) => console.warn(message),
+    });
+
     this.#idle = new IdleStop({
-      idleMs: IDLE_STOP_MS,
+      idleMs: () => launch.idleMs(),
       now: () => Date.now(),
       load: () => ctx.storage.get<number>(LAST_USE_KEY),
       save: (at) => ctx.storage.put(LAST_USE_KEY, at),
       setAlarm: (at) => ctx.storage.setAlarm(at),
       stop: async () => {
-        if (ctx.container?.running === true) await ctx.container.destroy();
+        if (ctx.container?.running !== true) return;
+
+        // The disk is snapshotted while the Container is idle, so the next launch restores the Toolchains.
+        await snapshots.take("idle");
+        await ctx.container.destroy();
       },
     });
 
     // The Container starts when a command first asks for it, not with the object.
     const container: ContainerBackendOptions = {
-      container: () => this,
+      // The launch goes through `launch`, which picks the instance type and the snapshot.
+      container: () => ({ getWorkspaceContainer: () => launch.wrap(this.getWorkspaceContainer()) }),
       workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
       name: WORKSPACE_CONTAINER,
-      instance: DEFAULT_INSTANCE,
       // Unrestricted direct egress in v1, not logged (docs/spec.md → Container and Toolchains).
       egress: { mode: "direct" },
     };
@@ -108,6 +167,8 @@ export class Workspace extends ContainerHost {
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
+      // Once the Toolchains are installed in a Container that started from the image, its disk is snapshotted.
+      afterInstall: () => launch.afterInstall(),
       git: { name: env.CLOUDPID_GIT_NAME, email: env.CLOUDPID_GIT_EMAIL },
       warn: (message) => console.warn(message),
       now: () => Date.now(),
@@ -161,6 +222,19 @@ export class Workspace extends ContainerHost {
         return noopObserver.span(name, attributes, run).finally(touch);
       },
     };
+  }
+
+  /** The Workspace's own settings in force (Container size and idle time), for the UI: `getWorkspaceSettings`. */
+  containerSettings(): Promise<WorkspaceSettingsAnswer> {
+    return this.#settings.read();
+  }
+
+  /**
+   * Replace the saved overrides of the Workspace's settings: `updateWorkspaceSettings`. Overrides that do not resolve
+   * are refused and nothing is saved. A Container that runs keeps the settings it launched with.
+   */
+  updateContainerSettings(overrides: Schema.Json): Promise<WriteAnswer> {
+    return this.#settings.write(overrides);
   }
 
   /** The idle stop's alarm. */

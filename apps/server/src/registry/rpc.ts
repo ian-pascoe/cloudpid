@@ -11,16 +11,21 @@ import * as Layer from "effect/Layer";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 import type { Repos } from "../workspace/repos.ts";
+import type { WorkspaceSettingsRemote } from "../workspace/settings.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import { SettingsUpdate } from "./settings.ts";
 
 /**
  * The main Worker's `RegistryRpcs` endpoint (`docs/spec.md` → Client and protocol): Effect RPC over HTTP with JSON
- * serialization, answered by the Registry DO, except for what needs a Workspace's files: `repos` lists the repos of a
- * Workspace and clones into one. It is reachable only through the Access gate in front of the Worker.
+ * serialization, answered by the Registry DO, except for what needs a Workspace's own object: `repos` lists the repos
+ * of a Workspace and clones into one, and `workspaceSettings` reads and saves its Container size and idle time. It is reachable only through the Access gate in front of the Worker.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
-export const serveRegistryRpc = (registries: Cloudflare.DurableObject<Registry>, repos: Repos) =>
+export const serveRegistryRpc = (
+  registries: Cloudflare.DurableObject<Registry>,
+  repos: Repos,
+  workspaceSettings: WorkspaceSettingsRemote,
+) =>
   Effect.gen(function* () {
     const registry = registries.getByName(REGISTRY_NAME);
 
@@ -71,6 +76,19 @@ export const serveRegistryRpc = (registries: Cloudflare.DurableObject<Registry>,
           yield* inWorkspace("Clone failed", () => repos.clone(workspace, repo));
 
           return repo.name;
+        }),
+      getWorkspaceSettings: ({ workspace }) =>
+        inWorkspace("Could not read the Workspace's settings", () =>
+          workspaceSettings.read(workspace),
+        ),
+      updateWorkspaceSettings: ({ workspace, overrides }) =>
+        Effect.gen(function* () {
+          const answer = yield* inWorkspace("Could not save the Workspace's settings", () =>
+            workspaceSettings.write(workspace, overrides),
+          );
+
+          // Overrides that do not resolve say why, one problem per line, and nothing was saved.
+          return answer.ok ? answer.state : yield* failed(answer.message);
         }),
       getSettings: () => registry.getSettings(),
       getPush: ({ endpoint }) => registry.getPush({ endpoint }),

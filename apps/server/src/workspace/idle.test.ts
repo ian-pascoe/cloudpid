@@ -30,7 +30,7 @@ const open = (idleMs = 15 * MINUTE) => {
 
   const make = () =>
     new IdleStop({
-      idleMs,
+      idleMs: async () => idleMs,
       now: () => state.now,
       load: async () => state.saved,
       save: async (at) => {
@@ -64,6 +64,26 @@ const open = (idleMs = 15 * MINUTE) => {
 };
 
 describe("IdleStop", () => {
+  it("stops after the configured idle time, whatever it is", async () => {
+    const { state, idle, fire } = open(5 * MINUTE);
+
+    await idle.touch();
+    expect(state.alarm).toBe(state.now + 5 * MINUTE);
+
+    state.now += 3 * MINUTE;
+    await idle.touch();
+
+    await fire(idle);
+
+    // The alarm found the Container used 3 minutes ago, and waits for the rest of the 5.
+    expect(state.stops).toBe(0);
+    expect(state.alarm).toBe(state.now + 3 * MINUTE);
+
+    await fire(idle);
+
+    expect(state.stops).toBe(1);
+  });
+
   it("stops the Container once the idle time has passed without use", async () => {
     const { state, idle, fire } = open();
 

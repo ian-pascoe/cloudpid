@@ -2,24 +2,22 @@
 // connection to computerd (a WebSocket, a heartbeat timer, a container monitor) keeps the Workspace DO in memory, and
 // the platform's own inactivity timeout never fires. So the Workspace stops it: every use of the Container records the
 // time, and a Durable Object alarm destroys the Container once the idle time has passed without one. A command that is
-// still running counts as use (`begin`/`end`): the alarm only waits again while one runs. Minimal on purpose: the idle
-// time is fixed and nothing is snapshotted first. The configurable time and snapshots come with #24 (snapshots and
-// idle stop).
+// still running counts as use (`begin`/`end`): the alarm only waits again while one runs. The idle time is the
+// Workspace's setting at the Container's launch (`ContainerLaunch.idleMs`), and the Workspace snapshots the Container's
+// disk before it stops it (`stop`).
 
 // @effect-diagnostics asyncFunction:off globalDate:off
 
-/** How long the Container may go unused before it is stopped (docs/spec.md: 15 minutes). */
-export const IDLE_STOP_MS = 15 * 60_000;
-
 /** The Workspace DO's side of the idle stop: its clock, its alarm and storage, and the Container. */
 export type IdleStopDeps = {
-  readonly idleMs: number;
+  /** How long the Container may go unused before it is stopped: the idle time it was launched with. */
+  readonly idleMs: () => Promise<number>;
   readonly now: () => number;
   /** The last use recorded in storage, if any. */
   readonly load: () => Promise<number | undefined>;
   readonly save: (at: number) => Promise<void>;
   readonly setAlarm: (at: number) => Promise<void>;
-  /** Stop the Container. */
+  /** Snapshot the Container, then stop it. */
   readonly stop: () => Promise<void>;
 };
 
@@ -41,14 +39,16 @@ export class IdleStop {
 
     this.#lastUse = at;
 
+    const idleMs = await this.#deps.idleMs();
+
     if (!this.#armed) {
       // Armed only once the alarm is set: a failed write leaves the next use to try again.
-      await this.#deps.setAlarm(at + this.#deps.idleMs);
+      await this.#deps.setAlarm(at + idleMs);
       this.#armed = true;
     }
 
     // Storage is written at most this often: an evicted object then wakes to a use that is at most this old.
-    if (this.#saved === undefined || at - this.#saved >= Math.min(30_000, this.#deps.idleMs / 4)) {
+    if (this.#saved === undefined || at - this.#saved >= Math.min(30_000, idleMs / 4)) {
       await this.#deps.save(at);
       this.#saved = at;
     }
@@ -72,8 +72,10 @@ export class IdleStop {
   async alarm(): Promise<void> {
     this.#armed = false;
 
+    const idleMs = await this.#deps.idleMs();
+
     if (this.#running > 0) {
-      await this.#deps.setAlarm(this.#deps.now() + this.#deps.idleMs);
+      await this.#deps.setAlarm(this.#deps.now() + idleMs);
       this.#armed = true;
 
       return;
@@ -83,7 +85,7 @@ export class IdleStop {
 
     if (lastUse === undefined) return;
 
-    const due = lastUse + this.#deps.idleMs;
+    const due = lastUse + idleMs;
 
     if (this.#deps.now() < due) {
       await this.#deps.setAlarm(due);
