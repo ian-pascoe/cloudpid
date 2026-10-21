@@ -19,6 +19,7 @@ import { serveRegistryRpc, type SessionObjects } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
 import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { serveAttachment } from "./serve-attachment.ts";
+import { IMAGES_BINDING } from "./session/images.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
@@ -124,6 +125,8 @@ const props = Effect.gen(function* () {
       ...(yield* workspaceBinding),
       ...(yield* sandboxBinding),
       ...(yield* browserBinding),
+      // The Images binding the Session DOs' `read` prepares images with; `alchemy dev` emulates it with sharp.
+      [IMAGES_BINDING]: Cloudflare.Images.Images(IMAGES_BINDING),
     },
   };
 });

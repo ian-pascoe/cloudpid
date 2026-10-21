@@ -8,6 +8,7 @@ import {
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
+import { Images } from "@cloudpid/extensions/images";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
@@ -38,6 +39,7 @@ import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { sessionExtensions } from "./extensions.ts";
+import { IMAGES_BINDING } from "./images.ts";
 import { NOTIFY_TIMEOUT, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import {
   reloadSessionExtensions,
@@ -302,6 +304,8 @@ export const SessionLive = Session.make(
                   ]),
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
+                  // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
+                  Effect.provideService(Images, worker[IMAGES_BINDING] as ImagesBinding),
                   // For extensions that need the owner (a Live View link, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
                   Effect.provideService(CodemodeSandbox, sandbox),

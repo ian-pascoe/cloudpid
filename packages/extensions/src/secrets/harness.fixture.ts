@@ -38,7 +38,7 @@ import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import { CodingTools } from "../coding-tools.ts";
+import { codingTools } from "../coding-tools.ts";
 import { secretsExtension } from "./extension.ts";
 import { scrubbingModels } from "./models.ts";
 import { type SecretAsk, Secrets, secretsLayer, type SecretStorage } from "./store.ts";
@@ -197,11 +197,12 @@ export const openSecretsHarness = async (
   );
 
   const resolving = usingSecrets(recorded);
+  const coding = codingTools();
 
   const extensions = await runtime.runPromise(
     Effect.all([
       Program,
-      secretsExtension([...(CodingTools.tools ?? []), ...(resolving.tools ?? [])]),
+      secretsExtension([...(coding.tools ?? []), ...(resolving.tools ?? [])]),
     ]).pipe(Effect.provideService(Secrets, secrets)),
   );
 
@@ -222,7 +223,7 @@ export const openSecretsHarness = async (
       return script.shift() ?? answer("done");
     }),
   );
-  registry.install(CodingTools);
+  registry.install(coding);
   registry.install(resolving);
   registry.install(defineExtension({ name: "program", tools: [program] }));
 

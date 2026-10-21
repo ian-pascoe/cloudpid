@@ -69,6 +69,8 @@ export default defineConfig({
                 CODEMODE_SESSIONS: { className: "TestCodemodeSession", useSQLite: true },
                 CODEMODE_SANDBOX: { className: "CodemodeSandbox", useSQLite: true },
               },
+              // The Session's `read` prepares images with it; miniflare emulates it with sharp.
+              images: { binding: "IMAGES" },
               workerLoaders: { LOADER: {} },
               // pi-codemode's QuickJS engine is a `.wasm` import, which Wrangler compiles by default.
               modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],

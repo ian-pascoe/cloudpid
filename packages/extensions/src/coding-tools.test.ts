@@ -3,6 +3,8 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { describe, expect, it } from "vitest";
 import { type BackendCall, openCodingHarness } from "./coding-tools.fixture.ts";
+import { fakeImage, fakeImages } from "./images.fixture.ts";
+import { MAX_IMAGE_CHARACTERS, MAX_IMAGE_FILE_BYTES } from "./images.ts";
 
 describe("bash", () => {
   it.each([
@@ -109,5 +111,80 @@ describe("bash", () => {
     expect(tool("bash")?.description).toMatch(/automatic/i);
     expect(tool("bash")?.description).toMatch(/override|explicit/i);
     expect(JSON.stringify(tool("bash")?.parameters)).toContain("container");
+  });
+});
+
+describe("read", () => {
+  const PHOTO = "/workspace/photo.jpg";
+
+  it("gives the model an image over the conversation's bound reduced to fit it, and says so", async () => {
+    const { images } = fakeImages({ bytesPerPixel: () => 0.05 });
+
+    const { call } = await openCodingHarness({
+      backends: true,
+      files: { [PHOTO]: fakeImage(4000, 3000, 3_000_000, true) },
+      images,
+    });
+
+    const result = await call("read", { path: "photo.jpg" });
+
+    expect(result.isError).toBe(false);
+    expect(result.images).toHaveLength(1);
+    expect(result.images?.[0]?.data.length).toBeLessThanOrEqual(MAX_IMAGE_CHARACTERS);
+    expect(result.text).toContain("Resized from 4000x3000 to 2000x1500");
+  });
+
+  it("leaves out an image it cannot reduce, and tells the model why", async () => {
+    const { images } = fakeImages({ leastBytes: 600_000 });
+
+    const { call } = await openCodingHarness({
+      backends: true,
+      files: { [PHOTO]: fakeImage(4000, 3000, 3_000_000, true) },
+      images,
+    });
+
+    const result = await call("read", { path: "photo.jpg" });
+
+    expect(result.isError).toBe(true);
+    expect(result.images).toBeUndefined();
+    expect(result.text).toContain(
+      "photo.jpg is an image (image/jpeg) that was left out: it could not be reduced to 750,000 base64 characters",
+    );
+  });
+
+  it("leaves out an image when the Images binding fails, and tells the model why", async () => {
+    const { images } = fakeImages({ failing: "ERROR 9422: monthly transformations exceeded" });
+
+    const { call } = await openCodingHarness({
+      backends: true,
+      files: { [PHOTO]: fakeImage(4000, 3000, 3_000_000, true) },
+      images,
+    });
+
+    const result = await call("read", { path: "photo.jpg" });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(
+      "was left out: the image service failed (ERROR 9422: monthly transformations exceeded)",
+    );
+  });
+
+  it("leaves out an image file over the Images binding's input limit without reading it", async () => {
+    const { images, outputs } = fakeImages();
+
+    const { call, reads } = await openCodingHarness({
+      backends: true,
+      files: { [PHOTO]: fakeImage(8000, 6000, 25 * 1024 * 1024, true) },
+      images,
+    });
+
+    const result = await call("read", { path: "photo.jpg" });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(
+      "photo.jpg is an image file of 25.0 MB, over the 20.0 MB an image may be; it was left out",
+    );
+    expect(reads.largest).toBeLessThan(MAX_IMAGE_FILE_BYTES);
+    expect(outputs).toEqual([]);
   });
 });

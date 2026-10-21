@@ -7,7 +7,13 @@
 // with no backends runs every command on itself.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  defineTool,
+  type Extension,
+  type ToolRegistration,
+} from "@earendil-works/pi-durable";
+import * as Effect from "effect/Effect";
 import {
   createBashTool,
   createEditTool,
@@ -16,6 +22,7 @@ import {
 } from "@earendil-works/pi-durable/tools";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { routeCommand } from "./bash-routing.ts";
+import { Images, type ImagesService, readTool } from "./images.ts";
 
 /** Where a `bash` command can run: the Worker Shell (`worker`) or the Container (`container`). */
 export type BashBackend = "worker" | "container";
@@ -71,8 +78,25 @@ const bash: ToolRegistration<typeof parameters> = defineTool({
   },
 });
 
+/** What the coding tools are built with. */
+export type CodingToolsOptions = {
+  /** The Images binding `read` prepares images with (`./images.ts`); without one, pi-durable's own checks apply. */
+  readonly images?: ImagesService;
+};
+
 /** `read`, `write`, `edit`, and `bash` with a `backend` argument. */
-export const CodingTools = defineExtension({
-  name: "coding-tools",
-  tools: [createReadTool(), createWriteTool(), createEditTool(), bash],
-});
+export const codingTools = (options: CodingToolsOptions = {}): Extension =>
+  defineExtension({
+    name: "coding-tools",
+    tools: [
+      options.images === undefined ? createReadTool() : readTool(options.images),
+      createWriteTool(),
+      createEditTool(),
+      bash,
+    ],
+  });
+
+/** The coding tools, with `read` preparing images through the Session's `Images` binding. */
+export const CodingTools: Effect.Effect<Extension, never, Images> = Effect.map(Images, (images) =>
+  codingTools({ images }),
+);
