@@ -3,6 +3,7 @@
 import { SessionNotFound, type SessionRecord } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as Atom from "effect/reactivity/Atom";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vitest";
 import { failureOf } from "./registry.ts";
@@ -155,9 +156,36 @@ describe("the Session list", () => {
         null,
       );
 
-      registry.set(deleteSessionAtom, "a");
-      yield* settled(registry, deleteSessionAtom);
+      registry.set(deleteSessionAtom("a"), undefined);
+      yield* settled(registry, deleteSessionAtom("a"));
       expect(ids(yield* settled(registry, sessionsAtom))).toEqual(["b"]);
+    }),
+  );
+
+  it.effect("keeps one Session's delete apart from another's, and forgets it when reset", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        deleteSession: ({ id }) =>
+          id === "slow"
+            ? Effect.never
+            : Effect.fail(SessionNotFound.make({ message: "No such session." })),
+      });
+
+      registry.mount(deleteSessionAtom("slow"));
+      registry.mount(deleteSessionAtom("gone"));
+      registry.set(deleteSessionAtom("slow"), undefined);
+      registry.set(deleteSessionAtom("gone"), undefined);
+
+      expect(registry.get(deleteSessionAtom("slow")).waiting).toBe(true);
+      expect(failureOf(yield* settled(registry, deleteSessionAtom("gone")))).toBe(
+        "No such session.",
+      );
+      expect(registry.get(deleteSessionAtom("slow")).waiting).toBe(true);
+
+      registry.set(deleteSessionAtom("gone"), Atom.Reset);
+
+      expect(AsyncResult.isInitial(registry.get(deleteSessionAtom("gone")))).toBe(true);
+      registry.dispose();
     }),
   );
 

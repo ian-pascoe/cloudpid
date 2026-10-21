@@ -57,8 +57,8 @@ describe("leaving a Session's page", () => {
     Effect.gen(function* () {
       const registry = showing(sessionPath("a"), [session("a"), session("b")]);
 
-      registry.set(deleteSessionAtom, "a");
-      yield* settled(registry, deleteSessionAtom);
+      registry.set(deleteSessionAtom("a"), undefined);
+      yield* settled(registry, deleteSessionAtom("a"));
 
       expect(registry.get(pathAtom)).toBe("/");
       expect(registry.get(noticeAtom)).toBe("Session deleted.");
@@ -69,8 +69,8 @@ describe("leaving a Session's page", () => {
     Effect.gen(function* () {
       const registry = showing(sessionPath("a"), [session("a"), session("b")]);
 
-      registry.set(deleteSessionAtom, "b");
-      yield* settled(registry, deleteSessionAtom);
+      registry.set(deleteSessionAtom("b"), undefined);
+      yield* settled(registry, deleteSessionAtom("b"));
 
       expect(registry.get(pathAtom)).toBe(sessionPath("a"));
       expect(registry.get(noticeAtom)).toBe(null);
@@ -81,9 +81,9 @@ describe("leaving a Session's page", () => {
     Effect.gen(function* () {
       const registry = showing(sessionPath("stuck"), [session("stuck")]);
 
-      registry.set(deleteSessionAtom, "stuck");
+      registry.set(deleteSessionAtom("stuck"), undefined);
 
-      const result = yield* settled(registry, deleteSessionAtom);
+      const result = yield* settled(registry, deleteSessionAtom("stuck"));
 
       expect(AsyncResult.isFailure(result)).toBe(true);
       expect(registry.get(pathAtom)).toBe(sessionPath("stuck"));

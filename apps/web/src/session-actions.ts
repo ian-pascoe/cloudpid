@@ -1,15 +1,14 @@
-// What the owner does to a Session from the list or its page, as promises a button awaits: each resolves to null when it
-// worked, or to why it did not, for the surface it was asked on to show.
+// What the owner does to a Session from a surface that shows its failure itself, as promises that surface awaits: each
+// resolves to null when it worked, or to why it did not. An archive or unarchive also reports to the surface's `problem`.
 
 import { useAtomSet } from "@effect/atom-react";
 import type { SessionRecord } from "@cloudpid/protocol";
 import * as Exit from "effect/Exit";
-import { useMemo } from "react";
+import type * as Atom from "effect/reactivity/Atom";
 import { exitFailure } from "./registry.ts";
 import {
   archiveSessionAtom,
   createSessionAtom,
-  deleteSessionAtom,
   renameSessionAtom,
   type SessionPlace,
   unarchiveSessionAtom,
@@ -21,25 +20,36 @@ export interface SessionActions {
   readonly rename: (id: string, title: string) => Promise<string | null>;
   readonly archive: (id: string) => Promise<string | null>;
   readonly unarchive: (id: string) => Promise<string | null>;
-  readonly delete: (id: string) => Promise<string | null>;
 }
 
-export const useSessionActions = (): SessionActions => {
+/**
+ * The actions of a surface whose `problem` is the failure of its last archive or unarchive: it is cleared as one starts
+ * and set to why it failed, if it did.
+ */
+export const useSessionActions = (problem: Atom.Writable<string | null>): SessionActions => {
+  const setProblem = useAtomSet(problem);
   const create = useAtomSet(createSessionAtom, { mode: "promiseExit" });
   const rename = useAtomSet(renameSessionAtom, { mode: "promiseExit" });
   const archive = useAtomSet(archiveSessionAtom, { mode: "promiseExit" });
   const unarchive = useAtomSet(unarchiveSessionAtom, { mode: "promiseExit" });
-  const remove = useAtomSet(deleteSessionAtom, { mode: "promiseExit" });
 
-  return useMemo(
-    () => ({
-      create: (where = {}) =>
-        create(where).then((exit) => (Exit.isSuccess(exit) ? exit.value : undefined)),
-      rename: (id, title) => rename({ id, title }).then(exitFailure),
-      archive: (id) => archive(id).then(exitFailure),
-      unarchive: (id) => unarchive(id).then(exitFailure),
-      delete: (id) => remove(id).then(exitFailure),
-    }),
-    [create, rename, archive, unarchive, remove],
-  );
+  const shown = (action: (id: string) => Promise<Exit.Exit<unknown, unknown>>) => (id: string) => {
+    setProblem(null);
+
+    return action(id).then((exit) => {
+      const failure = exitFailure(exit);
+
+      setProblem(failure);
+
+      return failure;
+    });
+  };
+
+  return {
+    create: (where = {}) =>
+      create(where).then((exit) => (Exit.isSuccess(exit) ? exit.value : undefined)),
+    rename: (id, title) => rename({ id, title }).then(exitFailure),
+    archive: shown(archive),
+    unarchive: shown(unarchive),
+  };
 };

@@ -1,5 +1,5 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- browser code in a React app with no Effect runtime.
-
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import { Ellipsis } from "lucide-react";
 import { type ComponentProps, type ReactNode, useEffect, useId, useRef } from "react";
 import { cn } from "../../lib/utils.ts";
@@ -15,6 +15,7 @@ const MOVES = {
   End: (_at, count) => count - 1,
 } satisfies Readonly<Record<string, (at: number, count: number) => number>>;
 
+// @effect-diagnostics-next-line preferEffectRecord:off -- `key` is any key the DOM reports, not a key of the table.
 const isMoveKey = (key: string): key is keyof typeof MOVES => Object.hasOwn(MOVES, key);
 
 /** The menu's items that can take focus, in order. */
@@ -130,7 +131,9 @@ export const Menu = ({
 
           const items = itemsOf(event.currentTarget);
 
-          const at = items.findIndex((item) => item === document.activeElement);
+          const at = Arr.findFirstIndex(items, (item) => item === document.activeElement).pipe(
+            Option.getOrElse(() => -1),
+          );
 
           const next = items[move(at, items.length)];
 

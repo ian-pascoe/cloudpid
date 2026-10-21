@@ -1,4 +1,5 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays are the platform here.
+// @effect-diagnostics preferEffectArray:off -- plain functions over native arrays.
+
 import { TOOL_PATTERN } from "@cloudpid/config";
 
 /** The offered tools as the settings page's text box shows them: one name or pattern per line. */

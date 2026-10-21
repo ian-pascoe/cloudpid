@@ -1,11 +1,15 @@
-// The settings: the defaults a Session starts from, as the Registry holds them, and saving them.
+// The settings: the defaults a Session starts from, as the Registry holds them, saving them, and the settings form's
+// state.
 
-import { overridesFrom, type Settings } from "@cloudpid/config";
+import { DEFAULT_SETTINGS, overridesFrom, type Settings } from "@cloudpid/config";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import { offeredToText } from "./offered-tools.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
+import { spendLimitToText } from "./spend-limit.ts";
 
 /** The settings in force, and the overrides saved over the defaults. */
 export const settingsAtom = RegistryClient.query("getSettings", undefined, {
@@ -20,14 +24,63 @@ export const settingsStateAtom = Atom.map(settingsAtom, (result) =>
 /** Why the settings could not load, or null. */
 export const settingsLoadErrorAtom = Atom.map(settingsAtom, failureOf);
 
+/** Whether the form was saved and not changed since: it then says so. */
+export const justSavedAtom = Atom.make(false);
+
 /**
  * Save `settings` as overrides of the defaults, and load them again. Answers with the new state, or with why the
  * Registry refused them (its own message, which lists each problem).
  */
 export const updateSettingsAtom = appRuntime.fn(
-  (settings: Settings) =>
+  (settings: Settings, get) =>
     RegistryClient.use((registry) =>
       registry("updateSettings", { overrides: overridesFrom(settings) }),
-    ).pipe(changing(["settings"])),
+    ).pipe(
+      changing(["settings"]),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          get.set(justSavedAtom, true);
+        }),
+      ),
+      Effect.tapCause(() =>
+        Effect.sync(() => {
+          get.set(justSavedAtom, false);
+        }),
+      ),
+    ),
   { concurrent: true },
 );
+
+/**
+ * A piece of the settings form: it starts as `initial` of the settings in force when the form first reads it, and then
+ * holds what was typed, whatever the settings are asked for again (after a save, say). The page has one form, so each
+ * piece is one atom, and it starts afresh each time the page is opened.
+ */
+const formPart = <A>(
+  initial: (saved: Settings) => A,
+  afterWrite?: (ctx: Atom.WriteContext<A>) => void,
+) =>
+  Atom.writable(
+    (get): A =>
+      Option.getOrElse(get.self<A>(), () =>
+        initial(get(settingsStateAtom)?.settings ?? DEFAULT_SETTINGS),
+      ),
+    (ctx, value: A) => {
+      ctx.setSelf(value);
+      afterWrite?.(ctx);
+    },
+  );
+
+/** The settings the form holds; changing them takes the "Saved" away. */
+export const settingsDraftAtom = formPart(
+  (saved) => saved,
+  (ctx) => {
+    ctx.set(justSavedAtom, false);
+  },
+);
+
+/** What is typed in the offered tools' text box; the draft holds what it parses to. */
+export const offeredTextAtom = formPart((saved) => offeredToText(saved.tools.offered));
+
+/** What is typed in the spend limit's box; the draft holds what it parses to, when it parses. */
+export const limitTextAtom = formPart((saved) => spendLimitToText(saved.spendLimit.perSession));

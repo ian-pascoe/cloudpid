@@ -1,64 +1,47 @@
-// @effect-diagnostics asyncFunction:off -- browser code in a React app with no Effect runtime: promises are the platform here.
-
 import type { SessionRecord } from "@cloudpid/protocol";
+import { useAtom, useAtomSet } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, Trash2 } from "lucide-react";
-import { useState } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
+import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
 import type { SessionActions as AllSessionActions } from "./session-actions.ts";
+import { deleteSessionAtom } from "./sessions.ts";
 
-/** What a Session's menu does: archive, unarchive and delete, through the Session list. */
-export type SessionActions = Pick<AllSessionActions, "archive" | "unarchive" | "delete">;
+/** What a Session's menu does besides delete: archive and unarchive, through the Session list. */
+export type SessionActions = Pick<AllSessionActions, "archive" | "unarchive">;
+
+/** Whether a menu's delete dialog is open; each menu has its own, since a Session's page and its list item both have one. */
+const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
 
 /**
  * Confirm deleting a Session: what goes (its conversations and history) and what stays (its files). Deleting a running
  * Session stops it first, which the dialog says.
  */
-export const DeleteSessionDialog = ({
+const DeleteSessionDialog = ({
   session,
   workspaceName,
-  open,
-  onClose,
-  deleteSession,
 }: {
   session: SessionRecord;
   workspaceName: string;
-  open: boolean;
-  onClose: () => void;
-  deleteSession: SessionActions["delete"];
 }) => {
-  const [deleting, setDeleting] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [open, setOpen] = useAtom(DeleteOpen.use());
+  const [deleted, remove] = useAtom(deleteSessionAtom(session.id));
+  const deleting = deleted.waiting;
+  const problem = settledFailureOf(deleted);
 
   const close = () => {
-    if (deleting) return;
-
-    setProblem(null);
-    onClose();
-  };
-
-  const confirm = async () => {
-    setDeleting(true);
-    setProblem(null);
-
-    const failure = await deleteSession(session.id);
-
-    setDeleting(false);
-
-    if (failure !== null) {
-      setProblem(failure);
-
-      return;
-    }
-
-    onClose();
+    if (!deleting) setOpen(false);
   };
 
   return (
     <Dialog
-      open={open}
+      // Once it is deleted the dialog is done, even before the list stops showing the Session.
+      open={open && !(AsyncResult.isSuccess(deleted) && !deleting)}
       onClose={close}
       dismissible={!deleting}
       title="Delete this session?"
@@ -80,7 +63,7 @@ export const DeleteSessionDialog = ({
         <Button variant="outline" disabled={deleting} onClick={close}>
           Cancel
         </Button>
-        <Button variant="destructive" disabled={deleting} onClick={() => void confirm()}>
+        <Button variant="destructive" disabled={deleting} onClick={() => remove()}>
           {deleting ? "Deleting…" : "Delete session"}
         </Button>
       </DialogActions>
@@ -88,31 +71,21 @@ export const DeleteSessionDialog = ({
   );
 };
 
-/**
- * A Session's "⋯" menu: archive or unarchive it, or delete it after a confirmation. A menu has no room for a failure, so
- * an archive or unarchive that failed goes to `onFailure`, for the surface it is on to show.
- */
-export const SessionMenu = ({
+const Actions = ({
   session,
   workspaceName,
   actions,
-  onFailure,
   className,
 }: {
   session: SessionRecord;
   workspaceName: string;
   actions: SessionActions;
-  onFailure: (message: string) => void;
-  className?: string;
+  className?: string | undefined;
 }) => {
-  const [deleting, setDeleting] = useState(false);
+  const setOpen = useAtomSet(DeleteOpen.use());
+  // A delete that failed shows no more once the dialog is opened again.
+  const forgetDelete = useAtomSet(deleteSessionAtom(session.id));
   const archived = session.archivedAt !== null;
-
-  const run = (action: Promise<string | null>) => {
-    void action.then((failure) => {
-      if (failure !== null) onFailure(failure);
-    });
-  };
 
   return (
     <>
@@ -120,7 +93,7 @@ export const SessionMenu = ({
         {archived ? (
           <MenuItem
             onSelect={() => {
-              run(actions.unarchive(session.id));
+              void actions.unarchive(session.id);
             }}
           >
             <ArchiveRestore aria-hidden />
@@ -129,7 +102,7 @@ export const SessionMenu = ({
         ) : (
           <MenuItem
             onSelect={() => {
-              run(actions.archive(session.id));
+              void actions.archive(session.id);
             }}
           >
             <Archive aria-hidden />
@@ -139,22 +112,30 @@ export const SessionMenu = ({
         <MenuItem
           destructive
           onSelect={() => {
-            setDeleting(true);
+            forgetDelete(Atom.Reset);
+            setOpen(true);
           }}
         >
           <Trash2 aria-hidden />
           Delete…
         </MenuItem>
       </Menu>
-      <DeleteSessionDialog
-        session={session}
-        workspaceName={workspaceName}
-        open={deleting}
-        onClose={() => {
-          setDeleting(false);
-        }}
-        deleteSession={actions.delete}
-      />
+      <DeleteSessionDialog session={session} workspaceName={workspaceName} />
     </>
   );
 };
+
+/**
+ * A Session's "⋯" menu: archive or unarchive it, or delete it after a confirmation. A menu has no room for a failure, so
+ * an archive or unarchive that failed is reported by `actions` to the surface the menu is on.
+ */
+export const SessionMenu = (props: {
+  session: SessionRecord;
+  workspaceName: string;
+  actions: SessionActions;
+  className?: string | undefined;
+}) => (
+  <DeleteOpen.Provider>
+    <Actions {...props} />
+  </DeleteOpen.Provider>
+);

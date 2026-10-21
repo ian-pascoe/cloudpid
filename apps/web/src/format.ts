@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics missingPipeableSignature:off -- plain functions over values, not combinators.
 
 /** "just now", "5 minutes ago", "yesterday": how long before `now` a time was, for a list of Sessions. */
 export const relativeTime = (time: number, now: number): string => {

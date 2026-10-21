@@ -1,6 +1,12 @@
-// The Workspace list and what the owner does to a Workspace in it: create, rename, delete.
+// The Workspace list, what the owner does to a Workspace in it (create, edit, delete, clone a repo), and the state of the
+// Workspaces page's forms and dialogs.
 
-import { workspaceOverridesFrom, type WorkspaceSettings } from "@cloudpid/config";
+import {
+  workspaceOverridesFrom,
+  type InstanceType,
+  type WorkspaceSettings,
+} from "@cloudpid/config";
+import type { WorkspaceSettingsState } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -28,35 +34,95 @@ export const workspaceNamesAtom = Atom.map(workspaceListAtom, (workspaces) =>
   Record.fromEntries(Arr.map(workspaces ?? [], (known) => [known.slug, known.name] as const)),
 );
 
-/** Register a Workspace by slug; one already registered keeps its record. */
+/** What is typed in the new-Workspace form. The page has one. */
+export const newWorkspaceSlugAtom = Atom.make("");
+
+/** Register a Workspace by slug; one already registered keeps its record. The form empties once it is registered. */
 export const createWorkspaceAtom = appRuntime.fn(
-  (slug: string) =>
+  (slug: string, get) =>
     RegistryClient.use((registry) => registry("createWorkspace", { slug })).pipe(
       changing(["workspaces"]),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          get.set(newWorkspaceSlugAtom, "");
+        }),
+      ),
     ),
   { concurrent: true },
 );
 
-/** Name a Workspace; its slug never changes. */
-export const renameWorkspaceAtom = appRuntime.fn(
-  (change: { readonly workspace: string; readonly name: string }) =>
-    RegistryClient.use((registry) => registry("renameWorkspace", change)).pipe(
-      changing(["workspaces"]),
-    ),
-  { concurrent: true },
+/** Which of the dialogs of Workspace `slug`'s card is open, if any. */
+export type WorkspaceDialog = "edit" | "delete";
+
+/** The dialog of Workspace `slug`'s card that is open: null when none is. */
+export const workspaceDialogAtom = Atom.family((_slug: string) =>
+  Atom.make<WorkspaceDialog | null>(null),
 );
+
+/** What changes in Workspace `slug` when its Edit dialog is saved: a new name, new Container settings, or both. */
+export interface WorkspaceEdit {
+  readonly name: string | undefined;
+  readonly settings: WorkspaceSettings | undefined;
+}
 
 /**
- * Delete a Workspace for good: its Sessions, files, Container and settings. A delete that stopped partway deleted some
- * Sessions, so the lists ask again either way.
+ * Save an edit of Workspace `slug`: rename it, then save its Container settings as overrides of the defaults, and load
+ * both again. The first the Workspace refuses ends it with the Workspace's own message. It answers with the new
+ * settings state when settings were saved. Once saved, the Edit dialog closes. Each Workspace has its own, so one's
+ * save does not show on another's dialog.
  */
-export const deleteWorkspaceAtom = appRuntime.fn(
-  (workspace: string) =>
-    RegistryClient.use((registry) => registry("deleteWorkspace", { workspace })).pipe(
-      Effect.asVoid,
-      changing(["workspaces", "sessions", `repos:${workspace}`, `workspace-settings:${workspace}`]),
-    ),
-  { concurrent: true },
+export const saveWorkspaceAtom = Atom.family((slug: string) =>
+  appRuntime.fn(
+    (edit: WorkspaceEdit, get) =>
+      Effect.gen(function* () {
+        const { name, settings } = edit;
+
+        if (name !== undefined)
+          yield* RegistryClient.use((registry) =>
+            registry("renameWorkspace", { workspace: slug, name }),
+          );
+
+        return settings === undefined
+          ? undefined
+          : yield* RegistryClient.use((registry) =>
+              registry("updateWorkspaceSettings", {
+                workspace: slug,
+                overrides: workspaceOverridesFrom(settings),
+              }),
+            );
+      }).pipe(
+        changing(["workspaces", `workspace-settings:${slug}`]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(workspaceDialogAtom(slug), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** What is typed in the Delete dialog of Workspace `slug`: its slug, to confirm. */
+export const deleteTypedAtom = Atom.family((_slug: string) => Atom.make(""));
+
+/**
+ * Delete Workspace `slug` for good: its Sessions, files, Container and settings. A delete that stopped partway deleted
+ * some Sessions, so the lists ask again either way. Once it is deleted, its dialog closes.
+ */
+export const deleteWorkspaceAtom = Atom.family((slug: string) =>
+  appRuntime.fn(
+    (_: void, get) =>
+      RegistryClient.use((registry) => registry("deleteWorkspace", { workspace: slug })).pipe(
+        Effect.asVoid,
+        changing(["workspaces", "sessions", `repos:${slug}`, `workspace-settings:${slug}`]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(workspaceDialogAtom(slug), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
 );
 
 /** The repos Workspace `slug` holds, by directory name; asked again after a clone. */
@@ -64,16 +130,25 @@ export const reposAtom = Atom.family((slug: string) =>
   RegistryClient.query("listRepos", { workspace: slug }, { reactivityKeys: [`repos:${slug}`] }),
 );
 
+/** What is typed in the clone form of Workspace `slug`: `owner/repo` or an https URL. */
+export const cloneSourceAtom = Atom.family((_slug: string) => Atom.make(""));
+
 /**
- * Clone `source` (`owner/repo` or an https URL) into Workspace `slug` and list its repos again. It answers with the
- * directory the repo went to, or with git's own message when it did not. It can take a minute: the Container starts,
- * and the repo is downloaded. Each Workspace has its own, so one's clone does not show on another's form.
+ * Clone `source` (`owner/repo` or an https URL) into Workspace `slug` and list its repos again; the form empties once it
+ * is cloned, and keeps what was typed when it was not. It answers with the directory the repo went to, or with git's own
+ * message when it did not. It can take a minute: the Container starts, and the repo is downloaded. Each Workspace has
+ * its own, so one's clone does not show on another's form.
  */
 export const cloneRepoAtom = Atom.family((slug: string) =>
   appRuntime.fn(
-    (source: string) =>
+    (source: string, get) =>
       RegistryClient.use((registry) => registry("cloneRepo", { workspace: slug, source })).pipe(
         changing([`repos:${slug}`]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(cloneSourceAtom(slug), "");
+          }),
+        ),
       ),
     { concurrent: true },
   ),
@@ -88,19 +163,45 @@ export const workspaceSettingsAtom = Atom.family((slug: string) =>
   ),
 );
 
+/** What the Edit dialog's form holds: the name, and the Container's size and idle time (minutes) as typed. */
+export interface WorkspaceDraft {
+  readonly name: string;
+  /** Undefined until the Workspace's settings have answered and nothing was picked. */
+  readonly instance: InstanceType | undefined;
+  /** Empty until the Workspace's settings have answered and nothing was typed. */
+  readonly idle: string;
+}
+
+/** `draft`, with the size and idle time it has not got yet taken from `saved`, the settings in force once they answer. */
+const filledFrom = (draft: WorkspaceDraft, saved: WorkspaceSettingsState | null): WorkspaceDraft =>
+  saved === null
+    ? draft
+    : {
+        ...draft,
+        instance: draft.instance ?? saved.settings.instance,
+        idle: draft.idle === "" ? String(saved.settings.idleMinutes) : draft.idle,
+      };
+
 /**
- * Save `settings` as Workspace `slug`'s overrides of the defaults, and load them again. Answers with the new state, or
- * with the Workspace's own message when it refused them.
+ * The Edit dialog's form of Workspace `slug`: its name and the Container settings in force, to change. The settings may
+ * answer after the dialog opened: what they bring fills in only what has not been picked or typed.
  */
-export const updateWorkspaceSettingsAtom = Atom.family((slug: string) =>
-  appRuntime.fn(
-    (settings: WorkspaceSettings) =>
-      RegistryClient.use((registry) =>
-        registry("updateWorkspaceSettings", {
-          workspace: slug,
-          overrides: workspaceOverridesFrom(settings),
-        }),
-      ).pipe(changing([`workspace-settings:${slug}`])),
-    { concurrent: true },
+export const workspaceDraftAtom = Atom.family((slug: string) =>
+  Atom.writable(
+    (get): WorkspaceDraft => {
+      const saved = get(workspaceSettingsAtom(slug)).pipe(AsyncResult.value, Option.getOrNull);
+
+      return filledFrom(
+        Option.getOrElse(get.self<WorkspaceDraft>(), () => ({
+          name: get(workspaceNamesAtom)[slug] ?? "",
+          instance: undefined,
+          idle: "",
+        })),
+        saved,
+      );
+    },
+    (ctx, draft: WorkspaceDraft) => {
+      ctx.setSelf(draft);
+    },
   ),
 );

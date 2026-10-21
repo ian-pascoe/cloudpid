@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics preferEffectArray:off -- JSX lists of options and sections are native arrays.
 
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import {
@@ -11,9 +11,8 @@ import {
   SUPPORTED_MODELS,
   THINKING_LEVELS,
 } from "@cloudpid/config";
-import * as Exit from "effect/Exit";
 import { ArrowLeft } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { modelName } from "./models.ts";
@@ -21,7 +20,15 @@ import { badOfferedEntries, offeredFromText, offeredToText } from "./offered-too
 import { disablePushAtom, enablePushAtom, pushStatusValueAtom } from "./push-state.ts";
 import { failureOf } from "./registry.ts";
 import { navigate } from "./router.ts";
-import { settingsLoadErrorAtom, settingsStateAtom, updateSettingsAtom } from "./settings.ts";
+import {
+  justSavedAtom,
+  limitTextAtom,
+  offeredTextAtom,
+  settingsDraftAtom,
+  settingsLoadErrorAtom,
+  settingsStateAtom,
+  updateSettingsAtom,
+} from "./settings.ts";
 import { spendLimitFromText, spendLimitToText } from "./spend-limit.ts";
 
 const ModelSelect = ({
@@ -75,8 +82,8 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 /** Whether this device gets a push when a Run ends, fails, or needs input. Takes effect at once, like no other setting here. */
 const NotificationsSection = () => {
   const status = useAtomValue(pushStatusValueAtom);
-  const [enabling, enable] = useAtom(enablePushAtom, { mode: "promiseExit" });
-  const [disabling, disable] = useAtom(disablePushAtom, { mode: "promiseExit" });
+  const [enabling, enable] = useAtom(enablePushAtom);
+  const [disabling, disable] = useAtom(disablePushAtom);
   const busy = enabling.waiting || disabling.waiting;
   const on = status?.kind === "on";
 
@@ -111,7 +118,8 @@ const NotificationsSection = () => {
             status === null || busy || status.kind === "unsupported" || status.kind === "denied"
           }
           onClick={() => {
-            void (on ? disable() : enable());
+            if (on) disable();
+            else enable();
           }}
         >
           {busy ? "Working…" : on ? "Turn off on this device" : "Turn on for this device"}
@@ -169,27 +177,22 @@ const SettingsForm = ({
   saved: Settings;
   saving: boolean;
   error: string | null;
-  onSave: (settings: Settings) => Promise<boolean>;
+  onSave: (settings: Settings) => void;
 }) => {
-  const [draft, setDraft] = useState(saved);
-  const [justSaved, setJustSaved] = useState(false);
+  const [draft, setDraft] = useAtom(settingsDraftAtom);
+  const justSaved = useAtomValue(justSavedAtom);
   // The text box keeps what is typed; the draft holds what it parses to.
-  const [offeredText, setOfferedText] = useState(offeredToText(saved.tools.offered));
-  const [limitText, setLimitText] = useState(spendLimitToText(saved.spendLimit.perSession));
+  const [offeredText, setOfferedText] = useAtom(offeredTextAtom);
+  const [limitText, setLimitText] = useAtom(limitTextAtom);
   const badLimit = spendLimitFromText(limitText) === undefined;
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   const badOffered = badOfferedEntries(draft.tools.offered);
-
-  const edit = (next: Settings) => {
-    setDraft(next);
-    setJustSaved(false);
-  };
 
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        void onSave(draft).then(setJustSaved);
+        onSave(draft);
       }}
     >
       <Section title="Default model">
@@ -203,7 +206,7 @@ const SettingsForm = ({
               id="default-model"
               value={draft.model}
               onChange={(model) => {
-                edit({ ...draft, model });
+                setDraft({ ...draft, model });
               }}
             />
           </Field>
@@ -214,7 +217,7 @@ const SettingsForm = ({
               onChange={(event) => {
                 const level = THINKING_LEVELS.find((known) => known === event.target.value);
 
-                if (level !== undefined) edit({ ...draft, thinkingLevel: level });
+                if (level !== undefined) setDraft({ ...draft, thinkingLevel: level });
               }}
             >
               {THINKING_LEVELS.map((level) => (
@@ -238,7 +241,7 @@ const SettingsForm = ({
               name={name}
               role={draft.roles[name]}
               onChange={(role) => {
-                edit({ ...draft, roles: { ...draft.roles, [name]: role } });
+                setDraft({ ...draft, roles: { ...draft.roles, [name]: role } });
               }}
             />
           ))}
@@ -260,7 +263,7 @@ const SettingsForm = ({
             spellCheck={false}
             onChange={(event) => {
               setOfferedText(event.target.value);
-              edit({
+              setDraft({
                 ...draft,
                 tools: { ...draft.tools, offered: offeredFromText(event.target.value) },
               });
@@ -298,7 +301,7 @@ const SettingsForm = ({
 
               const perSession = spendLimitFromText(event.target.value);
 
-              if (perSession !== undefined) edit({ ...draft, spendLimit: { perSession } });
+              if (perSession !== undefined) setDraft({ ...draft, spendLimit: { perSession } });
             }}
             className="min-w-0 rounded-md border border-input bg-background px-2.5 py-2 text-sm focus-visible:outline-2 focus-visible:outline-ring sm:max-w-48"
           />
@@ -324,7 +327,7 @@ const SettingsForm = ({
           variant="ghost"
           disabled={saving}
           onClick={() => {
-            edit(DEFAULT_SETTINGS);
+            setDraft(DEFAULT_SETTINGS);
             setOfferedText(offeredToText(DEFAULT_SETTINGS.tools.offered));
             setLimitText(spendLimitToText(DEFAULT_SETTINGS.spendLimit.perSession));
           }}
@@ -345,7 +348,7 @@ const SettingsForm = ({
 export const SettingsPage = () => {
   const state = useAtomValue(settingsStateAtom);
   const loadError = useAtomValue(settingsLoadErrorAtom);
-  const [update, save] = useAtom(updateSettingsAtom, { mode: "promiseExit" });
+  const [update, save] = useAtom(updateSettingsAtom);
   // Why a save was refused shows until the next save answers; until then, why the settings could not load.
   const error = failureOf(update) ?? loadError;
 
@@ -383,7 +386,7 @@ export const SettingsPage = () => {
             saved={state.settings}
             saving={update.waiting}
             error={error}
-            onSave={(settings) => save(settings).then(Exit.isSuccess)}
+            onSave={save}
           />
         )}
         <NotificationsSection />

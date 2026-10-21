@@ -83,32 +83,35 @@ export const unarchiveSessionAtom = appRuntime.fn(
 );
 
 /**
- * Delete a Session for good; the files it wrote in its Workspace stay. Once it is gone its page is left, saying so; its
- * socket's close, which can come first, is then no news.
+ * Delete Session `id` for good; the files it wrote in its Workspace stay. Once it is gone its page is left, saying so;
+ * its socket's close, which can come first, is then no news. Each Session has its own, so one's delete does not show on
+ * another's dialog.
  */
-export const deleteSessionAtom = appRuntime.fn(
-  (id: string, get) =>
-    Effect.gen(function* () {
-      const asked = (change: (ids: Set<string>) => void) => {
-        const ids = new Set(get(deletedHereAtom));
+export const deleteSessionAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    (_: void, get) =>
+      Effect.gen(function* () {
+        const asked = (change: (ids: Set<string>) => void) => {
+          const ids = new Set(get(deletedHereAtom));
 
-        change(ids);
-        get.set(deletedHereAtom, ids);
-      };
+          change(ids);
+          get.set(deletedHereAtom, ids);
+        };
 
-      asked((ids) => ids.add(id));
+        asked((ids) => ids.add(id));
 
-      yield* RegistryClient.use((registry) => registry("deleteSession", { id })).pipe(
-        Effect.tapError(() =>
-          Effect.sync(() => {
-            asked((ids) => ids.delete(id));
-          }),
-        ),
-      );
+        yield* RegistryClient.use((registry) => registry("deleteSession", { id })).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              asked((ids) => ids.delete(id));
+            }),
+          ),
+        );
 
-      leaveSession(get, id, "Session deleted.");
-    }).pipe(changing(["sessions"])),
-  { concurrent: true },
+        leaveSession(get, id, "Session deleted.");
+      }).pipe(changing(["sessions"])),
+    { concurrent: true },
+  ),
 );
 
 /** The Session the page shows, as the list last had it; undefined while the list has not answered or lacks it. */

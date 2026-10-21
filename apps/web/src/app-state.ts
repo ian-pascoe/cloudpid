@@ -34,6 +34,12 @@ export const pageProblemAtom = Atom.writable(
   },
 );
 
+/**
+ * Why an archive or unarchive from a Session's menu in the list failed, shown with the list's own error. It stays until
+ * the next archive or unarchive from the list.
+ */
+export const listProblemAtom = Atom.make<string | null>(null);
+
 /** Sessions this page asked to delete: their socket's close can come before the answer, and is then no news. */
 export const deletedHereAtom = Atom.make<ReadonlySet<string>>(new Set<string>()).pipe(
   Atom.keepAlive,

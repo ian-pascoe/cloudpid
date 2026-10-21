@@ -1,5 +1,3 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
-
 /** The spend limit as the settings page's text box shows it: US dollars, or nothing for no limit. */
 export const spendLimitToText = (limit: number | null): string =>
   limit === null ? "" : String(limit);
