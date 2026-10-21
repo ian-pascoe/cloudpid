@@ -218,7 +218,7 @@ Flat by default. Depth is drawn, not lit: a 1 px Ruled Line border, a step to Ti
 
 ## Shapes
 
-Gently rounded, never pill-shaped except for dots. Cards, the composer and the owner's messages use a 10 px radius; controls, list items, tool-call entries and code blocks 8 px; inline code 4 px; status dots and the scrollbar thumb are round. Borders are 1 px. Disclosures (thinking, tool calls, notices) use the native `details` element with a 14 px chevron that turns 90° when open.
+Gently rounded, never pill-shaped except for dots and the composer's main button. Cards, the composer and the owner's messages use a 10 px radius; controls, list items, tool-call entries and code blocks 8 px; inline code 4 px; status dots, the scrollbar thumb and the composer's Send, Steer and Stop button are round. Borders are 1 px. Disclosures (thinking, tool calls, notices) use the native `details` element with a 14 px chevron that turns 90° when open.
 
 ## Components
 
@@ -238,7 +238,7 @@ Quiet and exact.
 - **Style:** 36 px high, Input Line border, page-colored fill, 8 px radius, 12 px padding, 14 px text; mono for identifier fields (slug, repo source).
 - **Focus:** a 2 px Signal Blue ring.
 - **Error:** `aria-invalid` and a 12 px Brick Red line under the field.
-- **Select:** the platform's native `select`, styled the same, because it is the right picker on a phone.
+- **Select:** the platform's native `select`, styled the same, because it is the right picker on a phone. In the composer's toolbar a select is a chip instead (see Composer), still a native `select` underneath.
 
 ### Cards / Containers
 
@@ -259,6 +259,17 @@ A ghost 32 px "⋯" trigger (`aria-haspopup="menu"`) opening the platform's popo
 ### Dialog
 
 The platform's modal `dialog` (`showModal`, focus trapped, Escape closes; a click on the backdrop closes it too): a bordered 10 px panel, at most 448 px wide and 16 px from the screen's edges, 20 px padding, `shadow-sm`, over the Backdrop. A 16 px semibold title that asks the question, a muted 14 px description, the body, then the actions: right-aligned on a row, stacked full width on a phone with the main action on top. A destructive confirm names what is lost and keeps Cancel focused; deleting a Workspace also asks for its slug typed in, and its button stays disabled until it matches.
+
+### Composer
+
+One bordered 10 px box at the foot of the transcript column, on the page color, its border turning Signal Blue while anything in it has the focus. The input comes first (15 px, growing to 192 px, then scrolling); under it a toolbar row:
+
+- **Left:** the model and thinking level as quiet chips: 32 px high, 12 px Faded Ink text (the model ID in mono, the level after a brain icon) and a chevron, Tinted Wash on hover. Each is a native `select` laid invisibly over the chip, so a phone opens its own picker; on a touch screen the select reaches 6 px past the chip, above and below.
+- **Right:** the main button, a 32 px circle: Send (↑, Slate Ink) when idle; while a Run is in progress, Steer (↱, Slate Ink) with something typed and Stop (■, Brick Red outline) without, with a ghost Queue icon beside Steer and a "more ways to stop" menu (Stop all) beside Stop. On a touch screen each small control takes a 44 px touch through a transparent margin.
+
+Above the box, the queue lanes (Sending, Steering, Next up) as dashed 8 px rows under a 12 px label. Under it, a 12 px line when a Slash command failed (Brick Red, `role="alert"`) or did something worth saying (Faded Ink).
+
+**Completion menu.** Typing `/` at the start of the message opens a listbox that rises from the box's top edge, at its width and at most 288 px high: a bordered 10 px panel with `shadow-sm`, as an open menu has, sections under 12 px labels, and rows of the name in 13 px mono, its argument hint in 12 px mono Faded Ink, and a 12 px Faded Ink description, truncated. The input keeps the focus: ↑ and ↓ move the Tinted Wash highlight, Enter or Tab picks, Escape closes the menu until the trigger moves. Rows are 44 px on a touch screen. It fades and rises 4 px in over 150 ms, where motion is allowed.
 
 ### Transcript
 
@@ -285,4 +296,4 @@ The Secret request and Browser Handoff: a bordered 10 px card with a small shado
 - **Don't** use Run Green or Brick Red for emphasis or decoration.
 - **Don't** use raw Tailwind palette colors (`amber-500`, `zinc-*`): add a token in `styles.css` with light and dark values instead. The usage badge's `amber` "near limit" state is a known exception still to be turned into a warning token.
 - **Don't** reference a color utility with no token behind it. `bg-card` is used by the Waiting-On-You cards but `--card` is not defined, so they currently render with no fill; define the token before relying on it.
-- **Don't** let a header's controls push its title off screen on a phone: the Session header moves its model and thinking pickers to a second row below `md`.
+- **Don't** let a header's controls push its title off screen on a phone: keep the Session header to its title and a few icon buttons; what steers the next request (model, thinking level) lives in the composer's toolbar.

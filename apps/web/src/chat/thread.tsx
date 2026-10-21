@@ -1,15 +1,18 @@
-// @effect-diagnostics asyncFunction:off -- browser code in a React app with no Effect runtime: promises are the platform here.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off -- browser code in a React app with no Effect runtime: promises are the platform here.
 
 import { ThreadPrimitive } from "@assistant-ui/react";
+import { isModelId, THINKING_LEVELS } from "@cloudpid/config";
 import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
 import { MAX_TITLE_LENGTH } from "@cloudpid/protocol";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
-import { navigate } from "../router.ts";
+import { modelChoices, modelName } from "../models.ts";
+import { navigate, SETTINGS_PATH } from "../router.ts";
 import type { ConfigureChange, QueuedEntry, SessionState } from "../session/connection.ts";
+import type { ComposerCommand } from "./commands.ts";
 import { Composer } from "./composer.tsx";
-import { ModelPicker } from "./model-picker.tsx";
+import { isLevel, ModelPicker, type PickerHandle } from "./model-picker.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
@@ -150,16 +153,13 @@ const EditableTitle = ({ title, rename }: { title: string | undefined; rename: R
 const Header = ({
   title,
   rename,
-  picker,
   actions,
 }: {
   title: string | undefined;
   rename: Rename | undefined;
-  picker: ReactNode;
   actions: ReactNode;
 }) => (
-  // On a phone the pickers take a second row, so the title keeps its room and nothing scrolls sideways.
-  <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
+  <header className="flex items-center gap-2 border-b px-4 py-2.5">
     <button
       type="button"
       onClick={() => {
@@ -175,10 +175,160 @@ const Header = ({
     ) : (
       <EditableTitle title={title} rename={rename} />
     )}
-    <div className="order-last flex w-full min-w-0 md:order-none md:w-auto">{picker}</div>
     <div className="flex shrink-0 items-center gap-2">{actions}</div>
   </header>
 );
+
+/** What the Session page does for the Slash commands about the Session as a whole; each resolves to null or why not. */
+export type SessionCommandActions = {
+  /** Start a Session in the same Workspace and repo, and open it. */
+  readonly newSession?: (() => Promise<string | null>) | undefined;
+  /** Archive the Session. */
+  readonly archive?: (() => Promise<string | null>) | undefined;
+};
+
+const NO_ACTIONS: SessionCommandActions = {};
+
+const NOT_LIVE = "The session is not connected; try again once it is.";
+
+/**
+ * The Slash commands about the Session as a whole: its model and thinking level (set with an argument, or the picker
+ * opened without one), its title, a new Session beside it, archiving it, and the Settings.
+ */
+const sessionCommands = ({
+  state,
+  picker,
+  rename,
+  actions,
+  onConfigure,
+}: {
+  state: SessionState;
+  picker: RefObject<PickerHandle | null>;
+  rename: Rename | undefined;
+  actions: SessionCommandActions;
+  onConfigure: (change: ConfigureChange) => void;
+}): ComposerCommand[] => {
+  const live = state.status === "live";
+  const { view } = state;
+  const model = view.model === null ? null : `${view.model.provider}/${view.model.modelId}`;
+  const models = modelChoices(model);
+
+  const commands: ComposerCommand[] = [
+    {
+      name: "model",
+      description: "Pick the model for this session",
+      argumentHint: "[model]",
+      argument: "optional",
+      choices: [
+        { value: "default", description: "Follow the settings" },
+        ...models.map((id) => ({
+          value: modelName(id),
+          description: id === model ? "In use" : undefined,
+        })),
+      ],
+      run: (args) => {
+        if (!live) return NOT_LIVE;
+
+        if (args === "") {
+          picker.current?.openModel();
+
+          return null;
+        }
+
+        if (args === "default") {
+          onConfigure({ model: null });
+
+          return null;
+        }
+
+        const id = models.find((choice) => choice === args || modelName(choice) === args);
+
+        if (id === undefined || !isModelId(id)) return `There is no model named ${args}.`;
+
+        onConfigure({ model: id });
+
+        return null;
+      },
+    },
+    {
+      name: "thinking",
+      description: "Pick the thinking level for this session",
+      argumentHint: "[level]",
+      argument: "optional",
+      choices: [
+        { value: "default", description: "Follow the settings" },
+        ...THINKING_LEVELS.map((level) => ({
+          value: level,
+          description: level === view.thinkingLevel ? "In use" : undefined,
+        })),
+      ],
+      run: (args) => {
+        if (!live) return NOT_LIVE;
+
+        if (args === "") {
+          picker.current?.openThinking();
+
+          return null;
+        }
+
+        if (args === "default") {
+          onConfigure({ thinkingLevel: null });
+
+          return null;
+        }
+
+        if (!isLevel(args)) return `There is no thinking level named ${args}.`;
+
+        onConfigure({ thinkingLevel: args });
+
+        return null;
+      },
+    },
+    {
+      name: "settings",
+      description: "Open the settings",
+      argument: "none",
+      run: () => {
+        navigate(SETTINGS_PATH);
+
+        return null;
+      },
+    },
+  ];
+
+  if (rename !== undefined) {
+    commands.push({
+      name: "name",
+      description: "Rename this session",
+      argumentHint: "<title>",
+      argument: "required",
+      run: (title) =>
+        title.length > MAX_TITLE_LENGTH
+          ? `A title is at most ${MAX_TITLE_LENGTH} characters.`
+          : rename.save(title),
+    });
+  }
+
+  if (actions.newSession !== undefined) {
+    commands.push({
+      name: "new",
+      description: "Start a new session in this workspace",
+      argument: "none",
+      run: actions.newSession,
+    });
+  }
+
+  if (actions.archive !== undefined) {
+    commands.push({
+      name: "archive",
+      description: "Archive this session",
+      argument: "none",
+      run: actions.archive,
+    });
+  }
+
+  return commands;
+};
 
 /** The chat of one Session: its transcript with live progress, a notice when disconnected, and the composer. */
 export const Thread = ({
@@ -193,6 +343,7 @@ export const Thread = ({
   onAnswerSecrets,
   onStopAll,
   actions,
+  commandActions = NO_ACTIONS,
 }: {
   title: string | undefined;
   /** Lets the owner rename the Session from its header. */
@@ -202,8 +353,10 @@ export const Thread = ({
   state: SessionState;
   /** Stop the run and every subagent; given while a subagent is working. */
   onStopAll?: (() => void) | undefined;
-  /** Buttons in the header, after the model picker. */
+  /** Buttons in the header, after the title. */
   actions?: ReactNode;
+  /** What the Session-wide Slash commands do. */
+  commandActions?: SessionCommandActions | undefined;
   onConfigure: (change: ConfigureChange) => void;
   onAnswerSecrets: (request: string, values: Readonly<Record<string, string>> | null) => void;
   notice: ReactNode;
@@ -212,6 +365,19 @@ export const Thread = ({
 }) => {
   const { view } = state;
   const problem = state.failure ?? view.error;
+  const picker = useRef<PickerHandle>(null);
+
+  const commands = useMemo(
+    () =>
+      sessionCommands({
+        state,
+        picker,
+        rename,
+        actions: commandActions,
+        onConfigure,
+      }),
+    [state, rename, commandActions, onConfigure],
+  );
 
   // assistant-ui shows its own placeholder while the answer to the last user message has not started.
   const working =
@@ -222,19 +388,7 @@ export const Thread = ({
 
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-      <Header
-        title={title}
-        rename={rename}
-        picker={
-          <ModelPicker
-            view={view}
-            picked={state.picked}
-            disabled={state.status !== "live"}
-            onConfigure={onConfigure}
-          />
-        }
-        actions={actions}
-      />
+      <Header title={title} rename={rename} actions={actions} />
       {notice !== null && notice !== undefined && (
         <p
           role="status"
@@ -284,6 +438,16 @@ export const Thread = ({
           followUpLane={followUpLane}
           sending={state.sending}
           onStopAll={onStopAll}
+          commands={commands}
+          tools={
+            <ModelPicker
+              ref={picker}
+              view={view}
+              picked={state.picked}
+              disabled={state.status !== "live"}
+              onConfigure={onConfigure}
+            />
+          }
         />
       ) : (
         <ArchivedBanner archived={archived} />

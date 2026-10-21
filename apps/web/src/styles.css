@@ -124,3 +124,16 @@
     animation: pulse-dot 1.4s ease-in-out infinite;
   }
 }
+
+/* A small control keeps its look but takes a 44 px touch on a touch screen. */
+@media (pointer: coarse) {
+  .touch-target {
+    position: relative;
+  }
+
+  .touch-target::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
+}

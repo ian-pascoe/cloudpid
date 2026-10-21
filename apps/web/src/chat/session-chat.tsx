@@ -4,14 +4,25 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { sessionSocketPath } from "@cloudpid/protocol";
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { canStopAllBelow } from "../session/agents.ts";
-import { SessionConnection, type ConnectionStatus } from "../session/connection.ts";
+import {
+  type ConfigureChange,
+  type ConnectionStatus,
+  SessionConnection,
+} from "../session/connection.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
 import { queueAdapter, textOf } from "./queue-adapter.ts";
 import { SessionProvider } from "./session-context.tsx";
 import { TaskPanel, TaskPanelToggle } from "./task-panel.tsx";
-import { type Archived, type Rename, Thread } from "./thread.tsx";
+import { type Archived, type Rename, type SessionCommandActions, Thread } from "./thread.tsx";
 import { UsageBadge } from "./usage-badge.tsx";
 
 const socketUrl = (sessionId: string): string => {
@@ -56,6 +67,8 @@ type SessionPageProps = {
   onDeleted?: (() => void) | undefined;
   /** Why an archive or unarchive asked on this page failed, or null. */
   problem?: string | null | undefined;
+  /** What the composer's Session-wide Slash commands do. */
+  commandActions?: SessionCommandActions | undefined;
 };
 
 const LiveSession = ({
@@ -66,6 +79,7 @@ const LiveSession = ({
   menu,
   onDeleted,
   problem,
+  commandActions,
 }: {
   connection: SessionConnection;
   title: string | undefined;
@@ -85,6 +99,13 @@ const LiveSession = ({
     connection.watchTaskGraph();
     connection.watchUsage();
   }, [connection]);
+
+  const configure = useCallback(
+    (change: ConfigureChange) => {
+      connection.configure(change);
+    },
+    [connection],
+  );
 
   const messages = useMemo(() => toThreadMessages(state.view), [state.view]);
   const queue = useMemo(() => queueAdapter(connection, state.queue), [connection, state.queue]);
@@ -127,9 +148,8 @@ const LiveSession = ({
               }
               steerLane={state.queue.steer}
               followUpLane={state.queue.followUp}
-              onConfigure={(change) => {
-                connection.configure(change);
-              }}
+              onConfigure={configure}
+              commandActions={commandActions}
               onAnswerSecrets={(request, values) => {
                 connection.answerSecrets(request, values);
               }}

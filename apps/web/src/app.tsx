@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
-import { isSettingsPath, isWorkspacesPath, navigate, sessionIdOf, usePath } from "./router.ts";
+import {
+  isSettingsPath,
+  isWorkspacesPath,
+  navigate,
+  sessionIdOf,
+  sessionPath,
+  usePath,
+} from "./router.ts";
 import { SessionMenu } from "./session-menu.tsx";
 import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle } from "./sidebar.tsx";
@@ -95,6 +102,28 @@ export const App = () => {
   const workspaceName =
     session === undefined ? undefined : (names[session.workspace] ?? session.workspace);
 
+  // The composer's `/new` and `/archive`, for the Session shown.
+  const commandActions = useMemo(() => {
+    if (session === undefined) return undefined;
+
+    return {
+      newSession: async () => {
+        const created = await sessions.create(
+          session.repo === null
+            ? { workspace: session.workspace }
+            : { workspace: session.workspace, repo: session.repo },
+        );
+
+        if (created === undefined) return "The session could not be created.";
+
+        navigate(sessionPath(created.id));
+
+        return null;
+      },
+      archive: () => pageActions.archive(session.id),
+    };
+  }, [session, sessions.create, pageActions]);
+
   return (
     <div className="flex h-dvh">
       {/* On a narrow screen the list and the chat take turns. */}
@@ -144,6 +173,7 @@ export const App = () => {
                 : { unarchive: () => pageActions.unarchive(session.id) }
             }
             problem={problem}
+            commandActions={commandActions}
             menu={
               session === undefined || workspaceName === undefined ? undefined : (
                 <SessionMenu
