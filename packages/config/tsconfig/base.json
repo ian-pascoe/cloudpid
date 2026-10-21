@@ -19,7 +19,14 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        "allowedUnstableApis": ["effect/http", "effect/rpc"],
+        "allowedUnstableApis": [
+          "@effect/atom-react",
+          "@effect/platform-browser",
+          "effect/http",
+          "effect/reactivity",
+          "effect/rpc",
+          "effect/socket"
+        ],
         "diagnosticSeverity": {
           "abortControllerInEffect": "error",
           "acquireReleaseDisposable": "error",
