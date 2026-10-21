@@ -8,7 +8,8 @@ import type {
   ExternalThreadQueueAdapter,
   QueueItemState,
 } from "@assistant-ui/react";
-import type { QueuedEntry, QueueLanes, SessionConnection } from "../session/connection.ts";
+import type { QueuedEntry, QueueLanes } from "../session/state.ts";
+import type { Connection } from "./session-context.tsx";
 
 /** What the user typed, as text. */
 export const textOf = (message: AppendMessage): string => {
@@ -33,7 +34,7 @@ const queueItem = (entry: QueuedEntry): QueueItemState => {
  * `remove` do nothing and the UI offers none of them.
  */
 export const queueAdapter = (
-  connection: Pick<SessionConnection, "submit">,
+  connection: Pick<Connection, "submit">,
   lanes: QueueLanes,
 ): ExternalThreadQueueAdapter => ({
   items: lanes.followUp.map(queueItem),

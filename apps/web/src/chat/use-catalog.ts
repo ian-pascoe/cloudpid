@@ -6,7 +6,7 @@
 
 import type { Catalog } from "@cloudpid/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SessionConnection } from "../session/connection.ts";
+import type { Connection } from "./session-context.tsx";
 
 /** How long a catalog is fresh. */
 export const CATALOG_TTL_MS = 30_000;
@@ -23,7 +23,7 @@ export type CatalogState = { readonly catalog: Catalog | null; readonly refresh:
  * `conversationId` starts over: its catalog is asked for afresh, and an answer for the one before is dropped.
  */
 export const useCatalog = (
-  connection: Pick<SessionConnection, "catalog">,
+  connection: Pick<Connection, "catalog">,
   conversationId: number | undefined,
 ): CatalogState => {
   // The catalog with the conversation it is for, so one for another conversation is never shown.

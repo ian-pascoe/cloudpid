@@ -9,7 +9,7 @@ import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { modelChoices, modelName } from "../models.ts";
 import { navigate, SETTINGS_PATH } from "../router.ts";
-import type { ConfigureChange, QueuedEntry, SessionState } from "../session/connection.ts";
+import type { ConfigureChange, QueuedEntry, SessionState } from "../session/state.ts";
 import type { ComposerCommand } from "./commands.ts";
 import { Composer } from "./composer.tsx";
 import { isLevel, ModelPicker, type PickerHandle } from "./model-picker.tsx";

@@ -6,7 +6,7 @@ import { Brain, ChevronDown } from "lucide-react";
 import { type ComponentProps, type ReactNode, type Ref, useImperativeHandle, useRef } from "react";
 import { cn } from "../lib/utils.ts";
 import { agentSelect, FOLLOW_DEFAULT, modelChoices, modelName } from "../models.ts";
-import type { ConfigureChange, Picked } from "../session/connection.ts";
+import type { ConfigureChange, Picked } from "../session/state.ts";
 
 export const isLevel = (value: string): value is ThinkingLevel =>
   THINKING_LEVELS.some((level) => level === value);
