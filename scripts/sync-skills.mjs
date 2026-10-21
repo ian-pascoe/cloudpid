@@ -131,6 +131,23 @@ const EXCLUDED_PATHS = [
   "DESCRIPTION.md",
 ];
 
+/**
+ * Text edits to files that point at what is left out above (`skill/path`: `[from, to]` pairs), so a bundled skill never
+ * refers to a file that is not there. A `from` that no longer occurs fails the sync: the upstream changed, look again.
+ */
+const PATCHES = {
+  "diagnosing-bugs/SKILL.md": [
+    [
+      "10. **HITL bash script.** Last resort. If a human must click, drive _them_ with `scripts/hitl-loop.template.sh` so the loop is still structured. Captured output feeds back to you.",
+      "10. **Ask the human.** Last resort. If a human must click, ask them for each step and what they saw, so the loop is still structured. (The interactive HITL script is not bundled: it needs a terminal.)",
+    ],
+    [
+      "a human in the loop only via `scripts/hitl-loop.template.sh`",
+      "a human in the loop only by asking them, step by step",
+    ],
+  ],
+};
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const skillsDir = join(root, "skills");
 const licensesDir = join(skillsDir, "LICENSES");
@@ -220,7 +237,17 @@ const copies = Object.keys(INCLUDED_SKILLS).map((name) => {
 
       problems.push(...problemsIn(`${name}/${path}`, bytes));
 
-      return { path, text: new TextDecoder().decode(bytes) };
+      const patches = PATCHES[`${name}/${path}`] ?? [];
+
+      const text = patches.reduce((current, [from, to]) => {
+        if (!current.includes(from)) {
+          throw new Error(`${name}/${path}: the text to patch is gone upstream: ${from}`);
+        }
+
+        return current.replace(from, () => to);
+      }, new TextDecoder().decode(bytes));
+
+      return { path, text, patched: patches.length > 0 };
     }),
   };
 });
@@ -249,11 +276,13 @@ for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
 }
 
 for (const { name, source, files } of copies) {
-  for (const { path } of files) {
+  for (const { path, text, patched } of files) {
     const target = join(skillsDir, name, path);
 
     mkdirSync(dirname(target), { recursive: true });
     cpSync(join(source, path), target, { dereference: true });
+
+    if (patched) writeFileSync(target, text);
   }
 }
 

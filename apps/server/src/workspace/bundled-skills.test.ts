@@ -47,6 +47,19 @@ describe("the bundled skills", () => {
     expect(BUNDLED_SKILLS.version).toBe(`sha256:${hash.digest("hex")}`);
   });
 
+  it("point at no script or file of the skill that is not bundled", () => {
+    // Backticked `scripts/...` and `references/...` paths in a SKILL.md are relative to its skill directory.
+    for (const key of onDisk.filter((path) => path.endsWith("SKILL.md"))) {
+      const skill = key.split("/")[0] ?? "";
+
+      for (const [, path] of String(bundled[key]).matchAll(
+        /`((?:scripts|references)\/[\w./-]+)`/g,
+      )) {
+        expect(bundled[`${skill}/${path}`], `${key} points at ${path}`).toBeDefined();
+      }
+    }
+  });
+
   it("each declare a name and a description in their SKILL.md", () => {
     expect(skillDirectories.length).toBeGreaterThan(0);
 

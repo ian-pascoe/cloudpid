@@ -45,6 +45,8 @@ const entriesOf = (
  * `links` are symbolic links to directories: the absolute path of each, with the files below its target. A listing
  * shows a link as a link, and does not follow it.
  */
+const reads: string[] = [];
+
 const envOf = (
   cwd: string,
   files: Readonly<Record<string, string>>,
@@ -52,18 +54,19 @@ const envOf = (
 ): ExecutionEnv => {
   const fake: Pick<ExecutionEnv, "cwd" | "listFiles" | "readTextFile"> = {
     cwd,
-    listFiles: (root) => {
+    listFiles: (root, options) => {
       const target = links[root];
 
       if (target !== undefined) {
+        const entries = entriesOf(
+          Object.keys(target).map((path) => `${root}/${path}`),
+          `${root}/`,
+        );
+
+        const max = options?.maxEntries ?? Number.MAX_SAFE_INTEGER;
+
         return Promise.resolve(
-          ok({
-            entries: entriesOf(
-              Object.keys(target).map((path) => `${root}/${path}`),
-              `${root}/`,
-            ),
-            truncated: false,
-          }),
+          ok({ entries: entries.slice(0, max), truncated: entries.length > max }),
         );
       }
 
@@ -86,6 +89,8 @@ const envOf = (
       );
     },
     readTextFile: (path) => {
+      reads.push(path);
+
       const link = Object.keys(links).find((candidate) => path.startsWith(`${candidate}/`));
       const text = link === undefined ? files[path] : links[link]?.[path.slice(link.length + 1)];
 
@@ -332,6 +337,35 @@ describe("the skills section", () => {
     expect(section).toContain(
       "<location>/workspace/repo/.agents/skills/installed/SKILL.md</location>",
     );
+  });
+
+  it("reads at most 100 SKILL.md files, of a large directory or a link to one", async () => {
+    const big = Object.fromEntries(
+      Array.from({ length: 500 }, (_, index) => [
+        `s${String(index).padStart(3, "0")}/SKILL.md`,
+        skillFile(`s${String(index).padStart(3, "0")}`, "Large."),
+      ]),
+    );
+
+    reads.length = 0;
+
+    const section = await skillsSection("/workspace/repo", {}, true, {
+      "/workspace/repo/.agents/skills/big": big,
+    });
+
+    expect(section?.match(/<skill>/g)?.length ?? 0).toBeLessThanOrEqual(100);
+    expect(reads.length).toBeLessThanOrEqual(100);
+
+    reads.length = 0;
+
+    await skillsSection(
+      "/workspace/repo",
+      Object.fromEntries(
+        Object.entries(big).map(([path, text]) => [`/workspace/repo/.agents/skills/${path}`, text]),
+      ),
+    );
+
+    expect(reads.length).toBeLessThanOrEqual(100);
   });
 
   it("is absent when no skill is found", async () => {

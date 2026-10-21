@@ -42,6 +42,12 @@ export const MAX_DESCRIPTION_LENGTH = 1024;
 /** The most skills listed, nearest first. */
 export const MAX_SKILLS = 100;
 
+/** The most entries listed in a `.agents/skills` directory: far above any real one, below a walk of a whole tree. */
+const MAX_ROOT_ENTRIES = 5000;
+
+/** The most entries read from a directory a skills link points to: a link may lead anywhere, however large. */
+const MAX_LINKED_ENTRIES = 200;
+
 /** What discovery uses of the call's environment: it reads files and never executes. */
 type SkillsEnv = Pick<ExecutionEnv, "cwd" | "listFiles" | "readTextFile">;
 
@@ -226,6 +232,7 @@ const join = (directory: string, path: string): string =>
 const entriesBelow = (
   env: SkillsEnv,
   directory: string,
+  maxEntries: number,
 ): Effect.Effect<ReadonlyArray<FileListEntry>, SkillsError> =>
   Effect.gen(function* () {
     if (env.listFiles === undefined) return [];
@@ -234,7 +241,12 @@ const entriesBelow = (
       // Hidden: the skills are looked for in `.agents`. Not git's ignore rules: they are for the repo's files.
       env.listFiles!(
         directory,
-        { hidden: true, gitignore: false, exclude: ["node_modules"] },
+        {
+          hidden: true,
+          gitignore: false,
+          exclude: ["node_modules"],
+          maxEntries,
+        },
         BACKGROUND_CONTEXT,
       ),
     );
@@ -258,7 +270,7 @@ const candidatePaths = (
   root: string,
 ): Effect.Effect<ReadonlyArray<string>, SkillsError> =>
   Effect.gen(function* () {
-    const entries = yield* entriesBelow(env, root);
+    const entries = yield* entriesBelow(env, root, MAX_ROOT_ENTRIES);
 
     const linked = yield* Effect.forEach(
       Arr.filter(
@@ -268,7 +280,7 @@ const candidatePaths = (
           !Arr.some(entry.path.split("/"), (part) => part.startsWith(".")),
       ),
       (link) =>
-        Effect.map(entriesBelow(env, join(root, link.path)), (inside) =>
+        Effect.map(entriesBelow(env, join(root, link.path), MAX_LINKED_ENTRIES), (inside) =>
           Arr.map(inside, (entry) => ({ ...entry, path: `${link.path}/${entry.path}` })),
         ),
       { concurrency: 8 },
@@ -282,7 +294,8 @@ const candidatePaths = (
 /** The skills in one `.agents/skills` directory, none when it is absent. */
 const skillsIn = (env: SkillsEnv, root: string): Effect.Effect<ReadonlyArray<Skill>, SkillsError> =>
   Effect.gen(function* () {
-    const files = skillFiles(yield* candidatePaths(env, root));
+    // Capped before any file is read: a directory may hold far more than the prompt lists.
+    const files = Arr.take(skillFiles(yield* candidatePaths(env, root)), MAX_SKILLS);
 
     const skills = yield* Effect.forEach(
       files,

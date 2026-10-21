@@ -54,7 +54,7 @@ import file43 from "../../../../skills/writing-for-agents/SKILL-MECHANICS.md?raw
 import file44 from "../../../../skills/writing-for-agents/SKILL.md?raw";
 
 export const BUNDLED_SKILLS: WorkerBundleSource = {
-  version: "sha256:2b8d415a3e30016ae1aead4d31cec8dd80be92a6d8a7efa22362c27698ab6ba1",
+  version: "sha256:b9c9998423bddd4887f9ff9dc3affa67e02b8b0996d04be24d39e80b4d397263",
   files: {
     "ast-grep/SKILL.md": file0,
     "ast-grep/references/rule_reference.md": file1,
