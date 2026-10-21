@@ -58,6 +58,13 @@ export const messageOf = (cause: Cause.Cause<unknown>): string => {
 export const failureOf = <A, E>(result: AsyncResult.AsyncResult<A, E>): string | null =>
   AsyncResult.isFailure(result) ? messageOf(result.cause) : null;
 
+/**
+ * Why an atom's last answer is a failure, or null; null too while it asks again, so that starting again (a clone, a
+ * retry) clears the message.
+ */
+export const settledFailureOf = <A, E>(result: AsyncResult.AsyncResult<A, E>): string | null =>
+  AsyncResult.isFailure(result) && !result.waiting ? messageOf(result.cause) : null;
+
 /** Why a mutation that ended as `exit` failed, or null when it worked. */
 export const exitFailure = <A, E>(exit: Exit.Exit<A, E>): string | null =>
   Exit.isFailure(exit) ? messageOf(exit.cause) : null;

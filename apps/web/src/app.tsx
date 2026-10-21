@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useAtomMount, useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
@@ -14,6 +14,7 @@ import {
 } from "./router.ts";
 import { SessionMenu } from "./session-menu.tsx";
 import { SettingsPage } from "./settings-page.tsx";
+import { pushSyncAtom } from "./push-state.ts";
 import { Sidebar, sessionTitle } from "./sidebar.tsx";
 import { useSessionActions } from "./session-actions.ts";
 import { sessionListAtom, sessionsAtom } from "./sessions.ts";
@@ -21,6 +22,9 @@ import { workspaceNamesAtom } from "./workspaces-state.ts";
 import { WorkspacesPage } from "./workspaces-page.tsx";
 
 export const App = () => {
+  // At startup, a device that already gets notifications is re-told to the Registry.
+  useAtomMount(pushSyncAtom);
+
   const path = usePath();
   const sessionId = sessionIdOf(path);
   const settingsOpen = isSettingsPath(path);

@@ -1,5 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import {
   DEFAULT_SETTINGS,
   ROLE_NAMES,
@@ -10,16 +11,18 @@ import {
   SUPPORTED_MODELS,
   THINKING_LEVELS,
 } from "@cloudpid/config";
+import * as Exit from "effect/Exit";
 import { ArrowLeft } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { modelName } from "./models.ts";
 import { badOfferedEntries, offeredFromText, offeredToText } from "./offered-tools.ts";
+import { disablePushAtom, enablePushAtom, pushStatusValueAtom } from "./push-state.ts";
+import { failureOf } from "./registry.ts";
 import { navigate } from "./router.ts";
+import { settingsLoadErrorAtom, settingsStateAtom, updateSettingsAtom } from "./settings.ts";
 import { spendLimitFromText, spendLimitToText } from "./spend-limit.ts";
-import { usePush } from "./use-push.ts";
-import { useSettings } from "./use-settings.ts";
 
 const ModelSelect = ({
   id,
@@ -71,8 +74,10 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 
 /** Whether this device gets a push when a Run ends, fails, or needs input. Takes effect at once, like no other setting here. */
 const NotificationsSection = () => {
-  const push = usePush();
-  const { status } = push;
+  const status = useAtomValue(pushStatusValueAtom);
+  const [enabling, enable] = useAtom(enablePushAtom, { mode: "promiseExit" });
+  const [disabling, disable] = useAtom(disablePushAtom, { mode: "promiseExit" });
+  const busy = enabling.waiting || disabling.waiting;
   const on = status?.kind === "on";
 
   return (
@@ -103,16 +108,13 @@ const NotificationsSection = () => {
           type="button"
           variant={on ? "outline" : "default"}
           disabled={
-            status === null ||
-            push.busy ||
-            status.kind === "unsupported" ||
-            status.kind === "denied"
+            status === null || busy || status.kind === "unsupported" || status.kind === "denied"
           }
           onClick={() => {
-            void (on ? push.disable() : push.enable());
+            void (on ? disable() : enable());
           }}
         >
-          {push.busy ? "Working…" : on ? "Turn off on this device" : "Turn on for this device"}
+          {busy ? "Working…" : on ? "Turn off on this device" : "Turn on for this device"}
         </Button>
         {on && (
           <span role="status" className="text-sm text-muted-foreground">
@@ -341,7 +343,11 @@ const SettingsForm = ({
 
 /** The settings page: the default model and thinking level, the model roles, the offered tools, the spend limit, and this device's notifications. */
 export const SettingsPage = () => {
-  const settings = useSettings();
+  const state = useAtomValue(settingsStateAtom);
+  const loadError = useAtomValue(settingsLoadErrorAtom);
+  const [update, save] = useAtom(updateSettingsAtom, { mode: "promiseExit" });
+  // Why a save was refused shows until the next save answers; until then, why the settings could not load.
+  const error = failureOf(update) ?? loadError;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -359,25 +365,25 @@ export const SettingsPage = () => {
           </button>
           <h1 className="text-lg font-semibold">Settings</h1>
         </div>
-        {settings.state?.problem !== undefined && (
+        {state?.problem !== undefined && (
           <p role="alert" className="mt-4 text-sm whitespace-pre-wrap text-destructive">
-            {settings.state.problem}
+            {state.problem}
           </p>
         )}
-        {settings.state === null ? (
-          settings.error === null ? (
+        {state === null ? (
+          error === null ? (
             <p className="mt-6 text-sm text-muted-foreground">Loading…</p>
           ) : (
             <p role="alert" className="mt-6 text-sm text-destructive">
-              {settings.error}
+              {error}
             </p>
           )
         ) : (
           <SettingsForm
-            saved={settings.state.settings}
-            saving={settings.saving}
-            error={settings.error}
-            onSave={settings.save}
+            saved={state.settings}
+            saving={update.waiting}
+            error={error}
+            onSave={(settings) => save(settings).then(Exit.isSuccess)}
           />
         )}
         <NotificationsSection />
