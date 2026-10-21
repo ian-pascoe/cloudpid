@@ -1,8 +1,8 @@
 diff --git a/dist/pool/index.mjs b/dist/pool/index.mjs
-index 7cc8335d47b5362ba7903540b8919df867ffc73f..89fdd5692c75a65f50b242b31f27b76f430ccf13 100644
+index 7cc8335d47b5362ba7903540b8919df867ffc73f..dbd6640c10f1cf2f3e762015b6b3901f33312348 100644
 --- a/dist/pool/index.mjs
 +++ b/dist/pool/index.mjs
-@@ -69253,7 +69253,17 @@ function inlineCachedModule(module$1, cacheContents) {
+@@ -69253,7 +69253,21 @@ function inlineCachedModule(module$1, cacheContents) {
  * module IDs to results. Vitest checks the map before calling `fetch()`, so
  * both paths need inlining. Reuse reads within this reply because aliases in
  * the map can reference the same cache file.
@@ -12,15 +12,19 @@ index 7cc8335d47b5362ba7903540b8919df867ffc73f..89fdd5692c75a65f50b242b31f27b76f
 +* too large"), which kills the runner. So inline code only up to
 +* `WARM_MODULES_BUDGET` serialized bytes and leave the other modules out:
 +* Vitest fetches those one at a time, the same as any other snapshot miss.
-+* Aliases of a module share its code, which the message carries once, so it
-+* is counted once.
++* Aliases of a module (its URL and its ID) share one code string, and devalue
++* writes a repeated string once, so that code is counted once; this relies on
++* the serializer deduplicating strings.
++* 24 MiB, not 32: only the code is counted, and the rest (each entry's other
++* fields and keys, the externalized entries, the envelope) needs the margin,
++* about 0.7 MB for ~1,200 modules.
 +* https://github.com/cloudflare/workers-sdk/issues/16349
  */
 +const WARM_MODULES_BUDGET = 24 * 1024 * 1024;
  function inlineCachedModules(response) {
  	const cacheContents = /* @__PURE__ */ new Map();
  	let inlined;
-@@ -69264,10 +69274,19 @@ function inlineCachedModules(response) {
+@@ -69264,10 +69278,19 @@ function inlineCachedModules(response) {
  	}
  	if (inlined !== response || response === null || typeof response !== "object" || Array.isArray(response)) return inlined;
  	let hasCachedModules = false;
