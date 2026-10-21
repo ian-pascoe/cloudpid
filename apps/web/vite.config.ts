@@ -12,8 +12,9 @@ export default defineConfig({
   server: {
     proxy: {
       "/rpc": WORKER,
-      // Only the socket: the page at /sessions/:id is the app itself.
+      // Only the socket and the Attachments: the page at /sessions/:id is the app itself.
       "^/sessions/[^/]+/socket$": { target: WORKER, ws: true },
+      "^/sessions/[^/]+/attachments/": WORKER,
     },
   },
 });

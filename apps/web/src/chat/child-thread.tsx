@@ -9,7 +9,7 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { type ThreadState } from "../session/connection.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
 import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
@@ -68,10 +68,12 @@ const LiveChildThread = ({
   });
 
   const problem = thread.failure ?? thread.view.error;
+  // A file dropped on the subagent's thread attaches to its composer, not the Session's.
+  const dropZone = useRef<HTMLDivElement>(null);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root className="flex flex-col">
+      <ThreadPrimitive.Root ref={dropZone} className="flex flex-col">
         <ThreadPrimitive.Viewport className="max-h-96 min-h-16 overflow-y-auto">
           <div className="flex flex-col gap-4 py-2">
             <ThreadPrimitive.Empty>
@@ -90,6 +92,7 @@ const LiveChildThread = ({
           compact
           who={agent?.id ?? "the agent"}
           conversationId={conversationId}
+          dropZone={dropZone}
           steerLane={thread.queue.steer}
           followUpLane={thread.queue.followUp}
           sending={thread.sending}

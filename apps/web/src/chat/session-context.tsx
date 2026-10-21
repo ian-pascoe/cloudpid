@@ -10,6 +10,14 @@ const SessionContext = createContext<SessionConnection | null>(null);
 
 export const SessionProvider = SessionContext.Provider;
 
+const SessionIdContext = createContext<string | null>(null);
+
+/** The Session's ID, which the composers upload Attachments to. */
+export const SessionIdProvider = SessionIdContext.Provider;
+
+/** The ID of the Session shown, or null where there is none to upload Attachments to. */
+export const useSessionId = (): string | null => useContext(SessionIdContext);
+
 /** The Session's connection. */
 export const useConnection = (): SessionConnection => {
   const connection = useContext(SessionContext);

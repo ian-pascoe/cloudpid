@@ -253,6 +253,37 @@ describe("a Session connection", () => {
     });
   });
 
+  it("sends a message with images as its input, and shows what it was given to show in the lanes", () => {
+    const { connection, latest } = setup();
+
+    const input = [
+      { type: "text" as const, text: "look\n\n@/workspace/.uploads/s/a.png" },
+      { type: "image" as const, mimeType: "image/jpeg", data: "/9j/" },
+    ];
+
+    watching(latest());
+    connection.submit({ input, display: "look · Attached: a.png" }, "followUp");
+
+    expect(connection.getState().sending.map((entry) => entry.text)).toEqual([
+      "look · Attached: a.png",
+    ]);
+
+    const submit = latest().commands().at(-1);
+
+    expect(submit).toMatchObject({ type: "submit", input, whenBusy: "followUp" });
+
+    latest().say({ type: "result", id: submit?.id, result: { submissionId: "sub-1" } });
+    latest().say({
+      type: "events",
+      conversationId: 1,
+      events: [{ type: "inbox_update", items: [{ id: "sub-1", mode: "followUp" }] }],
+    });
+
+    expect(connection.getState().queue.followUp).toEqual([
+      { id: "sub-1", text: "look · Attached: a.png" },
+    ]);
+  });
+
   it("lists queued inputs by lane, and shows one it has no text for (sent before a reload) as such", () => {
     const { connection, latest } = setup();
 

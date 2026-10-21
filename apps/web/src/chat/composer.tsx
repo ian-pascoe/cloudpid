@@ -1,11 +1,13 @@
 // @effect-diagnostics preferEffectArray:off asyncFunction:off globalTimers:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
-import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Square } from "lucide-react";
+import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Paperclip, Square } from "lucide-react";
 import {
+  type ClipboardEvent,
   type SubmitEvent,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
   useId,
   useMemo,
@@ -15,15 +17,19 @@ import {
 } from "react";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
-import { type CommandOutcome, sessionCommandsFor } from "@cloudpid/protocol";
+import { type CommandOutcome, sessionCommandsFor, type WhenBusy } from "@cloudpid/protocol";
 import type { QueuedEntry, SendingEntry } from "../session/connection.ts";
+import { AttachmentTiles } from "./attachment-tiles.tsx";
+import { outgoingMessage } from "./attachments.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu, rowId } from "./completion-menu.tsx";
 import { detectTrigger, type Edited, replaceTrigger } from "./completion.ts";
 import { completionFor } from "./menu.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
-import { useConnection } from "./session-context.tsx";
+import { useConnection, useSessionId } from "./session-context.tsx";
+import { useAttachments } from "./use-attachments.ts";
 import { useCatalog } from "./use-catalog.ts";
+import { useFileDrop } from "./use-file-drop.ts";
 
 const Lane = ({
   label,
@@ -105,6 +111,10 @@ const roundButton =
  * (`/stop`, `/stop-all`, `/copy`) and the Session's (`/compact`, `/rollover`, `/todo`, `/export`, run on this
  * conversation), then the Prompt templates and Skills of the conversation's directory; `$` opens one of the Skills. A
  * submitted `/name` the composer does not know is sent as written, for the Session to expand or the model to read.
+ *
+ * Files attach with the Attach button, a paste, or a drop anywhere on `dropZone` (the thread), and upload at once
+ * (`use-attachments.ts`). A message with Attachments is sent by the composer itself, once every one is uploaded and every
+ * picture fitted (Send waits until then): its text names each one's `@path`, and the pictures go inline.
  */
 export const Composer = ({
   steerLane,
@@ -116,6 +126,7 @@ export const Composer = ({
   compact = false,
   who = "the session",
   conversationId,
+  dropZone,
 }: {
   steerLane: readonly QueuedEntry[];
   followUpLane: readonly QueuedEntry[];
@@ -132,6 +143,8 @@ export const Composer = ({
   who?: string;
   /** The subagent conversation this composer writes to; the root's when absent. */
   conversationId?: number | undefined;
+  /** Where a dropped file attaches to this composer: its thread. */
+  dropZone?: RefObject<HTMLElement | null> | undefined;
 }) => {
   // On a touch screen, focusing the input opens the keyboard over the transcript.
   const autoFocus = !compact && window.matchMedia("(pointer: fine)").matches;
@@ -153,6 +166,13 @@ export const Composer = ({
   const [busy, setBusy] = useState(false);
   const connection = useConnection();
   const { catalog, refresh } = useCatalog(connection, conversationId);
+  const sessionId = useSessionId();
+  const attachments = useAttachments(sessionId);
+  const picker = useRef<HTMLInputElement>(null);
+  const dragging = useFileDrop(dropZone, attachments.add, sessionId !== null);
+  const attached = attachments.items.length > 0;
+  // Attachments alone make a message.
+  const hasMessage = canSend || attached;
 
   // The Session's commands run on this composer's conversation; what they did shows under the box.
   const session = useMemo(
@@ -319,14 +339,52 @@ export const Composer = ({
     return true;
   };
 
-  const queue = () => {
-    if (!canSend || handled()) return;
+  /** Send what is typed with the Attachments, once they are all uploaded and fitted; else say what it waits for. */
+  const sendAttached = (whenBusy: WhenBusy) => {
+    const sent = attachments.sent();
 
-    aui.composer.send({ steer: false });
+    if (sent === undefined) {
+      setNote({ tone: "info", text: attachments.waiting ?? "The attachments are not ready." });
+
+      return;
+    }
+
+    connection.submit(outgoingMessage(text, sent), whenBusy, conversationId);
+    aui.composer.setText("");
+    attachments.clear();
+    setNote(null);
+  };
+
+  const queue = () => {
+    if (!hasMessage || handled()) return;
+
+    if (attached) sendAttached("followUp");
+    else aui.composer.send({ steer: false });
   };
 
   const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
-    if (busy || handled()) event.preventDefault();
+    if (busy || handled()) {
+      event.preventDefault();
+
+      return;
+    }
+
+    // assistant-ui sends text only: a message with Attachments is the composer's to send.
+    if (attached) {
+      event.preventDefault();
+      sendAttached(running ? "steer" : "followUp");
+    }
+  };
+
+  /** Pasted files attach; the clipboard's text, when it has any too, is pasted as well. */
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files);
+
+    if (files.length === 0 || sessionId === null) return;
+
+    if (!event.clipboardData.types.includes("text/plain")) event.preventDefault();
+
+    attachments.add(files);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -360,6 +418,15 @@ export const Composer = ({
     if (event.key === "Enter" && event.altKey) {
       event.preventDefault();
       queue();
+
+      return;
+    }
+
+    // assistant-ui's own steer shortcut would send the text without the Attachments.
+    if (attached && event.key === "Enter" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+
+      if (!busy && !handled()) sendAttached("steer");
     }
   };
 
@@ -394,12 +461,24 @@ export const Composer = ({
             onPick={pick}
           />
         )}
-        <div className="rounded-lg border bg-background transition-colors focus-within:border-ring">
+        <div
+          className={cn(
+            "rounded-lg border bg-background transition-colors focus-within:border-ring",
+            dragging && "border-ring bg-muted",
+          )}
+        >
+          <AttachmentTiles
+            items={attachments.items}
+            fits={attachments.fits}
+            onRemove={attachments.remove}
+          />
           <ComposerPrimitive.Input
             ref={input}
             rows={1}
             autoFocus={autoFocus}
             cancelOnEscape={false}
+            addAttachmentOnPaste={false}
+            onPaste={onPaste}
             placeholder={placeholder}
             aria-label="Message"
             aria-autocomplete="list"
@@ -426,7 +505,33 @@ export const Composer = ({
           <div className="flex items-center gap-2 px-1.5 pb-1.5">
             <div className="flex min-w-0 flex-1 items-center gap-0.5">{tools}</div>
             <div className="flex shrink-0 items-center gap-1">
-              {running && canSend && (
+              {sessionId !== null && (
+                <>
+                  <input
+                    ref={picker}
+                    type="file"
+                    multiple
+                    hidden
+                    tabIndex={-1}
+                    onChange={(event) => {
+                      attachments.add(Array.from(event.target.files ?? []));
+                      event.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    aria-label="Attach files"
+                    title="Attach files"
+                    onClick={() => {
+                      picker.current?.click();
+                    }}
+                    className="touch-target inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
+                  >
+                    <Paperclip aria-hidden />
+                  </button>
+                </>
+              )}
+              {running && hasMessage && (
                 <button
                   type="button"
                   disabled={busy}
@@ -438,7 +543,7 @@ export const Composer = ({
                   <ListPlus aria-hidden />
                 </button>
               )}
-              {running && !canSend && onStopAll !== undefined && (
+              {running && !hasMessage && onStopAll !== undefined && (
                 <Menu
                   label="More ways to stop"
                   title="More ways to stop"
@@ -451,7 +556,7 @@ export const Composer = ({
                   </MenuItem>
                 </Menu>
               )}
-              {running && !canSend ? (
+              {running && !hasMessage ? (
                 <button
                   type="button"
                   aria-label="Stop"
@@ -469,10 +574,14 @@ export const Composer = ({
               ) : (
                 <button
                   type="submit"
-                  disabled={!canSend || busy}
+                  disabled={!hasMessage || busy || (attached && attachments.waiting !== null)}
                   aria-label={running ? "Steer" : "Send"}
                   title={
-                    running ? "Steer: joins the run after its tool calls (Enter)" : "Send (Enter)"
+                    attached && attachments.waiting !== null
+                      ? attachments.waiting
+                      : running
+                        ? "Steer: joins the run after its tool calls (Enter)"
+                        : "Send (Enter)"
                   }
                   className={cn(
                     roundButton,

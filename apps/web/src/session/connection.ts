@@ -21,9 +21,11 @@ import {
   type SessionView,
   type TaskGraphSummary,
   type TodoTask,
+  type UserInput,
   type WhenBusy,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
@@ -159,10 +161,18 @@ interface ThreadWatch {
   todos: readonly TodoTask[];
 }
 
+/** A message with more than text (an Attachment's image): what is submitted, and what its lane shows. */
+export interface OutgoingMessage {
+  readonly input: UserInput;
+  readonly display: string;
+}
+
 /** A submit not yet answered. Its `requestId` makes sending it again safe. */
 interface PendingSubmit {
   readonly commandId: string;
   readonly requestId: string;
+  readonly input: UserInput;
+  /** What its lane shows: the typed text, with any Attachment's name. */
   readonly text: string;
   readonly whenBusy: WhenBusy;
   /** The subagent's conversation it is for; the root's when absent. */
@@ -299,15 +309,20 @@ export class SessionConnection {
   };
 
   /**
-   * Submit `text`. Idle, it starts a Run; busy, `steer` joins the running Run at its next boundary and `followUp`
-   * waits for the next Run. Held until the watch is answered (a submit sent before it can land before the snapshot),
-   * and sent again after a reconnect if no answer came.
+   * Submit `message`: text, or an input with images and what its lane shows. Idle, it starts a Run; busy, `steer`
+   * joins the running Run at its next boundary and `followUp` waits for the next Run. Held until the watch is answered
+   * (a submit sent before it can land before the snapshot), and sent again after a reconnect if no answer came.
    */
-  submit(text: string, whenBusy: WhenBusy, conversationId?: number): void {
+  submit(message: string | OutgoingMessage, whenBusy: WhenBusy, conversationId?: number): void {
+    const { input, display } = Predicate.isString(message)
+      ? { input: message, display: message }
+      : message;
+
     this.pending.push({
       commandId: this.nextCommandId(),
       requestId: crypto.randomUUID(),
-      text,
+      input,
+      text: display,
       whenBusy,
       conversationId: this.isRoot(conversationId) ? undefined : conversationId,
       sent: false,
@@ -782,7 +797,7 @@ export class SessionConnection {
       const message: Types.Mutable<Extract<ClientMessage, { type: "submit" }>> = {
         type: "submit",
         id: submit.commandId,
-        input: submit.text,
+        input: submit.input,
         whenBusy: submit.whenBusy,
         requestId: submit.requestId,
       };

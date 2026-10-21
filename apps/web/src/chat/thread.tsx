@@ -366,6 +366,8 @@ export const Thread = ({
   const { view } = state;
   const problem = state.failure ?? view.error;
   const picker = useRef<PickerHandle>(null);
+  // A file dropped anywhere on the thread attaches to its composer.
+  const dropZone = useRef<HTMLDivElement>(null);
 
   const commands = useMemo(
     () =>
@@ -387,7 +389,7 @@ export const Thread = ({
     view.messages.at(-1)?.role !== "user";
 
   return (
-    <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
+    <ThreadPrimitive.Root ref={dropZone} className="flex min-h-0 flex-1 flex-col">
       <Header title={title} rename={rename} actions={actions} />
       {notice !== null && notice !== undefined && (
         <p
@@ -439,6 +441,7 @@ export const Thread = ({
           sending={state.sending}
           onStopAll={onStopAll}
           commands={commands}
+          dropZone={dropZone}
           tools={
             <ModelPicker
               ref={picker}
