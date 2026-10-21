@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
+  startTransition,
   useEffect,
   useId,
   useMemo,
@@ -531,8 +532,14 @@ export const Composer = ({
             aria-activedescendant={open && entries.length > 0 ? rowId(menuId, active) : undefined}
             onKeyDown={onKeyDown}
             onChange={(event) => {
-              setNote(null);
-              trackCaret(event.target);
+              const element = event.target;
+
+              // Runs before assistant-ui stores the new text: an urgent update here would render the input with the
+              // text before the edit, which puts the caret at the end. As a transition it renders after.
+              startTransition(() => {
+                setNote(null);
+                trackCaret(element);
+              });
             }}
             onSelect={(event) => {
               trackCaret(event.currentTarget);
