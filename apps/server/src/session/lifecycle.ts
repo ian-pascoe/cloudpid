@@ -22,9 +22,10 @@ export type DestroySessionOptions = {
   readonly state: DestroyableState;
   /** Close the Session's browser; the Browser Run session it holds would otherwise run until its keep-alive ends. */
   readonly closeBrowser: Effect.Effect<boolean, BrowserError>;
-  /** Reset the object (`ctx.abort`), so the next event (if any) finds no instance over the wiped storage. */
-  readonly reset: (reason: string) => void;
 };
+
+/** Why a deleted Session's object resets (`ctx.abort`); the call that asks for the reset fails with it. */
+export const SESSION_DELETED_REASON = "Session deleted";
 
 /** Stop everything the Session runs: its root conversation and every subagent below it, background work included. */
 export const stopSession = Effect.flatMap(SessionHost, (host) => host.abort({ subagents: true }));
@@ -32,13 +33,15 @@ export const stopSession = Effect.flatMap(SessionHost, (host) => host.abort({ su
 /**
  * Delete the Session's own state: stop everything it runs, close its browser and its clients' sockets (with
  * `SESSION_DELETED_CLOSE_CODE`, so they do not reconnect), close the Harness so nothing writes after, and wipe the
- * storage and alarm. What could not be stopped or closed does not hold the wipe back. The object resets once the call
- * has answered.
+ * storage and alarm. What could not be stopped or closed does not hold the wipe back.
+ *
+ * The instance is not reset here: the caller resets it with a call of its own once this one has answered (the Session
+ * DO's `reset`). A reset from a timer set here raced the reply: the Effect runtime resolves the call through timers of
+ * its own, so the abort could land first and fail the deletion with "Session deleted".
  */
 export const destroySession = Effect.fn("destroySession")(function* ({
   state,
   closeBrowser,
-  reset,
 }: DestroySessionOptions) {
   const host = yield* SessionHost;
 
@@ -53,7 +56,7 @@ export const destroySession = Effect.fn("destroySession")(function* ({
   );
 
   for (const socket of state.getWebSockets()) {
-    yield* Effect.try(() => socket.close(SESSION_DELETED_CLOSE_CODE, "Session deleted")).pipe(
+    yield* Effect.try(() => socket.close(SESSION_DELETED_CLOSE_CODE, SESSION_DELETED_REASON)).pipe(
       Effect.ignore,
     );
   }
@@ -65,13 +68,4 @@ export const destroySession = Effect.fn("destroySession")(function* ({
   );
   yield* Effect.promise(() => state.storage.deleteAlarm());
   yield* Effect.promise(() => state.storage.deleteAll());
-
-  // After the reply: an abort now would fail the call that asked for the deletion. A plain timer, as the reset must
-  // outlive this call and its fiber.
-  yield* Effect.sync(() => {
-    // @effect-diagnostics-next-line globalTimersInEffect:off
-    setTimeout(() => {
-      reset("Session deleted");
-    }, 0);
-  });
 });

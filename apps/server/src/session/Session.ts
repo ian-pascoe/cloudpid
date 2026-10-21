@@ -49,7 +49,7 @@ import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
-import { destroySession, stopSession } from "./lifecycle.ts";
+import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
 import {
   cachedPlacement,
@@ -116,6 +116,11 @@ export type SessionMethods = {
   readonly stopAll: () => Effect.Effect<void, SessionError>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
+  /**
+   * Reset the object (`ctx.abort`) after `destroy` has answered, so the next event (if any) finds no instance over the
+   * wiped storage. The call always fails with `SESSION_DELETED_REASON`, as an abort fails the call that makes it.
+   */
+  readonly reset: () => Effect.Effect<void>;
 };
 
 /** One Session: a pi-durable Harness over this object's SQLite storage (`docs/spec.md` → Session host). */
@@ -374,12 +379,11 @@ export const SessionLive = Session.make(
           destroy: () =>
             invoked(
               "session.destroy",
-              destroySession({
-                state: state.raw,
-                closeBrowser: browser.close,
-                reset: (reason) => state.raw.abort(reason),
-              }).pipe(Effect.provideService(SessionHost, host)),
+              destroySession({ state: state.raw, closeBrowser: browser.close }).pipe(
+                Effect.provideService(SessionHost, host),
+              ),
             ),
+          reset: () => Effect.sync(() => state.raw.abort(SESSION_DELETED_REASON)),
         };
       }),
     ),

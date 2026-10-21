@@ -151,7 +151,15 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // A Session's object is found anew for each call; any failure of the call is a defect the endpoint reports.
     const sessionObjects: SessionObjects = {
       stop: (id) => Effect.orDie(sessions.getByName(id).stopAll()),
-      destroy: (id) => Effect.orDie(sessions.getByName(id).destroy()),
+      destroy: (id) => {
+        const session = sessions.getByName(id);
+
+        // Once the wipe has answered, the object resets: that call fails by design (an abort fails the call that makes
+        // it), and a reset that does not happen only leaves an instance over empty storage until it is evicted.
+        return Effect.orDie(session.destroy()).pipe(
+          Effect.andThen(Effect.ignoreCause(session.reset())),
+        );
+      },
     };
 
     return {
