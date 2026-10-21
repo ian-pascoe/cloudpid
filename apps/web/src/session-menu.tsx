@@ -21,15 +21,12 @@ export const DeleteSessionDialog = ({
   workspaceName,
   open,
   onClose,
-  onDeleted,
   deleteSession,
 }: {
   session: SessionRecord;
   workspaceName: string;
   open: boolean;
   onClose: () => void;
-  /** The Session is gone: leave its page if it is shown. */
-  onDeleted: () => void;
   deleteSession: SessionActions["delete"];
 }) => {
   const [deleting, setDeleting] = useState(false);
@@ -57,7 +54,6 @@ export const DeleteSessionDialog = ({
     }
 
     onClose();
-    onDeleted();
   };
 
   return (
@@ -100,14 +96,12 @@ export const SessionMenu = ({
   session,
   workspaceName,
   actions,
-  onDeleted,
   onFailure,
   className,
 }: {
   session: SessionRecord;
   workspaceName: string;
   actions: SessionActions;
-  onDeleted: () => void;
   onFailure: (message: string) => void;
   className?: string;
 }) => {
@@ -159,7 +153,6 @@ export const SessionMenu = ({
         onClose={() => {
           setDeleting(false);
         }}
-        onDeleted={onDeleted}
         deleteSession={actions.delete}
       />
     </>

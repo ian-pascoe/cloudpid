@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
+import * as AtomRegistry from "effect/reactivity/AtomRegistry";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  navigate,
+  pageAtom,
+  pathAtom,
+  sessionIdAtom,
   isSettingsPath,
   isWorkspacesPath,
   SETTINGS_PATH,
@@ -41,5 +46,56 @@ describe("the Workspaces path", () => {
     expect(isWorkspacesPath("/sessions/workspaces")).toBe(false);
     expect(sessionIdOf(WORKSPACES_PATH)).toBeUndefined();
     expect(isSettingsPath(WORKSPACES_PATH)).toBe(false);
+  });
+});
+
+/** A window whose history the test drives: `navigate` and the back button both reach `pathAtom`. */
+const stubWindow = (pathname: string) => {
+  const page = Object.assign(new EventTarget(), {
+    location: { pathname },
+    history: {
+      pushState: (_state: null, _title: string, path: string) => {
+        page.location.pathname = path;
+      },
+    },
+  });
+
+  vi.stubGlobal("window", page);
+  vi.stubGlobal("PopStateEvent", class extends Event {});
+
+  return {
+    back: (path: string) => {
+      page.location.pathname = path;
+      page.dispatchEvent(new Event("popstate"));
+    },
+  };
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("the page's path", () => {
+  it("follows navigate and the browser's back and forward buttons", () => {
+    const history = stubWindow("/");
+    const registry = AtomRegistry.make();
+
+    registry.mount(pathAtom);
+    expect(registry.get(pathAtom)).toBe("/");
+
+    navigate(sessionPath("a"));
+    expect(registry.get(sessionIdAtom)).toBe("a");
+
+    registry.set(pathAtom, SETTINGS_PATH);
+    expect(registry.get(pageAtom)).toEqual({ kind: "settings" });
+
+    history.back("/sessions/a");
+    expect(registry.get(pageAtom)).toEqual({ kind: "session", sessionId: "a" });
+
+    history.back(WORKSPACES_PATH);
+    expect(registry.get(pageAtom)).toEqual({ kind: "workspaces" });
+
+    history.back("/");
+    expect(registry.get(pageAtom)).toEqual({ kind: "empty" });
   });
 });
