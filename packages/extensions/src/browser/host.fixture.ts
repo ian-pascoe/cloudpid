@@ -1,6 +1,6 @@
 // @effect-diagnostics missingPipeableSignature:off instanceOfSchema:off
 // A fake browser host for tests: it answers `describe`, `run`, and `close` as given, and records and scripts Browser
-// Handoffs, which the tests of the handoff and the Session's wiring drive.
+// Browser Handoffs, which the tests of the handoff and the Session's wiring drive.
 import * as Effect from "effect/Effect";
 import {
   BrowserError,
@@ -15,7 +15,7 @@ import {
 export const LIVE_VIEW_URL =
   "https://live.browser.run/ui/view?mode=tab&wss=live.browser.run/api/devtools/browser/s/page/t?jwt=SECRET-LIVE-VIEW-TOKEN";
 
-/** Handoffs a fake host was asked to start, wait on, and end. */
+/** Browser Handoffs a fake host was asked to start, wait on, and end. */
 export type HandoffCalls = {
   readonly started: HandoffStartInput[];
   readonly waits: Array<{ readonly requestId: string; readonly maxMs: number }>;

@@ -1,7 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over a few times and services.
 // What wakes a Session that has no work live, and what it does when it settles (`./host.ts`'s `wakeAt` and `onIdle`): one
 // alarm serves a held Secret's expiry and the browser's keep-alive, so neither needs an alarm of its own.
-import type { BrowserSessionService, HandoffsService } from "@cloudpid/extensions/browser";
+import type { BrowserSessionService, BrowserHandoffsService } from "@cloudpid/extensions/browser";
 import type { SecretsService } from "@cloudpid/extensions/secrets";
 import * as Effect from "effect/Effect";
 
@@ -26,7 +26,7 @@ export const wakeAt = (
 export const onIdle = (
   secrets: Pick<SecretsService, "dropAbandoned">,
   browser: Pick<BrowserSessionService, "closeIfIdle">,
-  handoffs: Pick<HandoffsService, "dropAbandoned">,
+  handoffs: Pick<BrowserHandoffsService, "dropAbandoned">,
 ): Effect.Effect<void> =>
   Effect.all([secrets.dropAbandoned, handoffs.dropAbandoned, browser.closeIfIdle], {
     discard: true,

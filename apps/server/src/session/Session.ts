@@ -2,7 +2,7 @@ import { BROWSER_HOST_BINDING } from "@cloudpid/browser/binding";
 import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
 import {
   BrowserHost,
-  Handoffs,
+  BrowserHandoffs,
   BrowserSession,
   browserSessionLayer,
   imageLimitedModels,
@@ -31,7 +31,7 @@ import { sessionExtensions } from "./extensions.ts";
 import { NOTIFY_TIMEOUT, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
 import { sessionSettingsLayer, subagentSettings } from "./settings.ts";
 import { proxyModels } from "./models.ts";
-import { sessionHandoffsLayer } from "./handoffs.ts";
+import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { onIdle, wakeAt } from "./wake.ts";
@@ -200,7 +200,7 @@ export const SessionLive = Session.make(
         });
 
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed with their Live View link.
-        const sessionHandoffs = sessionHandoffsLayer({
+        const sessionBrowserHandoffs = sessionBrowserHandoffsLayer({
           host: browser,
           storage: kv,
           sockets: state.raw,
@@ -246,14 +246,14 @@ export const SessionLive = Session.make(
                   Effect.all([
                     Effect.service(Secrets),
                     Effect.service(BrowserSession),
-                    Effect.service(Handoffs),
+                    Effect.service(BrowserHandoffs),
                   ]),
                   ([held, browser, handoffs]) => onIdle(held, browser, handoffs),
                 ),
               }),
             ),
             Layer.provideMerge(sessionSecrets),
-            Layer.provideMerge(sessionHandoffs),
+            Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),
             Layer.provide(Layer.mergeAll(registry, settings)),
           ),

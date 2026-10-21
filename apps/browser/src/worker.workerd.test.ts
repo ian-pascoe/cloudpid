@@ -34,6 +34,23 @@ describe("the browser Worker", () => {
     expect(await env.BROWSER_HOST.getByName("idle").close()).toBe(false);
   });
 
+  it("hands over no tab for a conversation that has none, without starting a browser for it", async () => {
+    // Starting a browser would reach the binding, which fails with a 503 here: this answer is from the stored records.
+    const failure = await env.BROWSER_HOST.getByName("no-tab")
+      .startHandoff({
+        requestId: "1",
+        conversationId: 1,
+        instructions: "Log in",
+        timeoutMs: 60_000,
+      })
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+
+    expect(String(failure)).toMatch(/no open tab/);
+  });
+
   it("answers an HTTP request with 404", async () => {
     const response = await SELF.fetch("https://browser.example/");
 

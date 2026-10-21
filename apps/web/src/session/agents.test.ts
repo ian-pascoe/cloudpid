@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- test code over native arrays.
 import type { GraphAgent, TaskGraphSummary } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { agentOfConversation, canStopAllBelow, workingBelow } from "./agents.ts";
+import { agentLabel, agentOfConversation, canStopAllBelow, workingBelow } from "./agents.ts";
 
 const agent = (id: string, parent: string, conversationId: number, status: GraphAgent["status"]) =>
   ({
@@ -68,5 +68,17 @@ describe("the agents of a task graph", () => {
 
     expect(canStopAllBelow(withTask, "root", false)).toBe(true);
     expect(canStopAllBelow(withTask, "agent-1", false)).toBe(true);
+  });
+
+  it("names the agent of a conversation, and no one for the root's or an unknown one", () => {
+    const named: TaskGraphSummary = {
+      agents: [{ ...agent("agent-1", "root", 2, "idle"), role: "researcher" }],
+      background: [],
+    };
+
+    expect(agentLabel(named, 2)).toBe("agent-1 (researcher)");
+    expect(agentLabel(graph, 3)).toBe("agent-1.a");
+    expect(agentLabel(graph, 1)).toBeUndefined();
+    expect(agentLabel(null, 2)).toBeUndefined();
   });
 });

@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
-import { type HandoffRequest, makeHandoffs } from "./handoff.ts";
+import { type BrowserHandoffRequest, makeBrowserHandoffs } from "./handoff.ts";
 import { fakeHandoffHost, LIVE_VIEW_URL } from "./host.fixture.ts";
 import { BrowserError, type BrowserHostService, type HandoffStatus } from "./host.ts";
 import type { PushNotice } from "../notify.ts";
@@ -29,12 +29,12 @@ const memoryStorage = () => {
 const sessionOver = (
   host: BrowserHostService,
   storage = memoryStorage(),
-  announced: ReadonlyArray<HandoffRequest>[] = [],
+  announced: ReadonlyArray<BrowserHandoffRequest>[] = [],
   notices: PushNotice[] = [],
 ) => {
   const uses = { count: 0 };
 
-  const handoffs = makeHandoffs(
+  const handoffs = makeBrowserHandoffs(
     {
       host,
       storage,
@@ -249,7 +249,14 @@ describe("a Browser Handoff", () => {
   test("ends the handoffs that no call waits for once the Session is idle, and keeps those one does", () =>
     Effect.gen(function* () {
       const { host, calls } = hostWaiting({ state: "waiting" });
-      const stray: HandoffRequest = { ...ASK, id: "99", url: LIVE_VIEW_URL, deadline: TIMEOUT_MS };
+
+      const stray: BrowserHandoffRequest = {
+        ...ASK,
+        id: "99",
+        url: LIVE_VIEW_URL,
+        deadline: TIMEOUT_MS,
+      };
+
       const storage = memoryStorage();
 
       storage.put("browser-handoffs", [stray]);
@@ -265,5 +272,44 @@ describe("a Browser Handoff", () => {
       expect(Arr.map(announced.at(-1) ?? [], (request) => request.id)).toEqual(["7"]);
 
       yield* Fiber.interrupt(asking);
+    }));
+
+  test("does not show a handoff past its deadline, though nothing has ended it", () =>
+    Effect.gen(function* () {
+      const { host } = hostWaiting({ state: "waiting" });
+
+      const stray: BrowserHandoffRequest = {
+        ...ASK,
+        id: "99",
+        url: LIVE_VIEW_URL,
+        deadline: TIMEOUT_MS,
+      };
+
+      const storage = memoryStorage();
+
+      storage.put("browser-handoffs", [stray]);
+
+      const { handoffs } = sessionOver(host, storage);
+
+      expect(yield* handoffs.pending).toEqual([stray]);
+
+      // The deadline and the grace the host gets to answer late.
+      yield* TestClock.adjust(TIMEOUT_MS + 15_001);
+
+      expect(yield* handoffs.pending).toEqual([]);
+    }));
+
+  test("shows no card for a handoff the host says is over already, and answers how it ended", () =>
+    Effect.gen(function* () {
+      const { host } = fakeHandoffHost([{ state: "complete", success: true }], {
+        now: () => 0,
+        start: () => Effect.succeed({ url: "", startedAt: 0 }),
+      });
+
+      const { handoffs, announced, notices } = sessionOver(host);
+
+      expect(yield* handoffs.request(ASK)).toEqual({ status: "completed" });
+      expect(announced).toEqual([]);
+      expect(notices).toEqual([]);
     }));
 });

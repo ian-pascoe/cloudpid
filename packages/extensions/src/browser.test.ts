@@ -8,8 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   Browser,
   BrowserError,
-  Handoffs,
-  makeHandoffs,
+  BrowserHandoffs,
+  makeBrowserHandoffs,
   BrowserHost,
   type BrowserHostService,
   type BrowserRun,
@@ -80,10 +80,14 @@ const extensionOver = (host: BrowserHostService, session = fakeSession().session
       Effect.provideService(BrowserHost, host),
       Effect.provideService(BrowserSession, session),
       Effect.provideService(
-        Handoffs,
-        makeHandoffs({ host, storage: memoryStorage(), announce: () => Effect.void }, session, {
-          notify: () => Effect.void,
-        }),
+        BrowserHandoffs,
+        makeBrowserHandoffs(
+          { host, storage: memoryStorage(), announce: () => Effect.void },
+          session,
+          {
+            notify: () => Effect.void,
+          },
+        ),
       ),
     ),
   );
@@ -297,7 +301,7 @@ describe("browser_handoff", () => {
     const notices: unknown[] = [];
     const keepAlive = fakeSession().session;
 
-    const handoffs = makeHandoffs(
+    const handoffs = makeBrowserHandoffs(
       {
         host,
         storage: memoryStorage(),
@@ -319,7 +323,7 @@ describe("browser_handoff", () => {
       Browser.pipe(
         Effect.provideService(BrowserHost, host),
         Effect.provideService(BrowserSession, keepAlive),
-        Effect.provideService(Handoffs, handoffs),
+        Effect.provideService(BrowserHandoffs, handoffs),
       ),
     );
 
@@ -390,10 +394,14 @@ describe("browser_handoff", () => {
         Effect.provideService(BrowserHost, host),
         Effect.provideService(BrowserSession, keepAlive),
         Effect.provideService(
-          Handoffs,
-          makeHandoffs({ host, storage: memoryStorage(), announce: () => Effect.void }, keepAlive, {
-            notify: () => Effect.void,
-          }),
+          BrowserHandoffs,
+          makeBrowserHandoffs(
+            { host, storage: memoryStorage(), announce: () => Effect.void },
+            keepAlive,
+            {
+              notify: () => Effect.void,
+            },
+          ),
         ),
       ),
     );

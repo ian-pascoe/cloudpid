@@ -82,7 +82,7 @@ describe("the Session socket messages", () => {
 
   it("carry the Browser Handoffs waiting for the owner, with the link they open", async () => {
     const text = JSON.stringify({
-      type: "handoff_requests",
+      type: "browser_handoff_requests",
       requests: [
         {
           id: "12",
@@ -95,8 +95,8 @@ describe("the Session socket messages", () => {
     });
 
     expect(await readServer(text)).toEqual(JSON.parse(text));
-    expect(await readServer('{"type":"handoff_requests","requests":[]}')).toEqual({
-      type: "handoff_requests",
+    expect(await readServer('{"type":"browser_handoff_requests","requests":[]}')).toEqual({
+      type: "browser_handoff_requests",
       requests: [],
     });
   });

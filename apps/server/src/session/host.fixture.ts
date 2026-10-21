@@ -10,7 +10,7 @@ import {
   BrowserHost,
   type BrowserHostService,
   BrowserSession,
-  Handoffs,
+  BrowserHandoffs,
   type HandoffStartInput,
   type HandoffStatus,
   imageLimitedModels,
@@ -46,7 +46,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { sessionHandoffsLayer } from "./handoffs.ts";
+import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
@@ -195,7 +195,7 @@ export class TestSession extends DurableObject {
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | Handoffs
+    Harness | Secrets | BrowserHandoffs
   > {
     const { kv } = this.ctx.storage;
 
@@ -262,7 +262,7 @@ export class TestSession extends DurableObject {
               reportTimeout: "200 millis",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
               onIdle: Effect.flatMap(
-                Effect.all([Effect.service(Secrets), Effect.service(Handoffs)]),
+                Effect.all([Effect.service(Secrets), Effect.service(BrowserHandoffs)]),
                 ([held, handoffs]) => Effect.all([held.dropAbandoned, handoffs.dropAbandoned]),
               ),
             }).pipe(
@@ -290,7 +290,7 @@ export class TestSession extends DurableObject {
             ),
           ),
           Layer.provideMerge(
-            sessionHandoffsLayer({
+            sessionBrowserHandoffsLayer({
               host: testBrowserHost(ctx.storage.kv),
               storage: ctx.storage.kv,
               sockets: ctx,

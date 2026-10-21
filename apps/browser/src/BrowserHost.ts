@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalConsole:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
 // The browser host: one Durable Object per Session (ADR-0007) with the Session's one Browser Run browser, driven by
 // `agents/browser`'s `browserTool`. The Session DO reaches it over RPC, because the tool needs this Worker's
 // `CodemodeRuntime` facet and the Loader that runs the model's CDP code (`docs/spec.md` → Browser).
@@ -46,36 +46,86 @@ type ConversationTool = {
 };
 
 export class BrowserHost extends DurableObject<BrowserHostEnv> implements BrowserHostRpc {
+  readonly #store: DurableBrowserSessionStore;
   readonly #browser: Browser;
   readonly #tool: PiBrowserTool;
   readonly #handoffs: HandoffHost;
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
+    this.#store = new DurableBrowserSessionStore(ctx.storage);
     this.#browser = new Browser({
       provider: browserRun(env.BROWSER, { keepAliveMs: BROWSER_KEEP_ALIVE_MS }),
-      store: new DurableBrowserSessionStore(ctx.storage),
+      store: this.#store,
     });
     this.#tool = browserTool({ ctx, browser: this.#browser, loader: env.LOADER });
     this.#handoffs = new HandoffHost({
       records: ctx.storage.kv,
+      schedule: (at) => this.#wakeAt(at),
       browser: {
-        // The tab a conversation works in is the `browserTool`'s scope for it (`conversation:<id>`).
-        tabOf: async (conversationId) => {
-          const connection = await this.#browser.connect({
-            scope: `conversation:${conversationId}`,
-          });
-
-          // Only the tab and the session are wanted: the handoff opens a connection of its own, which hears its events.
-          connection.cdp.close();
-
-          return connection.activeTargetId === undefined
-            ? undefined
-            : { browserSessionId: connection.sessionId, targetId: connection.activeTargetId };
-        },
+        tabOf: (conversationId) => this.#tabOf(conversationId),
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
       },
     });
+  }
+
+  /**
+   * The tab conversation `conversationId` works in, if its browser is still there. The `browserTool` keeps it in the
+   * conversation's scope record (`conversation:<id>`, the `scope` option's default) beside the browser's own record, and
+   * both are read as they are stored: `Browser.connect` would create a browser for a conversation that has none and move
+   * a stale scope record to it, and a handoff must change neither.
+   */
+  async #tabOf(
+    conversationId: number,
+  ): Promise<{ readonly browserSessionId: string; readonly targetId: string } | undefined> {
+    const { name } = this.#browser;
+    const browser = await this.#store.get(`browser:session:${name}`);
+
+    const scope = await this.#store.get(
+      `browser:scope:${name.length}:${name}:conversation:${conversationId}`,
+    );
+
+    // The scope's record names the browser it last worked in: one that was replaced since has no tab to hand over.
+    if (
+      browser === undefined ||
+      browser.closedAt !== undefined ||
+      scope?.sessionId !== browser.sessionId ||
+      scope.activeTargetId === undefined
+    ) {
+      return undefined;
+    }
+
+    const targets = await this.env.BROWSER.fetch(
+      `https://localhost/v1/devtools/browser/${browser.sessionId}/json/list`,
+    );
+
+    if (!targets.ok) return undefined;
+
+    const open: unknown = await targets.json();
+
+    const present =
+      Array.isArray(open) && open.some((target) => target?.id === scope.activeTargetId);
+
+    return present
+      ? { browserSessionId: browser.sessionId, targetId: scope.activeTargetId }
+      : undefined;
+  }
+
+  /** Wake this object at `at` (epoch milliseconds) or sooner, to drop expired handoffs (`alarm`). */
+  #wakeAt(at: number): void {
+    void this.ctx.storage
+      .getAlarm()
+      .then((current) =>
+        current === null || current > at ? this.ctx.storage.setAlarm(at) : undefined,
+      )
+      .catch((error: Error) => console.warn(`Setting the handoff alarm failed: ${String(error)}`));
+  }
+
+  /** Drop the handoffs whose deadline has long passed (the Session did not end them), and wake again for the next. */
+  alarm(): void {
+    const next = this.#handoffs.prune();
+
+    if (next !== undefined) void this.ctx.storage.setAlarm(next);
   }
 
   /** The tool's description: how the model drives the browser. */

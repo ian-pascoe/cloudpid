@@ -368,24 +368,24 @@ describe("a Session connection", () => {
     it("shows the handoffs the Session says are waiting, with their links, until it says none are", () => {
       const { connection, latest } = setup();
 
-      expect(connection.getState().handoffRequests).toEqual([]);
+      expect(connection.getState().browserHandoffRequests).toEqual([]);
 
       watching(latest());
-      latest().say({ type: "handoff_requests", requests: [request] });
-      expect(connection.getState().handoffRequests).toEqual([request]);
+      latest().say({ type: "browser_handoff_requests", requests: [request] });
+      expect(connection.getState().browserHandoffRequests).toEqual([request]);
 
-      latest().say({ type: "handoff_requests", requests: [] });
-      expect(connection.getState().handoffRequests).toEqual([]);
+      latest().say({ type: "browser_handoff_requests", requests: [] });
+      expect(connection.getState().browserHandoffRequests).toEqual([]);
     });
 
     it("forgets the handoffs of a closed socket, as the next one says again which wait", () => {
       const { connection, latest } = setup();
 
       watching(latest());
-      latest().say({ type: "handoff_requests", requests: [request] });
+      latest().say({ type: "browser_handoff_requests", requests: [request] });
       latest().drop();
 
-      expect(connection.getState().handoffRequests).toEqual([]);
+      expect(connection.getState().browserHandoffRequests).toEqual([]);
     });
   });
 

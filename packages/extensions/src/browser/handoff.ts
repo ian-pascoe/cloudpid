@@ -38,14 +38,14 @@ const MAX_HOST_FAILURES = 3;
 const CLEANUP_TIMEOUT = "5 seconds";
 
 /** The Durable Object's synchronous key-value storage, as the store uses it. */
-export type HandoffStorage = {
+export type BrowserHandoffStorage = {
   get<T>(key: string): T | undefined;
   put<T>(key: string, value: T): void;
   delete(key: string): boolean;
 };
 
 /** A Browser Handoff waiting for the owner, with the link to do it in. */
-export const HandoffRequest = Schema.Struct({
+export const BrowserHandoffRequest = Schema.Struct({
   /** Unique within the Session: the asking call's task. */
   id: Schema.String,
   /** The conversation whose tab is handed over. */
@@ -58,18 +58,18 @@ export const HandoffRequest = Schema.Struct({
   deadline: Schema.Finite,
 });
 
-export type HandoffRequest = typeof HandoffRequest.Type;
+export type BrowserHandoffRequest = typeof BrowserHandoffRequest.Type;
 
 /** How a handoff ended, as the tool tells the model; never the link. */
-export type HandoffOutcome =
+export type BrowserHandoffOutcome =
   | { readonly status: "completed" }
   | { readonly status: "failed"; readonly reason?: string }
   | { readonly status: "timeout" }
   | { readonly status: "ended" };
 
-export type HandoffsService = {
-  /** The handoffs waiting for the owner, oldest first. */
-  readonly pending: Effect.Effect<ReadonlyArray<HandoffRequest>>;
+export type BrowserHandoffsService = {
+  /** The handoffs waiting for the owner, oldest first: those past their deadline (and grace) are not shown. */
+  readonly pending: Effect.Effect<ReadonlyArray<BrowserHandoffRequest>>;
   /**
    * Hand `input.conversationId`'s tab to the owner and wait until they finish, report failure, or the handoff times
    * out. Asking again with the same `id` (a rerun after an eviction) waits for the same handoff. Cancelling the wait
@@ -79,7 +79,7 @@ export type HandoffsService = {
     readonly id: string;
     readonly conversationId: number;
     readonly instructions: string;
-  }) => Effect.Effect<HandoffOutcome, BrowserError>;
+  }) => Effect.Effect<BrowserHandoffOutcome, BrowserError>;
   /**
    * End every handoff no call in this instance waits for. Run only while no work is live: then no call can still come
    * back for them (one an eviction cut off has rerun by then), so they were abandoned.
@@ -88,17 +88,17 @@ export type HandoffsService = {
 };
 
 /** The Session's Browser Handoffs. */
-export class Handoffs extends Context.Service<Handoffs, HandoffsService>()(
-  "@cloudpid/extensions/browser/handoff/Handoffs",
+export class BrowserHandoffs extends Context.Service<BrowserHandoffs, BrowserHandoffsService>()(
+  "@cloudpid/extensions/browser/handoff/BrowserHandoffs",
 ) {}
 
 const PENDING_KEY = "browser-handoffs";
 
-export type HandoffsOptions = {
+export type BrowserHandoffsOptions = {
   readonly host: BrowserHostService;
-  readonly storage: HandoffStorage;
+  readonly storage: BrowserHandoffStorage;
   /** Tell the clients which handoffs wait; called whenever that changes. */
-  readonly announce: (requests: ReadonlyArray<HandoffRequest>) => Effect.Effect<void>;
+  readonly announce: (requests: ReadonlyArray<BrowserHandoffRequest>) => Effect.Effect<void>;
   /** How long a handoff waits for the owner. Defaults to `HANDOFF_TIMEOUT_MS`. */
   readonly timeoutMs?: number;
   /** How long one round of waiting on the host lasts at most. Defaults to `HANDOFF_POLL_MS`. */
@@ -113,7 +113,7 @@ const pushBody = (instructions: string): string => `Needs you in the browser: ${
 /** `text` without the Live View link, so that nothing the model reads can carry it. */
 const withoutLink = (text: string, url: string): string => text.split(url).join("[Live View link]");
 
-export const makeHandoffs = (
+export const makeBrowserHandoffs = (
   {
     host,
     storage,
@@ -121,17 +121,17 @@ export const makeHandoffs = (
     timeoutMs = HANDOFF_TIMEOUT_MS,
     pollMs = HANDOFF_POLL_MS,
     graceMs = DEADLINE_GRACE_MS,
-  }: HandoffsOptions,
+  }: BrowserHandoffsOptions,
   session: Pick<BrowserSessionService, "touch">,
   notifications: (typeof OwnerNotifications)["Service"],
-): HandoffsService => {
+): BrowserHandoffsService => {
   /** Calls in this instance waiting on a handoff, by request. */
   const waiting = new Set<string>();
 
-  const stored = (): ReadonlyArray<HandoffRequest> =>
-    storage.get<HandoffRequest[]>(PENDING_KEY) ?? [];
+  const stored = (): ReadonlyArray<BrowserHandoffRequest> =>
+    storage.get<BrowserHandoffRequest[]>(PENDING_KEY) ?? [];
 
-  const put = (requests: ReadonlyArray<HandoffRequest>) =>
+  const put = (requests: ReadonlyArray<BrowserHandoffRequest>) =>
     Effect.suspend(() => {
       storage.put(PENDING_KEY, requests);
 
@@ -155,7 +155,7 @@ export const makeHandoffs = (
     });
 
   /** Ask the host in rounds until the handoff has an outcome. */
-  const waitFor = (request: HandoffRequest) =>
+  const waitFor = (request: BrowserHandoffRequest) =>
     Effect.gen(function* () {
       let failures = 0;
 
@@ -163,7 +163,7 @@ export const makeHandoffs = (
         const now = yield* Clock.currentTimeMillis;
         const remaining = request.deadline + graceMs - now;
 
-        if (remaining <= 0) return { status: "timeout" } satisfies HandoffOutcome;
+        if (remaining <= 0) return { status: "timeout" } satisfies BrowserHandoffOutcome;
 
         // The browser is in use while the owner works in it: it must not be closed as idle.
         yield* session.touch;
@@ -190,17 +190,20 @@ export const makeHandoffs = (
           case "waiting":
             continue;
           case "complete": {
-            if (round.status.success) return { status: "completed" } satisfies HandoffOutcome;
+            if (round.status.success)
+              return { status: "completed" } satisfies BrowserHandoffOutcome;
 
             const ended = yield* Clock.currentTimeMillis;
 
             if (ended >= request.deadline - TIMEOUT_SLACK_MS) {
-              return { status: "timeout" } satisfies HandoffOutcome;
+              return { status: "timeout" } satisfies BrowserHandoffOutcome;
             }
 
             const reason = round.status.reason?.trim();
 
-            const failed: Types.Mutable<Extract<HandoffOutcome, { readonly status: "failed" }>> = {
+            const failed: Types.Mutable<
+              Extract<BrowserHandoffOutcome, { readonly status: "failed" }>
+            > = {
               status: "failed",
             };
 
@@ -208,17 +211,17 @@ export const makeHandoffs = (
               failed.reason = withoutLink(reason, request.url);
             }
 
-            return failed satisfies HandoffOutcome;
+            return failed satisfies BrowserHandoffOutcome;
           }
 
           case "ended":
           case "unknown":
-            return { status: "ended" } satisfies HandoffOutcome;
+            return { status: "ended" } satisfies BrowserHandoffOutcome;
         }
       }
     });
 
-  const request: HandoffsService["request"] = ({ id, conversationId, instructions }) =>
+  const request: BrowserHandoffsService["request"] = ({ id, conversationId, instructions }) =>
     Effect.gen(function* () {
       let found = stored().find((pending) => pending.id === id);
 
@@ -230,7 +233,7 @@ export const makeHandoffs = (
           timeoutMs,
         });
 
-        const created: HandoffRequest = {
+        const created: BrowserHandoffRequest = {
           id,
           conversationId,
           instructions,
@@ -239,16 +242,21 @@ export const makeHandoffs = (
         };
 
         found = created;
-        yield* put([...stored(), created]);
 
-        // In the background: the push may take seconds, and the wait must neither wait on it nor outlive an abort.
-        yield* Effect.forkDetach(
-          notifications.notify({
-            kind: "notice",
-            body: pushBody(instructions),
-            url: created.url,
-          }),
-        );
+        // A blank link is a handoff that is over already (a start that came again after it ended): nothing to show the
+        // owner, and the wait finds the outcome.
+        if (started.url !== "") {
+          yield* put([...stored(), created]);
+
+          // In the background: the push may take seconds, and the wait must neither wait on it nor outlive an abort.
+          yield* Effect.forkDetach(
+            notifications.notify({
+              kind: "notice",
+              body: pushBody(instructions),
+              url: created.url,
+            }),
+          );
+        }
       }
 
       waiting.add(id);
@@ -261,7 +269,11 @@ export const makeHandoffs = (
     );
 
   return {
-    pending: Effect.sync(stored),
+    pending: Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+
+      return stored().filter((pending) => pending.deadline + graceMs > now);
+    }),
     request,
     dropAbandoned: Effect.suspend(() => {
       const abandoned = stored().filter((pending) => !waiting.has(pending.id));
@@ -277,11 +289,13 @@ export const makeHandoffs = (
   };
 };
 
-/** The Session's `Handoffs` over its storage and host; needs the Session's `BrowserSession` and `OwnerNotifications`. */
-export const handoffsLayer = (options: HandoffsOptions) =>
+/** The Session's `BrowserHandoffs` over its storage and host; needs the Session's `BrowserSession` and `OwnerNotifications`. */
+export const browserHandoffsLayer = (options: BrowserHandoffsOptions) =>
   Layer.effect(
-    Handoffs,
+    BrowserHandoffs,
     Effect.all([Effect.service(BrowserSession), Effect.service(OwnerNotifications)]).pipe(
-      Effect.map(([session, notifications]) => makeHandoffs(options, session, notifications)),
+      Effect.map(([session, notifications]) =>
+        makeBrowserHandoffs(options, session, notifications),
+      ),
     ),
   );

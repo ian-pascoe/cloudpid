@@ -11,7 +11,7 @@ import {
   ServerMessageJson,
   type ClientMessage,
   type ConversationId,
-  type HandoffRequest,
+  type BrowserHandoffRequest,
   type SecretRequest,
   type ServerMessage,
   type SessionView,
@@ -126,7 +126,7 @@ export interface SessionState {
   /** How long an entered Secret is held, as the Session says. */
   readonly secretLifetimeMinutes: number;
   /** Browser Handoffs waiting for the owner, each with the Live View link to open; never shown in the chat. */
-  readonly handoffRequests: readonly HandoffRequest[];
+  readonly browserHandoffRequests: readonly BrowserHandoffRequest[];
   /** The subagent threads being watched, by conversation ID. */
   readonly threads: Readonly<Record<string, ThreadState>>;
   /** The Session's subagents and background work, as of the last summary; null until it sends one. */
@@ -236,7 +236,7 @@ export class SessionConnection {
     failure: null,
     secretRequests: [],
     secretLifetimeMinutes: 15,
-    handoffRequests: [],
+    browserHandoffRequests: [],
     threads: {},
     taskGraph: null,
   };
@@ -440,8 +440,8 @@ export class SessionConnection {
         });
 
         return;
-      case "handoff_requests":
-        this.update({ handoffRequests: message.requests });
+      case "browser_handoff_requests":
+        this.update({ browserHandoffRequests: message.requests });
 
         return;
       case "events": {
@@ -682,7 +682,7 @@ export class SessionConnection {
     }
 
     // The next socket says again which Secret requests and Browser Handoffs wait.
-    this.state = { ...this.state, secretRequests: [], handoffRequests: [] };
+    this.state = { ...this.state, secretRequests: [], browserHandoffRequests: [] };
 
     // An unanswered close may leave the socket open at this end.
     socket?.close();
@@ -748,7 +748,7 @@ export class SessionConnection {
         | "picked"
         | "secretRequests"
         | "secretLifetimeMinutes"
-        | "handoffRequests"
+        | "browserHandoffRequests"
         | "taskGraph"
       >
     >,

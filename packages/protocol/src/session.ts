@@ -196,7 +196,7 @@ export const SecretRequests = Schema.Struct({
  * for a step it cannot do. `url` is the Live View link, a bearer credential for the owner alone: a client shows it as a
  * link for the owner to open and never to the agent or the chat.
  */
-export const HandoffRequest = Schema.Struct({
+export const BrowserHandoffRequest = Schema.Struct({
   /** The asking call's task, unique within the Session. */
   id: Schema.String,
   /** The conversation whose tab is handed over. */
@@ -209,7 +209,7 @@ export const HandoffRequest = Schema.Struct({
   deadline: Schema.Finite,
 });
 
-export type HandoffRequest = typeof HandoffRequest.Type;
+export type BrowserHandoffRequest = typeof BrowserHandoffRequest.Type;
 
 /**
  * The Browser Handoffs waiting for the owner, oldest first. A client shows each with its instructions and a link to open,
@@ -217,9 +217,9 @@ export type HandoffRequest = typeof HandoffRequest.Type;
  * waits). The owner finishes in the Live View itself, so there is no answer command; a request ends when the owner is
  * done, the handoff times out, or the run is stopped, and it outlives reconnects and evictions until then.
  */
-export const HandoffRequests = Schema.Struct({
-  type: Schema.Literal("handoff_requests"),
-  requests: Schema.Array(HandoffRequest),
+export const BrowserHandoffRequests = Schema.Struct({
+  type: Schema.Literal("browser_handoff_requests"),
+  requests: Schema.Array(BrowserHandoffRequest),
 });
 
 /** A subagent as the task graph shows it. */
@@ -320,7 +320,7 @@ export const ServerMessage = Schema.Union([
   Result,
   ErrorMessage,
   SecretRequests,
-  HandoffRequests,
+  BrowserHandoffRequests,
   TaskGraphMessage,
 ]);
 

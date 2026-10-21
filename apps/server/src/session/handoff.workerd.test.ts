@@ -7,7 +7,7 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   type ClientMessage,
-  type HandoffRequest,
+  type BrowserHandoffRequest,
   ServerMessageJson,
   type ServerMessage,
 } from "@cloudpid/protocol";
@@ -67,15 +67,15 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   };
 };
 
-type Requests = Extract<ServerMessage, { type: "handoff_requests" }>;
+type Requests = Extract<ServerMessage, { type: "browser_handoff_requests" }>;
 
 const isRequests = (message: ServerMessage): message is Requests =>
-  message.type === "handoff_requests";
+  message.type === "browser_handoff_requests";
 
 const isPending = (message: ServerMessage): message is Requests =>
   isRequests(message) && message.requests.length > 0;
 
-const only = (message: Requests): HandoffRequest => {
+const only = (message: Requests): BrowserHandoffRequest => {
   const [request] = message.requests;
 
   if (request === undefined || message.requests.length !== 1) throw new Error("Not one request");
@@ -278,10 +278,10 @@ describe("Browser Handoffs over the Session socket", () => {
   it("ends a handoff whose call is gone once the Session is idle", async () => {
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
 
-    const stray: HandoffRequest = {
+    const stray: BrowserHandoffRequest = {
       id: "99",
       // SAFETY: a conversation ID, as the protocol brands it.
-      conversationId: 1 as HandoffRequest["conversationId"],
+      conversationId: 1 as BrowserHandoffRequest["conversationId"],
       instructions: "Log in",
       url: LIVE_VIEW_URL,
       deadline: Date.now() + 60_000,

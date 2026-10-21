@@ -5,7 +5,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { BrowserBinding } from "agents/browser";
-import type { CdpEvent, CdpParams, CdpTransport } from "./handoff.ts";
+import { BrowserGoneError, type CdpEvent, type CdpParams, type CdpTransport } from "./handoff.ts";
 
 /** How long a command may take. */
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -42,6 +42,11 @@ export const openCdpSocket = async (
   );
 
   const socket = response.webSocket;
+
+  // Browser Run answers 404 or 410 for a session it no longer has.
+  if (socket === null && (response.status === 404 || response.status === 410)) {
+    throw new BrowserGoneError(`Browser Run no longer has browser session ${browserSessionId}`);
+  }
 
   if (socket === null) {
     throw new Error(`Browser Run did not open a CDP connection (${response.status})`);

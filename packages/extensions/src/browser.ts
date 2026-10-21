@@ -4,7 +4,7 @@
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { BrowserHost } from "./browser/host.ts";
-import { Handoffs } from "./browser/handoff.ts";
+import { BrowserHandoffs } from "./browser/handoff.ts";
 import { BrowserSession } from "./browser/session.ts";
 import {
   browserHandoffTool,
@@ -40,15 +40,15 @@ export {
 } from "./browser/session.ts";
 
 export {
-  Handoffs,
+  BrowserHandoffs,
   HANDOFF_POLL_MS,
-  type HandoffOutcome,
-  HandoffRequest,
-  handoffsLayer,
-  type HandoffsOptions,
-  type HandoffsService,
-  type HandoffStorage,
-  makeHandoffs,
+  type BrowserHandoffOutcome,
+  BrowserHandoffRequest,
+  browserHandoffsLayer,
+  type BrowserHandoffsOptions,
+  type BrowserHandoffsService,
+  type BrowserHandoffStorage,
+  makeBrowserHandoffs,
 } from "./browser/handoff.ts";
 
 export {
@@ -70,31 +70,34 @@ const DESCRIBE_TIMEOUT = "5 seconds";
  * The `browser` extension. Its description is the host's, which wakes the host's object when a Session starts; a host
  * that cannot answer in time leaves the tool with a short one.
  */
-export const Browser: Effect.Effect<Extension, never, BrowserHost | BrowserSession | Handoffs> =
-  Effect.gen(function* () {
-    const host = yield* BrowserHost;
-    const session = yield* BrowserSession;
-    const handoffs = yield* Handoffs;
+export const Browser: Effect.Effect<
+  Extension,
+  never,
+  BrowserHost | BrowserSession | BrowserHandoffs
+> = Effect.gen(function* () {
+  const host = yield* BrowserHost;
+  const session = yield* BrowserSession;
+  const handoffs = yield* BrowserHandoffs;
 
-    const description = yield* host.describe.pipe(
-      Effect.timeout(DESCRIBE_TIMEOUT),
-      Effect.catch((error) =>
-        Effect.logWarning("The browser host could not describe its tool", error).pipe(
-          Effect.as(FALLBACK_DESCRIPTION),
-        ),
+  const description = yield* host.describe.pipe(
+    Effect.timeout(DESCRIBE_TIMEOUT),
+    Effect.catch((error) =>
+      Effect.logWarning("The browser host could not describe its tool", error).pipe(
+        Effect.as(FALLBACK_DESCRIPTION),
       ),
-      Effect.map(describeBrowser),
-    );
+    ),
+    Effect.map(describeBrowser),
+  );
 
-    const tool = yield* browserTool(description).pipe(
-      Effect.provideService(BrowserHost, host),
-      Effect.provideService(BrowserSession, session),
-    );
+  const tool = yield* browserTool(description).pipe(
+    Effect.provideService(BrowserHost, host),
+    Effect.provideService(BrowserSession, session),
+  );
 
-    const handoff = yield* browserHandoffTool.pipe(
-      Effect.provideService(BrowserSession, session),
-      Effect.provideService(Handoffs, handoffs),
-    );
+  const handoff = yield* browserHandoffTool.pipe(
+    Effect.provideService(BrowserSession, session),
+    Effect.provideService(BrowserHandoffs, handoffs),
+  );
 
-    return defineExtension({ name: extensionName, tools: [tool, handoff] });
-  });
+  return defineExtension({ name: extensionName, tools: [tool, handoff] });
+});

@@ -3,20 +3,20 @@
 import {
   type BrowserHostService,
   type BrowserSession,
-  type HandoffStorage,
-  handoffsLayer,
-  type Handoffs,
+  type BrowserHandoffStorage,
+  browserHandoffsLayer,
+  type BrowserHandoffs,
 } from "@cloudpid/extensions/browser";
 import type { OwnerNotifications } from "@cloudpid/extensions/notify";
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
-import { handoffRequests, send, type SocketState } from "./sockets.ts";
+import { browserHandoffRequests, send, type SocketState } from "./sockets.ts";
 
-export type SessionHandoffsOptions = {
+export type SessionBrowserHandoffsOptions = {
   /** The Session's browser host, which holds the handoff itself. */
   readonly host: BrowserHostService;
   /** The object's synchronous key-value storage. */
-  readonly storage: HandoffStorage;
+  readonly storage: BrowserHandoffStorage;
   /** The object's sockets, which every change to the waiting requests is sent to. */
   readonly sockets: Pick<SocketState, "getWebSockets">;
   /** How long a handoff waits for the owner, and how long one round of waiting lasts; for tests. */
@@ -27,17 +27,21 @@ export type SessionHandoffsOptions = {
 };
 
 /**
- * The Session's `Handoffs`; needs its `BrowserSession` (kept in use while the owner works) and `OwnerNotifications` (the
+ * The Session's `BrowserHandoffs`; needs its `BrowserSession` (kept in use while the owner works) and `OwnerNotifications` (the
  * push that carries the link).
  */
-export const sessionHandoffsLayer = ({
+export const sessionBrowserHandoffsLayer = ({
   sockets,
   ...options
-}: SessionHandoffsOptions): Layer.Layer<Handoffs, never, BrowserSession | OwnerNotifications> =>
-  handoffsLayer({
+}: SessionBrowserHandoffsOptions): Layer.Layer<
+  BrowserHandoffs,
+  never,
+  BrowserSession | OwnerNotifications
+> =>
+  browserHandoffsLayer({
     ...options,
     announce: (requests) =>
       Effect.forEach(sockets.getWebSockets(), (socket) =>
-        send(socket, handoffRequests(requests)),
+        send(socket, browserHandoffRequests(requests)),
       ).pipe(Effect.asVoid),
   });

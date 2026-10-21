@@ -7,7 +7,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { Handoffs, type HandoffOutcome } from "./handoff.ts";
+import { BrowserHandoffs, type BrowserHandoffOutcome } from "./handoff.ts";
 import {
   BrowserError,
   BrowserHost,
@@ -124,7 +124,7 @@ export const browserTool = (description: string) =>
   });
 
 /** What `browser_handoff` tells the model of how a handoff ended. It never holds the Live View link. */
-export const describeOutcome = (outcome: HandoffOutcome): string => {
+export const describeOutcome = (outcome: BrowserHandoffOutcome): string => {
   const look = "The page may have changed: look at it with `browser` before you continue.";
 
   switch (outcome.status) {
@@ -169,7 +169,7 @@ export const browserHandoffTool = defineEffectTool({
   replay: "safe",
   execute: ({ instructions }, api) =>
     Effect.gen(function* () {
-      const handoffs = yield* Handoffs;
+      const handoffs = yield* BrowserHandoffs;
       const session = yield* BrowserSession;
 
       yield* session.touch;

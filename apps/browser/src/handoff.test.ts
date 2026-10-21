@@ -9,6 +9,7 @@ import {
   type CdpEvent,
   type CdpParams,
   type CdpTransport,
+  BrowserGoneError,
   HandoffHost,
   type HandoffRecords,
 } from "./handoff.ts";
@@ -23,6 +24,9 @@ const records = (): HandoffRecords => {
     get: <T>(key: string) => map.get(key) as T | undefined,
     put: <T>(key: string, value: T) => void map.set(key, structuredClone(value)),
     delete: (key: string) => map.delete(key),
+    list: <T>({ prefix }: { readonly prefix: string }) =>
+      // SAFETY: the host reads back only what it wrote under each prefix.
+      [...map].filter(([key]) => key.startsWith(prefix)) as [string, T][],
   };
 };
 
@@ -95,14 +99,17 @@ const hostOver = (
     browserSessionId: "browser-1",
     targetId: "tab-1",
   },
+  clock = { now: 1_000 },
 ) => {
   const opened: string[] = [];
   const asked: number[] = [];
+  const scheduled: number[] = [];
 
   const host = new HandoffHost({
     records: store,
     graceMs: 20,
-    now: () => 1_000,
+    now: () => clock.now,
+    schedule: (at) => scheduled.push(at),
     browser: {
       tabOf: (conversationId) => {
         asked.push(conversationId);
@@ -121,7 +128,7 @@ const hostOver = (
     },
   });
 
-  return { host, store, opened, asked };
+  return { host, store, opened, asked, scheduled, clock };
 };
 
 const COMPLETE = (params: Schema.Json): CdpEvent => ({
@@ -290,8 +297,51 @@ describe("a Browser Handoff in the browser host", () => {
 
     await hostOver([fakeTransport()], store2).host.start(REQUEST);
 
-    // No connection can be opened: the browser is gone.
-    expect(await hostOver([], store2).host.wait("7", 10)).toEqual({ state: "ended" });
+    // Browser Run says the browser is gone.
+    const gone = new HandoffHost({
+      records: store2,
+      now: () => 1_000,
+      browser: {
+        tabOf: () => Promise.resolve(undefined),
+        connect: () => Promise.reject(new BrowserGoneError("gone")),
+      },
+    });
+
+    expect(await gone.wait("7", 10)).toEqual({ state: "ended" });
+  });
+
+  it("asks the Session again when the connection cannot be reopened for another reason", async () => {
+    const store = records();
+
+    await hostOver([fakeTransport()], store).host.start(REQUEST);
+
+    // The host has no connection to give: a network failure, not Browser Run saying the browser is gone.
+    await expect(hostOver([], store).host.wait("7", 10)).rejects.toThrow(/no more connections/);
+
+    // The handoff is still there for the next round.
+    const next = fakeTransport();
+
+    expect(await hostOver([next], store).host.wait("7", 10)).toEqual({ state: "waiting" });
+  });
+
+  it("counts an event that comes before Browser Run answers the handoff command as the handoff's end", async () => {
+    const cdp = fakeTransport();
+    const { host } = hostOver([cdp]);
+    const send = cdp.transport.send.bind(cdp.transport);
+
+    cdp.transport.send = async (method, params, sessionId) => {
+      const answer = await send(method, params, sessionId);
+
+      if (method === "Cloudflare.handoff") {
+        cdp.emit(COMPLETE({ handoffId: "handoff-1", success: true }));
+      }
+
+      return answer;
+    };
+
+    await host.start(REQUEST);
+
+    expect(await host.wait("7", 10)).toEqual({ state: "complete", success: true });
   });
 
   it("ends a handoff the owner has not finished in Browser Run, then forgets it", async () => {
@@ -321,5 +371,89 @@ describe("a Browser Handoff in the browser host", () => {
 
     expect(cdp.methods()).not.toContain("Cloudflare.handoffComplete");
     expect(cdp.state.closed).toBe(true);
+  });
+
+  it("ends a handoff over a new connection when the host restarted since it started", async () => {
+    const store = records();
+
+    await hostOver([fakeTransport()], store).host.start(REQUEST);
+
+    const restarted = fakeTransport();
+    const { host, opened } = hostOver([restarted], store);
+
+    await host.end("7");
+
+    expect(opened).toEqual(["browser-1"]);
+    expect(restarted.sent.at(-1)).toEqual({
+      method: "Cloudflare.handoffComplete",
+      params: { success: false, reason: "The agent stopped waiting" },
+      sessionId: "cdp-1",
+    });
+    expect(restarted.state.closed).toBe(true);
+    expect(await host.wait("7", 10)).toEqual({ state: "unknown" });
+  });
+
+  it("forgets the Live View link once the handoff settles", async () => {
+    const store = records();
+    const cdp = fakeTransport();
+    const { host } = hostOver([cdp], store);
+
+    await host.start(REQUEST);
+    cdp.emit(COMPLETE({ success: true }));
+
+    expect(JSON.stringify([...store.list({ prefix: "" })])).not.toContain("SECRET-TOKEN");
+  });
+
+  it("joins a second start of the same request while the first is in flight, and opens one handoff", async () => {
+    const cdp = fakeTransport();
+    const { host, asked } = hostOver([cdp]);
+
+    const [first, second] = await Promise.all([host.start(REQUEST), host.start(REQUEST)]);
+
+    expect(second).toEqual(first);
+    expect(asked).toEqual([3]);
+    expect(cdp.methods().filter((method) => method === "Cloudflare.handoff")).toHaveLength(1);
+  });
+
+  it("lets a start in flight finish before it ends the handoff, and refuses a start that comes after", async () => {
+    const cdp = fakeTransport();
+    const { host, store } = hostOver([cdp]);
+
+    const starting = host.start(REQUEST);
+    const ending = host.end("7");
+
+    await starting;
+    await ending;
+
+    expect(cdp.sent.at(-1)?.method).toBe("Cloudflare.handoffComplete");
+    expect(cdp.state.closed).toBe(true);
+    expect(await host.wait("7", 10)).toEqual({ state: "unknown" });
+    await expect(host.start(REQUEST)).rejects.toThrow(/already ended/);
+    expect([...store.list({ prefix: "handoff:" })]).toEqual([]);
+  });
+
+  it("prunes a handoff past its deadline that nobody ended, and a tombstone past its time", async () => {
+    const cdp = fakeTransport();
+    const { host, store, clock, scheduled } = hostOver([cdp]);
+
+    await host.start(REQUEST);
+    // Woken once the record is of no use: its deadline and five minutes more.
+    expect(scheduled).toEqual([1_000 + 1_800_000 + 300_000]);
+
+    expect(host.prune()).toBe(1_000 + 1_800_000 + 300_000);
+    expect([...store.list({ prefix: "handoff:" })]).toHaveLength(1);
+
+    clock.now = 1_000 + 1_800_000 + 300_000;
+
+    expect(host.prune()).toBeUndefined();
+    expect([...store.list({ prefix: "handoff:" })]).toEqual([]);
+    expect(cdp.state.closed).toBe(true);
+
+    await host.end("8");
+    expect([...store.list({ prefix: "handoff-ended:" })]).toHaveLength(1);
+
+    clock.now += 3_600_000;
+    expect(host.prune()).toBeUndefined();
+    expect([...store.list({ prefix: "handoff-ended:" })]).toEqual([]);
   });
 });
