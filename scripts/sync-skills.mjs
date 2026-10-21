@@ -55,11 +55,21 @@ export const SOURCES = {
       "MIT, Copyright (c) 2022 Herrington Darkholme (ast-grep's licence, which the skill follows)",
     file: "ast-grep.LICENSE",
   },
+  pstack: {
+    repo: "backnotprop/pstack",
+    license: "MIT, Copyright (c) 2026 Lauren Tan (a mirror of cursor/plugins' `pstack`)",
+    file: "pstack.LICENSE",
+  },
+  cursorTeamKit: {
+    repo: "cursor/plugins",
+    license: "MIT, Copyright (c) 2026 Cursor (its `cursor-team-kit` plugin)",
+    file: "cursor-team-kit.LICENSE",
+  },
 };
 
 // Excluded pending the owner's confirmation of their provenance (no public upstream was found, so no licence to keep):
-// address-pr-review, ast-grep-outline, bro, deslop, unslop. If they are the owner's own, add them here with a `source`
-// of the owner's own (a `SOURCES` entry and a licence text) and sync again.
+// address-pr-review, ast-grep-outline. If they are the owner's own, add them here with a `source` of the owner's own
+// (a `SOURCES` entry and a licence text) and sync again.
 // Excluded as unsafe headless: impeccable (its launcher downloads an engine binary with curl, which the image lacks, and
 // its flows assume a local browser; 500 KB of the bundle).
 
@@ -73,12 +83,14 @@ export const INCLUDED_SKILLS = {
     source: ["astgrep"],
     reason: "structural code search; the Container installs ast-grep with mise",
   },
+  bro: { source: ["pstack"], reason: "restate the last message in plain language (user-named)" },
   "code-review": { source: ["mattpocock"], reason: "two-axis diff review that runs sub-agents" },
   "codebase-design": { source: ["mattpocock"], reason: "deep-module vocabulary for design work" },
   "convert-documents-to-markdown": {
     source: ["firecrawl"],
     reason: "office documents and PDFs to Markdown with npx on the Container",
   },
+  deslop: { source: ["cursorTeamKit"], reason: "remove AI-generated slop from a branch's diff" },
   "diagnosing-bugs": { source: ["mattpocock"], reason: "diagnosis loop for hard bugs" },
   "domain-modeling": { source: ["mattpocock"], reason: "GLOSSARY.md and ADR upkeep" },
   "grill-me": { source: ["mattpocock"], reason: "interview to sharpen a plan" },
@@ -111,6 +123,7 @@ export const INCLUDED_SKILLS = {
     reason: "break a spec into tickets on the issue tracker",
   },
   triage: { source: ["mattpocock"], reason: "move issues through triage roles" },
+  unslop: { source: ["pstack"], reason: "cut AI tells from writing (user-named)" },
   "wait-what": { source: ["mattpocock"], reason: "re-pitch a message that did not land" },
   wayfinder: { source: ["mattpocock"], reason: "plan a large piece of work as decision tickets" },
   "writing-for-agents": {
