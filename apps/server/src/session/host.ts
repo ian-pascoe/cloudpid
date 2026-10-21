@@ -11,7 +11,8 @@ import {
   SubagentsDoc,
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
-import type { TaskGraphSummary } from "@cloudpid/protocol";
+import { TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
+import type { TaskGraphSummary, TodoTask } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { formatModelId, isModelId } from "@cloudpid/config";
@@ -231,6 +232,13 @@ export type SessionHostService = {
   readonly events: (
     conversationId: ConversationId,
   ) => Stream.Stream<ReadonlyArray<AgentEvent>, SessionError>;
+  /**
+   * Conversation `conversationId`'s Todo List: how it stands, then each change that alters it. Fails when the
+   * conversation cannot be watched, and when the Harness ends the watch.
+   */
+  readonly todos: (
+    conversationId: ConversationId,
+  ) => Stream.Stream<ReadonlyArray<TodoTask>, SessionError>;
 };
 
 /** What the Session DO answers with: its Harness, prompted and woken. */
@@ -825,6 +833,52 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
+  /** The Tasks a Todo document holds, as clients are sent them. */
+  const tasksOf = (state: Readonly<TodoState> | null): ReadonlyArray<TodoTask> =>
+    Arr.map(state?.tasks ?? [], (task) => {
+      const sent: Types.Mutable<TodoTask> = { id: task.id, title: task.title, status: task.status };
+
+      if (task.description !== undefined) sent.description = task.description;
+
+      return sent;
+    });
+
+  const todos = (conversationId: ConversationId) =>
+    Stream.callback<ReadonlyArray<TodoTask>, SessionError>((queue) =>
+      Effect.acquireRelease(
+        attempt("watchTodos", async () => {
+          // A document exists once its conversation first used it, and only an existing one can be watched: make the
+          // empty list now, which also fails for a conversation the Harness does not have.
+          await harness.harness.commit(async (tx) => {
+            await tx.doc(TodoDoc, conversationId);
+          }, context);
+
+          const watch = await harness.harness.watchDoc(TodoDoc, conversationId, context);
+
+          if (watch === undefined) throw new Error("the Todo List document is missing");
+
+          Queue.offerUnsafe(queue, tasksOf(watch.value));
+          watch.start((state) => {
+            Queue.offerUnsafe(queue, tasksOf(state));
+
+            return Promise.resolve();
+          });
+          void watch.closed.then((end) =>
+            Queue.failCauseUnsafe(
+              queue,
+              Cause.fail(SessionError.make({ operation: "watchTodos", message: watchEnded(end) })),
+            ),
+          );
+
+          return watch;
+        }),
+        (watch) => Effect.promise(() => watch.stop()),
+      ),
+    ).pipe(
+      // The document also changes with its revision alone, which no client shows.
+      Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
+    );
+
   yield* wakeAndResume;
 
   return {
@@ -865,6 +919,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     taskGraph: taskGraphSummaries,
     events,
+    todos,
   } satisfies SessionHostService;
 });
 

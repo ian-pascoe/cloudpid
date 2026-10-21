@@ -155,7 +155,10 @@ const setGraphWatched = (socket: WebSocket, watched: boolean) =>
 /** The key of a socket's task graph watch among its watches. */
 const TASK_GRAPH = "task_graph";
 
-type WatchKey = ConversationId | typeof TASK_GRAPH;
+/** The key of a socket's watch of a conversation's Todo List among its watches. */
+const todosKey = (conversationId: ConversationId) => `todos:${conversationId}` as const;
+
+type WatchKey = ConversationId | typeof TASK_GRAPH | ReturnType<typeof todosKey>;
 
 /**
  * The Session's sockets over the object's `state`. Building it restarts the watches of sockets that outlived the last
@@ -224,6 +227,23 @@ export const sessionSocketsLayer = (
           );
 
           yield* Deferred.await(started);
+          yield* watchTodos(socket, conversationId);
+        });
+
+      /**
+       * Stream `conversationId`'s Todo List to `socket`, replacing a watch it already has. It goes with the watch of the
+       * conversation, after its snapshot. The list is not what the watch is for: one that fails is logged and the
+       * client keeps the last list it was sent.
+       */
+      const watchTodos = (socket: WebSocket, conversationId: ConversationId) =>
+        Effect.gen(function* () {
+          const fibers = yield* watchesOf(socket);
+
+          yield* host.todos(conversationId).pipe(
+            Stream.runForEach((tasks) => send(socket, { type: "todos", conversationId, tasks })),
+            Effect.catch((error) => Effect.logWarning("Todo List watch ended", error)),
+            FiberMap.run(fibers, todosKey(conversationId)),
+          );
         });
 
       /**
@@ -264,7 +284,11 @@ export const sessionSocketsLayer = (
         Effect.suspend(() => {
           const fibers = watching.get(socket);
 
-          return fibers === undefined ? Effect.void : FiberMap.remove(fibers, conversationId);
+          return fibers === undefined
+            ? Effect.void
+            : FiberMap.remove(fibers, conversationId).pipe(
+                Effect.andThen(FiberMap.remove(fibers, todosKey(conversationId))),
+              );
         });
 
       const command = (

@@ -52,6 +52,10 @@ _Avoid_: Memory, scratchpad
 The list of Note names and references a new Context Window starts with, so the agent can read its Notes instead of carrying them.
 _Avoid_: Note list, memory dump
 
+**Todo List**:
+The flat list of Tasks (title, optional description, status `pending`, `active` or `completed`) an agent keeps in its conversation to track what it means to do. Every conversation has its own, and it outlives every Handoff.
+_Avoid_: Plan, checklist, task list
+
 ## Workspaces and execution
 
 **Workspace**:

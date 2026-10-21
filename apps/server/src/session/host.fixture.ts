@@ -18,6 +18,7 @@ import {
 } from "@cloudpid/extensions/browser";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
+import { Todo } from "@cloudpid/extensions/todo";
 import {
   createModels,
   type FauxResponseStep,
@@ -193,7 +194,7 @@ const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef"
 export class TestSession extends DurableObject {
   /**
    * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
-   * tools, and the browser tools over a test browser host.
+   * tools, the browser tools over a test browser host, and `todo`.
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
@@ -212,7 +213,7 @@ export class TestSession extends DurableObject {
         Effect.provideService(BrowserSession, makeBrowserSession({ host, storage: kv })),
       );
 
-      return [echo, yield* secretsExtension([tool]), browser];
+      return [echo, yield* secretsExtension([tool]), browser, yield* Todo];
     });
   }
 

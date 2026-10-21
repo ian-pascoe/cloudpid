@@ -10,12 +10,12 @@ export const TODO_ACTIONS = ["list", "add", "update", "remove", "clear"] as cons
 export type TodoAction = (typeof TODO_ACTIONS)[number];
 
 /** The most Tasks one list holds; it is a Durable Object document that every watching client is sent whole. */
-export const MAX_TASKS = 500;
+export const MAX_TASKS = 200;
 
 /** The longest Task title, and the longest description, in characters. */
-export const MAX_TITLE_CHARACTERS = 500;
+export const MAX_TITLE_CHARACTERS = 300;
 
-export const MAX_DESCRIPTION_CHARACTERS = 10_000;
+export const MAX_DESCRIPTION_CHARACTERS = 2_000;
 
 /** The list as the actions see it: the Tasks in ID order and the ID the next one gets. */
 export type TodoList = {

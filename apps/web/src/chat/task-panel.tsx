@@ -13,6 +13,8 @@ import { ChildThread } from "./child-thread.tsx";
 import { Messages } from "./messages.tsx";
 import { useConnection, useSession } from "./session-context.tsx";
 import { AgentStatus, shortModel } from "./subagent-card.tsx";
+import { TodoList } from "./todo-list.tsx";
+import { todoProgress } from "../session/todos.ts";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
 const kindLabel = (kind: string): string =>
@@ -77,9 +79,11 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   </li>
 );
 
-/** The button that shows or hides the panel, with how many agents are working. */
+/** The button that shows or hides the panel, with how many agents are working and how far the Todo List is. */
 export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: () => void }) => {
   const working = useSession((state) => workingBelow(state.taskGraph, "root").length);
+  const todos = useSession((state) => state.todos);
+  const { total, completed } = todoProgress(todos);
 
   return (
     <Button
@@ -93,6 +97,11 @@ export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: (
       <ListTree />
       <span className="hidden sm:inline">Tasks</span>
       {working > 0 && <span className="text-xs tabular-nums">{working}</span>}
+      {total > 0 && (
+        <span className="text-xs tabular-nums" title="Todo List: done of all">
+          {completed}/{total}
+        </span>
+      )}
     </Button>
   );
 };
@@ -101,6 +110,7 @@ export const TaskPanelToggle = ({ open, onToggle }: { open: boolean; onToggle: (
 export const TaskPanel = ({ onClose, className }: { onClose: () => void; className?: string }) => {
   const connection = useConnection();
   const graph = useSession((state) => state.taskGraph);
+  const todos = useSession((state) => state.todos);
 
   const stoppable = useSession((state) =>
     canStopAllBelow(state.taskGraph, "root", state.view.running),
@@ -139,6 +149,7 @@ export const TaskPanel = ({ onClose, className }: { onClose: () => void; classNa
         </Button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <TodoList tasks={todos} className="mb-4" />
         {graph === null ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : graph.agents.length === 0 && graph.background.length === 0 ? (

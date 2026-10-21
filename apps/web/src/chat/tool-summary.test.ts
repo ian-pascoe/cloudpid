@@ -54,4 +54,16 @@ describe("toolSummary", () => {
     expect(toolSummary("read", { path: 3 })).toBeUndefined();
     expect(toolSummary("ls", {})).toBeUndefined();
   });
+
+  it("shows what a todo call does: its action, the Task it names, or how many it takes", () => {
+    expect(toolSummary("todo", { action: "list" })).toBe("list");
+    expect(toolSummary("todo", { action: "add", title: "Write it\nSoon" })).toBe("add: Write it");
+    expect(toolSummary("todo", { action: "update", id: 2, status: "completed" })).toBe("update #2");
+    expect(toolSummary("todo", { action: "update", id: 2, title: "New" })).toBe("update #2: New");
+    expect(toolSummary("todo", { action: "add", tasks: [{ title: "A" }, { title: "B" }] })).toBe(
+      "add 2 Tasks",
+    );
+    expect(toolSummary("todo", { action: "update", updates: [{ id: 1 }] })).toBe("update 1 Task");
+    expect(toolSummary("todo", {})).toBeUndefined();
+  });
 });

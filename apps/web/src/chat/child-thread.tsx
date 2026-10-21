@@ -16,6 +16,7 @@ import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import { Composer } from "./composer.tsx";
 import { queueAdapter, textOf } from "./queue-adapter.ts";
 import { useConnection, useSession } from "./session-context.tsx";
+import { TodoList } from "./todo-list.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
@@ -82,6 +83,7 @@ const LiveChildThread = ({
             {problem}
           </p>
         )}
+        <TodoList tasks={thread.todos} className="border-t pt-2" />
         <Composer
           compact
           who={agent?.id ?? "the agent"}
