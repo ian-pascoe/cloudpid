@@ -1,11 +1,22 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off globalDateInEffect:off preferEffectArray:off
 // The workerd test Worker: a Durable Object that hosts a `SessionHost` and its `SessionSockets` over the faux provider,
 // as the Session DO hosts them over the model proxy. Tests drive it with `runInDurableObject()` and client sockets,
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
-import { imageLimitedModels } from "@cloudpid/extensions/browser";
+import {
+  Browser,
+  BrowserHost,
+  type BrowserHostService,
+  BrowserSession,
+  BrowserHandoffs,
+  type HandoffStartInput,
+  type HandoffStatus,
+  imageLimitedModels,
+  makeBrowserSession,
+} from "@cloudpid/extensions/browser";
+import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import {
   createModels,
@@ -29,11 +40,13 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
@@ -56,6 +69,71 @@ const Echo = defineEffectTool({
   description: "Echo text back",
   parameters: Schema.Struct({ text: Schema.String }),
   execute: ({ text }) => Effect.succeed({ output: [{ type: "text", text: `echo: ${text}` }] }),
+});
+
+/** The Live View link the test browser host mints: recognisable, so a test can look for it where it must not be. */
+export const LIVE_VIEW_URL =
+  "https://live.browser.run/ui/view?mode=tab&wss=live.browser.run/api/devtools/browser/s/page/t?jwt=SECRET-LIVE-VIEW-TOKEN";
+
+/** How long one round of waiting on the test browser host lasts at most, and how long a call may wait past a deadline. */
+const HANDOFF_ROUND_MS = 10_000;
+const HANDOFF_GRACE_MS = 50;
+
+/** The object's key-value storage, as the test browser host uses it. */
+type Kv = DurableObjectStorage["kv"];
+
+/** Rounds of waiting on a handoff, which end early when the test completes it. */
+const roundWaiters = new Map<string, () => void>();
+
+/**
+ * A browser host that hands a tab over at once and finishes the handoff when the test says (`completeHandoff`). Its
+ * state is in the object's storage, as the real host's is in its own object: it outlives an instance of the Session.
+ */
+const testBrowserHost = (kv: Kv): BrowserHostService => ({
+  describe: Effect.succeed("Drives a browser."),
+  run: () => Effect.succeed({ output: [{ type: "text", text: "ok" }] }),
+  close: Effect.succeed(false),
+  startHandoff: (input) =>
+    Effect.sync(() => {
+      kv.put("handoff-starts", [...(kv.get<HandoffStartInput[]>("handoff-starts") ?? []), input]);
+
+      if (kv.get<HandoffStatus>(`handoff-status:${input.requestId}`) === undefined) {
+        kv.put(`handoff-status:${input.requestId}`, { state: "waiting" } satisfies HandoffStatus);
+      }
+
+      return { url: LIVE_VIEW_URL, startedAt: Date.now() };
+    }),
+  waitHandoff: (requestId, maxMs) =>
+    Effect.promise(
+      () =>
+        new Promise<HandoffStatus>((resolve) => {
+          const status = () =>
+            kv.get<HandoffStatus>(`handoff-status:${requestId}`) ?? { state: "unknown" as const };
+
+          if (status().state !== "waiting") {
+            resolve(status());
+
+            return;
+          }
+
+          // A round that ends on a timer is a pending timer, which keeps workerd from evicting the object: a test that
+          // evicts it mid-wait asks for rounds with no timer (`quiet`), which end only when the test completes the handoff.
+          const timer =
+            kv.get<boolean>("handoff-quiet") === true
+              ? undefined
+              : setTimeout(() => resolve(status()), maxMs);
+
+          roundWaiters.set(requestId, () => {
+            clearTimeout(timer);
+            resolve(status());
+          });
+        }),
+    ),
+  endHandoff: (requestId) =>
+    Effect.sync(() => {
+      kv.put("handoff-ended", [...(kv.get<string[]>("handoff-ended") ?? []), requestId]);
+      kv.delete(`handoff-status:${requestId}`);
+    }),
 });
 
 /** The models the test provider serves: those the default settings and a Session's choice may name. */
@@ -110,13 +188,28 @@ type TestPrompt = { readonly requestId: string; readonly text: string };
 const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef");
 
 export class TestSession extends DurableObject {
-  /** The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, and the secret tools. */
-  protected hostExtensions(): Effect.Effect<readonly Extension[], never, Harness | Secrets> {
+  /**
+   * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
+   * tools, and the browser tools over a test browser host.
+   */
+  protected hostExtensions(): Effect.Effect<
+    readonly Extension[],
+    never,
+    Harness | Secrets | BrowserHandoffs
+  > {
+    const { kv } = this.ctx.storage;
+
     return Effect.gen(function* () {
       const tool = yield* Echo;
       const echo = defineExtension({ name: "echo", tools: [tool] });
+      const host = testBrowserHost(kv);
 
-      return [echo, yield* secretsExtension([tool])];
+      const browser = yield* Browser.pipe(
+        Effect.provideService(BrowserHost, host),
+        Effect.provideService(BrowserSession, makeBrowserSession({ host, storage: kv })),
+      );
+
+      return [echo, yield* secretsExtension([tool]), browser];
     });
   }
 
@@ -168,7 +261,10 @@ export class TestSession extends DurableObject {
               env: this.hostEnv(),
               reportTimeout: "200 millis",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
-              onIdle: Effect.flatMap(Effect.service(Secrets), (held) => held.dropAbandoned),
+              onIdle: Effect.flatMap(
+                Effect.all([Effect.service(Secrets), Effect.service(BrowserHandoffs)]),
+                ([held, handoffs]) => Effect.all([held.dropAbandoned, handoffs.dropAbandoned]),
+              ),
             }).pipe(
               Layer.provide(
                 Layer.mergeAll(
@@ -188,6 +284,32 @@ export class TestSession extends DurableObject {
                     read: Effect.orDie(Effect.tryPromise(() => this.#readSettings())),
                     kv: ctx.storage.kv,
                     timeout: "200 millis",
+                  }),
+                ),
+              ),
+            ),
+          ),
+          Layer.provideMerge(
+            sessionBrowserHandoffsLayer({
+              host: testBrowserHost(ctx.storage.kv),
+              storage: ctx.storage.kv,
+              sockets: ctx,
+              // A short wait and a short deadline, so a test can see a handoff time out.
+              timeoutMs: ctx.storage.kv.get<number>("handoff-timeout") ?? 30 * 60_000,
+              pollMs: HANDOFF_ROUND_MS,
+              graceMs: HANDOFF_GRACE_MS,
+            }).pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(
+                    BrowserSession,
+                    makeBrowserSession({
+                      host: testBrowserHost(ctx.storage.kv),
+                      storage: ctx.storage.kv,
+                    }),
+                  ),
+                  Layer.succeed(OwnerNotifications, {
+                    notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
                   }),
                 ),
               ),
@@ -355,6 +477,53 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /** The handoffs the test browser host was asked to start, oldest first. */
+  handoffStarts(): readonly HandoffStartInput[] {
+    return this.ctx.storage.kv.get<HandoffStartInput[]>("handoff-starts") ?? [];
+  }
+
+  /** The handoffs the test browser host was told to end, oldest first. */
+  endedHandoffs(): readonly string[] {
+    return this.ctx.storage.kv.get<string[]>("handoff-ended") ?? [];
+  }
+
+  /** Make the test browser host's rounds of waiting end only when `completeHandoff` does, so the object can be evicted mid-wait. */
+  quietHandoffs(): void {
+    this.ctx.storage.kv.put("handoff-quiet", true);
+  }
+
+  /** Finish handoff `requestId` in the test browser host, as the owner does in Live View. */
+  completeHandoff(requestId: string, status: HandoffStatus): void {
+    this.ctx.storage.kv.put(`handoff-status:${requestId}`, status);
+    roundWaiters.get(requestId)?.();
+  }
+
+  /** Every request the model received, as the provider would see its messages, oldest first. */
+  requestMessages(): readonly string[] {
+    return this.ctx.storage.kv.get<string[]>("request-messages") ?? [];
+  }
+
+  /** The Harness's own storage (the transcript and everything the Session keeps in `pi_` tables), as JSON. */
+  harnessDump(): string {
+    const { sql } = this.ctx.storage;
+
+    const tables = sql
+      .exec(
+        "select name from sqlite_master where type = 'table' and name like 'pi\\_%' escape '\\'",
+      )
+      .toArray();
+
+    return JSON.stringify(
+      tables.flatMap((table) => {
+        const name = table["name"];
+
+        return Predicate.isString(name)
+          ? [[name, sql.exec(`select * from "${name}"`).toArray()]]
+          : [];
+      }),
+    );
+  }
+
   /** Hold `values` as if the owner had entered them for a request. */
   hold(values: Readonly<Record<string, string>>): Promise<void> {
     return this.#runtime.runPromise(
@@ -425,6 +594,10 @@ export class TestSession extends DurableObject {
     return (_request, options, _state, model) => {
       const { kv } = this.ctx.storage;
 
+      kv.put("request-messages", [
+        ...(kv.get<string[]>("request-messages") ?? []),
+        JSON.stringify(_request.messages),
+      ]);
       kv.put("requests", [
         ...(kv.get<TestRequest[]>("requests") ?? []),
         { model: model.id, thinking: options?.reasoning } satisfies TestRequest,

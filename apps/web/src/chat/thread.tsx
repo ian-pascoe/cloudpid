@@ -6,6 +6,7 @@ import type { ConfigureChange, QueuedEntry, SessionState } from "../session/conn
 import { Composer } from "./composer.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { Messages } from "./messages.tsx";
+import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
 
 const Header = ({
@@ -117,6 +118,7 @@ export const Thread = ({
         </p>
       )}
       <div className="px-4">
+        <BrowserHandoffRequests requests={state.browserHandoffRequests} graph={state.taskGraph} />
         <SecretRequests
           requests={state.secretRequests}
           lifetimeMinutes={state.secretLifetimeMinutes}

@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
+import { fakeHandoffHost } from "./host.fixture.ts";
 import { BROWSER_IDLE_MS, BrowserError, type BrowserHostService } from "./host.ts";
 import { type BrowserStorage, makeBrowserSession } from "./session.ts";
 
@@ -27,6 +28,7 @@ const fakeHost = (failing = false) => {
   const closes = { count: 0 };
 
   const host: BrowserHostService = {
+    ...fakeHandoffHost().host,
     describe: Effect.succeed("drives a browser"),
     run: () => Effect.succeed({ output: [] }),
     close: Effect.suspend(() => {
@@ -124,6 +126,7 @@ describe("the Session's browser keep-alive", () => {
       const closes = { count: 0 };
 
       const host: BrowserHostService = {
+        ...fakeHandoffHost().host,
         describe: Effect.succeed("drives a browser"),
         run: () => Effect.succeed({ output: [] }),
         close: Effect.suspend(() => {

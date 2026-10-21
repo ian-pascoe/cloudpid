@@ -17,6 +17,7 @@ import {
   Secrets,
   type SecretsError,
 } from "@cloudpid/extensions/secrets";
+import { type BrowserHandoffRequest, BrowserHandoffs } from "@cloudpid/extensions/browser";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -102,6 +103,18 @@ export const secretRequests = (asks: ReadonlyArray<SecretAsk>): ServerMessage =>
   })),
 });
 
+/** The `browser_handoff_requests` message for `requests`: the Live View links go to the owner's clients, and nowhere else. */
+export const browserHandoffRequests = (
+  requests: ReadonlyArray<BrowserHandoffRequest>,
+): ServerMessage => ({
+  type: "browser_handoff_requests",
+  requests: Arr.map(requests, (request) => ({
+    ...request,
+    // SAFETY: a handoff's conversation is the asking call's, a pi-durable conversation ID.
+    conversationId: request.conversationId as ConversationId,
+  })),
+});
+
 /** The agent change a `configure` asks for: a field it leaves out is left out, as is. */
 const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): AgentChange => {
   const change: Types.Mutable<AgentChange> = {};
@@ -150,12 +163,13 @@ type WatchKey = ConversationId | typeof TASK_GRAPH;
  */
 export const sessionSocketsLayer = (
   state: SocketState,
-): Layer.Layer<SessionSockets, never, SessionHost | Secrets> =>
+): Layer.Layer<SessionSockets, never, SessionHost | Secrets | BrowserHandoffs> =>
   Layer.effect(
     SessionSockets,
     Effect.gen(function* () {
       const host = yield* SessionHost;
       const secrets = yield* Secrets;
+      const handoffs = yield* BrowserHandoffs;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
       const watching = new Map<WebSocket, FiberMap.FiberMap<WatchKey>>();
@@ -370,6 +384,11 @@ export const sessionSocketsLayer = (
         const asks = yield* secrets.pending;
 
         if (asks.length > 0) yield* send(server, secretRequests(asks));
+
+        // So are Browser Handoffs, which wait for the owner for up to 30 minutes.
+        const pending = yield* handoffs.pending;
+
+        if (pending.length > 0) yield* send(server, browserHandoffRequests(pending));
 
         return client;
       });

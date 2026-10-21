@@ -5,13 +5,18 @@
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { BrowserRun } from "./contract.ts";
+import type { BrowserRun, HandoffStarted, HandoffStartInput, HandoffStatus } from "./contract.ts";
 
 export {
   BROWSER_IDLE_MS,
   BROWSER_KEEP_ALIVE_MS,
   type BrowserOutputPart,
   type BrowserRun,
+  HANDOFF_TIMEOUT_MS,
+  type HandoffStarted,
+  type HandoffStartInput,
+  type HandoffStatus,
+  MAX_HANDOFF_INSTRUCTIONS,
 } from "./contract.ts";
 
 /** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
@@ -33,6 +38,19 @@ export type BrowserHostService = {
   }) => Effect.Effect<BrowserRun, BrowserError>;
   /** Close the Session's browser; says whether there was one. The next `run` starts a new browser. */
   readonly close: Effect.Effect<boolean, BrowserError>;
+  /**
+   * Hand conversation `conversationId`'s tab to the owner (Browser Run's `Cloudflare.handoff`) and mint the Live View
+   * link. Starting a handoff again under the same `requestId` finds the one already started. Fails when the
+   * conversation has no tab to hand over.
+   */
+  readonly startHandoff: (input: HandoffStartInput) => Effect.Effect<HandoffStarted, BrowserError>;
+  /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
+  readonly waitHandoff: (
+    requestId: string,
+    maxMs: number,
+  ) => Effect.Effect<HandoffStatus, BrowserError>;
+  /** Finish handoff `requestId`: end it in Browser Run if the owner has not, and forget it. */
+  readonly endHandoff: (requestId: string) => Effect.Effect<void, BrowserError>;
 };
 
 export class BrowserHost extends Context.Service<BrowserHost, BrowserHostService>()(

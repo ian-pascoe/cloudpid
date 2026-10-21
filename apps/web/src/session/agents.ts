@@ -10,6 +10,21 @@ export const agentOfConversation = (
   conversationId: number,
 ): GraphAgent | undefined => graph?.agents.find((agent) => agent.conversationId === conversationId);
 
+/**
+ * How to name the agent that conversation `conversationId` belongs to for the owner: its ID and role, or undefined when
+ * it is the root agent's (which the summary does not list) or unknown.
+ */
+export const agentLabel = (
+  graph: TaskGraphSummary | null,
+  conversationId: number,
+): string | undefined => {
+  const agent = agentOfConversation(graph, conversationId);
+
+  if (agent === undefined) return undefined;
+
+  return agent.role === null ? agent.id : `${agent.id} (${agent.role})`;
+};
+
 const isBelowAgent = (graph: TaskGraphSummary, agentId: string, parentOf: string): boolean => {
   const parents = new Map(graph.agents.map((agent) => [agent.id, agent.parent]));
 

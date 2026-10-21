@@ -356,6 +356,39 @@ describe("a Session connection", () => {
     });
   });
 
+  describe("Browser Handoffs", () => {
+    const request = {
+      id: "12",
+      conversationId: 1,
+      instructions: "Log in, then press Done",
+      url: "https://live.browser.run/ui/view?mode=tab",
+      deadline: 1_800_000,
+    };
+
+    it("shows the handoffs the Session says are waiting, with their links, until it says none are", () => {
+      const { connection, latest } = setup();
+
+      expect(connection.getState().browserHandoffRequests).toEqual([]);
+
+      watching(latest());
+      latest().say({ type: "browser_handoff_requests", requests: [request] });
+      expect(connection.getState().browserHandoffRequests).toEqual([request]);
+
+      latest().say({ type: "browser_handoff_requests", requests: [] });
+      expect(connection.getState().browserHandoffRequests).toEqual([]);
+    });
+
+    it("forgets the handoffs of a closed socket, as the next one says again which wait", () => {
+      const { connection, latest } = setup();
+
+      watching(latest());
+      latest().say({ type: "browser_handoff_requests", requests: [request] });
+      latest().drop();
+
+      expect(connection.getState().browserHandoffRequests).toEqual([]);
+    });
+  });
+
   it("shows why a configure failed", () => {
     const { connection, latest } = setup();
 

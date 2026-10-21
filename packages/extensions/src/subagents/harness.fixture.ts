@@ -64,6 +64,8 @@ export type Request = {
   readonly system: string;
   /** Aborted when the request is. */
   readonly signal: AbortSignal | undefined;
+  /** Every message of the request, as the provider gets it. */
+  readonly messages: readonly Message[];
 };
 
 /** A response that calls tools, in order. */
@@ -146,6 +148,7 @@ export const openSubagentHarness = async (
           )
           .join("\n"),
         signal: options?.signal,
+        messages,
       };
 
       requests.push(request);

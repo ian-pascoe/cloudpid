@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalConsole:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
 // The browser host: one Durable Object per Session (ADR-0007) with the Session's one Browser Run browser, driven by
 // `agents/browser`'s `browserTool`. The Session DO reaches it over RPC, because the tool needs this Worker's
 // `CodemodeRuntime` facet and the Loader that runs the model's CDP code (`docs/spec.md` → Browser).
@@ -10,6 +10,9 @@ import {
   BROWSER_KEEP_ALIVE_MS,
   type BrowserHostRpc,
   type BrowserRun,
+  type HandoffStarted,
+  type HandoffStartInput,
+  type HandoffStatus,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -19,6 +22,9 @@ import {
 } from "agents/browser";
 import { browserTool, type PiBrowserTool } from "agents/browser/pi";
 import { DurableObject } from "cloudflare:workers";
+import { openCdpSocket } from "./cdp-socket.ts";
+import { HandoffHost } from "./handoff.ts";
+import { tabOf } from "./tab.ts";
 
 /** What the browser Worker binds (`resource.ts`). */
 export type BrowserHostEnv = {
@@ -41,16 +47,48 @@ type ConversationTool = {
 };
 
 export class BrowserHost extends DurableObject<BrowserHostEnv> implements BrowserHostRpc {
+  readonly #store: DurableBrowserSessionStore;
   readonly #browser: Browser;
   readonly #tool: PiBrowserTool;
+  readonly #handoffs: HandoffHost;
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
+    this.#store = new DurableBrowserSessionStore(ctx.storage);
     this.#browser = new Browser({
       provider: browserRun(env.BROWSER, { keepAliveMs: BROWSER_KEEP_ALIVE_MS }),
-      store: new DurableBrowserSessionStore(ctx.storage),
+      store: this.#store,
     });
     this.#tool = browserTool({ ctx, browser: this.#browser, loader: env.LOADER });
+    this.#handoffs = new HandoffHost({
+      records: ctx.storage.kv,
+      schedule: (at) => this.#wakeAt(at),
+      browser: {
+        tabOf: (conversationId) =>
+          tabOf(
+            { name: this.#browser.name, store: this.#store, binding: env.BROWSER },
+            conversationId,
+          ),
+        connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
+      },
+    });
+  }
+
+  /** Wake this object at `at` (epoch milliseconds) or sooner, to drop expired handoffs (`alarm`). */
+  #wakeAt(at: number): void {
+    void this.ctx.storage
+      .getAlarm()
+      .then((current) =>
+        current === null || current > at ? this.ctx.storage.setAlarm(at) : undefined,
+      )
+      .catch((error: Error) => console.warn(`Setting the handoff alarm failed: ${String(error)}`));
+  }
+
+  /** Drop the handoffs whose deadline has long passed (the Session did not end them), and wake again for the next. */
+  alarm(): void {
+    const next = this.#handoffs.prune();
+
+    if (next !== undefined) void this.ctx.storage.setAlarm(next);
   }
 
   /** The tool's description: how the model drives the browser. */
@@ -69,6 +107,24 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     const { output, content, ...rest } = await tool.execute({ code }, { conversationId });
 
     return { ...rest, output: output ?? content ?? [] };
+  }
+
+  /**
+   * Hand conversation `input.conversationId`'s tab to the owner (`Cloudflare.handoff`) and mint the Live View link. The
+   * link is for the owner alone and goes only to the Session DO, which shows it to the owner's clients.
+   */
+  startHandoff(input: HandoffStartInput): Promise<HandoffStarted> {
+    return this.#handoffs.start(input);
+  }
+
+  /** Wait up to `maxMs` for the handoff `requestId` to end, and say where it stands. */
+  waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus> {
+    return this.#handoffs.wait(requestId, maxMs);
+  }
+
+  /** Finish handoff `requestId`, ending it in Browser Run if the owner has not, and forget it. */
+  endHandoff(requestId: string): Promise<void> {
+    return this.#handoffs.end(requestId);
   }
 
   /** Close the browser: its record is retired and its Browser Run session ends. False when there was none. */

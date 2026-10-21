@@ -19,6 +19,9 @@ describe("the Session's browser host", () => {
             return Promise.resolve({ output: [{ type: "text", text: "ok" }] });
           },
           close: () => Promise.resolve(true),
+          startHandoff: () => Promise.reject(new Error("not here")),
+          waitHandoff: () => Promise.reject(new Error("not here")),
+          endHandoff: () => Promise.reject(new Error("not here")),
         }),
       },
       "session-1",
@@ -37,6 +40,9 @@ describe("the Session's browser host", () => {
           describe: () => Promise.reject(new Error("overloaded")),
           run: () => Promise.reject(new Error("overloaded")),
           close: () => Promise.reject(new Error("overloaded")),
+          startHandoff: () => Promise.reject(new Error("overloaded")),
+          waitHandoff: () => Promise.reject(new Error("overloaded")),
+          endHandoff: () => Promise.reject(new Error("overloaded")),
         }),
       },
       "session-1",
@@ -45,5 +51,76 @@ describe("the Session's browser host", () => {
     expect(await host.close.pipe(Effect.flip, Effect.runPromise)).toEqual(
       BrowserError.make({ message: "close: Error: overloaded" }),
     );
+  });
+
+  it("hands a conversation's tab to the owner, waits on the handoff, and ends it, in the object named for the Session", async () => {
+    const calls: unknown[] = [];
+
+    const host = remoteBrowserHost(
+      {
+        getByName: (name) => ({
+          describe: () => Promise.resolve("described"),
+          run: () => Promise.resolve({ output: [] }),
+          close: () => Promise.resolve(true),
+          startHandoff: (input) => {
+            calls.push({ name, start: input });
+
+            return Promise.resolve({ url: "https://live.example/view", startedAt: 5 });
+          },
+          waitHandoff: (requestId, maxMs) => {
+            calls.push({ name, wait: [requestId, maxMs] });
+
+            return Promise.resolve({ state: "complete", success: true });
+          },
+          endHandoff: (requestId) => {
+            calls.push({ name, end: requestId });
+
+            return Promise.resolve();
+          },
+        }),
+      },
+      "session-1",
+    );
+
+    const input = { requestId: "7", conversationId: 3, instructions: "Log in", timeoutMs: 1_000 };
+
+    expect(await Effect.runPromise(host.startHandoff(input))).toEqual({
+      url: "https://live.example/view",
+      startedAt: 5,
+    });
+    expect(await Effect.runPromise(host.waitHandoff("7", 500))).toEqual({
+      state: "complete",
+      success: true,
+    });
+    await Effect.runPromise(host.endHandoff("7"));
+    expect(calls).toEqual([
+      { name: "session-1", start: input },
+      { name: "session-1", wait: ["7", 500] },
+      { name: "session-1", end: "7" },
+    ]);
+  });
+
+  it("fails a handoff the host cannot start with its reason, which says nothing of a link", async () => {
+    const host = remoteBrowserHost(
+      {
+        getByName: () => ({
+          describe: () => Promise.resolve(""),
+          run: () => Promise.resolve({ output: [] }),
+          close: () => Promise.resolve(true),
+          startHandoff: () => Promise.reject(new Error("This conversation has no open tab")),
+          waitHandoff: () => Promise.resolve({ state: "waiting" }),
+          endHandoff: () => Promise.resolve(),
+        }),
+      },
+      "session-1",
+    );
+
+    const error = await Effect.runPromise(
+      host
+        .startHandoff({ requestId: "7", conversationId: 3, instructions: "x", timeoutMs: 1 })
+        .pipe(Effect.flip),
+    );
+
+    expect(error.message).toContain("startHandoff: Error: This conversation has no open tab");
   });
 });
