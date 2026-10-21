@@ -45,3 +45,14 @@ owner's own packages, under the same MIT licence. 1Password and Env File Secret 
 | `vault.ts`      | `secret-vault.ts`                           | WebCrypto; one HKDF-derived key per Session from a Worker-secret master key instead of a key file with a key per Secret                                      |
 | `store.ts`      | `pi-secret-extension.ts` (state, `context`) | values entered in a masked form on the web client and stored in the Session DO; a message redacted once keeps its redacted form in storage across evictions  |
 | `extension.ts`  | `pi-secret-extension.ts` (tools, hooks)     | pi-durable hooks; references resolved inside tool wraps rather than in `tool_call`, so no value enters durable state; injected per command, not process-wide |
+
+The Todo List in `src/todo/` is a port of [`@ian-pascoe/pi-todo`](https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-todo)
+(version 0.6.8, commit `3dad0f7`), the owner's own package, under the same MIT licence. The `/todo clear` command, the
+TUI widget and renderers, and the troubleshooting Skill are not ported (the web UI shows the list).
+
+| Here            | From                                      | Change                                                                                                                                                                                                                                          |
+| --------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list.ts`       | `todo-list.ts`                            | plain results instead of thrown errors; no branded IDs; the list holds at most 500 Tasks, titles 500 characters and descriptions 10,000 (it is a Durable Object document sent whole to clients)                                                 |
+| `doc.ts`        | `pi-todo-state` session entries           | a conversation document instead of journal entries, with a revision counter                                                                                                                                                                     |
+| `tool.ts`       | `pi-todo-extension.ts` (tool)             | Effect Schema parameters; every result's text ends with the whole list, and its `details` carry the revision it shows                                                                                                                           |
+| `projection.ts` | `todo-context.ts`, `pi-todo-extension.ts` | a `beforeRequest` hook puts the list last in a request whose last `todo` result is not the current revision, instead of re-placing hidden snapshots at journal positions; the reconcile instruction follows a context that holds no list at all |
