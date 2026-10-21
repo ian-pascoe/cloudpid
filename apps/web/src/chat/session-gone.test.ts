@@ -68,4 +68,26 @@ describe("a deleted Session's page", () => {
       expect(registry.get(noticeAtom)).toBe("That session was deleted.");
     }),
   );
+
+  it.effect("leaves at once when the Session was already deleted before the page read it", () =>
+    Effect.gen(function* () {
+      const { registry, latest } = chatRegistry();
+
+      registry.mount(pathAtom);
+      registry.mount(noticeAtom);
+      registry.mount(sessionStatusAtom("s1"));
+      yield* settle;
+      yield* live(latest());
+      yield* latest().drop(SESSION_DELETED_CLOSE_CODE);
+      yield* settle;
+
+      expect(registry.get(sessionStatusAtom("s1"))).toBe("deleted");
+
+      registry.mount(leaveWhenDeletedAtom("s1"));
+      yield* settle;
+
+      expect(registry.get(pathAtom)).toBe("/");
+      expect(registry.get(noticeAtom)).toBe("That session was deleted.");
+    }),
+  );
 });

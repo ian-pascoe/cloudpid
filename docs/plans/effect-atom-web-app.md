@@ -29,14 +29,14 @@ Consult this while doing the steps; it is the single source for the patterns eve
 - `src/runtime.ts` exports `appRuntime = Atom.runtime((get) => Layer.mergeAll(get(RegistryClient.runtime.layer), …the app's live layers))`.
 - `AtomRpc.Service` builds its own runtime (`RegistryClient.runtime`). Compose its layer into `appRuntime` through `get(RegistryClient.runtime.layer)`, so domain `fn`s can `yield* RegistryClient`. Both runtimes come from the default factory (`Atom.runtime`), which shares one `Layer.MemoMap` and one `Reactivity` per registry. That gives one RPC client, and a mutation's reactivity keys reach every query.
 - `main.tsx` mounts one `RegistryProvider` around `<App />` under `StrictMode`. The provider disposes its registry 500 ms after unmount, which is what makes StrictMode's double mount safe.
-- **Tests** build `AtomRegistry.make({ initialValues: [[appRuntime.layer, testLayer], [RegistryClient.runtime.layer, fakeRegistryLayer]] })` and drive atoms through `registry.get`, `registry.set` and `registry.mount`. They use no React, no jsdom, and no React Testing Library. Timers use `@effect/vitest` with `TestClock`.
+- **Tests** build `AtomRegistry.make({ initialValues: [[appRuntime.layer, testLayer], [RegistryClient.runtime.layer, fakeRegistryLayer]] })` and drive atoms through `registry.get`, `registry.set` and `registry.mount`. They use no React, no jsdom, and no React Testing Library. An Effect a test runs itself (the `SessionClient`, a push operation) takes `TestClock`; atoms run on the registry's runtime, not the test fiber, so a test that moves time under atoms uses `vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })` (faking `setImmediate` stalls Effect's scheduler).
 
 ### Registry data
 
 - `src/registry.ts` becomes `class RegistryClient extends AtomRpc.Service<RegistryClient>()("@cloudpid/web/RegistryClient", { group: RegistryRpcs, protocol: … })`. The protocol is `RpcClient.layerProtocolHttp({ url: RPC_PATH })` with `RpcSerialization.layerJson` and `FetchHttpClient.layer`, the same wiring as today.
 - Queries are `RegistryClient.query(tag, payload, { reactivityKeys })`. Mutations are `RegistryClient.mutation(tag)`, called with `{ payload, reactivityKeys }`.
 - **Reactivity keys**: `sessions`, `workspaces`, `repos:<slug>`, `workspace-settings:<slug>`, `settings`, `push`. A mutation names every key whose query it changes. Deleting a Workspace, for example, names `workspaces`, `sessions` and its `repos:<slug>`.
-- `Answer<A>`, `RegistryApi` and `connectRegistry` are deleted. Components render `AsyncResult`: use `AsyncResult.builder` or match it, and treat the `waiting` flag as "refreshing". The failure text shown to the owner stays the error's `message`.
+- `Answer<A>`, `RegistryApi` and `connectRegistry` are deleted. Components render `AsyncResult`. A component that must await one call's own outcome (a shared `concurrent` fn keeps one result for every caller) goes through `useCall` in `src/calls.ts`: use `AsyncResult.builder` or match it, and treat the `waiting` flag as "refreshing". The failure text shown to the owner stays the error's `message`.
 
 ### Session data
 
@@ -49,7 +49,7 @@ Consult this while doing the steps; it is the single source for the patterns eve
 
 - **Entity-keyed**: state that belongs to a Session, conversation or Workspace is an `Atom.family` keyed by that entity's ID. This covers the task panel being open, the rename draft and the page `problem` (per Session); Attachments, the file-search query and the catalog (per conversation); the edit and delete dialogs and the clone form (per Workspace).
 - **Per-instance**: UI state with no natural key is a `ScopedAtom.make(…)` provided around the component. This covers the composer's `caret`, `focused` and `busy`, a card's `open`, and a form's `busy`.
-- **Lifetime**: atoms dispose when nothing reads them, so they reset the way `useState` does. Add `Atom.keepAlive` only where this plan names it.
+- **Lifetime**: atoms dispose when nothing reads them, so they reset the way `useState` does. Add `Atom.keepAlive` only where this plan names it: the startup push sync, and `deletedHereAtom` (the Sessions this page asked to delete, which must outlive the page that asked).
 - **Stays in React**: DOM refs, `useId`, `useImperativeHandle`, effects that only synchronise the DOM with a ref (`dialog.tsx`'s `showModal`, `menu.tsx`'s placement listeners), and what assistant-ui owns: the composer's text, and the thread runtime `useExternalStoreRuntime` builds from our atoms (root thread and child threads).
 - **Pure helpers stay plain functions.** This covers `menu.ts`, `completion.ts`, `commands.ts`, `thread-messages.ts`, `tool-summary.ts`, `nested-calls.ts`, `format.ts`, `workspaces.ts` and others like them. Reword their `@effect-diagnostics` reason from "a React app with no Effect runtime" to "plain functions over native arrays" (or whatever they actually suppress).
 
@@ -121,7 +121,7 @@ The largest step. `session/connection.ts` (1,136 lines) is rewritten as an Effec
    - `TestClock` stands in for fake timers;
    - an injected probe service stands in for the probe argument.
 2. **Implement** `SessionClient` until every ported test passes. Behaviour to keep, with the same constants and their exported names:
-   - **Reconnect:** `Schedule.exponential("500 millis")` capped at 10 s, with no jitter. Every reconnect watches again and starts from a fresh snapshot.
+   - **Reconnect:** 500 ms doubling to a 10 s cap, with no jitter (`min(500·2^attempts, 10 000)`, written out rather than a `Schedule` because the attempt count resets when a snapshot lands). Every reconnect watches again and starts from a fresh snapshot.
    - **Heartbeat:** a ping every 25 s (`HEARTBEAT_INTERVAL_MS`); a socket silent 10 s after a ping is replaced (`PONG_TIMEOUT_MS`).
    - **HTTP probe** after 2 failed attempts. It decides between `signed-out` and `missing`; a close with `SESSION_DELETED_CLOSE_CODE` means `deleted`.
    - **Submits** waiting for a socket are held, and sent again under the same `requestId` on reconnect. Each one settles its `onOutcome` exactly once.

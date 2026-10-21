@@ -199,6 +199,42 @@ const cloning = (repos: string[]) => {
   return registry;
 };
 
+describe("deleting a Workspace", () => {
+  it.effect("asks again for its repos and its own settings, as well as the lists", () =>
+    Effect.gen(function* () {
+      const asked = { repos: 0, settings: 0 };
+
+      const registry = registryWith({
+        listWorkspaces: () => Effect.succeed([workspace("work")]),
+        listSessions: () => Effect.succeed([]),
+        listRepos: () =>
+          Effect.sync(() => {
+            asked.repos += 1;
+
+            return [];
+          }),
+        getWorkspaceSettings: () =>
+          Effect.die(asked.settings++ < 0 ? "unreachable" : "The Workspace is not answering."),
+        deleteWorkspace: () => Effect.void,
+      });
+
+      registry.mount(reposAtom("work"));
+      registry.mount(workspaceSettingsAtom("work"));
+      yield* settled(registry, reposAtom("work"));
+      yield* settled(registry, workspaceSettingsAtom("work"));
+
+      expect(asked).toEqual({ repos: 1, settings: 1 });
+
+      registry.set(deleteWorkspaceAtom("work"), undefined);
+      yield* settled(registry, deleteWorkspaceAtom("work"));
+      yield* settled(registry, reposAtom("work"));
+      yield* settled(registry, workspaceSettingsAtom("work"));
+
+      expect(asked).toEqual({ repos: 2, settings: 2 });
+    }),
+  );
+});
+
 describe("the repos of a Workspace", () => {
   it.effect("lists the repos the Workspace holds, each Workspace its own", () =>
     Effect.gen(function* () {

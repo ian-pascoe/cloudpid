@@ -10,8 +10,13 @@ export const leaveWhenDeletedAtom = Atom.family((sessionId: string) =>
   Atom.readable((get) => {
     get.mount(sessionGoneAtom);
     get.mount(sessionStatusAtom(sessionId));
-    get.subscribe(sessionStatusAtom(sessionId), (status) => {
-      if (status === "deleted") get.set(sessionGoneAtom, sessionId);
-    });
+    // Immediate: a status that was already `deleted` when the page first read this counts too.
+    get.subscribe(
+      sessionStatusAtom(sessionId),
+      (status) => {
+        if (status === "deleted") get.set(sessionGoneAtom, sessionId);
+      },
+      { immediate: true },
+    );
   }),
 );
