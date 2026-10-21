@@ -82,6 +82,24 @@ _Avoid_: Prompt, snippet, macro
 A file the owner gives with a message, stored in the Workspace and pointed at by its path; an attached image is also shown to the model.
 _Avoid_: Upload (for the file), file mention
 
+## Diffs and review
+
+**Changes**:
+A repo's uncommitted working tree against its HEAD, shared by every Session on the Workspace.
+_Avoid_: Diff (for the whole set), working copy, pending edits
+
+**Comparison**:
+A branch's or pull request's changes against its base.
+_Avoid_: Branch diff, PR diff (for the thing itself)
+
+**Annotation**:
+The owner's note on a line range of a diff, kept as a draft until it is sent in a Review.
+_Avoid_: Comment, remark, note (that is an agent's Note)
+
+**Review**:
+A batch of Annotations the owner sends to one conversation as a single message.
+_Avoid_: Feedback, comment batch, code review (for the message)
+
 ## Workspaces and execution
 
 **Workspace**:
