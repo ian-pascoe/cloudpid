@@ -95,6 +95,8 @@ export class TestSubagentSession extends DurableObject {
               Layer.succeed(SessionRegistry, {
                 report: () => Effect.void,
                 notify: () => Effect.void,
+                titleWanted: Effect.succeed(false),
+                setTitle: () => Effect.void,
               }),
               sessionSettingsLayer({ read: Effect.succeed({}), kv: ctx.storage.kv }),
             ),

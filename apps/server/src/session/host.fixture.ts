@@ -142,6 +142,9 @@ const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as c
 /** The model and thinking level a request asked for. */
 export type TestRequest = { readonly model: string; readonly thinking: string | undefined };
 
+/** A request for a Session title as the model received it: the model asked, and its messages (system prompt included) as JSON. */
+export type TitleRequest = { readonly model: string; readonly messages: string };
+
 /** A scripted response that calls tool `name` with the JSON arguments `args`. */
 const CALL = /^call:(\w+):(.*)$/;
 
@@ -277,6 +280,15 @@ export class TestSession extends DurableObject {
                     notify: (event) =>
                       Effect.tryPromise({
                         try: () => this.#notify(event),
+                        catch: (cause) => ReportError.make({ message: String(cause) }),
+                      }),
+                    titleWanted: Effect.tryPromise({
+                      try: () => this.#titleWanted(),
+                      catch: (cause) => ReportError.make({ message: String(cause) }),
+                    }),
+                    setTitle: (title) =>
+                      Effect.tryPromise({
+                        try: () => this.#setTitle(title),
                         catch: (cause) => ReportError.make({ message: String(cause) }),
                       }),
                   }),
@@ -420,6 +432,26 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("registry", registry);
   }
 
+  /**
+   * Let this Session name itself, as the Session DO does after its first answer: the `replies` are what the title
+   * requests get, in order (`gate:<reply>` waits for `open()`), kept in storage like the script. Without it no title is
+   * wanted, so a test that does not look at titles never sees a request for one. The Registry decides, as the real
+   * one does, whether the title is wanted and whether it is kept.
+   */
+  titles(replies: readonly string[]): void {
+    this.ctx.storage.kv.put("title-replies", { responses: replies, next: 0 } satisfies Script);
+  }
+
+  /** The requests for a title the model received, oldest first: its model and the messages as it saw them. */
+  titleRequests(): readonly TitleRequest[] {
+    return this.ctx.storage.kv.get<TitleRequest[]>("title-requests") ?? [];
+  }
+
+  /** Make the Registry unreachable for the title task until `titleRegistry("working")`. */
+  titleRegistry(mode: "working" | "failing"): void {
+    this.ctx.storage.kv.put("titleMode", mode);
+  }
+
   /** Make status reports fail until `reports("working")`, or hang. */
   reports(mode: "working" | "failing" | "hanging"): void {
     this.ctx.storage.kv.put("reportMode", mode);
@@ -561,6 +593,33 @@ export class TestSession extends DurableObject {
     return (await this.env.REGISTRIES.getByName(registry).getSettings()).overrides;
   }
 
+  /** Whether the Registry wants a title for this Session: titles are on, and it has neither a title nor an owner's. */
+  async #titleWanted(): Promise<boolean> {
+    const { kv } = this.ctx.storage;
+    const registry = kv.get<string>("registry");
+
+    if (registry === undefined || kv.get<Script>("title-replies") === undefined) return false;
+
+    if (kv.get<string>("titleMode") === "failing") throw new Error("Registry is down");
+
+    const session = await this.env.REGISTRIES.getByName(registry).getSession(
+      this.ctx.id.name ?? "",
+    );
+
+    return session !== null && session.titleSource === null;
+  }
+
+  async #setTitle(title: string): Promise<void> {
+    const { kv } = this.ctx.storage;
+    const registry = kv.get<string>("registry");
+
+    if (registry === undefined) return;
+
+    if (kv.get<string>("titleMode") === "failing") throw new Error("Registry is down");
+
+    await this.env.REGISTRIES.getByName(registry).setGeneratedTitle(this.ctx.id.name ?? "", title);
+  }
+
   #notify(event: PushEvent): Promise<void> {
     const { kv } = this.ctx.storage;
 
@@ -598,6 +657,25 @@ export class TestSession extends DurableObject {
   #step(): FauxResponseStep {
     return (request, options, _state, model) => {
       const { kv } = this.ctx.storage;
+
+      // A request for a Session title has its own script and log, so it never shifts the Run's.
+      if (JSON.stringify(request.messages).includes("You name conversations")) {
+        kv.put("title-requests", [
+          ...(kv.get<TitleRequest[]>("title-requests") ?? []),
+          { model: model.id, messages: JSON.stringify(request.messages) } satisfies TitleRequest,
+        ]);
+
+        const replies = kv.get<Script>("title-replies") ?? { responses: [], next: 0 };
+        const reply = replies.responses[replies.next] ?? "unscripted";
+
+        kv.put("title-replies", { ...replies, next: replies.next + 1 });
+
+        if (!reply.startsWith("gate:")) return respond(reply);
+
+        this.gated.resolve();
+
+        return this.#gate.promise.then(() => respond(reply.slice("gate:".length)));
+      }
 
       kv.put("request-messages", [
         ...(kv.get<string[]>("request-messages") ?? []),

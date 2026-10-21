@@ -6,6 +6,7 @@ import { groupByWorkspace, idleMinutesProblem, slugProblem, sourceProblem } from
 const session = (id: string, workspace: string, repo: string | null = null): SessionRecord => ({
   id,
   title: null,
+  titleSource: null,
   workspace,
   repo,
   status: "idle",

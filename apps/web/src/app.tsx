@@ -45,6 +45,14 @@ export const App = () => {
             key={sessionId}
             sessionId={sessionId}
             title={session === undefined ? undefined : sessionTitle(session)}
+            rename={
+              session === undefined
+                ? undefined
+                : {
+                    current: session.title ?? "",
+                    save: (title) => sessions.rename(session.id, title),
+                  }
+            }
           />
         )}
       </main>

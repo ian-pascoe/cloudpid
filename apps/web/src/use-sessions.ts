@@ -20,6 +20,8 @@ export interface Sessions {
     readonly workspace?: string;
     readonly repo?: string;
   }) => Promise<SessionRecord | undefined>;
+  /** Name a Session and refresh the list; resolves to whether it worked (the reason is in `error` when not). */
+  readonly rename: (id: string, title: string) => Promise<boolean>;
   readonly refresh: () => Promise<void>;
 }
 
@@ -65,5 +67,22 @@ export const useSessions = (): Sessions => {
     [registry, refresh],
   );
 
-  return { sessions, error, create, refresh };
+  const rename = useCallback(
+    async (id: string, title: string) => {
+      const answer = await registry.renameSession(id, title);
+
+      if (!answer.ok) {
+        setError(answer.message);
+
+        return false;
+      }
+
+      await refresh();
+
+      return true;
+    },
+    [registry, refresh],
+  );
+
+  return { sessions, error, create, rename, refresh };
 };

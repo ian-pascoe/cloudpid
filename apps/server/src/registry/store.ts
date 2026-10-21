@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE, type PushSubscription } from "@cloudpid/protocol";
+import { DEFAULT_WORKSPACE, type PushSubscription, TitleSource } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
@@ -14,6 +14,8 @@ export type SessionRecord = {
   readonly id: string;
   /** Null until the user or the title task gives it one. */
   readonly title: string | null;
+  /** Who set the title: null while there is none. A title the owner set is never replaced; a generated one is set once. */
+  readonly titleSource: TitleSource | null;
   /** The slug of the Workspace the Session works on, fixed when it is created. */
   readonly workspace: string;
   /** The repo directory below `/workspace` that is the Session's `cwd`, fixed when it is created; null for the root. */
@@ -47,6 +49,13 @@ export type RegistryStore = {
   readonly listSessions: () => SessionRecord[];
   /** Record that a Session's Run started or ended. A Session that is not registered is ignored. */
   readonly setSessionStatus: (id: string, status: SessionStatus, now: number) => void;
+  /** Give a Session the owner's title, replacing any other; null when the Session is not registered. */
+  readonly renameSession: (id: string, title: string) => SessionRecord | null;
+  /**
+   * Give a Session a generated title, only if it has none: a Session the owner named, or one already titled, keeps its
+   * title. Says whether the title was set.
+   */
+  readonly setGeneratedTitle: (id: string, title: string) => boolean;
   /** Register a Workspace by slug; one that is already registered keeps its record. */
   readonly createWorkspace: (slug: string, now: number) => WorkspaceRecord;
   readonly listWorkspaces: () => WorkspaceRecord[];
@@ -67,6 +76,7 @@ export type RegistryStore = {
 type SessionRow = {
   id: string;
   title: string | null;
+  title_source: string | null;
   /** Null for a Session stored before Sessions had Workspaces. */
   workspace: string | null;
   /** Null for the Workspace root, and for a Session stored before Sessions had repos. */
@@ -92,9 +102,20 @@ const checkedStatus = (status: string): SessionStatus => {
   return status;
 };
 
+const isTitleSource = Schema.is(TitleSource);
+
+const checkedTitleSource = (source: string | null): TitleSource | null => {
+  if (source === null) return null;
+
+  if (!isTitleSource(source)) throw new Error(`Unknown title source in the Registry: ${source}`);
+
+  return source;
+};
+
 const toSession = (row: SessionRow): SessionRecord => ({
   id: row.id,
   title: row.title,
+  titleSource: checkedTitleSource(row.title_source),
   workspace: row.workspace ?? DEFAULT_WORKSPACE,
   repo: row.repo,
   status: checkedStatus(row.status),
@@ -170,6 +191,11 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE sessions ADD COLUMN repo TEXT");
   },
+  // 7: who set the title. A title stored before this was the owner's (it could only be given at creation).
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN title_source TEXT");
+    sql.exec("UPDATE sessions SET title_source = 'owner' WHERE title IS NOT NULL");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -214,9 +240,10 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
       createWorkspace(workspace, now);
       sql.exec(
-        "INSERT INTO sessions (id, title, workspace, repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'idle', ?, ?)",
+        "INSERT INTO sessions (id, title, title_source, workspace, repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)",
         input.id,
         input.title,
+        input.title === null ? null : "owner",
         workspace,
         input.repo ?? null,
         now,
@@ -226,6 +253,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       return {
         id: input.id,
         title: input.title,
+        titleSource: input.title === null ? null : "owner",
         workspace,
         repo: input.repo ?? null,
         status: "idle",
@@ -256,6 +284,21 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         status,
       );
     },
+
+    renameSession: (id, title) => {
+      sql.exec("UPDATE sessions SET title = ?, title_source = 'owner' WHERE id = ?", title, id);
+
+      const [row] = sql.exec<SessionRow>("SELECT * FROM sessions WHERE id = ?", id).toArray();
+
+      return row === undefined ? null : toSession(row);
+    },
+
+    setGeneratedTitle: (id, title) =>
+      sql.exec(
+        "UPDATE sessions SET title = ?, title_source = 'generated' WHERE id = ? AND title_source IS NULL",
+        title,
+        id,
+      ).rowsWritten > 0,
 
     createWorkspace,
 

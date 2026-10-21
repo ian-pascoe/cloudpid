@@ -60,6 +60,7 @@ import type { PushEvent } from "../push/notification.ts";
 import { harnessSettings, SessionSettings, type SettingsKv } from "./settings.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
+import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -333,6 +334,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const settings = yield* SessionSettings;
   const scope = yield* Scope.Scope;
   const services = yield* Effect.context<R>();
+  const models = Effect.isEffect(options.models) ? yield* options.models : options.models;
 
   /** When the object must wake although no work is live. */
   const wakeAt =
@@ -387,6 +389,53 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   });
 
   const inspect = harness.inspect.pipe(fromHarness);
+
+  /**
+   * Names the Session after its first answer (`docs/spec.md` → Client and protocol → Titles). The root's first message
+   * and answer come from its first entries; a first Run so long that its answer is past them is named by its message.
+   */
+  const titles = titleTask({
+    kv,
+    models,
+    // The `small` role's model; the Session's own when the roles hold none.
+    model: () => {
+      const { agent, subagents } = settings.current();
+
+      return subagents.roles.small?.model ?? agent.model;
+    },
+    registry,
+    exchange: Effect.gen(function* () {
+      const conversation = yield* root;
+
+      const page = yield* attempt("titleEntries", () =>
+        conversation.commit(
+          (tx) =>
+            tx.scanEntries(
+              { conversationId: conversation.id, order: "ascending" },
+              EXCHANGE_ENTRIES,
+            ),
+          context,
+        ),
+      );
+
+      const exchange = firstExchange(page.items);
+
+      return exchange?.answer === undefined && page.items.length < EXCHANGE_ENTRIES
+        ? undefined
+        : exchange;
+    }),
+  });
+
+  /** Once `submission` is answered, name the Session beside the Run, which never waits for it. Lost with the object; a later answer tries again. */
+  const titleAfter = (submission: Submission) =>
+    titles.done()
+      ? Effect.void
+      : attempt("wait", () => submission.wait(context)).pipe(
+          Effect.flatMap((settled) => (settled.status === "done" ? titles.run : Effect.void)),
+          Effect.ignore,
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
 
   /**
    * Live work keeps the heartbeat, as pi-durable main's `wake()` counts it: a task no installed definition can run
@@ -540,6 +589,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
       Effect.andThen(settle),
       Effect.andThen(notifyRunEnds),
+      // Also here, so a first Run an eviction cut short is named once it is finished on the next instance.
+      Effect.andThen(titles.run),
       Effect.ignore,
       Effect.forkIn(scope),
       Effect.asVoid,
@@ -612,6 +663,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ),
       ),
       Effect.tap(settleWhenIdle),
+      // Only the root is named: a subagent's conversation is the root's own work.
+      Effect.tap((submission) => (toRoot ? titleAfter(submission) : Effect.void)),
     );
   };
 

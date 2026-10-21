@@ -24,6 +24,11 @@ export const SessionTitle = Schema.Trim.check(
   Schema.isMaxLength(MAX_TITLE_LENGTH),
 );
 
+/** Who gave a Session its title: the owner by naming it, or the `small` role's model after the first answer. */
+export const TitleSource = Schema.Literals(["generated", "owner"]);
+
+export type TitleSource = typeof TitleSource.Type;
+
 /** A Workspace slug, which is also its directory and its Workspace DO's name. */
 export const WorkspaceSlug = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
 
@@ -36,6 +41,11 @@ export const SessionRecord = Schema.Struct({
   id: Schema.String,
   /** Null until the user or the title task gives it one. */
   title: Schema.NullOr(Schema.String),
+  /**
+   * Who set the title; null while there is none. A generated title is set at most once, and never replaces an owner's
+   * (`docs/spec.md` → Client and protocol → Titles).
+   */
+  titleSource: Schema.NullOr(TitleSource),
   /** The slug of the Workspace the Session works on; it never changes. */
   workspace: Schema.String,
   /** The repo directory below `/workspace` the Session's `cwd` is, or null for the Workspace root; it never changes. */
@@ -47,6 +57,14 @@ export const SessionRecord = Schema.Struct({
 });
 
 export type SessionRecord = typeof SessionRecord.Type;
+
+/** A Session the Registry does not know. */
+export class SessionNotFound extends Schema.TaggedError<
+  SessionNotFound,
+  { readonly brand: unique symbol }
+>()("SessionNotFound", {
+  message: Schema.String,
+}) {}
 
 /** A Workspace as the Registry lists it. */
 export const WorkspaceRecord = Schema.Struct({ slug: Schema.String, createdAt: Schema.Finite });
@@ -164,6 +182,15 @@ export class RegistryRpcs extends RpcGroup.make(
     },
     success: SessionRecord,
     error: WorkspaceError,
+  }),
+  /**
+   * Name a Session. The title is the owner's from then on: the title task never replaces it. Fails with a
+   * `SessionNotFound` when the Registry has no Session `id`.
+   */
+  Rpc.make("renameSession", {
+    payload: { id: Schema.String, title: SessionTitle },
+    success: SessionRecord,
+    error: SessionNotFound,
   }),
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
   /** Register a Workspace by slug; one already registered keeps its record. */

@@ -36,6 +36,7 @@ describe("the Registry store", () => {
     expect(created).toEqual({
       id: "s-1",
       title: "Fix the build",
+      titleSource: "owner",
       workspace: DEFAULT_WORKSPACE,
       repo: null,
       status: "idle",
@@ -201,6 +202,7 @@ describe("the Registry store", () => {
       sql.exec("DROP TABLE documents");
       sql.exec("DROP TABLE push_subscriptions");
       sql.exec("ALTER TABLE sessions DROP COLUMN repo");
+      sql.exec("ALTER TABLE sessions DROP COLUMN title_source");
       sql.exec("DELETE FROM schema_version WHERE version > 3");
 
       const store = openRegistryStore(storage);
@@ -271,7 +273,8 @@ describe("the Registry store", () => {
 
       // As the release before repos left it: version 5, Sessions without a repo column.
       sql.exec("ALTER TABLE sessions DROP COLUMN repo");
-      sql.exec("DELETE FROM schema_version WHERE version = 6");
+      sql.exec("ALTER TABLE sessions DROP COLUMN title_source");
+      sql.exec("DELETE FROM schema_version WHERE version > 5");
       sql.exec(
         "INSERT INTO sessions (id, title, workspace, status, created_at, updated_at) VALUES ('old', NULL, 'a', 'idle', 1, 1)",
       );
@@ -282,6 +285,102 @@ describe("the Registry store", () => {
       expect(store.createSession({ id: "new", title: null, repo: "pi" }, 2)).toMatchObject({
         repo: "pi",
       });
+    });
+  });
+
+  it("has no title source for a Session created without a title", async () => {
+    const registry = fresh();
+
+    expect(await registry.createSession({ id: "s-1", title: null }, 1_000)).toMatchObject({
+      title: null,
+      titleSource: null,
+    });
+  });
+
+  it("sets a generated title once, on a Session that has none", async () => {
+    const registry = fresh();
+
+    await registry.createSession({ id: "s-1", title: null }, 1_000);
+
+    expect(await registry.setGeneratedTitle("s-1", "Fix the build")).toBe(true);
+    expect(await registry.getSession("s-1")).toMatchObject({
+      title: "Fix the build",
+      titleSource: "generated",
+    });
+
+    // A second generation does not replace the first.
+    expect(await registry.setGeneratedTitle("s-1", "Something else")).toBe(false);
+    expect((await registry.getSession("s-1"))?.title).toBe("Fix the build");
+  });
+
+  it("never replaces the owner's title with a generated one", async () => {
+    const registry = fresh();
+
+    await registry.createSession({ id: "named", title: "Mine" }, 1_000);
+    await registry.createSession({ id: "renamed", title: null }, 1_000);
+    await registry.createSession({ id: "regenerated", title: null }, 1_000);
+
+    expect(await registry.setGeneratedTitle("named", "Generated")).toBe(false);
+
+    // Renamed before the title was generated, and after.
+    await registry.renameSession("renamed", "Also mine");
+    expect(await registry.setGeneratedTitle("renamed", "Generated")).toBe(false);
+    await registry.setGeneratedTitle("regenerated", "Generated");
+    await registry.renameSession("regenerated", "Mine now");
+    expect(await registry.setGeneratedTitle("regenerated", "Generated again")).toBe(false);
+
+    expect(await registry.getSession("named")).toMatchObject({
+      title: "Mine",
+      titleSource: "owner",
+    });
+    expect(await registry.getSession("renamed")).toMatchObject({
+      title: "Also mine",
+      titleSource: "owner",
+    });
+    expect(await registry.getSession("regenerated")).toMatchObject({
+      title: "Mine now",
+      titleSource: "owner",
+    });
+  });
+
+  it("renames a Session, leaving its other fields alone, and ignores one it does not know", async () => {
+    const registry = fresh();
+
+    await registry.createSession({ id: "s-1", title: null, workspace: "cloudpid" }, 1_000);
+    await registry.setSessionStatus("s-1", "running", 2_000);
+
+    expect(await registry.renameSession("s-1", "Fix the build")).toEqual({
+      id: "s-1",
+      title: "Fix the build",
+      titleSource: "owner",
+      workspace: "cloudpid",
+      repo: null,
+      status: "running",
+      createdAt: 1_000,
+      updatedAt: 2_000,
+    });
+    expect(await registry.renameSession("ghost", "Nope")).toBeNull();
+    expect(await registry.listSessions()).toHaveLength(1);
+  });
+
+  it("adds the title source to a Registry at the previous version: a title it holds is the owner's", async () => {
+    await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+      const { storage } = state;
+      const { sql } = storage;
+
+      // As the release before generated titles left it: version 6, Sessions without a title source.
+      sql.exec("ALTER TABLE sessions DROP COLUMN title_source");
+      sql.exec("DELETE FROM schema_version WHERE version = 7");
+      sql.exec(
+        "INSERT INTO sessions (id, title, workspace, status, created_at, updated_at) VALUES ('named', 'Mine', 'a', 'idle', 1, 1), ('bare', NULL, 'a', 'idle', 2, 2)",
+      );
+
+      const store = openRegistryStore(storage);
+
+      expect(store.getSession("named")).toMatchObject({ title: "Mine", titleSource: "owner" });
+      expect(store.getSession("bare")).toMatchObject({ title: null, titleSource: null });
+      expect(store.setGeneratedTitle("named", "Generated")).toBe(false);
+      expect(store.setGeneratedTitle("bare", "Generated")).toBe(true);
     });
   });
 

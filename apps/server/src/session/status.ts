@@ -1,5 +1,5 @@
 // What a Session tells the Registry (`docs/spec.md` → Durable Objects): whether it has a Run in progress, and what the
-// owner should be notified of.
+// owner should be notified of, and the title it generated.
 import { SessionStatus } from "@cloudpid/protocol";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -25,5 +25,11 @@ export class SessionRegistry extends Context.Service<
     readonly report: (status: SessionStatus) => Effect.Effect<void, ReportError>;
     /** Tell the owner, by Web Push through the Registry, that this Session has something to hear. */
     readonly notify: (event: PushEvent) => Effect.Effect<void, ReportError>;
+    /** Whether the Session still lacks a title: it has none, and the owner has not named it. */
+    readonly titleWanted: Effect.Effect<boolean, ReportError>;
+    /**
+     * Offer the title the Session generated. The Registry keeps the owner's title, and an earlier generated one, over it.
+     */
+    readonly setTitle: (title: string) => Effect.Effect<void, ReportError>;
   }
 >()("@cloudpid/server/session/status/SessionRegistry") {}

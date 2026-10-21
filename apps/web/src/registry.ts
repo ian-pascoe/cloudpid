@@ -37,6 +37,8 @@ export interface RegistryApi {
     readonly workspace?: string;
     readonly repo?: string;
   }) => Promise<Answer<SessionRecord>>;
+  /** Name a Session: the title is the owner's from then on, and generation never replaces it. */
+  readonly renameSession: (id: string, title: string) => Promise<Answer<SessionRecord>>;
   /** Every Workspace, newest first. */
   readonly listWorkspaces: () => Promise<Answer<readonly WorkspaceRecord[]>>;
   /** Register a Workspace by slug; one already registered keeps its record. */
@@ -90,6 +92,8 @@ export const connectRegistry = (origin: string): RegistryApi => {
     listSessions: () => answer(Registry.use((registry) => registry.listSessions())),
     createSession: (where = {}) =>
       answer(Registry.use((registry) => registry.createSession(where))),
+    renameSession: (id, title) =>
+      answer(Registry.use((registry) => registry.renameSession({ id, title }))),
     listWorkspaces: () => answer(Registry.use((registry) => registry.listWorkspaces())),
     createWorkspace: (slug) =>
       answer(Registry.use((registry) => registry.createWorkspace({ slug }))),
