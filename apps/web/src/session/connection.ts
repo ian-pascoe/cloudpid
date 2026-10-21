@@ -2,9 +2,11 @@
 // root conversation the Session names in `hello`, folds the events into a `SessionView`, sends the user's commands,
 // and keeps the connection alive: a heartbeat, and a reconnect with a fresh watch after any close.
 
-// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalFetch:off globalTimers:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalFetch:off globalTimers:off newPromise:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import {
+  Catalog,
+  CommandOutcome,
   EMPTY_VIEW,
   HEARTBEAT,
   reduceEvents,
@@ -171,6 +173,24 @@ interface PendingSubmit {
 
 const decodeServerMessage = Schema.decodeOption(ServerMessageJson);
 
+const decodeCatalog = Schema.decodeUnknownOption(Catalog);
+
+const decodeOutcome = Schema.decodeUnknownOption(CommandOutcome);
+
+/** What a `result` carries. */
+type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
+
+/** A request whose answer a promise waits for: `catalog` and `command`. */
+interface PendingRequest {
+  readonly answer: (result: ResultValue) => void;
+  readonly fail: (message: string) => void;
+  /** Whether it changes the Session, so one whose answer was lost may have run all the same. */
+  readonly acts: boolean;
+}
+
+/** Why a request cannot be answered while the socket is down. */
+const NOT_CONNECTED = "The session is not connected; try again once it is.";
+
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
 const decodeSubmitResult = Schema.decodeUnknownOption(SubmitResult);
@@ -222,6 +242,7 @@ export class SessionConnection {
   private readonly listeners = new Set<() => void>();
   private readonly texts = new Map<string, string>();
   private readonly pending: PendingSubmit[] = [];
+  private readonly requests = new Map<string, PendingRequest>();
   private socket: SessionSocket | null = null;
   private readonly threadWatches = new Map<number, ThreadWatch>();
   private readonly threadLanes = new Map<
@@ -389,9 +410,56 @@ export class SessionConnection {
     this.send(abort);
   }
 
+  /**
+   * What the composer of the root conversation, or of subagent conversation `conversationId`, completes: the Session's
+   * Slash commands, and the Prompt templates and Skills of the conversation's directory. Rejects when the socket is not
+   * open, when the Session refuses, and when the socket closes before it answers.
+   */
+  catalog(conversationId?: number): Promise<Catalog> {
+    const id = this.nextCommandId();
+
+    const message: Types.Mutable<Extract<ClientMessage, { type: "catalog" }>> = {
+      type: "catalog",
+      id,
+    };
+
+    if (!this.isRoot(conversationId) && conversationId !== undefined) {
+      message.conversationId = conversation(conversationId);
+    }
+
+    return this.request(id, message, (result) => Option.getOrUndefined(decodeCatalog(result)));
+  }
+
+  /**
+   * Run the Session's Slash command `name` with `args` on the root conversation, or on subagent conversation
+   * `conversationId`: what it did, or a rejection with why it could not.
+   */
+  command(name: string, args: string, conversationId?: number): Promise<CommandOutcome> {
+    const id = this.nextCommandId();
+
+    const message: Types.Mutable<Extract<ClientMessage, { type: "command" }>> = {
+      type: "command",
+      id,
+      name,
+      args,
+    };
+
+    if (!this.isRoot(conversationId) && conversationId !== undefined) {
+      message.conversationId = conversation(conversationId);
+    }
+
+    return this.request(
+      id,
+      message,
+      (result) => Option.getOrUndefined(decodeOutcome(result)),
+      true,
+    );
+  }
+
   dispose(): void {
     this.disposed = true;
     this.stopTimers();
+    this.failRequests("The session was closed.");
 
     const socket = this.socket;
 
@@ -536,6 +604,15 @@ export class SessionConnection {
       }
 
       case "result": {
+        const request = this.requests.get(message.id);
+
+        if (request !== undefined) {
+          this.requests.delete(message.id);
+          request.answer(message.result);
+
+          return;
+        }
+
         if (message.id === this.watchId) {
           this.watched = true;
           this.flush();
@@ -560,6 +637,15 @@ export class SessionConnection {
       }
 
       case "error": {
+        const request = message.id === undefined ? undefined : this.requests.get(message.id);
+
+        if (message.id !== undefined && request !== undefined) {
+          this.requests.delete(message.id);
+          request.fail(message.message);
+
+          return;
+        }
+
         const failed = message.id === undefined ? undefined : this.threadWatchOf(message.id);
 
         if (message.id === this.watchId) {
@@ -710,6 +796,51 @@ export class SessionConnection {
     }
   }
 
+  /**
+   * Send `message` and wait for its answer, read by `read` (undefined: an answer it cannot read). `acts` says whether it
+   * changes the Session, as a command does and a catalog request does not.
+   */
+  private request<A>(
+    id: string,
+    message: ClientMessage,
+    read: (result: ResultValue) => A | undefined,
+    acts = false,
+  ): Promise<A> {
+    return new Promise<A>((resolve, reject) => {
+      if (!this.opened) {
+        reject(new Error(NOT_CONNECTED));
+
+        return;
+      }
+
+      this.requests.set(id, {
+        answer: (result) => {
+          const value = read(result);
+
+          if (value === undefined) reject(new Error("The session's answer could not be read."));
+          else resolve(value);
+        },
+        fail: (failure) => {
+          reject(new Error(failure));
+        },
+        acts,
+      });
+      this.send(message);
+    });
+  }
+
+  /**
+   * Fail every request still waiting for an answer: the socket that carried them is gone. One that changes the Session
+   * fails with `acted` when given: it may have reached the Session, and run, before the socket went.
+   */
+  private failRequests(failure: string, acted = failure): void {
+    const waiting = [...this.requests.values()];
+
+    this.requests.clear();
+
+    for (const request of waiting) request.fail(request.acts ? acted : failure);
+  }
+
   private send(message: ClientMessage): void {
     this.socket?.send(JSON.stringify(message));
   }
@@ -722,6 +853,7 @@ export class SessionConnection {
 
   /** The Session was deleted: stop for good, as `dispose` does, and say so. */
   private deleted(): void {
+    this.failRequests("The session was deleted.");
     this.socket = null;
     this.stopTimers();
     clearTimeout(this.reconnectTimer);
@@ -740,6 +872,11 @@ export class SessionConnection {
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of this.pending) submit.sent = false;
+
+    this.failRequests(
+      "The connection was lost; try again once it is back.",
+      "The connection was lost before the Session answered; the command may have run, so check before running it again.",
+    );
 
     for (const watch of this.threadWatches.values()) {
       watch.watched = false;

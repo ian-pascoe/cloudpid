@@ -1180,3 +1180,83 @@ describe("Todo Lists on a Session connection", () => {
     expect(connection.getState().todos).toEqual(tasks("Root task"));
   });
 });
+
+describe("the catalog and Slash commands", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const CATALOG = {
+    commands: [{ name: "export", description: "Export", argument: "none" }],
+    templates: [{ name: "review", description: "Review", argumentHint: "<ref>" }],
+    skills: [{ name: "deploy", description: "Deploy" }],
+  };
+
+  it("asks for a conversation's catalog and resolves with the answer", async () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+    watchingThread(latest(), 2);
+
+    const root = connection.catalog();
+    const child = connection.catalog(2);
+
+    const [rootAsk, childAsk] = latest()
+      .commands()
+      .filter((command) => command.type === "catalog");
+
+    expect(rootAsk).toEqual({ type: "catalog", id: rootAsk?.id });
+    expect(childAsk).toMatchObject({ type: "catalog", conversationId: 2 });
+
+    latest().say({ type: "result", id: rootAsk?.id, result: CATALOG });
+    latest().say({ type: "result", id: childAsk?.id, result: { ...CATALOG, skills: [] } });
+
+    await expect(root).resolves.toEqual(CATALOG);
+    await expect(child).resolves.toEqual({ ...CATALOG, skills: [] });
+  });
+
+  it("runs a command and resolves with what it did, or rejects with why it could not", async () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+
+    const done = connection.command("compact", "the API");
+    const refused = connection.command("todo", "");
+
+    const [first, second] = latest()
+      .commands()
+      .filter((command) => command.type === "command");
+
+    expect(first).toEqual({ type: "command", id: first?.id, name: "compact", args: "the API" });
+
+    latest().say({ type: "result", id: first?.id, result: { notice: "Compacting the context." } });
+    latest().say({ type: "error", id: second?.id, message: "/todo takes clear." });
+
+    await expect(done).resolves.toEqual({ notice: "Compacting the context." });
+    await expect(refused).rejects.toThrow("/todo takes clear.");
+    // A command's failure is the composer's to show, not the Session's.
+    expect(connection.getState().failure).toBeNull();
+  });
+
+  it("rejects a request made while disconnected, and one the socket's close leaves unanswered", async () => {
+    const { connection, latest } = setup();
+
+    await expect(connection.command("export", "")).rejects.toThrow(/not connected/);
+
+    watching(latest());
+
+    const waiting = connection.catalog();
+    const running = connection.command("todo", "clear");
+
+    latest().drop();
+
+    await expect(waiting).rejects.toThrow("The connection was lost; try again once it is back.");
+    // A command may have reached the Session before the socket went.
+    await expect(running).rejects.toThrow(/the command may have run/);
+  });
+});

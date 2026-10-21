@@ -20,7 +20,8 @@
 //
 // Changes: types renamed (`PiMessage` → `TranscriptMessage`, `PiMessagePart` → `TranscriptPart`), functions written as
 // `const` arrow functions, `Predicate.isString` for the typeof check, and `projectMessage` builds its result in steps.
-// Resets, compaction summaries, and extension entries with a `notice` title in their data project as titled notices.
+// Resets, compaction summaries, and extension entries with a `notice` title in their data project as titled notices; an
+// owner's message the Session expanded (`cloudpid.user`) projects as what the owner typed, with its Skills beside it.
 // Formatted for this repository.
 
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
@@ -35,6 +36,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
+import { skillBlocksIn, userEntryData } from "./user-entry.ts";
 
 /**
  * The display model of a transcript. The Session returns pi's own entries; the UI folds them into these messages, in
@@ -59,6 +61,13 @@ export type TranscriptPart =
       readonly error: boolean;
     };
 
+/** A Skill the Session expanded into an owner's message: its name, its `SKILL.md`, and the block the model got. */
+export type TranscriptSkill = {
+  readonly name: string;
+  readonly location: string;
+  readonly text: string;
+};
+
 /** One display-ready message projected from a pi transcript entry. */
 export type TranscriptMessage = {
   /** The pi entry ID, or `live` for the message being streamed. */
@@ -70,6 +79,8 @@ export type TranscriptMessage = {
   readonly timestamp: number;
   readonly stopReason?: string;
   readonly error?: string;
+  /** The Skills the Session expanded into an owner's message, which shows the typed text instead. */
+  readonly skills?: readonly TranscriptSkill[];
 };
 
 const userParts = (content: UserMessage["content"]): TranscriptPart[] =>
@@ -153,9 +164,39 @@ const noticeTitle = (entry: EntryRecord): string | undefined => {
 };
 
 /**
+ * An owner's message the Session expanded, as the owner typed it: the typed text in place of the expansion, which is the
+ * message's first text part, its other parts as they were, and each expanded Skill with the block the model got.
+ */
+const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
+  const data = userEntryData(entry);
+  const message = entry.model?.[0];
+
+  if (data === undefined || message?.role !== "user") return undefined;
+
+  const parts = userParts(message.content);
+  const first = parts.findIndex((part) => part.type === "text");
+  const expanded = parts[first];
+  const blocks = skillBlocksIn(expanded?.type === "text" ? expanded.text : "", data);
+
+  return {
+    id: String(entry.id),
+    role: "user",
+    parts:
+      first === -1
+        ? [{ type: "text", text: data.display }, ...parts]
+        : parts.map((part, index) =>
+            index === first ? { type: "text" as const, text: data.display } : part,
+          ),
+    timestamp: message.timestamp,
+    skills: data.skills.map((skill, index) => ({ ...skill, text: blocks[index] ?? "" })),
+  };
+};
+
+/**
  * Project one transcript entry. Entries that carry a model message become that message; a reset (with the Handoff it
- * carries), a compaction summary, and an extension's entry whose data has a `notice` title become notices; system-prompt entries and other
- * bookkeeping have no projection.
+ * carries), a compaction summary, and an extension's entry whose data has a `notice` title become notices; an owner's
+ * message the Session expanded shows what the owner typed; system-prompt entries and other bookkeeping have no
+ * projection.
  */
 export const projectEntry = (entry: EntryRecord): TranscriptMessage | undefined => {
   const message = entry.model?.[0];
@@ -172,6 +213,10 @@ export const projectEntry = (entry: EntryRecord): TranscriptMessage | undefined 
   }
 
   if (entry.kind === "pi.system" || message === undefined) return undefined;
+
+  const typed = typedMessage(entry);
+
+  if (typed !== undefined) return typed;
 
   return projectMessage(message, String(entry.id));
 };

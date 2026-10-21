@@ -4,6 +4,7 @@
 // streams `events` batches whose first batch is a `snapshot`.
 import { ModelId, ThinkingLevel } from "@cloudpid/config";
 import type { AgentEvent, ConversationId as PiConversationId } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
@@ -158,10 +159,36 @@ export const UnwatchUsage = Schema.Struct({
   id: CommandId,
 });
 
+/**
+ * Ask what the composer completes in the root conversation, or in the subagent conversation `conversationId` names: the
+ * Session's Slash commands, and the Prompt templates and Skills of the conversation's directory. Answered with a
+ * `Catalog`.
+ */
+export const CatalogRequest = Schema.Struct({
+  type: Schema.Literal("catalog"),
+  id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
+});
+
+/**
+ * Run the Session's Slash command `name` (without its `/`) with `args` (trimmed, `""` when none) on the root
+ * conversation, or on the subagent conversation `conversationId` names. Answered with a `CommandOutcome`; a command that
+ * cannot run fails with why.
+ */
+export const RunCommand = Schema.Struct({
+  type: Schema.Literal("command"),
+  id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
+  name: Schema.String,
+  args: Schema.String,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   Submit,
   Abort,
+  CatalogRequest,
+  RunCommand,
   Watch,
   Unwatch,
   Configure,
@@ -360,6 +387,101 @@ export const Events = Schema.Struct({
   conversationId: ConversationId,
   events: Schema.Array(AgentEventSchema),
 });
+
+/** A value a Slash command's argument can take. */
+export const CommandChoice = Schema.Struct({
+  value: Schema.String,
+  description: Schema.optionalKey(Schema.String),
+});
+
+/** A Slash command the Session runs (`command`). */
+export const CatalogCommand = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  /** Shown after the name: `[focus]`, `clear`. */
+  argumentHint: Schema.optionalKey(Schema.String),
+  argument: Schema.Literals(["none", "optional", "required"]),
+  /** The values its argument can take, when it takes only these. */
+  choices: CommandChoice.pipe(Schema.Array, Schema.optionalKey),
+});
+
+export type CatalogCommand = typeof CatalogCommand.Type;
+
+/**
+ * The Slash commands the Session runs, on the conversation they are typed in (docs/spec.md → Client and protocol → Slash
+ * commands). Known to the client too, so a command typed before the catalog arrives, or after it could not be had, runs
+ * as one instead of reaching the model.
+ */
+export const SESSION_COMMANDS: ReadonlyArray<CatalogCommand> = [
+  {
+    name: "compact",
+    description: "Summarize the context to free room; after the run, if one is in progress",
+    argumentHint: "[focus]",
+    argument: "optional",
+  },
+  {
+    name: "rollover",
+    description: "Ask the agent to write its Handoff and start a fresh context",
+    argumentHint: "[focus]",
+    argument: "optional",
+  },
+  {
+    name: "todo",
+    description: "Clear the Todo List",
+    argumentHint: "clear",
+    argument: "required",
+    choices: [{ value: "clear", description: "Remove every Task" }],
+  },
+  {
+    name: "export",
+    description: "Download the whole History as Markdown",
+    argument: "none",
+  },
+];
+
+/**
+ * The Session's Slash commands in a conversation whose agent can (`rollover`) or cannot roll over: `/rollover` needs the
+ * `context_rollover` tool, which a subagent is never granted.
+ */
+export const sessionCommandsFor = (rollover: boolean): ReadonlyArray<CatalogCommand> =>
+  rollover ? SESSION_COMMANDS : Arr.filter(SESSION_COMMANDS, ({ name }) => name !== "rollover");
+
+/** A Prompt template or a Skill the composer offers: `/name` or `/skill:name` and `$name`. */
+export const CatalogEntry = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  argumentHint: Schema.optionalKey(Schema.String),
+});
+
+export type CatalogEntry = typeof CatalogEntry.Type;
+
+/**
+ * The answer to `catalog`. Templates and Skills are those of the conversation's directory and the directories above it
+ * up to the Workspace root, nearest first; Skills include the ones the model is not offered
+ * (`disable-model-invocation`), which exist for the owner to name.
+ */
+export const Catalog = Schema.Struct({
+  commands: Schema.Array(CatalogCommand),
+  templates: Schema.Array(CatalogEntry),
+  skills: Schema.Array(CatalogEntry),
+});
+
+export type Catalog = typeof Catalog.Type;
+
+/** A file a Slash command hands the owner, such as `/export`'s transcript, for the client to download. */
+export const CommandFile = Schema.Struct({
+  name: Schema.String,
+  mimeType: Schema.String,
+  content: Schema.String,
+});
+
+/** The answer to `command`: what it did, to show the owner, and a file to download, if any. */
+export const CommandOutcome = Schema.Struct({
+  notice: Schema.optionalKey(Schema.String),
+  file: Schema.optionalKey(CommandFile),
+});
+
+export type CommandOutcome = typeof CommandOutcome.Type;
 
 /** A command's answer. */
 export const Result = Schema.Struct({

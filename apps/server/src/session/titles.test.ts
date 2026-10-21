@@ -143,6 +143,22 @@ describe("firstExchange", () => {
     });
   });
 
+  it("takes what the owner typed of a message the Session expanded", () => {
+    const expanded: EntryRecord = {
+      ...user(1, '<skill name="review" location="/s/SKILL.md">\nBody\n</skill>\n\nthe diff'),
+      kind: "cloudpid.user",
+      data: {
+        display: "/skill:review the diff",
+        skills: [{ name: "review", location: "/s/SKILL.md" }],
+      },
+    };
+
+    expect(firstExchange([expanded, assistant(2, "Reviewed.")])).toEqual({
+      question: "/skill:review the diff",
+      answer: "Reviewed.",
+    });
+  });
+
   it("has nothing before the first message", () => {
     expect(firstExchange([])).toBeUndefined();
   });

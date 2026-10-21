@@ -18,7 +18,8 @@ import {
 } from "@cloudpid/extensions/browser";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
-import { Todo } from "@cloudpid/extensions/todo";
+import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
+import type { Catalog, CommandOutcome, ConversationId } from "@cloudpid/protocol";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -33,6 +34,7 @@ import {
   defineExtension,
   type Extension,
   type HarnessOptions,
+  ROOT_CONVERSATION_ID,
   type SnapshotEvent,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
@@ -49,6 +51,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
+import type * as Types from "effect/Types";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
@@ -60,7 +63,13 @@ import {
   sessionSettingsLayer,
   toolSearchSettings,
 } from "./settings.ts";
-import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
+import {
+  type Answer,
+  SessionHost,
+  sessionHostLayer,
+  type SessionHostService,
+  type SlashCommand,
+} from "./host.ts";
 import { destroySession } from "./lifecycle.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import type { PushEvent } from "../push/notification.ts";
@@ -479,6 +488,100 @@ export class TestSession extends DurableObject {
       attributes: Object.fromEntries(span.attributes),
       ended: Predicate.isTagged(span.status, "Ended"),
     }));
+  }
+
+  /** What the composer of the root conversation, or of a subagent's, offers. */
+  catalog(conversationId?: ConversationId): Promise<Catalog> {
+    return this.#runtime.runPromise(this.#host.catalog(conversationId));
+  }
+
+  /** Run the Session's Slash command `name`: what it did, or why it could not. */
+  command(
+    name: string,
+    args: string,
+    conversationId?: ConversationId,
+  ): Promise<{ readonly outcome: CommandOutcome } | { readonly failure: string }> {
+    const command: Types.Mutable<SlashCommand> = { name, args };
+
+    if (conversationId !== undefined) command.conversationId = conversationId;
+
+    return this.#runtime.runPromise(
+      this.#host.command(command).pipe(
+        Effect.map((outcome) => ({ outcome })),
+        Effect.catch((error) => Effect.succeed({ failure: error.message })),
+      ),
+    );
+  }
+
+  /** The root conversation's entries, oldest first: each one's kind, data, and the text of its message. */
+  rootEntries(): Promise<
+    ReadonlyArray<{ readonly kind: string; readonly data: unknown; readonly text: string }>
+  > {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+        const root = yield* harness.root({});
+
+        const page = yield* callDurable("entries", (context) =>
+          root.entries({ order: "ascending" }, 500, undefined, context),
+        );
+
+        return Arr.map(page.items, (entry) => {
+          const message = entry.model?.[0];
+
+          const text =
+            message === undefined || message.role === "system"
+              ? ""
+              : Predicate.isString(message.content)
+                ? message.content
+                : Arr.join(
+                    Arr.flatMap(
+                      // SAFETY: a user's, an assistant's and a tool result's content are arrays of typed blocks; only
+                      // the text ones are read.
+                      message.content as ReadonlyArray<{ type: string; text?: string }>,
+                      (block) =>
+                        block.type === "text" && block.text !== undefined ? [block.text] : [],
+                    ),
+                    "",
+                  );
+
+          return { kind: entry.kind, data: entry.data, text };
+        });
+      }),
+    );
+  }
+
+  /**
+   * Watch the root conversation's Todo List as a client does: `lists` gets the titles of each list sent, the first being
+   * how it stands, until `stop`.
+   */
+  watchTodos() {
+    const lists: (readonly string[])[] = [];
+
+    const fiber = this.#runtime.runFork(
+      Stream.runForEach(this.#host.todos(ROOT_CONVERSATION_ID), (tasks) =>
+        Effect.sync(() => {
+          lists.push(Arr.map(tasks, (task) => task.title));
+        }),
+      ),
+    );
+
+    return { lists, stop: () => void fiber.pipe(Fiber.interrupt, Effect.runFork) };
+  }
+
+  /** The tasks of the root conversation's Todo List. */
+  todoTitles(): Promise<readonly string[]> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        const state = yield* callDurable("snapshot", (context) =>
+          harness.harness.snapshot(TodoDoc, ROOT_CONVERSATION_ID, context),
+        );
+
+        return Arr.map(state?.tasks ?? [], (task) => task.title);
+      }),
+    );
   }
 
   /** The text of each tool result in the root transcript, oldest first. */

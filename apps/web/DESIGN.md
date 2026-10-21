@@ -269,11 +269,11 @@ One bordered 10 px box at the foot of the transcript column, on the page color, 
 
 Above the box, the queue lanes (Sending, Steering, Next up) as dashed 8 px rows under a 12 px label. Under it, a 12 px line when a Slash command failed (Brick Red, `role="alert"`) or did something worth saying (Faded Ink).
 
-**Completion menu.** Typing `/` at the start of the message opens a listbox that rises from the box's top edge, at its width and at most 288 px high: a bordered 10 px panel with `shadow-sm`, as an open menu has, sections under 12 px labels, and rows of the name in 13 px mono, its argument hint in 12 px mono Faded Ink, and a 12 px Faded Ink description, truncated. The input keeps the focus: ↑ and ↓ move the Tinted Wash highlight, Enter or Tab picks, Escape closes the menu until the trigger moves. Rows are 44 px on a touch screen. It fades and rises 4 px in over 150 ms, where motion is allowed.
+**Completion menu.** Typing `/` at the start of the message, or `$` at the start of a word, opens a listbox that rises from the box's top edge, at its width and at most 288 px high: a bordered 10 px panel with `shadow-sm`, as an open menu has, sections under 12 px labels, and rows of the name in 13 px mono, its argument hint in 12 px mono Faded Ink, and a 12 px Faded Ink description, truncated. The input keeps the focus: ↑ and ↓ move the Tinted Wash highlight, Enter or Tab picks, Escape closes the menu until the trigger moves. Rows are 44 px on a touch screen. It fades and rises 4 px in over 150 ms, where motion is allowed. After `/` the sections are Commands, Prompt templates, then Skills (as `/skill:name`); after `$`, Skills alone, and no menu at all when none matches, so `$HOME` types on undisturbed.
 
 ### Transcript
 
-The owner's message is right-aligned on Tinted Wash (10 px radius, at most 85% wide). The agent's message is unboxed prose. Thinking and tool calls are bordered disclosures, closed once done; output inside is mono on Tinted Wash, capped at 288 px high. Notices (Handoffs, compactions, Rollover requests) are a centered 12 px label between two hairlines, opening on demand.
+The owner's message is right-aligned on Tinted Wash (10 px radius, at most 85% wide), as typed; the Skill a `/skill:` embedded in it follows the text as a closed disclosure labelled "Skill · name" (12 px Faded Ink, 14 px chevron), opening on the block the model got, mono on the page color and capped at 288 px high. The agent's message is unboxed prose. Thinking and tool calls are bordered disclosures, closed once done; output inside is mono on Tinted Wash, capped at 288 px high. Notices (Handoffs, compactions, Rollover requests) are a centered 12 px label between two hairlines, opening on demand.
 
 ### Waiting-On-You Card
 

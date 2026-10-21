@@ -2,7 +2,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off preferEffectArray:off preferEffectRecord:off
 // A test Session DO whose Session runs the subagents extension, as the Session DO does, over a scripted model that
 // answers by the agent asking. The script's switches live in the object's storage, so an instance started after an
-// eviction carries on with them.
+// eviction carries on with them. Its Workspace is a fake one (`fake-workspace.fixture.ts`), absent until a test sets it.
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, Harness } from "@cloudpid/effect-durable";
 import {
@@ -20,7 +20,7 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import type { TaskGraphSummary } from "@cloudpid/protocol";
+import type { Catalog, CommandOutcome, TaskGraphSummary } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -28,7 +28,14 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { type AbortOptions, SessionHost, sessionHostLayer } from "./host.ts";
+import type * as Types from "effect/Types";
+import {
+  askedConversations,
+  type FakeWorkspace,
+  fakeWorkspaceEnv,
+  useFakeWorkspace,
+} from "./fake-workspace.fixture.ts";
+import { type AbortOptions, SessionHost, sessionHostLayer, type SlashCommand } from "./host.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { SessionRegistry } from "./status.ts";
@@ -91,6 +98,8 @@ export class TestSubagentSession extends DurableObject {
           models: pricedModels(models, REQUEST_COST),
           reset: (reason) => ctx.abort(reason),
           extensions: Effect.map(subagents, (extension) => [extension]),
+          env: fakeWorkspaceEnv(ctx.storage.kv),
+          expandTimeout: "1 second",
         }).pipe(
           Layer.provide(
             Layer.mergeAll(
@@ -240,6 +249,69 @@ export class TestSubagentSession extends DurableObject {
     return this.#runtime.runPromise(
       Effect.flatMap(SessionHost, (host) =>
         host.submit({ requestId: text, input: text, conversationId }),
+      ),
+    );
+  }
+
+  /** Give the Session a fake Workspace that holds and answers what `workspace` says. */
+  useWorkspace(workspace: FakeWorkspace): void {
+    useFakeWorkspace(this.ctx.storage.kv, workspace);
+  }
+
+  /** The conversations whose environment the Session built, in order. */
+  workspaceAskedFor(): readonly number[] {
+    return askedConversations(this.ctx.storage.kv);
+  }
+
+  /** What the composer of the root conversation, or of a subagent's, offers. */
+  catalog(conversationId?: ConversationId): Promise<Catalog> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.catalog(conversationId)),
+    );
+  }
+
+  /** Run the Session's Slash command `name`: what it did, or why it could not. */
+  command(
+    name: string,
+    args: string,
+    conversationId?: ConversationId,
+  ): Promise<{ readonly outcome: CommandOutcome } | { readonly failure: string }> {
+    const command: Types.Mutable<SlashCommand> = { name, args };
+
+    if (conversationId !== undefined) command.conversationId = conversationId;
+
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.command(command)).pipe(
+        Effect.map((outcome) => ({ outcome })),
+        Effect.catch((error) => Effect.succeed({ failure: error.message })),
+      ),
+    );
+  }
+
+  /** The kind and data of each entry of conversation `id`, oldest first, with the text of its message. */
+  entries(
+    id?: ConversationId,
+  ): Promise<
+    ReadonlyArray<{ readonly kind: string; readonly data: unknown; readonly text: string }>
+  > {
+    return this.#runtime.runPromise(
+      Effect.flatMap(Harness, ({ harness }) =>
+        callDurable("entries", async (context) => {
+          const conversation =
+            id === undefined
+              ? await harness.root(context)
+              : await harness.conversation(id, context);
+
+          const page = await conversation!.entries({ order: "ascending" }, 200, undefined, context);
+
+          return page.items.map((entry) => ({
+            kind: entry.kind,
+            data: entry.data,
+            text: (entry.model ?? [])
+              .map((message) => (message.role === "system" ? "" : text(message.content)))
+              .join(""),
+          }));
+        }),
       ),
     );
   }

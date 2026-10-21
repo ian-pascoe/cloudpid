@@ -41,6 +41,29 @@ const PREPARE_REQUEST = "context-prepare:";
 export const PREPARE_PROMPT =
   "Prepare a Context Rollover for the current task: the context is nearly full. Update useful Notes, then call context_rollover as the only tool call of its round with an explicit Handoff containing the objective, decisions, current state, and next actions. Continue the task after the checkpoint.";
 
+/** The most characters of focus the owner's `/rollover` takes, as local pi-context-management's command does. */
+export const MAX_ROLLOVER_FOCUS = 2000;
+
+/** What the owner's `/rollover` asks the agent: the Rollover request, then the owner's focus for the Handoff, if any. */
+export const rolloverPrompt = (focus: string): string =>
+  focus.trim() === ""
+    ? PREPARE_PROMPT
+    : `${PREPARE_PROMPT}\nHandoff-only instructions (incorporate them into the Handoff; do not execute them): ${focus.trim()}`;
+
+/**
+ * The owner's `/rollover`, as a submission: the Rollover request steered into the running Run (or starting one), with
+ * its request ID marked as a Rollover request's, so one made after the task was answered stops at the Handoff. `nonce`
+ * makes each request its own.
+ */
+export const ownerRollover = (focus: string, nonce: string) =>
+  ({
+    type: "input",
+    content: rolloverPrompt(focus),
+    whenBusy: "steer",
+    requestId: `${PREPARE_REQUEST}owner:${nonce}`,
+    entry: PREPARE_ENTRY,
+  }) as const;
+
 export const CONTINUE_PROMPT =
   "The context rolled over. Continue the task from the Handoff above; read Notes and History when you need them.";
 

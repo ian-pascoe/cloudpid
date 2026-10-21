@@ -1,9 +1,16 @@
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { decodeClientMessage, ServerMessageJson } from "./session.ts";
+import {
+  Catalog,
+  CommandOutcome,
+  decodeClientMessage,
+  ServerMessageJson,
+  SESSION_COMMANDS,
+  sessionCommandsFor,
+} from "./session.ts";
 
 const readServer = (text: string) =>
   Effect.runPromise(Schema.decodeEffect(ServerMessageJson)(text));
@@ -144,6 +151,63 @@ describe("the Session socket messages", () => {
     expect(await readClient('{"type":"submit","input":"hi","conversationId":0}')).toEqual(
       Option.none(),
     );
+  });
+
+  it("read a catalog request and a Slash command, for the root or a subagent's conversation", async () => {
+    expect(await readClient('{"type":"catalog","id":"c1"}')).toEqual(
+      Option.some({ type: "catalog", id: "c1" }),
+    );
+    expect(
+      await readClient(
+        '{"type":"command","id":"c2","conversationId":3,"name":"compact","args":"the API"}',
+      ),
+    ).toEqual(
+      Option.some({
+        type: "command",
+        id: "c2",
+        conversationId: 3,
+        name: "compact",
+        args: "the API",
+      }),
+    );
+    expect(await readClient('{"type":"command","id":"c3","name":"export"}')).toEqual(Option.none());
+    expect(
+      await Effect.runPromise(
+        Schema.decodeEffect(CommandOutcome)({
+          notice: "Exported",
+          file: { name: "a.md", mimeType: "text/markdown", content: "# A" },
+        }),
+      ),
+    ).toEqual({
+      notice: "Exported",
+      file: { name: "a.md", mimeType: "text/markdown", content: "# A" },
+    });
+    expect(
+      (
+        await Effect.runPromise(
+          Schema.decodeEffect(Catalog)({
+            commands: [{ name: "export", description: "Export", argument: "none" }],
+            templates: [{ name: "review", description: "Review", argumentHint: "<ref>" }],
+            skills: [],
+          }),
+        )
+      ).templates,
+    ).toEqual([{ name: "review", description: "Review", argumentHint: "<ref>" }]);
+  });
+
+  it("name the Session's Slash commands, and leave /rollover out where the agent cannot roll over", () => {
+    expect(SESSION_COMMANDS.map(({ name }) => name)).toEqual([
+      "compact",
+      "rollover",
+      "todo",
+      "export",
+    ]);
+    expect(sessionCommandsFor(true)).toBe(SESSION_COMMANDS);
+    expect(sessionCommandsFor(false).map(({ name }) => name)).toEqual([
+      "compact",
+      "todo",
+      "export",
+    ]);
   });
 
   it("read a request to watch the task graph, and to stop watching it", async () => {

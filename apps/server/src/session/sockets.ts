@@ -3,6 +3,8 @@
 // watches live in memory and each socket's attachment names the conversations it watches, so an instance woken from
 // hibernation restarts them, each with a fresh snapshot, on sockets that never closed.
 import {
+  type Catalog,
+  type CommandOutcome,
   ConversationId,
   decodeClientMessage,
   HEARTBEAT,
@@ -351,7 +353,10 @@ export const sessionSocketsLayer = (
       const command = (
         socket: WebSocket,
         message: ClientMessage,
-      ): Effect.Effect<{ readonly submissionId: number } | null, SessionError | SecretsError> => {
+      ): Effect.Effect<
+        { readonly submissionId: number } | Catalog | CommandOutcome | null,
+        SessionError | SecretsError
+      > => {
         switch (message.type) {
           case "submit": {
             const { type: _type, id: _id, ...prompt } = message;
@@ -363,6 +368,14 @@ export const sessionSocketsLayer = (
             const { type: _type, id: _id, ...options } = message;
 
             return host.abort(options).pipe(Effect.as(null));
+          }
+
+          case "catalog":
+            return host.catalog(message.conversationId);
+          case "command": {
+            const { type: _type, id: _id, ...command } = message;
+
+            return host.command(command);
           }
 
           case "configure":

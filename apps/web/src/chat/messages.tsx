@@ -8,18 +8,45 @@ import {
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import * as Arr from "effect/Array";
+import { ChevronRight } from "lucide-react";
+import { useMemo } from "react";
 import * as Predicate from "effect/Predicate";
 import { MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent.ts";
+import { type ShownSkill, shownSkills } from "../session/thread-messages.ts";
 
-const UserMessage = () => (
-  <MessagePrimitive.Root className="flex justify-end">
-    <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
-      <MessagePrimitive.Parts />
-    </div>
-  </MessagePrimitive.Root>
+/**
+ * A Skill the Session expanded into the owner's message: closed, under the typed text, so what the model got beyond it
+ * stays in sight (docs/adr/0001-expand-skills-and-prompt-templates-at-submit.md).
+ */
+const SkillDisclosure = ({ skill }: { skill: ShownSkill }) => (
+  <details className="group mt-1.5">
+    <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
+      <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
+      Skill · {skill.name}
+    </summary>
+    <pre className="mt-1.5 max-h-72 overflow-auto rounded-md border bg-background px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+      {skill.text}
+    </pre>
+  </details>
 );
+
+const UserMessage = () => {
+  const custom = useAuiState((state) => state.message.metadata.custom);
+  const skills = useMemo(() => shownSkills(custom), [custom]);
+
+  return (
+    <MessagePrimitive.Root className="flex justify-end">
+      <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
+        <MessagePrimitive.Parts />
+        {Arr.map(skills, (skill) => (
+          <SkillDisclosure key={skill.name} skill={skill} />
+        ))}
+      </div>
+    </MessagePrimitive.Root>
+  );
+};
 
 /** Why the model's answer ended in an error, if it did. */
 const FailureNotice = () => {

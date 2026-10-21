@@ -160,19 +160,23 @@ const skillFiles = (paths: ReadonlyArray<string>): ReadonlyArray<string> => {
   );
 };
 
-const join = (directory: string, path: string): string =>
+export const join = (directory: string, path: string): string =>
   directory === "/" ? `/${path}` : `${directory}/${path}`;
 
-/** The entries below `directory`, none when it is absent, is not a directory, or is a link to nothing. */
-const entriesBelow = (
+/**
+ * The entries below `directory`, none when it is absent, is not a directory, or is a link to nothing. `what` names
+ * what is looked for there, for the error.
+ */
+export const entriesBelow = (
   env: SkillsEnv,
   directory: string,
   maxEntries: number,
+  what = "skills",
 ): Effect.Effect<ReadonlyArray<FileListEntry>, SkillsError> =>
   Effect.gen(function* () {
     if (env.listFiles === undefined) return [];
 
-    const listing = yield* attempt("Cannot list skills", () =>
+    const listing = yield* attempt(`Cannot list ${what}`, () =>
       // Hidden: the skills are looked for in `.agents`. Not git's ignore rules: they are for the repo's files.
       env.listFiles!(
         directory,
@@ -191,7 +195,7 @@ const entriesBelow = (
     return listing.error.code === "not_found" || listing.error.code === "not_directory"
       ? []
       : yield* SkillsError.make({
-          message: `Cannot list skills in ${directory}: ${listing.error.message}`,
+          message: `Cannot list ${what} in ${directory}: ${listing.error.message}`,
         });
   });
 

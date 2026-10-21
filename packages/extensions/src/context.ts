@@ -14,7 +14,14 @@ export const extensionName = "context";
 
 export { ContextDoc, type ContextState, type Note } from "./context/notes.ts";
 
-export { CONTINUE_ENTRY, PREPARE_ENTRY } from "./context/rollover.ts";
+export {
+  CONTINUE_ENTRY,
+  MAX_ROLLOVER_FOCUS,
+  ownerRollover,
+  PREPARE_ENTRY,
+  PREPARE_PROMPT,
+  rolloverPrompt,
+} from "./context/rollover.ts";
 
 /** The guideline of each context tool the request offers, as pi-context-management adds them to the prompt. */
 const Guidelines = effectSection("context_management", (input) =>
