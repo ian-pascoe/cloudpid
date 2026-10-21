@@ -4,10 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    # `closed` destroys the pull request's preview (the `preview` job).
+    types: [opened, synchronize, reopened, closed]
 
 permissions:
   contents: read
@@ -21,8 +19,14 @@ jobs:
   # Reusable by the deploy job: `needs: check`.
   check:
     name: Check
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Job-level, not workflow-level: a new push cancels the PR's previous check, but never a preview deploy or destroy
+    # midway (the `preview` job has its own group).
+    concurrency:
+      group: check-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -99,3 +103,70 @@ jobs:
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+
+  # Deploys stage `pr-<number>` for a pull request from this repository, and destroys it when the pull request is closed
+  # (https://alchemy.run/environments/ci/#how-pr-previews-work). Credentials come from the `preview` environment, which
+  # any branch may use (infra/github.ts): its own token, without the zone permissions only `prod` needs, and its own copy
+  # of the app secrets. Pull requests from forks get no secrets, so they get no preview.
+  preview:
+    name: Preview
+    needs: check
+    # `check` is skipped on `closed`, so the destroy runs without it; a deploy waits for it to pass.
+    if: >-
+      !cancelled()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (github.event.action == 'closed' || needs.check.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      # The preview comment (GitHub.Comment in infra/alchemy.run.ts).
+      pull-requests: write
+    environment:
+      name: preview
+    # One deploy or destroy per pull request at a time, never cancelled midway: a newer push waits, and a close waits
+    # for the running deploy, then destroys what it made.
+    concurrency:
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      # A destroy evaluates the stack too: check out the commit that was last deployed, since the merge ref of a closed
+      # pull request may be gone.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.action == 'closed' && github.event.pull_request.head.sha || '' }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      # No dependency cache in a job holding deploy credentials (cache poisoning).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - run: pnpm install --frozen-lockfile
+
+      # The deploy credentials are scoped to this step: install scripts never see them. `destroy` evaluates the stack,
+      # so it needs every variable `deploy` does (see the `deploy` job for what each is).
+      - name: ${{ github.event.action == 'closed' && 'Destroy' || 'Deploy' }} pr-${{ github.event.pull_request.number }}
+        run: >-
+          pnpm --filter @cloudpid/infra exec alchemy
+          ${{ github.event.action == 'closed' && 'destroy' || 'deploy' }}
+          --stage pr-${{ github.event.pull_request.number }} --no-input --yes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          MODEL_PROXY_URL: ${{ vars.MODEL_PROXY_URL }}
+          MODEL_PROXY_API_KEY: ${{ secrets.MODEL_PROXY_API_KEY }}
+          SECRETS_ENCRYPTION_KEY: ${{ secrets.SECRETS_ENCRYPTION_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}
+          CLOUDPID_GITHUB_TOKEN: ${{ secrets.CLOUDPID_GITHUB_TOKEN }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          # Read by GitHub.GitHubEnv and GitHub.Comment (infra/alchemy.run.ts): the PR to comment on, and the token to
+          # comment with.
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

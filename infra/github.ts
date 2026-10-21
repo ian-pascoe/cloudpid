@@ -1,6 +1,7 @@
 /**
- * CI credentials as code: the GitHub Actions environment `production` (deployments from `main` only), a scoped
- * Cloudflare API token for deploys, and the secrets and variables that hand them to .github/workflows/ci.yml.
+ * CI credentials as code: the GitHub Actions environments `production` (deployments from `main` only) and `preview`
+ * (pull request previews, any branch), a scoped Cloudflare API token for each, and the secrets and variables that hand
+ * them to .github/workflows/ci.yml.
  * Deployed once from a workstation with a profile that may create API tokens, and again to rotate the token or change
  * its permissions:
  *
@@ -11,10 +12,10 @@
  *   MODEL_PROXY_URL    the model proxy's URL (default: https://api.ai.ianpascoe.dev)
  *   GITHUB_REPOSITORY  owner/name (default: ian-pascoe/cloudpid)
  *
- * Not managed here: the `production` environment's secret MODEL_PROXY_API_KEY, a Commissary API key minted in
- * Commissary's panel and set by hand (`gh secret set MODEL_PROXY_API_KEY --env production`), and its secret
- * SECRETS_ENCRYPTION_KEY, the master key for the owner's Secrets (`openssl rand -base64 32 | gh secret set
- * SECRETS_ENCRYPTION_KEY --env production`).
+ * Not managed here: the app secrets each environment's deploys bind to the Workers, set by hand on both `production` and
+ * `preview` (`gh secret set <NAME> --env <environment>`; AGENTS.md → Infra): MODEL_PROXY_API_KEY (a Commissary API key
+ * minted in Commissary's panel), SECRETS_ENCRYPTION_KEY (`openssl rand -base64 32`), CLOUDPID_GITHUB_TOKEN, the VAPID
+ * triple and the search keys. Give `preview` its own SECRETS_ENCRYPTION_KEY and VAPID pair rather than production's.
  */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -56,26 +57,37 @@ export default Alchemy.Stack(
       deploymentBranchPolicy: { customBranchPolicies: ["main"] },
     }).pipe(Alchemy.RemovalPolicy.retain());
 
+    // Pull request previews (stage `pr-<number>`). Any branch may deploy here, so it holds its own token and its own copy
+    // of the app secrets, never production's ones. The token still writes every Worker on the account (Cloudflare has no
+    // narrower Workers scope), so whoever can push a branch can reach `prod`'s Workers. Retained on destroy for the same
+    // reason as `production`.
+    const preview = yield* GitHub.Environment("Preview", {
+      ...repo,
+      name: "preview",
+    }).pipe(Alchemy.RemovalPolicy.retain());
+
     // Everything `alchemy deploy` of alchemy.run.ts touches. Alchemy's state store needs Secrets Store Write (it
     // binds its token secret to a short-lived preview Worker on every run). Access Apps and Policies covers the
     // Worker's Access application; Zone Read, DNS Write and Workers Routes Write cover the custom domain of `prod`.
     // Workers Containers Write covers the Workspace DO's Container application and the push of its image to
     // Cloudflare's registry.
+    const accountPolicy: Cloudflare.ApiToken.Policy = {
+      effect: "allow",
+      permissionGroups: [
+        "Workers Scripts Write",
+        "Workers Containers Write",
+        "Secrets Store Write",
+        "Account Settings Read",
+        ACCESS_APPS_AND_POLICIES_WRITE,
+      ],
+      resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
+    };
+
     const deployToken = yield* Cloudflare.ApiToken.AccountApiToken("DeployToken", {
       name: "cloudpid-ci-deploy",
       accountId,
       policies: [
-        {
-          effect: "allow",
-          permissionGroups: [
-            "Workers Scripts Write",
-            "Workers Containers Write",
-            "Secrets Store Write",
-            "Account Settings Read",
-            ACCESS_APPS_AND_POLICIES_WRITE,
-          ],
-          resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
-        },
+        accountPolicy,
         {
           effect: "allow",
           permissionGroups: ["Zone Read", "DNS Write", "Workers Routes Write"],
@@ -109,6 +121,34 @@ export default Alchemy.Stack(
       value: modelProxyUrl,
     });
 
-    return { environment: "production", zoneId: ZONE_ID };
+    // Previews are served on `workers.dev` only (apps/server/src/deployment.ts), so their token has no zone permissions.
+    const previewToken = yield* Cloudflare.ApiToken.AccountApiToken("PreviewDeployToken", {
+      name: "cloudpid-ci-preview",
+      accountId,
+      policies: [accountPolicy],
+    });
+
+    yield* GitHub.Secret("PreviewCloudflareApiToken", {
+      ...repo,
+      environment: preview,
+      name: "CLOUDFLARE_API_TOKEN",
+      value: previewToken.value,
+    });
+
+    yield* GitHub.Variable("PreviewCloudflareAccountId", {
+      ...repo,
+      environment: preview,
+      name: "CLOUDFLARE_ACCOUNT_ID",
+      value: accountId,
+    });
+
+    yield* GitHub.Variable("PreviewModelProxyUrl", {
+      ...repo,
+      environment: preview,
+      name: "MODEL_PROXY_URL",
+      value: modelProxyUrl,
+    });
+
+    return { environments: ["production", "preview"], zoneId: ZONE_ID };
   }),
 );
