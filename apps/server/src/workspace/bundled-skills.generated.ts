@@ -9,12 +9,12 @@ import type { WorkerBundleSource } from "@cloudflare/computer";
 
 import file0 from "../../../../skills/ast-grep/SKILL.md?raw";
 import file1 from "../../../../skills/ast-grep/references/rule_reference.md?raw";
-import file2 from "../../../../skills/code-review/SKILL.md?raw";
-import file3 from "../../../../skills/codebase-design/DEEPENING.md?raw";
-import file4 from "../../../../skills/codebase-design/DESIGN-IT-TWICE.md?raw";
-import file5 from "../../../../skills/codebase-design/SKILL.md?raw";
-import file6 from "../../../../skills/convert-documents-to-markdown/SKILL.md?raw";
-import file7 from "../../../../skills/bro/SKILL.md?raw";
+import file2 from "../../../../skills/bro/SKILL.md?raw";
+import file3 from "../../../../skills/code-review/SKILL.md?raw";
+import file4 from "../../../../skills/codebase-design/DEEPENING.md?raw";
+import file5 from "../../../../skills/codebase-design/DESIGN-IT-TWICE.md?raw";
+import file6 from "../../../../skills/codebase-design/SKILL.md?raw";
+import file7 from "../../../../skills/convert-documents-to-markdown/SKILL.md?raw";
 import file8 from "../../../../skills/deslop/SKILL.md?raw";
 import file9 from "../../../../skills/diagnosing-bugs/SKILL.md?raw";
 import file10 from "../../../../skills/domain-modeling/ADR-FORMAT.md?raw";
@@ -57,16 +57,16 @@ import file46 from "../../../../skills/writing-for-agents/SKILL-MECHANICS.md?raw
 import file47 from "../../../../skills/writing-for-agents/SKILL.md?raw";
 
 export const BUNDLED_SKILLS: WorkerBundleSource = {
-  version: "sha256:73334bd09a9e4b507de519533b79d2f276133dd339c6b59acae533c2c00ac2e1",
+  version: "sha256:2f45e9a5e26b036e80905360fec3309bfa996eed6303605c1dc65f07dbb1f732",
   files: {
     "ast-grep/SKILL.md": file0,
     "ast-grep/references/rule_reference.md": file1,
-    "code-review/SKILL.md": file2,
-    "codebase-design/DEEPENING.md": file3,
-    "codebase-design/DESIGN-IT-TWICE.md": file4,
-    "codebase-design/SKILL.md": file5,
-    "convert-documents-to-markdown/SKILL.md": file6,
-    "bro/SKILL.md": file7,
+    "bro/SKILL.md": file2,
+    "code-review/SKILL.md": file3,
+    "codebase-design/DEEPENING.md": file4,
+    "codebase-design/DESIGN-IT-TWICE.md": file5,
+    "codebase-design/SKILL.md": file6,
+    "convert-documents-to-markdown/SKILL.md": file7,
     "deslop/SKILL.md": file8,
     "diagnosing-bugs/SKILL.md": file9,
     "domain-modeling/ADR-FORMAT.md": file10,

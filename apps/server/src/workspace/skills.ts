@@ -13,6 +13,17 @@ let cached:
   | { readonly version: string; readonly mount: string; readonly skills: ReadonlyArray<Skill> }
   | undefined;
 
+const byPathSegments = (a: string, b: string): number => {
+  const left = a.split("/");
+  const right = b.split("/");
+
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    if (left[index] !== right[index]) return left[index]! < right[index]! ? -1 : 1;
+  }
+
+  return left.length - right.length;
+};
+
 /**
  * The skills `bundle` mounts at `mount`, read from the bundle in memory instead of from the mounted files. The mount is
  * read-only and holds exactly the bundle (`WorkerBundle` copies it again when its version changes), so this is what a
@@ -30,9 +41,12 @@ export const bundledSkills = (
 
   const skills = skillsOfFiles(
     mount,
-    Object.entries(bundle.files).flatMap(([path, content]) =>
-      Predicate.isString(content) ? [[path, content] as const] : [],
-    ),
+    // In the order a walk of the mount lists them (by name, directory by directory), whatever order the manifest has.
+    Object.entries(bundle.files)
+      .sort(([a], [b]) => byPathSegments(a, b))
+      .flatMap(([path, content]) =>
+        Predicate.isString(content) ? [[path, content] as const] : [],
+      ),
   );
 
   if (version !== undefined) cached = { version, mount, skills };
