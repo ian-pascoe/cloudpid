@@ -1,11 +1,17 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
+import {
+  ContainerBackend,
+  type IWorkspaceContainerAPI,
+} from "@cloudflare/computer/backends/container";
+import { DEFAULT_WORKSPACE_SETTINGS } from "@cloudpid/config";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -185,4 +191,83 @@ describe("ComputerExecutionEnv over many calls", () => {
     expect(live.opened).toBeGreaterThanOrEqual(12);
     expect(live).toMatchObject({ workspaces: 0, execs: 0 });
   }, 30_000);
+});
+
+describe("the Container launch, through computer's own ContainerBackend", () => {
+  type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
+
+  it("starts on the Workspace's instance type from a snapshot, and restarts from the image when it never comes up", async () => {
+    const starts: Spec[] = [];
+    const restarts: Spec[] = [];
+    let record: LaunchRecord | undefined;
+    let forgotten = 0;
+
+    // A platform whose Container never answers its health probe, so the backend restarts it once.
+    const platform: IWorkspaceContainerAPI = {
+      start: async (spec) => {
+        starts.push(spec);
+
+        return { runtimeId: "r1", clientSecret: "s", outcome: "launched" };
+      },
+      restart: async (spec) => {
+        restarts.push(spec);
+
+        return { runtimeId: "r2", clientSecret: "s", outcome: "launched" };
+      },
+      status: async () => ({ running: false, exit: null }),
+      exitInfo: async () => null,
+      interceptOutboundHttp: async () => undefined,
+      interceptAllOutboundHttp: async () => undefined,
+      setInactivityTimeout: async () => undefined,
+      fetchPort: async () => {
+        throw new Error("not up");
+      },
+      port: () => {
+        throw new Error("not used");
+      },
+    };
+
+    const launch = new ContainerLaunch({
+      settings: async () => ({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-3" }),
+      snapshots: {
+        restorable: async () => ({ id: "snap-1" }),
+        forget: async () => {
+          forgotten++;
+        },
+        take: async () => "taken",
+      },
+      load: async () => record,
+      save: async (saved) => {
+        record = saved;
+      },
+      running: () => false,
+      now: () => Date.now(),
+      warn: () => undefined,
+    });
+
+    const backend = new ContainerBackend({
+      container: () => ({ getWorkspaceContainer: () => launch.wrap(platform) }),
+      workspace: { binding: "WORKSPACES", id: "x" },
+      name: "WorkspaceContainer",
+      connectTimeoutMs: 600,
+      healthRetryInitialDelayMs: 5,
+      healthRetryMaxDelayMs: 10,
+    });
+
+    await expect(backend.connect()).rejects.toThrow();
+
+    // The first launch asked for the Workspace's size and the snapshot (and no image: computer picks it from the name).
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({
+      instance: "standard-3",
+      containerSnapshot: { id: "snap-1" },
+    });
+    expect(starts[0]?.env.MOUNT_POINT).toBe("/workspace");
+
+    // The restart kept the size, dropped the snapshot, and the snapshot was forgotten.
+    expect(restarts).toHaveLength(1);
+    expect(restarts[0]?.instance).toBe("standard-3");
+    expect(restarts[0]?.containerSnapshot).toBeUndefined();
+    expect(forgotten).toBe(1);
+  });
 });

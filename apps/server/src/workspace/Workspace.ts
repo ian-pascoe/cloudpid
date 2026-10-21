@@ -39,12 +39,7 @@ import {
 import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
-import {
-  SKILLS_MOUNT,
-  WORKSPACE_CONTAINER,
-  WORKSPACE_BINDING,
-  WORKSPACE_ROOT,
-} from "./binding.ts";
+import { SKILLS_MOUNT, WORKSPACE_CONTAINER, WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
 
 export type WorkspaceEnv = {
   /** The Worker Loader the Worker Shell runs in. */

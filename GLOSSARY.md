@@ -78,6 +78,10 @@ _Avoid_: Plugin, command
 A program a Workspace declares in its mise configuration and the Container installs on demand.
 _Avoid_: Dependency, package (for tools)
 
+**Snapshot**:
+A saved copy of the Container's disk, taken after the Toolchains are installed and when the Container stops for being idle, and restored at its next launch so the Toolchains come back without downloading.
+_Avoid_: Backup, checkpoint, image (for the saved disk)
+
 **Registry**:
 The single index of Workspaces, Sessions, settings overrides, and notification subscriptions.
 _Avoid_: Catalog, directory
