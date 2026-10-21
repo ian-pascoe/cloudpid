@@ -11,7 +11,7 @@ import { toThreadMessages } from "../session/thread-messages.ts";
 import { queueAdapter, textOf } from "./queue-adapter.ts";
 import { SessionProvider } from "./session-context.tsx";
 import { TaskPanel, TaskPanelToggle } from "./task-panel.tsx";
-import { Thread } from "./thread.tsx";
+import { type Rename, Thread } from "./thread.tsx";
 
 const socketUrl = (sessionId: string): string => {
   const url = new URL(sessionSocketPath(sessionId), window.location.href);
@@ -47,9 +47,11 @@ const CONNECTION_NOTICE: Partial<Record<ConnectionStatus, ReactNode>> = {
 const LiveSession = ({
   connection,
   title,
+  rename,
 }: {
   connection: SessionConnection;
   title: string | undefined;
+  rename: Rename | undefined;
 }) => {
   const state = useSyncExternalStore(connection.subscribe, connection.getState);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -88,6 +90,7 @@ const LiveSession = ({
           <AssistantRuntimeProvider runtime={runtime}>
             <Thread
               title={title}
+              rename={rename}
               state={state}
               notice={CONNECTION_NOTICE[state.status]}
               steerLane={state.queue.steer}
@@ -133,9 +136,11 @@ const LiveSession = ({
 export const SessionChat = ({
   sessionId,
   title,
+  rename,
 }: {
   sessionId: string;
   title: string | undefined;
+  rename?: Rename | undefined;
 }) => {
   const [connection, setConnection] = useState<SessionConnection | null>(null);
 
@@ -150,5 +155,7 @@ export const SessionChat = ({
     };
   }, [sessionId]);
 
-  return connection === null ? null : <LiveSession connection={connection} title={title} />;
+  return connection === null ? null : (
+    <LiveSession connection={connection} title={title} rename={rename} />
+  );
 };

@@ -457,3 +457,184 @@ describe("a Session's agent", () => {
     ]);
   });
 });
+
+describe("a Session's title", () => {
+  const titled = async (replies: string[], script: string[] = ["It is fixed."]) => {
+    const session = await registered();
+
+    await runInDurableObject(session.stub, (instance: TestSession) => {
+      instance.script(script);
+      instance.titles(replies);
+    });
+
+    return session;
+  };
+
+  const ask = (stub: DurableObjectStub<TestSession>, n: number, text = "Fix the login bug") =>
+    runInDurableObject(stub, (instance: TestSession) =>
+      instance.prompt({ requestId: `turn-${n}`, text }),
+    );
+
+  const titleRequests = (stub: DurableObjectStub<TestSession>) =>
+    runInDurableObject(stub, (instance: TestSession) => instance.titleRequests());
+
+  const stored = async (registry: DurableObjectStub<TestRegistry>) => {
+    const [session] = await registry.listSessions();
+
+    return { title: session?.title, source: session?.titleSource };
+  };
+
+  it("names the Session after its first answer, with the small role's model and only once", async () => {
+    const { stub, registry } = await titled(['"Fix the login bug."', "A second title"]);
+
+    await ask(stub, 1);
+    await settles(async () =>
+      expect(await stored(registry)).toEqual({ title: "Fix the login bug", source: "generated" }),
+    );
+
+    const [request, ...more] = await titleRequests(stub);
+
+    expect(request?.model).toBe("claude-haiku-5-5");
+    // The first message and the answer, nothing else.
+    expect(request?.messages).toContain("Fix the login bug");
+    expect(request?.messages).toContain("It is fixed.");
+    expect(more).toEqual([]);
+
+    // Later answers do not name it again, not even from a new instance.
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["Done again."]));
+    await ask(stub, 2, "Now the tests");
+    await evictDurableObject(stub);
+    await ask(stub, 3, "And the docs");
+    expect(await titleRequests(stub)).toHaveLength(1);
+    expect(await stored(registry)).toEqual({ title: "Fix the login bug", source: "generated" });
+  });
+
+  it("does not hold up the Run: the answer and the idle report come before the title", async () => {
+    const { stub, registry, status } = await titled(["gate:Fix the login bug"]);
+
+    expect(await ask(stub, 1)).toMatchObject({ status: "answered", text: "It is fixed." });
+    await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
+    await settles(async () => expect(await status()).toBe("idle"));
+    expect(await stored(registry)).toEqual({ title: null, source: null });
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.open());
+    await settles(async () =>
+      expect(await stored(registry)).toEqual({ title: "Fix the login bug", source: "generated" }),
+    );
+  });
+
+  it("keeps a title the owner set before the first answer, and never asks the model", async () => {
+    const { stub, registry } = await titled(["Generated"]);
+
+    await registry.renameSession("session-" + counter, "My name");
+    await ask(stub, 1);
+    await runDurableObjectAlarm(stub);
+    await evictDurableObject(stub);
+    await ask(stub, 2);
+
+    expect(await titleRequests(stub)).toEqual([]);
+    expect(await stored(registry)).toEqual({ title: "My name", source: "owner" });
+  });
+
+  it("keeps a title the owner set while it was being generated", async () => {
+    const { stub, registry } = await titled(["gate:Generated"]);
+
+    await ask(stub, 1);
+    await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
+    await registry.renameSession("session-" + counter, "My name");
+    await runInDurableObject(stub, (instance: TestSession) => instance.open());
+
+    await settles(async () => {
+      const [request] = await titleRequests(stub);
+
+      expect(request).toBeDefined();
+      // The title was offered and refused: the Session does not look again.
+      expect(
+        await runInDurableObject(stub, (_i, state) => state.storage.kv.get("title-task")),
+      ).toMatchObject({
+        done: true,
+      });
+    });
+    expect(await stored(registry)).toEqual({ title: "My name", source: "owner" });
+  });
+
+  it("names a Session whose first Run an eviction cut off, once it finishes", async () => {
+    const { stub, registry } = await titled(["Fix the login bug"], ["hang", "Finally fixed."]);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      await instance.submit({ requestId: "turn-1", text: "Fix the login bug" });
+      await instance.hanging.promise;
+    });
+    await evictDurableObject(stub);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+
+    await settles(async () =>
+      expect(await stored(registry)).toEqual({ title: "Fix the login bug", source: "generated" }),
+    );
+    expect((await titleRequests(stub))[0]?.messages).toContain("Finally fixed.");
+  });
+
+  it("tries again at a later answer, even after an eviction, when the Registry could not be reached", async () => {
+    const { stub, registry } = await titled(["First try", "Fix the login bug"]);
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.titleRegistry("failing"));
+    await ask(stub, 1);
+    await runInDurableObject(stub, (instance: TestSession) => instance.idle());
+    expect(await stored(registry)).toEqual({ title: null, source: null });
+
+    // One answer is one attempt, however many times the Session settles.
+    const attempts = () =>
+      runInDurableObject(
+        stub,
+        (_instance: TestSession, state) =>
+          state.storage.kv.get<{ attempts: number }>("title-task")?.attempts,
+      );
+
+    await settles(async () => expect(await attempts()).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await attempts()).toBe(1);
+
+    // The attempt is kept across an eviction, and a later answer tries again.
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.titleRegistry("working");
+      instance.script(["Fixed again."]);
+    });
+    await ask(stub, 2, "Now the tests");
+
+    await settles(async () =>
+      expect(await stored(registry)).toEqual({ title: "First try", source: "generated" }),
+    );
+  });
+
+  it("shows the model no Secret the Session holds", async () => {
+    const { stub, registry } = await titled(["Rotate the credentials"]);
+    const secret = "hunter2-correct-horse-battery";
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.hold({ API_KEY: secret }));
+    await ask(stub, 1, `Rotate the key ${secret} please`);
+
+    await settles(async () =>
+      expect(await stored(registry)).toEqual({
+        title: "Rotate the credentials",
+        source: "generated",
+      }),
+    );
+
+    const [request] = await titleRequests(stub);
+
+    expect(request?.messages).toContain("Rotate the key");
+    expect(request?.messages).not.toContain(secret);
+  });
+
+  it("cuts a long first message and answer before the model sees them", async () => {
+    const { stub, registry } = await titled(["A very long title"], ["y".repeat(50_000)]);
+
+    await ask(stub, 1, "x".repeat(50_000));
+    await settles(async () => expect((await stored(registry)).source).toBe("generated"));
+
+    const [request] = await titleRequests(stub);
+
+    expect(request?.messages.length).toBeLessThan(10_000);
+  });
+});

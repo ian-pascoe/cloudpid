@@ -5,13 +5,15 @@ import {
   SettingsError,
   type WorkspaceSettings,
 } from "@cloudpid/config";
-import { RegistryRpcs, RPC_PATH, WorkspaceError } from "@cloudpid/protocol";
+import { RegistryRpcs, RPC_PATH, SessionNotFound, WorkspaceError } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
@@ -54,6 +56,7 @@ const fakeRegistries = () => {
         const record: SessionRecord = {
           id: `session-${sessions.length + 1}`,
           title: title ?? null,
+          titleSource: title === undefined ? null : "owner",
           workspace: workspace ?? "default",
           repo: repo ?? null,
           status: "idle",
@@ -66,6 +69,20 @@ const fakeRegistries = () => {
         return record;
       }),
     listSessions: () => Effect.sync(() => [...sessions]),
+    renameSession: ({ id, title }: { id: string; title: string }) =>
+      Effect.sync(() => {
+        calls.push("renameSession");
+
+        const found = Arr.findFirst(sessions, (session) => session.id === id);
+
+        if (Option.isNone(found)) return null;
+
+        const renamed: SessionRecord = { ...found.value, title, titleSource: "owner" };
+
+        sessions.splice(sessions.indexOf(found.value), 1, renamed);
+
+        return renamed;
+      }),
     createWorkspace: ({ slug }: { slug: string }) =>
       Effect.sync(() => {
         calls.push("createWorkspace");
@@ -257,6 +274,47 @@ it("creates a Session in the singleton Registry and lists it", async () => {
   expect(created).toMatchObject({ id: "session-1", title: "Fix the build", status: "idle" });
   expect(listed).toEqual([created]);
   expect(fake.names).toEqual(["registry", "registry"]);
+});
+
+it("renames a Session, which is the owner's title from then on", async () => {
+  const fake = fakeRegistries();
+
+  const [renamed, listed] = await withClient(
+    Effect.gen(function* () {
+      const registry = yield* Registry;
+      const session = yield* registry.createSession({});
+
+      return [
+        yield* registry.renameSession({ id: session.id, title: "Fix the build" }),
+        yield* registry.listSessions(),
+      ] as const;
+    }),
+    fake,
+  );
+
+  expect(renamed).toMatchObject({ title: "Fix the build", titleSource: "owner" });
+  expect(listed).toEqual([renamed]);
+});
+
+it("fails to rename a Session the Registry does not know", async () => {
+  const error = await withClient(
+    Registry.pipe(
+      Effect.flatMap((registry) => registry.renameSession({ id: "ghost", title: "Nope" })),
+      Effect.flip,
+    ),
+  );
+
+  expect(error).toBeInstanceOf(SessionNotFound);
+  expect(error.message).toContain("ghost");
+});
+
+it("rejects a new title that is blank or longer than 200 characters, before it reaches the Registry", async () => {
+  for (const title of ["   ", "a".repeat(201)]) {
+    const { text, calls } = await callRaw("renameSession", { id: "s", title });
+
+    expect(text).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
 });
 
 it("binds a created Session to the Workspace it names, and rejects a slug that is not one", async () => {

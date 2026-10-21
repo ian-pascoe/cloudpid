@@ -41,6 +41,14 @@ export class TestRegistry extends DurableObject {
     this.#store.setSessionStatus(id, status, now);
   }
 
+  renameSession(id: string, title: string): SessionRecord | null {
+    return this.#store.renameSession(id, title);
+  }
+
+  setGeneratedTitle(id: string, title: string): boolean {
+    return this.#store.setGeneratedTitle(id, title);
+  }
+
   createWorkspace(slug: string, now: number): WorkspaceRecord {
     return this.#store.createWorkspace(slug, now);
   }

@@ -129,6 +129,23 @@ export const SessionLive = Session.make(
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
               : registries.getByName(REGISTRY_NAME).notify({ sessionId: name, event }),
+          titleWanted:
+            name === undefined
+              ? ReportError.make({ message: "The Session's name is unknown" })
+              : registries
+                  .getByName(REGISTRY_NAME)
+                  .getSession({ id: name })
+                  .pipe(
+                    // A Session the Registry does not know has nowhere to keep a title.
+                    Effect.map((session) => session !== null && session.titleSource === null),
+                  ),
+          setTitle: (title) =>
+            name === undefined
+              ? ReportError.make({ message: "The Session's name is unknown" })
+              : registries
+                  .getByName(REGISTRY_NAME)
+                  .setGeneratedTitle({ id: name, title })
+                  .pipe(Effect.asVoid),
         } satisfies (typeof SessionRegistry)["Service"];
 
         const registry = Layer.succeed(SessionRegistry, sessionRegistry);

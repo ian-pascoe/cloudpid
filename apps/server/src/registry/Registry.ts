@@ -36,6 +36,19 @@ export type RegistryMethods = {
     readonly id: string;
     readonly status: SessionStatus;
   }) => Effect.Effect<void>;
+  /** The owner names a Session: the title is theirs from then on. The Session's record, or null when it is not registered. */
+  readonly renameSession: (input: {
+    readonly id: string;
+    readonly title: string;
+  }) => Effect.Effect<SessionRecord | null>;
+  /**
+   * The Session DO offers the title it generated. It is set only if the Session has no title yet, so the owner's (set
+   * before or while it was generated) and an earlier generated one are kept. Says whether it was set.
+   */
+  readonly setGeneratedTitle: (input: {
+    readonly id: string;
+    readonly title: string;
+  }) => Effect.Effect<boolean>;
   /** Register a Workspace by slug; one already registered keeps its record. */
   readonly createWorkspace: (input: { readonly slug: string }) => Effect.Effect<WorkspaceRecord>;
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
@@ -93,6 +106,9 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => store.setSessionStatus(id, status, now)),
             ),
+          renameSession: ({ id, title }) => Effect.sync(() => store.renameSession(id, title)),
+          setGeneratedTitle: ({ id, title }) =>
+            Effect.sync(() => store.setGeneratedTitle(id, title)),
           createWorkspace: ({ slug }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => store.createWorkspace(slug, now))),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),

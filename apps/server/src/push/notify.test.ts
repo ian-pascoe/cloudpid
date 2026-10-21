@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { pushNotifier } from "./notify.ts";
 import { base64UrlEncode, exportPublicKey, generateEcdhKeys, type Vapid } from "./webpush.ts";
 
-const SESSION = { id: "s-1", title: "Fix the build" };
+const SESSION = { id: "s-1", title: "Fix the build", titleSource: "owner" as const };
 
 /** A browser's subscription keys, as `PushSubscription.toJSON()` gives them. */
 const newKeys = async () => ({

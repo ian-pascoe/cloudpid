@@ -1,6 +1,10 @@
+// @effect-diagnostics asyncFunction:off -- browser code in a React app with no Effect runtime: promises are the platform here.
+
 import { ThreadPrimitive } from "@assistant-ui/react";
-import { ArrowLeft } from "lucide-react";
-import type { ReactNode } from "react";
+import { ArrowLeft, Pencil } from "lucide-react";
+import { MAX_TITLE_LENGTH } from "@cloudpid/protocol";
+import { type ReactNode, useRef, useState } from "react";
+import { Input } from "../components/ui/input.tsx";
 import { navigate } from "../router.ts";
 import type { ConfigureChange, QueuedEntry, SessionState } from "../session/connection.ts";
 import { Composer } from "./composer.tsx";
@@ -9,12 +13,111 @@ import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
 
+/** Naming the Session: its title now ("" while it has none), and how to save a new one. */
+export type Rename = {
+  readonly current: string;
+  /** Resolves to null when the title was saved, or to why it was not. */
+  readonly save: (title: string) => Promise<string | null>;
+};
+
+/**
+ * The title and a button that turns it into a field to rename it in place. Enter (outside an IME composition) or
+ * leaving the field saves, Escape cancels; the field stays, with the reason inline, while a save fails.
+ */
+const EditableTitle = ({ title, rename }: { title: string | undefined; rename: Rename }) => {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // Escape and a finished save close the field, which blurs it: that blur is not a save.
+  const closing = useRef(false);
+
+  const close = () => {
+    closing.current = true;
+    setDraft(null);
+    setProblem(null);
+  };
+
+  const save = async () => {
+    if (draft === null || saving || closing.current) return;
+
+    const next = draft.trim();
+
+    if (next === "" || next === rename.current) {
+      close();
+
+      return;
+    }
+
+    setSaving(true);
+
+    const failure = await rename.save(next);
+
+    setSaving(false);
+
+    if (failure === null) close();
+    else setProblem(failure);
+  };
+
+  if (draft === null) {
+    return (
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        <h2 className="min-w-0 truncate text-sm font-semibold">{title ?? "Session"}</h2>
+        <button
+          type="button"
+          onClick={() => {
+            closing.current = false;
+            setDraft(rename.current);
+          }}
+          aria-label={`Rename ${title ?? "session"}`}
+          className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Pencil className="size-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-w-0 flex-1">
+      <Input
+        autoFocus
+        aria-label="Session title"
+        aria-invalid={problem !== null}
+        value={draft}
+        maxLength={MAX_TITLE_LENGTH}
+        disabled={saving}
+        className="h-8 w-full font-semibold"
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setProblem(null);
+        }}
+        onBlur={() => {
+          // A field that could not save is left as it was, rather than tried again by the blur.
+          if (problem === null) void save();
+          else close();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.nativeEvent.isComposing) void save();
+          else if (event.key === "Escape") close();
+        }}
+      />
+      {problem !== null && (
+        <p role="alert" className="mt-1 text-xs text-destructive">
+          {problem}
+        </p>
+      )}
+    </div>
+  );
+};
+
 const Header = ({
   title,
+  rename,
   picker,
   actions,
 }: {
   title: string | undefined;
+  rename: Rename | undefined;
   picker: ReactNode;
   actions: ReactNode;
 }) => (
@@ -29,7 +132,11 @@ const Header = ({
     >
       <ArrowLeft className="size-4" />
     </button>
-    <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title ?? "Session"}</h2>
+    {rename === undefined ? (
+      <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title ?? "Session"}</h2>
+    ) : (
+      <EditableTitle title={title} rename={rename} />
+    )}
     {picker}
     {actions}
   </header>
@@ -38,6 +145,7 @@ const Header = ({
 /** The chat of one Session: its transcript with live progress, a notice when disconnected, and the composer. */
 export const Thread = ({
   title,
+  rename,
   state,
   notice,
   steerLane,
@@ -48,6 +156,8 @@ export const Thread = ({
   actions,
 }: {
   title: string | undefined;
+  /** Lets the owner rename the Session from its header. */
+  rename?: Rename | undefined;
   state: SessionState;
   /** Stop the run and every subagent; given while a subagent is working. */
   onStopAll?: (() => void) | undefined;
@@ -73,6 +183,7 @@ export const Thread = ({
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <Header
         title={title}
+        rename={rename}
         picker={
           <ModelPicker
             view={view}

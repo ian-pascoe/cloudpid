@@ -3,12 +3,14 @@ import {
   DEFAULT_WORKSPACE,
   parseRepoSource,
   RegistryRpcs,
+  SessionNotFound,
   WorkspaceError,
 } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 import type { Repos } from "../workspace/repos.ts";
@@ -69,6 +71,14 @@ export const serveRegistryRpc = (
 
           return yield* registry.createSession({ title, workspace, repo });
         }),
+      renameSession: ({ id, title }) =>
+        registry
+          .renameSession({ id, title })
+          .pipe(
+            Effect.filterOrFail(Predicate.isNotNull, () =>
+              SessionNotFound.make({ message: `No session "${id}"` }),
+            ),
+          ),
       listWorkspaces: () => registry.listWorkspaces(),
       createWorkspace: ({ slug }) => registry.createWorkspace({ slug }),
       listRepos: ({ workspace }) =>
