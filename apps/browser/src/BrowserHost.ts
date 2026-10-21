@@ -24,6 +24,7 @@ import { browserTool, type PiBrowserTool } from "agents/browser/pi";
 import { DurableObject } from "cloudflare:workers";
 import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
+import { tabOf } from "./tab.ts";
 
 /** What the browser Worker binds (`resource.ts`). */
 export type BrowserHostEnv = {
@@ -63,52 +64,14 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
       records: ctx.storage.kv,
       schedule: (at) => this.#wakeAt(at),
       browser: {
-        tabOf: (conversationId) => this.#tabOf(conversationId),
+        tabOf: (conversationId) =>
+          tabOf(
+            { name: this.#browser.name, store: this.#store, binding: env.BROWSER },
+            conversationId,
+          ),
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
       },
     });
-  }
-
-  /**
-   * The tab conversation `conversationId` works in, if its browser is still there. The `browserTool` keeps it in the
-   * conversation's scope record (`conversation:<id>`, the `scope` option's default) beside the browser's own record, and
-   * both are read as they are stored: `Browser.connect` would create a browser for a conversation that has none and move
-   * a stale scope record to it, and a handoff must change neither.
-   */
-  async #tabOf(
-    conversationId: number,
-  ): Promise<{ readonly browserSessionId: string; readonly targetId: string } | undefined> {
-    const { name } = this.#browser;
-    const browser = await this.#store.get(`browser:session:${name}`);
-
-    const scope = await this.#store.get(
-      `browser:scope:${name.length}:${name}:conversation:${conversationId}`,
-    );
-
-    // The scope's record names the browser it last worked in: one that was replaced since has no tab to hand over.
-    if (
-      browser === undefined ||
-      browser.closedAt !== undefined ||
-      scope?.sessionId !== browser.sessionId ||
-      scope.activeTargetId === undefined
-    ) {
-      return undefined;
-    }
-
-    const targets = await this.env.BROWSER.fetch(
-      `https://localhost/v1/devtools/browser/${browser.sessionId}/json/list`,
-    );
-
-    if (!targets.ok) return undefined;
-
-    const open: unknown = await targets.json();
-
-    const present =
-      Array.isArray(open) && open.some((target) => target?.id === scope.activeTargetId);
-
-    return present
-      ? { browserSessionId: browser.sessionId, targetId: scope.activeTargetId }
-      : undefined;
   }
 
   /** Wake this object at `at` (epoch milliseconds) or sooner, to drop expired handoffs (`alarm`). */
