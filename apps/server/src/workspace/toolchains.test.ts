@@ -232,6 +232,22 @@ describe("the bootstrap", () => {
     expect(bootstrap?.timeoutMs).toBeGreaterThan(60_000);
   });
 
+  it("locks the directories it is told the Workspace holds read-only, and no others", async () => {
+    for (const [readOnlyDirectories, locked] of [
+      [["/workspace/.agents/skills"], true],
+      [undefined, false],
+    ] as const) {
+      const container = fakeContainer();
+      const handle = await open(container, { readOnlyDirectories }).toolchains.connect(host);
+
+      await handle.rpc.shell.exec({ source: "true" });
+
+      const source = bootstraps(container.execs)[0]?.source ?? "";
+
+      expect(source.includes("/workspace/.agents/skills")).toBe(locked);
+    }
+  });
+
   it("runs bash, because computerd's shell is dash", async () => {
     const container = fakeContainer();
     const handle = await open(container).toolchains.connect(host);

@@ -14,6 +14,7 @@
     "./browser/contract": "./src/browser/contract.ts",
     "./files": "./src/files.ts",
     "./skills": "./src/skills.ts",
+    "./skills-discovery": "./src/skills-discovery.ts",
     "./coding-tools": "./src/coding-tools.ts",
     "./bash-routing": "./src/bash-routing.ts",
     "./tool-search": "./src/tool-search.ts"

@@ -20,6 +20,8 @@ import {
  */
 export interface ComputerEnvHost {
   fileOperation(request: EnvRequest): Promise<object>;
+  /** The skills a conversation in `cwd` can use (an array of `WireSkill`), found next to the files: one RPC call. */
+  skills(cwd: string): Promise<object>;
 }
 
 /** The value an operation's successful answer holds. */
@@ -49,7 +51,7 @@ export const abortedResult = <T>(
 
 /** A `Call` on `host`. */
 export const caller =
-  (host: ComputerEnvHost): Call =>
+  (host: Pick<ComputerEnvHost, "fileOperation">): Call =>
   async (context, op, ...args) => {
     const path = args[0] instanceof Array ? undefined : String(args[0]);
     const before = abortedResult<ValueOf<typeof op>>(context, path);

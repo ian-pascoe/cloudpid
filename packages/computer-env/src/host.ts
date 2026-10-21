@@ -3,17 +3,26 @@
 // pi-durable's `ExecutionEnv` is Promise-native and stays so (ADR-0003); this adapter follows it.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalDate:off preferEffectArray:off
 import type { Workspace } from "@cloudflare/computer";
-import { type FileInfo, type FileKind, LineScanner } from "@earendil-works/pi-durable/env";
+import {
+  err,
+  type ExecutionEnv,
+  type FileInfo,
+  type FileKind,
+  LineScanner,
+  ok,
+} from "@earendil-works/pi-durable/env";
 import { HostFailure, posixCode, toWireError } from "./failure.ts";
 import { listFiles } from "./list-files.ts";
-import { ancestors, basename, dirname } from "./paths.ts";
-import type {
-  EnvRequest,
-  EnvResponse,
-  HostOperation,
-  HostOperations,
-  ScanTarget,
-  WireResult,
+import { ancestors, basename, dirname, resolve } from "./paths.ts";
+import {
+  type EnvRequest,
+  type EnvResponse,
+  type HostOperation,
+  fromResult,
+  type HostOperations,
+  type ScanTarget,
+  toFileError,
+  type WireResult,
 } from "./wire.ts";
 
 /** Where open binary readers keep their hard links. */
@@ -82,6 +91,10 @@ const concat = (chunks: readonly Uint8Array[]): Uint8Array => {
 };
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+
+/** The part of an environment that reads files, which code running next to them (skill discovery) needs. */
+export type ReadEnv = Pick<ExecutionEnv, "cwd" | "listFiles" | "readTextFile">;
 
 /**
  * `fs.mkdir(path, { recursive: true })`, except that a directory that is already there is left alone. computer refuses
@@ -120,6 +133,23 @@ export class WorkspaceEnvHost {
     ) => Promise<EnvResponse<HostOperation>>;
 
     return operation(...request.args);
+  }
+
+  /**
+   * A read-only environment over this Workspace's files in `cwd`, answering in process what `ComputerExecutionEnv`
+   * asks over RPC (paths resolve against `cwd` as there): for code that runs in the Workspace DO and wants no RPC call per file.
+   */
+  readEnv(cwd: string): ReadEnv {
+    return {
+      cwd,
+      listFiles: async (path, options) =>
+        fromResult(await this.#operations.listFiles(resolve(cwd, path), options ?? {})),
+      readTextFile: async (path) => {
+        const bytes = await this.#operations.readFile(resolve(cwd, path));
+
+        return bytes.ok ? ok(decoder.decode(bytes.value)) : err(toFileError(bytes.error));
+      },
+    };
   }
 
   /** Create the Workspace root, and remove reader links that no client will close and stale temp files. */

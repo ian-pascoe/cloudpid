@@ -14,7 +14,14 @@ import { Type } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
-import { parseSkill, Skills, skillDirectories } from "./skills.ts";
+import {
+  BUNDLED_SKILLS_DIRECTORY,
+  discoverSkills,
+  parseSkill,
+  Skills,
+  skillDirectories,
+  type Skill,
+} from "./skills.ts";
 
 /** A skill's `SKILL.md`. */
 const skillFile = (name: string, description: string, extra = "") =>
@@ -104,6 +111,14 @@ const envOf = (
   return fake as ExecutionEnv;
 };
 
+/** `env` that also discovers skills itself, and fails any read or listing: a request must not need them. */
+const withOwn = (env: ExecutionEnv, own: () => Promise<ReadonlyArray<Skill>>): ExecutionEnv =>
+  Object.assign(env, {
+    discoverSkills: own,
+    listFiles: () => Promise.reject(new Error("listFiles must not be called")),
+    readTextFile: () => Promise.reject(new Error("readTextFile must not be called")),
+  });
+
 const noop = defineTool({
   name: "read",
   description: "Read a file",
@@ -117,6 +132,7 @@ const skillsSection = async (
   files: Readonly<Record<string, string>>,
   tools = true,
   links: Readonly<Record<string, Readonly<Record<string, string>>>> = {},
+  own?: () => Promise<ReadonlyArray<Skill>>,
 ): Promise<string | undefined> => {
   const faux = fauxProvider();
   const models = createModels();
@@ -140,7 +156,12 @@ const skillsSection = async (
 
   const harness = await Harness.open(
     new MemoryStorage(),
-    { models, registry, env: () => envOf(cwd, files, links) },
+    {
+      models,
+      registry,
+      env: () =>
+        own === undefined ? envOf(cwd, files, links) : withOwn(envOf(cwd, files, links), own),
+    },
     BACKGROUND_CONTEXT,
   );
 
@@ -372,5 +393,80 @@ describe("the skills section", () => {
     expect(
       await skillsSection("/workspace/repo", { "/workspace/repo/README.md": "# repo\n" }),
     ).toBeUndefined();
+  });
+
+  it("takes the skills of an environment that discovers its own, without a read or a listing", async () => {
+    let asked = 0;
+
+    const section = await skillsSection("/workspace/repo", {}, true, {}, () => {
+      asked++;
+
+      return Promise.resolve([
+        {
+          name: "deploy",
+          description: "Ship it.",
+          filePath: "/workspace/repo/.agents/skills/deploy/SKILL.md",
+          disableModelInvocation: false,
+        },
+        {
+          name: "tdd",
+          description: "Test-driven development.",
+          filePath: "/workspace/.agents/skills/tdd/SKILL.md",
+          disableModelInvocation: false,
+        },
+      ]);
+    });
+
+    expect(asked).toBe(1);
+    expect(section).toContain("<name>deploy</name>");
+    expect(section).toContain("<name>tdd</name>");
+    expect(section).toContain("are bundled with the agent and read-only");
+  });
+});
+
+describe("discoverSkills with a directory's skills already known", () => {
+  const tdd: Skill = {
+    name: "tdd",
+    description: "Bundled.",
+    filePath: "/workspace/.agents/skills/tdd/SKILL.md",
+    disableModelInvocation: false,
+  };
+
+  it("walks the other directories, never the known one, and lists the known skills last", async () => {
+    const listed: string[] = [];
+
+    const env = envOf("/workspace/repo", {
+      "/workspace/repo/.agents/skills/deploy/SKILL.md": skillFile("deploy", "Ship."),
+      // Not the bundle's: a walk of the root would find it, and the known skills stand in for the walk.
+      "/workspace/.agents/skills/stray/SKILL.md": skillFile("stray", "Stray."),
+    });
+
+    const listFiles = env.listFiles!.bind(env);
+
+    env.listFiles = (path, options, context) => {
+      listed.push(path);
+
+      return listFiles(path, options, context);
+    };
+
+    const found = await Effect.runPromise(
+      discoverSkills(env, new Map([[BUNDLED_SKILLS_DIRECTORY, [tdd]]])),
+    );
+
+    expect(found.map((skill) => skill.name)).toEqual(["deploy", "tdd"]);
+    expect(listed).toEqual(["/workspace/repo/.agents/skills"]);
+  });
+
+  it("lets a nearer skill shadow a known one of the same name", async () => {
+    const found = await Effect.runPromise(
+      discoverSkills(
+        envOf("/workspace/repo", {
+          "/workspace/repo/.agents/skills/tdd/SKILL.md": skillFile("tdd", "Repo's own."),
+        }),
+        new Map([[BUNDLED_SKILLS_DIRECTORY, [tdd]]]),
+      ),
+    );
+
+    expect(found.map((skill) => skill.description)).toEqual(["Repo's own."]);
   });
 });

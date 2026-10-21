@@ -25,6 +25,18 @@ export type WireResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: WireError };
 
+/**
+ * A skill the Workspace DO found (the extensions package's `Skill`, which this package does not import): the answer to
+ * `skills`.
+ */
+export type WireSkill = {
+  readonly name: string;
+  readonly description: string;
+  /** The absolute path of its `SKILL.md`. */
+  readonly filePath: string;
+  readonly disableModelInvocation: boolean;
+};
+
 /** A watch target, resolved, as the Workspace DO scans it. */
 export type ScanTarget = {
   readonly path: string;

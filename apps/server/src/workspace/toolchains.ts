@@ -55,6 +55,11 @@ export type ToolchainOptions = {
    * Container's disk here, while nothing else is writing to it. A failure is reported and changes nothing.
    */
   readonly afterInstall?: (() => Promise<void>) | undefined;
+  /**
+   * The directories the Workspace holds read-only (absolute paths), which the Container makes read-only too so a write
+   * there fails instead of staying on the Container. Empty where the Container's `/workspace` is not a real mount.
+   */
+  readonly readOnlyDirectories?: readonly string[] | undefined;
   /** Where a failed bootstrap is reported (never with the token). */
   readonly warn: (message: string) => void;
   readonly now: () => number;
@@ -184,7 +189,7 @@ export class ToolchainBackend implements WorkspaceBackend {
     try {
       const execution = await shell.exec({
         id: crypto.randomUUID(),
-        source: inBash(bootstrapScript(WORKSPACE_ROOT)),
+        source: inBash(bootstrapScript(WORKSPACE_ROOT, this.#options.readOnlyDirectories)),
         cwd: WORKSPACE_ROOT,
         timeoutMs: BOOTSTRAP_TIMEOUT_MS,
         env: { ...this.#env, ...identity },
