@@ -15,7 +15,15 @@ import {
 } from "./context/harness.fixture.ts";
 import { SubagentsDoc } from "./subagents.ts";
 import { Todo, TodoDoc } from "./todo.ts";
-import { CHANGED_HEADER, RECONCILE_INSTRUCTION, SNAPSHOT_HEADER } from "./todo/projection.ts";
+import {
+  CHANGED_HEADER,
+  RECONCILE_INSTRUCTION,
+  SNAPSHOT_HEADER,
+  STALE_NOTE,
+} from "./todo/projection.ts";
+
+/** Resolves when `run_todo_and_wait` has made its nested call. */
+let waiting = Promise.withResolvers<void>();
 
 /** Calls `todo` with a nested `executeTool`, as a code mode script does, and returns what the script gets. */
 const Scripts = defineExtension({
@@ -24,11 +32,28 @@ const Scripts = defineExtension({
     defineTool({
       name: "run_todo",
       description: "Call todo as a script would and return its structured output",
-      parameters: Type.Object({ args: Type.Any() }),
+      parameters: Type.Object({ args: Type.Any(), pad: Type.Optional(Type.Number()) }),
       execute: async (params, api, ctx) => {
         const nested = await api.executeTool("todo", params.args, ctx);
+        const text = JSON.stringify(nested.structuredOutput);
 
-        return { output: [{ type: "text", text: JSON.stringify(nested.structuredOutput) }] };
+        return { output: [{ type: "text", text: `${text}${"x".repeat(params.pad ?? 0)}` }] };
+      },
+    }),
+    defineTool({
+      name: "run_todo_and_wait",
+      description: "Call todo as a script would, then wait to be stopped",
+      parameters: Type.Object({ args: Type.Any() }),
+      execute: async (params, api, ctx) => {
+        await api.executeTool("todo", params.args, ctx);
+        waiting.resolve();
+
+        const aborted = Promise.withResolvers<void>();
+
+        ctx.abortSignal?.addEventListener("abort", () => aborted.resolve());
+        await aborted.promise;
+
+        return { output: [{ type: "text", text: "stopped" }] };
       },
     }),
   ],
@@ -417,6 +442,80 @@ describe("todo", () => {
       expect(last.text).toContain(`${CHANGED_HEADER}\n[x] #1 A\n[ ] #2 B`);
       expect(last.transcript.filter((text) => text.includes(SNAPSHOT_HEADER))).toEqual([]);
       expect(session.requests[before]!.transcript.slice(0, 3)).toEqual(last.transcript.slice(0, 3));
+    });
+
+    it("tells the agent, at the end of the request, when a Stop left a script's change without a result", async () => {
+      waiting = Promise.withResolvers<void>();
+
+      const session = await open((request) => {
+        switch (request.text) {
+          case "Plan":
+            return call(["todo", { action: "add", tasks: [{ title: "A" }, { title: "B" }] }]);
+          case "Script":
+            return call([
+              "run_todo_and_wait",
+              { args: { action: "update", id: 1, status: "completed" } },
+            ]);
+          case "Next":
+            return call(["noop", {}]);
+          default:
+            return request.text.includes(STALE_NOTE)
+              ? call(["todo", { action: "list" }])
+              : answer("Done.");
+        }
+      });
+
+      await session.prompt("Plan");
+
+      const stopped = session.root.submit({ type: "input", content: "Script" }, context);
+
+      await waiting.promise;
+      await session.root.abort(context);
+      await (await stopped).wait(context);
+      await session.settle();
+
+      const before = session.requests.length;
+
+      await session.prompt("Next");
+
+      const asked = session.requests.slice(before);
+      const earlier = session.requests[0]!;
+
+      // The stopped call's nested change never got a result, so the list the context shows is behind. The agent is told
+      // so at the end of the request, and nothing earlier changed: the first message is as it was.
+      expect(asked[0]!.text).toContain("Next");
+      expect(asked.at(-1)!.text).not.toContain(STALE_NOTE);
+      expect(asked.some((request) => request.text.includes(STALE_NOTE))).toBe(true);
+      expect(asked.every((request) => request.transcript[0] === earlier.transcript[0])).toBe(true);
+      expect(asked.flatMap((request) => request.transcript)).not.toContain(
+        expect.stringContaining(SNAPSHOT_HEADER),
+      );
+      // Calling `todo` shows the list, which ends the note.
+      expect(asked.at(-1)!.text).toBe("[x] #1 A\n[ ] #2 B");
+    });
+
+    it("does not claim a list a result is too long to show whole", async () => {
+      const session = await open((request) => {
+        switch (request.text) {
+          case "Plan":
+            return call(["todo", { action: "add", tasks: [{ title: "A" }, { title: "B" }] }]);
+          case "Script":
+            return call([
+              "run_todo",
+              { args: { action: "update", id: 1, status: "completed" }, pad: 45_000 },
+            ]);
+          default:
+            return answer("Done.");
+        }
+      }, 10_000_000);
+
+      await session.prompt("Plan");
+      await session.prompt("Script");
+
+      const last = session.requests.at(-1)!;
+
+      expect(last.text).not.toContain(CHANGED_HEADER);
+      expect(last.text).toContain(STALE_NOTE);
     });
 
     it("says nothing about a list that was never used", async () => {
