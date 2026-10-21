@@ -397,12 +397,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const titles = titleTask({
     kv,
     models,
-    // The `small` role's model; the Session's own when the roles hold none.
-    model: () => {
-      const { agent, subagents } = settings.current();
-
-      return subagents.roles.small?.model ?? agent.model;
-    },
+    // The `small` role's model; the Session's own (its pick, else the default) when the roles hold none.
+    model: () =>
+      settings.current().subagents.roles.small?.model ??
+      picked().model ??
+      settings.current().agent.model,
     registry,
     exchange: Effect.gen(function* () {
       const conversation = yield* root;
@@ -426,11 +425,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     }),
   });
 
+  /**
+   * Whether this instance admitted a root submission and so follows its answers itself (`titleAfter`): the title is then
+   * attempted once per answer, and the idle settle below leaves it alone. An instance that only resumed work
+   * (`wakeAndResume`) has no such follower, so the idle settle names the Session when that work ends.
+   */
+  let followingAnswers = false;
+
   /** Once `submission` is answered, name the Session beside the Run, which never waits for it. Lost with the object; a later answer tries again. */
   const titleAfter = (submission: Submission) =>
     titles.done()
       ? Effect.void
-      : attempt("wait", () => submission.wait(context)).pipe(
+      : Effect.sync(() => {
+          followingAnswers = true;
+        }).pipe(
+          Effect.andThen(attempt("wait", () => submission.wait(context))),
           Effect.flatMap((settled) => (settled.status === "done" ? titles.run : Effect.void)),
           Effect.ignore,
           Effect.forkIn(scope),
@@ -589,8 +598,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
       Effect.andThen(settle),
       Effect.andThen(notifyRunEnds),
-      // Also here, so a first Run an eviction cut short is named once it is finished on the next instance.
-      Effect.andThen(titles.run),
+      // Also here, so a first Run an eviction cut short is named once the next instance has finished it.
+      Effect.andThen(Effect.suspend(() => (followingAnswers ? Effect.void : titles.run))),
       Effect.ignore,
       Effect.forkIn(scope),
       Effect.asVoid,

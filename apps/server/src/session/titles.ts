@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off missingPipeableSignature:off
+// @effect-diagnostics missingPipeableSignature:off -- the exports are data-first functions and a plain-data factory, called directly, not combinators to pipe.
 // Generated Session titles (`docs/spec.md` → Client and protocol → Titles): after the root conversation's first answer, the
 // `small` role's model names the Session in 3 to 6 words, and the Registry keeps the title unless the owner named the
 // Session first. The task runs beside the Run, never inside it, and what it needs to be sure of is kept in storage:
@@ -140,7 +140,11 @@ export const sanitizeTitle = (reply: string): string | undefined => {
 
   if (line === undefined) return undefined;
 
+  // Format characters (zero-width, bidi overrides) are dropped, and other controls read as spaces, so a title cannot
+  // hide or reorder its own text, in the list or in a push.
   const bare = line
+    .replace(/\p{Cf}/gu, "")
+    .replace(/\p{Cc}/gu, " ")
     .replace(/^(?:[*_#>\s]*)title\s*:/iu, "")
     .replace(/\s+/gu, " ")
     .replace(EDGE, "");
@@ -185,6 +189,14 @@ export const generateTitle = (
           maxTokens: TITLE_MAX_TOKENS,
         }),
       catch: (cause) => TitleError.make({ message: `The title request failed: ${String(cause)}` }),
+    });
+
+    // The call's cost is not in `pi.usage` yet (telemetry): log it, so the spend of naming Sessions can be told.
+    yield* Effect.logInfo("Session title request", {
+      model: `${model.provider}/${model.modelId}`,
+      input: reply.usage.input,
+      output: reply.usage.output,
+      cost: reply.usage.cost.total,
     });
 
     if (reply.stopReason === "error" || reply.stopReason === "aborted") {

@@ -582,6 +582,18 @@ describe("a Session's title", () => {
     await runInDurableObject(stub, (instance: TestSession) => instance.idle());
     expect(await stored(registry)).toEqual({ title: null, source: null });
 
+    // One answer is one attempt, however many times the Session settles.
+    const attempts = () =>
+      runInDurableObject(
+        stub,
+        (_instance: TestSession, state) =>
+          state.storage.kv.get<{ attempts: number }>("title-task")?.attempts,
+      );
+
+    await settles(async () => expect(await attempts()).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await attempts()).toBe(1);
+
     // The attempt is kept across an eviction, and a later answer tries again.
     await evictDurableObject(stub);
     await runInDurableObject(stub, (instance: TestSession) => {

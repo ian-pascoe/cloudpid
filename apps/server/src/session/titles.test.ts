@@ -1,4 +1,4 @@
-// @effect-diagnostics globalDate:off asyncFunction:off
+// @effect-diagnostics asyncFunction:off -- the tests await promises, as the other test files do.
 import {
   createModels,
   fauxAssistantMessage,
@@ -85,6 +85,13 @@ describe("sanitizeTitle", () => {
     expect(sanitizeTitle("**Title:** `Refactor the Registry`!")).toBe("Refactor the Registry");
     expect(sanitizeTitle("# Add dark mode…")).toBe("Add dark mode");
     expect(sanitizeTitle("“Plan the migration”")).toBe("Plan the migration");
+  });
+
+  it("drops zero-width and bidi override characters and turns other controls into spaces", () => {
+    expect(sanitizeTitle("Fix\u200B the\u202E build\u0007now\u0085ok")).toBe(
+      "Fix the build now ok",
+    );
+    expect(sanitizeTitle("\u200B\u202E\u0007")).toBeUndefined();
   });
 
   it("keeps punctuation inside the title", () => {
