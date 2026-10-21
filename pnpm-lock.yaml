@@ -288,6 +288,9 @@ importers:
       '@cloudpid/sandbox-image':
         specifier: workspace:*
         version: link:../sandbox-image
+      '@cloudpid/telemetry':
+        specifier: workspace:*
+        version: link:../../packages/telemetry
       '@earendil-works/chord':
         specifier: ^1.3.0
         version: 1.3.0
@@ -421,6 +424,9 @@ importers:
 
   packages/effect-durable:
     dependencies:
+      '@cloudpid/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
       '@earendil-works/chord':
         specifier: ^1.3.0
         version: 1.3.0

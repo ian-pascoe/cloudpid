@@ -12,7 +12,7 @@ import {
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
 import { TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
-import type { TaskGraphSummary, TodoTask } from "@cloudpid/protocol";
+import type { SessionUsage, TaskGraphSummary, TodoTask } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { formatModelId, isModelId } from "@cloudpid/config";
@@ -64,6 +64,13 @@ import {
   type SessionSettingsValues,
   type SettingsKv,
 } from "./settings.ts";
+import {
+  type Ledger,
+  limitingModels,
+  recordTitleUsage,
+  sessionTotals,
+  usageMessage,
+} from "./spend.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -197,6 +204,9 @@ export type AbortOptions = {
 /** The longest a change to the task graph waits before it is sent. */
 export const TASK_GRAPH_INTERVAL: Duration.Input = "250 millis";
 
+/** The longest a change to the Session's usage waits before it is sent. */
+export const USAGE_INTERVAL: Duration.Input = "500 millis";
+
 /** How long to wait before reading the Subagents document again after a read failed. */
 const TASK_GRAPH_RETRY: Duration.Input = "1 second";
 
@@ -246,6 +256,11 @@ export type SessionHostService = {
    * every `TASK_GRAPH_INTERVAL`. Fails when the Harness ends its watch.
    */
   readonly taskGraph: Stream.Stream<TaskGraphSummary, SessionError>;
+  /**
+   * What the Session has spent (every conversation's, subagents' and the title call's) and its limit: how it stands,
+   * then each change, at most one every `USAGE_INTERVAL`. Fails when the Harness ends its watch.
+   */
+  readonly usage: Stream.Stream<SessionUsage, SessionError>;
   /**
    * Conversation `conversationId`'s agent events, unchanged: a batch holding its `snapshot`, then a batch per commit.
    * Fails when the conversation cannot be watched, and when the Harness ends the watch.
@@ -335,12 +350,26 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
   );
 
   const models = Effect.isEffect(options.models) ? yield* options.models : options.models;
-  const harnessOptions = { models, settings: harnessSettings(settings) };
+
+  /** The open Harness, once it is: a request made before that, by nothing yet, is not held to the limit. */
+  let opened: Ledger | undefined;
+
+  // Every request the Harness makes (generations, summaries, a subagent's) is held to the Session's spend limit, read at
+  // the request. The title call is not: it goes through `options.models` as they are, and its cost is counted.
+  const limited = limitingModels(models, {
+    limit: () => settings.current().spendLimit,
+    spent: async () =>
+      opened === undefined ? undefined : (await sessionTotals(opened, storage.kv)).cost,
+  });
+
+  const harnessOptions = { models: limited, settings: harnessSettings(settings) };
 
   const harness = yield* openHarness(
     piStorage,
     options.env === undefined ? harnessOptions : { ...harnessOptions, env: options.env },
   ).pipe(fromHarness);
+
+  opened = harness.harness;
 
   // A storage error closes the Harness for good; reset the object so the next event reopens it.
   yield* Effect.sync(
@@ -443,6 +472,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const inspect = harness.inspect.pipe(fromHarness);
 
+  /** What watches of the Session's usage run when it changes outside the Harness's ledgers. */
+  const usageListeners = new Set<() => void>();
+
   /**
    * Names the Session after its first answer (`docs/spec.md` → Client and protocol → Titles). The root's first message
    * and answer come from its first entries; a first Run so long that its answer is past them is named by its message.
@@ -450,6 +482,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const titles = titleTask({
     kv,
     models,
+    // The call is counted in the Session's spend, though no conversation holds it.
+    onUsage: (usage) => {
+      recordTitleUsage(kv, usage);
+
+      for (const listener of usageListeners) listener();
+    },
     // The `small` role's model; the Session's own (its pick, else the default) when the roles hold none.
     model: () =>
       settings.current().subagents.roles.small?.model ??
@@ -848,6 +886,69 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
   );
 
+  /** The Session's usage and limit; one per change, the first being how it stands. */
+  const usageUpdates = Stream.callback<SessionUsage, SessionError>((queue) =>
+    Effect.flatMap(Effect.context<never>(), (services) =>
+      Effect.acquireRelease(
+        attempt("watchUsage", async () => {
+          const run = Effect.runForkWith(services);
+          // Usage is committed with each response, so a request that ends changes the task graph after it.
+          const graph = await harness.harness.watchTaskGraph(context);
+          // Reads are made one at a time, in the order the changes came.
+          let chain: Promise<void> = Promise.resolve();
+          let stopped = false;
+
+          const publish = (): void => {
+            if (stopped) return;
+
+            chain = chain.then(async () => {
+              try {
+                const totals = await sessionTotals(harness.harness, kv);
+
+                Queue.offerUnsafe(queue, usageMessage(totals, settings.current().spendLimit));
+              } catch (error) {
+                // One failed read must not wedge the chain: the next change reads again.
+                run(Effect.logWarning("Usage read failed", error));
+              }
+            });
+          };
+
+          usageListeners.add(publish);
+          publish();
+          graph.start(() => {
+            publish();
+
+            return Promise.resolve();
+          });
+          void graph.closed.then((end) =>
+            Queue.failCauseUnsafe(
+              queue,
+              Cause.fail(SessionError.make({ operation: "watchUsage", message: watchEnded(end) })),
+            ),
+          );
+
+          return {
+            graph,
+            stop: () => {
+              stopped = true;
+              usageListeners.delete(publish);
+            },
+          };
+        }),
+        (watch) =>
+          Effect.promise(async () => {
+            watch.stop();
+            await watch.graph.stop();
+          }),
+      ),
+    ),
+  ).pipe(
+    // A burst of changes is one message, and a change that alters nothing a client shows is none.
+    Stream.groupedWithin(Number.MAX_SAFE_INTEGER, USAGE_INTERVAL),
+    Stream.map((updates) => updates[updates.length - 1]!),
+    Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
+  );
+
   const events = (conversationId: ConversationId) =>
     Stream.callback<ReadonlyArray<AgentEvent>, SessionError>((queue) =>
       Effect.acquireRelease(
@@ -965,6 +1066,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ),
       ),
     taskGraph: taskGraphSummaries,
+    usage: usageUpdates,
     events,
     todos,
   } satisfies SessionHostService;

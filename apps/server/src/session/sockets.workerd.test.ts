@@ -16,7 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { constructions, type TestSession } from "./host.fixture.ts";
+import { constructions, REQUEST_COST, type TestSession } from "./host.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -711,6 +711,68 @@ describe("a task graph watch", () => {
 
     expect(graphs(await client.until((messages) => graphs(messages).length === 1, before))).toEqual(
       [{ type: "task_graph", agents: [], background: [] }],
+    );
+  });
+});
+
+/** The usage messages among `messages`, in order. */
+const usages = (messages: readonly ServerMessage[]) =>
+  Arr.flatMap(messages, (message) => (message.type === "usage" ? [message] : []));
+
+describe("a usage watch", () => {
+  it("sends what the Session has spent and its limit, again after each answer, and stops once unwatched", async () => {
+    const stub = fresh();
+    const registry = await registryOf(stub);
+    const client = await connect(stub);
+
+    await registry.updateSettings({ spendLimit: { perSession: 5 } }, 1);
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["It is done."]));
+
+    client.send({ type: "watch_usage", id: "usage" });
+    expect(await client.answer("usage")).toEqual({ type: "result", id: "usage", result: null });
+
+    // Nothing spent yet, and no limit: the Session reads the saved settings when it admits a request.
+    const [first] = usages(await client.until((messages) => usages(messages).length === 1));
+
+    expect(first).toMatchObject({ type: "usage", cost: 0, totalTokens: 0 });
+    expect(await recordedWatches(stub)).toEqual([{ watches: [], usage: true }]);
+
+    client.send({
+      type: "submit",
+      id: "submit",
+      input: "Do it",
+    });
+
+    const spent = usages(
+      await client.until((messages) => Arr.some(usages(messages), (usage) => usage.cost > 0)),
+    ).at(-1);
+
+    expect(spent?.cost).toBeCloseTo(REQUEST_COST);
+    expect(spent?.totalTokens).toBeGreaterThan(0);
+    expect(spent?.limit).toBe(5);
+
+    client.send({ type: "unwatch_usage", id: "unwatch" });
+    await client.answer("unwatch");
+    expect(await recordedWatches(stub)).toEqual([{ watches: [], usage: false }]);
+  });
+
+  it("survives hibernation: the woken Session sends the usage again on the same socket", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch_usage" });
+    await client.until((messages) => usages(messages).length === 1);
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    // A message wakes it.
+    client.send({ type: "unwatch", id: "wake", conversationId: root });
+    await client.answer("wake");
+
+    expect(usages(await client.until((messages) => usages(messages).length === 1, before))).toEqual(
+      [expect.objectContaining({ type: "usage", cost: 0, limit: null })],
     );
   });
 });

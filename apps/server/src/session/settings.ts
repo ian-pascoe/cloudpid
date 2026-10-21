@@ -40,6 +40,8 @@ export type SessionSettingsValues = {
   readonly subagents: SubagentOptions;
   /** Which tools every conversation's model is offered; the rest are deferred. */
   readonly toolSearch: ToolSearchOptions;
+  /** US dollars the Session may spend on model requests; `null` for no limit. */
+  readonly spendLimit: number | null;
 };
 
 /** The parts of `settings` a Session uses. */
@@ -51,6 +53,7 @@ export const valuesFrom = (settings: Settings): SessionSettingsValues => ({
     settings.extensions["subagents"],
   ),
   toolSearch: { offered: settings.tools.offered },
+  spendLimit: settings.spendLimit.perSession,
 });
 
 export type SessionSettingsService = {

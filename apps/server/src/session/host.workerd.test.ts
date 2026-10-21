@@ -4,7 +4,7 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "c
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import type { TestSession } from "./host.fixture.ts";
+import { REQUEST_COST, type TestSession } from "./host.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -667,5 +667,88 @@ describe("a Session's title", () => {
     const [request] = await titleRequests(stub);
 
     expect(request?.messages.length).toBeLessThan(10_000);
+  });
+});
+
+describe("a Session's spend limit", () => {
+  const ask = (stub: DurableObjectStub<TestSession>, n: number) =>
+    runInDurableObject(stub, (instance: TestSession) =>
+      instance.prompt({ requestId: `turn-${n}`, text: "hi" }),
+    );
+
+  const requests = (stub: DurableObjectStub<TestSession>) =>
+    runInDurableObject(stub, (instance: TestSession) => instance.requests());
+
+  it("refuses the request that would follow once the Session has spent its limit, and tells the owner why", async () => {
+    const { stub, registry } = await registered();
+
+    // One request costs `REQUEST_COST`: the Run's second request finds the Session at its limit.
+    await registry.updateSettings({ spendLimit: { perSession: REQUEST_COST } }, 1);
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script(['call:echo:{"text":"one"}', "never sent"]),
+    );
+
+    expect(await ask(stub, 1)).toMatchObject({ status: "unanswered", reason: "model_error" });
+    expect(await requests(stub)).toHaveLength(1);
+
+    await settles(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([{ kind: "failed", reason: expect.stringContaining("out of budget") }]),
+    );
+  });
+
+  it("holds every later prompt to it, across an eviction, until the limit is raised or cleared", async () => {
+    const { stub, registry } = await registered();
+
+    await registry.updateSettings({ spendLimit: { perSession: REQUEST_COST } }, 1);
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["first answer"]));
+    expect(await ask(stub, 1)).toMatchObject({ status: "answered", text: "first answer" });
+
+    await evictDurableObject(stub);
+    expect(await ask(stub, 2)).toMatchObject({ status: "unanswered", reason: "model_error" });
+    expect(await requests(stub)).toHaveLength(1);
+
+    await registry.updateSettings({ spendLimit: { perSession: 10 } }, 2);
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["second answer"]));
+    expect(await ask(stub, 3)).toMatchObject({ status: "answered", text: "second answer" });
+
+    await registry.updateSettings({ spendLimit: { perSession: REQUEST_COST } }, 3);
+    expect(await ask(stub, 4)).toMatchObject({ status: "unanswered", reason: "model_error" });
+
+    await registry.updateSettings({}, 4);
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(["third answer"]));
+    expect(await ask(stub, 5)).toMatchObject({ status: "answered", text: "third answer" });
+  });
+
+  it("is off by default: a Session spends without bound", async () => {
+    const { stub } = await registered();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script(["one", "two", "three"]),
+    );
+
+    for (const n of [1, 2, 3]) {
+      expect(await ask(stub, n)).toMatchObject({ status: "answered" });
+    }
+  });
+
+  it("does not stop the title call, which it counts", async () => {
+    const session = await registered();
+
+    await session.registry.updateSettings({ spendLimit: { perSession: REQUEST_COST } }, 1);
+    await runInDurableObject(session.stub, (instance: TestSession) => {
+      instance.script(["It is fixed."]);
+      instance.titles(["Fix the login bug"]);
+    });
+
+    // The answer is the Session's only request under its limit; the title call goes through although it is now at it.
+    expect(await ask(session.stub, 1)).toMatchObject({ status: "answered" });
+    await settles(async () =>
+      expect((await session.registry.listSessions())[0]?.titleSource).toBe("generated"),
+    );
+    expect(
+      await runInDurableObject(session.stub, (instance: TestSession) => instance.spent()),
+    ).toBeCloseTo(2 * REQUEST_COST);
   });
 });

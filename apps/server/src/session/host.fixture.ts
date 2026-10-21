@@ -50,6 +50,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
+import { pricedModels } from "./priced.fixture.ts";
+import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import {
   reloadSessionExtensions,
@@ -146,6 +148,9 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
 
 /** The models the test provider serves: those the default settings and a Session's choice may name. */
 const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as const;
+
+/** What each answered request costs, in US dollars: the faux provider has no prices, so the fixture gives it one. */
+export const REQUEST_COST = 0.25;
 
 /** The model and thinking level a request asked for. */
 export type TestRequest = { readonly model: string; readonly thinking: string | undefined };
@@ -280,7 +285,7 @@ export class TestSession extends DurableObject {
               storage: ctx.storage,
               // As the Session DO's: every model call is scrubbed of the Secrets the Session holds.
               models: Effect.map(Effect.service(Secrets), (held) =>
-                scrubbingModels(imageLimitedModels(models), held),
+                scrubbingModels(imageLimitedModels(pricedModels(models, REQUEST_COST)), held),
               ),
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
@@ -406,6 +411,19 @@ export class TestSession extends DurableObject {
           return first?.type === "snapshot" ? Effect.succeed(first) : Effect.die("Not a snapshot");
         }),
       ),
+    );
+  }
+
+  /** What the Session has spent, in US dollars: every conversation's requests and the title calls'. */
+  spent(): Promise<number> {
+    const { kv } = this.ctx.storage;
+
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        return (yield* Effect.promise(() => sessionTotals(harness.harness, kv))).cost;
+      }),
     );
   }
 
