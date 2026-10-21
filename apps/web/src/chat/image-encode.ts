@@ -1,11 +1,16 @@
 // The browser's side of an attached image going inline (`image-budget.ts` fits them): decode the file, scale it to a
 // 1568 px long edge on a canvas and encode it as JPEG, or WebP (PNG where the browser cannot encode WebP) when it has
 // transparency. Each file is decoded and drawn once, and the drawing kept until the file is sent or removed; encodings
-// are kept per file and quality, so fitting a changed set of images again costs no new work.
+// are kept per file and quality, so fitting a changed set of images again costs no new work. The `ImageEncoder`
+// service is this module as Effects, which the composer's Attachments fit their pictures with.
 
-// @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off newPromise:off -- browser code with no Effect runtime: promises and canvas callbacks are the platform here.
+// @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off newPromise:off -- the browser's canvas and file reader, whose callbacks and promises the `ImageEncoder` service wraps.
 
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import { INLINE_IMAGE_BUDGET } from "@cloudpid/protocol";
 import { type Encoded, fitLongEdge, QUALITIES } from "./image-budget.ts";
 
@@ -202,3 +207,40 @@ export const encodeImage = async (file: File, quality: number): Promise<Encoded>
 
   return encoded;
 };
+
+/** Why an image could not be read or encoded: it goes as a file only. */
+export class ImageError extends Schema.TaggedError<ImageError, { readonly brand: unique symbol }>()(
+  "ImageError",
+  { message: Schema.String },
+) {}
+
+export interface ImageEncoderApi {
+  /** Decode `file` once and draw it at the size the model gets: fails when the browser cannot read it. */
+  readonly probe: (file: File) => Effect.Effect<void, ImageError>;
+  /** `file` for the model at `quality`, from its drawing. */
+  readonly encode: (file: File, quality: number) => Effect.Effect<Encoded, ImageError>;
+  /** Drop what was kept of `file` for encoding: its message was sent, or it was removed. */
+  readonly release: (file: File) => Effect.Effect<void>;
+}
+
+/** The browser's decoding and encoding of attached pictures, a service so the Attachments run under Node. */
+export class ImageEncoder extends Context.Service<ImageEncoder, ImageEncoderApi>()(
+  "@cloudpid/web/chat/image-encode/ImageEncoder",
+) {}
+
+const imageCall = <A>(call: () => Promise<A>): Effect.Effect<A, ImageError> =>
+  Effect.tryPromise({
+    try: call,
+    catch: (error) =>
+      ImageError.make({ message: Predicate.isError(error) ? error.message : String(error) }),
+  });
+
+/** The page's canvas. Building it touches nothing of the page: each operation does, when it runs. */
+export const ImageEncoderLive: Layer.Layer<ImageEncoder> = Layer.succeed(ImageEncoder)({
+  probe: (file) => imageCall(() => probeImage(file)).pipe(Effect.asVoid),
+  encode: (file, quality) => imageCall(() => encodeImage(file, quality)),
+  release: (file) =>
+    Effect.sync(() => {
+      releaseImage(file);
+    }),
+});

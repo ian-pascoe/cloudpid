@@ -1,8 +1,11 @@
 // @effect-diagnostics preferEffectArray:off globalDate:off -- browser code in a React app with no Effect runtime: native arrays and Date are the platform here.
-import type { BrowserHandoffRequest, TaskGraphSummary } from "@cloudpid/protocol";
+import type { BrowserHandoffRequest } from "@cloudpid/protocol";
+import { useAtomValue } from "@effect/atom-react";
 import { ExternalLink, Hand } from "lucide-react";
 import { buttonVariants } from "../components/ui/button.tsx";
 import { agentLabel } from "../session/agents.ts";
+import { browserHandoffRequestsAtom, taskGraphAtom } from "../session/atoms.ts";
+import { useShownSessionId } from "./conversation.ts";
 
 /** The time of day a handoff times out, as the owner reads it. */
 const until = (deadline: number): string =>
@@ -49,18 +52,17 @@ const BrowserHandoffPrompt = ({
   </section>
 );
 
-/** The Browser Handoffs waiting for the owner, oldest first. */
-export const BrowserHandoffRequests = ({
-  requests,
-  graph,
-}: {
-  requests: readonly BrowserHandoffRequest[];
-  graph: TaskGraphSummary | null;
-}) =>
-  requests.map((request) => (
+/** The Browser Handoffs waiting for the owner in the Session shown, oldest first. */
+export const BrowserHandoffRequests = () => {
+  const sessionId = useShownSessionId();
+  const requests = useAtomValue(browserHandoffRequestsAtom(sessionId));
+  const graph = useAtomValue(taskGraphAtom(sessionId));
+
+  return requests.map((request) => (
     <BrowserHandoffPrompt
       key={request.id}
       request={request}
       agent={agentLabel(graph, request.conversationId)}
     />
   ));
+};

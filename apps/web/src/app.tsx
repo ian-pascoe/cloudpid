@@ -1,6 +1,6 @@
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Match from "effect/Match";
-import { pageProblemAtom, sessionGoneAtom } from "./app-state.ts";
+import { pageProblemAtom } from "./app-state.ts";
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
 import { pushSyncAtom } from "./push-state.ts";
@@ -41,7 +41,6 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
   const names = useAtomValue(workspaceNamesAtom);
   const problem = useAtomValue(pageProblemAtom);
   const setProblem = useAtomSet(pageProblemAtom);
-  const gone = useAtomSet(sessionGoneAtom);
   const actions = usePageActions();
 
   const workspaceName =
@@ -93,9 +92,6 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
           />
         )
       }
-      onDeleted={() => {
-        gone(sessionId);
-      }}
     />
   );
 };

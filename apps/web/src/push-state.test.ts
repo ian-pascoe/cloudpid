@@ -7,6 +7,8 @@ import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as Reactivity from "effect/reactivity/Reactivity";
 import { afterEach, vi } from "vitest";
+import { ImageEncoderLive } from "./chat/image-encode.ts";
+import { UploadsLive } from "./chat/uploads.ts";
 import {
   disablePushAtom,
   enablePushAtom,
@@ -82,6 +84,8 @@ const device = (options: {
         Layer.mergeAll(
           BrowserLayer,
           Layer.succeed(PushManager, browser),
+          UploadsLive,
+          ImageEncoderLive,
           registry,
           Reactivity.layer,
         ),
