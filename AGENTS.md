@@ -18,9 +18,17 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 - Runtime dependencies go in the package that imports them (`pnpm --filter @cloudpid/<pkg> add …`); the ones still at the root (`pi-*`, `@cloudflare/*`) move to their first consumer when a ticket starts using them.
 - Relative imports end in `.ts` (`allowImportingTsExtensions` is on in the shared tsconfig), so every file also runs under plain Node type stripping.
 - Effect's `http` modules are unstable but allowed through `allowedUnstableApis` in the shared tsconfig; add other unstable subtrees (`effect/rpc`, …) there when a ticket adopts them.
-- `skills/` is bundled skill content, not a package.
+- `skills/` is bundled skill content, not a package (see _Skills_ below).
 
 `pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set; the `effect-tsgo` patch still runs.
+
+## Skills
+
+`skills/` holds the headless-safe skills from the owner's local pi config, copied whole (contents, not links). The Workspace DO mounts them read-only with computer's `WorkerBundle` at `/workspace/.agents/skills` (`apps/server/src/workspace/Workspace.ts`), so a write under it fails with `EROFS` and a deploy that changes them replaces the copy. They ship inside the Workspaces Worker's upload as `?raw` string imports listed in `apps/server/src/workspace/bundled-skills.generated.ts`, so keep them to text and small.
+
+To refresh, run `node scripts/sync-skills.mjs` (sources: `~/.pi/agent/skills`, then `~/.agents/skills`; `--source <dir>` overrides). It copies the skills named in `INCLUDED_SKILLS` at the top of the script (add or remove a skill there), drops `agents/` metadata and the large local-browser files listed in `EXCLUDED_PATHS`, refuses binaries, files over 128 KB and anything that looks like a credential, and rewrites `bundled-skills.generated.ts`; commit both. `skills/` is outside oxfmt and oxlint, and `bundled-skills.test.ts` fails if the manifest and the directory drift. Licence and credit notes stay in the skills' own frontmatter and files; `skills/NOTICE.md` says where they came from.
+
+The `skills` prompt section (`@cloudpid/extensions/skills`) lists the skills in `.agents/skills` of the conversation's `cwd` and of each directory above it up to `/workspace`, nearest first (so a repo's skills beat the bundled ones of the same name), in the format local pi uses; skills with `disable-model-invocation: true` are not listed, and the section says they are for the user to name. Every Workspace therefore has a `.agents/` directory at its root.
 
 ## Infra
 

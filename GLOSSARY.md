@@ -70,6 +70,10 @@ _Avoid_: just-bash (as a product name), lite shell
 The Linux Backend of a Workspace, which runs real programs against the same files.
 _Avoid_: Sandbox, VM, box
 
+**Skill**:
+A directory with a `SKILL.md` (name, description, instructions) and supporting files that the agent reads by path when a task matches its description. Bundled Skills ship with cloudpid and are mounted read-only at `/workspace/.agents/skills`; a repo may add its own in `.agents/skills`.
+_Avoid_: Plugin, command
+
 **Toolchain**:
 A program a Workspace declares in its mise configuration and the Container installs on demand.
 _Avoid_: Dependency, package (for tools)

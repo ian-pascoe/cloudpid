@@ -458,6 +458,9 @@ importers:
       htmlparser2:
         specifier: 12.0.0
         version: 12.0.0
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
     devDependencies:
       '@cloudpid/config':
         specifier: workspace:*

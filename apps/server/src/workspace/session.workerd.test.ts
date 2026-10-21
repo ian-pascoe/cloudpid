@@ -69,7 +69,8 @@ describe("a Session's coding tools", () => {
       "alpha\ngamma\n",
       "notes.txt:2: gamma",
       "notes.txt",
-      "notes.txt",
+      // Every Workspace holds the bundled skills, in `.agents/skills`.
+      ".agents/\nnotes.txt",
       "alpha\ngamma\n",
     ]);
 
@@ -98,12 +99,12 @@ describe("a Session's coding tools", () => {
 
     expect(await first.run([call("read", { path: "shared.txt" }), call("ls", {})])).toEqual([
       "from first\nfrom second\n",
-      "shared.txt",
+      ".agents/\nshared.txt",
     ]);
     // A Session created afterwards finds the files: they belong to the Workspace, not to a Session.
-    expect(await sessionOn(slug).run([call("grep", { pattern: "second" })])).toEqual([
-      "shared.txt:2: from second",
-    ]);
+    expect(await sessionOn(slug).run([call("grep", { pattern: "second", glob: "*.txt" })])).toEqual(
+      ["shared.txt:2: from second"],
+    );
   });
 
   it("work in the repo directory they are bound to: files, search, commands and git", async () => {
@@ -142,6 +143,6 @@ describe("a Session's coding tools", () => {
 
     await one.run([call("write", { path: "mine.txt", content: "x" })]);
 
-    expect(await other.run([call("ls", {})])).toEqual(["(empty directory)"]);
+    expect(await other.run([call("ls", {})])).toEqual([".agents/"]);
   });
 });

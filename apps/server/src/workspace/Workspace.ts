@@ -7,6 +7,7 @@
 import {
   noopObserver,
   Workspace as ComputerWorkspace,
+  WorkerBundle,
   type WorkspaceObserver,
   type WorkspaceStub,
 } from "@cloudflare/computer";
@@ -25,12 +26,14 @@ import {
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
 import { DurableObject } from "cloudflare:workers";
+import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { workerShellGit } from "./git.ts";
 import { IDLE_STOP_MS, IdleStop } from "./idle.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
 import {
   DEFAULT_INSTANCE,
+  SKILLS_MOUNT,
   WORKSPACE_CONTAINER,
   WORKSPACE_BINDING,
   WORKSPACE_ROOT,
@@ -112,6 +115,9 @@ export class Workspace extends ContainerHost {
 
     this.#workspace = new ComputerWorkspace({
       storage: ctx.storage,
+      // The bundled skills (`skills/`) ship in this Worker and appear read-only in every Workspace: a write under the
+      // mount fails with EROFS, and a deploy that changes the files replaces the copy.
+      mounts: { [SKILLS_MOUNT]: WorkerBundle(BUNDLED_SKILLS) },
       observer: this.#containerUseObserver(),
       // The Worker Shell's `git` runs on computer's git client. `bash` routes only a few read-only subcommands there
       // (`bash-routing.ts`): the Container's real git is the only one that writes `.git`.
@@ -175,7 +181,10 @@ export class Workspace extends ContainerHost {
   }
 
   /** One of `ComputerExecutionEnv`'s file operations, answered as plain data. */
-  fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+  async fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+    // The bundled skills are copied into the files the first time the mounts are indexed, which `ready()` does once.
+    await this.#workspace.ready();
+
     return this.#host.handle(request);
   }
 

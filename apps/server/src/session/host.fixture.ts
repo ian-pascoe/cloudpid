@@ -1,5 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off globalDateInEffect:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off globalDateInEffect:off preferEffectArray:off preferEffectRecord:off
 // The workerd test Worker: a Durable Object that hosts a `SessionHost` and its `SessionSockets` over the faux provider,
 // as the Session DO hosts them over the model proxy. Tests drive it with `runInDurableObject()` and client sockets,
 // evict it, and run its alarm.
@@ -455,6 +455,11 @@ export class TestSession extends DurableObject {
     return Effect.runPromise(this.#host.configure(change));
   }
 
+  /** The system prompt sections the model's latest request carried, by key. */
+  sections(): Readonly<Record<string, string>> {
+    return this.ctx.storage.kv.get<Record<string, string>>("sections") ?? {};
+  }
+
   /** The model and thinking level of each request the model received, oldest first. */
   requests(): readonly TestRequest[] {
     return this.ctx.storage.kv.get<TestRequest[]>("requests") ?? [];
@@ -591,13 +596,28 @@ export class TestSession extends DurableObject {
 
   /** The next scripted response; the script position is stored before the response is used. */
   #step(): FauxResponseStep {
-    return (_request, options, _state, model) => {
+    return (request, options, _state, model) => {
       const { kv } = this.ctx.storage;
 
       kv.put("request-messages", [
         ...(kv.get<string[]>("request-messages") ?? []),
-        JSON.stringify(_request.messages),
+        JSON.stringify(request.messages),
       ]);
+
+      // The system prompt sections in effect for this request, replayed from its system messages.
+      const sections: Record<string, string> = {};
+
+      for (const message of request.messages) {
+        if (message.role !== "system") continue;
+
+        for (const [key, value] of Object.entries(message.sections ?? {})) {
+          if (value === null) delete sections[key];
+          else sections[key] = value;
+        }
+      }
+
+      kv.put("sections", sections);
+
       kv.put("requests", [
         ...(kv.get<TestRequest[]>("requests") ?? []),
         { model: model.id, thinking: options?.reasoning } satisfies TestRequest,

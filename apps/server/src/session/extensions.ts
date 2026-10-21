@@ -9,6 +9,7 @@ import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContextManagement } from "@cloudpid/extensions/context";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
+import { Skills } from "@cloudpid/extensions/skills";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Web, WebConfig, WebNetworkLive } from "@cloudpid/extensions/web";
 import type { Extension } from "@earendil-works/pi-durable";
@@ -24,7 +25,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
  * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; and the secret tools
  * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
- * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query); and `browser`, which drives the
+ * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query); the `skills` section, which lists
+ * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
  * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
  * browser's Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through). Needs `WebConfig`: the search keys, which the Session DO reads with
@@ -50,6 +52,7 @@ export const sessionExtensions: Effect.Effect<
   Subagents,
   ContextManagement,
   Browser,
+  Skills,
 ]).pipe(
   // Last, so its hooks see every other extension's results; only these tools' arguments resolve Secrets.
   Effect.flatMap((extensions) => {

@@ -10,6 +10,9 @@ export const WORKSPACE_BINDING = "WORKSPACES";
  */
 export { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
 
+/** Where the bundled skills are mounted, read-only, in every Workspace: the Workspace's own `.agents/skills` (docs/spec.md → Filesystem and tools). */
+export const SKILLS_MOUNT = "/workspace/.agents/skills";
+
 /**
  * The Container the Workspace DO runs the sandbox image (`apps/sandbox-image`) as: its logical id in the stack, and the key of the image in
  * `ctx.container.images` (alchemy names each Container's image by its id).
