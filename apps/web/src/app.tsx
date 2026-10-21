@@ -1,5 +1,6 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
@@ -14,8 +15,9 @@ import {
 import { SessionMenu } from "./session-menu.tsx";
 import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle } from "./sidebar.tsx";
-import { useSessions } from "./use-sessions.ts";
-import { useWorkspaces } from "./use-workspaces.ts";
+import { useSessionActions } from "./session-actions.ts";
+import { sessionListAtom, sessionsAtom } from "./sessions.ts";
+import { workspaceNamesAtom } from "./workspaces-state.ts";
 import { WorkspacesPage } from "./workspaces-page.tsx";
 
 export const App = () => {
@@ -25,21 +27,17 @@ export const App = () => {
   const workspacesOpen = isWorkspacesPath(path);
   // On a narrow screen the list is shown alone; any other page takes its place.
   const listOnly = sessionId === undefined && !settingsOpen && !workspacesOpen;
-  const sessions = useSessions();
-  const workspaces = useWorkspaces();
-  const session = sessions.sessions?.find((known) => known.id === sessionId);
+  const sessions = useAtomValue(sessionListAtom);
+  const names = useAtomValue(workspaceNamesAtom);
+  const refresh = useAtomRefresh(sessionsAtom);
+  const actions = useSessionActions();
+  const session = sessions?.find((known) => known.id === sessionId);
   const [notice, setNotice] = useState<string | null>(null);
   // An archive or unarchive asked on the Session's page that failed, shown there: the list may be hidden (a phone).
   const [problem, setProblem] = useState<string | null>(null);
   // Sessions this page asked to delete: their socket's close can come before the answer, and is then no news.
   const deletedHere = useRef(new Set<string>());
-  const { refresh, archive, unarchive, delete: deleteSession } = sessions;
-
-  const names = useMemo(
-    () =>
-      Object.fromEntries((workspaces.workspaces ?? []).map((known) => [known.slug, known.name])),
-    [workspaces.workspaces],
-  );
+  const { archive, unarchive, delete: deleteSession, create, rename } = actions;
 
   // A notice is about what happened before the owner moved on: opening a Session clears it, and its page's problem.
   useEffect(() => {
@@ -51,7 +49,7 @@ export const App = () => {
   /** A Session is gone: leave its page if it is the one shown, and say why. */
   const left = useCallback(
     (id: string, message: string) => {
-      void refresh();
+      refresh();
 
       if (id !== sessionId) return;
 
@@ -108,7 +106,7 @@ export const App = () => {
 
     return {
       newSession: async () => {
-        const created = await sessions.create(
+        const created = await create(
           session.repo === null
             ? { workspace: session.workspace }
             : { workspace: session.workspace, repo: session.repo },
@@ -122,14 +120,13 @@ export const App = () => {
       },
       archive: () => pageActions.archive(session.id),
     };
-  }, [session, sessions.create, pageActions]);
+  }, [session, create, pageActions]);
 
   return (
     <div className="flex h-dvh">
       {/* On a narrow screen the list and the chat take turns. */}
       <Sidebar
-        sessions={{ ...sessions, delete: deleteHere }}
-        names={names}
+        actions={{ archive, unarchive, delete: deleteHere }}
         activeId={sessionId}
         settingsActive={settingsOpen}
         workspacesActive={workspacesOpen}
@@ -146,7 +143,7 @@ export const App = () => {
         {settingsOpen ? (
           <SettingsPage />
         ) : workspacesOpen ? (
-          <WorkspacesPage sessions={sessions} workspaces={workspaces} />
+          <WorkspacesPage />
         ) : sessionId === undefined ? (
           <div className="m-auto max-w-sm px-6 text-center">
             <h2 className="text-lg font-semibold">Pick a session, or start a new one</h2>
@@ -164,7 +161,7 @@ export const App = () => {
                 ? undefined
                 : {
                     current: session.title ?? "",
-                    save: (title) => sessions.rename(session.id, title),
+                    save: (title) => rename(session.id, title),
                   }
             }
             archived={

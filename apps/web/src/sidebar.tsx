@@ -1,14 +1,18 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import type { SessionRecord } from "@cloudpid/protocol";
+import { useAtomValue } from "@effect/atom-react";
 import { ChevronRight, FolderGit2, Plus, Settings as SettingsIcon, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
 import { cn } from "./lib/utils.ts";
 import { navigate, SETTINGS_PATH, sessionPath, WORKSPACES_PATH } from "./router.ts";
-import type { Sessions } from "./use-sessions.ts";
+import { failureOf } from "./registry.ts";
+import { useSessionActions } from "./session-actions.ts";
 import { type SessionActions, SessionMenu } from "./session-menu.tsx";
+import { createSessionAtom, sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
+import { workspaceNamesAtom } from "./workspaces-state.ts";
 import { groupByWorkspace, splitArchived, type WorkspaceGroup } from "./workspaces.ts";
 
 export const sessionTitle = (session: SessionRecord): string => session.title ?? "Untitled session";
@@ -122,8 +126,7 @@ const SessionGroups = ({
 );
 
 export const Sidebar = ({
-  sessions,
-  names,
+  actions,
   activeId,
   settingsActive,
   workspacesActive,
@@ -132,9 +135,8 @@ export const Sidebar = ({
   onDeleted,
   className,
 }: {
-  sessions: Sessions;
-  /** Each Workspace's name, by slug. */
-  names: Readonly<Record<string, string>>;
+  /** What each item's menu does. */
+  actions: SessionActions;
   activeId: string | undefined;
   settingsActive: boolean;
   workspacesActive: boolean;
@@ -145,6 +147,13 @@ export const Sidebar = ({
   onDeleted: (id: string) => void;
   className?: string;
 }) => {
+  const sessions = useAtomValue(sessionListAtom);
+  const listError = useAtomValue(sessionsErrorAtom);
+  const names = useAtomValue(workspaceNamesAtom);
+  // Why the last new Session could not be created, here or by the composer's `/new`.
+  const created = useAtomValue(createSessionAtom);
+  const createError = failureOf(created);
+  const { create: createSession } = useSessionActions();
   const [creating, setCreating] = useState(false);
   // An archive or unarchive from an item's menu that failed: shown with the list's own error.
   const [problem, setProblem] = useState<string | null>(null);
@@ -154,14 +163,14 @@ export const Sidebar = ({
       archive: (id) => {
         setProblem(null);
 
-        return sessions.archive(id);
+        return actions.archive(id);
       },
       unarchive: (id) => {
         setProblem(null);
 
-        return sessions.unarchive(id);
+        return actions.unarchive(id);
       },
-      delete: sessions.delete,
+      delete: actions.delete,
     },
     onDeleted,
     onFailure: setProblem,
@@ -170,14 +179,15 @@ export const Sidebar = ({
   const create = async () => {
     setCreating(true);
 
-    const session = await sessions.create();
+    const session = await createSession();
 
     setCreating(false);
 
     if (session !== undefined) navigate(sessionPath(session.id));
   };
 
-  const { active, archived } = splitArchived(sessions.sessions ?? []);
+  const { active, archived } = splitArchived(sessions ?? []);
+  const error = problem ?? createError ?? listError;
 
   return (
     <nav aria-label="Sessions" className={cn("flex w-full flex-col border-r md:w-72", className)}>
@@ -204,13 +214,13 @@ export const Sidebar = ({
           </button>
         </div>
       )}
-      {(problem ?? sessions.error) !== null && (
+      {error !== null && (
         <p role="alert" className="mx-3 mb-2 text-sm whitespace-pre-wrap text-destructive">
-          {problem ?? sessions.error}
+          {error}
         </p>
       )}
       <div className="flex-1 overflow-y-auto px-2 pb-3">
-        {sessions.sessions === null ? (
+        {sessions === null ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading…</p>
         ) : (
           <div className="flex flex-col gap-4">

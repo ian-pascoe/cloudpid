@@ -1,138 +1,63 @@
-// The Registry operations (`RegistryRpcs`, Effect RPC over HTTP) as promises, for the Session list.
-import type { SettingsOverrides, WorkspaceSettingsOverrides } from "@cloudpid/config";
-import {
-  type PushState,
-  type PushSubscription,
-  RegistryRpcs,
-  RPC_PATH,
-  type SessionRecord,
-  type SettingsState,
-  type WorkspaceRecord,
-  type WorkspaceSettingsState,
-} from "@cloudpid/protocol";
-import * as Context from "effect/Context";
+// The Registry operations (`RegistryRpcs`, Effect RPC over HTTP) as an atom client: queries cache their answers, and a
+// mutation invalidates the keys of the queries it changes (ADR-0011).
+import { RegistryRpcs, RPC_PATH } from "@cloudpid/protocol";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Layer from "effect/Layer";
-import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Predicate from "effect/Predicate";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as AtomRpc from "effect/reactivity/AtomRpc";
+import * as Reactivity from "effect/reactivity/Reactivity";
 import * as RpcClient from "effect/rpc/RpcClient";
-import type { RpcClientError } from "effect/rpc/RpcClientError";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
-class Registry extends Context.Service<
-  Registry,
-  RpcClient.FromGroup<typeof RegistryRpcs, RpcClientError>
->()("@cloudpid/web/registry") {}
+/**
+ * What a query listens to and a mutation invalidates: the Session list, the Workspace list, a Workspace's repos and
+ * its own settings by slug, the settings, and this browser's push subscription.
+ */
+export type RegistryKey =
+  | "sessions"
+  | "workspaces"
+  | `repos:${string}`
+  | `workspace-settings:${string}`
+  | "settings"
+  | "push";
 
-/** An answer, or why there is none. */
-export type Answer<A> =
-  | { readonly ok: true; readonly value: A }
-  | { readonly ok: false; readonly message: string };
-
-export interface RegistryApi {
-  /** Every Session, newest first. */
-  readonly listSessions: () => Promise<Answer<readonly SessionRecord[]>>;
-  /** Register a new Session, idle, on a Workspace (the default one when none) and a repo in it (the root when none). */
-  readonly createSession: (where?: {
-    readonly workspace?: string;
-    readonly repo?: string;
-  }) => Promise<Answer<SessionRecord>>;
-  /** Name a Session: the title is the owner's from then on, and generation never replaces it. */
-  readonly renameSession: (id: string, title: string) => Promise<Answer<SessionRecord>>;
-  /** Stop everything a Session runs and take it out of the Session list; it is kept whole. */
-  readonly archiveSession: (id: string) => Promise<Answer<SessionRecord>>;
-  /** Put an archived Session back in the Session list. */
-  readonly unarchiveSession: (id: string) => Promise<Answer<SessionRecord>>;
-  /** Delete a Session for good; the files it wrote in its Workspace stay. */
-  readonly deleteSession: (id: string) => Promise<Answer<void>>;
-  /** Every Workspace, newest first. */
-  readonly listWorkspaces: () => Promise<Answer<readonly WorkspaceRecord[]>>;
-  /** Register a Workspace by slug; one already registered keeps its record. */
-  readonly createWorkspace: (slug: string) => Promise<Answer<WorkspaceRecord>>;
-  /** Name a Workspace; its slug never changes. */
-  readonly renameWorkspace: (slug: string, name: string) => Promise<Answer<WorkspaceRecord>>;
-  /** Delete a Workspace for good: its Sessions, files, Container and settings. */
-  readonly deleteWorkspace: (slug: string) => Promise<Answer<void>>;
-  /** The repos a Workspace holds, by directory name. */
-  readonly listRepos: (workspace: string) => Promise<Answer<readonly string[]>>;
-  /** Clone `source` (owner/repo or an https URL) into a Workspace; resolves to the directory it went to. */
-  readonly cloneRepo: (workspace: string, source: string) => Promise<Answer<string>>;
-  /** A Workspace's own settings (Container size and idle time) in force, and the overrides saved over the defaults. */
-  readonly getWorkspaceSettings: (workspace: string) => Promise<Answer<WorkspaceSettingsState>>;
-  /** Replace a Workspace's saved overrides; they apply at its next Container launch. */
-  readonly updateWorkspaceSettings: (
-    workspace: string,
-    overrides: WorkspaceSettingsOverrides,
-  ) => Promise<Answer<WorkspaceSettingsState>>;
-  /** The settings in force, and the overrides saved over the defaults. */
-  readonly getSettings: () => Promise<Answer<SettingsState>>;
-  /** Replace the saved overrides; overrides that do not resolve fail with a readable message, and nothing is saved. */
-  readonly updateSettings: (overrides: SettingsOverrides) => Promise<Answer<SettingsState>>;
-  /** The VAPID public key to subscribe with, and whether the Registry holds the subscription at `endpoint`. */
-  readonly getPush: (endpoint?: string) => Promise<Answer<PushState>>;
-  /** Keep this browser's Web Push subscription, so Sessions notify it. */
-  readonly subscribePush: (subscription: PushSubscription) => Promise<Answer<void>>;
-  /** Forget the subscription at `endpoint`. */
-  readonly unsubscribePush: (endpoint: string) => Promise<Answer<void>>;
-}
-
-/** A client of the main Worker at `origin`. */
-export const connectRegistry = (origin: string): RegistryApi => {
-  const client = Layer.effect(Registry, RpcClient.make(RegistryRpcs)).pipe(
-    Layer.provide(RpcClient.layerProtocolHttp({ url: new URL(RPC_PATH, origin).href })),
-    Layer.provide(RpcSerialization.layerJson),
-    Layer.provide(FetchHttpClient.layer),
-  );
-
-  const runtime = ManagedRuntime.make(client);
-
-  const answer = <A, E extends { readonly message: string }>(
-    call: Effect.Effect<A, E, Registry>,
-  ): Promise<Answer<A>> =>
-    runtime.runPromise(
-      call.pipe(
-        Effect.match({
-          onFailure: (error): Answer<A> => ({ ok: false, message: error.message }),
-          onSuccess: (value): Answer<A> => ({ ok: true, value }),
-        }),
+/** The main Worker's Registry, at `RPC_PATH` of the page's origin. */
+export class RegistryClient extends AtomRpc.Service<RegistryClient>()(
+  "@cloudpid/web/RegistryClient",
+  {
+    group: RegistryRpcs,
+    // Unwrapped, so the page's origin is read only when the client is built (never in a test, which replaces it).
+    protocol: Layer.unwrap(
+      Effect.sync(() =>
+        RpcClient.layerProtocolHttp({ url: new URL(RPC_PATH, window.location.origin).href }),
       ),
-    );
+    ).pipe(Layer.provide([RpcSerialization.layerJson, FetchHttpClient.layer])),
+  },
+) {}
 
-  return {
-    listSessions: () => answer(Registry.use((registry) => registry.listSessions())),
-    createSession: (where = {}) =>
-      answer(Registry.use((registry) => registry.createSession(where))),
-    renameSession: (id, title) =>
-      answer(Registry.use((registry) => registry.renameSession({ id, title }))),
-    archiveSession: (id) => answer(Registry.use((registry) => registry.archiveSession({ id }))),
-    unarchiveSession: (id) => answer(Registry.use((registry) => registry.unarchiveSession({ id }))),
-    deleteSession: (id) => answer(Registry.use((registry) => registry.deleteSession({ id }))),
-    listWorkspaces: () => answer(Registry.use((registry) => registry.listWorkspaces())),
-    renameWorkspace: (workspace, name) =>
-      answer(Registry.use((registry) => registry.renameWorkspace({ workspace, name }))),
-    deleteWorkspace: (workspace) =>
-      answer(Registry.use((registry) => registry.deleteWorkspace({ workspace }))),
-    createWorkspace: (slug) =>
-      answer(Registry.use((registry) => registry.createWorkspace({ slug }))),
-    listRepos: (workspace) => answer(Registry.use((registry) => registry.listRepos({ workspace }))),
-    cloneRepo: (workspace, source) =>
-      answer(Registry.use((registry) => registry.cloneRepo({ workspace, source }))),
-    getWorkspaceSettings: (workspace) =>
-      answer(Registry.use((registry) => registry.getWorkspaceSettings({ workspace }))),
-    updateWorkspaceSettings: (workspace, overrides) =>
-      answer(
-        Registry.use((registry) => registry.updateWorkspaceSettings({ workspace, overrides })),
-      ),
-    getSettings: () => answer(Registry.use((registry) => registry.getSettings())),
-    updateSettings: (overrides) =>
-      answer(Registry.use((registry) => registry.updateSettings({ overrides }))),
-    getPush: (endpoint) =>
-      answer(
-        Registry.use((registry) => registry.getPush(endpoint === undefined ? {} : { endpoint })),
-      ),
-    subscribePush: (subscription) =>
-      answer(Registry.use((registry) => registry.subscribePush({ subscription }))),
-    unsubscribePush: (endpoint) =>
-      answer(Registry.use((registry) => registry.unsubscribePush({ endpoint }))),
-  };
+/** Run `effect` as a mutation of `keys`: the queries of those keys ask again once it ends, whether or not it worked. */
+export const changing =
+  (keys: ReadonlyArray<RegistryKey>) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | Reactivity.Reactivity> =>
+    effect.pipe(Effect.ensuring(Reactivity.invalidate(keys)));
+
+/** The text a failure shows the owner: the error's own message, or the defect's. */
+export const messageOf = (cause: Cause.Cause<unknown>): string => {
+  const error = Cause.squash(cause);
+
+  return Predicate.hasProperty(error, "message") && Predicate.isString(error.message)
+    ? error.message
+    : String(error);
 };
+
+/** Why an atom's last answer is a failure, or null. */
+export const failureOf = <A, E>(result: AsyncResult.AsyncResult<A, E>): string | null =>
+  AsyncResult.isFailure(result) ? messageOf(result.cause) : null;
+
+/** Why a mutation that ended as `exit` failed, or null when it worked. */
+export const exitFailure = <A, E>(exit: Exit.Exit<A, E>): string | null =>
+  Exit.isFailure(exit) ? messageOf(exit.cause) : null;

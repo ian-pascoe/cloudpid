@@ -9,7 +9,7 @@ import {
   type PushBrowser,
   type PushStatus,
 } from "./push.ts";
-import { connectRegistry } from "./registry.ts";
+import { connectRegistry } from "./legacy-registry.ts";
 
 export interface PushStore {
   /** Whether this device is notified; null until the first answer. */

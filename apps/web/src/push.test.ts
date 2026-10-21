@@ -10,7 +10,7 @@ import {
   type PushBrowser,
   syncPush,
 } from "./push.ts";
-import type { Answer } from "./registry.ts";
+import type { Answer } from "./legacy-registry.ts";
 
 const ENDPOINT = "https://push.example.net/wpush/v2/abc";
 
