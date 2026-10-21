@@ -8,14 +8,12 @@ import type {
   ToolExecutionResult,
   ToolRegistration,
 } from "@earendil-works/pi-durable";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { invoker } from "./chord.ts";
+import { invoker, settleTyped } from "./chord.ts";
 
 /** What an Effect tool may fail with: its message becomes the error result the model sees. */
 export type ToolFailure = { readonly message: string };
@@ -77,30 +75,17 @@ const jsonSchema = <Fields extends Schema.Struct.Fields>(
   );
 };
 
-/**
- * A settled call as pi-durable expects it: a typed failure as an error result. A defect, even beside a failure, and
- * any failure of a call pi-durable cancelled are thrown, so pi-durable records them itself: as a `tool_error` result,
- * or as an aborted call.
- */
+/** A settled call as pi-durable expects it: a typed failure as an error result; see `settleTyped` for the rest. */
 const toResult =
   (context: Chord.Context) =>
   <TDetails extends JsonValue>(
     exit: Exit.Exit<ToolExecutionResult<TDetails>, ToolFailure>,
   ): ToolExecutionResult<TDetails> => {
-    if (Exit.isSuccess(exit)) return exit.value;
+    const settled = settleTyped(exit, context);
 
-    // Defects win over failures, as in Effect's own error reporting.
-    const defect = Cause.findDefect(exit.cause);
-
-    if (Result.isSuccess(defect)) throw defect.success;
-
-    const failure = Cause.findErrorOption(exit.cause);
-
-    if (Option.isNone(failure) || context.abortSignal?.aborted === true) {
-      throw Cause.squash(exit.cause);
-    }
-
-    return { isError: true, output: [{ type: "text", text: failure.value.message }] };
+    return Result.isSuccess(settled)
+      ? settled.success
+      : { isError: true, output: [{ type: "text", text: settled.failure.message }] };
   };
 
 /**

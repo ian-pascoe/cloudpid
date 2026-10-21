@@ -9,4 +9,6 @@ export { effectHook, type EffectHooks } from "./hook.ts";
 
 export { effectSection } from "./section.ts";
 
+export { effectTask, type EffectTaskDefinition, type TaskFailure } from "./task.ts";
+
 export { defineEffectTool, type EffectToolDefinition, type ToolFailure } from "./tool.ts";

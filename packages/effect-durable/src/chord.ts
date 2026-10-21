@@ -6,6 +6,8 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Tracer from "effect/Tracer";
 import { CallerFrame, captureFrame } from "./frame.ts";
 
@@ -40,4 +42,29 @@ export const settle = <A, E>(exit: Exit.Exit<A, E>): A => {
   if (Exit.isSuccess(exit)) return exit.value;
 
   throw Cause.squash(exit.cause);
+};
+
+/**
+ * An invocation's value, or its typed failure. A defect, even beside a failure, and any failure of an invocation whose
+ * Context was cancelled are thrown, so pi-durable records them itself, as a throw or as a cancellation.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- as `settle`: it runs in Promise code.
+export const settleTyped = <A, E>(
+  exit: Exit.Exit<A, E>,
+  context: Chord.Context,
+): Result.Result<A, E> => {
+  if (Exit.isSuccess(exit)) return Result.succeed(exit.value);
+
+  // Defects win over failures, as in Effect's own error reporting.
+  const defect = Cause.findDefect(exit.cause);
+
+  if (Result.isSuccess(defect)) throw defect.success;
+
+  const failure = Cause.findErrorOption(exit.cause);
+
+  if (Option.isNone(failure) || context.abortSignal?.aborted === true) {
+    throw Cause.squash(exit.cause);
+  }
+
+  return Result.fail(failure.value);
 };
