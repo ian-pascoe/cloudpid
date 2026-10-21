@@ -1,6 +1,9 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off
+import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import type { JsonValue } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -137,5 +140,73 @@ describe("the bundled skills", () => {
       "No files found matching pattern",
       "No files found matching pattern",
     ]);
+  });
+
+  it("are skipped by a search from above the mount, and found by one of the mount", async () => {
+    const { results } = await sessionOn(uniqueWorkspace()).run([
+      call("write", { path: "notes.txt", content: "Test-Driven Development\n" }),
+      call("find", { pattern: "SKILL.md" }),
+      call("grep", { pattern: "Test-Driven Development" }),
+      call("find", { pattern: "SKILL.md", path: "/workspace/.agents/skills" }),
+      call("grep", { pattern: "# Test-Driven Development", path: "/workspace/.agents/skills/tdd" }),
+    ]);
+
+    expect(results[1]).toBe("No files found matching pattern");
+    expect(results[2]).toBe("notes.txt:1: Test-Driven Development");
+    expect(results[3]).toContain("tdd/SKILL.md");
+    expect(results[4]).toBe("SKILL.md:6: # Test-Driven Development");
+  });
+});
+
+describe("a Workspace with the read-only mount", () => {
+  const envOn = (slug: string) =>
+    new ComputerExecutionEnv({
+      workspace: env.WORKSPACES.getByName(slug),
+      id: `computer:${slug}`,
+      cwd: "/workspace",
+    });
+
+  it("still makes a directory that exists, above the mount, and files in it", async () => {
+    const workspace = envOn(uniqueWorkspace());
+
+    getOrThrow(await workspace.createDir("/workspace", { recursive: true }, BACKGROUND_CONTEXT));
+    getOrThrow(await workspace.writeFile("top.txt", "x", BACKGROUND_CONTEXT));
+    getOrThrow(
+      await workspace.createDir("/workspace/new/deep", { recursive: true }, BACKGROUND_CONTEXT),
+    );
+    getOrThrow(await workspace.writeFile("/workspace/new/deep/a.txt", "y", BACKGROUND_CONTEXT));
+
+    expect(
+      getOrThrow(await workspace.readTextFile("/workspace/new/deep/a.txt", BACKGROUND_CONTEXT)),
+    ).toBe("y");
+  });
+
+  it("refuses to make or write below the mount", async () => {
+    const workspace = envOn(uniqueWorkspace());
+
+    for (const result of [
+      await workspace.createDir(
+        "/workspace/.agents/skills/mine",
+        { recursive: true },
+        BACKGROUND_CONTEXT,
+      ),
+      await workspace.writeFile("/workspace/.agents/skills/mine/SKILL.md", "x", BACKGROUND_CONTEXT),
+    ]) {
+      expect(result).toMatchObject({ ok: false, error: { code: "permission_denied" } });
+    }
+  });
+
+  it("lets the Worker Shell make a directory that exists, above the mount", async () => {
+    const { results } = await sessionOn(uniqueWorkspace()).run([
+      call("bash", {
+        command:
+          "mkdir -p /workspace && echo a=$? && mkdir -p . && echo b=$? && touch /workspace && echo c=$? && mkdir -p /workspace/new/deep && echo d=$?",
+        backend: "worker",
+      }),
+      call("bash", { command: "mkdir -p /workspace/.agents/skills/mine", backend: "worker" }),
+    ]);
+
+    expect(results[0]).toBe("a=0\nb=0\nc=0\nd=0\n");
+    expect(results[1]).toContain("read-only mount at /workspace/.agents/skills");
   });
 });

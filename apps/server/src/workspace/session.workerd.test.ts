@@ -102,9 +102,9 @@ describe("a Session's coding tools", () => {
       ".agents/\nshared.txt",
     ]);
     // A Session created afterwards finds the files: they belong to the Workspace, not to a Session.
-    expect(await sessionOn(slug).run([call("grep", { pattern: "second", glob: "*.txt" })])).toEqual(
-      ["shared.txt:2: from second"],
-    );
+    expect(await sessionOn(slug).run([call("grep", { pattern: "second" })])).toEqual([
+      "shared.txt:2: from second",
+    ]);
   });
 
   it("work in the repo directory they are bound to: files, search, commands and git", async () => {

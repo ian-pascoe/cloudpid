@@ -5,10 +5,12 @@
 // @effect-diagnostics asyncFunction:off globalConsole:off
 import {
   type Workspace as ComputerWorkspace,
+  WorkspaceFilesystemStub,
   type WorkspaceRuntimeExecHandleStub,
   WorkspaceRuntimeStub,
   WorkspaceStub,
 } from "@cloudflare/computer";
+import { ensureDirectory } from "@cloudpid/computer-env";
 import { RpcTarget } from "cloudflare:workers";
 import type { IdleStop } from "./idle.ts";
 
@@ -91,14 +93,39 @@ class TrackedRuntime extends WorkspaceRuntimeStub {
   }
 }
 
+/**
+ * The Workspace's file system for the Worker Shell, where `mkdir -p` of a directory that exists succeeds even above a
+ * read-only mount: computer refuses it on `/workspace` once the bundled skills are mounted below (`ensureDirectory`).
+ */
+export class GuardedFilesystem extends WorkspaceFilesystemStub {
+  readonly #workspace: ComputerWorkspace;
+
+  constructor(workspace: ComputerWorkspace) {
+    super(workspace);
+    this.#workspace = workspace;
+  }
+
+  override async mkdir(...[path, options]: Parameters<WorkspaceFilesystemStub["mkdir"]>) {
+    if (options?.recursive === true) return ensureDirectory(this.#workspace.fs, path);
+
+    return super.mkdir(path, options);
+  }
+}
+
 /** A Workspace stub whose commands on `containerBackend` are reported to `tracker`. */
 export class TrackedWorkspaceStub extends WorkspaceStub {
   readonly #runtime: TrackedRuntime;
+  readonly #fs: GuardedFilesystem;
   #disposed = false;
 
   constructor(workspace: ComputerWorkspace, tracker: CommandTracker, containerBackend: string) {
     super(workspace);
     this.#runtime = new TrackedRuntime(workspace, tracker, containerBackend);
+    this.#fs = new GuardedFilesystem(workspace);
+  }
+
+  override get fs() {
+    return this.#fs;
   }
 
   override get runtime() {
@@ -109,6 +136,7 @@ export class TrackedWorkspaceStub extends WorkspaceStub {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#runtime[Symbol.dispose]();
+    this.#fs[Symbol.dispose]();
     super[Symbol.dispose]();
   }
 }

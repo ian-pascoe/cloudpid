@@ -9,7 +9,7 @@
 import { effectSection } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, type PromptInput } from "@earendil-works/pi-durable";
-import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { ExecutionEnv, FileListEntry } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -32,6 +32,15 @@ export const SKILLS_DIRECTORY = ".agents/skills";
 
 /** The Workspace root: discovery goes no further up. */
 const WORKSPACE_ROOT = "/workspace";
+
+/** Where the bundled skills are mounted, read-only, in every Workspace: the Workspace root's own `.agents/skills`. */
+export const BUNDLED_SKILLS_DIRECTORY = `${WORKSPACE_ROOT}/${SKILLS_DIRECTORY}`;
+
+/** The longest description listed, the Agent Skills limit: a repo's skills are not trusted to size the prompt. */
+export const MAX_DESCRIPTION_LENGTH = 1024;
+
+/** The most skills listed, nearest first. */
+export const MAX_SKILLS = 100;
 
 /** What discovery uses of the call's environment: it reads files and never executes. */
 type SkillsEnv = Pick<ExecutionEnv, "cwd" | "listFiles" | "readTextFile">;
@@ -96,7 +105,7 @@ export const parseSkill = (filePath: string, text: string): Skill | undefined =>
 
   return {
     name: Predicate.isString(name) && name !== "" ? name : (filePath.split("/").at(-2) ?? ""),
-    description,
+    description: description.slice(0, MAX_DESCRIPTION_LENGTH),
     filePath,
     disableModelInvocation: declared.value["disable-model-invocation"] === true,
   };
@@ -133,11 +142,20 @@ export const formatSkills = (
 
   const hidden = skills.length > visible.length;
 
+  const bundled = Arr.some(visible, (skill) =>
+    skill.filePath.startsWith(`${BUNDLED_SKILLS_DIRECTORY}/`),
+  );
+
   return Arr.join(
     [
       "The following skills provide specialized instructions for specific tasks.",
       LOADING[fileReadTool],
       "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+      ...(bundled
+        ? [
+            `The skills in ${BUNDLED_SKILLS_DIRECTORY} are bundled with the agent and read-only: do not write there.`,
+          ]
+        : []),
       ...(hidden
         ? [
             "Skills that are not listed are for when the user asks for one by name: then read its SKILL.md from the same skills directories.",
@@ -204,31 +222,67 @@ const skillFiles = (paths: ReadonlyArray<string>): ReadonlyArray<string> => {
 const join = (directory: string, path: string): string =>
   directory === "/" ? `/${path}` : `${directory}/${path}`;
 
-/** The skills in one `.agents/skills` directory, none when it is absent. */
-const skillsIn = (env: SkillsEnv, root: string): Effect.Effect<ReadonlyArray<Skill>, SkillsError> =>
+/** The entries below `directory`, none when it is absent, is not a directory, or is a link to nothing. */
+const entriesBelow = (
+  env: SkillsEnv,
+  directory: string,
+): Effect.Effect<ReadonlyArray<FileListEntry>, SkillsError> =>
   Effect.gen(function* () {
     if (env.listFiles === undefined) return [];
 
     const listing = yield* attempt("Cannot list skills", () =>
       // Hidden: the skills are looked for in `.agents`. Not git's ignore rules: they are for the repo's files.
       env.listFiles!(
-        root,
+        directory,
         { hidden: true, gitignore: false, exclude: ["node_modules"] },
         BACKGROUND_CONTEXT,
       ),
     );
 
-    if (!listing.ok) {
-      return listing.error.code === "not_found" || listing.error.code === "not_directory"
-        ? []
-        : yield* SkillsError.make({
-            message: `Cannot list skills in ${root}: ${listing.error.message}`,
-          });
-    }
+    if (listing.ok) return listing.value.entries;
 
-    const files = skillFiles(
-      Arr.flatMap(listing.value.entries, (entry) => (entry.kind === "file" ? [entry.path] : [])),
+    return listing.error.code === "not_found" || listing.error.code === "not_directory"
+      ? []
+      : yield* SkillsError.make({
+          message: `Cannot list skills in ${directory}: ${listing.error.message}`,
+        });
+  });
+
+/**
+ * The paths below a `.agents/skills` directory that may hold a skill's `SKILL.md`: its files and links, and what the
+ * links to directories hold, one level deep, as pi follows a skill installer's symbolic links (`listFiles` itself
+ * does not follow them).
+ */
+const candidatePaths = (
+  env: SkillsEnv,
+  root: string,
+): Effect.Effect<ReadonlyArray<string>, SkillsError> =>
+  Effect.gen(function* () {
+    const entries = yield* entriesBelow(env, root);
+
+    const linked = yield* Effect.forEach(
+      Arr.filter(
+        entries,
+        (entry) =>
+          entry.kind === "symlink" &&
+          !Arr.some(entry.path.split("/"), (part) => part.startsWith(".")),
+      ),
+      (link) =>
+        Effect.map(entriesBelow(env, join(root, link.path)), (inside) =>
+          Arr.map(inside, (entry) => ({ ...entry, path: `${link.path}/${entry.path}` })),
+        ),
+      { concurrency: 8 },
     );
+
+    return Arr.flatMap([...entries, ...Arr.flatten(linked)], (entry) =>
+      entry.kind === "directory" ? [] : [entry.path],
+    );
+  });
+
+/** The skills in one `.agents/skills` directory, none when it is absent. */
+const skillsIn = (env: SkillsEnv, root: string): Effect.Effect<ReadonlyArray<Skill>, SkillsError> =>
+  Effect.gen(function* () {
+    const files = skillFiles(yield* candidatePaths(env, root));
 
     const skills = yield* Effect.forEach(
       files,
@@ -259,7 +313,14 @@ export const discoverSkills = (env: SkillsEnv): Effect.Effect<ReadonlyArray<Skil
     {
       concurrency: 4,
     },
-  ).pipe(Effect.map((found) => Arr.dedupeWith(Arr.flatten(found), (a, b) => a.name === b.name)));
+  ).pipe(
+    Effect.map((found) =>
+      Arr.take(
+        Arr.dedupeWith(Arr.flatten(found), (a, b) => a.name === b.name),
+        MAX_SKILLS,
+      ),
+    ),
+  );
 
 /** How the agent loads a skill's file: with `read` if it has it, else `bash`, else however it can. */
 const readToolOf = (input: PromptInput): FileReadTool => {

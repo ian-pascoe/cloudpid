@@ -20,34 +20,74 @@ import { parseSkill, Skills, skillDirectories } from "./skills.ts";
 const skillFile = (name: string, description: string, extra = "") =>
   `---\nname: ${name}\ndescription: ${description}\n${extra}---\n\n# ${name}\n`;
 
-/** An environment holding `files` (absolute path to text) with `cwd`, that answers what skill discovery asks of one. */
-const envOf = (cwd: string, files: Readonly<Record<string, string>>): ExecutionEnv => {
+/** The entries below `prefix` among `paths`: its directories, and its files as `kind`. */
+const entriesOf = (
+  paths: ReadonlyArray<string>,
+  prefix: string,
+  kind: FileListEntry["kind"] = "file",
+): FileListEntry[] => {
+  const directories = new Set(
+    paths.flatMap((path) => {
+      const segments = path.slice(prefix.length).split("/").slice(0, -1);
+
+      return segments.map((_, index) => segments.slice(0, index + 1).join("/"));
+    }),
+  );
+
+  return [
+    ...[...directories].map((path) => ({ path, kind: "directory" as const })),
+    ...paths.map((path) => ({ path: path.slice(prefix.length), kind })),
+  ];
+};
+
+/**
+ * An environment holding `files` (absolute path to text) with `cwd`, that answers what skill discovery asks of one.
+ * `links` are symbolic links to directories: the absolute path of each, with the files below its target. A listing
+ * shows a link as a link, and does not follow it.
+ */
+const envOf = (
+  cwd: string,
+  files: Readonly<Record<string, string>>,
+  links: Readonly<Record<string, Readonly<Record<string, string>>>> = {},
+): ExecutionEnv => {
   const fake: Pick<ExecutionEnv, "cwd" | "listFiles" | "readTextFile"> = {
     cwd,
     listFiles: (root) => {
+      const target = links[root];
+
+      if (target !== undefined) {
+        return Promise.resolve(
+          ok({
+            entries: entriesOf(
+              Object.keys(target).map((path) => `${root}/${path}`),
+              `${root}/`,
+            ),
+            truncated: false,
+          }),
+        );
+      }
+
       const prefix = `${root}/`;
       const below = Object.keys(files).filter((path) => path.startsWith(prefix));
+      const linked = Object.keys(links).filter((path) => path.startsWith(prefix));
 
-      if (below.length === 0)
+      if (below.length + linked.length === 0) {
         return Promise.resolve(err(new FileError("not_found", "No such directory", root)));
+      }
 
-      const directories = new Set(
-        below.flatMap((path) => {
-          const segments = path.slice(prefix.length).split("/").slice(0, -1);
-
-          return segments.map((_, index) => segments.slice(0, index + 1).join("/"));
+      return Promise.resolve(
+        ok({
+          entries: [
+            ...entriesOf(below, prefix),
+            ...entriesOf(linked, prefix, "symlink").filter((entry) => entry.kind === "symlink"),
+          ],
+          truncated: false,
         }),
       );
-
-      const entries: FileListEntry[] = [
-        ...[...directories].map((path) => ({ path, kind: "directory" as const })),
-        ...below.map((path) => ({ path: path.slice(prefix.length), kind: "file" as const })),
-      ];
-
-      return Promise.resolve(ok({ entries, truncated: false }));
     },
     readTextFile: (path) => {
-      const text = files[path];
+      const link = Object.keys(links).find((candidate) => path.startsWith(`${candidate}/`));
+      const text = link === undefined ? files[path] : links[link]?.[path.slice(link.length + 1)];
 
       return Promise.resolve(
         text === undefined ? err(new FileError("not_found", "No such file", path)) : ok(text),
@@ -71,6 +111,7 @@ const skillsSection = async (
   cwd: string,
   files: Readonly<Record<string, string>>,
   tools = true,
+  links: Readonly<Record<string, Readonly<Record<string, string>>>> = {},
 ): Promise<string | undefined> => {
   const faux = fauxProvider();
   const models = createModels();
@@ -94,7 +135,7 @@ const skillsSection = async (
 
   const harness = await Harness.open(
     new MemoryStorage(),
-    { models, registry, env: () => envOf(cwd, files) },
+    { models, registry, env: () => envOf(cwd, files, links) },
     BACKGROUND_CONTEXT,
   );
 
@@ -168,6 +209,7 @@ describe("the skills section", () => {
         "The following skills provide specialized instructions for specific tasks.",
         "Use the read tool to load a skill's file when the task matches its description.",
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+        "The skills in /workspace/.agents/skills are bundled with the agent and read-only: do not write there.",
         "",
         "<available_skills>",
         "  <skill>",
@@ -242,6 +284,54 @@ describe("the skills section", () => {
     );
 
     expect(section).toContain("Load a skill's file when the task matches its description.");
+  });
+
+  it("lists no read-only note when no listed skill is bundled", async () => {
+    const section = await skillsSection("/workspace/repo", {
+      "/workspace/repo/.agents/skills/mine/SKILL.md": skillFile("mine", "Mine."),
+    });
+
+    expect(section).not.toContain("read-only");
+  });
+
+  it("cuts a description to the Agent Skills limit of 1024 characters", async () => {
+    const section = await skillsSection("/workspace/repo", {
+      "/workspace/repo/.agents/skills/wordy/SKILL.md": skillFile("wordy", "x".repeat(5000)),
+    });
+
+    expect(section).toContain(`<description>${"x".repeat(1024)}</description>`);
+  });
+
+  it("lists at most 100 skills, the nearest first", async () => {
+    const many = Object.fromEntries(
+      Array.from({ length: 120 }, (_, index) => [
+        `/workspace/repo/.agents/skills/s${String(index).padStart(3, "0")}/SKILL.md`,
+        skillFile(`s${String(index).padStart(3, "0")}`, "A skill."),
+      ]),
+    );
+
+    const section = await skillsSection("/workspace/repo", {
+      ...many,
+      "/workspace/.agents/skills/tdd/SKILL.md": skillFile("tdd", "Test-driven development."),
+    });
+
+    expect(section?.match(/<skill>/g)).toHaveLength(100);
+    expect(section).toContain("<name>s000</name>");
+    expect(section).not.toContain("<name>tdd</name>");
+  });
+
+  it("follows a symbolic link to a skill directory, as pi does, one level deep", async () => {
+    const section = await skillsSection("/workspace/repo", {}, true, {
+      "/workspace/repo/.agents/skills/installed": {
+        "SKILL.md": skillFile("installed", "Installed by a skill installer."),
+        "notes.md": "# notes\n",
+      },
+    });
+
+    expect(section).toContain("<name>installed</name>");
+    expect(section).toContain(
+      "<location>/workspace/repo/.agents/skills/installed/SKILL.md</location>",
+    );
   });
 
   it("is absent when no skill is found", async () => {
