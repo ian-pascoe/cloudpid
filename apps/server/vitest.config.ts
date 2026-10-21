@@ -1,5 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import config from "@cloudpid/config/vitest";
+import config, { testTimeout } from "@cloudpid/config/vitest";
 import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest/config";
 
 const workerd = "src/**/*.workerd.test.ts";
@@ -41,6 +41,7 @@ export default defineConfig({
         ],
         test: {
           name: "workerd",
+          testTimeout,
           include: [workerd],
           exclude: [...configDefaults.exclude, "src/workspace/**"],
         },
@@ -59,7 +60,7 @@ export default defineConfig({
             },
           }),
         ],
-        test: { name: "workerd-workspace", include: workspaceOnly },
+        test: { name: "workerd-workspace", include: workspaceOnly, testTimeout },
       }),
       defineProject({
         plugins: [
@@ -82,6 +83,7 @@ export default defineConfig({
         ],
         test: {
           name: "workerd-session",
+          testTimeout,
           include: [onWorkspace],
           exclude: [...configDefaults.exclude, ...workspaceOnly],
         },
