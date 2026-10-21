@@ -3,6 +3,8 @@
 
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays are the platform here, and these are plain functions, not combinators.
 
+import type { CatalogCommand } from "@cloudpid/protocol";
+import type * as Types from "effect/Types";
 import { parseCommand } from "./completion.ts";
 
 /** A value a command's argument can take, offered in the menu once the command's name is typed. */
@@ -54,3 +56,26 @@ export const resolveCommand = (commands: readonly ComposerCommand[], text: strin
 
   return { kind: "run", command, args: call.args };
 };
+
+/**
+ * The Session's own Slash commands (`/compact`, `/rollover`, `/todo`, `/export`) as the composer offers them: each runs
+ * through `run`, which resolves to null when it worked or to why it did not.
+ */
+export const sessionCommands = (
+  commands: readonly CatalogCommand[],
+  run: (name: string, args: string) => Promise<string | null>,
+): ComposerCommand[] =>
+  commands.map((command) => {
+    const composer: Types.Mutable<ComposerCommand> = {
+      name: command.name,
+      description: command.description,
+      argument: command.argument,
+      run: (args) => run(command.name, args),
+    };
+
+    if (command.argumentHint !== undefined) composer.argumentHint = command.argumentHint;
+
+    if (command.choices !== undefined) composer.choices = command.choices;
+
+    return composer;
+  });

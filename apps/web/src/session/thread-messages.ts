@@ -5,7 +5,9 @@
 
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/protocol";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import { liveCalls, type NestedCall, settledCalls } from "../chat/nested-calls.ts";
 import { type StartedSubagent, startedSubagent } from "../chat/subagent.ts";
 
@@ -143,6 +145,20 @@ type CardArtifact = {
 
 const userMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();
 
+/** A Skill an owner's message carries, as its disclosure shows it: its name, and the block the model got. */
+export const ShownSkill = Schema.Struct({ name: Schema.String, text: Schema.String });
+
+export type ShownSkill = typeof ShownSkill.Type;
+
+const decodeSkills = Schema.decodeUnknownOption(Schema.Array(ShownSkill));
+
+/** What a message's metadata keeps for this app: a notice's `title`, a user message's `skills`. */
+type MessageCustom = NonNullable<NonNullable<ThreadMessageLike["metadata"]>["custom"]>;
+
+/** The Skills a user message's metadata keeps; none when it has none. */
+export const shownSkills = (custom: MessageCustom | undefined): readonly ShownSkill[] =>
+  Option.getOrElse(decodeSkills(custom?.["skills"]), () => []);
+
 /** A turn followed by a user message cannot change, so its message is made once and handed out again. */
 const finishedTurn = new WeakMap<
   TranscriptMessage,
@@ -166,6 +182,14 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
       content: userContent(message.parts),
       createdAt: dateOf(message.timestamp),
     };
+
+    // The Skills the Session expanded into it show under the typed text, each as the block the model got.
+    if (message.skills !== undefined && message.skills.length > 0) {
+      const skills: ShownSkill[] = message.skills.map(({ name, text }) => ({ name, text }));
+
+      made = { ...made, metadata: { custom: { skills } } };
+    }
+
     userMessage.set(message, made);
   }
 

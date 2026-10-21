@@ -1,6 +1,6 @@
 import { EMPTY_VIEW, type SessionView, type TranscriptMessage } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { toThreadMessages } from "./thread-messages.ts";
+import { shownSkills, toThreadMessages } from "./thread-messages.ts";
 
 const user = (id: string, text: string): TranscriptMessage => ({
   id,
@@ -62,6 +62,28 @@ describe("the thread messages of a view", () => {
         status: { type: "complete", reason: "stop" },
       },
     ]);
+  });
+
+  it("keeps the Skills the Session expanded into a user message, for its disclosures", () => {
+    const [message] = toThreadMessages(
+      view({
+        messages: [
+          {
+            ...user("1", "$deploy now"),
+            skills: [{ name: "deploy", location: "/s/SKILL.md", text: "<skill>…</skill>" }],
+          },
+        ],
+      }),
+    );
+
+    expect(message?.content).toEqual([{ type: "text", text: "$deploy now" }]);
+    expect(shownSkills(message?.metadata?.custom)).toEqual([
+      { name: "deploy", text: "<skill>…</skill>" },
+    ]);
+    expect(toThreadMessages(view({ messages: [user("1", "hi")] }))[0]).not.toHaveProperty(
+      "metadata",
+    );
+    expect(shownSkills(undefined)).toEqual([]);
   });
 
   it("maps an image in a user message to a data URL", () => {

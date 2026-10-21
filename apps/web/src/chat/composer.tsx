@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off globalTimers:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Square } from "lucide-react";
@@ -15,16 +15,15 @@ import {
 } from "react";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
+import type { CommandOutcome } from "@cloudpid/protocol";
 import type { QueuedEntry, SendingEntry } from "../session/connection.ts";
-import { type ComposerCommand, resolveCommand } from "./commands.ts";
-import {
-  CompletionMenu,
-  type CompletionRow,
-  type CompletionSection,
-  rowId,
-} from "./completion-menu.tsx";
-import { detectTrigger, type Edited, rank, replaceTrigger, type Trigger } from "./completion.ts";
+import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
+import { CompletionMenu, rowId } from "./completion-menu.tsx";
+import { detectTrigger, type Edited, replaceTrigger } from "./completion.ts";
+import { completionFor } from "./menu.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
+import { useConnection } from "./session-context.tsx";
+import { useCatalog } from "./use-catalog.ts";
 
 const Lane = ({
   label,
@@ -69,60 +68,18 @@ const subscribeWide = (listener: () => void) => {
 const useWide = (): boolean =>
   useSyncExternalStore(subscribeWide, () => window.matchMedia(WIDE_QUERY).matches);
 
-/** What a pick from the menu does: put text in place of the trigger, or run a command at once. */
-type Pick =
-  | { readonly kind: "insert"; readonly text: string }
-  | { readonly kind: "run"; readonly command: ComposerCommand; readonly args: string };
+/** Hand the owner `file` as a download, as a link to it would. */
+const download = (file: NonNullable<CommandOutcome["file"]>) => {
+  const url = URL.createObjectURL(new Blob([file.content], { type: file.mimeType }));
+  const link = document.createElement("a");
 
-type Entry = CompletionRow & { readonly pick: Pick };
-
-type Completion = {
-  readonly label: string;
-  readonly sections: readonly CompletionSection[];
-  readonly entries: readonly Entry[];
-};
-
-/** The menu for `trigger`: the commands whose names match it, or the values of the command whose argument it is. */
-const completionFor = (
-  trigger: Trigger,
-  commands: readonly ComposerCommand[],
-): Completion | null => {
-  if (trigger.kind === "command") {
-    const entries = rank(trigger.query, commands, ({ name }) => name).map((command): Entry => ({
-      id: `command:${command.name}`,
-      label: `/${command.name}`,
-      hint: command.argumentHint,
-      description: command.description,
-      // A command without an argument runs as it is picked; one with an argument waits for it.
-      pick:
-        command.argument === "none"
-          ? { kind: "run", command, args: "" }
-          : { kind: "insert", text: `/${command.name}` },
-    }));
-
-    return { label: "Commands", sections: [{ label: "Commands", rows: entries }], entries };
-  }
-
-  if (trigger.kind === "argument") {
-    const command = commands.find(({ name }) => name === trigger.command);
-
-    if (command?.choices === undefined) return null;
-
-    const entries = rank(trigger.query, command.choices, ({ value }) => value).map(
-      (choice): Entry => ({
-        id: `choice:${choice.value}`,
-        label: choice.value,
-        description: choice.description,
-        pick: { kind: "run", command, args: choice.value },
-      }),
-    );
-
-    const label = `/${command.name}`;
-
-    return { label, sections: [{ label, rows: entries }], entries };
-  }
-
-  return null;
+  link.href = url;
+  link.download = file.name;
+  link.click();
+  // After the click has started the download.
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 0);
 };
 
 /** A line under the composer: why a command failed, or what one did. */
@@ -138,9 +95,10 @@ const roundButton =
  * (it waits for the next Run); with nothing typed, the main button stops the Run instead. Messages waiting in the
  * Session's inbox show above the box, by lane, after the ones still being sent.
  *
- * A `/` at the start of the message opens a menu of the Slash commands the composer runs itself: `commands`, and the
- * ones of any conversation (`/stop`, `/stop-all`, `/copy`). A submitted `/name` the composer does not know is sent as
- * written, for the Session to expand or the model to read.
+ * A `/` at the start of the message opens a menu of the Slash commands: `commands`, the ones of any conversation
+ * (`/stop`, `/stop-all`, `/copy`) and the Session's (`/compact`, `/rollover`, `/todo`, `/export`, run on this
+ * conversation), then the Prompt templates and Skills of the conversation's directory; `$` opens one of the Skills. A
+ * submitted `/name` the composer does not know is sent as written, for the Session to expand or the model to read.
  */
 export const Composer = ({
   steerLane,
@@ -151,6 +109,7 @@ export const Composer = ({
   commands = [],
   compact = false,
   who = "the session",
+  conversationId,
 }: {
   steerLane: readonly QueuedEntry[];
   followUpLane: readonly QueuedEntry[];
@@ -165,6 +124,8 @@ export const Composer = ({
   compact?: boolean;
   /** Whom the message is for, in the input's placeholder. */
   who?: string;
+  /** The subagent conversation this composer writes to; the root's when absent. */
+  conversationId?: number | undefined;
 }) => {
   // On a touch screen, focusing the input opens the keyboard over the transcript.
   const autoFocus = !compact && window.matchMedia("(pointer: fine)").matches;
@@ -184,6 +145,29 @@ export const Composer = ({
   const [highlighted, setHighlighted] = useState(0);
   const [note, setNote] = useState<Note | null>(null);
   const [busy, setBusy] = useState(false);
+  const connection = useConnection();
+  const { catalog, refresh } = useCatalog(connection, conversationId);
+
+  // The Session's commands run on this composer's conversation; what they did shows under the box.
+  const session = useMemo(
+    () =>
+      sessionCommands(catalog?.commands ?? [], async (name, args) => {
+        let outcome: CommandOutcome;
+
+        try {
+          outcome = await connection.command(name, args, conversationId);
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+
+        if (outcome.file !== undefined) download(outcome.file);
+
+        if (outcome.notice !== undefined) setNote({ tone: "info", text: outcome.notice });
+
+        return null;
+      }),
+    [catalog, connection, conversationId],
+  );
 
   const allCommands = useMemo(() => {
     const own: ComposerCommand[] = [
@@ -242,13 +226,15 @@ export const Composer = ({
       });
     }
 
-    return [...commands, ...own].toSorted((a, b) => a.name.localeCompare(b.name));
-  }, [aui, commands, onStopAll]);
+    return [...commands, ...session, ...own].toSorted((a, b) => a.name.localeCompare(b.name));
+  }, [aui, commands, session, onStopAll]);
 
   const trigger = focused ? detectTrigger(text, caret) : null;
 
   const completion =
-    trigger === null || trigger.start === dismissed ? null : completionFor(trigger, allCommands);
+    trigger === null || trigger.start === dismissed
+      ? null
+      : completionFor(trigger, allCommands, catalog ?? undefined);
 
   const open = trigger !== null && completion !== null && completion.entries.length > 0;
 
@@ -258,6 +244,13 @@ export const Composer = ({
   useEffect(() => {
     setHighlighted(0);
   }, [menuKey]);
+
+  // The catalog is asked for when a menu that lists it first opens, and again once it is stale.
+  const listsCatalog = trigger?.kind === "command" || trigger?.kind === "skill";
+
+  useEffect(() => {
+    if (listsCatalog) refresh();
+  }, [listsCatalog, refresh]);
 
   // A dismissed trigger that is gone (deleted, or the caret left it) no longer holds its menu closed.
   useEffect(() => {
@@ -364,7 +357,7 @@ export const Composer = ({
     setCaret(element.selectionStart);
   };
 
-  const hints = "/ commands";
+  const hints = "/ commands · $ skills";
 
   const placeholder = running
     ? "Steer the run, or queue a follow-up…"
