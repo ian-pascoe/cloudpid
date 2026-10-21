@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-durable/env";
 import { HostFailure, posixCode, toWireError } from "./failure.ts";
 import { listFiles } from "./list-files.ts";
-import { ancestors, basename, dirname } from "./paths.ts";
+import { ancestors, basename, dirname, resolve } from "./paths.ts";
 import {
   type EnvRequest,
   type EnvResponse,
@@ -137,15 +137,15 @@ export class WorkspaceEnvHost {
 
   /**
    * A read-only environment over this Workspace's files in `cwd`, answering in process what `ComputerExecutionEnv`
-   * asks over RPC: for code that runs in the Workspace DO and wants no RPC call per file.
+   * asks over RPC (paths resolve against `cwd` as there): for code that runs in the Workspace DO and wants no RPC call per file.
    */
   readEnv(cwd: string): ReadEnv {
     return {
       cwd,
       listFiles: async (path, options) =>
-        fromResult(await this.#operations.listFiles(path, options ?? {})),
+        fromResult(await this.#operations.listFiles(resolve(cwd, path), options ?? {})),
       readTextFile: async (path) => {
-        const bytes = await this.#operations.readFile(path);
+        const bytes = await this.#operations.readFile(resolve(cwd, path));
 
         return bytes.ok ? ok(decoder.decode(bytes.value)) : err(toFileError(bytes.error));
       },

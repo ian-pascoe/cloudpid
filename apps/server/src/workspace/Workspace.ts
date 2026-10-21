@@ -185,6 +185,8 @@ export class Workspace extends ContainerHost {
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
       // Once the Toolchains are installed in a Container that started from the image, its disk is snapshotted.
       afterInstall: () => launch.afterInstall(),
+      // Under `alchemy dev` the Container's `/workspace` is no real mount (`CONTAINER_FUSE=false`): it cannot be locked.
+      readOnlyDirectories: env.CONTAINER_FUSE === "false" ? [] : [SKILLS_MOUNT],
       git: { name: env.CLOUDPID_GIT_NAME, email: env.CLOUDPID_GIT_EMAIL },
       warn: (message) => console.warn(message),
       now: () => Date.now(),
@@ -272,9 +274,7 @@ export class Workspace extends ContainerHost {
     this.#mountChecked ??= keepPriorSkills({
       fs: this.#workspace.fs,
       // computer records a mount in its own table when it first indexes it, and never forgets it.
-      indexed: () =>
-        this.#sql.exec("SELECT 1 FROM _vfs_mounts WHERE root = ?", SKILLS_MOUNT).toArray().length >
-        0,
+      indexed: () => this.#mountIndexed(),
       warn: (message) => console.warn(message),
     }).then(
       () => undefined,
@@ -288,6 +288,27 @@ export class Workspace extends ContainerHost {
 
     await this.#mountChecked;
     await this.#workspace.ready();
+  }
+
+  /**
+   * Whether computer has indexed the skills' mount, which it records in its own table. If that table cannot be read (a
+   * computer upgrade changed it), the mount is taken for indexed: files are left to computer, as before this check,
+   * rather than every call failing.
+   */
+  #mountIndexed(): boolean {
+    try {
+      return (
+        this.#sql.exec("SELECT 1 FROM _vfs_mounts WHERE root = ?", SKILLS_MOUNT).toArray().length >
+        0
+      );
+    } catch (cause) {
+      console.warn(
+        "Cannot tell whether the skills mount was indexed; leaving its files to computer",
+        cause,
+      );
+
+      return true;
+    }
   }
 
   /**

@@ -20,7 +20,6 @@ import {
   toolchainEnv,
   WORKSPACE_ROOT,
 } from "@cloudpid/sandbox-image/toolchains";
-import { SKILLS_MOUNT } from "./binding.ts";
 import { Redactor } from "./redact.ts";
 
 type Shell = BackendHandle["rpc"]["shell"];
@@ -56,13 +55,15 @@ export type ToolchainOptions = {
    * Container's disk here, while nothing else is writing to it. A failure is reported and changes nothing.
    */
   readonly afterInstall?: (() => Promise<void>) | undefined;
+  /**
+   * The directories the Workspace holds read-only (absolute paths), which the Container makes read-only too so a write
+   * there fails instead of staying on the Container. Empty where the Container's `/workspace` is not a real mount.
+   */
+  readonly readOnlyDirectories?: readonly string[] | undefined;
   /** Where a failed bootstrap is reported (never with the token). */
   readonly warn: (message: string) => void;
   readonly now: () => number;
 };
-
-/** What the Workspace holds read-only: the Container makes it so too, or a write there would stay on the Container. */
-const READ_ONLY_DIRECTORIES = [SKILLS_MOUNT];
 
 export class ToolchainBackend implements WorkspaceBackend {
   readonly #options: ToolchainOptions;
@@ -188,7 +189,7 @@ export class ToolchainBackend implements WorkspaceBackend {
     try {
       const execution = await shell.exec({
         id: crypto.randomUUID(),
-        source: inBash(bootstrapScript(WORKSPACE_ROOT, READ_ONLY_DIRECTORIES)),
+        source: inBash(bootstrapScript(WORKSPACE_ROOT, this.#options.readOnlyDirectories)),
         cwd: WORKSPACE_ROOT,
         timeoutMs: BOOTSTRAP_TIMEOUT_MS,
         env: { ...this.#env, ...identity },

@@ -8,8 +8,10 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import { SKILLS_MOUNT } from "./binding.ts";
 
-/** The bundled skills of the version last asked for: a bundle is fixed for the life of the Worker's code. */
-let cached: { readonly version: string; readonly skills: ReadonlyArray<Skill> } | undefined;
+/** The bundled skills of the version and mount last asked for: a bundle is fixed for the life of the Worker's code. */
+let cached:
+  | { readonly version: string; readonly mount: string; readonly skills: ReadonlyArray<Skill> }
+  | undefined;
 
 /**
  * The skills `bundle` mounts at `mount`, read from the bundle in memory instead of from the mounted files. The mount is
@@ -22,7 +24,9 @@ export const bundledSkills = (
 ): ReadonlyArray<Skill> => {
   const version = bundle.version;
 
-  if (version !== undefined && cached?.version === version) return cached.skills;
+  if (version !== undefined && cached?.version === version && cached.mount === mount) {
+    return cached.skills;
+  }
 
   const skills = skillsOfFiles(
     mount,
@@ -31,7 +35,7 @@ export const bundledSkills = (
     ),
   );
 
-  if (version !== undefined) cached = { version, skills };
+  if (version !== undefined) cached = { version, mount, skills };
 
   return skills;
 };

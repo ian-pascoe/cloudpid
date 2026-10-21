@@ -375,6 +375,12 @@ describe("skill discovery on the Workspace DO", () => {
     expect(first.length).toBeGreaterThan(0);
     expect(bundledSkills(BUNDLED_SKILLS)).toBe(first);
 
+    // The same version at another mount has other paths.
+    expect(bundledSkills(BUNDLED_SKILLS, "/elsewhere")[0]?.filePath.startsWith("/elsewhere/")).toBe(
+      true,
+    );
+    expect(bundledSkills(BUNDLED_SKILLS)[0]?.filePath.startsWith("/workspace/.agents/")).toBe(true);
+
     // A bundle of another version is read again, and not mistaken for the cached one.
     const files = { "a/SKILL.md": skillFile("a"), "a/notes.md": "# notes\n" };
 
