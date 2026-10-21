@@ -165,7 +165,6 @@ describe("a Session's coding tools", () => {
   });
 });
 
-// The bundled skills share this file: a file of its own in `workerd-session` crashes the project's workers in CI (#64).
 const DEPLOY_SKILL =
   "---\nname: deploy\ndescription: Deploy this repo to staging.\n---\n\nRun `./deploy.sh`.\n";
 
