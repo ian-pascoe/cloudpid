@@ -14,5 +14,7 @@ licences are kept in `skills/LICENSES/`, and a skill is bundled only when its up
 | [shadcn/improve](https://github.com/shadcn/improve) | MIT, Copyright (c) 2026 shadcn | [LICENSES/shadcn-improve.LICENSE](LICENSES/shadcn-improve.LICENSE) | `improve` |
 | [firecrawl/anydoc](https://github.com/firecrawl/anydoc) | MIT, Copyright (c) 2026 Sideguide Technologies Inc. | [LICENSES/firecrawl-anydoc.LICENSE](LICENSES/firecrawl-anydoc.LICENSE) | `convert-documents-to-markdown` |
 | [ast-grep/agent-skill](https://github.com/ast-grep/agent-skill) | MIT, Copyright (c) 2022 Herrington Darkholme (ast-grep's licence, which the skill follows) | [LICENSES/ast-grep.LICENSE](LICENSES/ast-grep.LICENSE) | `ast-grep` |
+| [backnotprop/pstack](https://github.com/backnotprop/pstack) | MIT, Copyright (c) 2026 Lauren Tan (a mirror of cursor/plugins' `pstack`) | [LICENSES/pstack.LICENSE](LICENSES/pstack.LICENSE) | `bro`, `unslop` |
+| [cursor/plugins](https://github.com/cursor/plugins) | MIT, Copyright (c) 2026 Cursor (its `cursor-team-kit` plugin) | [LICENSES/cursor-team-kit.LICENSE](LICENSES/cursor-team-kit.LICENSE) | `deslop` |
 
 `pr`: its Summary section's visuals come from Dex Horthy's `show-me` (HumanLayer's `humanlayer/skills`); see `pr/CREDITS.md`.
