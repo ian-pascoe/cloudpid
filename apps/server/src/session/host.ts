@@ -27,6 +27,7 @@ import {
 import {
   type Catalog,
   type CommandOutcome,
+  type FileMatches,
   type SessionUsage,
   type TaskGraphSummary,
   type TodoTask,
@@ -103,6 +104,18 @@ import {
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
+import {
+  EXCLUDED_NAMES,
+  fileCandidates,
+  type FileIndex,
+  fileIndex,
+  FileListingError,
+  FileListings,
+  fileListingsLayer,
+  LISTING_WALK_TIMEOUT_MS,
+  matchFiles,
+  MAX_LISTED_ENTRIES,
+} from "./file-search.ts";
 import { inputProblem, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
@@ -252,6 +265,14 @@ export type SlashCommand = {
   readonly conversationId?: ConversationId;
 };
 
+/** What the composer's `@` menu asks for. */
+export type FileSearch = {
+  /** What follows the `@`. */
+  readonly query: string;
+  /** The conversation whose directory to search: the root by default, or a live subagent's. */
+  readonly conversationId?: ConversationId;
+};
+
 /** What an abort reaches. */
 export type AbortOptions = {
   /** The conversation to abort: the root by default. */
@@ -346,6 +367,12 @@ export type SessionHostService = {
   readonly catalog: (conversationId?: ConversationId) => Effect.Effect<Catalog, SessionError>;
   /** Run one of the Session's Slash commands (`SESSION_COMMANDS`); one that cannot run fails with why, for the owner. */
   readonly command: (command: SlashCommand) => Effect.Effect<CommandOutcome, SessionError>;
+  /**
+   * The files and folders of the conversation's directory that best match `search.query`, relative to it, for the
+   * composer's `@` menu: from a gitignore-aware listing of the directory held for `LISTING_TTL` (`file-search.ts`). A
+   * conversation without an environment, or whose environment cannot list files, has none; a listing that fails fails.
+   */
+  readonly files: (search: FileSearch) => Effect.Effect<FileMatches, SessionError>;
 };
 
 /** What the Session DO answers with: its Harness, prompted and woken. */
@@ -991,6 +1018,56 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       { concurrency: 2 },
     ).pipe(Effect.map(([rollover, [skills, templates]]) => catalogOf(skills, templates, rollover)));
 
+  const listings = yield* FileListings;
+
+  /** The paths `env` offers the `@` menu from its directory, held per file namespace and directory. */
+  const pathsIn = (env: ExecutionEnv) => {
+    const list = env.listFiles?.bind(env);
+
+    if (list === undefined) return Effect.succeed<FileIndex>([]);
+
+    const options = {
+      exclude: EXCLUDED_NAMES,
+      maxEntries: MAX_LISTED_ENTRIES,
+      timeoutMs: LISTING_WALK_TIMEOUT_MS,
+    };
+
+    const listed = Effect.tryPromise({
+      try: () => list(".", options, context),
+      catch: (cause) => FileListingError.make({ message: String(cause) }),
+    }).pipe(
+      Effect.flatMap((result) =>
+        result.ok
+          ? Effect.succeed(result.value)
+          : Effect.fail(FileListingError.make({ message: result.error.message })),
+      ),
+      Effect.tap(({ entries, truncated }) =>
+        truncated
+          ? Effect.logWarning("The @ menu's listing of a directory was cut off at its bounds", {
+              directory: env.cwd,
+              entries: entries.length,
+            })
+          : Effect.void,
+      ),
+      Effect.map(({ entries }) => fileIndex(fileCandidates(entries, env.cwd))),
+    );
+
+    return listings
+      .get(`${env.id}:${env.cwd}`, listed)
+      .pipe(
+        Effect.mapError((error) =>
+          SessionError.make({ operation: "files", message: error.message }),
+        ),
+      );
+  };
+
+  /** What `conversation`'s `@` menu offers for `query`. */
+  const filesFor = (conversation: Conversation, query: string) =>
+    environment(conversation).pipe(
+      Effect.flatMap((env) => (env === undefined ? Effect.succeed([]) : pathsIn(env))),
+      Effect.map((paths): FileMatches => ({ paths: matchFiles(query, paths) })),
+    );
+
   /** The typed text of `input`: the text itself, or its first text block. */
   const typedText = (input: UserInput): string | undefined =>
     Predicate.isString(input)
@@ -1619,6 +1696,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     todos,
     catalog: (conversationId) => addressed(conversationId).pipe(Effect.flatMap(catalogFor)),
     command: runCommand,
+    files: ({ query, conversationId }) =>
+      addressed(conversationId).pipe(
+        Effect.flatMap((conversation) => filesFor(conversation, query)),
+      ),
   } satisfies SessionHostService;
 });
 
@@ -1631,5 +1712,6 @@ export const sessionHostLayer = <R = never>(
   options: SessionHostOptions<R>,
 ): Layer.Layer<SessionHost | Harness, SessionError, SessionRegistry | SessionSettings | R> =>
   Layer.effect(SessionHost, startSessionHost(options)).pipe(
+    Layer.provide(fileListingsLayer()),
     Layer.provideMerge(Layer.effect(Harness, openSessionHarness(options))),
   );

@@ -7,6 +7,7 @@ import {
   type CommandOutcome,
   ConversationId,
   decodeClientMessage,
+  type FileMatches,
   HEARTBEAT,
   type ClientMessage,
   type ServerMessage,
@@ -354,7 +355,7 @@ export const sessionSocketsLayer = (
         socket: WebSocket,
         message: ClientMessage,
       ): Effect.Effect<
-        { readonly submissionId: number } | Catalog | CommandOutcome | null,
+        { readonly submissionId: number } | Catalog | CommandOutcome | FileMatches | null,
         SessionError | SecretsError
       > => {
         switch (message.type) {
@@ -372,6 +373,12 @@ export const sessionSocketsLayer = (
 
           case "catalog":
             return host.catalog(message.conversationId);
+          case "files": {
+            const { type: _type, id: _id, ...search } = message;
+
+            return host.files(search);
+          }
+
           case "command": {
             const { type: _type, id: _id, ...command } = message;
 

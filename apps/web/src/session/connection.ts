@@ -8,6 +8,7 @@ import {
   Catalog,
   CommandOutcome,
   EMPTY_VIEW,
+  FileMatches,
   HEARTBEAT,
   reduceEvents,
   SESSION_DELETED_CLOSE_CODE,
@@ -187,12 +188,14 @@ const decodeServerMessage = Schema.decodeOption(ServerMessageJson);
 
 const decodeCatalog = Schema.decodeUnknownOption(Catalog);
 
+const decodeFileMatches = Schema.decodeUnknownOption(FileMatches);
+
 const decodeOutcome = Schema.decodeUnknownOption(CommandOutcome);
 
 /** What a `result` carries. */
 type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
 
-/** A request whose answer a promise waits for: `catalog` and `command`. */
+/** A request whose answer a promise waits for: `catalog`, `files` and `command`. */
 interface PendingRequest {
   readonly answer: (result: ResultValue) => void;
   readonly fail: (message: string) => void;
@@ -453,6 +456,26 @@ export class SessionConnection {
     }
 
     return this.request(id, message, (result) => Option.getOrUndefined(decodeCatalog(result)));
+  }
+
+  /**
+   * The files and folders of the root conversation's directory, or of subagent conversation `conversationId`'s, that
+   * best match `query`, for the composer's `@` menu. Rejects as `catalog` does.
+   */
+  files(query: string, conversationId?: number): Promise<FileMatches> {
+    const id = this.nextCommandId();
+
+    const message: Types.Mutable<Extract<ClientMessage, { type: "files" }>> = {
+      type: "files",
+      id,
+      query,
+    };
+
+    if (!this.isRoot(conversationId) && conversationId !== undefined) {
+      message.conversationId = conversation(conversationId);
+    }
+
+    return this.request(id, message, (result) => Option.getOrUndefined(decodeFileMatches(result)));
   }
 
   /**

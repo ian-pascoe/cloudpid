@@ -1287,6 +1287,30 @@ describe("the catalog and Slash commands", () => {
     await expect(child).resolves.toEqual({ ...CATALOG, skills: [] });
   });
 
+  it("asks for the files that match a query in a conversation's directory", async () => {
+    const { connection, latest } = setup();
+
+    watching(latest());
+    connection.watchThread(2);
+    watchingThread(latest(), 2);
+
+    const root = connection.files("src/");
+    const child = connection.files("", 2);
+
+    const [rootAsk, childAsk] = latest()
+      .commands()
+      .filter((command) => command.type === "files");
+
+    expect(rootAsk).toEqual({ type: "files", id: rootAsk?.id, query: "src/" });
+    expect(childAsk).toEqual({ type: "files", id: childAsk?.id, query: "", conversationId: 2 });
+
+    latest().say({ type: "result", id: rootAsk?.id, result: { paths: ["src/", "src/app.ts"] } });
+    latest().say({ type: "result", id: childAsk?.id, result: { nope: true } });
+
+    await expect(root).resolves.toEqual({ paths: ["src/", "src/app.ts"] });
+    await expect(child).rejects.toThrow("The session's answer could not be read.");
+  });
+
   it("runs a command and resolves with what it did, or rejects with why it could not", async () => {
     const { connection, latest } = setup();
 

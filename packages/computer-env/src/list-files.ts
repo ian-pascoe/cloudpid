@@ -1,5 +1,8 @@
-// `ExecutionEnv.listFiles` in the Workspace DO: one `fs.find` walk (depth first, siblings in byte order of their names,
-// symbolic links listed and not followed), filtered by hidden names, excluded names and git's ignore rules.
+// `ExecutionEnv.listFiles` in the Workspace DO: a walk of one directory at a time (depth first, siblings in byte order of
+// their names, symbolic links listed and not followed), filtered by hidden names, excluded names and git's ignore rules
+// as it goes, so a directory skipped (`node_modules`, an ignored `dist/` or `.venv/`) is never walked. A directory
+// holding `.git` below the listed one is a work tree of its own: its ignore rules apply from there, in place of those
+// above it, as git applies a nested repository's.
 // pi-durable's `ExecutionEnv` is Promise-native and stays so (ADR-0003); this adapter follows it.
 // @effect-diagnostics asyncFunction:off globalDate:off missingPipeableSignature:off preferEffectArray:off
 import type { Workspace } from "@cloudflare/computer";
@@ -13,8 +16,8 @@ const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 const LIMIT_MAX_BYTES = Math.floor(15.9 * 1024 * 1024);
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Characters `fs.find` reads as glob syntax; a name holding one is excluded after the walk instead. */
-const GLOB_SYNTAX = /[*?[\]{}!\\]/;
+/** `fs.find` exclusions that leave a directory's own entries only: anything two levels down is pruned. */
+const CHILDREN_ONLY = ["*/*"];
 
 /** `fs.find` reports a symbolic link as itself; its declared type lists only files and directories. */
 const KINDS = { file: "file", dir: "directory", symlink: "symlink" } as const;
@@ -110,82 +113,93 @@ export const listFiles = async (
   const deadline = Date.now() + timeoutMs;
   const hidden = options.hidden ?? true;
   const excluded = new Set(options.exclude ?? []);
+  const gitignore = options.gitignore !== false;
 
   if (!(await fs.stat(path)).isDirectory) {
     throw new HostFailure("not_directory", "Not a directory", path);
   }
 
-  const globs = [".git", ...excluded, ...(hidden ? [] : [".*"])].flatMap((name) =>
-    name === ".*" || !GLOB_SYNTAX.test(name) ? [`**/${name}`] : [],
-  );
-
-  const found = await fs.find(path, undefined, { exclude: globs });
-  const root = options.gitignore === false ? undefined : await workTreeRoot(fs, path);
-  const layers: IgnoreLayer[] = [];
+  const root = gitignore ? await workTreeRoot(fs, path) : undefined;
+  const above: IgnoreLayer[] = [];
 
   if (root !== undefined) {
     const exclude = await layer(fs, root, `${child(root, ".git")}/info/exclude`);
 
-    if (exclude !== undefined) layers.push(exclude);
+    if (exclude !== undefined) above.push(exclude);
 
-    // The listed directory's own rules and its parents' up to the work tree root, outermost first.
-    for (const directory of [...ancestors(path).filter((up) => isWithin(up, root)), path].toSorted(
-      (a, b) => a.length - b.length,
-    )) {
+    // The parents' rules up to the work tree root, outermost first; the walk reads the listed directory's own.
+    for (const directory of ancestors(path)
+      .filter((up) => isWithin(up, root))
+      .toSorted((a, b) => a.length - b.length)) {
       const rules = await layer(fs, directory, child(directory, ".gitignore"));
 
-      if (rules !== undefined) layers.push(rules);
-    }
-
-    // Rules below the listed directory, read before the walk is filtered, since a sibling may sort before them.
-    for (const entry of found) {
-      if (entry.path.endsWith("/.gitignore") && entry.type === "file") {
-        const rules = await layer(fs, entry.path.slice(0, -"/.gitignore".length), entry.path);
-
-        if (rules !== undefined) layers.push(rules);
-      }
+      if (rules !== undefined) above.push(rules);
     }
   }
 
   const prefix = path === "/" ? "/" : `${path}/`;
   const entries: FileListEntry[] = [];
-  const skipped: string[] = [];
   let bytes = 0;
   let truncated = false;
 
-  for (const entry of found) {
-    if (skipped.some((directory) => isWithin(entry.path, directory))) continue;
+  /** List `directory`'s entries and walk the directories among them; true once a bound stopped the listing. */
+  const walk = async (
+    directory: string,
+    inherited: readonly IgnoreLayer[],
+    inWorkTree: boolean,
+  ): Promise<boolean> => {
+    const children = await fs.find(directory, undefined, { exclude: CHILDREN_ONLY });
+    let layers = inherited;
+    let tracked = inWorkTree;
 
-    const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-    const directory = entry.type === "dir";
+    if (gitignore) {
+      // A repository below the listed directory: its rules, not those above it.
+      if (directory !== root && children.some((entry) => entry.path.endsWith("/.git"))) {
+        const exclude = await layer(fs, directory, `${child(directory, ".git")}/info/exclude`);
 
-    const skip =
-      name === ".git" ||
-      excluded.has(name) ||
-      (!hidden && name.startsWith(".")) ||
-      ignored(
-        layers.filter(({ base }) => isWithin(entry.path, base)),
-        entry.path,
-        directory,
-      );
+        layers = exclude === undefined ? [] : [exclude];
+        tracked = true;
+      }
 
-    if (skip) {
-      if (directory) skipped.push(entry.path);
-      continue;
+      if (tracked && children.some((entry) => entry.path.endsWith("/.gitignore"))) {
+        const rules = await layer(fs, directory, child(directory, ".gitignore"));
+
+        if (rules !== undefined) layers = [...layers, rules];
+      }
     }
 
-    const relative = entry.path.slice(prefix.length);
-    const size = new TextEncoder().encode(relative).length + 2;
+    for (const entry of children) {
+      const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+      const isDirectory = entry.type === "dir";
 
-    if (entries.length + 1 > maxEntries || bytes + size > maxBytes || Date.now() > deadline) {
-      truncated = true;
-      break;
+      const skip =
+        name === ".git" ||
+        excluded.has(name) ||
+        (!hidden && name.startsWith(".")) ||
+        ignored(layers, entry.path, isDirectory);
+
+      if (skip) continue;
+
+      const relative = entry.path.slice(prefix.length);
+      const size = new TextEncoder().encode(relative).length + 2;
+
+      if (entries.length + 1 > maxEntries || bytes + size > maxBytes || Date.now() > deadline) {
+        truncated = true;
+
+        return true;
+      }
+
+      bytes += size;
+      // SAFETY: `fs.find` reports every node with its stored type, one of the keys of `KINDS`.
+      entries.push({ path: relative, kind: KINDS[entry.type as keyof typeof KINDS] });
+
+      if (isDirectory && (await walk(entry.path, layers, tracked))) return true;
     }
 
-    bytes += size;
-    // SAFETY: `fs.find` reports every node with its stored type, one of the keys of `KINDS`.
-    entries.push({ path: relative, kind: KINDS[entry.type as keyof typeof KINDS] });
-  }
+    return false;
+  };
+
+  await walk(path, above, root !== undefined);
 
   return { entries, truncated };
 };

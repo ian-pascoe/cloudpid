@@ -82,84 +82,25 @@ export const detectTrigger = (text: string, caret: number): Trigger | null => {
   };
 };
 
-/** Word separators: a match right after one starts a word. */
-const SEPARATOR = /[\s\-_/:.]/;
-
-/** How well `query` matches `candidate` (both lower case): lower is better, null is no match. */
-const tier = (query: string, candidate: string): number | null => {
-  if (candidate === query) return 0;
-
-  if (candidate.startsWith(query)) return 1;
-
-  const at = candidate.indexOf(query);
-
-  if (at > 0) {
-    // Any occurrence may start a word, not only the first: `install` holds `all` in its middle and after its dash.
-    for (let from = at; from >= 0; from = candidate.indexOf(query, from + 1)) {
-      if (SEPARATOR.test(candidate[from - 1] ?? "")) return 2;
-    }
-
-    return 3;
-  }
-
-  let from = 0;
-
-  for (const char of query) {
-    const found = candidate.indexOf(char, from);
-
-    if (found < 0) return null;
-
-    from = found + 1;
-  }
-
-  return 4;
-};
-
-/**
- * `candidates` that match `query`, best first: an exact match, then a prefix, a word start, a substring, and the
- * query's letters in order. For a path, a match in its last segment beats one only elsewhere. Ties keep their order,
- * and an empty query keeps every candidate in order.
- */
-export const rank = <A>(
-  query: string,
-  candidates: readonly A[],
-  key: (candidate: A) => string,
-): A[] => {
-  if (query === "") return [...candidates];
-
-  const lower = query.toLowerCase();
-  const scored: { candidate: A; score: number; index: number }[] = [];
-
-  candidates.forEach((candidate, index) => {
-    const name = key(candidate).toLowerCase();
-    const base = name.slice(name.replace(/\/$/, "").lastIndexOf("/") + 1);
-    const inBase = base === name ? null : tier(lower, base);
-    const whole = tier(lower, name);
-    const score = inBase ?? (whole === null ? null : whole + (base === name ? 0 : 5));
-
-    if (score !== null) scored.push({ candidate, score, index });
-  });
-
-  return scored
-    .toSorted((a, b) => a.score - b.score || a.index - b.index)
-    .map(({ candidate }) => candidate);
-};
-
 /** Text, and where the caret goes in it. */
 export type Edited = { readonly text: string; readonly caret: number };
 
-/** The text with `pick` and a space in place of the trigger's span, and where the caret goes: after the space. */
+/**
+ * The text with `pick` and a space in place of the trigger's span, and where the caret goes: after the space. Without
+ * the space (`space: false`, for a folder), the caret stays right after the pick, in the trigger, which stays open.
+ */
 export const replaceTrigger = (
   text: string,
   span: Pick<Trigger, "start" | "end">,
   pick: string,
+  { space = true }: { readonly space?: boolean } = {},
 ): Edited => {
   const after = text.slice(span.end);
-  const spaced = after.startsWith(" ") ? pick : `${pick} `;
+  const spaced = !space || after.startsWith(" ") ? pick : `${pick} `;
 
   return {
     text: `${text.slice(0, span.start)}${spaced}${after}`,
-    caret: span.start + pick.length + 1,
+    caret: span.start + pick.length + (space ? 1 : 0),
   };
 };
 

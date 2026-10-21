@@ -20,7 +20,7 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ConversationId, UserInput } from "@earendil-works/pi-durable";
-import type { Catalog, CommandOutcome, TaskGraphSummary } from "@cloudpid/protocol";
+import type { Catalog, CommandOutcome, FileMatches, TaskGraphSummary } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -33,9 +33,16 @@ import {
   askedConversations,
   type FakeWorkspace,
   fakeWorkspaceEnv,
+  listedDirectories,
   useFakeWorkspace,
 } from "./fake-workspace.fixture.ts";
-import { type AbortOptions, SessionHost, sessionHostLayer, type SlashCommand } from "./host.ts";
+import {
+  type AbortOptions,
+  type FileSearch,
+  SessionHost,
+  sessionHostLayer,
+  type SlashCommand,
+} from "./host.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { SessionRegistry } from "./status.ts";
@@ -296,6 +303,27 @@ export class TestSubagentSession extends DurableObject {
     return this.#runtime.runPromise(
       Effect.flatMap(SessionHost, (host) => host.catalog(conversationId)),
     );
+  }
+
+  /** What the `@` menu of the root conversation, or of a subagent's, offers for `query`; or why it could not. */
+  files(
+    query: string,
+    conversationId?: ConversationId,
+  ): Promise<FileMatches | { readonly failure: string }> {
+    const search: Types.Mutable<FileSearch> = { query };
+
+    if (conversationId !== undefined) search.conversationId = conversationId;
+
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.files(search)).pipe(
+        Effect.catch((error) => Effect.succeed({ failure: error.message })),
+      ),
+    );
+  }
+
+  /** The directories the fake Workspace listed, in order. */
+  listedDirectories(): readonly string[] {
+    return listedDirectories(this.ctx.storage.kv);
   }
 
   /** Run the Session's Slash command `name`: what it did, or why it could not. */

@@ -1,16 +1,20 @@
 // What the composer's menu lists for a trigger: the Slash commands, Prompt templates and Skills whose names match what
-// is typed after `/`, a command's argument values, or the Skills after `$`. Pure, so the composer only renders it.
+// is typed after `/`, a command's argument values, the Skills after `$`, or the files and folders after `@`. Pure, so
+// the composer only renders it.
 
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays are the platform here, and these are plain functions, not combinators.
 
-import type { CatalogEntry } from "@cloudpid/protocol";
+import { type CatalogEntry, rank } from "@cloudpid/protocol";
 import type { ComposerCommand } from "./commands.ts";
 import type { CompletionRow, CompletionSection } from "./completion-menu.tsx";
-import { rank, type Trigger } from "./completion.ts";
+import type { Trigger } from "./completion.ts";
 
-/** What a pick from the menu does: put text in place of the trigger, or run a command at once. */
+/**
+ * What a pick from the menu does: put text in place of the trigger, or run a command at once. An insert that `continues`
+ * (a folder) is not followed by a space, so the trigger stays open on it and typing on narrows into it.
+ */
 export type MenuPick =
-  | { readonly kind: "insert"; readonly text: string }
+  | { readonly kind: "insert"; readonly text: string; readonly continues?: true }
   | { readonly kind: "run"; readonly command: ComposerCommand; readonly args: string };
 
 export type MenuEntry = CompletionRow & { readonly pick: MenuPick };
@@ -21,6 +25,8 @@ export type Completion = {
   readonly sections: readonly CompletionSection[];
   /** Every row, across the sections, in order. */
   readonly entries: readonly MenuEntry[];
+  /** What the menu says in place of rows when it has none: that it is searching, or found nothing. */
+  readonly notice?: string;
 };
 
 /** The Prompt templates and Skills of the conversation's directory, as far as the Session has said. */
@@ -30,6 +36,58 @@ export type MenuCatalog = {
 };
 
 const NO_CATALOG: MenuCatalog = { templates: [], skills: [] };
+
+/** The Session's answers to the `@` menu's `files` requests, as far as they have come. */
+export type FileResults = {
+  /** The query `paths` answer, or null before the first answer. */
+  readonly query: string | null;
+  /** The paths that answer it, relative to the conversation's directory, best first; a folder's ends in `/`. */
+  readonly paths: readonly string[];
+  /** Whether the Session is being asked about another query than `query`. */
+  readonly searching: boolean;
+  /** Whether asking about the current query failed. */
+  readonly failed: boolean;
+};
+
+const NOT_SEARCHED: FileResults = { query: null, paths: [], searching: true, failed: false };
+
+/**
+ * The `@` menu: the paths the Session answered for `query`, or, while it is asked about a new one, the last answer's
+ * paths that match it (ranked as the Session ranks), so the list narrows as the owner types. With no rows it says
+ * whether it is searching, found nothing, or could not search.
+ */
+const filesMenu = (query: string, files: FileResults): Completion => {
+  const paths = files.query === query ? files.paths : rank(query, files.paths, (path) => path);
+
+  const rows = paths.map((path): MenuEntry => {
+    const folder = path.endsWith("/");
+    // The name, a folder's with its `/`, and the folder it is in, which gives way first to a narrow menu.
+    const split = path.slice(0, folder ? -1 : undefined).lastIndexOf("/") + 1;
+    const directory = path.slice(0, split);
+
+    return {
+      id: `file:${path}`,
+      label: path.slice(split),
+      detail: directory === "" ? undefined : directory,
+      pick: folder
+        ? { kind: "insert", text: `@${path}`, continues: true }
+        : { kind: "insert", text: `@${path}` },
+    };
+  });
+
+  if (rows.length > 0) {
+    return { label: "Files", sections: [{ label: "Files", rows }], entries: rows };
+  }
+
+  const notice =
+    files.query !== query && files.searching
+      ? "Searching files…"
+      : files.failed
+        ? "Could not search the files."
+        : "No matching files or folders.";
+
+  return { label: "Files", sections: [], entries: [], notice };
+};
 
 /** The menu of `sections`, leaving out those with no rows; null when none has any. */
 const menu = (
@@ -46,12 +104,13 @@ const menu = (
 /**
  * The menu for `trigger`. After `/`: the commands whose names match, then the Prompt templates, then the Skills as
  * `/skill:name`. After a command's name: the values its argument takes. After `$`: the Skills alone, and no menu when
- * none matches, so `$HOME` types on undisturbed.
+ * none matches, so `$HOME` types on undisturbed. After `@`: the files and folders of `files`, or a notice in their place.
  */
 export const completionFor = (
   trigger: Trigger,
   commands: readonly ComposerCommand[],
   catalog: MenuCatalog = NO_CATALOG,
+  files: FileResults = NOT_SEARCHED,
 ): Completion | null => {
   if (trigger.kind === "command") {
     return menu("Commands", [
@@ -132,5 +191,27 @@ export const completionFor = (
     ]);
   }
 
-  return null;
+  return filesMenu(trigger.query, files);
+};
+
+/** What a key does in an open menu with `rows` rows: move the highlight, pick, close it, or nothing (it types on). */
+export type MenuKey = "next" | "previous" | "pick" | "close" | null;
+
+/**
+ * The menu's part in `key`: ↑ and ↓ move, Enter (without Shift or Alt) and Tab pick, Escape closes. A menu with no rows,
+ * only its notice, takes Escape alone, so Enter sends and the arrows move the caret as they would without it.
+ */
+export const menuKey = (
+  key: { readonly key: string; readonly shiftKey: boolean; readonly altKey: boolean },
+  rows: number,
+): MenuKey => {
+  if (key.key === "Escape") return "close";
+
+  if (rows === 0) return null;
+
+  if (key.key === "ArrowDown") return "next";
+
+  if (key.key === "ArrowUp") return "previous";
+
+  return (key.key === "Enter" && !key.shiftKey && !key.altKey) || key.key === "Tab" ? "pick" : null;
 };
