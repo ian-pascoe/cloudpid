@@ -68,6 +68,20 @@ _Avoid_: Plan, checklist, task list
 One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Tasks panel lists.
 _Avoid_: Task (alone, in prose about the product), to-do
 
+## Messages
+
+**Slash command**:
+A `/name` at the start of the owner's message that runs an action instead of being sent to the model as written, either in the Session or in the web app.
+_Avoid_: Command (alone), action, macro
+
+**Prompt template**:
+A Markdown file in a repo's `.agents/prompts` whose Slash command expands into a message, with the command's arguments filled in.
+_Avoid_: Prompt, snippet, macro
+
+**Attachment**:
+A file the owner gives with a message, stored in the Workspace and pointed at by its path; an attached image is also shown to the model.
+_Avoid_: Upload (for the file), file mention
+
 ## Workspaces and execution
 
 **Workspace**:

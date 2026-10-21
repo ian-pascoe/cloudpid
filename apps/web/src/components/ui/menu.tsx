@@ -49,11 +49,17 @@ const place = (menu: HTMLElement, trigger: HTMLElement) => {
  */
 export const Menu = ({
   label,
+  icon = <Ellipsis className="size-4" aria-hidden />,
+  title,
   children,
   className,
 }: {
   /** What the button says to assistive technology, such as "Actions for Fix the build". */
   label: string;
+  /** The button's icon: "⋯" unless the menu is better named by another. */
+  icon?: ReactNode;
+  /** The button's tooltip. */
+  title?: string | undefined;
   children: ReactNode;
   className?: string | undefined;
 }) => {
@@ -103,12 +109,13 @@ export const Menu = ({
         aria-haspopup="menu"
         aria-expanded="false"
         aria-label={label}
+        title={title}
         className={cn(
           "inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
           className,
         )}
       >
-        <Ellipsis className="size-4" aria-hidden />
+        {icon}
       </button>
       <div
         ref={menu}
