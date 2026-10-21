@@ -11,6 +11,7 @@ import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
+import { ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
@@ -29,7 +30,12 @@ import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from ".
 import type { PushEvent } from "../push/notification.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { NOTIFY_TIMEOUT, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
-import { sessionSettingsLayer, subagentSettings } from "./settings.ts";
+import {
+  reloadSessionExtensions,
+  sessionSettingsLayer,
+  subagentSettings,
+  toolSearchSettings,
+} from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
@@ -250,7 +256,9 @@ export const SessionLive = Session.make(
                   Effect.provideService(CodemodeSandbox, sandbox),
                   Effect.provideService(BrowserHost, browser),
                   Effect.provideServiceEffect(SubagentSettings, subagentSettings),
+                  Effect.provideServiceEffect(ToolSearchSettings, toolSearchSettings),
                 ),
+                reload: reloadSessionExtensions,
                 env: workspace.env,
                 // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time, and when the
                 // browser falls idle past its keep-alive, so it is closed.

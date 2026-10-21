@@ -3,6 +3,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_OFFERED_TOOLS,
   DEFAULT_SETTINGS,
   overridesFrom,
   resolveLeniently,
@@ -51,6 +52,27 @@ describe("the defaults", () => {
     });
   });
 
+  it("offer the core coding tools, code mode and tool_search, and leave every other tool deferred", () => {
+    expect(DEFAULT_SETTINGS.tools.offered).toEqual(DEFAULT_OFFERED_TOOLS);
+    expect(DEFAULT_SETTINGS.tools.offered).toEqual(
+      expect.arrayContaining([
+        "read",
+        "write",
+        "edit",
+        "bash",
+        "ls",
+        "find",
+        "grep",
+        "codemode",
+        "tool_search",
+        "secret_ask",
+      ]),
+    );
+    expect(DEFAULT_SETTINGS.tools.offered).not.toContain("web_fetch");
+    expect(DEFAULT_SETTINGS.tools.offered).not.toContain("browser");
+    expect(DEFAULT_SETTINGS.tools.offered).not.toContain("subagent");
+  });
+
   it("offer only models the proxy serves", () => {
     expect(SUPPORTED_MODELS).toContain(DEFAULT_SETTINGS.model);
   });
@@ -81,6 +103,19 @@ describe("resolving overrides", () => {
       hint: DEFAULT_SETTINGS.roles.small.hint,
     });
     expect(settings.roles.large).toEqual(DEFAULT_SETTINGS.roles.large);
+  });
+
+  it("replaces the offered tools as a whole, so a tool taken out of the list is deferred", () => {
+    const settings = resolved({ tools: { offered: ["read", "codemode", "web_*"] } });
+
+    expect(settings.tools.offered).toEqual(["read", "codemode", "web_*"]);
+    expect(resolved({ tools: { offered: [] } }).tools.offered).toEqual([]);
+  });
+
+  it("rejects an offered tool that is not a snake_case name or pattern, so a typo is not saved", () => {
+    for (const entry of ["", " read", "Read", "web fetch", "read,bash"]) {
+      expect(rejected({ tools: { offered: ["bash", entry] } })).toContain("tools.offered");
+    }
   });
 
   it("carries extension options", () => {
@@ -144,6 +179,15 @@ describe("overrides from settings", () => {
     });
   });
 
+  it("keeps a changed offered set, and drops it once it is the default again", () => {
+    const settings = resolved({ tools: { offered: ["read", "web_fetch"] } });
+
+    expect(overridesFrom(settings)).toEqual({ tools: { offered: ["read", "web_fetch"] } });
+    expect(overridesFrom({ ...settings, tools: { offered: [...DEFAULT_OFFERED_TOOLS] } })).toEqual(
+      {},
+    );
+  });
+
   it("resolves back to the settings it came from", () => {
     const settings = resolved({
       model: "anthropic/claude-haiku-5-5",
@@ -186,6 +230,20 @@ describe("resolving stale overrides leniently", () => {
     expect(settings.thinkingLevel).toBe("low");
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("retiredSetting");
+  });
+
+  it("drops a saved offered list that has a bad element whole, and keeps every other override", () => {
+    const { settings, dropped } = resolveLeniently({
+      model: "anthropic/claude-sonnet-5-5",
+      thinkingLevel: "low",
+      tools: { offered: ["read", "Bad Name", "bash"] },
+    });
+
+    expect(settings.model).toBe("anthropic/claude-sonnet-5-5");
+    expect(settings.thinkingLevel).toBe("low");
+    expect(settings.tools.offered).toEqual(DEFAULT_OFFERED_TOOLS);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toContain("tools.offered");
   });
 
   it("gives the defaults for overrides that are not an object", () => {

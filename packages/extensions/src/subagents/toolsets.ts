@@ -4,6 +4,7 @@
 // child gets them by its delegation, not its selection.
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
+import { matchesPattern } from "../patterns.ts";
 import { PARENT_ONLY_SECRET_TOOLS } from "../secrets/extension.ts";
 import type { Toolsets } from "./options.ts";
 
@@ -40,12 +41,6 @@ export type ResolvedTools = {
 /** `names` without the coordinator tools. */
 export const ordinaryTools = (names: ReadonlyArray<string>): ReadonlyArray<string> =>
   Arr.filter(names, (name) => !COORDINATOR.has(name));
-
-const escape = (text: string): string => text.replace(/[.+^${}()|[\]\\?]/g, "\\$&");
-
-/** Whether tool `name` matches `pattern`, where `*` matches any run of characters. */
-const matches = (pattern: string, name: string): boolean =>
-  new RegExp(`^${Arr.join(Arr.map(pattern.split("*"), escape), ".*")}$`).test(name);
 
 /**
  * The ordinary tools `selection` grants under `ceiling`, the caller's ordinary tools without the parent-only ones. The base toolset applies to every
@@ -104,7 +99,7 @@ const resolveWithin = (
 
   const configured = Arr.flatMap(keys, (key) =>
     Arr.flatMap(toolsets[key], (pattern) => {
-      const found = Arr.filter(ceiling, (name) => matches(pattern, name));
+      const found = Arr.filter(ceiling, (name) => matchesPattern(pattern, name));
 
       if (found.length === 0) {
         warnings.push(`${key} pattern ${JSON.stringify(pattern)} matched none of your tools`);

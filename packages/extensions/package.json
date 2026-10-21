@@ -15,7 +15,8 @@
     "./files": "./src/files.ts",
     "./skills": "./src/skills.ts",
     "./coding-tools": "./src/coding-tools.ts",
-    "./bash-routing": "./src/bash-routing.ts"
+    "./bash-routing": "./src/bash-routing.ts",
+    "./tool-search": "./src/tool-search.ts"
   },
   "scripts": {
     "typecheck": "tsc",

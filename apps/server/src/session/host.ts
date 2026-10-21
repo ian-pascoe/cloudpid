@@ -58,7 +58,12 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
-import { harnessSettings, SessionSettings, type SettingsKv } from "./settings.ts";
+import {
+  harnessSettings,
+  SessionSettings,
+  type SessionSettingsValues,
+  type SettingsKv,
+} from "./settings.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -138,6 +143,22 @@ export type SessionHostOptions<R = never> = {
   readonly reset: (reason: string) => void;
   /** The extensions the Session's conversations run with, installed before any work resumes. */
   readonly extensions: Effect.Effect<readonly Extension[], never, Harness | SessionSettings | R>;
+  /**
+   * Extensions that follow the settings: after a read that brought new values, given the extensions installed, the
+   * values now and those before, it returns the ones to install over those of the same name (none when what they follow
+   * did not change). pi-durable's wraps are pure, so a setting that decides what an extension wraps (the offered
+   * tools) is applied by installing it again, which takes effect from the next phase pi-durable starts, never in the
+   * middle of one. A model's tool call spans two phases, though (the generation, then the call), so a read that lands
+   * between them can defer a tool the request offered: that call fails as unavailable, and the model can load the tool
+   * with `tool_search` and call it again.
+   */
+  readonly reload?:
+    | ((
+        installed: readonly Extension[],
+        values: SessionSettingsValues,
+        previous: SessionSettingsValues,
+      ) => readonly Extension[])
+    | undefined;
   /**
    * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
    * this is undefined too.
@@ -354,7 +375,31 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
 
   // Before anything resumes, so resumed tool calls find their tools.
-  for (const extension of yield* options.extensions) yield* harness.install(extension);
+  const installed = yield* options.extensions;
+
+  for (const extension of installed) yield* harness.install(extension);
+
+  /** The settings the extensions were last built for. */
+  let built = settings.current();
+
+  /** Read the settings, and install the extensions that follow them again when they changed. */
+  const refreshSettings = settings.refresh.pipe(
+    Effect.andThen(
+      Effect.gen(function* () {
+        const values = settings.current();
+
+        if (options.reload === undefined || values === built) return;
+
+        const previous = built;
+
+        built = values;
+
+        for (const extension of options.reload(installed, values, previous)) {
+          yield* harness.install(extension);
+        }
+      }),
+    ),
+  );
 
   // Alarm decisions run one at a time, so an idle check never deletes the heartbeat a concurrent submit just armed.
   const serially = Semaphore.withPermit(yield* Semaphore.make(1));
@@ -658,7 +703,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never holds
     // up the alarm or a status report.
-    return settings.refresh.pipe(
+    return refreshSettings.pipe(
       // Another conversation is checked before arming: a bad ID must not report the Session running to the Registry.
       Effect.andThen(toRoot ? Effect.succeed(target) : Effect.map(target, Effect.succeed)),
       Effect.flatMap((resolved) =>
@@ -892,7 +937,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     ),
     root: Effect.map(root, (conversation) => conversation.id),
     configure: (change) =>
-      settings.refresh.pipe(
+      refreshSettings.pipe(
         Effect.andThen(
           Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), change))).pipe(
             Effect.andThen(applyAgent),
@@ -900,7 +945,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         ),
       ),
-    sync: settings.refresh.pipe(Effect.andThen(applyAgent.pipe(serially))),
+    sync: refreshSettings.pipe(Effect.andThen(applyAgent.pipe(serially))),
     picks: Effect.sync(() => {
       const pick = picked();
 

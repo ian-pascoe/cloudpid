@@ -5,14 +5,16 @@ import { extensionName as todo } from "@cloudpid/extensions/todo";
 import { extensionName as web } from "@cloudpid/extensions/web";
 import { extensionName as secrets } from "@cloudpid/extensions/secrets";
 import { extensionName as browser } from "@cloudpid/extensions/browser";
+import { extensionName as toolSearch } from "@cloudpid/extensions/tool-search";
 
 it("exposes one subpath export per extension", () => {
-  expect([subagents, context, todo, web, secrets, browser]).toEqual([
+  expect([subagents, context, todo, web, secrets, browser, toolSearch]).toEqual([
     "subagents",
     "context",
     "todo",
     "web",
     "secrets",
     "browser",
+    "tool-search",
   ]);
 });

@@ -15,6 +15,7 @@ import { useState, type ReactNode } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { modelName } from "./models.ts";
+import { badOfferedEntries, offeredFromText, offeredToText } from "./offered-tools.ts";
 import { navigate } from "./router.ts";
 import { usePush } from "./use-push.ts";
 import { useSettings } from "./use-settings.ts";
@@ -169,7 +170,10 @@ const SettingsForm = ({
 }) => {
   const [draft, setDraft] = useState(saved);
   const [justSaved, setJustSaved] = useState(false);
+  // The text box keeps what is typed; the draft holds what it parses to.
+  const [offeredText, setOfferedText] = useState(offeredToText(saved.tools.offered));
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const badOffered = badOfferedEntries(draft.tools.offered);
 
   const edit = (next: Settings) => {
     setDraft(next);
@@ -235,13 +239,50 @@ const SettingsForm = ({
           ))}
         </div>
       </Section>
+      <Section title="Offered tools">
+        <p className="text-sm text-muted-foreground">
+          The tools the model sees from its first request, one name per line (<code>*</code> matches
+          any run of characters, as in <code>context_*</code>). Every other tool is deferred: the
+          model finds it with <code>tool_search</code>, which is always offered, as is{" "}
+          <code>context_rollover</code>, and scripts in <code>codemode</code> call it without
+          loading it. A change applies to the next request of new and idle sessions.
+        </p>
+        <Field label="Tools" htmlFor="offered-tools">
+          <textarea
+            id="offered-tools"
+            rows={Math.min(Math.max(draft.tools.offered.length + 1, 4), 16)}
+            value={offeredText}
+            spellCheck={false}
+            onChange={(event) => {
+              setOfferedText(event.target.value);
+              edit({
+                ...draft,
+                tools: { ...draft.tools, offered: offeredFromText(event.target.value) },
+              });
+            }}
+            className="min-w-0 rounded-md border border-input bg-background px-2.5 py-2 font-mono text-sm focus-visible:outline-2 focus-visible:outline-ring"
+          />
+        </Field>
+        {badOffered.length > 0 && (
+          <p role="alert" className="text-sm text-destructive">
+            Not a tool name: {badOffered.join(", ")}. Use lowercase letters, digits, underscores,
+            and <code>*</code>.
+          </p>
+        )}
+        {draft.tools.offered.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            Nothing is listed, so the model is offered only <code>tool_search</code> and{" "}
+            <code>context_rollover</code> and must search for every other tool.
+          </p>
+        )}
+      </Section>
       {error !== null && (
         <p role="alert" className="mb-4 text-sm whitespace-pre-wrap text-destructive">
           {error}
         </p>
       )}
       <div className="flex items-center gap-3 border-t py-4">
-        <Button type="submit" disabled={!dirty || saving}>
+        <Button type="submit" disabled={!dirty || saving || badOffered.length > 0}>
           {saving ? "Saving…" : "Save"}
         </Button>
         <Button
@@ -250,6 +291,7 @@ const SettingsForm = ({
           disabled={saving}
           onClick={() => {
             edit(DEFAULT_SETTINGS);
+            setOfferedText(offeredToText(DEFAULT_SETTINGS.tools.offered));
           }}
         >
           Reset to defaults
@@ -264,7 +306,7 @@ const SettingsForm = ({
   );
 };
 
-/** The settings page: the default model and thinking level, the model roles, and this device's notifications. */
+/** The settings page: the default model and thinking level, the model roles, the offered tools, and this device's notifications. */
 export const SettingsPage = () => {
   const settings = useSettings();
 

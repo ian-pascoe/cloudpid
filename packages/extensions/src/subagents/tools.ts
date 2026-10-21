@@ -30,6 +30,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { TOOL_SEARCH_TOOL_NAME } from "@earendil-works/pi-durable/tool-search";
 import { firstInput, parentContext } from "./context.ts";
 import { fail, SubagentError } from "./errors.ts";
 import {
@@ -282,7 +283,7 @@ const SpawnParameters = Schema.Struct({
       Schema.Array(Schema.String.check(Schema.isMinLength(1))),
     ]).annotate({
       description:
-        'Presets: "read" grants read, grep, find, ls; "modify" adds bash, edit, write; "none" grants only the base toolset. An array names exact ordinary tools. Omit to grant your own ordinary tools. Grants never exceed your own tools; coordinator tools are granted by delegation and must not appear here.',
+        'Presets: "read" grants read, grep, find, ls; "modify" adds bash, edit, write; "none" grants only the base toolset. An array names exact ordinary tools. Tools a preset or an array grants are offered to the child even if they are deferred for you; omit to grant your own ordinary tools, of which the child is offered the usual defaults and finds the rest with tool_search (all of them when you have no tool_search). Grants never exceed your own tools; coordinator tools are granted by delegation and must not appear here.',
     }),
   ),
   delegation: Schema.optionalKey(
@@ -431,13 +432,26 @@ const Spawn = defineEffectTool({
       const spawns = delegation === "fanout" && depth < options.maxSubagentDepth;
       const coordinator = coordinatorToolsFor(spawns);
 
-      const registrations = Arr.flatMap([...resolved.tools, ...coordinator], (name) =>
-        Option.toArray(
-          Option.map(
-            Arr.findFirst(installed, (each) => each.tool.name === name),
-            (each): ToolRegistration => each.tool,
+      const registered = (names: ReadonlyArray<string>) =>
+        Arr.flatMap(names, (name) =>
+          Option.toArray(
+            Option.map(
+              Arr.findFirst(installed, (each) => each.tool.name === name),
+              (each): ToolRegistration => each.tool,
+            ),
           ),
-        ),
+        );
+
+      const registrations = registered([...resolved.tools, ...coordinator]);
+
+      // What the child is offered besides what the settings offer every conversation: the tools its spawner named, a
+      // preset's or an exact list's, and its coordinator tools, even where they are deferred. A child that inherits its
+      // caller's tools is offered the defaults and finds the rest with `tool_search`, which it inherits, unless its
+      // caller has none (a preset child, say): it could reach no deferred tool of the grant, so the whole grant is offered.
+      const searches = Arr.contains(resolved.tools, TOOL_SEARCH_TOOL_NAME);
+
+      const offered = registered(
+        selectionName === "inherit" && searches ? coordinator : [...resolved.tools, ...coordinator],
       );
 
       const anchor = await tx.createTask(Anchor, null, {
@@ -451,7 +465,7 @@ const Spawn = defineEffectTool({
         model,
         thinkingLevel,
         tools: registrations,
-        modelTools: null,
+        modelTools: { add: offered },
         instructions: instructions(id, caller, spawns),
       });
 

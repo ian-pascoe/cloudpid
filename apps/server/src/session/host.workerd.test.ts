@@ -41,8 +41,8 @@ const eventually = async (
 let counter = 0;
 
 /** A Session registered in a fresh Registry, with its Session object reporting to that Registry. */
-const registered = async () => {
-  const sessionId = `session-${(counter += 1)}`;
+const registered = async (prefix = "session") => {
+  const sessionId = `${prefix}-${(counter += 1)}`;
   const registryName = `registry-${counter}`;
   const registry = env.REGISTRIES.getByName(registryName);
   const stub = env.SESSIONS.getByName(sessionId);
@@ -334,6 +334,37 @@ describe("a Session's agent", () => {
       { model: "claude-opus-5-5", thinking: "high" },
       { model: "claude-sonnet-5-5", thinking: "low" },
     ]);
+  });
+
+  it("defers the tools the offered set leaves out, and follows a change of it from the next request on", async () => {
+    const { stub, registry } = await registered("tool-search");
+
+    const offered = () =>
+      runInDurableObject(stub, (instance: TestSession) => instance.offeredTools());
+
+    await script(stub, "one", "two", "three");
+    await ask(stub, 1);
+
+    // The defaults offer neither echo nor todo, and always offer tool_search and context tools.
+    await registry.updateSettings({ tools: { offered: ["echo", "secret_*"] } }, 1);
+    await ask(stub, 2);
+
+    // Defaults back: what the Registry saved is gone, so the offered set is the default again.
+    await registry.updateSettings({}, 2);
+    await ask(stub, 3);
+
+    const [first, second, third] = await offered();
+
+    expect(first).toContain("tool_search");
+    expect(first).not.toContain("echo");
+    expect(first).not.toContain("todo");
+    expect(second).toEqual(
+      expect.arrayContaining(["echo", "secret_ask", "secret_list", "tool_search"]),
+    );
+    expect(second).not.toContain("todo");
+    expect(third).not.toContain("echo");
+    expect(third).toContain("secret_ask");
+    expect(third).not.toContain("secret_list");
   });
 
   it("applies the default in force when a new Session first runs", async () => {

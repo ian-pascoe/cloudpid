@@ -3,8 +3,10 @@
 // settings synchronously, so the Registry is read before a request is admitted (`refresh`), never inside a getter.
 import { DEFAULT_SETTINGS, parseModelId, resolveLeniently, type Settings } from "@cloudpid/config";
 import { type SubagentOptions, subagentOptions } from "@cloudpid/extensions/subagents";
+import { reloadToolSearch, type ToolSearchOptions } from "@cloudpid/extensions/tool-search";
 import type {
   AgentChange,
+  Extension,
   CompactionPolicy,
   HarnessSettings,
   ModelRef,
@@ -15,6 +17,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equivalence from "effect/Equivalence";
 import * as Layer from "effect/Layer";
 import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
@@ -35,6 +38,8 @@ export type SessionSettingsValues = {
   readonly compaction: CompactionPolicy;
   /** The model roles, depth cap, and toolsets subagents are spawned with. */
   readonly subagents: SubagentOptions;
+  /** Which tools every conversation's model is offered; the rest are deferred. */
+  readonly toolSearch: ToolSearchOptions;
 };
 
 /** The parts of `settings` a Session uses. */
@@ -45,6 +50,7 @@ export const valuesFrom = (settings: Settings): SessionSettingsValues => ({
     Record.map(settings.roles, (role) => ({ model: parseModelId(role.model), hint: role.hint })),
     settings.extensions["subagents"],
   ),
+  toolSearch: { offered: settings.tools.offered },
 });
 
 export type SessionSettingsService = {
@@ -65,6 +71,27 @@ export class SessionSettings extends Context.Service<SessionSettings, SessionSet
 /** What the subagents extension reads of the Session's settings: their subagent options, as last read. */
 export const subagentSettings = Effect.map(SessionSettings, (settings) => ({
   current: () => settings.current().subagents,
+}));
+
+const sameTools = Arr.makeEquivalence(Equivalence.strictEqual<string>());
+
+/**
+ * The extensions that follow the settings (`SessionHostOptions.reload`): `tool_search`, built again over the installed
+ * extensions' tools when the offered tools changed, so the tools it defers follow the settings.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const reloadSessionExtensions = (
+  installed: readonly Extension[],
+  values: SessionSettingsValues,
+  previous: SessionSettingsValues,
+): readonly Extension[] =>
+  sameTools(values.toolSearch.offered, previous.toolSearch.offered)
+    ? []
+    : [reloadToolSearch(installed, values.toolSearch)];
+
+/** What the tool search extension reads of the Session's settings: the offered tools, as last read. */
+export const toolSearchSettings = Effect.map(SessionSettings, (settings) => ({
+  current: () => settings.current().toolSearch,
 }));
 
 /** The parts of a Durable Object's `storage.kv` the settings use. */

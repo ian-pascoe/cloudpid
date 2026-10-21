@@ -425,12 +425,25 @@ export const secretsExtension = (
       afterTool: (_call, toolResult) => Effect.sync(() => secrets.redact(toolResult)),
     });
 
+    // Also when the secret tools are deferred: the guidance not to ask the owner to paste a Secret into the conversation
+    // must not depend on having loaded the tool that replaces it.
     const guidelines = yield* effectSection("secrets", (input) =>
-      Effect.sync(() =>
-        Arr.some(input.agent.tools, (tool) => SECRET_TOOLS.has(tool.name))
-          ? SECRET_GUIDELINES.map((line) => `- ${line}`).join("\n")
-          : undefined,
-      ),
+      Effect.sync(() => {
+        const isSecretTool = (tool: { readonly name: string }) => SECRET_TOOLS.has(tool.name);
+
+        if (Arr.some(input.agent.tools, isSecretTool)) {
+          return SECRET_GUIDELINES.map((line) => `- ${line}`).join("\n");
+        }
+
+        return Arr.some(input.agent.deferred, isSecretTool)
+          ? [
+              ...SECRET_GUIDELINES,
+              "The secret tools are deferred: load them with tool_search before you call them.",
+            ]
+              .map((line) => `- ${line}`)
+              .join("\n")
+          : undefined;
+      }),
     );
 
     const wrap = withSecrets(secrets, run);

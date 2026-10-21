@@ -2,17 +2,34 @@
 // references, while the value never reaches the transcript, tool output, or the model. pi-durable's Harness is
 // Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 import { SECRET_LIFETIME_MS, secretEnvName, secretReference } from "./secrets.ts";
 import { call, openSecretsHarness } from "./secrets/harness.fixture.ts";
+import { toolSearchExtension } from "./tool-search.ts";
 
 const VALUE = "ghp_live0123456789abcdef";
 const ref = secretReference;
 const env = secretEnvName;
 
 describe("secrets", () => {
+  it("keeps telling the model not to ask for a pasted Secret while the secret tools are deferred", async () => {
+    const session = await openSecretsHarness([
+      toolSearchExtension(["secret_ask", "secret_list", "secret_forget"], { offered: [] }),
+    ]);
+
+    await session.prompt("Deploy");
+
+    const [request] = session.requests;
+    const prompt = getCurrentSystemPrompt(request ?? []);
+
+    expect(getCurrentTools(request ?? []).map((tool) => tool.name)).not.toContain("secret_ask");
+    expect(prompt).toContain("call secret_ask instead of asking the user to paste it");
+    expect(prompt).toContain("load them with tool_search");
+  });
+
   it("lets a command use a Secret the owner entered in the masked form", async () => {
     const session = await openSecretsHarness();
 

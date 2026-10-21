@@ -72,6 +72,44 @@ const Compaction = Schema.Struct({
   backgroundTokens: nonNegativeInt.pipe(Schema.withDecodingDefaultKey(Effect.succeed(32_768))),
 });
 
+/**
+ * The tools a conversation's model is offered, by name, before it loads any with `tool_search`. Every other tool is
+ * deferred: the model finds it by searching, and code mode scripts call it without loading it. This is the owner's local
+ * pi exposure (`defaultTools` on top of pi's read, bash, edit and write: codemode, the file search tools, `tool_search`),
+ * plus the context tools, which compaction depends on (the Rollover request tells the model to call `context_rollover`),
+ * and `secret_ask`, so the prompt keeps its guidance not to ask the owner to paste a credential into the conversation.
+ * `tool_search` and `context_rollover` are always offered, whatever is saved: without the first the model cannot reach
+ * a deferred tool, and without the second Rollover turns itself off.
+ */
+export const DEFAULT_OFFERED_TOOLS: ReadonlyArray<string> = [
+  "read",
+  "write",
+  "edit",
+  "bash",
+  "ls",
+  "find",
+  "grep",
+  "codemode",
+  "tool_search",
+  "context_notes",
+  "context_history",
+  "context_rollover",
+  "secret_ask",
+];
+
+/** What a name or pattern in the offered tools looks like: snake_case, with `*` for any run of characters. */
+export const TOOL_PATTERN = /^[a-z0-9_*]+$/;
+
+/**
+ * Which tools are offered to the model and which are deferred (`GLOSSARY.md` → Offered tool). A name, or a pattern in
+ * which `*` matches any run of characters (`context_*`), in snake_case; one that matches no tool does nothing.
+ */
+const Tools = Schema.Struct({
+  offered: Schema.Array(Schema.String.check(Schema.isPattern(TOOL_PATTERN))).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(DEFAULT_OFFERED_TOOLS)),
+  ),
+});
+
 /** The role hints are those of `~/.pi/agent/settings.json`. */
 const Roles = Schema.Struct({
   small: role(
@@ -102,6 +140,7 @@ export const Settings = Schema.Struct({
   thinkingLevel: ThinkingLevel.pipe(Schema.withDecodingDefaultKey(Effect.succeed("high"))),
   roles: Roles.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   compaction: Compaction.pipe(Schema.withDecodingDefaultKey(allDefaults)),
+  tools: Tools.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   extensions: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Json)).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed({})),
   ),
@@ -200,9 +239,16 @@ const omitPath = (value: Schema.Json, keys: ReadonlyArray<string>): Schema.Json 
 
   if (head === undefined || !isJsonObject(value)) return value;
 
-  return rest.length === 0
-    ? Record.filter(value, (_, key) => key !== head)
-    : Record.map(value, (entry, key) => (key === head ? omitPath(entry, rest) : entry));
+  if (rest.length === 0) return Record.filter(value, (_, key) => key !== head);
+
+  // A problem inside a list (`tools.offered.2`) drops the whole list, whose other elements may shift or be stale too.
+  return Record.filterMap(value, (entry, key) =>
+    key !== head
+      ? Result.succeed(entry)
+      : Arr.isArray(entry)
+        ? Result.failVoid
+        : Result.succeed(omitPath(entry, rest)),
+  );
 };
 
 /** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
