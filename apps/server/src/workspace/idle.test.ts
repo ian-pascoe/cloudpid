@@ -18,7 +18,9 @@ type FakeState = {
 };
 
 /** A fake Durable Object: a clock, one alarm, one stored time, and a count of Container stops. */
-const open = (idleMs = 15 * MINUTE) => {
+const open = (initialIdleMs = 15 * MINUTE) => {
+  const idle = { ms: initialIdleMs };
+
   const state: FakeState = {
     now: 1_000_000,
     alarm: undefined,
@@ -30,7 +32,7 @@ const open = (idleMs = 15 * MINUTE) => {
 
   const make = () =>
     new IdleStop({
-      idleMs: async () => idleMs,
+      idleMs: async () => idle.ms,
       now: () => state.now,
       load: async () => state.saved,
       save: async (at) => {
@@ -60,10 +62,38 @@ const open = (idleMs = 15 * MINUTE) => {
     await idle.alarm();
   };
 
-  return { state, idle: make(), make, fire };
+  return { state, idle: make(), make, fire, setIdle: (ms: number) => (idle.ms = ms) };
 };
 
 describe("IdleStop", () => {
+  it("brings the alarm forward when the Container turns out to have a shorter idle time than the one it was armed with", async () => {
+    const { state, idle, setIdle } = open(15 * MINUTE);
+
+    // The first use comes before the launch is recorded, so it sees the default time.
+    await idle.touch();
+    expect(state.alarm).toBe(state.now + 15 * MINUTE);
+
+    // The launch is recorded with the Workspace's own, shorter time.
+    setIdle(MINUTE);
+    state.now += 5_000;
+    await idle.touch();
+
+    expect(state.alarm).toBe(state.now + MINUTE);
+  });
+
+  it("does not move the alarm earlier on ordinary use", async () => {
+    const { state, idle } = open();
+
+    await idle.touch();
+
+    const armed = state.alarm;
+
+    state.now += 5 * MINUTE;
+    await idle.touch();
+
+    expect(state.alarm).toBe(armed);
+  });
+
   it("stops after the configured idle time, whatever it is", async () => {
     const { state, idle, fire } = open(5 * MINUTE);
 

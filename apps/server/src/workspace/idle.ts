@@ -26,6 +26,8 @@ export class IdleStop {
   #lastUse: number | undefined;
   #saved: number | undefined;
   #armed = false;
+  /** When the alarm that is set will fire. */
+  #armedAt = 0;
   /** Commands on the Container that have begun and not ended. In memory: an evicted object has none running. */
   #running = 0;
 
@@ -41,10 +43,13 @@ export class IdleStop {
 
     const idleMs = await this.#deps.idleMs();
 
-    if (!this.#armed) {
+    // An alarm already set for later than the idle time allows is brought forward: the first use of a Container comes
+    // before its launch is recorded, so it is armed with the default time, not the Container's own.
+    if (!this.#armed || at + idleMs < this.#armedAt) {
       // Armed only once the alarm is set: a failed write leaves the next use to try again.
       await this.#deps.setAlarm(at + idleMs);
       this.#armed = true;
+      this.#armedAt = at + idleMs;
     }
 
     // Storage is written at most this often: an evicted object then wakes to a use that is at most this old.
@@ -75,7 +80,8 @@ export class IdleStop {
     const idleMs = await this.#deps.idleMs();
 
     if (this.#running > 0) {
-      await this.#deps.setAlarm(this.#deps.now() + idleMs);
+      this.#armedAt = this.#deps.now() + idleMs;
+      await this.#deps.setAlarm(this.#armedAt);
       this.#armed = true;
 
       return;
@@ -88,6 +94,7 @@ export class IdleStop {
     const due = lastUse + idleMs;
 
     if (this.#deps.now() < due) {
+      this.#armedAt = due;
       await this.#deps.setAlarm(due);
       this.#armed = true;
 
