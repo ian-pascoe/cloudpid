@@ -10,6 +10,7 @@ import {
 } from "@cloudflare/computer";
 import { RpcTarget } from "cloudflare:workers";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
+import { GuardedFilesystem } from "./tracked.ts";
 
 /** Live counts of the stubs a `TestWorkspace` handed out. */
 export type LiveStubs = {
@@ -105,12 +106,14 @@ class CountedRuntime extends WorkspaceRuntimeStub {
 
 class CountedWorkspaceStub extends WorkspaceStub {
   readonly #runtime: CountedRuntime;
+  readonly #fs: GuardedFilesystem;
   readonly #counter: Counter;
   #disposed = false;
 
   constructor(workspace: ComputerWorkspace, counter: Counter) {
     super(workspace);
     this.#runtime = new CountedRuntime(workspace, counter);
+    this.#fs = new GuardedFilesystem(workspace);
     this.#counter = counter;
     counter.opened++;
     counter.workspaces++;
@@ -120,9 +123,14 @@ class CountedWorkspaceStub extends WorkspaceStub {
     return this.#runtime;
   }
 
+  override get fs() {
+    return this.#fs;
+  }
+
   override [Symbol.dispose]() {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#fs[Symbol.dispose]();
     this.#counter.workspaces--;
     this.#runtime[Symbol.dispose]();
     super[Symbol.dispose]();

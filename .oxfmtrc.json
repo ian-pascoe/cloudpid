@@ -13,6 +13,8 @@
     ".roo/**",
     ".windsurf/**",
     ".repos/**",
+    "skills/**",
+    "apps/server/src/workspace/bundled-skills.generated.ts",
     "tools/oxlint/anti-slop/**",
     "pnpm-workspace.yaml"
   ]

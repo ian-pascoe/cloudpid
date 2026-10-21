@@ -9,6 +9,6 @@ export {
 
 export { ComputerFiles } from "./files.ts";
 
-export { READERS_DIR, WorkspaceEnvHost } from "./host.ts";
+export { ensureDirectory, READERS_DIR, WorkspaceEnvHost } from "./host.ts";
 
 export type { EnvRequest, EnvResponse, HostOperation } from "./wire.ts";

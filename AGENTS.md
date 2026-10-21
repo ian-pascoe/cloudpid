@@ -18,9 +18,19 @@ Every workspace package (`apps/*`, `infra`, `packages/*`) is named `@cloudpid/<d
 - Runtime dependencies go in the package that imports them (`pnpm --filter @cloudpid/<pkg> add …`); the ones still at the root (`pi-*`, `@cloudflare/*`) move to their first consumer when a ticket starts using them.
 - Relative imports end in `.ts` (`allowImportingTsExtensions` is on in the shared tsconfig), so every file also runs under plain Node type stripping.
 - Effect's `http` modules are unstable but allowed through `allowedUnstableApis` in the shared tsconfig; add other unstable subtrees (`effect/rpc`, …) there when a ticket adopts them.
-- `skills/` is bundled skill content, not a package.
+- `skills/` is bundled skill content, not a package (see _Skills_ below).
 
 `pnpm install` skips the reference-repository clones when `CI` or `SKIP_REFERENCE_REPOS` is set; the `effect-tsgo` patch still runs.
+
+## Skills
+
+`skills/` holds the headless-safe skills from the owner's local pi config, copied whole (contents, not links). The Workspace DO mounts them read-only with computer's `WorkerBundle` at `/workspace/.agents/skills` (`apps/server/src/workspace/Workspace.ts`), so a write under it through the file tools or the Worker Shell fails with `EROFS` and a deploy that changes them replaces the copy. On the Container the mount is an ordinary directory (checked deployed): a command's write there succeeds locally but never reaches the Workspace, so the Container's copy can differ from the real one until it restarts. They ship inside the Workspaces Worker's upload as `?raw` string imports listed in `apps/server/src/workspace/bundled-skills.generated.ts`, so keep them to text and small. Every Workspace therefore has a `.agents/` directory at its root; `find` and `grep` from above the mount skip it, and a search of a path in the mount finds the files.
+
+computer refuses `mkdir -p` of any path above a read-only mount, `/workspace` included, though the directory exists. `ensureDirectory` (`packages/computer-env`) makes that a no-op for the file operations and, through `GuardedFilesystem` (`apps/server/src/workspace/tracked.ts`), for the Worker Shell; a Workspace stub that does not extend `TrackedWorkspaceStub` must return a `GuardedFilesystem` as its `fs`.
+
+To refresh, run `node scripts/sync-skills.mjs` (sources: `~/.pi/agent/skills`, then `~/.agents/skills`; `--source <dir>` overrides). It copies the skills named in `INCLUDED_SKILLS` at the top of the script, each with the upstream it comes from (`SOURCES`; the upstream's licence text is vendored in `skills/LICENSES/`, and a skill whose upstream and licence are unknown is not bundled), drops the paths in `EXCLUDED_PATHS` (including each skill's `agents/` metadata), refuses what `scripts/skills-checks.ts` forbids (binaries, files over 128 KB, a bundle over 1 MB, anything that looks like a credential or a local path), and rewrites `bundled-skills.generated.ts` and `skills/NOTICE.md`; commit all of it. `skills/` is outside oxfmt and oxlint. `bundled-skills.test.ts` fails in CI if the manifest, its `version` (computer copies the mount into a Workspace again only when it changes), the checks or the notices disagree with the directory.
+
+The `skills` prompt section (`@cloudpid/extensions/skills`) lists the skills in `.agents/skills` of the conversation's `cwd` and of each directory above it up to `/workspace`, nearest first (so a repo's skills beat the bundled ones of the same name; symbolic links to skill directories are followed one level), in the format local pi uses, at most 100 and each description cut to 1024 characters. Skills with `disable-model-invocation: true` are not listed, and the section says they are for the user to name.
 
 ## Infra
 

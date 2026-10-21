@@ -83,6 +83,25 @@ const concat = (chunks: readonly Uint8Array[]): Uint8Array => {
 
 const encoder = new TextEncoder();
 
+/**
+ * `fs.mkdir(path, { recursive: true })`, except that a directory that is already there is left alone. computer refuses
+ * the call on any path above a read-only mount (`/workspace`, with the bundled skills mounted below it), though it would
+ * change nothing, and every write into the Workspace root makes its parents this way.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain async helper, not an Effect combinator.
+export const ensureDirectory = async (
+  fs: Pick<Workspace["fs"], "stat" | "mkdir">,
+  path: string,
+): Promise<void> => {
+  try {
+    if ((await fs.stat(path)).isDirectory) return;
+  } catch (cause) {
+    if (posixCode(cause) !== "ENOENT") throw cause;
+  }
+
+  await fs.mkdir(path, { recursive: true });
+};
+
 /** Answers `ComputerExecutionEnv`'s requests from the Workspace it holds. */
 export class WorkspaceEnvHost {
   readonly #workspace: Workspace;
@@ -107,7 +126,7 @@ export class WorkspaceEnvHost {
   async prepare(root: string, now: number): Promise<void> {
     const fs = this.#workspace.fs;
 
-    await fs.mkdir(root, { recursive: true });
+    await ensureDirectory(fs, root);
     await fs.mkdir(READERS_DIR, { recursive: true });
 
     for (const entry of await fs.readdir(READERS_DIR)) {
@@ -203,7 +222,7 @@ export class WorkspaceEnvHost {
         attempt(path, async () => {
           const bytes = content instanceof Uint8Array ? content : encoder.encode(content);
 
-          await fs.mkdir(dirname(path), { recursive: true });
+          await ensureDirectory(fs, dirname(path));
 
           const existing = append ? await readAll(path).then((bytes) => [bytes], absent) : [];
 
@@ -237,7 +256,8 @@ export class WorkspaceEnvHost {
         }),
       createDir: (path, recursive) =>
         attempt(path, async () => {
-          await fs.mkdir(path, { recursive });
+          if (recursive) await ensureDirectory(fs, path);
+          else await fs.mkdir(path, { recursive });
 
           return null;
         }),

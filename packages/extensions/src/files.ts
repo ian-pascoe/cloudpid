@@ -94,6 +94,21 @@ const GREP_MAX_LINE_LENGTH = 500;
 /** What `find` and `grep` skip, as local pi's `find` does. */
 const IGNORED = ["**/node_modules/**", "**/.git/**"] as const;
 
+/** Where the bundled skills are mounted, read-only, in every Workspace (`@cloudpid/extensions/skills`). */
+const SKILLS_MOUNT = "/workspace/.agents/skills";
+
+/**
+ * What a search of `path` skips: `IGNORED`, and the bundled skills' mount when `path` is above it, so a search from the
+ * Workspace root does not walk the bundled files; a search of a path in or at the mount finds them.
+ */
+const ignoredIn = (path: string): ReadonlyArray<string> => {
+  const prefix = path.endsWith("/") ? path : `${path}/`;
+
+  return SKILLS_MOUNT.startsWith(prefix)
+    ? [...IGNORED, `${SKILLS_MOUNT.slice(prefix.length)}/**`]
+    : IGNORED;
+};
+
 const encoder = new TextEncoder();
 
 const sizeOf = (bytes: number): string =>
@@ -294,7 +309,10 @@ const Find = defineEffectTool({
     const effectiveLimit = limit ?? DEFAULT_FIND_LIMIT;
 
     const found = yield* attempt("Cannot search", () =>
-      files.find(directory, anywhere(pattern), { limit: effectiveLimit, exclude: IGNORED }),
+      files.find(directory, anywhere(pattern), {
+        limit: effectiveLimit,
+        exclude: ignoredIn(directory),
+      }),
     );
 
     if (found.length === 0) return textResult("No files found matching pattern", {});
@@ -378,7 +396,7 @@ const Grep = defineEffectTool({
         context: contextLines,
         limit: effectiveLimit,
         include: glob === undefined ? undefined : anywhere(glob),
-        exclude: IGNORED,
+        exclude: ignoredIn(searched),
       }),
     );
 
