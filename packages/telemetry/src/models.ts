@@ -12,6 +12,8 @@ import {
   type AssistantMessageEventStream,
   createAssistantMessageEventStream,
 } from "@earendil-works/pi-ai/utils/event-stream";
+import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import type { TelemetryContext } from "@earendil-works/pi-telemetry";
 import * as Predicate from "effect/Predicate";
 
@@ -105,6 +107,15 @@ export const aroundRequests = (models: Models, around: AroundRequest): Models =>
   });
 };
 
+/** How a failed response is classed, for a span: pi-ai's own judgement of the provider's text, which is not recorded. */
+export const failureKind = (
+  message: AssistantMessage,
+): "context_overflow" | "retryable" | "other" => {
+  if (isContextOverflow(message)) return "context_overflow";
+
+  return isRetryableAssistantError(message) ? "retryable" : "other";
+};
+
 /**
  * `models` with every request a `pi.ai.request` span of `telemetry`, in pi-ai's own vocabulary
  * (`AI_TELEMETRY_SCHEMA`): provider, API, model and reasoning level, and on the response its stop reason, token counts
@@ -137,9 +148,10 @@ export const tracingModels = (models: Models, telemetry: TelemetryContext): Mode
           });
 
           if (message.stopReason === "error") {
+            // Only the kind of failure: the provider's text may quote parts of the request, and is in the transcript.
             span.setStatus({
               status: "error",
-              error: { name: "provider_error", message: message.errorMessage?.slice(0, 500) ?? "" },
+              error: { name: "provider_error", message: failureKind(message) },
             });
           }
         };

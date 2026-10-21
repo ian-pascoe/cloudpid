@@ -756,6 +756,27 @@ describe("a usage watch", () => {
     expect(await recordedWatches(stub)).toEqual([{ watches: [], usage: false }]);
   });
 
+  it("sends the new limit when a read of the settings changes it, though the Session is idle", async () => {
+    const stub = fresh();
+    const registry = await registryOf(stub);
+    const client = await connect(stub);
+
+    client.send({ type: "watch_usage" });
+    await client.until((messages) => usages(messages).length === 1);
+
+    await registry.updateSettings({ spendLimit: { perSession: 3 } }, 1);
+
+    // Any command reads the settings first; this one changes nothing else.
+    client.send({ type: "configure", id: "read" });
+    await client.answer("read");
+
+    const sent = usages(
+      await client.until((messages) => Arr.some(usages(messages), (usage) => usage.limit === 3)),
+    );
+
+    expect(sent.at(-1)).toMatchObject({ limit: 3, cost: 0 });
+  });
+
   it("survives hibernation: the woken Session sends the usage again on the same socket", async () => {
     const stub = fresh();
     const client = await connect(stub);

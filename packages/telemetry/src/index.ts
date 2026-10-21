@@ -1,7 +1,5 @@
 export { effectTelemetry } from "./adapter.ts";
 
-export { CallerFrame, captureFrame, type Frame } from "./frame.ts";
-
 export {
   aroundRequests,
   type AroundRequest,

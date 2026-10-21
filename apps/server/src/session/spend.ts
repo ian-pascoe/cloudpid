@@ -122,6 +122,11 @@ export type SpendGate = {
    * must not stop the owner's work.
    */
   readonly spent: () => Promise<number | undefined>;
+  /**
+   * Told why `spent` failed, when it did and the request went through. Every gated request reads the ledgers of all
+   * the Session's conversations, which is cheap until a Session has very many subagents.
+   */
+  readonly failed?: (reason: string) => void;
 };
 
 /**
@@ -140,7 +145,11 @@ export const limitingModels = (models: Models, gate: SpendGate): Models =>
 
     gate
       .spent()
-      .catch(() => undefined)
+      .catch((error) => {
+        gate.failed?.(String(error));
+
+        return undefined;
+      })
       .then(async (spent) => {
         if (spent !== undefined && isOverLimit(spent, limit)) {
           const refused = failedStream(model, spendMessage(spent, limit), Date.now());

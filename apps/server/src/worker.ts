@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { BROWSER_HOST_BINDING, Browsers } from "@cloudpid/browser";
 import { WebConfigLive } from "@cloudpid/extensions/web";
-import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry";
+import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-sandbox";
 import * as Alchemy from "alchemy";
 import * as Command from "alchemy/Command";

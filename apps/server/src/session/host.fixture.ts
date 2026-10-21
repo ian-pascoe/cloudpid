@@ -51,7 +51,7 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
-import { pricedModels } from "./priced.fixture.ts";
+import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import {
@@ -150,8 +150,7 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
 /** The models the test provider serves: those the default settings and a Session's choice may name. */
 const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as const;
 
-/** What each answered request costs, in US dollars: the faux provider has no prices, so the fixture gives it one. */
-export const REQUEST_COST = 0.25;
+export { REQUEST_COST };
 
 /** The model and thinking level a request asked for. */
 export type TestRequest = { readonly model: string; readonly thinking: string | undefined };

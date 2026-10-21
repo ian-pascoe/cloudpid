@@ -194,4 +194,26 @@ describe("workersTracer", () => {
     expect(attributes["event.pi.ai.first_chunk"]).toEqual(expect.any(Number));
     expect(attributes).toMatchObject({ error: true, "error.name": "provider_error" });
   });
+
+  it("adds no attribute for a log made inside a span, whatever the message carries", async () => {
+    const { tracing, recorded } = fakeTracing();
+    const tracer = workersTracer(tracing);
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        // Effect's tracer logger turns each of these into an event of the current span, named by the message.
+        yield* Effect.logWarning(
+          "Session command submit failed",
+          new Error("bad request: secret-ish text"),
+        );
+        yield* Effect.logInfo("Session title request", { model: "anthropic/x", cost: 0.01 });
+        yield* Effect.log("x".repeat(500));
+      }).pipe(Effect.withSpan("session.message"), Effect.provideService(Tracer.Tracer, tracer)),
+    );
+
+    const keys = Object.keys(named(recorded, "session.message").attributes);
+
+    expect(keys.filter((key) => key.startsWith("event."))).toEqual([]);
+    expect(JSON.stringify(keys)).not.toContain("secret-ish");
+  });
 });

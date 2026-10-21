@@ -1,13 +1,13 @@
 // Chord `Context` ↔ Effect fibers (ADR-0003). pi-durable passes every invocation a Chord `Context` whose abort signal
 // cancels it; the fiber that runs an invocation's Effect is interrupted by that signal and sees the Context as
 // `ChordContext`, so pi-durable calls it makes inherit both the Context's values and its cancellation.
-import { CallerFrame, captureFrame } from "@cloudpid/telemetry";
 import * as Chord from "@earendil-works/chord/context";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Tracer from "effect/Tracer";
+import { CallerFrame, captureFrame } from "./frame.ts";
 
 /** The Chord `Context` of the pi-durable invocation this fiber runs for; outside one, the background context. */
 export const ChordContext = Context.Reference<Chord.Context>(

@@ -13,7 +13,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Tracer from "effect/Tracer";
-import { CallerFrame, captureFrame, type Frame } from "./frame.ts";
+import { CallerFrame, captureFrame, type Frame } from "@cloudpid/effect-durable";
 
 /** The parts of a `cloudflare:workers` `Span` the tracer uses. */
 export type WorkersSpan = {
@@ -39,6 +39,9 @@ const exitKind = (exit: Exit.Exit<unknown, unknown>): "success" | "interrupted" 
   return Cause.hasInterruptsOnly(exit.cause) ? "interrupted" : "failure";
 };
 
+/** The names of events pi raises: short, lowercase, dotted. Anything else is a log message, not an event name. */
+const EVENT_NAME = /^[a-z][a-z0-9_.]{0,63}$/;
+
 /** An Effect span that also lives in the runtime, and the async context it was started in. */
 class WorkersEffectSpan extends Tracer.NativeSpan {
   constructor(
@@ -58,11 +61,18 @@ class WorkersEffectSpan extends Tracer.NativeSpan {
     }
   }
 
-  /** The runtime has no events: the first of each name is kept as the milliseconds since the span started. */
+  /**
+   * The runtime has no events: an event pi raises (a short dotted name such as `pi.ai.first_chunk`) is kept as an
+   * attribute with the milliseconds since the span started, the last of each name. Effect's own logger also raises an
+   * event for every log made inside a span, named by its message, which may carry error text and is unbounded: those
+   * stay in Effect's span and never reach the runtime.
+   */
   override event(...[name, startTime, attributes]: Parameters<Tracer.Span["event"]>): void {
     super.event(name, startTime, attributes);
 
-    this.native?.setAttribute(`event.${name}`, Number(startTime - this.startTime) / 1_000_000);
+    if (EVENT_NAME.test(name)) {
+      this.native?.setAttribute(`event.${name}`, Number(startTime - this.startTime) / 1_000_000);
+    }
   }
 
   override end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {

@@ -1,4 +1,4 @@
-import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry";
+import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { BROWSER_HOST_BINDING } from "./binding.ts";
 

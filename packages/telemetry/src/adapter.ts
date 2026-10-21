@@ -20,7 +20,7 @@ import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
 import * as Tracer from "effect/Tracer";
-import { CallerFrame, captureFrame } from "./frame.ts";
+import { CallerFrame, captureFrame } from "@cloudpid/effect-durable";
 
 /** Attributes with every value defined. */
 type Attributes = Record<string, AttributeValue>;

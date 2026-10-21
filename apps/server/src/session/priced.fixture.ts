@@ -5,6 +5,9 @@ import type { AssistantMessage, Models } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { aroundRequests } from "@cloudpid/telemetry";
 
+/** What every answered request costs, in US dollars, in the tests that look at spend. */
+export const REQUEST_COST = 0.25;
+
 const priced = (message: AssistantMessage, cost: number): AssistantMessage => ({
   ...message,
   usage: { ...message.usage, cost: { ...message.usage.cost, total: cost } },

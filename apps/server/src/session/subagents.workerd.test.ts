@@ -4,6 +4,7 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "c
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { expect, it } from "vitest";
+import { REQUEST_COST } from "./priced.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -326,4 +327,31 @@ it("stops everything below the root, a grandchild too, and the Session goes idle
   for (const agent of agents) {
     expect(agent.turns.at(-1)).toMatchObject({ status: "aborted", delivery: "none" });
   }
+});
+
+it("holds a subagent to the Session's spend limit, and the root's next request too", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+    // The root's first request, which starts the subagent, costs this much: the Session is then at its limit.
+    instance.limit(REQUEST_COST);
+    await instance.submit("Delegate quietly");
+  });
+  await eventually(stub, (instance) => instance.idle());
+
+  const subagents = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.subagents(),
+  );
+
+  // The child's first request was refused, so its turn failed; so was each of the root's requests after it.
+  expect(subagents?.agents["agent-1"]?.turns).toMatchObject([
+    { id: "turn-1", status: "failed", error: "model_error" },
+  ]);
+
+  const errors = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.errors(),
+  );
+
+  expect(errors).not.toHaveLength(0);
+  expect(Arr.every(errors, (message) => message.includes("out of budget"))).toBe(true);
 });

@@ -358,7 +358,15 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
 
   // Every request the Harness makes (generations, summaries, a subagent's) is held to the Session's spend limit, read at
   // the request. The title call is not: it goes through `options.models` as they are, and its cost is counted.
+  const run = Effect.runForkWith(yield* Effect.context<never>());
+
   const limited = limitingModels(models, {
+    // The limit is off while the ledgers cannot be read: say so, or it would be off without a trace.
+    failed: (reason) => {
+      run(
+        Effect.logWarning("Reading the Session's spend failed; the request goes through", reason),
+      );
+    },
     limit: () => settings.current().spendLimit,
     spent: async () =>
       opened === undefined ? undefined : (await sessionTotals(opened, storage.kv)).cost,
@@ -413,17 +421,27 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   /** The settings the extensions were last built for. */
   let built = settings.current();
 
+  /** What watches of the Session's usage run when it or its limit changes outside the Harness's ledgers. */
+  const usageListeners = new Set<() => void>();
+
   /** Read the settings, and install the extensions that follow them again when they changed. */
   const refreshSettings = settings.refresh.pipe(
     Effect.andThen(
       Effect.gen(function* () {
         const values = settings.current();
 
-        if (options.reload === undefined || values === built) return;
+        if (values === built) return;
 
         const previous = built;
 
         built = values;
+
+        // A limit changed in the settings reaches the clients that watch the usage even if the Session sits idle.
+        if (values.spendLimit !== previous.spendLimit) {
+          for (const listener of usageListeners) listener();
+        }
+
+        if (options.reload === undefined) return;
 
         for (const extension of options.reload(installed, values, previous)) {
           yield* harness.install(extension);
@@ -473,9 +491,6 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   });
 
   const inspect = harness.inspect.pipe(fromHarness);
-
-  /** What watches of the Session's usage run when it changes outside the Harness's ledgers. */
-  const usageListeners = new Set<() => void>();
 
   /**
    * Names the Session after its first answer (`docs/spec.md` → Client and protocol → Titles). The root's first message
@@ -934,23 +949,42 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           const run = Effect.runForkWith(services);
           // Usage is committed with each response, so a request that ends changes the task graph after it.
           const graph = await harness.harness.watchTaskGraph(context);
-          // Reads are made one at a time, in the order the changes came.
-          let chain: Promise<void> = Promise.resolve();
           let stopped = false;
+          // One read of the ledgers at a time: a change that comes meanwhile asks for one more read when this ends, however
+          // many came, so a burst of work costs one scan at a time and never a backlog.
+          let reading = false;
+          let changed = false;
 
           const publish = (): void => {
             if (stopped) return;
 
-            chain = chain.then(async () => {
-              try {
-                const totals = await sessionTotals(harness.harness, kv);
+            if (reading) {
+              changed = true;
 
-                Queue.offerUnsafe(queue, usageMessage(totals, settings.current().spendLimit));
-              } catch (error) {
-                // One failed read must not wedge the chain: the next change reads again.
-                run(Effect.logWarning("Usage read failed", error));
+              return;
+            }
+
+            reading = true;
+            void (async () => {
+              try {
+                do {
+                  changed = false;
+
+                  try {
+                    const totals = await sessionTotals(harness.harness, kv);
+
+                    if (!stopped) {
+                      Queue.offerUnsafe(queue, usageMessage(totals, settings.current().spendLimit));
+                    }
+                  } catch (error) {
+                    // One failed read must not stop the watch: the next change reads again.
+                    run(Effect.logWarning("Usage read failed", error));
+                  }
+                } while (changed && !stopped);
+              } finally {
+                reading = false;
               }
-            });
+            })();
           };
 
           usageListeners.add(publish);

@@ -74,12 +74,15 @@ describe("tracingModels", () => {
     expect(span!.status).toEqual({ status: "ok" });
   });
 
-  it("marks a request the provider failed as an error, with its message cut to 500 characters", async () => {
+  it("marks a request the provider failed as an error, with how it failed and none of its text", async () => {
     const { models, faux } = fauxModels();
     const telemetry = new InMemoryTelemetryContext();
 
     faux.setResponses([
-      fauxAssistantMessage([], { stopReason: "error", errorMessage: "x".repeat(900) }),
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "messages.3.content: overloaded, try later",
+      }),
     ]);
 
     const traced = tracingModels(models, telemetry);
@@ -91,8 +94,9 @@ describe("tracingModels", () => {
     expect(message.stopReason).toBe("error");
     expect(telemetry.getSpans()[0]?.status).toEqual({
       status: "error",
-      error: { name: "provider_error", message: "x".repeat(500) },
+      error: { name: "provider_error", message: "retryable" },
     });
+    expect(JSON.stringify(telemetry.getSpans())).not.toContain("messages.3");
   });
 
   it("leaves the rest of the models object as it is", () => {

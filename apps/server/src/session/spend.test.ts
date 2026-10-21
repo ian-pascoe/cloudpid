@@ -217,6 +217,23 @@ describe("limitingModels", () => {
     }
   });
 
+  it("tells the gate why it let a request through when what was spent could not be read", async () => {
+    const { models, faux } = fauxModels();
+    const failures: string[] = [];
+    const broken = new Error("the ledger is unreadable");
+
+    faux.setResponses([fauxAssistantMessage("hi")]);
+
+    const limited = limitingModels(models, {
+      limit: () => 1,
+      spent: () => Promise.reject(broken),
+      failed: (reason) => void failures.push(reason),
+    });
+
+    expect((await ask(limited)).stopReason).toBe("stop");
+    expect(failures).toEqual([String(broken)]);
+  });
+
   it("reads the limit at each request, so a change applies to the next", async () => {
     const { models, faux } = fauxModels();
     let limit: number | null = 1;

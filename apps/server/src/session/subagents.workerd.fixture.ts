@@ -26,8 +26,10 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import type * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { type AbortOptions, SessionHost, sessionHostLayer } from "./host.ts";
+import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionSettingsLayer } from "./settings.ts";
 import { SessionRegistry } from "./status.ts";
 
@@ -86,7 +88,7 @@ export class TestSubagentSession extends DurableObject {
       this.#runtime = ManagedRuntime.make(
         sessionHostLayer({
           storage: ctx.storage,
-          models,
+          models: pricedModels(models, REQUEST_COST),
           reset: (reason) => ctx.abort(reason),
           extensions: Effect.map(subagents, (extension) => [extension]),
         }).pipe(
@@ -98,7 +100,10 @@ export class TestSubagentSession extends DurableObject {
                 titleWanted: Effect.succeed(false),
                 setTitle: () => Effect.void,
               }),
-              sessionSettingsLayer({ read: Effect.succeed({}), kv: ctx.storage.kv }),
+              sessionSettingsLayer({
+                read: Effect.sync(() => ctx.storage.kv.get<Schema.Json>("overrides") ?? {}),
+                kv: ctx.storage.kv,
+              }),
             ),
           ),
         ),
@@ -188,6 +193,35 @@ export class TestSubagentSession extends DurableObject {
   /** Let the child's hanging request answer now. */
   answerChild(): void {
     this.#childMayAnswer.resolve();
+  }
+
+  /** Hold the Session to a spend limit of `perSession` US dollars, from the next prompt on. */
+  limit(perSession: number): void {
+    this.ctx.storage.kv.put("overrides", { spendLimit: { perSession } });
+  }
+
+  /** The error message of each assistant message of conversation `id` that ended in an error, oldest first. */
+  errors(id?: ConversationId): Promise<readonly string[]> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(Harness, ({ harness }) =>
+        callDurable("entries", async (context) => {
+          const conversation =
+            id === undefined
+              ? await harness.root(context)
+              : await harness.conversation(id, context);
+
+          const page = await conversation!.entries({ order: "ascending" }, 200, undefined, context);
+
+          return page.items.flatMap((entry) =>
+            (entry.model ?? []).flatMap((message) =>
+              message.role === "assistant" && message.errorMessage !== undefined
+                ? [message.errorMessage]
+                : [],
+            ),
+          );
+        }),
+      ),
+    );
   }
 
   /** Let the child answer, from its next request on. */

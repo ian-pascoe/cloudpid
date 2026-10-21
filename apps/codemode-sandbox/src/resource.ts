@@ -1,4 +1,4 @@
-import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry";
+import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { CODEMODE_SANDBOX_BINDING } from "./binding.ts";
 
