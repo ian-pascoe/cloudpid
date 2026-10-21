@@ -1,0 +1,43 @@
+diff --git a/dist/pool/index.mjs b/dist/pool/index.mjs
+index 7cc8335d47b5362ba7903540b8919df867ffc73f..89fdd5692c75a65f50b242b31f27b76f430ccf13 100644
+--- a/dist/pool/index.mjs
++++ b/dist/pool/index.mjs
+@@ -69253,7 +69253,17 @@ function inlineCachedModule(module$1, cacheContents) {
+ * module IDs to results. Vitest checks the map before calling `fetch()`, so
+ * both paths need inlining. Reuse reads within this reply because aliases in
+ * the map can reference the same cache file.
++*
++* The map holds every warm module of a test file's import graph, and workerd
++* closes a WebSocket that receives a message over 32 MiB (1009, "Message is
++* too large"), which kills the runner. So inline code only up to
++* `WARM_MODULES_BUDGET` serialized bytes and leave the other modules out:
++* Vitest fetches those one at a time, the same as any other snapshot miss.
++* Aliases of a module share its code, which the message carries once, so it
++* is counted once.
++* https://github.com/cloudflare/workers-sdk/issues/16349
+ */
++const WARM_MODULES_BUDGET = 24 * 1024 * 1024;
+ function inlineCachedModules(response) {
+ 	const cacheContents = /* @__PURE__ */ new Map();
+ 	let inlined;
+@@ -69264,10 +69274,19 @@ function inlineCachedModules(response) {
+ 	}
+ 	if (inlined !== response || response === null || typeof response !== "object" || Array.isArray(response)) return inlined;
+ 	let hasCachedModules = false;
++	let budget = WARM_MODULES_BUDGET;
++	const counted = /* @__PURE__ */ new Set();
+ 	const entries = Object.entries(response).flatMap(([specifier, module$1]) => {
+ 		try {
+ 			const inlinedModule = inlineCachedModule(module$1, cacheContents);
+-			hasCachedModules ||= inlinedModule !== module$1;
++			if (inlinedModule === module$1) return [[specifier, module$1]];
++			hasCachedModules = true;
++			if (!counted.has(module$1.tmp)) {
++				const size = Buffer.byteLength(structuredSerializableStringify(inlinedModule.code));
++				if (size > budget) return [];
++				budget -= size;
++				counted.add(module$1.tmp);
++			}
+ 			return [[specifier, inlinedModule]];
+ 		} catch {
+ 			hasCachedModules = true;
