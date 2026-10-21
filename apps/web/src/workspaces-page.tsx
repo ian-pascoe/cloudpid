@@ -24,7 +24,7 @@ import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
-import { navigate, sessionPath } from "./router.ts";
+import { navigate } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
 import { exitFailure, failureOf, settledFailureOf } from "./registry.ts";
 import { useSessionActions } from "./session-actions.ts";
@@ -662,11 +662,9 @@ export const WorkspacesPage = () => {
   const start = async (workspace: string, repo?: string) => {
     setStarting(true);
 
-    const session = await createSession(repo === undefined ? { workspace } : { workspace, repo });
+    await createSession(repo === undefined ? { workspace } : { workspace, repo });
 
     setStarting(false);
-
-    if (session !== undefined) navigate(sessionPath(session.id));
   };
 
   return (

@@ -1,13 +1,14 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
 
 import type { SessionRecord } from "@cloudpid/protocol";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import { ChevronRight, FolderGit2, Plus, Settings as SettingsIcon, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
 import { cn } from "./lib/utils.ts";
 import { navigate, SETTINGS_PATH, sessionPath, WORKSPACES_PATH } from "./router.ts";
+import { noticeAtom } from "./app-state.ts";
 import { failureOf } from "./registry.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { type SessionActions, SessionMenu } from "./session-menu.tsx";
@@ -78,18 +79,14 @@ const SessionItem = ({
       workspaceName={workspaceName}
       actions={menu.actions}
       onFailure={menu.onFailure}
-      onDeleted={() => {
-        menu.onDeleted(session.id);
-      }}
       className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 group-has-[:popover-open]:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
     />
   </li>
 );
 
-/** What every item's menu does in the list: the actions, and where a deletion and a failure go. */
+/** What every item's menu does in the list: the actions, and where a failure goes. */
 type ItemMenu = {
   readonly actions: SessionActions;
-  readonly onDeleted: (id: string) => void;
   readonly onFailure: (message: string) => void;
 };
 
@@ -130,9 +127,6 @@ export const Sidebar = ({
   activeId,
   settingsActive,
   workspacesActive,
-  notice,
-  onDismissNotice,
-  onDeleted,
   className,
 }: {
   /** What each item's menu does. */
@@ -140,14 +134,10 @@ export const Sidebar = ({
   activeId: string | undefined;
   settingsActive: boolean;
   workspacesActive: boolean;
-  /** Something the owner should know that happened elsewhere, such as a Session deleted from another device. */
-  notice: string | null;
-  onDismissNotice: () => void;
-  /** A Session was deleted from its menu. */
-  onDeleted: (id: string) => void;
   className?: string;
 }) => {
   const sessions = useAtomValue(sessionListAtom);
+  const [notice, setNotice] = useAtom(noticeAtom);
   const listError = useAtomValue(sessionsErrorAtom);
   const names = useAtomValue(workspaceNamesAtom);
   // Why the last new Session could not be created, here or by the composer's `/new`.
@@ -172,18 +162,15 @@ export const Sidebar = ({
       },
       delete: actions.delete,
     },
-    onDeleted,
     onFailure: setProblem,
   };
 
   const create = async () => {
     setCreating(true);
 
-    const session = await createSession();
+    await createSession();
 
     setCreating(false);
-
-    if (session !== undefined) navigate(sessionPath(session.id));
   };
 
   const { active, archived } = splitArchived(sessions ?? []);
@@ -206,7 +193,9 @@ export const Sidebar = ({
           <span className="min-w-0 flex-1">{notice}</span>
           <button
             type="button"
-            onClick={onDismissNotice}
+            onClick={() => {
+              setNotice(null);
+            }}
             aria-label="Dismiss"
             className="-m-1 shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
