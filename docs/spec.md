@@ -49,7 +49,7 @@ The Session DO opens the Harness with `openDurableObjectSqliteStorage(ctx.storag
 Effect is the language everywhere except pi-durable's own core ([ADR-0003](adr/0003-effect-around-pi-durable.md)).
 
 - Each DO builds its Layers once and keeps a `ManagedRuntime`. Services (`Context.Service`) include `Harness`, `WorkspaceClient`, `Models`, `Settings`, `Secrets`, `Registry`, and `Telemetry`.
-- `packages/effect-durable` provides `defineEffectTool` (Effect `Schema` parameters compiled to TypeBox/JSON Schema), `effectHook`, `effectSection`, and `effectTask`. Chord `Context` cancellation becomes fiber interruption, and typed failures become tool error results.
+- `packages/effect-durable` provides `defineEffectTool` (Effect `Schema` parameters compiled to TypeBox/JSON Schema), `effectHook`, `effectSection`, and `effectTask`. Chord `Context` cancellation becomes fiber interruption, and typed failures become tool error results (`effectTask`: the task's `failed` outcome; a defect faults it, as a native throw does). A task's phases run as Effects but still commit their checkpoints through `runtime`.
 - Harness internals, commits, documents, and task phases stay native. Effect reaches them through thin facades (`Effect.tryPromise`), never a parallel scheduler.
 
 ### Models
