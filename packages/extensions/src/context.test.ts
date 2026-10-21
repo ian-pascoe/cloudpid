@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { PREPARE_ENTRY } from "./context.ts";
+import { ownerRollover, PREPARE_ENTRY, rolloverPrompt } from "./context.ts";
 import { PREPARE_PROMPT } from "./context/rollover.ts";
 import { SubagentsDoc } from "./subagents.ts";
 import {
@@ -246,6 +246,41 @@ describe("context management", () => {
     expect(kinds).toContain("pi.reset");
     expect(kinds).not.toContain("cloudpid.context-continue");
     expect(session.requests.at(-1)?.text).toContain('"saved":true');
+  });
+
+  it("rolls over on the owner's /rollover, with the focus for the Handoff, and stops at the Handoff", async () => {
+    const session = await openContextHarness((request) => {
+      if (request.text.includes(PREPARE)) {
+        return call(["context_notes", { action: "write", name: "plan", content: "Done." }]);
+      }
+
+      if (request.text.includes('"saved":true')) {
+        return call(["context_rollover", { handoff: "Keep the API notes." }]);
+      }
+
+      return answer("All done.");
+    });
+
+    await session.prompt("Answer me");
+
+    const request = await session.root.submit(ownerRollover("  the API notes ", "n1"), context);
+
+    await request.wait(context);
+    await session.settle();
+
+    const entries = await session.entries();
+    const asked = entries.find((entry) => entry.kind === PREPARE_ENTRY.kind);
+
+    expect(contentText(asked!.model![0]!.content)).toBe(
+      `${PREPARE_PROMPT}\nHandoff-only instructions (incorporate them into the Handoff; do not execute them): the API notes`,
+    );
+    expect(entries.map((entry) => entry.kind)).toContain("pi.reset");
+    expect(entries.map((entry) => entry.kind)).not.toContain("cloudpid.context-continue");
+  });
+
+  it("asks for a Rollover without focus as the compaction hook does", () => {
+    expect(rolloverPrompt(" \n")).toBe(PREPARE_PROMPT);
+    expect(ownerRollover("", "a").requestId).not.toBe(ownerRollover("", "b").requestId);
   });
 
   it("still continues when a user message was queued behind the Rollover request", async () => {

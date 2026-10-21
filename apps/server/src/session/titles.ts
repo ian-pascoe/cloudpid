@@ -12,6 +12,7 @@ import type {
   ToolCall,
   Usage,
 } from "@earendil-works/pi-ai";
+import { userEntryData } from "@cloudpid/protocol";
 import type { EntryRecord, ModelRef } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -82,11 +83,16 @@ const textOf = (
 export const firstExchange = (entries: ReadonlyArray<EntryRecord>): Exchange | undefined => {
   const messages = Arr.flatMap(entries, (entry) => entry.model ?? []);
 
+  // A message the Session expanded is named by what the owner typed, not by the Skill or template it became.
   const question = Arr.head(
-    Arr.flatMap(messages, (message) =>
-      message.role === "user" && textOf(message.content).trim() !== ""
-        ? [textOf(message.content)]
-        : [],
+    Arr.flatMap(entries, (entry) =>
+      Arr.flatMap(entry.model ?? [], (message) => {
+        if (message.role !== "user") return [];
+
+        const text = userEntryData(entry)?.display ?? textOf(message.content);
+
+        return text.trim() === "" ? [] : [text];
+      }),
     ),
   );
 

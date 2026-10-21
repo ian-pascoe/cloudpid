@@ -26,6 +26,7 @@ import {
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
+import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import { DurableObject } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
@@ -37,7 +38,7 @@ import {
   workspaceSettingsStore,
   type WriteAnswer,
 } from "./settings.ts";
-import { discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
+import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
 import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
@@ -338,6 +339,16 @@ export class Workspace extends ContainerHost {
     await this.#ready();
 
     return discoverWorkspaceSkills(this.#host.readEnv(cwd), BUNDLED_SKILLS);
+  }
+
+  /**
+   * The Prompt templates a conversation in `cwd` can use: the `.agents/prompts` of `cwd` and of each directory above it
+   * up to the Workspace root, nearest first, walked next to the files as skills are.
+   */
+  async prompts(cwd: string): Promise<ReadonlyArray<PromptTemplate>> {
+    await this.#ready();
+
+    return discoverWorkspacePrompts(this.#host.readEnv(cwd));
   }
 
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */

@@ -14,7 +14,7 @@ import {
   openContextHarness,
 } from "./context/harness.fixture.ts";
 import { SubagentsDoc } from "./subagents.ts";
-import { Todo, TodoDoc } from "./todo.ts";
+import { clearTodoList, Todo, TodoDoc } from "./todo.ts";
 import {
   CHANGED_HEADER,
   RECONCILE_INSTRUCTION,
@@ -117,6 +117,44 @@ describe("todo", () => {
     expect(await listOf(session)).toEqual([
       { id: 1, title: "Write the tool", status: "completed" },
     ]);
+  });
+
+  it("clears the list for the owner, the IDs starting again from 1", async () => {
+    const session = await open((request) => {
+      // The list's note may follow the message's text.
+      if (request.text.startsWith("Plan")) {
+        return call(["todo", { action: "add", tasks: [{ title: "One" }, { title: "Two" }] }]);
+      }
+
+      if (request.text.startsWith("Again"))
+        return call(["todo", { action: "add", title: "Three" }]);
+
+      return answer("Done.");
+    });
+
+    await session.prompt("Plan");
+
+    const before = await session.harness.snapshot(TodoDoc, ROOT_CONVERSATION_ID, context);
+
+    const cleared = await session.harness.commit(
+      (tx) => clearTodoList(tx, ROOT_CONVERSATION_ID),
+      context,
+    );
+
+    const after = await session.harness.snapshot(TodoDoc, ROOT_CONVERSATION_ID, context);
+
+    expect(cleared).toBe(2);
+    expect(after?.tasks).toEqual([]);
+    expect(after?.rev).toBe((before?.rev ?? 0) + 1);
+
+    // Clearing an empty list changes nothing.
+    await session.harness.commit((tx) => clearTodoList(tx, ROOT_CONVERSATION_ID), context);
+    expect((await session.harness.snapshot(TodoDoc, ROOT_CONVERSATION_ID, context))?.rev).toBe(
+      after?.rev,
+    );
+
+    await session.prompt("Again");
+    expect(await listOf(session)).toEqual([{ id: 1, title: "Three", status: "pending" }]);
   });
 
   it("changes nothing when one entry of a batch is bad", async () => {

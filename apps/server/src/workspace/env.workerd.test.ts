@@ -9,6 +9,7 @@ import { DEFAULT_WORKSPACE_SETTINGS } from "@cloudpid/config";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { discoverSkills } from "@cloudpid/extensions/skills-discovery";
+import { discoverPrompts } from "@cloudpid/extensions/prompt-templates";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
@@ -301,6 +302,11 @@ const countingEnv = (workspace: DurableObjectStub<TestWorkspace>, cwd: string) =
 
       return workspace.skills(at);
     },
+    prompts: (at: string) => {
+      calls.push("prompts");
+
+      return workspace.prompts(at);
+    },
     __getWorkspaceStub: () => workspace.__getWorkspaceStub(),
   };
 
@@ -367,6 +373,48 @@ describe("skill discovery on the Workspace DO", () => {
     expect((await executionEnv.discoverSkills(context)).map((skill) => skill.name)).not.toContain(
       "mine",
     );
+  });
+
+  it("answers the Prompt templates of a directory in one RPC call, nearest first, as a walk of the files finds them", async () => {
+    const workspace = env.WORKSPACES.getByName("prompts-discovery");
+    const { calls, env: executionEnv } = countingEnv(workspace, "/workspace/repo/app");
+
+    for (const [path, text] of [
+      ["/workspace/repo/app/.agents/prompts/review.md", "---\ndescription: Near\n---\nReview $1"],
+      ["/workspace/repo/.agents/prompts/review.md", "Far review"],
+      ["/workspace/repo/.agents/prompts/ship.md", "---\nargument-hint: <tag>\n---\nShip $1"],
+      ["/workspace/.agents/prompts/root.md", "At the root"],
+    ] as const) {
+      getOrThrow(await executionEnv.writeFile(path, text, context));
+    }
+
+    calls.length = 0;
+
+    const found = await executionEnv.discoverPrompts(context);
+
+    expect(calls).toEqual(["prompts"]);
+    expect(found).toEqual([
+      {
+        name: "review",
+        description: "Near",
+        content: "Review $1",
+        filePath: "/workspace/repo/app/.agents/prompts/review.md",
+      },
+      {
+        name: "ship",
+        description: "Ship $1",
+        argumentHint: "<tag>",
+        content: "Ship $1",
+        filePath: "/workspace/repo/.agents/prompts/ship.md",
+      },
+      {
+        name: "root",
+        description: "At the root",
+        content: "At the root",
+        filePath: "/workspace/.agents/prompts/root.md",
+      },
+    ]);
+    expect(found).toEqual(await Effect.runPromise(discoverPrompts(executionEnv)));
   });
 
   it("reads the bundled skills from the bundle once per version", () => {

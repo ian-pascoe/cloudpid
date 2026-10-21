@@ -37,6 +37,20 @@ export type WireSkill = {
   readonly disableModelInvocation: boolean;
 };
 
+/**
+ * A Prompt template the Workspace DO found (the extensions package's `PromptTemplate`, which this package does not
+ * import): the answer to `prompts`.
+ */
+export type WirePrompt = {
+  readonly name: string;
+  readonly description: string;
+  readonly argumentHint?: string;
+  /** Its body, without the frontmatter. */
+  readonly content: string;
+  /** The absolute path of its file. */
+  readonly filePath: string;
+};
+
 /** A watch target, resolved, as the Workspace DO scans it. */
 export type ScanTarget = {
   readonly path: string;

@@ -11,8 +11,28 @@ import {
   SubagentsDoc,
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
-import { TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
-import type { SessionUsage, TaskGraphSummary, TodoTask } from "@cloudpid/protocol";
+import { clearTodoList, TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
+import { MAX_ROLLOVER_FOCUS, ownerRollover } from "@cloudpid/extensions/context";
+import {
+  discoverPrompts,
+  isPromptSource,
+  type PromptTemplate,
+  stripFrontmatter,
+} from "@cloudpid/extensions/prompt-templates";
+import {
+  discoverSkills,
+  isSkillSource,
+  type Skill,
+  type SkillsError,
+} from "@cloudpid/extensions/skills-discovery";
+import {
+  type Catalog,
+  type CommandOutcome,
+  type SessionUsage,
+  type TaskGraphSummary,
+  type TodoTask,
+  USER_ENTRY_KIND,
+} from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { formatModelId, isModelId } from "@cloudpid/config";
@@ -25,10 +45,15 @@ import {
   type ModelRef,
   type AgentEvent,
   AssistantEntry,
+  type Conversation,
   type ConversationId,
+  type Cursor,
+  type EnvTarget,
+  type EntryRecord,
   type Extension,
   type HarnessOptions,
   type InputSubmissionDraft,
+  LiveDoc,
   ROOT_CONVERSATION_ID,
   type Submission,
   type SubmissionId,
@@ -42,10 +67,12 @@ import {
   type DurableObjectSqliteStorage,
   openDurableObjectSqliteStorage,
 } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -53,6 +80,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
+import * as Random from "effect/Random";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -73,6 +102,8 @@ import {
   sessionTotals,
   usageMessage,
 } from "./spend.ts";
+import { catalogOf, exportMarkdown, MAX_EXPORT_CHARACTERS } from "./commands.ts";
+import { expandMessage, mayExpand } from "./expand.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -93,6 +124,12 @@ export const NOTIFY_TIMEOUT: Duration.Input = "20 seconds";
 
 /** The submissions the owner made whose Run's end has not been notified yet, in the Session's key-value storage. */
 const NOTIFY_KEY = "notify-submissions";
+
+/** The conversations whose `/compact` waits for their Run to end, in the Session's key-value storage. */
+const COMPACT_KEY = "pending-compactions";
+
+/** How many entries `/export` reads at a time. */
+const EXPORT_PAGE = 500;
 
 /** Why a submission went unanswered by the owner's own doing: stopping a Run is not news. */
 const SILENT_REASONS: ReadonlySet<string> = new Set(["aborted", "reset"]);
@@ -195,6 +232,15 @@ export type Prompt = {
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
 };
 
+/** One of the Session's Slash commands, as the owner typed it. */
+export type SlashCommand = {
+  /** Its name, without the `/`. */
+  readonly name: string;
+  readonly args: string;
+  /** The conversation it is for: the root by default, or a live subagent's. */
+  readonly conversationId?: ConversationId;
+};
+
 /** What an abort reaches. */
 export type AbortOptions = {
   /** The conversation to abort: the root by default. */
@@ -282,6 +328,13 @@ export type SessionHostService = {
   readonly todos: (
     conversationId: ConversationId,
   ) => Stream.Stream<ReadonlyArray<TodoTask>, SessionError>;
+  /**
+   * What the composer of the root conversation, or of the subagent's that `conversationId` names, offers: the Session's
+   * Slash commands, and the Prompt templates and Skills of the conversation's directory, nearest first.
+   */
+  readonly catalog: (conversationId?: ConversationId) => Effect.Effect<Catalog, SessionError>;
+  /** Run one of the Session's Slash commands (`SERVER_COMMANDS`); one that cannot run fails with why, for the owner. */
+  readonly command: (command: SlashCommand) => Effect.Effect<CommandOutcome, SessionError>;
 };
 
 /** What the Session DO answers with: its Harness, prompted and woken. */
@@ -789,8 +842,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
-  const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> => {
-    const { conversationId, input, ...options } = prompt;
+  /**
+   * Admit `draft` to conversation `conversationId` (the root's by default). `named` says whether the Session may be
+   * named after it: only the owner's own messages to the root name it, a subagent's conversation being the root's own
+   * work and a Rollover request not being the owner's words.
+   */
+  const admitDraft = (
+    conversationId: ConversationId | undefined,
+    draft: InputSubmissionDraft,
+    named: boolean,
+  ): Effect.Effect<Submission, SessionError> => {
     const toRoot = conversationId === undefined || conversationId === ROOT_CONVERSATION_ID;
 
     // A subagent keeps the agent it was started with; only the root follows the settings and the owner's pick.
@@ -808,9 +869,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           Effect.flatMap((conversation) =>
             tracedRun(
               conversation.id,
-              attempt("submit", () =>
-                conversation.submit({ type: "input", content: input, ...options }, context),
-              ),
+              attempt("submit", () => conversation.submit(draft, context)),
             ),
           ),
           // The owner hears how this Run ends, even after an eviction: the submission is kept until it is told.
@@ -823,10 +882,146 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ),
       ),
       Effect.tap(settleWhenIdle),
-      // Only the root is named: a subagent's conversation is the root's own work.
-      Effect.tap((submission) => (toRoot ? titleAfter(submission) : Effect.void)),
+      Effect.tap((submission) => (toRoot && named ? titleAfter(submission) : Effect.void)),
     );
   };
+
+  /** The execution environment of `conversation`, in its own `cwd`: the Session's Workspace. */
+  const environment = (conversation: Conversation) =>
+    Effect.suspend(() => {
+      const build = options.env;
+
+      if (build === undefined) return Effect.undefined;
+
+      return attempt("agent", () => conversation.agent(context)).pipe(
+        Effect.flatMap((agent) =>
+          attempt("env", async () => {
+            const target: Types.Mutable<EnvTarget> = {
+              conversationId: conversation.id,
+              read: harness.harness,
+            };
+
+            // A conversation's own `cwd`, as pi-durable builds its environment for a tool call.
+            if (agent.cwd !== undefined) target.cwd = agent.cwd;
+
+            return build(target, context);
+          }),
+        ),
+      );
+    });
+
+  const fromDiscovery = Effect.mapError((error: SkillsError) =>
+    SessionError.make({ operation: "discover", message: error.message }),
+  );
+
+  /** The Skills a conversation in `env` can name, those the model is not offered too. */
+  const skillsIn = (env: ExecutionEnv): Effect.Effect<ReadonlyArray<Skill>, SessionError> =>
+    isSkillSource(env)
+      ? attempt("skills", () => env.discoverSkills(context))
+      : discoverSkills(env).pipe(fromDiscovery);
+
+  /** The Prompt templates of a conversation in `env`. */
+  const templatesIn = (
+    env: ExecutionEnv,
+  ): Effect.Effect<ReadonlyArray<PromptTemplate>, SessionError> =>
+    isPromptSource(env)
+      ? attempt("prompts", () => env.discoverPrompts(context))
+      : discoverPrompts(env).pipe(fromDiscovery);
+
+  /** What `conversation`'s composer offers: the Session's commands, and its directory's templates and Skills. */
+  const catalogFor = (conversation: Conversation) =>
+    environment(conversation).pipe(
+      Effect.flatMap((env) =>
+        env === undefined
+          ? Effect.succeed(catalogOf([], []))
+          : Effect.all([skillsIn(env), templatesIn(env)], { concurrency: 2 }).pipe(
+              Effect.map(([skills, templates]) => catalogOf(skills, templates)),
+            ),
+      ),
+    );
+
+  /** The typed text of `input`: the text itself, or its first text block. */
+  const typedText = (input: UserInput): string | undefined =>
+    Predicate.isString(input)
+      ? input
+      : Arr.findFirst(input, (block) => block.type === "text").pipe(
+          Option.map((block) => (block.type === "text" ? block.text : "")),
+          Option.getOrUndefined,
+        );
+
+  /** `input` with its typed text replaced by `content`. */
+  const withText = (input: UserInput, content: string): UserInput => {
+    if (Predicate.isString(input)) return content;
+
+    const at = Option.getOrUndefined(Arr.findFirstIndex(input, (block) => block.type === "text"));
+
+    return Arr.map(input, (block, index) =>
+      index === at ? { type: "text" as const, text: content } : block,
+    );
+  };
+
+  /**
+   * The draft of the owner's `prompt`: its input as the model gets it. A message that names a Skill or a Prompt template
+   * of the conversation's directory is expanded, and placed as a `cloudpid.user` entry keeping what the owner typed
+   * (docs/adr/0001-expand-skills-and-prompt-templates-at-submit.md). A message the Workspace cannot be asked about
+   * goes as typed.
+   */
+  const draftOf = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> => {
+    const { conversationId, input, ...rest } = prompt;
+    const typed = typedText(input);
+    const plain: InputSubmissionDraft = { type: "input", content: input, ...rest };
+
+    if (typed === undefined || !mayExpand(typed)) return Effect.succeed(plain);
+
+    const expansion = (conversation: Conversation) =>
+      environment(conversation).pipe(
+        Effect.flatMap((env) =>
+          env === undefined
+            ? Effect.undefined
+            : Effect.all([skillsIn(env), templatesIn(env)], { concurrency: 2 }).pipe(
+                Effect.flatMap(([skills, templates]) =>
+                  attempt("expand", () =>
+                    expandMessage(typed, {
+                      skills,
+                      templates,
+                      body: async (skill) => {
+                        const read = await env.readTextFile(skill.filePath, context);
+
+                        return read.ok ? stripFrontmatter(read.value).trim() : undefined;
+                      },
+                    }),
+                  ),
+                ),
+              ),
+        ),
+        // The Workspace could not be asked: the message goes as typed rather than not at all.
+        Effect.catch((error) =>
+          Effect.logWarning("Expanding a message failed; it goes as typed", error).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      );
+
+    // A conversation that is neither the root nor a subagent fails here, as the submit would.
+    return addressed(conversationId).pipe(
+      Effect.flatMap(expansion),
+      Effect.map((expanded): InputSubmissionDraft =>
+        expanded === undefined
+          ? plain
+          : {
+              ...plain,
+              content: withText(input, expanded.content),
+              entry: {
+                kind: USER_ENTRY_KIND,
+                data: { display: expanded.data.display, skills: [...expanded.data.skills] },
+              },
+            },
+      ),
+    );
+  };
+
+  const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
+    draftOf(prompt).pipe(Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)));
 
   const answer = Effect.fn("SessionHost.prompt")(function* (prompt: Prompt) {
     const submission = yield* admit(prompt);
@@ -861,6 +1056,165 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     return { status: "answered", submissionId: submission.id, text } satisfies Answer;
   });
+
+  /** A failure the owner's Slash command reports to the composer. */
+  const refuse = (message: string) => SessionError.make({ operation: "command", message });
+
+  /** The conversations whose `/compact` waits for their Run to end, with the focus asked for. */
+  const pendingCompactions = (): Readonly<Record<string, string>> =>
+    kv.get<Record<string, string>>(COMPACT_KEY) ?? {};
+
+  /** Admit a manual compaction of `conversationId`, with `focus` as its summary's additional focus. */
+  const startCompaction = (conversationId: ConversationId, focus: string) =>
+    arm({ active: true }).pipe(
+      Effect.andThen(
+        attempt("compact", async () => {
+          const conversation = await harness.harness.conversation(conversationId, context);
+
+          if (conversation === undefined) {
+            throw new Error(`Conversation ${conversationId} does not exist`);
+          }
+
+          await conversation.compact(focus === "" ? undefined : focus, context);
+        }),
+      ),
+      serially,
+      Effect.tap(settleWhenIdle),
+    );
+
+  /**
+   * Once `conversationId` is idle, run the compaction its `/compact` asked for, if no other waiter took it first. The
+   * request is in storage until it starts, so an instance that was evicted meanwhile starts it again.
+   */
+  const compactWhenIdle = (conversationId: ConversationId) =>
+    attempt("waitForIdle", async () => {
+      await (await harness.harness.conversation(conversationId, context))?.waitForIdle(context);
+    }).pipe(
+      Effect.andThen(
+        Effect.suspend(() => {
+          const { [String(conversationId)]: focus, ...others } = pendingCompactions();
+
+          if (focus === undefined) return Effect.void;
+
+          kv.put(COMPACT_KEY, others);
+
+          return startCompaction(conversationId, focus);
+        }),
+      ),
+      Effect.catchCause((cause) => Effect.logWarning("A /compact after a Run failed", cause)),
+      Effect.forkIn(scope),
+      Effect.asVoid,
+    );
+
+  /** `/compact [focus]`: now when the conversation is idle, otherwise once its Run ends. */
+  const compact = (conversation: Conversation, focus: string) =>
+    attempt("snapshot", () => harness.harness.snapshot(LiveDoc, conversation.id, context)).pipe(
+      Effect.flatMap((live): Effect.Effect<CommandOutcome, SessionError> => {
+        if (live?.run === undefined) {
+          return startCompaction(conversation.id, focus).pipe(
+            Effect.as({ notice: "Compacting the context." }),
+          );
+        }
+
+        return Effect.sync(() =>
+          kv.put(COMPACT_KEY, { ...pendingCompactions(), [String(conversation.id)]: focus }),
+        ).pipe(
+          Effect.andThen(compactWhenIdle(conversation.id)),
+          Effect.as({ notice: "The context is compacted once the run ends." }),
+        );
+      }),
+    );
+
+  /** `/rollover [focus]`: the Rollover request, steered into the Run, with the owner's focus for the Handoff. */
+  const rollover = (conversation: Conversation, focus: string) =>
+    focus.length > MAX_ROLLOVER_FOCUS
+      ? Effect.fail(refuse(`Keep the Rollover focus to ${MAX_ROLLOVER_FOCUS} characters.`))
+      : attempt("agent", () => conversation.agent(context)).pipe(
+          Effect.filterOrFail(
+            (agent) => Arr.some(agent.tools, (tool) => tool.name === "context_rollover"),
+            () => refuse("This conversation cannot roll over: it has no context_rollover tool."),
+          ),
+          Effect.andThen(Effect.all([Clock.currentTimeMillis, Random.nextInt])),
+          Effect.flatMap(([now, random]) =>
+            admitDraft(conversation.id, ownerRollover(focus, `${now}-${random}`), false),
+          ),
+          Effect.as({ notice: "Asked the agent to roll over." } satisfies CommandOutcome),
+        );
+
+  /** `/todo clear`. */
+  const clearTodos = (conversation: Conversation, args: string) =>
+    args === "clear"
+      ? attempt("todo", () =>
+          harness.harness.commit((tx) => clearTodoList(tx, conversation.id), context),
+        ).pipe(
+          Effect.map((cleared): CommandOutcome => ({
+            notice:
+              cleared === 0
+                ? "The Todo List is already empty."
+                : `Cleared ${cleared} ${cleared === 1 ? "Task" : "Tasks"}.`,
+          })),
+        )
+      : Effect.fail(refuse("/todo takes clear."));
+
+  /** Every entry of `conversation`'s History, oldest first, across its Context Windows. */
+  const historyOf = (conversation: Conversation) =>
+    Effect.gen(function* () {
+      const entries: EntryRecord[] = [];
+      let cursor: Cursor | undefined;
+
+      do {
+        const page = yield* attempt("entries", () =>
+          conversation.entries({ order: "ascending" }, EXPORT_PAGE, cursor, context),
+        );
+
+        entries.push(...page.items);
+        cursor = page.next;
+      } while (cursor !== undefined);
+
+      return entries;
+    });
+
+  /** `/export`: the whole History as Markdown, for the client to download. */
+  const exportHistory = (conversation: Conversation) =>
+    Effect.all([historyOf(conversation), DateTime.now]).pipe(
+      Effect.map(([entries, now]) =>
+        exportMarkdown(conversation.id, entries, DateTime.formatIso(now)),
+      ),
+      Effect.filterOrFail(
+        (markdown) => markdown.length <= MAX_EXPORT_CHARACTERS,
+        () => refuse("The History is too large to export in one file."),
+      ),
+      Effect.map((content): CommandOutcome => ({
+        notice: "Exported the History.",
+        file: {
+          name: `conversation-${conversation.id}-history.md`,
+          mimeType: "text/markdown",
+          content,
+        },
+      })),
+    );
+
+  const runCommand = (request: SlashCommand) =>
+    addressed(request.conversationId).pipe(
+      Effect.flatMap((conversation): Effect.Effect<CommandOutcome, SessionError> => {
+        const args = request.args.trim();
+
+        switch (request.name) {
+          case "compact":
+            return compact(conversation, args);
+          case "rollover":
+            return rollover(conversation, args);
+          case "todo":
+            return clearTodos(conversation, args);
+          case "export":
+            return args === ""
+              ? exportHistory(conversation)
+              : Effect.fail(refuse("/export takes no argument."));
+          default:
+            return Effect.fail(refuse(`The Session has no /${request.name} command.`));
+        }
+      }),
+    );
 
   /** The Session's task graph as summaries; one per change, the first being how it stands. */
   const taskGraphSummaries = Stream.callback<TaskGraphSummary, SessionError>((queue) =>
@@ -1108,6 +1462,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   yield* wakeAndResume;
 
+  // A `/compact` that was waiting for a Run when the last instance went away waits again.
+  for (const key of Record.keys(pendingCompactions())) {
+    // SAFETY: the keys are the IDs of conversations a `/compact` was addressed to, written above.
+    yield* compactWhenIdle(Number(key) as ConversationId);
+  }
+
   return {
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
@@ -1149,6 +1509,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     usage: usageUpdates,
     events,
     todos,
+    catalog: (conversationId) => addressed(conversationId).pipe(Effect.flatMap(catalogFor)),
+    command: runCommand,
   } satisfies SessionHostService;
 });
 

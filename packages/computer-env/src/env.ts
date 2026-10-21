@@ -31,7 +31,7 @@ import { join, resolve } from "./paths.ts";
 import { inBash } from "./shell.ts";
 import { ComputerBinaryReader, ComputerDirReader, ComputerTextLineReader } from "./readers.ts";
 import { type PollingOptions, PollingWatcher } from "./watch.ts";
-import type { WireSkill } from "./wire.ts";
+import type { WirePrompt, WireSkill } from "./wire.ts";
 
 /**
  * A Workspace DO stub: computer's `__getWorkspaceStub()`, which `getWorkspace()` calls for exec, and the file operations
@@ -380,6 +380,18 @@ export class ComputerExecutionEnv implements ExecutionEnv {
     // SAFETY: the Workspace DO answers `skills` with the array of plain data it found; a stub's RPC types only
     // rewrite its declared type.
     return (await this.#workspace.skills(this.cwd)) as ReadonlyArray<WireSkill>;
+  }
+
+  /**
+   * The Prompt templates of this environment's `cwd`, found by the Workspace DO next to the files, as skills are (the
+   * extensions package's `PromptSource`).
+   */
+  async discoverPrompts(context: Context): Promise<ReadonlyArray<WirePrompt>> {
+    if (context.abortSignal?.aborted === true) throw new Error("aborted");
+
+    // SAFETY: the Workspace DO answers `prompts` with the array of plain data it found; a stub's RPC types only
+    // rewrite its declared type.
+    return (await this.#workspace.prompts(this.cwd)) as ReadonlyArray<WirePrompt>;
   }
 
   /** Kill the commands this environment still runs. */

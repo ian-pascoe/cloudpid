@@ -3,6 +3,7 @@
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { projectEntries } from "./transcript.ts";
+import { skillBlock } from "./user-entry.ts";
 import { EMPTY_VIEW, reduceEvents, reduceView, type SessionView } from "./view.ts";
 
 /** The parts of pi's shapes a fixture sets. */
@@ -607,6 +608,74 @@ describe("the session view", () => {
 });
 
 describe("the transcript projection", () => {
+  it("shows an owner's expanded message as typed, with each Skill's block beside it", () => {
+    const block = skillBlock({
+      name: "review",
+      location: "/workspace/.agents/skills/review/SKILL.md",
+      body: "Review well.",
+    });
+
+    const projected = projectEntries([
+      asEntry({
+        id: 1,
+        conversationId: 1,
+        kind: "cloudpid.user",
+        data: {
+          display: "$review the diff",
+          skills: [{ name: "review", location: "/workspace/.agents/skills/review/SKILL.md" }],
+        },
+        model: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: `${block}\n\n$review the diff` },
+              { type: "image", data: "AAAA", mimeType: "image/png" },
+            ],
+            timestamp: 1,
+          },
+        ],
+      }),
+    ]);
+
+    expect(projected).toEqual([
+      {
+        id: "1",
+        role: "user",
+        timestamp: 1,
+        parts: [
+          { type: "text", text: "$review the diff" },
+          { type: "image", data: "AAAA", mimeType: "image/png" },
+        ],
+        skills: [
+          {
+            name: "review",
+            location: "/workspace/.agents/skills/review/SKILL.md",
+            text: block,
+          },
+        ],
+      },
+    ]);
+    expect(block).toBe(
+      '<skill name="review" location="/workspace/.agents/skills/review/SKILL.md">\nReferences are relative to /workspace/.agents/skills/review.\n\nReview well.\n</skill>',
+    );
+  });
+
+  it("shows a cloudpid.user entry whose data it cannot read as the model's message", () => {
+    expect(
+      projectEntries([
+        asEntry({
+          id: 1,
+          conversationId: 1,
+          kind: "cloudpid.user",
+          data: { display: 3 },
+          model: [{ role: "user", content: "Expanded", timestamp: 1 }],
+        }),
+      ]),
+    ).toEqual([
+      { id: "1", role: "user", timestamp: 1, parts: [{ type: "text", text: "Expanded" }] },
+    ]);
+  });
+
   it("projects messages, tool calls and their results, and leaves out system and bookkeeping entries", () => {
     const projected = projectEntries([
       asEntry({

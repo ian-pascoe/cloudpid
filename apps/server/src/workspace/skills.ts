@@ -1,9 +1,11 @@
-// The Workspace DO's side of skills (docs/spec.md → Filesystem and tools): finding them next to the files, so a Session's
-// request is one RPC, and keeping what a Workspace had at the bundled skills' mount before the mount existed.
+// The Workspace DO's side of skills and Prompt templates (docs/spec.md → Filesystem and tools): finding them next to the
+// files, so a Session's request is one RPC, and keeping what a Workspace had at the bundled skills' mount before the
+// mount existed.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import type { Workspace as ComputerWorkspace, WorkerBundleSource } from "@cloudflare/computer";
 import { posixCode, type ReadEnv } from "@cloudpid/computer-env";
 import { discoverSkills, type Skill, skillsOfFiles } from "@cloudpid/extensions/skills-discovery";
+import { discoverPrompts, type PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import { SKILLS_MOUNT } from "./binding.ts";
@@ -63,6 +65,10 @@ export const discoverWorkspaceSkills = (
   bundle: WorkerBundleSource,
 ): Promise<ReadonlyArray<Skill>> =>
   Effect.runPromise(discoverSkills(env, new Map([[SKILLS_MOUNT, bundledSkills(bundle)]])));
+
+/** The Prompt templates of `env`'s `cwd` and the directories above it, walked in process as the skills are. */
+export const discoverWorkspacePrompts = (env: ReadEnv): Promise<ReadonlyArray<PromptTemplate>> =>
+  Effect.runPromise(discoverPrompts(env));
 
 /**
  * Where a Workspace's own files at the skills' mount are kept: the directory beside it. It is not a skills directory,

@@ -22,6 +22,8 @@ export interface ComputerEnvHost {
   fileOperation(request: EnvRequest): Promise<object>;
   /** The skills a conversation in `cwd` can use (an array of `WireSkill`), found next to the files: one RPC call. */
   skills(cwd: string): Promise<object>;
+  /** The Prompt templates of `cwd` (an array of `WirePrompt`), found next to the files: one RPC call. */
+  prompts(cwd: string): Promise<object>;
 }
 
 /** The value an operation's successful answer holds. */

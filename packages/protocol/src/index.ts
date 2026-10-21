@@ -7,4 +7,6 @@ export * from "./session.ts";
 
 export * from "./transcript.ts";
 
+export * from "./user-entry.ts";
+
 export * from "./view.ts";
