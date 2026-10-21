@@ -1,7 +1,7 @@
 // What the composer sends for its Attachments (GLOSSARY.md → Messages: Attachment): each one's `@path` in the
 // Workspace after the typed text, its image inline when it fits, and the names in the queue lanes.
 
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over native arrays, not combinators.
 
 import { freeAttachmentName, sanitizeAttachmentName, type UserInput } from "@cloudpid/protocol";
 import type { OutgoingMessage } from "../session/state.ts";

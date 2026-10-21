@@ -1,4 +1,5 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- browser code with no Effect runtime: native arrays are the platform here.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- assertions over the menu's native arrays and records.
+
 import { describe, expect, it } from "vitest";
 import type { ComposerCommand } from "./commands.ts";
 import { detectTrigger } from "./completion.ts";

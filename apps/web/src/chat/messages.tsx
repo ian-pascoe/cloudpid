@@ -9,7 +9,6 @@ import {
 } from "@assistant-ui/react";
 import * as Arr from "effect/Array";
 import { ChevronRight } from "lucide-react";
-import { useMemo } from "react";
 import * as Predicate from "effect/Predicate";
 import { MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
@@ -51,7 +50,7 @@ const USER_PARTS = { Image: UserImage };
 
 const UserMessage = () => {
   const custom = useAuiState((state) => state.message.metadata.custom);
-  const skills = useMemo(() => shownSkills(custom), [custom]);
+  const skills = shownSkills(custom);
 
   return (
     <MessagePrimitive.Root className="flex justify-end">

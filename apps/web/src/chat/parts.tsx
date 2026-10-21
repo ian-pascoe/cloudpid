@@ -1,10 +1,8 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: JSX lists are native arrays.
-
-import {
-  useAuiState,
-  type ReasoningMessagePartComponent,
-  type ToolCallMessagePartComponent,
+import type {
+  ReasoningMessagePartComponent,
+  ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
+import * as Arr from "effect/Array";
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
 import { Check, ChevronRight, Loader, X } from "lucide-react";
 import * as Option from "effect/Option";
@@ -103,7 +101,7 @@ const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
   <div className="mt-2 first:mt-0">
     <div className="text-xs font-medium text-muted-foreground">Calls</div>
     <ul className="mt-1 space-y-1">
-      {calls.map((call) => {
+      {Arr.map(calls, (call) => {
         const summary = toolSummary(call.name, call.args);
 
         return (
@@ -203,7 +201,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   return (
     <>
       {card}
-      {images.map((image, index) => (
+      {Arr.map(images, (image, index) => (
         <img
           key={index}
           src={`data:${image.mimeType};base64,${image.data}`}
@@ -214,7 +212,3 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
     </>
   );
 };
-
-/** Whether this message is the one streaming now, for a caret or a spinner. */
-export const useIsStreaming = (): boolean =>
-  useAuiState((state) => state.message.status?.type === "running");

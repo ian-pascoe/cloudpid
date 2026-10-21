@@ -1,6 +1,5 @@
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
-
 import { isModelId, THINKING_LEVELS, type ThinkingLevel } from "@cloudpid/config";
+import * as Arr from "effect/Array";
 import type { SessionView } from "@cloudpid/protocol";
 import { Brain, ChevronDown } from "lucide-react";
 import { type ComponentProps, type ReactNode, type Ref, useImperativeHandle, useRef } from "react";
@@ -9,7 +8,7 @@ import { agentSelect, FOLLOW_DEFAULT, modelChoices, modelName } from "../models.
 import type { ConfigureChange, Picked } from "../session/state.ts";
 
 export const isLevel = (value: string): value is ThinkingLevel =>
-  THINKING_LEVELS.some((level) => level === value);
+  Arr.some(THINKING_LEVELS, (level) => level === value);
 
 /** Opens a picker from elsewhere, as `/model` and `/thinking` do without an argument. */
 export type PickerHandle = {
@@ -123,7 +122,7 @@ export const ModelPicker = ({
         }}
       >
         <option value={FOLLOW_DEFAULT}>{modelChoice.defaultLabel}</option>
-        {modelChoices(model).map((choice) => (
+        {Arr.map(modelChoices(model), (choice) => (
           <option key={choice} value={choice}>
             {modelName(choice)}
           </option>
@@ -146,7 +145,7 @@ export const ModelPicker = ({
         }}
       >
         <option value={FOLLOW_DEFAULT}>{levelChoice.defaultLabel}</option>
-        {THINKING_LEVELS.map((level) => (
+        {Arr.map(THINKING_LEVELS, (level) => (
           <option key={level} value={level}>
             {level}
           </option>

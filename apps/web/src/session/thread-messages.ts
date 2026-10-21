@@ -1,7 +1,7 @@
 // A `SessionView` as assistant-ui's thread: pi's transcript alternates assistant messages and tool results, which
 // assistant-ui shows as one assistant message per turn, with each tool result on its call.
 
-// @effect-diagnostics globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics globalDate:off preferEffectArray:off -- plain functions over native arrays; assistant-ui's messages carry a Date.
 
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/protocol";

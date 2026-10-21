@@ -2,10 +2,11 @@
 // size; each with its upload's progress and a labelled remove button, which takes a 44 px touch. A tile that has
 // something to say (the upload failed, the picture goes as a file only, a GIF goes as a still) widens to say it.
 
-// @effect-diagnostics preferEffectArray:off -- browser code in a React app with no Effect runtime.
-
+import * as Arr from "effect/Array";
 import { AlertCircle, FileText, Image as ImageIcon, ImageOff, X } from "lucide-react";
-import { useState } from "react";
+import { useAtom } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
+import * as Atom from "effect/reactivity/Atom";
 import { cn } from "../lib/utils.ts";
 import { formatSize } from "./attachments.ts";
 import type { Fit } from "./image-budget.ts";
@@ -50,20 +51,21 @@ const noteOf = (item: AttachmentItem, fit: Fit | undefined) => {
   return undefined;
 };
 
-const Tile = ({
-  item,
-  fit,
-  onRemove,
-}: {
+type TileProps = {
   item: AttachmentItem;
   fit: Fit | undefined;
   onRemove: (id: string) => void;
-}) => {
+};
+
+/** Whether the browser could not show a tile's picture. */
+const Unshown = ScopedAtom.make(() => Atom.make(false));
+
+const Tile = ({ item, fit, onRemove }: TileProps) => {
   const note = noteOf(item, fit);
   // The name the message will use: the stored one, once the Workspace has suffixed it.
   const name = item.stored?.name ?? item.name;
   // A picture the browser cannot show (a HEIC elsewhere than Safari, a corrupt file) gets a file's icon instead.
-  const [unshown, setUnshown] = useState(false);
+  const [unshown, setUnshown] = useAtom(Unshown.use());
   const thumbnail = item.picture && item.preview !== undefined && !unshown;
   const thumbnailOnly = thumbnail && note === undefined;
   const failed = item.status === "failed";
@@ -169,8 +171,10 @@ export const AttachmentTiles = ({
       aria-relevant="additions"
       className="flex flex-wrap gap-2 px-2.5 pt-2.5"
     >
-      {items.map((item) => (
-        <Tile key={item.id} item={item} fit={fits.get(item.id)} onRemove={onRemove} />
+      {Arr.map(items, (item) => (
+        <Unshown.Provider key={item.id}>
+          <Tile item={item} fit={fits.get(item.id)} onRemove={onRemove} />
+        </Unshown.Provider>
       ))}
     </ul>
   );

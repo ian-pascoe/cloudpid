@@ -4,6 +4,7 @@ import type { SessionRecord } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ChevronRight, FolderGit2, Plus, Settings as SettingsIcon, X } from "lucide-react";
 import { Button } from "./components/ui/button.tsx";
+import { callOf } from "./calls.ts";
 import { relativeTime } from "./format.ts";
 import { cn } from "./lib/utils.ts";
 import { navigate, SETTINGS_PATH, sessionPath, WORKSPACES_PATH } from "./router.ts";
@@ -149,7 +150,7 @@ export const Sidebar = ({
           variant="outline"
           disabled={created.waiting}
           onClick={() => {
-            createSession({});
+            createSession(callOf({}));
           }}
         >
           <Plus />

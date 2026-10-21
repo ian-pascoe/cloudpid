@@ -1,7 +1,7 @@
 // The calls a tool made, as its card lists them: live from the view's `nestedTools` while it runs, and from the details of
 // its result once it has ended (pi-durable's code mode writes `CodemodeToolDetails` there, which the view no longer has).
 
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- browser code in a React app with no Effect runtime.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over native arrays, not combinators.
 
 import type { NestedTool, TranscriptPart } from "@cloudpid/protocol";
 import * as Option from "effect/Option";

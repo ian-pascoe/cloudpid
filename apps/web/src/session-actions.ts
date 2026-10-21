@@ -5,6 +5,7 @@ import { useAtomSet } from "@effect/atom-react";
 import type { SessionRecord } from "@cloudpid/protocol";
 import * as Exit from "effect/Exit";
 import type * as Atom from "effect/reactivity/Atom";
+import { useCall } from "./calls.ts";
 import { exitFailure } from "./registry.ts";
 import {
   archiveSessionAtom,
@@ -28,10 +29,10 @@ export interface SessionActions {
  */
 export const useSessionActions = (problem: Atom.Writable<string | null>): SessionActions => {
   const setProblem = useAtomSet(problem);
-  const create = useAtomSet(createSessionAtom, { mode: "promiseExit" });
-  const rename = useAtomSet(renameSessionAtom, { mode: "promiseExit" });
-  const archive = useAtomSet(archiveSessionAtom, { mode: "promiseExit" });
-  const unarchive = useAtomSet(unarchiveSessionAtom, { mode: "promiseExit" });
+  const create = useCall(createSessionAtom);
+  const rename = useCall(renameSessionAtom);
+  const archive = useCall(archiveSessionAtom);
+  const unarchive = useCall(unarchiveSessionAtom);
 
   const shown = (action: (id: string) => Promise<Exit.Exit<unknown, unknown>>) => (id: string) => {
     setProblem(null);

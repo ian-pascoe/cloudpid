@@ -1,14 +1,17 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off -- browser code in a React app with no Effect runtime: promises are the platform here.
-
 import { ThreadPrimitive } from "@assistant-ui/react";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import { isModelId, THINKING_LEVELS } from "@cloudpid/config";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
+import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
 import { MAX_TITLE_LENGTH, type SessionView } from "@cloudpid/protocol";
-import { type ReactNode, type RefObject, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { modelChoices, modelName } from "../models.ts";
+import { settledFailureOf } from "../registry.ts";
 import { navigate, SETTINGS_PATH } from "../router.ts";
 import {
   configureAtom,
@@ -27,13 +30,16 @@ import { isLevel, ModelPicker, type PickerHandle } from "./model-picker.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
+import { type Rename, saveTitleAtom, titleDraftAtom } from "./title-state.ts";
 
 /** An archived Session: read-only until the owner unarchives it, which resolves to null or why it failed. */
 export type Archived = { readonly unarchive: () => Promise<string | null> };
 
-/** In place of the composer while the Session is archived: say so, and offer to unarchive it. */
-const ArchivedBanner = ({ archived }: { archived: Archived }) => {
-  const [busy, setBusy] = useState(false);
+/** Whether the banner's unarchive is in progress. */
+const Unarchiving = ScopedAtom.make(() => Atom.make(false));
+
+const Banner = ({ archived }: { archived: Archived }) => {
+  const [busy, setBusy] = useAtom(Unarchiving.use());
 
   return (
     <div className="px-4 pb-4">
@@ -64,49 +70,31 @@ const ArchivedBanner = ({ archived }: { archived: Archived }) => {
   );
 };
 
-/** Naming the Session: its title now ("" while it has none), and how to save a new one. */
-export type Rename = {
-  readonly current: string;
-  /** Resolves to null when the title was saved, or to why it was not. */
-  readonly save: (title: string) => Promise<string | null>;
-};
+/** In place of the composer while the Session is archived: say so, and offer to unarchive it. */
+const ArchivedBanner = ({ archived }: { archived: Archived }) => (
+  <Unarchiving.Provider>
+    <Banner archived={archived} />
+  </Unarchiving.Provider>
+);
 
 /**
  * The title and a button that turns it into a field to rename it in place. Enter (outside an IME composition) or
  * leaving the field saves, Escape cancels; the field stays, with the reason inline, while a save fails.
  */
 const EditableTitle = ({ title, rename }: { title: string | undefined; rename: Rename }) => {
-  const [draft, setDraft] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  // Escape and a finished save close the field, which blurs it: that blur is not a save.
-  const closing = useRef(false);
+  const sessionId = useShownSessionId();
+  const [draft, setDraft] = useAtom(titleDraftAtom(sessionId));
+  const [saved, save] = useAtom(saveTitleAtom(sessionId));
+  const saving = saved.waiting;
+  const problem = settledFailureOf(saved);
 
   const close = () => {
-    closing.current = true;
     setDraft(null);
-    setProblem(null);
+    save(Atom.Reset);
   };
 
-  const save = async () => {
-    if (draft === null || saving || closing.current) return;
-
-    const next = draft.trim();
-
-    if (next === "" || next === rename.current) {
-      close();
-
-      return;
-    }
-
-    setSaving(true);
-
-    const failure = await rename.save(next);
-
-    setSaving(false);
-
-    if (failure === null) close();
-    else setProblem(failure);
+  const submit = () => {
+    if (!saving) save(rename);
   };
 
   if (draft === null) {
@@ -116,7 +104,6 @@ const EditableTitle = ({ title, rename }: { title: string | undefined; rename: R
         <button
           type="button"
           onClick={() => {
-            closing.current = false;
             setDraft(rename.current);
           }}
           aria-label={`Rename ${title ?? "session"}`}
@@ -140,15 +127,15 @@ const EditableTitle = ({ title, rename }: { title: string | undefined; rename: R
         className="h-8 w-full font-semibold"
         onChange={(event) => {
           setDraft(event.target.value);
-          setProblem(null);
+          save(Atom.Reset);
         }}
         onBlur={() => {
           // A field that could not save is left as it was, rather than tried again by the blur.
-          if (problem === null) void save();
+          if (problem === null) submit();
           else close();
         }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.nativeEvent.isComposing) void save();
+          if (event.key === "Enter" && !event.nativeEvent.isComposing) submit();
           else if (event.key === "Escape") close();
         }}
       />
@@ -232,7 +219,7 @@ const sessionCommands = ({
       argument: "optional",
       choices: [
         { value: "default", description: "Follow the settings" },
-        ...models.map((id) => ({
+        ...Arr.map(models, (id) => ({
           value: modelName(id),
           description: id === model ? "In use" : undefined,
         })),
@@ -252,7 +239,9 @@ const sessionCommands = ({
           return null;
         }
 
-        const id = models.find((choice) => choice === args || modelName(choice) === args);
+        const id = Option.getOrUndefined(
+          Arr.findFirst(models, (choice) => choice === args || modelName(choice) === args),
+        );
 
         if (id === undefined || !isModelId(id)) return `There is no model named ${args}.`;
 
@@ -268,7 +257,7 @@ const sessionCommands = ({
       argument: "optional",
       choices: [
         { value: "default", description: "Follow the settings" },
-        ...THINKING_LEVELS.map((level) => ({
+        ...Arr.map(THINKING_LEVELS, (level) => ({
           value: level,
           description: level === view.thinkingLevel ? "In use" : undefined,
         })),
@@ -378,18 +367,14 @@ export const Thread = ({
   // A file dropped anywhere on the thread attaches to its composer.
   const dropZone = useRef<HTMLDivElement>(null);
 
-  const commands = useMemo(
-    () =>
-      sessionCommands({
-        live,
-        view,
-        picker,
-        rename,
-        actions: commandActions,
-        onConfigure,
-      }),
-    [live, view, rename, commandActions, onConfigure],
-  );
+  const commands = sessionCommands({
+    live,
+    view,
+    picker,
+    rename,
+    actions: commandActions,
+    onConfigure,
+  });
 
   // assistant-ui shows its own placeholder while the answer to the last user message has not started.
   const working =

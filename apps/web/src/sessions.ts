@@ -8,6 +8,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
+import { replying } from "./calls.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { deletedHereAtom, leaveSession } from "./app-state.ts";
 import { pathAtom, sessionIdAtom, sessionPath } from "./router.ts";
@@ -43,7 +44,7 @@ export type SessionPlace = { readonly workspace?: string; readonly repo?: string
 
 /** Register a new Session, idle, and open it; the list asks again. */
 export const createSessionAtom = appRuntime.fn(
-  (where: SessionPlace, get) =>
+  replying((where: SessionPlace, get: Atom.FnContext) =>
     RegistryClient.use((registry) => registry("createSession", where)).pipe(
       Effect.tap((created) =>
         Effect.sync(() => {
@@ -52,33 +53,37 @@ export const createSessionAtom = appRuntime.fn(
       ),
       changing(["sessions"]),
     ),
+  ),
   { concurrent: true },
 );
 
 /** Name a Session: the title is the owner's from then on. */
 export const renameSessionAtom = appRuntime.fn(
-  (change: { readonly id: string; readonly title: string }) =>
+  replying((change: { readonly id: string; readonly title: string }) =>
     RegistryClient.use((registry) => registry("renameSession", change)).pipe(
       changing(["sessions"]),
     ),
+  ),
   { concurrent: true },
 );
 
 /** Stop everything a Session runs and take it out of the Session list; it is kept whole. */
 export const archiveSessionAtom = appRuntime.fn(
-  (id: string) =>
+  replying((id: string) =>
     RegistryClient.use((registry) => registry("archiveSession", { id })).pipe(
       changing(["sessions"]),
     ),
+  ),
   { concurrent: true },
 );
 
 /** Put an archived Session back in the Session list. */
 export const unarchiveSessionAtom = appRuntime.fn(
-  (id: string) =>
+  replying((id: string) =>
     RegistryClient.use((registry) => registry("unarchiveSession", { id })).pipe(
       changing(["sessions"]),
     ),
+  ),
   { concurrent: true },
 );
 

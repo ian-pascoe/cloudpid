@@ -1,7 +1,5 @@
 // The subagent a `subagent` tool call started, as its card needs it: which conversation to open.
 
-// @effect-diagnostics missingPipeableSignature:off -- browser code in a React app with no Effect runtime.
-
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { TranscriptPart } from "@cloudpid/protocol";
 import * as Option from "effect/Option";

@@ -1,6 +1,5 @@
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays are the platform here.
-
 import { useEffect } from "react";
+import * as Arr from "effect/Array";
 import { cn } from "../lib/utils.ts";
 
 /** One row of the menu: what is picked, the argument it takes, and what it does. */
@@ -20,6 +19,7 @@ export type CompletionSection = {
 };
 
 /** The id of row `index` of the menu `menuId`, for the input's `aria-activedescendant`. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain id helper, not a combinator.
 export const rowId = (menuId: string, index: number): string => `${menuId}-row-${index}`;
 
 /**
@@ -67,7 +67,7 @@ export const CompletionMenu = ({
     >
       {sections.length > 0 && (
         <div id={id} role="listbox" aria-label={label}>
-          {sections.map((section) => (
+          {Arr.map(sections, (section) => (
             <div key={section.label} role="group" aria-label={section.label}>
               <div
                 aria-hidden
@@ -75,7 +75,7 @@ export const CompletionMenu = ({
               >
                 {section.label}
               </div>
-              {section.rows.map((row) => {
+              {Arr.map(section.rows, (row) => {
                 const at = index;
 
                 index += 1;

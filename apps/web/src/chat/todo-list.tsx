@@ -1,7 +1,6 @@
 // A conversation's Todo List: the Tasks the agent keeps, in the order of their IDs, with what each one's status is.
 
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- browser code in a React app with no Effect runtime.
-
+import * as Arr from "effect/Array";
 import type { TodoTask } from "@cloudpid/protocol";
 import { CircleCheck, CircleDot, Circle } from "lucide-react";
 import { cn } from "../lib/utils.ts";
@@ -63,7 +62,7 @@ export const TodoList = ({
         </p>
       )}
       <ul className="mt-1 max-h-64 overflow-y-auto">
-        {tasks.map((task) => (
+        {Arr.map(tasks, (task) => (
           <TaskRow key={task.id} task={task} />
         ))}
       </ul>

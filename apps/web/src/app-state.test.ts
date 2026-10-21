@@ -4,6 +4,7 @@ import { SessionNotFound, type SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
+import { callOf } from "./calls.ts";
 import { deletedHereAtom, noticeAtom, pageProblemAtom, sessionGoneAtom } from "./app-state.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import { pathAtom, sessionPath, SETTINGS_PATH } from "./router.ts";
@@ -147,7 +148,7 @@ describe("a new Session", () => {
       const registry = showing("/", []);
 
       registry.mount(currentSessionAtom);
-      registry.set(createSessionAtom, {});
+      registry.set(createSessionAtom, callOf({}));
       yield* settled(registry, createSessionAtom);
 
       expect(registry.get(pathAtom)).toBe(sessionPath("new"));

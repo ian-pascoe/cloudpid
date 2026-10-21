@@ -1,4 +1,4 @@
-// @effect-diagnostics globalDate:off preferEffectArray:off -- browser code in a React app with no Effect runtime: native arrays, promises, timers, Date and fetch are the platform here.
+// @effect-diagnostics globalDate:off preferEffectArray:off -- assistant-ui's messages carry a Date; the lanes are native arrays.
 
 import type { AppendMessage } from "@assistant-ui/react";
 import { describe, expect, it, vi } from "vitest";

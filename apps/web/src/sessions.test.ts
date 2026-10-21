@@ -1,12 +1,14 @@
 // @effect-diagnostics preferEffectArray:off newSchemaClass:off -- in-memory fakes of the Registry over native arrays.
 
 import { SessionNotFound, type SessionRecord } from "@cloudpid/protocol";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vitest";
-import { failureOf } from "./registry.ts";
+import { callIn, callOf } from "./calls.ts";
+import { exitFailure, failureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import {
   archiveSessionAtom,
@@ -125,7 +127,7 @@ describe("the Session list", () => {
       const { registry } = listed([session("a")]);
 
       yield* settled(registry, sessionsAtom);
-      registry.set(createSessionAtom, { workspace: "work" });
+      registry.set(createSessionAtom, callOf({ workspace: "work" }));
 
       const created = yield* settled(registry, createSessionAtom);
 
@@ -140,17 +142,17 @@ describe("the Session list", () => {
 
       yield* settled(registry, sessionsAtom);
 
-      registry.set(renameSessionAtom, { id: "a", title: "Named" });
+      registry.set(renameSessionAtom, callOf({ id: "a", title: "Named" }));
       yield* settled(registry, renameSessionAtom);
       expect(AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom))[0]?.title).toBe(
         "Named",
       );
 
-      registry.set(archiveSessionAtom, "b");
+      registry.set(archiveSessionAtom, callOf("b"));
       yield* settled(registry, archiveSessionAtom);
       expect(AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom))[1]?.archivedAt).toBe(2);
 
-      registry.set(unarchiveSessionAtom, "b");
+      registry.set(unarchiveSessionAtom, callOf("b"));
       yield* settled(registry, unarchiveSessionAtom);
       expect(AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom))[1]?.archivedAt).toBe(
         null,
@@ -193,9 +195,34 @@ describe("the Session list", () => {
     Effect.gen(function* () {
       const { registry } = listed([session("a")]);
 
-      registry.set(unarchiveSessionAtom, "gone");
+      registry.set(unarchiveSessionAtom, callOf("gone"));
 
       expect(failureOf(yield* settled(registry, unarchiveSessionAtom))).toBe("No such session.");
+    }),
+  );
+
+  it.effect("answers each of two overlapping renames with its own outcome", () =>
+    Effect.gen(function* () {
+      const slow = Deferred.makeUnsafe<void>();
+
+      const registry = registryWith({
+        renameSession: ({ id, title }) =>
+          id === "slow"
+            ? Deferred.await(slow).pipe(Effect.as({ ...session(id), title }))
+            : Effect.fail(SessionNotFound.make({ message: "No such session." })),
+      });
+
+      registry.mount(renameSessionAtom);
+
+      const first = callIn(registry, renameSessionAtom, { id: "slow", title: "Named" });
+      const second = callIn(registry, renameSessionAtom, { id: "gone", title: "Named" });
+
+      expect(exitFailure(yield* Effect.promise(() => second))).toBe("No such session.");
+
+      yield* Deferred.succeed(slow, undefined);
+
+      expect(exitFailure(yield* Effect.promise(() => first))).toBe(null);
+      registry.dispose();
     }),
   );
 

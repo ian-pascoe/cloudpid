@@ -5,12 +5,11 @@ import {
 } from "@assistant-ui/react";
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { type ReactNode, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { canStopAllBelow } from "../session/agents.ts";
 import {
   abortAtom,
   sessionClientAtom,
-  sessionQueueAtom,
   sessionStatusAtom,
   sessionViewAtom,
   submitAtom,
@@ -18,12 +17,13 @@ import {
   usageAtom,
 } from "../session/atoms.ts";
 import type { ConnectionStatus } from "../session/state.ts";
-import { toThreadMessages } from "../session/thread-messages.ts";
-import { ShownSession } from "./conversation.ts";
-import { queueAdapter, textOf } from "./queue-adapter.ts";
+import { conversationKey, ShownSession } from "./conversation.ts";
+import { textOf } from "./queue-adapter.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
 import { TaskPanel, TaskPanelToggle } from "./task-panel.tsx";
-import { type Archived, type Rename, type SessionCommandActions, Thread } from "./thread.tsx";
+import { taskPanelOpenAtom, threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
+import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
+import type { Rename } from "./title-state.ts";
 import { UsageBadge } from "./usage-badge.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
@@ -77,7 +77,9 @@ const LiveSession = ({
 } & SessionPageProps) => {
   const status = useAtomValue(sessionStatusAtom(sessionId));
   const view = useAtomValue(sessionViewAtom(sessionId));
-  const lanes = useAtomValue(sessionQueueAtom(sessionId));
+  const root = conversationKey(sessionId, undefined);
+  const messages = useAtomValue(threadMessagesAtom(root));
+  const queue = useAtomValue(threadQueueAtom(root));
   // The cards and the panel read the task graph, and the header what the Session has spent: their atoms watch them
   // for as long as the Session is shown.
   const taskGraph = useAtomValue(taskGraphAtom(sessionId));
@@ -88,23 +90,8 @@ const LiveSession = ({
 
   const submit = useAtomSet(submitAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));
-  const [panelOpen, setPanelOpen] = useState(false);
+  const panelOpen = useAtomValue(taskPanelOpenAtom(sessionId));
   const stoppable = canStopAllBelow(taskGraph, "root", view.running);
-
-  const messages = useMemo(() => toThreadMessages(view), [view]);
-
-  const queue = useMemo(
-    () =>
-      queueAdapter(
-        {
-          submit: (text, whenBusy) => {
-            submit({ message: text, whenBusy });
-          },
-        },
-        lanes,
-      ),
-    [submit, lanes],
-  );
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
@@ -152,12 +139,7 @@ const LiveSession = ({
               actions={
                 <>
                   <UsageBadge />
-                  <TaskPanelToggle
-                    open={panelOpen}
-                    onToggle={() => {
-                      setPanelOpen(!panelOpen);
-                    }}
-                  />
+                  <TaskPanelToggle />
                   {menu}
                 </>
               }
@@ -165,12 +147,7 @@ const LiveSession = ({
           </AssistantRuntimeProvider>
         </div>
         {panelOpen && (
-          <TaskPanel
-            className="fixed inset-0 z-20 md:static md:inset-auto md:z-auto md:w-96 md:shrink-0"
-            onClose={() => {
-              setPanelOpen(false);
-            }}
-          />
+          <TaskPanel className="fixed inset-0 z-20 md:static md:inset-auto md:z-auto md:w-96 md:shrink-0" />
         )}
       </div>
     </ShownSession.Provider>

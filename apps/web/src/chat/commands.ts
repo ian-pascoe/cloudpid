@@ -1,7 +1,7 @@
 // The Slash commands the composer runs itself, rather than sending as a message, and how a submitted message resolves
 // against them.
 
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- browser code with no Effect runtime: native arrays are the platform here, and these are plain functions, not combinators.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over native arrays, not combinators.
 
 import type { CatalogCommand } from "@cloudpid/protocol";
 import type * as Types from "effect/Types";
