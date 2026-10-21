@@ -87,7 +87,8 @@ describe("effectTask", () => {
 
     expect(settled.state.outcome).toEqual({ status: "completed", result: "Grace greets Ada" });
     // The phase's Context is the one pi-durable cancels, not the background one.
-    expect(seenContext?.abortSignal).toBeDefined();
+    expect(seenContext).not.toBe(context);
+    expect(seenContext?.abortSignal?.aborted).toBe(false);
   });
 
   it("interrupts the running phase's fiber when the task is aborted", async () => {
@@ -151,6 +152,92 @@ describe("effectTask", () => {
     expect(settled.state.outcome).toMatchObject({
       status: "faulted",
       error: { message: "Greeting crashed" },
+    });
+  });
+
+  it("settles a rejected commit as faulted, not failed, though callDurable fails it with a typed HarnessError", async () => {
+    const rejecting = effectTask<null, { phase: "greet" }, null, HarnessError>({
+      name: "test.rejecting",
+      version: 1,
+      initial: () => ({ phase: "greet" }),
+      phases: {
+        greet: (_task, runtime) =>
+          callDurable("commit", (chord) =>
+            runtime.commit(() => {
+              throw new Error("Commit callback threw");
+            }, chord),
+          ),
+      },
+    });
+
+    const { harness, id } = await start(Effect.runSync(rejecting), null);
+    const settled = await harness.waitForTask(id, context);
+
+    expect(settled.state.outcome).toMatchObject({
+      status: "faulted",
+      error: { message: expect.stringContaining("Commit callback threw") },
+    });
+  });
+
+  it("runs a custom abort Effect with its services and settles as it commits", async () => {
+    const started = Promise.withResolvers<void>();
+
+    const cleaning = effectTask<null, { phase: "wait" }, null, HarnessError, Greeted>({
+      name: "test.cleaning",
+      version: 1,
+      initial: () => ({ phase: "wait" }),
+      phases: {
+        wait: () => Effect.sync(() => started.resolve()).pipe(Effect.andThen(Effect.never)),
+      },
+      abort: (_task, runtime) =>
+        Effect.gen(function* () {
+          const greeted = yield* Greeted;
+
+          yield* callDurable("commit", (chord) =>
+            runtime.commit(
+              () => ({
+                status: "terminal",
+                outcome: { status: "aborted", reason: `${greeted} left` },
+              }),
+              chord,
+            ),
+          );
+        }),
+    }).pipe(Effect.provideService(Greeted, "Ada"));
+
+    const { harness, id } = await start(Effect.runSync(cleaning), null);
+
+    await started.promise;
+    await harness.abortTask(id, context);
+
+    const settled = await harness.waitForTask(id, context);
+
+    expect(settled.state.outcome).toEqual({ status: "aborted", reason: "Ada left" });
+  });
+
+  it("settles a typed failure of a custom abort Effect as failed", async () => {
+    const started = Promise.withResolvers<void>();
+
+    const stuck = effectTask<null, { phase: "wait" }, null, GreetingRefused>({
+      name: "test.stuck",
+      version: 1,
+      initial: () => ({ phase: "wait" }),
+      phases: {
+        wait: () => Effect.sync(() => started.resolve()).pipe(Effect.andThen(Effect.never)),
+      },
+      abort: () => Effect.fail(GreetingRefused.make({ message: "Cannot clean up" })),
+    });
+
+    const { harness, id } = await start(Effect.runSync(stuck), null);
+
+    await started.promise;
+    await harness.abortTask(id, context);
+
+    const settled = await harness.waitForTask(id, context);
+
+    expect(settled.state.outcome).toEqual({
+      status: "failed",
+      error: { message: "Cannot clean up" },
     });
   });
 });

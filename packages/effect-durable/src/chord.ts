@@ -11,6 +11,9 @@ import * as Result from "effect/Result";
 import * as Tracer from "effect/Tracer";
 import { CallerFrame, captureFrame } from "./frame.ts";
 
+/** What an adapted Effect may fail with: its message is what pi-durable records (a tool's error result, a task's `failed` outcome). */
+export type Failure = { readonly message: string };
+
 /** The Chord `Context` of the pi-durable invocation this fiber runs for; outside one, the background context. */
 export const ChordContext = Context.Reference<Chord.Context>(
   "@cloudpid/effect-durable/ChordContext",

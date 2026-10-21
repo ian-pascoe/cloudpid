@@ -13,10 +13,12 @@ import {
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import { invoker, settleTyped } from "./chord.ts";
+import * as Schema from "effect/Schema";
+import { type Failure, invoker, settleTyped } from "./chord.ts";
+import { HarnessError } from "./Harness.ts";
 
 /** What an Effect task may fail with: its message becomes the `failed` outcome's error. */
-export type TaskFailure = { readonly message: string };
+export type TaskFailure = Failure;
 
 /**
  * A task whose phases, and abort handler, are Effects. Each takes the arguments of the native handler without its
@@ -24,8 +26,11 @@ export type TaskFailure = { readonly message: string };
  * one does, for example with `callDurable`.
  *
  * A typed failure settles the task `failed` with its message, as pi-durable's docs call an expected failure the
- * implementation commits. A defect is thrown, which settles the task `faulted` as any throw does. An Effect interrupted
- * because the task was aborted is thrown too, and the abort handler settles the task.
+ * implementation commits. A defect is thrown, which settles the task `faulted` as any throw does; so is a
+ * `HarnessError`, which `callDurable` (and so the Harness facade) fails with when pi-durable rejects a call, such as a
+ * `runtime.commit` that throws or a storage error. Those are contract failures, not the task's expected ones, so a
+ * phase need not `orDie` them. An Effect interrupted because the task was aborted is thrown too, and the abort handler
+ * settles the task.
  */
 export type EffectTaskDefinition<
   I,
@@ -41,12 +46,18 @@ export type EffectTaskDefinition<
       runtime: TaskRuntime<I, S, R, H>,
     ) => Effect.Effect<void, E, Services>;
   };
-  /** Runs in a fresh invocation after an abort mark and must commit a terminal outcome. Default: `aborted`. */
+  /**
+   * Runs in a fresh invocation after an abort mark and must commit a terminal outcome. pi-durable requires it so that
+   * every task decides how it is cancelled; this adapter defaults to the common answer, committing `aborted`, so only a
+   * task with something to clean up or a reason to record writes one.
+   */
   readonly abort?: (
     task: RunningTask<I, S, R>,
     runtime: TaskRuntime<I, S, R, H>,
   ) => Effect.Effect<void, E, Services>;
 };
+
+const isHarnessError = Schema.is(HarnessError);
 
 const aborted = <S, R>(): NextTaskState<S, R> => ({
   status: "terminal",
@@ -81,6 +92,9 @@ export const effectTask = <
       const settled = settleTyped(await invoke(effect, context), context);
 
       if (Result.isSuccess(settled)) return;
+
+      // A rejected pi-durable call is a contract failure, which faults the task as a native throw does.
+      if (isHarnessError(settled.failure)) throw settled.failure;
 
       const { message } = settled.failure;
 

@@ -13,10 +13,10 @@ import * as Exit from "effect/Exit";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { invoker, settleTyped } from "./chord.ts";
+import { type Failure, invoker, settleTyped } from "./chord.ts";
 
 /** What an Effect tool may fail with: its message becomes the error result the model sees. */
-export type ToolFailure = { readonly message: string };
+export type ToolFailure = Failure;
 
 /**
  * A tool whose parameters are an Effect `Schema.Struct` and whose execution is an Effect. A typed failure becomes an

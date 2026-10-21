@@ -1,7 +1,7 @@
 // pi-durable's Harness and the faux provider are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off
 // A pi-durable Harness over memory storage whose model is pi-ai's faux provider, for driving adapted tools, hooks,
-// and sections through real runs.
+// sections, and tasks through real runs.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type AssistantMessage,
