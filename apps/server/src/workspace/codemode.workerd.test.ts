@@ -71,6 +71,75 @@ describe("the codemode tool", () => {
     expect(codemode).toMatch(/"exitCode":\s*0/);
   });
 
+  it("leaves deferred tools out of the model's tool list until tool_search loads them, and lets scripts call them unloaded", async () => {
+    const { stub, workspace } = session();
+
+    const { results, offered } = await runInDurableObject(
+      stub,
+      async (instance: TestCodemodeSession) => {
+        instance.bindWorkspace(workspace);
+        instance.script([
+          // `secret_list` is deferred: the script calls it without loading it.
+          script("return await tools.secret_list({});"),
+          'call:tool_search:{"query":"secret list"}',
+          "call:secret_list:{}",
+          "done",
+        ]);
+
+        const answer = await instance.prompt({ requestId: crypto.randomUUID(), text: "go" });
+
+        expect(answer).toMatchObject({ status: "answered", text: "done" });
+
+        return { results: await instance.toolResults(), offered: instance.offeredTools() };
+      },
+    );
+
+    const [scripted, searched, loaded] = results;
+
+    expect(scripted).toContain("Script completed");
+    expect(scripted).toContain("No Secrets are held");
+    expect(searched).toContain("secret_list");
+    // The model's own call of the tool it loaded ran: it was offered, and answered as the tool does.
+    expect(loaded).not.toMatch(/not available|unavailable|unknown tool/i);
+    expect(loaded).toBe("No Secrets are held. Call secret_ask to request one.");
+
+    const core = [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "ls",
+      "find",
+      "grep",
+      "codemode",
+      "tool_search",
+      "secret_ask",
+    ];
+
+    const deferred = [
+      "secret_list",
+      "secret_forget",
+      "todo",
+      "web_fetch",
+      "web_search",
+      "browser",
+      "subagent",
+    ];
+
+    // The first two requests came before the search: the core tools, `secret_ask` (so the Secret guidance stays), and
+    // the context tools Rollover needs.
+    for (const request of offered.slice(0, 2)) {
+      expect(request).toEqual(expect.arrayContaining([...core, "context_rollover"]));
+
+      for (const tool of deferred) expect(request).not.toContain(tool);
+    }
+
+    // The request after the search offers what it loaded, and not a tool the query does not match.
+    expect(offered[2]).toContain("secret_list");
+    expect(offered[3]).toContain("secret_list");
+    expect(offered[3]).not.toContain("web_fetch");
+  }, 30_000);
+
   it("resumes a script an eviction cut off, without running its finished calls again", async () => {
     const { stub, workspace } = session();
 

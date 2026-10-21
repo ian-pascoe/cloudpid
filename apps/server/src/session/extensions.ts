@@ -12,6 +12,7 @@ import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Skills } from "@cloudpid/extensions/skills";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Todo } from "@cloudpid/extensions/todo";
+import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { Web, WebConfig, WebNetworkLive } from "@cloudpid/extensions/web";
 import type { Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -31,7 +32,10 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
  * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
- * browser's Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through). Needs `WebConfig`: the search keys, which the Session DO reads with
+ * browser's Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
+ * `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
+ * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
+ * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
  */
 export const sessionExtensions: Effect.Effect<
@@ -41,6 +45,7 @@ export const sessionExtensions: Effect.Effect<
   | WebConfig
   | CodemodeSandbox
   | SubagentSettings
+  | ToolSearchSettings
   | Harness
   | Secrets
   | BrowserHost
@@ -69,6 +74,21 @@ export const sessionExtensions: Effect.Effect<
 
     return Effect.map(secretsExtension(resolving), (secrets) => [...extensions, secrets]);
   }),
+  // After every other extension, so each of their tools is named: those the settings do not offer are deferred.
+  Effect.flatMap((extensions) =>
+    Effect.map(
+      ToolSearch(
+        Arr.map(
+          Arr.flatMap(
+            extensions,
+            (extension): ReadonlyArray<{ readonly name: string }> => extension.tools ?? [],
+          ),
+          (tool) => tool.name,
+        ),
+      ),
+      (toolSearch) => [...extensions, toolSearch],
+    ),
+  ),
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(WebNetworkLive),
 );

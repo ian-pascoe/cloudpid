@@ -19,12 +19,14 @@ import {
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo } from "@cloudpid/extensions/todo";
+import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
   type FauxResponseStep,
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
+  getCurrentTools,
 } from "@earendil-works/pi-ai";
 import {
   type AgentChange,
@@ -49,7 +51,12 @@ import * as Stream from "effect/Stream";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
-import { sessionSettingsLayer } from "./settings.ts";
+import {
+  reloadSessionExtensions,
+  SessionSettings,
+  sessionSettingsLayer,
+  toolSearchSettings,
+} from "./settings.ts";
 import { type Answer, SessionHost, sessionHostLayer, type SessionHostService } from "./host.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import type { PushEvent } from "../push/notification.ts";
@@ -194,14 +201,16 @@ const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef"
 export class TestSession extends DurableObject {
   /**
    * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
-   * tools, the browser tools over a test browser host, and `todo`.
+   * tools, the browser tools over a test browser host, and `todo`; and, for a Session whose name starts with
+   * `tool-search-`, `tool_search` over the Registry's offered tools, which is installed again when they change.
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs
+    Harness | Secrets | BrowserHandoffs | SessionSettings
   > {
     const { kv } = this.ctx.storage;
+    const searching = this.#searching();
 
     return Effect.gen(function* () {
       const tool = yield* Echo;
@@ -213,8 +222,21 @@ export class TestSession extends DurableObject {
         Effect.provideService(BrowserSession, makeBrowserSession({ host, storage: kv })),
       );
 
-      return [echo, yield* secretsExtension([tool]), browser, yield* Todo];
+      const extensions = [echo, yield* secretsExtension([tool]), browser, yield* Todo];
+
+      if (!searching) return extensions;
+
+      const search = yield* ToolSearch(
+        Arr.flatMap(extensions, (extension) => Arr.map(extension.tools ?? [], (each) => each.name)),
+      ).pipe(Effect.provideServiceEffect(ToolSearchSettings, toolSearchSettings));
+
+      return [...extensions, search];
     });
+  }
+
+  /** Whether this Session defers the tools its settings do not offer (the tests that look at it name it so). */
+  #searching(): boolean {
+    return this.ctx.id.name?.startsWith("tool-search-") === true;
   }
 
   /** What builds a conversation's execution environment, if this Session has one. */
@@ -262,6 +284,7 @@ export class TestSession extends DurableObject {
               ),
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
+              reload: this.#searching() ? reloadSessionExtensions : undefined,
               env: this.hostEnv(),
               reportTimeout: "200 millis",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
@@ -493,6 +516,11 @@ export class TestSession extends DurableObject {
     return this.ctx.storage.kv.get<Record<string, string>>("sections") ?? {};
   }
 
+  /** The names of the tools each request offered the model, oldest first. */
+  offeredTools(): readonly (readonly string[])[] {
+    return this.ctx.storage.kv.get<string[][]>("request-tools") ?? [];
+  }
+
   /** The model and thinking level of each request the model received, oldest first. */
   requests(): readonly TestRequest[] {
     return this.ctx.storage.kv.get<TestRequest[]>("requests") ?? [];
@@ -696,6 +724,12 @@ export class TestSession extends DurableObject {
       }
 
       kv.put("sections", sections);
+
+      // The tools this request offered, as the transport replays them.
+      kv.put("request-tools", [
+        ...(kv.get<string[][]>("request-tools") ?? []),
+        getCurrentTools(request.messages).map((tool) => tool.name),
+      ]);
 
       kv.put("requests", [
         ...(kv.get<TestRequest[]>("requests") ?? []),

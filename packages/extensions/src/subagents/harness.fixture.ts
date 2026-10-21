@@ -9,6 +9,7 @@ import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
+  getCurrentTools,
   type Message,
   type ToolCall,
   Type,
@@ -101,20 +102,9 @@ const agentOf = (messages: readonly Message[]): string => {
   return "root";
 };
 
-/** The tools offered so far in a request's transcript. */
-const toolsOf = (messages: readonly Message[]): string[] => {
-  const tools = new Set<string>();
-
-  for (const message of messages) {
-    if (message.role !== "system") continue;
-
-    for (const tool of message.toolsAdded ?? []) tools.add(tool.name);
-
-    for (const tool of message.toolsRemoved ?? []) tools.delete(tool.name);
-  }
-
-  return [...tools];
-};
+/** The tools offered in a request: its transcript's system messages replayed, as the transport does. */
+const toolsOf = (messages: readonly Message[]): string[] =>
+  getCurrentTools(messages).map((tool) => tool.name);
 
 /**
  * Open a Harness whose model answers each request with `script(request)`, with the subagents extension under `options`
@@ -213,7 +203,19 @@ export const openSubagentHarness = async (
       ),
     );
 
-  return { harness, root, storage, requests, prompt, state, until, settle, entries, texts };
+  return {
+    harness,
+    root,
+    registry,
+    storage,
+    requests,
+    prompt,
+    state,
+    until,
+    settle,
+    entries,
+    texts,
+  };
 };
 
 /** A promise and the functions that settle it, for a scripted response that waits on the test. */

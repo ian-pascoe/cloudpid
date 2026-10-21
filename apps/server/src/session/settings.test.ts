@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off
-import { DEFAULT_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_OFFERED_TOOLS, DEFAULT_SETTINGS } from "@cloudpid/config";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,7 @@ import {
   SessionSettings,
   sessionSettingsLayer,
   type SettingsKv,
+  toolSearchSettings,
   valuesFrom,
 } from "./settings.ts";
 
@@ -155,6 +156,26 @@ describe("a Session's settings", () => {
     kv.put("settings-overrides", { model: "anthropic/retired-model" });
 
     expect(open(registry(), kv).current()).toEqual(valuesFrom(DEFAULT_SETTINGS));
+  });
+});
+
+describe("the offered tools", () => {
+  it("are the default core tools until the Registry has been read, and follow its overrides after", async () => {
+    const source = registry({ tools: { offered: ["read", "web_*"] } });
+    const settings = open(source);
+
+    const offered = Effect.runSync(
+      toolSearchSettings.pipe(Effect.provideService(SessionSettings, settings)),
+    );
+
+    expect(offered.current().offered).toEqual(DEFAULT_OFFERED_TOOLS);
+
+    await Effect.runPromise(settings.refresh);
+    expect(offered.current().offered).toEqual(["read", "web_*"]);
+
+    source.state.overrides = {};
+    await Effect.runPromise(settings.refresh);
+    expect(offered.current().offered).toEqual(DEFAULT_OFFERED_TOOLS);
   });
 });
 

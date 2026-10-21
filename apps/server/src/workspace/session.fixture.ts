@@ -8,7 +8,9 @@ import { BrowserHost, BrowserSession, type BrowserHandoffs } from "@cloudpid/ext
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
+import { fixedToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
+import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
 import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
 import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
@@ -73,6 +75,7 @@ export class TestWorkspaceSession extends TestSession {
         closeIfIdle: Effect.void,
       }),
       Effect.provideService(SubagentSettings, { current: () => subagentOptions({}, undefined) }),
+      Effect.provide(fixedToolSearchSettings(DEFAULT_OFFERED_TOOLS)),
       // No search keys: the tests script the model, and none searches.
       Effect.provideService(WebConfig, { exaApiKey: Option.none(), parallelApiKey: Option.none() }),
     );
