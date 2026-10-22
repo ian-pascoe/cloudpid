@@ -74,6 +74,10 @@ _Avoid_: Task (alone, in prose about the product), to-do
 A `/name` at the start of the owner's message that runs an action instead of being sent to the model as written, either in the Session or in the web app.
 _Avoid_: Command (alone), action, macro
 
+**Shell escape**:
+A `!command` the owner runs from a conversation's composer, shown in that conversation with its output; the output reaches the model with its next request, unless it was a `!!command`, which the model never sees.
+_Avoid_: Bash mode, user bash, Slash command (for this)
+
 **Prompt template**:
 A Markdown file in a repo's `.agents/prompts` whose Slash command expands into a message, with the command's arguments filled in.
 _Avoid_: Prompt, snippet, macro
@@ -133,6 +137,14 @@ _Avoid_: just-bash (as a product name), lite shell
 **Container**:
 The Linux Backend of a Workspace, which runs real programs against the same files.
 _Avoid_: Sandbox, VM, box
+
+**Terminal**:
+An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as one tab of the Session's terminal panel. The agent does not see it.
+_Avoid_: Console, shell (alone), PTY
+
+**Pane**:
+A panel beside a conversation that shows something live the owner can look at or work in: a Terminal, the browser's Live View, an open file. (Planned; a Terminal is the first.)
+_Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Offered tool**:
 A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, and `secret_ask` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.
