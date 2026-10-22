@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
+import { workspaceObjectsRemote } from "./lifecycle.ts";
 import { bundledSkills, PRIOR_SKILLS } from "./skills.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
@@ -542,11 +543,9 @@ describe("deleting a Workspace", () => {
       await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 5 }),
     ).toMatchObject({ ok: true });
 
-    await workspace.destroy();
-
-    // The instance resets once the call has answered, which breaks the stub that saw it, as a reset does; the next
-    // stub, as each call of the main Worker takes one, reaches a new instance over the wiped storage.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // As the main Worker deletes it: the wipe, then the reset in a call of its own, which breaks the stub that saw it;
+    // the next stub, as each call of the main Worker takes one, reaches a new instance over the wiped storage.
+    await workspaceObjectsRemote(env.WORKSPACES).destroy("delete-me");
 
     const again = env.WORKSPACES.getByName("delete-me");
 
