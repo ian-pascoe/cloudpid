@@ -123,7 +123,7 @@ Returning a Workspace to a fresh start: its Sessions, files, Container and Snaps
 _Avoid_: Wipe, clear (for the owner's action), delete (which also forgets the Workspace)
 
 **Container restart**:
-Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from the image and installs the Toolchains again; the files and Sessions stay.
+Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from the image, installs the Toolchains and runs the Setup Scripts again; the files and Sessions stay.
 _Avoid_: Reset (for the Container alone), reboot
 
 **Backend**:
@@ -147,7 +147,7 @@ A panel beside a conversation that shows something live the owner can look at or
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Early start**:
-Starting a Workspace's Container (restoring its Snapshot or launching the image, then the bootstrap) when the owner sends a message, before any command asks for it, so the turn's first command does not wait; it does nothing while the Container runs or is starting.
+Starting a Workspace's Container (restoring its Snapshot or launching the image, then the bootstrap, Setup Scripts included) when the owner sends a message, before any command asks for it, so the turn's first command does not wait; it does nothing while the Container runs or is starting.
 _Avoid_: Warm-up, prewarm, preload
 
 **Offered tool**:
@@ -166,12 +166,16 @@ _Avoid_: Plugin, command
 A program a Workspace declares in its mise configuration and the Container installs on demand.
 _Avoid_: Dependency, package (for tools)
 
+**Setup Script**:
+A repo's `.agents/setup.sh`, which the Container runs after installing the Toolchains to prepare the repo (typically installing its dependencies), again only when it changes or the Container starts from the image; one that failed runs again at the next Container start.
+_Avoid_: Install script, setup hook
+
 **Container-only path**:
 A path in a Workspace that its Container keeps to itself on its own disk, out of the Workspace's files (dependency directories, build output, caches): the built-in ones and those the Workspace's Container settings add.
 _Avoid_: Ignored path (computer's term), excluded path
 
 **Snapshot**:
-A saved copy of the Container's disk, taken after the Toolchains are installed and when the Container stops for being idle, and restored at its next launch so the Toolchains come back without downloading.
+A saved copy of the Container's disk, taken after the Toolchains are installed and the Setup Scripts have run and when the Container stops for being idle, and restored at its next launch so the Toolchains and what the Setup Scripts installed come back without downloading.
 _Avoid_: Backup, checkpoint, image (for the saved disk)
 
 **Registry**:

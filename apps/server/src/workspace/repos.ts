@@ -7,6 +7,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isRepoName, type RepoSource, repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import type { Shell } from "@earendil-works/pi-durable/env";
+import { setupRecord } from "@cloudpid/sandbox-image/toolchains";
 import type { WorkspaceNamespace } from "../session/workspace.ts";
 
 /** How long a clone may take, in seconds: a big repository over the Container's network, after a cold start. */
@@ -41,11 +42,18 @@ export const cloneCommand = (source: RepoSource): ReadonlyArray<string> => [
 export const REMOVE_TIMEOUT_SECONDS = 5 * 60;
 
 /**
- * `rm -rf -- <name>` as an argument vector, run in `/workspace` without a shell. The name is a repo name (`isRepoName`),
- * so it is one directory directly below `/workspace`, never a path, `.`, `..` or an option; `--` ends `rm`'s options
- * besides.
+ * `rm -rf -- <name> <its Setup Script record>` as an argument vector, run in `/workspace` without a shell. The name is a
+ * repo name (`isRepoName`), so it is one directory directly below `/workspace`, never a path, `.`, `..` or an option;
+ * `--` ends `rm`'s options besides. The record of the repo's last successful Setup Script goes too, so a repo cloned
+ * again under the name runs its script at the next Container start, though the script is the same.
  */
-export const removeCommand = (name: string): ReadonlyArray<string> => ["rm", "-rf", "--", name];
+export const removeCommand = (name: string): ReadonlyArray<string> => [
+  "rm",
+  "-rf",
+  "--",
+  name,
+  setupRecord(name),
+];
 
 /** What a command run in `/workspace` is called in its failures. */
 type Doing = {

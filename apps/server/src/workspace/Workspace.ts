@@ -207,14 +207,16 @@ export class Workspace extends ContainerHost {
       ignore: () => launch.ignore(),
     });
 
-    // Before the first command of each Container start, the Toolchains are installed (the lockfile's); every command
-    // gets the GitHub token and mise's settings, and the token is taken out of its output. The Workspace sees this as
-    // the Container's backend.
+    // Before the first command of each Container start, the Toolchains are installed (the lockfile's) and the repos'
+    // Setup Scripts that are due run; every command gets the GitHub token and mise's settings, and the token is taken out
+    // of its output. The Workspace sees this as the Container's backend.
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
       // Once the Toolchains are installed in a Container that started from the image, its disk is snapshotted.
       afterInstall: () => launch.afterInstall(),
+      // A bootstrap (its Setup Scripts can take a quarter of an hour) keeps the Container from its idle stop.
+      activity: this.#idle,
       // Under `alchemy dev` the Container's `/workspace` is no real mount (`CONTAINER_FUSE=false`): it cannot be locked.
       readOnlyDirectories: env.CONTAINER_FUSE === "false" ? [] : [SKILLS_MOUNT],
       git: { name: env.CLOUDPID_GIT_NAME, email: env.CLOUDPID_GIT_EMAIL },

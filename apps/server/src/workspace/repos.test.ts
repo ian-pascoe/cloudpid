@@ -33,13 +33,19 @@ const shell = (answer: Awaited<ReturnType<Exec>>, output = "") => {
 const source = { url: "https://github.com/octocat/Hello-World.git", name: "Hello-World" };
 
 describe("removeFrom", () => {
-  it("runs rm -rf -- <name> as an argument vector in /workspace", async () => {
+  it("runs rm -rf -- <name> <its Setup Script record> as an argument vector in /workspace", async () => {
     const container = shell(ok({ exitCode: 0 }));
 
     await removeFrom(container, "Hello-World");
 
     expect(container.calls).toHaveLength(1);
-    expect(container.calls[0]?.command).toEqual(["rm", "-rf", "--", "Hello-World"]);
+    expect(container.calls[0]?.command).toEqual([
+      "rm",
+      "-rf",
+      "--",
+      "Hello-World",
+      "/var/lib/cloudpid/setup/Hello-World",
+    ]);
     expect(container.calls[0]?.options).toMatchObject({
       cwd: "/workspace",
       timeout: REMOVE_TIMEOUT_SECONDS,

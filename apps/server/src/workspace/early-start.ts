@@ -5,6 +5,8 @@
 // and the first command starts the Container as it would have. A message is a use of the Container for the idle stop
 // either way: an early start is held from its start to its end as a command is, so the bootstrap is never stopped
 // midway, and a message to a running Container touches the idle clock, so it is not stopped while the model thinks.
+// The bootstrap holds the Container itself too (`ToolchainBackend`'s `activity`, for a bootstrap whose waiting command
+// went away): the idle stop counts holds, so the two nest, each ending its own.
 // @effect-diagnostics asyncFunction:off globalDate:off
 import type { IdleStop } from "./idle.ts";
 
