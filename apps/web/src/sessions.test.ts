@@ -14,6 +14,8 @@ import {
   archiveSessionAtom,
   createSessionAtom,
   deleteSessionAtom,
+  newSessionPlace,
+  placeLabel,
   renameSessionAtom,
   sessionsAtom,
   unarchiveSessionAtom,
@@ -92,6 +94,28 @@ const listed = (list: SessionRecord[]) => {
 
   return { registry, calls: () => calls };
 };
+
+describe("where a new Session starts", () => {
+  it("starts where the shown Session works: its Workspace, and its repo if it has one", () => {
+    expect(newSessionPlace({ ...session("a"), workspace: "work", repo: "cloudpid" })).toEqual({
+      workspace: "work",
+      repo: "cloudpid",
+    });
+    expect(newSessionPlace({ ...session("a"), workspace: "work" })).toEqual({ workspace: "work" });
+  });
+
+  it("starts at the default Workspace's root when no Session is shown", () => {
+    expect(newSessionPlace(undefined)).toEqual({ workspace: "default" });
+  });
+
+  it("is named by the Workspace's name and the repo, or the slug when the name is not known", () => {
+    const names = { work: "Work" };
+
+    expect(placeLabel({ workspace: "work", repo: "cloudpid" }, names)).toBe("Work · cloudpid");
+    expect(placeLabel({ workspace: "work" }, names)).toBe("Work");
+    expect(placeLabel({ workspace: "gone" }, names)).toBe("gone");
+  });
+});
 
 const ids = (result: AsyncResult.AsyncResult<readonly SessionRecord[], unknown>) =>
   AsyncResult.getOrThrow(result).map((known) => known.id);

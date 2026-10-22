@@ -1,5 +1,8 @@
+// @effect-diagnostics missingPipeableSignature:off -- plain helpers over a place, not combinators.
+
 // The Session list and what the owner does to a Session in it: create, rename, archive, unarchive, delete.
 
+import { DEFAULT_WORKSPACE, type SessionRecord } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -41,6 +44,30 @@ export const sessionsErrorAtom = Atom.map(sessionsAtom, failureOf);
 
 /** Where a new Session works: `/workspace/<repo>` of Workspace `workspace`, or the default Workspace's root. */
 export type SessionPlace = { readonly workspace?: string; readonly repo?: string };
+
+/** A place that names its Workspace. */
+export type PlaceInWorkspace = { readonly workspace: string; readonly repo?: string };
+
+/**
+ * Where the New session button starts one: where the shown Session works (its Workspace, and its repo if it has one), as
+ * the composer's `/new` does; at the default Workspace's root when none is shown.
+ */
+export const newSessionPlace = (shown: SessionRecord | undefined): PlaceInWorkspace =>
+  shown === undefined
+    ? { workspace: DEFAULT_WORKSPACE }
+    : shown.repo === null
+      ? { workspace: shown.workspace }
+      : { workspace: shown.workspace, repo: shown.repo };
+
+/** A place as the owner reads it: the Workspace's name (its slug when not known), then the repo. */
+export const placeLabel = (
+  place: PlaceInWorkspace,
+  names: Readonly<Record<string, string>>,
+): string => {
+  const workspace = names[place.workspace] ?? place.workspace;
+
+  return place.repo === undefined ? workspace : `${workspace} · ${place.repo}`;
+};
 
 /** Register a new Session, idle, and open it; the list asks again. */
 export const createSessionAtom = appRuntime.fn(

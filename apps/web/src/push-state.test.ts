@@ -2,6 +2,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
@@ -88,6 +89,7 @@ const device = (options: {
           ImageEncoderLive,
           registry,
           Reactivity.layer,
+          KeyValueStore.layerMemory,
         ),
       ),
     ],

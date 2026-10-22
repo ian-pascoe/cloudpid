@@ -52,6 +52,8 @@ export const Menu = ({
   label,
   icon = <Ellipsis className="size-4" aria-hidden />,
   title,
+  disabled = false,
+  onOpenChange,
   children,
   className,
 }: {
@@ -61,12 +63,32 @@ export const Menu = ({
   icon?: ReactNode;
   /** The button's tooltip. */
   title?: string | undefined;
+  /** Holds the button, so the menu cannot be opened. */
+  disabled?: boolean;
+  /** Hears the menu open and close, for a menu whose items are only worth fetching while it is open. */
+  onOpenChange?: ((open: boolean) => void) | undefined;
   children: ReactNode;
   className?: string | undefined;
 }) => {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const element = menu.current;
+
+    if (element === null || onOpenChange === undefined) return;
+
+    const onToggle = (event: Event) => {
+      onOpenChange(event instanceof ToggleEvent && event.newState === "open");
+    };
+
+    element.addEventListener("toggle", onToggle);
+
+    return () => {
+      element.removeEventListener("toggle", onToggle);
+    };
+  }, [onOpenChange]);
 
   useEffect(() => {
     const element = menu.current;
@@ -84,20 +106,25 @@ export const Menu = ({
       itemsOf(element)[0]?.focus();
     };
 
-    // The menu is placed again while open, so it follows its button when the page scrolls or resizes.
+    // The menu is placed again while open, so it follows its button when the page scrolls or resizes, and stays on screen
+    // when items that arrive after it opened change its size.
     const follow = () => {
       if (trigger.current !== null && element.matches(":popover-open"))
         place(element, trigger.current);
     };
 
+    const resized = new ResizeObserver(follow);
+
     element.addEventListener("toggle", onToggle);
     window.addEventListener("resize", follow);
     window.addEventListener("scroll", follow, true);
+    resized.observe(element);
 
     return () => {
       element.removeEventListener("toggle", onToggle);
       window.removeEventListener("resize", follow);
       window.removeEventListener("scroll", follow, true);
+      resized.disconnect();
     };
   }, []);
 
@@ -111,8 +138,9 @@ export const Menu = ({
         aria-expanded="false"
         aria-label={label}
         title={title}
+        disabled={disabled}
         className={cn(
-          "inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
+          "inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50",
           className,
         )}
       >
@@ -142,7 +170,7 @@ export const Menu = ({
           event.preventDefault();
           next.focus();
         }}
-        className="fixed m-0 min-w-44 rounded-lg border bg-background p-1 text-foreground shadow-sm"
+        className="fixed m-0 max-h-[70vh] min-w-44 overflow-y-auto rounded-lg border bg-background p-1 text-foreground shadow-sm"
       >
         {children}
       </div>

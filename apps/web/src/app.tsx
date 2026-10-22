@@ -1,13 +1,14 @@
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as Match from "effect/Match";
 import { pageProblemAtom } from "./app-state.ts";
+import { revealShownAtom } from "./collapsed-groups.ts";
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
 import { pushSyncAtom } from "./push-state.ts";
 import { pageAtom } from "./router.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { SessionMenu } from "./session-menu.tsx";
-import { currentSessionAtom } from "./sessions.ts";
+import { currentSessionAtom, newSessionPlace } from "./sessions.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle } from "./sidebar.tsx";
 import { WorkspacesPage } from "./workspaces-page.tsx";
@@ -49,11 +50,7 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
           : {
               newSession: () =>
                 actions
-                  .create(
-                    session.repo === null
-                      ? { workspace: session.workspace }
-                      : { workspace: session.workspace, repo: session.repo },
-                  )
+                  .create(newSessionPlace(session))
                   .then((created) =>
                     created === undefined ? "The session could not be created." : null,
                   ),
@@ -72,6 +69,8 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
 export const App = () => {
   // At startup, a device that already gets notifications is re-told to the Registry.
   useAtomMount(pushSyncAtom);
+  // The shown Session's group in the list expands as it is shown, even while the list is hidden (a phone).
+  useAtomMount(revealShownAtom);
 
   const page = useAtomValue(pageAtom);
   // On a narrow screen the list is shown alone; any other page takes its place.
