@@ -361,6 +361,25 @@ describe("the Container-only paths of a launch", () => {
   });
 });
 
+describe("a restart with no launch on record", () => {
+  it("keeps a running Container on standard-2, the default when launches began to be recorded", async () => {
+    const { state, container } = open();
+
+    state.running = true;
+    await container.restart(SPEC);
+
+    expect(state.restarts[0]?.instance).toBe("standard-2");
+  });
+
+  it("uses the Workspace's settings when nothing runs", async () => {
+    const { state, container } = open({ instance: "standard-3" });
+
+    await container.restart(SPEC);
+
+    expect(state.restarts[0]?.instance).toBe("standard-3");
+  });
+});
+
 describe("a restart after the Container did not come up", () => {
   it("starts it from the image again, on the same instance, and forgets the snapshot of a Container that died", async () => {
     const { state, container } = open({ instance: "standard-3" });

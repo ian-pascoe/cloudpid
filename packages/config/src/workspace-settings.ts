@@ -60,13 +60,16 @@ const isCustomInstance = (type: InstanceType): type is CustomInstanceType =>
 export const containerInstance = (type: InstanceType): NamedInstanceType | ContainerResources =>
   isCustomInstance(type) ? CUSTOM_INSTANCES[type] : type;
 
-/** What each instance type offers, from Cloudflare's Containers limits page, for the settings form to show. */
+const describeResources = ({ vcpu, memoryMib, diskMb }: ContainerResources): string =>
+  `${vcpu} vCPU, ${memoryMib / 1024} GiB memory, ${diskMb / 1000} GB disk`;
+
+/** What each size offers, for the settings form to show: Cloudflare's Containers limits page for its named types, the resources for the custom ones. */
 export const INSTANCE_DESCRIPTIONS: Readonly<Record<InstanceType, string>> = {
   lite: "1/16 vCPU, 256 MiB memory, 2 GB disk",
   basic: "1/4 vCPU, 1 GiB memory, 4 GB disk",
   "standard-1": "1/2 vCPU, 4 GiB memory, 8 GB disk",
   "standard-2": "1 vCPU, 6 GiB memory, 12 GB disk",
-  "custom-2": "2 vCPU, 6 GiB memory, 12 GB disk",
+  "custom-2": describeResources(CUSTOM_INSTANCES["custom-2"]),
   "standard-3": "2 vCPU, 8 GiB memory, 16 GB disk",
   "standard-4": "4 vCPU, 12 GiB memory, 20 GB disk",
 };

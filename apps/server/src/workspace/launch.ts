@@ -280,9 +280,12 @@ export class ContainerLaunch {
       }
     }
 
-    return api.restart({
-      ...spec,
-      instance: containerInstance(record?.instance ?? DEFAULT_WORKSPACE_SETTINGS.instance),
-    });
+    // Without a record the Container is one found running that was launched before launches were recorded (as in
+    // `#start`), else this is a launch of its own and the settings decide.
+    const instance =
+      record?.instance ??
+      (this.#deps.running() ? UNRECORDED_INSTANCE : (await this.#deps.settings()).instance);
+
+    return api.restart({ ...spec, instance: containerInstance(instance) });
   }
 }
