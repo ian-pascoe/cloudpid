@@ -146,7 +146,7 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  * 0. makes each of `readOnlyDirectories` (absolute paths: the Workspace's read-only mounts) read-only here too, when the
  *    Container can mount,
  * 1. writes `BASE_MISE_TOML` if the Workspace root has no mise config of any kind mise reads, with the image's
- *    `BASE_MISE_LOCK` next to it (`CLOUDPID_BASE_MISE_LOCK` names another, for the tests) when the image has one,
+ *    lockfile for it (`baseLock`, by default `BASE_MISE_LOCK`) next to it when the image has one,
  * 2. makes sure `mise.lock` is there and current for the root's `mise.toml`, which is mise's global config
  *    (`toolchainEnv`) and so is only locked by `mise lock --global`: when the lockfile is missing or older than the
  *    config, to the one platform the Container is,
@@ -160,6 +160,7 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 export const bootstrapScript = (
   root: string = WORKSPACE_ROOT,
   readOnlyDirectories: readonly string[] = [],
+  baseLock: string = BASE_MISE_LOCK,
 ): string => `
 set -u
 root=${shellQuote(root)}
@@ -189,8 +190,7 @@ has_mise_config() {
 if ! has_mise_config "$root"; then
   cat > mise.toml <<'CLOUDPID_BASE_MISE_TOML'
 ${BASE_MISE_TOML}CLOUDPID_BASE_MISE_TOML
-  base_lock=\${CLOUDPID_BASE_MISE_LOCK:-${BASE_MISE_LOCK}}
-  [ -f "$base_lock" ] && [ ! -e mise.lock ] && cp "$base_lock" mise.lock
+  [ -f ${shellQuote(baseLock)} ] && [ ! -e mise.lock ] && cp ${shellQuote(baseLock)} mise.lock
 fi
 
 status=0

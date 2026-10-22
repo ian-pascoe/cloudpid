@@ -55,9 +55,10 @@ COPY --chmod=755 supervise /usr/local/bin/cloudpid-supervise
 
 # computerd mounts its file system at MOUNT_POINT, so commands see the Workspace's files at /workspace. FUSE_MOUNT=auto
 # mounts through /dev/fuse where the platform exposes it (Cloudflare Containers) and falls back to a userspace shim
-# where it does not. mise keeps the Toolchains it installs on the Container's own disk, in its default place under /root,
-# and its shims put them on PATH, before the shims of the image's own installs. PATH is the one variable computerd passes on to a command, so it is the one set
-# here: mise's other settings reach a command in its exec environment (apps/sandbox-image/src/toolchains.ts).
+# where it does not. mise keeps the Toolchains it installs on the Container's own disk, in its default place under
+# /root, and its shims put them on PATH, before the shims of the image's own installs. PATH is the one variable
+# computerd passes on to a command, so it is the one set here: mise's other settings reach a command in its exec
+# environment (apps/sandbox-image/src/toolchains.ts).
 # computerd keeps its copy of the Workspace in COMPUTERD_DB, on the Container's disk, so a snapshot holds it with its
 # sync positions: a Container restored from one is sent only what changed since, not every file (docs/spec.md →
 # Container and Toolchains → Snapshots). In memory, the default, it is rebuilt from the Workspace DO at each start.

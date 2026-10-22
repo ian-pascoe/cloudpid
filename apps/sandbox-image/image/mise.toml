@@ -1,5 +1,5 @@
-# Toolchains of this Workspace. The Container installs them on start, from mise.lock.
-# https://mise.jdx.dev/configuration.html
+# The image's copy of the base mise.toml (BASE_MISE_TOML, apps/sandbox-image/src/toolchains.ts; a test keeps their
+# settings and tools equal). The image build installs these Toolchains into mise's system directory and locks them.
 
 [settings]
 lockfile = true

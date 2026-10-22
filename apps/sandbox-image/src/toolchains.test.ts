@@ -109,7 +109,10 @@ describe("the image's preinstalled Toolchains", () => {
   });
 
   it("are what the base mise.toml asks for, version for version, so a new Workspace downloads none", () => {
-    expect(image).toBe(BASE_MISE_TOML);
+    // Equal but for the comment at the top, which says what each copy is for.
+    const body = (toml: string) => toml.slice(toml.indexOf("[settings]"));
+
+    expect(body(image)).toBe(body(BASE_MISE_TOML));
     expect(dockerfile).toContain(`COPY mise.toml ${dirname(BASE_MISE_LOCK)}/mise.toml\n`);
     expect(dockerfile).toContain(`MISE_GLOBAL_CONFIG_FILE=${dirname(BASE_MISE_LOCK)}/mise.toml `);
     expect(dockerfile).toMatch(/&& mise install --system \\\n/);
@@ -170,8 +173,11 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
   );
   chmodSync(join(bin, "mise"), 0o755);
 
+  // No image lockfile unless a test makes one there.
+  const imageLock = join(base, "image.mise.lock");
+
   const run = (env: Record<string, string> = {}, readOnly: readonly string[] = []) =>
-    spawnSync("bash", ["-c", bootstrapScript(root, readOnly)], {
+    spawnSync("bash", ["-c", bootstrapScript(root, readOnly, imageLock)], {
       encoding: "utf8",
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -182,7 +188,7 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
 
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 
-  return { base, bin, root, home, run, calls };
+  return { base, bin, root, home, imageLock, run, calls };
 };
 
 const LOCK = "mise lock --global --platform linux-x64";
@@ -283,24 +289,22 @@ describe("the bootstrap", () => {
   });
 
   it("copies the image's lockfile of the base mise.toml with it, so nothing is downloaded to lock it", () => {
-    const { base, root, run, calls } = sandbox();
-    const lock = join(base, "image.mise.lock");
+    const { imageLock, root, run, calls } = sandbox();
 
-    writeFileSync(lock, "# the image's lock\n");
+    writeFileSync(imageLock, "# the image's lock\n");
 
-    expect(run({ CLOUDPID_BASE_MISE_LOCK: lock }).status).toBe(0);
+    expect(run().status).toBe(0);
     expect(readFileSync(join(root, "mise.lock"), "utf8")).toBe("# the image's lock\n");
     expect(calls()).toEqual([`${root}: mise install`]);
   });
 
   it("leaves a Workspace's own mise.lock alone, and its mise.toml", () => {
-    const { base, root, run } = sandbox();
-    const lock = join(base, "image.mise.lock");
+    const { imageLock, root, run } = sandbox();
 
-    writeFileSync(lock, "# the image's lock\n");
+    writeFileSync(imageLock, "# the image's lock\n");
     writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
     writeFileSync(join(root, "mise.lock"), "# the Workspace's lock\n");
-    run({ CLOUDPID_BASE_MISE_LOCK: lock });
+    run();
 
     expect(readFileSync(join(root, "mise.lock"), "utf8")).toBe("# the Workspace's lock\n");
   });
