@@ -2,18 +2,15 @@
 // time and Container-only paths are the Workspace's settings at that moment, kept for as long as that Container runs; a
 // snapshot of the image's Toolchains is restored when there is one, and a restore that does not come up falls back to
 // the image.
-// @effect-diagnostics asyncFunction:off newPromise:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
 import { DEFAULT_WORKSPACE_SETTINGS, type WorkspaceSettings } from "@cloudpid/config";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 
 type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
 
 const SPEC: Spec = { env: { PORT: "8080" }, enableInternet: true, name: "WorkspaceContainer" };
-
-/** How long the commands that wait for the bootstrap are held for the install snapshot. */
-const HOLD_MS = 60_000;
 
 /** The built-in Container-only paths of the fake: the Workspace's own come after them. */
 const BUILT_IN = ["**/node_modules"];
@@ -48,10 +45,6 @@ type Fake = {
   forgotten: number;
   takes: string[];
   takeOutcome: "taken" | "skipped" | "failed";
-  /** Holds each snapshot until released, to take longer than the hold. */
-  takeGate: Promise<void> | undefined;
-  /** Makes saving the launch record reject. */
-  saveFails: boolean;
   warnings: string[];
   infos: string[];
   now: number;
@@ -76,8 +69,6 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
     forgotten: 0,
     takes: [],
     takeOutcome: "taken",
-    takeGate: undefined,
-    saveFails: false,
     warnings: [],
     infos: [],
     now: 9_000,
@@ -133,18 +124,14 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
           state.takes.push(reason);
           state.takeImages.push(image);
           state.takeIgnores.push(ignore);
-          await state.takeGate;
 
           return state.takeOutcome;
         },
       },
       load: async () => state.record,
       save: async (record) => {
-        if (state.saveFails) throw new Error("storage is gone");
-
         state.record = record;
       },
-      holdMs: HOLD_MS,
       running: () => state.running,
       now: () => state.now,
       warn: (message) => state.warnings.push(message),
@@ -474,7 +461,6 @@ describe("a start the platform rejects for the snapshot", () => {
         },
         load: async () => undefined,
         save: async () => undefined,
-        holdMs: HOLD_MS,
         running: () => false,
         now: () => 1,
         warn: () => undefined,
@@ -608,158 +594,5 @@ describe("afterInstall", () => {
     await make().afterInstall(true);
 
     expect(state.takes).toEqual(["install"]);
-  });
-});
-
-describe("afterInstall, for a snapshot that takes long", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  /** A snapshot held until the returned function is called, which then ends it with the outcome given. */
-  const slow = (state: Fake) => {
-    let release: (outcome: Fake["takeOutcome"]) => void = () => undefined;
-
-    state.takeGate = new Promise<void>((resolve) => {
-      release = (outcome) => {
-        state.takeOutcome = outcome;
-        resolve();
-      };
-    });
-
-    return release;
-  };
-
-  it("holds the commands until a snapshot that finishes within the hold is taken", async () => {
-    const { state, container, launch } = open();
-
-    await container.start(SPEC);
-
-    const release = slow(state);
-
-    let released = false;
-
-    const done = launch.afterInstall(true).then(() => {
-      released = true;
-    });
-
-    await vi.advanceTimersByTimeAsync(HOLD_MS - 1);
-    expect(released).toBe(false);
-
-    release("taken");
-    await done;
-
-    expect(state.record).toMatchObject({ needsSnapshot: false, installPending: false });
-    expect(state.takes).toEqual(["install"]);
-  });
-
-  it("releases the commands at the hold, and records the snapshot when it lands later", async () => {
-    const { state, container, launch } = open();
-
-    await container.start(SPEC);
-
-    const release = slow(state);
-
-    let released = false;
-
-    const done = launch.afterInstall(true).then(() => {
-      released = true;
-    });
-
-    await vi.advanceTimersByTimeAsync(HOLD_MS);
-    await done;
-
-    // Released while it goes on: the install is still not in a snapshot, which the launch record keeps asking for.
-    expect(released).toBe(true);
-    expect(state.record).toMatchObject({ needsSnapshot: true, installPending: true });
-    expect(state.infos.join("\n")).toContain("in the background");
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    release("taken");
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(state.record).toMatchObject({ needsSnapshot: false, installPending: false });
-    expect(state.takes).toEqual(["install"]);
-  });
-
-  it("keeps the install pending when the snapshot that went on in the background fails", async () => {
-    const { state, container, launch } = open();
-
-    await container.start(SPEC);
-
-    const release = slow(state);
-    const done = launch.afterInstall(true);
-
-    await vi.advanceTimersByTimeAsync(HOLD_MS);
-    await done;
-    release("failed");
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(state.record).toMatchObject({ needsSnapshot: true, installPending: true });
-  });
-
-  it("keeps the install pending when the snapshot is skipped in the background", async () => {
-    const { state, container, launch } = open();
-
-    await container.start(SPEC);
-
-    const release = slow(state);
-    const done = launch.afterInstall(true);
-
-    await vi.advanceTimersByTimeAsync(HOLD_MS);
-    await done;
-    release("skipped");
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(state.record).toMatchObject({ needsSnapshot: true, installPending: true });
-  });
-
-  it("does not touch the record of a newer launch when the snapshot of an earlier one lands", async () => {
-    const { state, container, launch } = open();
-
-    await container.start(SPEC);
-
-    const release = slow(state);
-    const done = launch.afterInstall(true);
-
-    await vi.advanceTimersByTimeAsync(HOLD_MS);
-    await done;
-
-    // The Container was stopped and launched again before the snapshot landed.
-    state.running = false;
-    state.now = 200_000;
-    await container.start(SPEC);
-
-    const relaunched = state.record;
-
-    expect(relaunched).toMatchObject({ needsSnapshot: true, launchedAt: 200_000 });
-
-    release("taken");
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(state.record).toEqual(relaunched);
-    expect(state.record?.installPending).toBeUndefined();
-  });
-
-  it("reports a launch record that could not be updated, not as an unhandled rejection", async () => {
-    const { state, container, launch } = open();
-
-    await container.start(SPEC);
-
-    const release = slow(state);
-    const done = launch.afterInstall(true);
-
-    await vi.advanceTimersByTimeAsync(HOLD_MS);
-    await done;
-
-    state.saveFails = true;
-    release("taken");
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(state.warnings.join("\n")).toContain("storage is gone");
   });
 });

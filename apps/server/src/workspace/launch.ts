@@ -14,9 +14,7 @@
 // - the Container-only paths (computer's `ignore`: the built-in ones, then the Workspace's own) are decided before
 //   computer builds the launch (`ignore`), kept for as long as that Container runs, and recorded from the launch itself,
 //   so a snapshot is restored only by a launch with the paths it was taken with.
-// - the install snapshot holds the commands that wait for the bootstrap for `holdMs` at most; one still being taken then
-//   goes on in the background, and its landing updates the launch record if it is still the same launch.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off missingPipeableSignature:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import type {
   ContainerLaunchSpec,
   IWorkspaceContainerAPI,
@@ -58,11 +56,6 @@ export type ContainerLaunchDeps = {
   readonly image: () => string | undefined;
   readonly load: () => Promise<LaunchRecord | undefined>;
   readonly save: (record: LaunchRecord) => Promise<void>;
-  /**
-   * How long the commands that wait for the bootstrap are held for the install snapshot. One that is not taken by then
-   * goes on in the background (up to the snapshot's own limit), and the commands run.
-   */
-  readonly holdMs: number;
   /** Whether a Container is running now. */
   readonly running: () => boolean;
   readonly now: () => number;
@@ -159,9 +152,6 @@ export class ContainerLaunch {
    * taken), snapshot it, so the next launch skips the downloads. A bootstrap that installed nothing (the image had
    * every Toolchain) does not hold the first command for a snapshot: the idle stop's takes one. One restored from a
    * snapshot has nothing new to keep (the idle stop snapshots again).
-   *
-   * The commands are held for `holdMs` at most: a snapshot not taken by then goes on in the background and returns
-   * here, and when it lands the launch record stops asking for one, if the Container is still the same launch.
    */
   async afterInstall(changed: boolean): Promise<void> {
     const record = await this.#current();
@@ -176,35 +166,10 @@ export class ContainerLaunch {
       return;
     }
 
-    const { launchedAt } = record;
-    const taking = this.snapshot("install");
-    const outcome = await this.#within(taking, this.#deps.holdMs);
-
-    if (outcome === "taken") {
+    if ((await this.snapshot("install")) === "taken") {
       await this.#remember({ ...record, needsSnapshot: false, installPending: false });
-
-      return;
-    }
-
-    // Not taken, or not yet: until one is, the install is pending, so that a Container the snapshot is lost with (an
-    // eviction, a stop) asks again at its next bootstrap.
-    if (changed && record.installPending !== true) {
+    } else if (changed && record.installPending !== true) {
       await this.#remember({ ...record, installPending: true });
-    }
-
-    if (outcome === undefined) {
-      this.#deps.info(
-        `The install snapshot is not taken after ${this.#deps.holdMs / 1000} s: the commands run and it goes on in the background`,
-      );
-
-      // `taking` never rejects, so only the update can: it is reported, as nothing awaits this.
-      void taking
-        .then((landed) => this.#landed(launchedAt, landed))
-        .catch((cause: unknown) => {
-          this.#deps.warn(
-            `After the install snapshot: ${cause instanceof Error ? cause.message : String(cause)}`,
-          );
-        });
     }
   }
 
@@ -218,38 +183,6 @@ export class ContainerLaunch {
     return record?.image === undefined
       ? "skipped"
       : this.#deps.snapshots.take(reason, record.image, record.ignore);
-  }
-
-  /** `taking`'s outcome, or undefined when it has not ended within `ms`. It goes on either way. */
-  async #within(
-    taking: Promise<SnapshotOutcome>,
-    ms: number,
-  ): Promise<SnapshotOutcome | undefined> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const held = new Promise<undefined>((resolve) => {
-      timer = setTimeout(resolve, ms, undefined);
-    });
-
-    try {
-      return await Promise.race([taking, held]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /**
-   * The install snapshot that outlasted the hold ended. The launch record is the one now, not the one read before:
-   * only the launch the snapshot was taken for stops needing it, and a relaunch since keeps its own.
-   */
-  async #landed(launchedAt: number, outcome: SnapshotOutcome): Promise<void> {
-    if (outcome !== "taken") return;
-
-    const record = await this.#current();
-
-    if (record === undefined || record.launchedAt !== launchedAt) return;
-
-    await this.#remember({ ...record, needsSnapshot: false, installPending: false });
   }
 
   async #current(): Promise<LaunchRecord | undefined> {

@@ -82,15 +82,11 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
-/** How long a snapshot, its scan included, may take before it is given up on: the same for the install's and the idle stop's. */
-const SNAPSHOT_TIMEOUT_MS = { install: 2 * 60_000, idle: 2 * 60_000 } as const;
-
 /**
- * How long the Container's first commands wait for the install snapshot. One that takes longer goes on in the
- * background (up to `SNAPSHOT_TIMEOUT_MS`) and the commands run (#156: the snapshot after this repo's install takes
- * 45–64 s).
+ * How long a snapshot, its scan included, may take. The install's is short because the Container's first commands wait
+ * for it; the idle stop's can be long, since nothing waits.
  */
-const INSTALL_HOLD_MS = 60_000;
+const SNAPSHOT_TIMEOUT_MS = { install: 60_000, idle: 2 * 60_000 } as const;
 
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
@@ -164,7 +160,6 @@ export class Workspace extends ContainerHost {
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       load: () => ctx.storage.get<LaunchRecord>(LAUNCH_KEY),
       save: (record) => ctx.storage.put(LAUNCH_KEY, record),
-      holdMs: INSTALL_HOLD_MS,
       running: () => ctx.container?.running === true,
       now: () => Date.now(),
       warn: (message) => console.warn(message),
