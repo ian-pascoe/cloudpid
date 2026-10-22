@@ -35,6 +35,7 @@ import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
+import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
   type WorkspaceSettingsAnswer,
   workspaceSettingsStore,
@@ -289,19 +290,22 @@ export class Workspace extends ContainerHost {
   /**
    * Delete the Workspace's own state (`LifecycleHost`): stop its Container, then wipe the storage (files, settings, the
    * snapshot and launch records) and the alarm. The disk snapshot itself expires on Cloudflare's side; there is no API to
-   * delete it. The object resets once the call has answered, so the next call to this slug opens an empty Workspace.
+   * delete it. The instance is not reset here: the caller resets it with `reset` once this call has answered.
    */
   async destroy(): Promise<void> {
     if (this.ctx.container?.running === true) await this.ctx.container.destroy();
 
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+  }
 
-    // After the reply: an abort now would fail the call that asked for the deletion.
-    // @effect-diagnostics-next-line globalTimers:off
-    setTimeout(() => {
-      this.ctx.abort("Workspace deleted");
-    }, 0);
+  /**
+   * Reset the object (`ctx.abort`) after `destroy` has answered, so the next call to this slug opens an empty Workspace
+   * instead of an instance over the wiped storage. The call always fails with `WORKSPACE_DELETED_REASON`, as an abort
+   * fails the call that makes it. A reset from a timer in `destroy` raced the reply and failed the deletion.
+   */
+  reset(): void {
+    this.ctx.abort(WORKSPACE_DELETED_REASON);
   }
 
   /** The idle stop's alarm. */
