@@ -7,6 +7,11 @@
 # tmpfs where there is one), never on the Container's disk, which a snapshot captures. A report that cannot be sent is
 # dropped; the exit status is computerd's either way.
 #
+# computerd's log lines can carry file contents as `data:<mime>;base64,<payload>` runs, hundreds of KB each, which would
+# fill the report and push out the lines that matter (a crash and its stack). The kept copy, not the passthrough, has
+# each payload of at least `base64_min` characters replaced by a marker before the last lines are chosen, by a
+# line-buffered sed that reads a line of any length as it comes (a payload cut off by the end of its line collapses too).
+#
 # The host, the path and the number of lines are those of `@cloudpid/sandbox-image/supervisor`; CLOUDPID_COMPUTERD and
 # CLOUDPID_REPORT_* exist for its tests, and the image sets none of them.
 set -u
@@ -18,12 +23,17 @@ report_path=/container-exit
 keep_lines=200
 # The most of the kept lines sent, in bytes: the end of them when they are longer.
 keep_bytes=32768
+# A base64 payload of a data URL this long (or longer) is replaced by a marker in the kept lines.
+base64_min=64
+base64_marker='[base64 dropped]'
+collapse_base64="s#(data:[-A-Za-z0-9.+/;=_]*;base64,)[-A-Za-z0-9+/=_]{${base64_min},}#\\1${base64_marker}#g"
 
 scratch=$(mktemp -d /dev/shm/cloudpid-supervise.XXXXXX 2>/dev/null || mktemp -d)
 mkfifo "$scratch/out" "$scratch/keep"
 
-# tee passes computerd's output on and copies it to tail, which holds the last lines until the output ends.
-tail -n "$keep_lines" <"$scratch/keep" >"$scratch/tail" &
+# tee passes computerd's output on and copies it to sed, which collapses the data URLs' payloads, and tail, which holds
+# the last lines until the output ends.
+sed -u -E "$collapse_base64" <"$scratch/keep" | tail -n "$keep_lines" >"$scratch/tail" &
 tail_pid=$!
 tee "$scratch/keep" <"$scratch/out" &
 tee_pid=$!

@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
+  EXIT_REPORT_BASE64_MARKER,
+  EXIT_REPORT_BASE64_MIN,
   EXIT_REPORT_BYTES,
   EXIT_REPORT_HOST,
   EXIT_REPORT_LINES,
@@ -103,6 +105,8 @@ describe("the supervisor", () => {
     expect(source).toContain(`report_path=${EXIT_REPORT_PATH}\n`);
     expect(source).toContain(`keep_lines=${EXIT_REPORT_LINES}\n`);
     expect(source).toContain(`keep_bytes=${EXIT_REPORT_BYTES}\n`);
+    expect(source).toContain(`base64_min=${EXIT_REPORT_BASE64_MIN}\n`);
+    expect(source).toContain(`base64_marker='${EXIT_REPORT_BASE64_MARKER}'\n`);
   });
 
   it("passes computerd's output through, and posts its status and last lines when it exits on its own", async () => {
@@ -133,6 +137,45 @@ describe("the supervisor", () => {
     expect(lines).toHaveLength(EXIT_REPORT_LINES);
     expect(lines[0]).toBe("line 52");
     expect(lines.at(-1)).toBe("boom");
+  });
+
+  it("collapses data URLs' payloads in the report, so the crash lines survive, and leaves the passthrough alone", async () => {
+    const { reports, port } = await reportServer();
+    const payloadLength = 200_000;
+
+    // The crash comes first and file contents in data URLs after it, 200 KB a line, the last one cut off without a
+    // newline: far more than the report holds, so only collapsing keeps the crash in it.
+    const computerd = fakeComputerd(
+      [
+        `payload=$(head -c ${payloadLength} /dev/zero | tr '\\0' 'A')`,
+        'echo "uncaughtException: Error: log 1234: append after exit"',
+        'echo "    at EventLog.append (computerd:1:1)"',
+        'for i in 1 2 3; do echo "log {\\"url\\":\\"data:image/png;base64,$payload\\",\\"after\\":$i} tail $i"; done',
+        'echo "short data:text/plain;base64,QUJD kept"',
+        'printf "cut off data:application/pdf;base64,%s" "$payload"',
+        "exit 1",
+      ].join("\n"),
+    );
+
+    const run = await supervise(computerd, port);
+
+    expect(run.status).toBe(1);
+    // The Container's log has everything.
+    expect(run.stdout).toContain(`data:image/png;base64,${"A".repeat(payloadLength)}`);
+    expect(run.stdout).toContain(`data:application/pdf;base64,${"A".repeat(payloadLength)}`);
+
+    const body = reports[0]?.body ?? "";
+
+    expect(body).toContain("uncaughtException: Error: log 1234: append after exit\n");
+    expect(body).toContain("    at EventLog.append (computerd:1:1)\n");
+    expect(body).toContain(
+      `data:image/png;base64,${EXIT_REPORT_BASE64_MARKER}","after":3} tail 3\n`,
+    );
+    expect(body).toContain("short data:text/plain;base64,QUJD kept\n");
+    expect(body.endsWith(`cut off data:application/pdf;base64,${EXIT_REPORT_BASE64_MARKER}`)).toBe(
+      true,
+    );
+    expect(body).not.toContain("AAAAAAAAAA");
   });
 
   it("reports a computerd that a signal killed, with the shell's status for it", async () => {
