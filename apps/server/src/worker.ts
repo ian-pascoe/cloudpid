@@ -25,6 +25,7 @@ import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import { workspaceRepos } from "./workspace/repos.ts";
+import { machineWorktrees } from "./workspace/worktrees.ts";
 import { workspaceSettingsRemote } from "./workspace/settings.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
@@ -148,13 +149,20 @@ export default class Server extends Cloudflare.Worker<Server>()(
       workspaceAttachmentFiles(worker[WORKSPACE_BINDING] as WorkspaceNamespace, slug);
 
     // SAFETY: the same binding; the Workspace DO answers the settings methods `SettingsHost` names.
-    const workspaceSettings = workspaceSettingsRemote(
+    const machineSettings = workspaceSettingsRemote(
       worker[WORKSPACE_BINDING] as Parameters<typeof workspaceSettingsRemote>[0],
     );
 
     // SAFETY: the same binding; the Workspace DO answers `LifecycleHost.destroy`.
-    const workspaces = workspaceObjectsRemote(
+    const machines = workspaceObjectsRemote(
       worker[WORKSPACE_BINDING] as Parameters<typeof workspaceObjectsRemote>[0],
+    );
+
+    // SAFETY: the same binding; the worktrees are read through its files and made on its Container.
+    // A Setup Script that fails runs outside any Effect (in the worktree's preparation); the Worker log keeps it.
+    const worktrees = machineWorktrees(worker[WORKSPACE_BINDING] as WorkspaceNamespace, (message) =>
+      // @effect-diagnostics-next-line globalConsole:off
+      console.warn(message),
     );
 
     // A Session's object is found anew for each call; any failure of the call is a defect the endpoint reports.
@@ -187,9 +195,10 @@ export default class Server extends Cloudflare.Worker<Server>()(
         if (isRegistryRpc(request))
           return yield* serveRegistryRpc(registries, {
             repos,
-            workspaceSettings,
-            workspaces,
+            machineSettings,
+            machines,
             sessions: sessionObjects,
+            worktrees,
           });
 
         return hello;

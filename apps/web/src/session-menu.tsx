@@ -3,17 +3,20 @@ import { useAtom, useAtomSet } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { Archive, ArchiveRestore, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, GitFork, Trash2 } from "lucide-react";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
 import type { SessionActions as AllSessionActions } from "./session-actions.ts";
-import { deleteSessionAtom } from "./sessions.ts";
+import { deleteSessionAtom, sameWorkspacePlace } from "./sessions.ts";
 
-/** What a Session's menu does besides delete: archive and unarchive, through the Session list. */
-export type SessionActions = Pick<AllSessionActions, "archive" | "unarchive">;
+/**
+ * What a Session's menu does besides delete: start another Session in its Workspace, archive and unarchive, through the
+ * Session list.
+ */
+export type SessionActions = Pick<AllSessionActions, "create" | "archive" | "unarchive">;
 
 /** Whether a menu's delete dialog is open; each menu has its own, since a Session's page and its list item both have one. */
 const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
@@ -24,10 +27,10 @@ const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
  */
 const DeleteSessionDialog = ({
   session,
-  workspaceName,
+  machineName,
 }: {
   session: SessionRecord;
-  workspaceName: string;
+  machineName: string;
 }) => {
   const [open, setOpen] = useAtom(DeleteOpen.use());
   const [deleted, remove] = useAtom(deleteSessionAtom(session.id));
@@ -49,7 +52,10 @@ const DeleteSessionDialog = ({
         <>
           <span className="font-medium text-foreground">{sessionTitle(session)}</span> and its
           conversation, subagents and history are deleted for good. Files it wrote in the{" "}
-          <span className="font-medium text-foreground">{workspaceName}</span> workspace stay.
+          <span className="font-medium text-foreground">{machineName}</span> machine stay
+          {session.workspace === null
+            ? "."
+            : ", but for its workspace's worktree when no other session is in it: that goes unless it holds uncommitted changes, and its branch stays."}
           {session.status === "running" && " It is running: everything it runs stops first."}
         </>
       }
@@ -73,12 +79,12 @@ const DeleteSessionDialog = ({
 
 const Actions = ({
   session,
-  workspaceName,
+  machineName,
   actions,
   className,
 }: {
   session: SessionRecord;
-  workspaceName: string;
+  machineName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => {
@@ -90,6 +96,16 @@ const Actions = ({
   return (
     <>
       <Menu label={`Actions for ${sessionTitle(session)}`} className={className}>
+        {session.repo !== null && !archived && (
+          <MenuItem
+            onSelect={() => {
+              void actions.create(sameWorkspacePlace(session));
+            }}
+          >
+            <GitFork aria-hidden />
+            New session in this workspace
+          </MenuItem>
+        )}
         {archived ? (
           <MenuItem
             onSelect={() => {
@@ -120,18 +136,19 @@ const Actions = ({
           Delete…
         </MenuItem>
       </Menu>
-      <DeleteSessionDialog session={session} workspaceName={workspaceName} />
+      <DeleteSessionDialog session={session} machineName={machineName} />
     </>
   );
 };
 
 /**
- * A Session's "⋯" menu: archive or unarchive it, or delete it after a confirmation. A menu has no room for a failure, so
+ * A Session's "⋯" menu: start another Session in its Workspace, archive or unarchive it, or delete it after a
+ * confirmation. A menu has no room for a failure, so
  * an archive or unarchive that failed is reported by `actions` to the surface the menu is on.
  */
 export const SessionMenu = (props: {
   session: SessionRecord;
-  workspaceName: string;
+  machineName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => (

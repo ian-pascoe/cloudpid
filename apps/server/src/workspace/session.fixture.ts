@@ -12,7 +12,7 @@ import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagent
 import { fixedToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
 import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
-import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
+import { DEFAULT_MACHINE } from "@cloudpid/protocol";
 import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -48,8 +48,14 @@ export class TestWorkspaceSession extends TestSession {
       namespace: this.env.WORKSPACES,
       placement: () =>
         Promise.resolve(
-          this.ctx.storage.kv.get<Placement>(KEY) ?? { slug: DEFAULT_WORKSPACE, repo: null },
+          this.ctx.storage.kv.get<Placement>(KEY) ?? {
+            machine: DEFAULT_MACHINE,
+            repo: null,
+            worktree: null,
+          },
         ),
+      // The test Worker has no Container to make a worktree on; these Sessions work in main checkouts.
+      prepare: () => Promise.reject(new Error("The test Worker makes no worktrees")),
     });
   }
 
@@ -101,7 +107,7 @@ export class TestWorkspaceSession extends TestSession {
 
     return earlyStartOnSubmit({
       startContainerEarly: async () => {
-        if (kv.get<Placement>(KEY)?.slug.startsWith(UNREACHABLE) !== true) {
+        if (kv.get<Placement>(KEY)?.machine.startsWith(UNREACHABLE) !== true) {
           return workspace.startContainerEarly();
         }
 
@@ -123,6 +129,6 @@ export class TestWorkspaceSession extends TestSession {
 
   /** Bind this Session to Workspace `slug` (and the repo directory in it), as the Registry binds a Session when it is created. */
   bindWorkspace(slug: string, repo: string | null = null): void {
-    this.ctx.storage.kv.put(KEY, { slug, repo } satisfies Placement);
+    this.ctx.storage.kv.put(KEY, { machine: slug, repo, worktree: null } satisfies Placement);
   }
 }

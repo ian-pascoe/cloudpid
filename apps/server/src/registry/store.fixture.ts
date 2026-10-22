@@ -11,9 +11,12 @@ import {
   type RegistryStore,
   type SessionRecord,
   type SessionStatus,
+  type StoredWorkspaceChoice,
+  type MachineDeletion,
+  type MachineRecord,
+  type MachineRename,
   type WorkspaceDeletion,
   type WorkspaceRecord,
-  type WorkspaceRename,
 } from "./store.ts";
 
 export class TestRegistry extends DurableObject {
@@ -25,7 +28,13 @@ export class TestRegistry extends DurableObject {
   }
 
   createSession(
-    input: { id: string; title: string | null; workspace?: string; repo?: string },
+    input: {
+      id: string;
+      title: string | null;
+      machine?: string;
+      repo?: string;
+      workspace?: StoredWorkspaceChoice;
+    },
     now: number,
   ): SessionRecord {
     return this.#store.createSession(input, now);
@@ -63,24 +72,40 @@ export class TestRegistry extends DurableObject {
     return this.#store.deleteSession(id);
   }
 
-  createWorkspace(slug: string, now: number): WorkspaceRecord {
-    return this.#store.createWorkspace(slug, now);
+  createMachine(slug: string, now: number): MachineRecord {
+    return this.#store.createMachine(slug, now);
   }
 
-  getWorkspace(slug: string): WorkspaceRecord | null {
-    return this.#store.getWorkspace(slug);
+  getMachine(slug: string): MachineRecord | null {
+    return this.#store.getMachine(slug);
+  }
+
+  listMachines(): MachineRecord[] {
+    return this.#store.listMachines();
+  }
+
+  renameMachine(slug: string, name: string): MachineRename {
+    return this.#store.renameMachine(slug, name);
+  }
+
+  deleteMachine(slug: string): MachineDeletion {
+    return this.#store.deleteMachine(slug);
+  }
+
+  getWorkspace(id: string): WorkspaceRecord | null {
+    return this.#store.getWorkspace(id);
   }
 
   listWorkspaces(): WorkspaceRecord[] {
     return this.#store.listWorkspaces();
   }
 
-  renameWorkspace(slug: string, name: string): WorkspaceRename {
-    return this.#store.renameWorkspace(slug, name);
+  deleteWorkspace(id: string): WorkspaceDeletion {
+    return this.#store.deleteWorkspace(id);
   }
 
-  deleteWorkspace(slug: string): WorkspaceDeletion {
-    return this.#store.deleteWorkspace(slug);
+  deleteWorkspacesOf(machine: string, repo?: string): void {
+    this.#store.deleteWorkspacesOf(machine, repo);
   }
 
   getDocument(name: string): string | null {

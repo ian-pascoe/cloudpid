@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./toolchains": "./src/toolchains.ts",
-    "./supervisor": "./src/supervisor.ts"
+    "./supervisor": "./src/supervisor.ts",
+    "./worktrees": "./src/worktrees.ts"
   },
   "scripts": {
     "typecheck": "tsc",

@@ -30,10 +30,12 @@ export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
 export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/node_modules",
   "**/.venv",
-  // Cargo's target directory, in a repo (`/<repo>/target`) or at the Workspace root. Not at any depth: a source
+  // Cargo's target directory, in a repo (`/<repo>/target`), in a Workspace's worktree of one
+  // (`/.worktrees/<repo>/<id>/target`: `WORKTREES_DIRECTORY`) or at the Machine's root. Not at any depth: a source
   // directory called `target` is not a build directory.
   "/target",
   "/*/target",
+  "/.worktrees/*/*/target",
   "**/.cache",
   // pnpm's content-addressed store. The Container's global pnpm configuration puts it on the Container's disk
   // (`PNPM_STORE_DIRECTORY_NAME` under the home directory), but with the home directory on the Container's disk and the
@@ -200,7 +202,8 @@ export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
 /** git's answer to a credential request for github.com: the token of the environment it runs in. */
 const CREDENTIAL_HELPER = String.raw`!f() { if [ "$1" = get ] && [ -n "$GITHUB_TOKEN" ]; then echo username=x-access-token; echo "password=$GITHUB_TOKEN"; fi; }; f`;
 
-const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+/** `value` as one bash word, single-quoted, whatever it holds. */
+export const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** `storeDir` as pnpm also reads it from a file: `store-dir`. */
 const kebab = (key: string): string =>
@@ -289,7 +292,7 @@ if [ -f mise.toml ] && { [ ! -e mise.lock ] || [ mise.toml -nt mise.lock ]; }; t
   note_failure $?
 fi
 
-for dir in "$root" "$root"/*/; do
+for dir in "$root" "$root"/*/ "$root"/${WORKTREES_DIRECTORY}/*/*/; do
   dir=\${dir%/}
   if has_mise_config "$dir"; then
     (cd "$dir" && mise install)
@@ -330,9 +333,35 @@ export const SETUP_SCRIPT = ".agents/setup.sh";
  */
 export const SETUP_STATE_DIRECTORY = "/var/lib/cloudpid/setup";
 
-/** Where the Container records the Setup Script of the repo directory `repo` (a name, not a path) that last succeeded. */
-export const setupRecord = (repo: string, state: string = SETUP_STATE_DIRECTORY): string =>
-  `${state}/${repo}`;
+/**
+ * The directory below the Machine's root, `/workspace`, that holds the Workspaces' own worktrees: `<root>/.worktrees/<repo>/<id>`
+ * (`worktreeDirectory` in `@cloudpid/protocol`, which a test keeps equal). Hidden, so it is never taken for a repo.
+ */
+export const WORKTREES_DIRECTORY = ".worktrees";
+
+/**
+ * Where the Container records the Setup Script that last succeeded in a repo's main checkout or a Workspace's worktree,
+ * by its record name (`setupRecordName`), not a path.
+ */
+export const setupRecord = (name: string, state: string = SETUP_STATE_DIRECTORY): string =>
+  `${state}/${name}`;
+
+/**
+ * The name the Setup Script of `directory` is recorded under: the repo's name for its main checkout (`<root>/<repo>`),
+ * and `<repo>@<id>` for a Workspace's worktree (`<root>/.worktrees/<repo>/<id>`), so each is prepared on its own. A repo
+ * name never holds an `@`.
+ */
+export const setupRecordName = (directory: string, root: string = WORKSPACE_ROOT): string => {
+  const relative = directory.startsWith(`${root}/`) ? directory.slice(root.length + 1) : directory;
+
+  if (relative.startsWith(`${WORKTREES_DIRECTORY}/`)) {
+    const [repo = "", id = ""] = relative.slice(WORKTREES_DIRECTORY.length + 1).split("/");
+
+    return `${repo}@${id}`;
+  }
+
+  return relative.slice(relative.lastIndexOf("/") + 1);
+};
 
 /** How long a Setup Script may run before it is stopped. */
 export const SETUP_TIMEOUT_SECONDS = 15 * 60;
@@ -355,9 +384,9 @@ export const setupScriptTimedOut = (code: number | undefined, output: string): b
 const sha256 = (file: string): string => `sha256sum < ${file} | cut -d' ' -f1`;
 
 /**
- * The bash script that prints, one per line, the directories of the repos in `root` whose Setup Script is due: each
- * directory directly below `root` with a `SETUP_SCRIPT` file whose content differs from the last one that succeeded
- * there (`setupRecord`). A repo that never ran its script is due.
+ * The bash script that prints, one per line, the directories whose Setup Script is due: each repo directly below `root`
+ * and each Workspace's worktree (`<root>/.worktrees/<repo>/<id>`), repos first, with a `SETUP_SCRIPT` file whose content
+ * differs from the last one that succeeded there (`setupRecord`). One that never ran its script is due.
  */
 export const pendingSetupScripts = (
   root: string = WORKSPACE_ROOT,
@@ -365,12 +394,18 @@ export const pendingSetupScripts = (
 ): string => `
 set -u -o pipefail
 state=${shellQuote(state)}
-for dir in ${shellQuote(root)}/*/; do
+root=${shellQuote(root)}
+for dir in "$root"/*/ "$root"/${WORKTREES_DIRECTORY}/*/*/; do
   dir=\${dir%/}
   [ -f "$dir"/${SETUP_SCRIPT} ] || continue
   hash=$(${sha256(`"$dir"/${SETUP_SCRIPT}`)}) || continue
-  # setupRecord's path.
-  [ "$(cat "$state/\${dir##*/}" 2>/dev/null)" = "$hash" ] && continue
+  # setupRecordName's: the repo's name, or <repo>@<id> for a worktree.
+  relative=\${dir#"$root"/}
+  case $relative in
+    ${WORKTREES_DIRECTORY}/*) relative=\${relative#${WORKTREES_DIRECTORY}/}; name=\${relative%%/*}@\${relative#*/} ;;
+    *) name=$relative ;;
+  esac
+  [ "$(cat "$state/$name" 2>/dev/null)" = "$hash" ] && continue
   printf '%s\\n' "$dir"
 done
 exit 0
@@ -386,6 +421,7 @@ export const setupScriptRun = (
   directory: string,
   state: string = SETUP_STATE_DIRECTORY,
   timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
+  root: string = WORKSPACE_ROOT,
 ): string => `
 set -u -o pipefail
 cd ${shellQuote(directory)} || exit 1
@@ -399,7 +435,22 @@ if [ "$status" -ne 0 ] && [ $((SECONDS - started)) -ge ${timeoutSeconds} ]; then
   exit ${SETUP_TIMED_OUT_STATUS}
 fi
 if [ "$status" -eq 0 ]; then
-  mkdir -p ${shellQuote(state)} && printf '%s\\n' "$hash" > ${shellQuote(setupRecord(directory.slice(directory.lastIndexOf("/") + 1), state))} || exit 1
+  mkdir -p ${shellQuote(state)} && printf '%s\\n' "$hash" > ${shellQuote(setupRecord(setupRecordName(directory, root), state))} || exit 1
 fi
 exit "$status"
 `;
+
+/**
+ * `setupScriptRun`, only when the Setup Script of `directory` is due: there is one, and it is not the one that last
+ * succeeded there. It exits 0 without running anything otherwise. For a worktree made after the Container started,
+ * which the bootstrap did not see.
+ */
+export const setupScriptRunIfDue = (
+  directory: string,
+  state: string = SETUP_STATE_DIRECTORY,
+  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
+  root: string = WORKSPACE_ROOT,
+): string => `
+[ -f ${shellQuote(`${directory}/${SETUP_SCRIPT}`)} ] || exit 0
+[ "$(cat ${shellQuote(setupRecord(setupRecordName(directory, root), state))} 2>/dev/null)" = "$(${sha256(shellQuote(`${directory}/${SETUP_SCRIPT}`))})" ] && exit 0
+${setupScriptRun(directory, state, timeoutSeconds, root)}`;

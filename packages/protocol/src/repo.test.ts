@@ -1,6 +1,13 @@
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import { parseRepoSource, REPO_NAME } from "./repo.ts";
+import {
+  branchProblem,
+  isWorkspaceId,
+  parseRepoSource,
+  REPO_NAME,
+  WORKTREES_DIRECTORY,
+  worktreeDirectory,
+} from "./repo.ts";
 
 const parsed = (input: string) => {
   const result = parseRepoSource(input);
@@ -91,5 +98,53 @@ describe("REPO_NAME", () => {
 
   it.each(["", ".", "..", ".git", "-x", "a/b", "a b", "a\nb", "~"])("rejects %j", (name) => {
     expect(REPO_NAME.test(name)).toBe(false);
+  });
+});
+
+describe("worktreeDirectory", () => {
+  it("is the Workspace's own directory below the Machine's hidden worktrees directory", () => {
+    expect(worktreeDirectory("app", "1a2b3c4d")).toBe(
+      `/workspace/${WORKTREES_DIRECTORY}/app/1a2b3c4d`,
+    );
+    expect(WORKTREES_DIRECTORY.startsWith(".")).toBe(true);
+  });
+});
+
+describe("isWorkspaceId", () => {
+  it.each(["1a2b3c4d", "00000000", "ffffffff"])("takes %s", (id) => {
+    expect(isWorkspaceId(id)).toBe(true);
+  });
+
+  it.each(["new", "1A2B3C4D", "1a2b3c4", "1a2b3c4d5", "../a2b3c", ""])("refuses %s", (id) => {
+    expect(isWorkspaceId(id)).toBe(false);
+  });
+});
+
+describe("branchProblem", () => {
+  it.each(["main", "feat/workspaces", "cloudpid/1a2b3c4d", "fix-1.2_x", "a/b/c"])(
+    "takes %s",
+    (name) => {
+      expect(branchProblem(name)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["", "empty"],
+    ["-x", "an option"],
+    ["a..b", "a range"],
+    ["a b", "a space"],
+    ["a//b", "an empty segment"],
+    ["a/", "a trailing slash"],
+    ["/a", "a leading slash"],
+    ["a/.b", "a hidden segment"],
+    ["a.lock", "a lock file"],
+    ["a.", "a trailing dot"],
+    ["a@{1}", "a reflog"],
+    ["HEAD", "HEAD"],
+    ["a~1", "an ancestor"],
+    ["a:b", "a colon"],
+    ["x".repeat(201), "too long"],
+  ])("refuses %s (%s)", (name) => {
+    expect(branchProblem(name)).toBeTypeOf("string");
   });
 });

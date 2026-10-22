@@ -1,14 +1,14 @@
 // A Workspace's own settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Size and
 // idle). They live here, not in the Registry: the Workspace DO reads them when it launches its Container, and its
 // Worker (`Workspaces`) deploys before the main Worker that hosts the Registry, so it cannot reach the Registry. The
-// UI reads and writes them through `RegistryRpcs` (`getWorkspaceSettings`/`updateWorkspaceSettings`), which the main
+// UI reads and writes them through `RegistryRpcs` (`getMachineSettings`/`updateMachineSettings`), which the main
 // Worker answers from this object.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import {
-  resolveWorkspaceSettings,
-  resolveWorkspaceSettingsLeniently,
-  type WorkspaceSettings,
-  workspaceOverridesFrom,
+  resolveMachineSettings,
+  resolveMachineSettingsLeniently,
+  type MachineSettings,
+  machineOverridesFrom,
 } from "@cloudpid/config";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
@@ -18,7 +18,7 @@ const SETTINGS_KEY = "cloudpid:workspace-settings";
 
 /** The settings in force and the overrides they come from, as plain data a Durable Object can answer over RPC. */
 export type WorkspaceSettingsAnswer = {
-  readonly settings: WorkspaceSettings;
+  readonly settings: MachineSettings;
   readonly overrides: Schema.Json;
   /** Why only some of the saved overrides applied, when a later release no longer accepts one. */
   readonly problem?: string;
@@ -37,7 +37,7 @@ export type SettingsStorage = {
 export const workspaceSettingsStore = (storage: SettingsStorage) => {
   const read = async (): Promise<WorkspaceSettingsAnswer> => {
     const overrides = (await storage.get<Schema.Json>(SETTINGS_KEY)) ?? {};
-    const { settings, dropped } = resolveWorkspaceSettingsLeniently(overrides);
+    const { settings, dropped } = resolveMachineSettingsLeniently(overrides);
 
     return dropped.length === 0
       ? { settings, overrides }
@@ -45,12 +45,12 @@ export const workspaceSettingsStore = (storage: SettingsStorage) => {
   };
 
   const write = async (overrides: Schema.Json): Promise<WriteAnswer> => {
-    const resolved = resolveWorkspaceSettings(overrides);
+    const resolved = resolveMachineSettings(overrides);
 
     if (Result.isFailure(resolved)) return { ok: false, message: resolved.failure.message };
 
     // Only what differs from the defaults is kept, so a setting left alone follows later changes of the default.
-    const kept = workspaceOverridesFrom(resolved.success);
+    const kept = machineOverridesFrom(resolved.success);
 
     await storage.put(SETTINGS_KEY, kept);
 

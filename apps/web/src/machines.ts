@@ -1,13 +1,13 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over native arrays, not combinators.
 
 import {
-  MAX_WORKSPACE_NAME_LENGTH,
+  MAX_MACHINE_NAME_LENGTH,
   parseRepoSource,
   type SessionRecord,
-  WorkspaceSlug,
+  MachineSlug,
 } from "@cloudpid/protocol";
 import {
-  DEFAULT_WORKSPACE_SETTINGS,
+  DEFAULT_MACHINE_SETTINGS,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
   type InstanceType,
@@ -17,11 +17,11 @@ import {
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-/** A Workspace's Sessions, newest first. */
-export type WorkspaceGroup = {
-  /** The Workspace's slug. */
-  readonly workspace: string;
-  /** The Workspace's name, or its slug when it is not known. */
+/** A Machine's Sessions, newest first. */
+export type MachineGroup = {
+  /** The Machine's slug. */
+  readonly machine: string;
+  /** The Machine's name, or its slug when it is not known. */
   readonly name: string;
   readonly sessions: readonly SessionRecord[];
   /** Whether any of them is running, so a collapsed group still shows it. */
@@ -29,25 +29,25 @@ export type WorkspaceGroup = {
 };
 
 /**
- * `sessions` (newest first) grouped by the Workspace they work on: the Workspace of the newest Session first, the
- * Sessions of each in the order given. `names` maps a slug to the Workspace's name.
+ * `sessions` (newest first) grouped by the Machine they work on: the Machine of the newest Session first, the
+ * Sessions of each in the order given. `names` maps a slug to the Machine's name.
  */
-export const groupByWorkspace = (
+export const groupByMachine = (
   sessions: readonly SessionRecord[],
   names: Readonly<Record<string, string>> = {},
-): readonly WorkspaceGroup[] => {
+): readonly MachineGroup[] => {
   const groups = new Map<string, SessionRecord[]>();
 
   for (const session of sessions) {
-    const group = groups.get(session.workspace);
+    const group = groups.get(session.machine);
 
-    if (group === undefined) groups.set(session.workspace, [session]);
+    if (group === undefined) groups.set(session.machine, [session]);
     else group.push(session);
   }
 
-  return [...groups].map(([workspace, grouped]) => ({
-    workspace,
-    name: names[workspace] ?? workspace,
+  return [...groups].map(([machine, grouped]) => ({
+    machine,
+    name: names[machine] ?? machine,
     sessions: grouped,
     running: grouped.some((session) => session.status === "running"),
   }));
@@ -66,30 +66,30 @@ export const splitArchived = (sessions: readonly SessionRecord[]): SplitSessions
 });
 
 /**
- * Why `text` cannot be a Workspace's name, or null when it can: trimmed, not empty, at most 80 characters, and no name
- * in `others` (the other Workspaces') whatever the case. The server checks the same.
+ * Why `text` cannot be a Machine's name, or null when it can: trimmed, not empty, at most 80 characters, and no name
+ * in `others` (the other Machines') whatever the case. The server checks the same.
  */
-export const workspaceNameProblem = (text: string, others: readonly string[]): string | null => {
+export const machineNameProblem = (text: string, others: readonly string[]): string | null => {
   const name = text.trim();
 
-  if (name === "") return "Give the workspace a name";
+  if (name === "") return "Give the machine a name";
 
-  if (name.length > MAX_WORKSPACE_NAME_LENGTH)
-    return `Use at most ${MAX_WORKSPACE_NAME_LENGTH} characters`;
+  if (name.length > MAX_MACHINE_NAME_LENGTH)
+    return `Use at most ${MAX_MACHINE_NAME_LENGTH} characters`;
 
   const lower = name.toLowerCase();
 
   return others.some((other) => other.toLowerCase() === lower)
-    ? "Another workspace is already named that"
+    ? "Another machine is already named that"
     : null;
 };
 
-/** Whether the owner typed the Workspace's slug to confirm deleting it. */
+/** Whether the owner typed the Machine's slug to confirm deleting it. */
 export const deleteConfirmed = (slug: string, typed: string): boolean => typed.trim() === slug;
 
-const isSlug = Schema.is(WorkspaceSlug);
+const isSlug = Schema.is(MachineSlug);
 
-/** Why `text` cannot be a Workspace slug, or null when it can. */
+/** Why `text` cannot be a Machine slug, or null when it can. */
 export const slugProblem = (text: string): string | null =>
   isSlug(text)
     ? null
@@ -104,7 +104,7 @@ export const sourceProblem = (text: string): string | null => {
 
 /** An instance type's line in the Edit dialog's size list: its name and what it offers, the default marked as such. */
 export const instanceLabel = (type: InstanceType): string =>
-  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_WORKSPACE_SETTINGS.instance ? " (default)" : ""}`;
+  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_MACHINE_SETTINGS.instance ? " (default)" : ""}`;
 
 /** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
 export const idleMinutesProblem = (text: string): string | null => {
@@ -126,7 +126,7 @@ export const ignorePatternsFrom = (text: string): readonly string[] =>
     .filter((line) => line !== "");
 
 /**
- * Why `text` cannot be a Workspace's extra Container-only paths, or null when it can: the server's rules
+ * Why `text` cannot be a Machine's extra Container-only paths, or null when it can: the server's rules
  * (`ignorePatternProblem`), with the first pattern that breaks them.
  */
 export const ignoreProblem = (text: string): string | null => {

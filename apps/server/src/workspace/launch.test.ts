@@ -4,7 +4,7 @@
 // the image.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
-import { DEFAULT_WORKSPACE_SETTINGS, type WorkspaceSettings } from "@cloudpid/config";
+import { DEFAULT_MACHINE_SETTINGS, type MachineSettings } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 
@@ -22,7 +22,7 @@ const specFor = (ignore: readonly string[]): Spec => ({
 });
 
 type Fake = {
-  settings: WorkspaceSettings;
+  settings: MachineSettings;
   running: boolean;
   /** What the platform answers `start` with. */
   outcome: "launched" | "adopted" | "relaunched";
@@ -50,9 +50,9 @@ type Fake = {
   now: number;
 };
 
-const open = (settings: Partial<WorkspaceSettings> = {}) => {
+const open = (settings: Partial<MachineSettings> = {}) => {
   const state: Fake = {
-    settings: { ...DEFAULT_WORKSPACE_SETTINGS, ...settings },
+    settings: { ...DEFAULT_MACHINE_SETTINGS, ...settings },
     running: false,
     outcome: "launched",
     restorable: undefined,
@@ -179,7 +179,7 @@ describe("a launch", () => {
     // The deploy moves the default and the Workspace's setting follows it (the saved one is dropped), while it runs.
     state.running = true;
     state.outcome = "adopted";
-    state.settings = DEFAULT_WORKSPACE_SETTINGS;
+    state.settings = DEFAULT_MACHINE_SETTINGS;
     await container.start(SPEC);
 
     // Neither the reconnect nor an evicted Workspace DO asks for anything but what the Container launched with.
@@ -278,7 +278,7 @@ describe("a launch", () => {
   it("falls back to the default idle time before any launch", async () => {
     const { launch } = open();
 
-    expect(await launch.idleMs()).toBe(DEFAULT_WORKSPACE_SETTINGS.idleMinutes * 60_000);
+    expect(await launch.idleMs()).toBe(DEFAULT_MACHINE_SETTINGS.idleMinutes * 60_000);
   });
 
   it("starts a Container found running with no launch on record on standard-2, so it is adopted", async () => {

@@ -16,6 +16,7 @@ import {
   deleteSessionAtom,
   newSessionPlace,
   placeLabel,
+  sameWorkspacePlace,
   renameSessionAtom,
   sessionsAtom,
   unarchiveSessionAtom,
@@ -25,8 +26,9 @@ const session = (id: string, title: string | null = null): SessionRecord => ({
   id,
   title,
   titleSource: title === null ? null : "owner",
-  workspace: "default",
+  machine: "default",
   repo: null,
+  workspace: null,
   status: "idle",
   createdAt: 1,
   updatedAt: 1,
@@ -44,9 +46,9 @@ const listed = (list: SessionRecord[]) => {
 
         return [...list];
       }),
-    createSession: ({ workspace }) =>
+    createSession: ({ machine }) =>
       Effect.sync(() => {
-        const created = { ...session(`new-${list.length}`), workspace: workspace ?? "default" };
+        const created = { ...session(`new-${list.length}`), machine: machine ?? "default" };
 
         list.unshift(created);
 
@@ -96,24 +98,49 @@ const listed = (list: SessionRecord[]) => {
 };
 
 describe("where a new Session starts", () => {
-  it("starts where the shown Session works: its Workspace, and its repo if it has one", () => {
-    expect(newSessionPlace({ ...session("a"), workspace: "work", repo: "cloudpid" })).toEqual({
-      workspace: "work",
+  it("starts in a new Workspace of the shown Session's repo, or at its Machine's root", () => {
+    expect(newSessionPlace({ ...session("a"), machine: "work", repo: "cloudpid" })).toEqual({
+      machine: "work",
       repo: "cloudpid",
+      workspace: "new",
     });
-    expect(newSessionPlace({ ...session("a"), workspace: "work" })).toEqual({ workspace: "work" });
+    expect(newSessionPlace({ ...session("a"), machine: "work" })).toEqual({ machine: "work" });
   });
 
-  it("starts at the default Workspace's root when no Session is shown", () => {
-    expect(newSessionPlace(undefined)).toEqual({ workspace: "default" });
+  it("starts at the default Machine's root when no Session is shown", () => {
+    expect(newSessionPlace(undefined)).toEqual({ machine: "default" });
   });
 
-  it("is named by the Workspace's name and the repo, or the slug when the name is not known", () => {
+  it("starts in the shown Session's own Workspace when asked to share it", () => {
+    const inRepo = { ...session("a"), machine: "work", repo: "cloudpid" };
+
+    expect(sameWorkspacePlace({ ...inRepo, workspace: "0a1b2c3d" })).toEqual({
+      machine: "work",
+      repo: "cloudpid",
+      workspace: "0a1b2c3d",
+    });
+    expect(sameWorkspacePlace(inRepo)).toEqual({ machine: "work", repo: "cloudpid" });
+    expect(sameWorkspacePlace({ ...session("a"), machine: "work" })).toEqual({ machine: "work" });
+  });
+
+  it("is named by the Machine's name, the repo and the Workspace, or the slug when the name is not known", () => {
     const names = { work: "Work" };
+    const branches = { "0a1b2c3d": "fix/build" };
 
-    expect(placeLabel({ workspace: "work", repo: "cloudpid" }, names)).toBe("Work · cloudpid");
-    expect(placeLabel({ workspace: "work" }, names)).toBe("Work");
-    expect(placeLabel({ workspace: "gone" }, names)).toBe("gone");
+    expect(placeLabel({ machine: "work", repo: "cloudpid", workspace: "new" }, names)).toBe(
+      "Work · cloudpid · new workspace",
+    );
+    expect(placeLabel({ machine: "work", repo: "cloudpid" }, names)).toBe(
+      "Work · cloudpid · main checkout",
+    );
+    expect(
+      placeLabel({ machine: "work", repo: "cloudpid", workspace: "0a1b2c3d" }, names, branches),
+    ).toBe("Work · cloudpid · fix/build");
+    expect(placeLabel({ machine: "work", repo: "cloudpid", workspace: "ffffffff" }, names)).toBe(
+      "Work · cloudpid · workspace ffffffff",
+    );
+    expect(placeLabel({ machine: "work" }, names)).toBe("Work");
+    expect(placeLabel({ machine: "gone" }, names)).toBe("gone");
   });
 });
 
@@ -151,11 +178,11 @@ describe("the Session list", () => {
       const { registry } = listed([session("a")]);
 
       yield* settled(registry, sessionsAtom);
-      registry.set(createSessionAtom, callOf({ workspace: "work" }));
+      registry.set(createSessionAtom, callOf({ machine: "work" }));
 
       const created = yield* settled(registry, createSessionAtom);
 
-      expect(AsyncResult.getOrThrow(created).workspace).toBe("work");
+      expect(AsyncResult.getOrThrow(created).machine).toBe("work");
       expect(ids(yield* settled(registry, sessionsAtom))).toEqual(["new-1", "a"]);
     }),
   );

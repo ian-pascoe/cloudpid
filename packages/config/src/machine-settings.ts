@@ -1,5 +1,5 @@
-// A Workspace's own settings (`docs/spec.md` → Container and Toolchains → Size and idle): the Container's instance
-// size, how long it may sit unused before the Workspace stops it, and the paths it keeps to itself on top of the
+// A Machine's own settings (`docs/spec.md` → Container and Toolchains → Size and idle): the Container's instance
+// size, how long it may sit unused before the Machine stops it, and the paths it keeps to itself on top of the
 // built-in ones. Like the global settings, every field has a
 // decoding default, so decoding the saved overrides gives the resolved settings and the schema's `Encoded` side is the
 // overrides' shape. They live in the Workspace DO, which reads them at each Container launch.
@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
 /**
- * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in a Workspace's
+ * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in a Machine's
  * settings. Cloudflare's named instance types are stored under their own names; the others are custom sizes
  * (`{ vcpu, memoryMib, diskMb }` in `ctx.container.start`), stored as `custom-<vCPU>` and mapped to their resources by
  * `containerInstance` at each launch. A stored name never changes meaning, so a new custom size gets a new name.
@@ -82,7 +82,7 @@ const IdleMinutes = Schema.Int.check(
   Schema.isLessThanOrEqualTo(MAX_IDLE_MINUTES),
 );
 
-/** The most extra Container-only paths a Workspace may have. */
+/** The most extra Container-only paths a Machine may have. */
 export const MAX_IGNORE_PATTERNS = 50;
 
 /** The longest extra Container-only path. */
@@ -129,7 +129,7 @@ export const ignorePatternProblem = (pattern: string): string | undefined => {
   }
 
   if (Arr.every(parts, (part) => part === "**" || part === "*")) {
-    return "would keep the whole Workspace on the Container";
+    return "would keep the whole Machine on the Container";
   }
 
   return undefined;
@@ -143,13 +143,13 @@ const IgnorePattern = Schema.String.check(
   }),
 );
 
-export const WorkspaceSettings = Schema.Struct({
+export const MachineSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-2"))),
   /** Minutes without a command on the Container before it is stopped (a disk snapshot is taken first). */
   idleMinutes: IdleMinutes.pipe(Schema.withDecodingDefaultKey(Effect.succeed(5))),
   /**
-   * Paths the Container keeps to itself, out of the Workspace, after the built-in ones (`TOOLCHAIN_IGNORE`), as
+   * Paths the Container keeps to itself, out of the Machine, after the built-in ones (`TOOLCHAIN_IGNORE`), as
    * computer's `ignore` patterns: the last one that matches a path wins, so `!` keeps a built-in one synced.
    */
   ignore: Schema.Array(IgnorePattern)
@@ -157,15 +157,15 @@ export const WorkspaceSettings = Schema.Struct({
     .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 
-export type WorkspaceSettings = typeof WorkspaceSettings.Type;
+export type MachineSettings = typeof MachineSettings.Type;
 
 /** What is stored: the settings that differ from the defaults. */
-export type WorkspaceSettingsOverrides = typeof WorkspaceSettings.Encoded;
+export type MachineSettingsOverrides = typeof MachineSettings.Encoded;
 
-export class WorkspaceSettingsError extends Schema.TaggedError<
-  WorkspaceSettingsError,
+export class MachineSettingsError extends Schema.TaggedError<
+  MachineSettingsError,
   { readonly brand: unique symbol }
->()("WorkspaceSettingsError", {
+>()("MachineSettingsError", {
   message: Schema.String,
 }) {}
 
@@ -184,17 +184,17 @@ const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
     return { keys, line: path === "" ? issue.message : `${path}: ${issue.message}` };
   });
 
-const decodeOverrides = Schema.decodeUnknownResult(WorkspaceSettings, {
+const decodeOverrides = Schema.decodeUnknownResult(MachineSettings, {
   onExcessProperty: "error",
   errors: "all",
 });
 
 /** The settings `overrides` give over the defaults, or why they are not valid settings, one problem per line. */
-export const resolveWorkspaceSettings = (
+export const resolveMachineSettings = (
   overrides: Schema.Json,
-): Result.Result<WorkspaceSettings, WorkspaceSettingsError> =>
+): Result.Result<MachineSettings, MachineSettingsError> =>
   Result.mapError(decodeOverrides(overrides), (error) =>
-    WorkspaceSettingsError.make({
+    MachineSettingsError.make({
       message: Arr.join(
         Arr.map(problemsOf(error), (problem) => problem.line),
         "\n",
@@ -204,21 +204,19 @@ export const resolveWorkspaceSettings = (
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
-export const DEFAULT_WORKSPACE_SETTINGS: WorkspaceSettings = Schema.decodeSync(WorkspaceSettings)(
-  {},
-);
+export const DEFAULT_MACHINE_SETTINGS: MachineSettings = Schema.decodeSync(MachineSettings)({});
 
 /** The overrides that make the defaults into `settings`: only what differs. What a settings form saves. */
-export const workspaceOverridesFrom = (settings: WorkspaceSettings): WorkspaceSettingsOverrides => {
+export const machineOverridesFrom = (settings: MachineSettings): MachineSettingsOverrides => {
   const overrides: {
-    -readonly [K in keyof WorkspaceSettingsOverrides]: WorkspaceSettingsOverrides[K];
+    -readonly [K in keyof MachineSettingsOverrides]: MachineSettingsOverrides[K];
   } = {};
 
-  if (settings.instance !== DEFAULT_WORKSPACE_SETTINGS.instance) {
+  if (settings.instance !== DEFAULT_MACHINE_SETTINGS.instance) {
     overrides.instance = settings.instance;
   }
 
-  if (settings.idleMinutes !== DEFAULT_WORKSPACE_SETTINGS.idleMinutes) {
+  if (settings.idleMinutes !== DEFAULT_MACHINE_SETTINGS.idleMinutes) {
     overrides.idleMinutes = settings.idleMinutes;
   }
 
@@ -228,9 +226,9 @@ export const workspaceOverridesFrom = (settings: WorkspaceSettings): WorkspaceSe
 };
 
 /** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
-export type LenientWorkspaceSettings = {
-  readonly settings: WorkspaceSettings;
-  /** One line per override dropped, as `resolveWorkspaceSettings` words it. */
+export type LenientMachineSettings = {
+  readonly settings: MachineSettings;
+  /** One line per override dropped, as `resolveMachineSettings` words it. */
   readonly dropped: ReadonlyArray<string>;
 };
 
@@ -240,14 +238,12 @@ const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
 /**
  * The settings `overrides` give once every override that does not resolve is dropped, so a value a later release stops
  * accepting (an instance type Cloudflare retires) costs only itself. Reading what was saved is lenient and writing is
- * strict (`resolveWorkspaceSettings`), as for the global settings.
+ * strict (`resolveMachineSettings`), as for the global settings.
  */
-export const resolveWorkspaceSettingsLeniently = (
-  overrides: Schema.Json,
-): LenientWorkspaceSettings => {
+export const resolveMachineSettingsLeniently = (overrides: Schema.Json): LenientMachineSettings => {
   if (!isJsonObject(overrides)) {
     return {
-      settings: DEFAULT_WORKSPACE_SETTINGS,
+      settings: DEFAULT_MACHINE_SETTINGS,
       dropped: Result.isSuccess(decodeOverrides(overrides)) ? [] : ["not an object"],
     };
   }
@@ -272,5 +268,5 @@ export const resolveWorkspaceSettingsLeniently = (
     rest = Record.filter(rest, (_, key) => !bad.has(key));
   }
 
-  return { settings: DEFAULT_WORKSPACE_SETTINGS, dropped };
+  return { settings: DEFAULT_MACHINE_SETTINGS, dropped };
 };

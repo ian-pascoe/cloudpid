@@ -1,7 +1,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
+import { DEFAULT_MACHINE } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
@@ -18,17 +18,36 @@ declare global {
   }
 }
 
-/** The slugs of the Workspaces the Registry lists, in name order. */
+/** The slugs of the Machines the Registry lists, in name order. */
 const slugs = async (registry: DurableObjectStub<TestRegistry>) =>
   Arr.sort(
-    Arr.map(await registry.listWorkspaces(), (workspace) => workspace.slug),
+    Arr.map(await registry.listMachines(), (machine) => machine.slug),
     Order.String,
   );
 
 const fresh = () => env.REGISTRIES.get(env.REGISTRIES.newUniqueId());
 
-/** Undo migrations 8 and 9 (Workspace names, archived Sessions), as the stores before them were. */
+/**
+ * Expect the store to refuse to create a Session. It is called in the object, not over RPC: a refusal in a storage
+ * transaction is otherwise also reported as an unhandled rejection.
+ */
+const refuses = (
+  registry: DurableObjectStub<TestRegistry>,
+  ...input: Parameters<TestRegistry["createSession"]>
+) =>
+  runInDurableObject(registry, (instance: TestRegistry) => {
+    expect(() => instance.createSession(...input)).toThrow();
+  });
+
+/** Undo migration 10 (Workspaces of their own), as the stores before it were. */
+const withoutWorkspaces = (sql: SqlStorage) => {
+  sql.exec("DROP TABLE worktrees");
+  sql.exec("ALTER TABLE sessions DROP COLUMN worktree");
+};
+
+/** Undo migrations 8 to 10 (Machine names, archived Sessions, Workspaces), as the stores before them were. */
 const withoutNamesOrArchive = (sql: SqlStorage) => {
+  withoutWorkspaces(sql);
   sql.exec("DROP INDEX workspaces_by_name");
   sql.exec("ALTER TABLE workspaces DROP COLUMN name");
   sql.exec("ALTER TABLE sessions DROP COLUMN archived_at");
@@ -44,8 +63,9 @@ describe("the Registry store", () => {
       id: "s-1",
       title: "Fix the build",
       titleSource: "owner",
-      workspace: DEFAULT_WORKSPACE,
+      machine: DEFAULT_MACHINE,
       repo: null,
+      workspace: null,
       status: "idle",
       createdAt: 1_000,
       updatedAt: 1_000,
@@ -113,52 +133,52 @@ describe("the Registry store", () => {
     });
   });
 
-  it("records a Workspace by slug once, however often it is created", async () => {
+  it("records a Machine by slug once, however often it is created", async () => {
     const registry = fresh();
 
-    await registry.createWorkspace("cloudpid", 1_000);
-    const again = await registry.createWorkspace("cloudpid", 2_000);
+    await registry.createMachine("cloudpid", 1_000);
+    const again = await registry.createMachine("cloudpid", 2_000);
 
     expect(again).toEqual({ slug: "cloudpid", name: "cloudpid", createdAt: 1_000 });
-    expect(await registry.listWorkspaces()).toContainEqual({
+    expect(await registry.listMachines()).toContainEqual({
       slug: "cloudpid",
       name: "cloudpid",
       createdAt: 1_000,
     });
-    expect(await slugs(registry)).toEqual(["cloudpid", DEFAULT_WORKSPACE]);
+    expect(await slugs(registry)).toEqual(["cloudpid", DEFAULT_MACHINE]);
   });
 
-  it("lists the default Workspace before any Session is created in it", async () => {
-    expect(await slugs(fresh())).toEqual([DEFAULT_WORKSPACE]);
+  it("lists the default Machine before any Session is created in it", async () => {
+    expect(await slugs(fresh())).toEqual([DEFAULT_MACHINE]);
   });
 
-  it("binds a Session to the Workspace it is created with, and lists that Workspace", async () => {
+  it("binds a Session to the Machine it is created with, and lists that Machine", async () => {
     const registry = fresh();
 
     const created = await registry.createSession(
-      { id: "s-1", title: null, workspace: "cloudpid" },
+      { id: "s-1", title: null, machine: "cloudpid" },
       1_000,
     );
 
-    expect(created.workspace).toBe("cloudpid");
-    expect((await registry.getSession("s-1"))?.workspace).toBe("cloudpid");
-    expect(await registry.listWorkspaces()).toContainEqual({
+    expect(created.machine).toBe("cloudpid");
+    expect((await registry.getSession("s-1"))?.machine).toBe("cloudpid");
+    expect(await registry.listMachines()).toContainEqual({
       slug: "cloudpid",
       name: "cloudpid",
       createdAt: 1_000,
     });
   });
 
-  it("binds a Session created without a Workspace to the default one", async () => {
+  it("binds a Session created without a Machine to the default one", async () => {
     const registry = fresh();
 
     await registry.createSession({ id: "s-1", title: null }, 1_000);
 
-    expect((await registry.getSession("s-1"))?.workspace).toBe(DEFAULT_WORKSPACE);
-    expect(await slugs(registry)).toEqual([DEFAULT_WORKSPACE]);
+    expect((await registry.getSession("s-1"))?.machine).toBe(DEFAULT_MACHINE);
+    expect(await slugs(registry)).toEqual([DEFAULT_MACHINE]);
   });
 
-  it("opens a Registry written before Sessions had Workspaces, binding its Sessions to the default", async () => {
+  it("opens a Registry written before Sessions had Machines, binding its Sessions to the default", async () => {
     await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
       const { storage } = state;
       const { sql } = storage;
@@ -179,12 +199,12 @@ describe("the Registry store", () => {
 
       const store = openRegistryStore(storage);
 
-      expect(store.getSession("old")).toMatchObject({ id: "old", workspace: DEFAULT_WORKSPACE });
+      expect(store.getSession("old")).toMatchObject({ id: "old", machine: DEFAULT_MACHINE });
       // Opening again changes nothing, and the new column is writable.
       expect(
-        openRegistryStore(storage).createSession({ id: "new", title: null, workspace: "a" }, 2),
+        openRegistryStore(storage).createSession({ id: "new", title: null, machine: "a" }, 2),
       ).toMatchObject({
-        workspace: "a",
+        machine: "a",
       });
     });
   });
@@ -276,11 +296,11 @@ describe("the Registry store", () => {
     const registry = fresh();
 
     const created = await registry.createSession(
-      { id: "s-1", title: null, workspace: "cloudpid", repo: "pi" },
+      { id: "s-1", title: null, machine: "cloudpid", repo: "pi" },
       1_000,
     );
 
-    expect(created).toMatchObject({ workspace: "cloudpid", repo: "pi" });
+    expect(created).toMatchObject({ machine: "cloudpid", repo: "pi" });
     expect(await registry.getSession("s-1")).toEqual(created);
     expect(await registry.listSessions()).toEqual([created]);
   });
@@ -301,7 +321,7 @@ describe("the Registry store", () => {
 
       const store = openRegistryStore(storage);
 
-      expect(store.getSession("old")).toMatchObject({ workspace: "a", repo: null });
+      expect(store.getSession("old")).toMatchObject({ machine: "a", repo: null });
       expect(store.createSession({ id: "new", title: null, repo: "pi" }, 2)).toMatchObject({
         repo: "pi",
       });
@@ -366,15 +386,16 @@ describe("the Registry store", () => {
   it("renames a Session, leaving its other fields alone, and ignores one it does not know", async () => {
     const registry = fresh();
 
-    await registry.createSession({ id: "s-1", title: null, workspace: "cloudpid" }, 1_000);
+    await registry.createSession({ id: "s-1", title: null, machine: "cloudpid" }, 1_000);
     await registry.setSessionStatus("s-1", "running", 2_000);
 
     expect(await registry.renameSession("s-1", "Fix the build")).toEqual({
       id: "s-1",
       title: "Fix the build",
       titleSource: "owner",
-      workspace: "cloudpid",
+      machine: "cloudpid",
       repo: null,
+      workspace: null,
       status: "running",
       createdAt: 1_000,
       updatedAt: 2_000,
@@ -410,7 +431,7 @@ describe("the Registry store", () => {
     const registry = fresh();
 
     const created = await registry.createSession(
-      { id: "s-1", title: "Keep me", workspace: "cloudpid", repo: "pi" },
+      { id: "s-1", title: "Keep me", machine: "cloudpid", repo: "pi" },
       1_000,
     );
 
@@ -445,92 +466,92 @@ describe("the Registry store", () => {
     expect(await registry.deleteSession("s-1")).toBe(false);
   });
 
-  it("names a new Workspace after its slug", async () => {
+  it("names a new Machine after its slug", async () => {
     const registry = fresh();
 
-    expect(await registry.createWorkspace("cloudpid", 1_000)).toMatchObject({
+    expect(await registry.createMachine("cloudpid", 1_000)).toMatchObject({
       slug: "cloudpid",
       name: "cloudpid",
     });
-    expect(await registry.getWorkspace(DEFAULT_WORKSPACE)).toMatchObject({
-      name: DEFAULT_WORKSPACE,
+    expect(await registry.getMachine(DEFAULT_MACHINE)).toMatchObject({
+      name: DEFAULT_MACHINE,
     });
-    expect(await registry.getWorkspace("ghost")).toBeNull();
+    expect(await registry.getMachine("ghost")).toBeNull();
   });
 
-  it("renames a Workspace, keeping its slug, and refuses a name another Workspace has in any case", async () => {
+  it("renames a Machine, keeping its slug, and refuses a name another Machine has in any case", async () => {
     const registry = fresh();
 
-    await registry.createWorkspace("cloudpid", 1_000);
-    await registry.createWorkspace("pi", 2_000);
+    await registry.createMachine("cloudpid", 1_000);
+    await registry.createMachine("pi", 2_000);
 
-    expect(await registry.renameWorkspace("cloudpid", "Pi on Cloudflare")).toEqual({
+    expect(await registry.renameMachine("cloudpid", "Pi on Cloudflare")).toEqual({
       status: "renamed",
-      workspace: { slug: "cloudpid", name: "Pi on Cloudflare", createdAt: 1_000 },
+      machine: { slug: "cloudpid", name: "Pi on Cloudflare", createdAt: 1_000 },
     });
-    expect(await registry.renameWorkspace("pi", "PI ON CLOUDFLARE")).toEqual({ status: "taken" });
-    expect(await registry.renameWorkspace("pi", "CloudPid")).toMatchObject({ status: "renamed" });
-    // A Workspace may change the case of its own name.
-    expect(await registry.renameWorkspace("cloudpid", "pi on cloudflare")).toMatchObject({
+    expect(await registry.renameMachine("pi", "PI ON CLOUDFLARE")).toEqual({ status: "taken" });
+    expect(await registry.renameMachine("pi", "CloudPid")).toMatchObject({ status: "renamed" });
+    // A Machine may change the case of its own name.
+    expect(await registry.renameMachine("cloudpid", "pi on cloudflare")).toMatchObject({
       status: "renamed",
     });
-    expect(await registry.renameWorkspace("ghost", "Anything")).toEqual({ status: "missing" });
-    expect(await registry.getWorkspace("pi")).toMatchObject({ name: "CloudPid" });
+    expect(await registry.renameMachine("ghost", "Anything")).toEqual({ status: "missing" });
+    expect(await registry.getMachine("pi")).toMatchObject({ name: "CloudPid" });
   });
 
-  it("gives a new Workspace whose slug another Workspace is named a name of its own", async () => {
+  it("gives a new Machine whose slug another Machine is named a name of its own", async () => {
     const registry = fresh();
 
-    await registry.renameWorkspace(DEFAULT_WORKSPACE, "cloudpid");
+    await registry.renameMachine(DEFAULT_MACHINE, "cloudpid");
 
-    expect(await registry.createWorkspace("cloudpid", 1_000)).toMatchObject({
+    expect(await registry.createMachine("cloudpid", 1_000)).toMatchObject({
       slug: "cloudpid",
       name: "cloudpid 2",
     });
   });
 
-  it("deletes a Workspace's record, after which its slug registers afresh", async () => {
+  it("deletes a Machine's record, after which its slug registers afresh", async () => {
     const registry = fresh();
 
-    await registry.createWorkspace("cloudpid", 1_000);
-    await registry.renameWorkspace("cloudpid", "Old name");
+    await registry.createMachine("cloudpid", 1_000);
+    await registry.renameMachine("cloudpid", "Old name");
 
-    expect(await registry.deleteWorkspace("cloudpid")).toBe("deleted");
-    expect(await registry.getWorkspace("cloudpid")).toBeNull();
-    expect(await slugs(registry)).toEqual([DEFAULT_WORKSPACE]);
-    expect(await registry.deleteWorkspace("cloudpid")).toBe("missing");
+    expect(await registry.deleteMachine("cloudpid")).toBe("deleted");
+    expect(await registry.getMachine("cloudpid")).toBeNull();
+    expect(await slugs(registry)).toEqual([DEFAULT_MACHINE]);
+    expect(await registry.deleteMachine("cloudpid")).toBe("missing");
 
-    expect(await registry.createWorkspace("cloudpid", 9_000)).toEqual({
+    expect(await registry.createMachine("cloudpid", 9_000)).toEqual({
       slug: "cloudpid",
       name: "cloudpid",
       createdAt: 9_000,
     });
   });
 
-  it("keeps a Workspace's record while a Session is still bound to it", async () => {
+  it("keeps a Machine's record while a Session is still bound to it", async () => {
     const registry = fresh();
 
-    await registry.createSession({ id: "late", title: null, workspace: "cloudpid" }, 1_000);
+    await registry.createSession({ id: "late", title: null, machine: "cloudpid" }, 1_000);
 
-    expect(await registry.deleteWorkspace("cloudpid")).toBe("in-use");
+    expect(await registry.deleteMachine("cloudpid")).toBe("in-use");
     expect(await slugs(registry)).toContain("cloudpid");
 
     await registry.deleteSession("late");
 
-    expect(await registry.deleteWorkspace("cloudpid")).toBe("deleted");
+    expect(await registry.deleteMachine("cloudpid")).toBe("deleted");
   });
 
-  it("refuses a Workspace name another one has in any case, beyond ASCII", async () => {
+  it("refuses a Machine name another one has in any case, beyond ASCII", async () => {
     const registry = fresh();
 
-    await registry.createWorkspace("fruit", 1_000);
-    await registry.createWorkspace("more", 2_000);
-    await registry.renameWorkspace("fruit", "Äpfel");
+    await registry.createMachine("fruit", 1_000);
+    await registry.createMachine("more", 2_000);
+    await registry.renameMachine("fruit", "Äpfel");
 
-    expect(await registry.renameWorkspace("more", "äPFEL")).toEqual({ status: "taken" });
+    expect(await registry.renameMachine("more", "äPFEL")).toEqual({ status: "taken" });
   });
 
-  it("names the Workspaces of a Registry at the previous version after their slugs, and leaves its Sessions unarchived", async () => {
+  it("names the Machines of a Registry at the previous version after their slugs, and leaves its Sessions unarchived", async () => {
     await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
       const { storage } = state;
       const { sql } = storage;
@@ -545,29 +566,233 @@ describe("the Registry store", () => {
 
       const store = openRegistryStore(storage);
 
-      expect(store.getWorkspace("cloudpid")).toEqual({
+      expect(store.getMachine("cloudpid")).toEqual({
         slug: "cloudpid",
         name: "cloudpid",
         createdAt: 5,
       });
       expect(store.getSession("old")).toMatchObject({ archivedAt: null });
-      expect(store.renameWorkspace(DEFAULT_WORKSPACE, "CLOUDPID")).toEqual({ status: "taken" });
+      expect(store.renameMachine(DEFAULT_MACHINE, "CLOUDPID")).toEqual({ status: "taken" });
     });
   });
 
-  it("keeps its Sessions and Workspaces across an eviction", async () => {
+  it("creates a Session in a new Workspace of its own, registering the Workspace with it", async () => {
     const registry = fresh();
 
-    await registry.createSession({ id: "s-1", title: "Survivor", workspace: "cloudpid" }, 1_000);
+    const created = await registry.createSession(
+      {
+        id: "s-1",
+        title: null,
+        machine: "cloudpid",
+        repo: "app",
+        workspace: { kind: "new", id: "1a2b3c4d", branch: "cloudpid/1a2b3c4d" },
+      },
+      1_000,
+    );
+
+    expect(created).toMatchObject({ machine: "cloudpid", repo: "app", workspace: "1a2b3c4d" });
+    expect(await registry.getSession("s-1")).toEqual(created);
+    expect(await registry.listWorkspaces()).toEqual([
+      {
+        id: "1a2b3c4d",
+        machine: "cloudpid",
+        repo: "app",
+        branch: "cloudpid/1a2b3c4d",
+        directory: "/workspace/.worktrees/app/1a2b3c4d",
+        createdAt: 1_000,
+      },
+    ]);
+  });
+
+  it("binds a Session to a Workspace that exists, and one without to its repo's main checkout", async () => {
+    const registry = fresh();
+    const workspace = { kind: "new" as const, id: "1a2b3c4d", branch: "feature" };
+
+    await registry.createSession({ id: "first", title: null, repo: "app", workspace }, 1_000);
+
+    expect(
+      await registry.createSession(
+        { id: "second", title: null, repo: "app", workspace: { kind: "existing", id: "1a2b3c4d" } },
+        2_000,
+      ),
+    ).toMatchObject({ workspace: "1a2b3c4d" });
+    expect(
+      await registry.createSession({ id: "main", title: null, repo: "app" }, 3_000),
+    ).toMatchObject({ workspace: null });
+    expect(await registry.listWorkspaces()).toHaveLength(1);
+  });
+
+  it("registers neither the Session nor the Workspace when the Workspace's id is taken", async () => {
+    const registry = fresh();
+    const workspace = { kind: "new" as const, id: "1a2b3c4d", branch: "feature" };
+
+    await registry.createSession({ id: "first", title: null, repo: "app", workspace }, 1_000);
+
+    await refuses(registry, { id: "second", title: null, repo: "app", workspace }, 2_000);
+    expect(await registry.getSession("second")).toBeNull();
+  });
+
+  it("registers no Session in a Workspace that is gone, or of another Machine or repo", async () => {
+    const registry = fresh();
+    const workspace = { kind: "new" as const, id: "1a2b3c4d", branch: "feature" };
+
+    await registry.createSession({ id: "first", title: null, repo: "app", workspace }, 1_000);
+
+    for (const [input, id] of [
+      [{ repo: "app", workspace: { kind: "existing" as const, id: "deadbeef" } }, "gone"],
+      [{ repo: "other", workspace: { kind: "existing" as const, id: "1a2b3c4d" } }, "repo"],
+      [
+        { machine: "m", repo: "app", workspace: { kind: "existing" as const, id: "1a2b3c4d" } },
+        "machine",
+      ],
+    ] as const) {
+      await refuses(registry, { id, title: null, ...input }, 2_000);
+      expect(await registry.getSession(id)).toBeNull();
+    }
+  });
+
+  it("registers no second Workspace of a repo on a branch one is on", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      {
+        id: "first",
+        title: null,
+        repo: "app",
+        workspace: { kind: "new", id: "1a2b3c4d", branch: "feature" },
+      },
+      1_000,
+    );
+
+    await refuses(
+      registry,
+      {
+        id: "second",
+        title: null,
+        repo: "app",
+        workspace: { kind: "new", id: "5e6f7a8b", branch: "feature" },
+      },
+      2_000,
+    );
+    expect(await registry.getSession("second")).toBeNull();
+    expect(await registry.listWorkspaces()).toHaveLength(1);
+
+    // Another repo's, or another Machine's, may be on it.
+    await registry.createSession(
+      {
+        id: "third",
+        title: null,
+        machine: "m",
+        repo: "app",
+        workspace: { kind: "new", id: "9c0d1e2f", branch: "feature" },
+      },
+      3_000,
+    );
+    expect(await registry.listWorkspaces()).toHaveLength(2);
+  });
+
+  it("deletes a Workspace's record only once no Session is bound to it", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      {
+        id: "s-1",
+        title: null,
+        repo: "app",
+        workspace: { kind: "new", id: "1a2b3c4d", branch: "b" },
+      },
+      1_000,
+    );
+
+    expect(await registry.deleteWorkspace("1a2b3c4d")).toBe("in-use");
+
+    await registry.deleteSession("s-1");
+
+    expect(await registry.deleteWorkspace("1a2b3c4d")).toBe("deleted");
+    expect(await registry.getWorkspace("1a2b3c4d")).toBeNull();
+    expect(await registry.deleteWorkspace("1a2b3c4d")).toBe("missing");
+  });
+
+  it("deletes the unbound Workspaces of a Machine, or of one of its repos", async () => {
+    const registry = fresh();
+
+    const make = (id: string, machine: string, repo: string) =>
+      registry.createSession(
+        { id: `s-${id}`, title: null, machine, repo, workspace: { kind: "new", id, branch: id } },
+        1_000,
+      );
+
+    await make("00000001", "m", "app");
+    await make("00000002", "m", "app");
+    await make("00000003", "m", "other");
+    await make("00000004", "n", "app");
+    await registry.deleteSession("s-00000001");
+    await registry.deleteSession("s-00000003");
+    await registry.deleteSession("s-00000004");
+
+    await registry.deleteWorkspacesOf("m", "app");
+
+    const ids = async () => Arr.map(await registry.listWorkspaces(), (w) => w.id).sort();
+
+    // Bound to a Session, so kept; another repo; another Machine.
+    expect(await ids()).toEqual(["00000002", "00000003", "00000004"]);
+
+    await registry.deleteWorkspacesOf("m");
+
+    expect(await ids()).toEqual(["00000002", "00000004"]);
+  });
+
+  it("forgets a Machine's Workspaces with the Machine", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      {
+        id: "s-1",
+        title: null,
+        machine: "m",
+        repo: "app",
+        workspace: { kind: "new", id: "1a2b3c4d", branch: "b" },
+      },
+      1_000,
+    );
+    await registry.deleteSession("s-1");
+
+    expect(await registry.deleteMachine("m")).toBe("deleted");
+    expect(await registry.listWorkspaces()).toEqual([]);
+  });
+
+  it("adds Workspaces to a Registry at the previous version, its Sessions in their repos' main checkouts", async () => {
+    await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+      const { storage } = state;
+      const { sql } = storage;
+
+      // As the release before Workspaces of their own left it: version 9.
+      withoutWorkspaces(sql);
+      sql.exec("DELETE FROM schema_version WHERE version > 9");
+      sql.exec(
+        "INSERT INTO sessions (id, title, workspace, repo, status, created_at, updated_at) VALUES ('old', NULL, 'a', 'app', 'idle', 1, 1)",
+      );
+
+      const store = openRegistryStore(storage);
+
+      expect(store.getSession("old")).toMatchObject({ repo: "app", workspace: null });
+      expect(store.listWorkspaces()).toEqual([]);
+    });
+  });
+
+  it("keeps its Sessions and Machines across an eviction", async () => {
+    const registry = fresh();
+
+    await registry.createSession({ id: "s-1", title: "Survivor", machine: "cloudpid" }, 1_000);
     await registry.setSessionStatus("s-1", "running", 2_000);
 
     await evictDurableObject(registry);
 
     // A new instance reopens the same storage.
     expect(await registry.listSessions()).toMatchObject([
-      { id: "s-1", title: "Survivor", workspace: "cloudpid", status: "running", updatedAt: 2_000 },
+      { id: "s-1", title: "Survivor", machine: "cloudpid", status: "running", updatedAt: 2_000 },
     ]);
-    expect(await registry.listWorkspaces()).toContainEqual({
+    expect(await registry.listMachines()).toContainEqual({
       slug: "cloudpid",
       name: "cloudpid",
       createdAt: 1_000,

@@ -1,11 +1,12 @@
-// Repos in a Workspace (`docs/spec.md` → Filesystem and tools): one directory per repo below `/workspace`, named by
+// @effect-diagnostics missingPipeableSignature:off
+// Repos on a Machine (`docs/spec.md` → Filesystem and tools): one directory per repo below `/workspace`, named by
 // the owner or taken from the clone URL. Both the web app (to check input as it is typed) and the server (before a
 // name reaches a path or a URL reaches `git`) use these, so the rules are in one place.
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-/** The Workspace root: one directory per repo below it. */
+/** The Machine root: one directory per repo below it. */
 export const WORKSPACE_ROOT = "/workspace";
 
 /** The longest repo directory name. */
@@ -26,8 +27,60 @@ export const RepoName = Schema.String.check(
 export const isRepoName = (name: string): boolean =>
   REPO_NAME.test(name) && name.length <= MAX_REPO_NAME_LENGTH;
 
-/** The directory of repo `name` in a Workspace. */
+/** The directory of repo `name` on a Machine: its main checkout. */
 export const repoDirectory = (name: string): string => `${WORKSPACE_ROOT}/${name}`;
+
+/**
+ * The hidden directory below the Machine's root that holds the Workspaces' own worktrees, one directory per repo
+ * (`WORKTREES_DIRECTORY` in `@cloudpid/sandbox-image/toolchains`, which a test keeps equal). Being hidden, it is never
+ * listed as a repo.
+ */
+export const WORKTREES_DIRECTORY = ".worktrees";
+
+/** The worktree of Workspace `id` of repo `repo` (ADR-0015). */
+export const worktreeDirectory = (repo: string, id: string): string =>
+  `${WORKSPACE_ROOT}/${WORKTREES_DIRECTORY}/${repo}/${id}`;
+
+/** A Workspace's id: eight lowercase hex digits, also the name of its worktree's directory. Never `new`. */
+export const WORKSPACE_ID = /^[0-9a-f]{8}$/;
+
+/** A Workspace's id, as a payload carries it: `WORKSPACE_ID`. */
+export const WorkspaceId = Schema.String.check(Schema.isPattern(WORKSPACE_ID));
+
+/** Whether `id` is a Workspace's id (`WorkspaceId`). */
+export const isWorkspaceId = (id: string): boolean => WORKSPACE_ID.test(id);
+
+/** The longest branch a Workspace may be made on. */
+export const MAX_BRANCH_LENGTH = 200;
+
+const BRANCH_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+
+/**
+ * Why `name` cannot be a Workspace's branch, or undefined when it can: segments of letters, digits, dots, underscores
+ * and dashes split by single slashes, none hidden or ending in `.lock` or a dot, no `..`, at most 200 characters, and
+ * not `HEAD`. Stricter than git's own rules (`git check-ref-format --branch`), so the name is never an option, a range,
+ * a revision expression or anything a shell would read.
+ */
+export const branchProblem = (name: string): string | undefined => {
+  if (name === "") return "Give the branch a name";
+
+  if (name.length > MAX_BRANCH_LENGTH) return `Use at most ${MAX_BRANCH_LENGTH} characters`;
+
+  if (name === "HEAD") return "HEAD is not a branch name";
+
+  if (name.includes("..")) return "A branch name may not contain ..";
+
+  return Arr.every(
+    name.split("/"),
+    (segment) =>
+      BRANCH_SEGMENT.test(segment) && !segment.endsWith(".lock") && !segment.endsWith("."),
+  )
+    ? undefined
+    : "Use letters, digits, dots, underscores and dashes, in parts split by single slashes";
+};
+
+/** A branch a new Workspace may be on, as a payload carries it: one `branchProblem` finds nothing wrong with. */
+export const BranchName = Schema.String.check(Schema.makeFilter(branchProblem));
 
 /** The longest repo address a person may enter. */
 export const MAX_REPO_SOURCE_LENGTH = 300;
@@ -120,10 +173,10 @@ export const parseRepoSource = (input: string): Result.Result<RepoSource, string
   );
 };
 
-/** A Workspace operation that failed, with a message for a person: a clone that did not finish, a repo that is not there. */
-export class WorkspaceError extends Schema.TaggedError<
-  WorkspaceError,
+/** A Machine operation that failed, with a message for a person: a clone that did not finish, a repo that is not there. */
+export class MachineError extends Schema.TaggedError<
+  MachineError,
   { readonly brand: unique symbol }
->()("WorkspaceError", {
+>()("MachineError", {
   message: Schema.String,
 }) {}

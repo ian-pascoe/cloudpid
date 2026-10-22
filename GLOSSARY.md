@@ -5,7 +5,7 @@ A personal coding agent on Cloudflare: pi's harness running durably in Durable O
 ## Agents and conversations
 
 **Session**:
-One agent workspace-of-work the user opens: a root conversation, its subagents, and their history, bound to one Workspace.
+One agent unit of work the user opens: a root conversation, its subagents, and their history, bound to one Workspace.
 _Avoid_: Chat, thread, conversation (for the whole unit)
 
 **Archived Session**:
@@ -13,7 +13,7 @@ A Session the owner has put away: kept whole, listed apart under _Archived_ rath
 _Avoid_: Hidden, closed, deleted (for an archived one)
 
 **Deleted Session**:
-A Session deleted for good, with everything it held; the files it wrote in its Workspace stay.
+A Session deleted for good, with everything it held; the files it wrote in its Workspace stay, unless it was the Workspace's last Session and the Workspace is removed with it.
 _Avoid_: Archived (for a deleted one), removed
 
 **Conversation**:
@@ -83,13 +83,13 @@ A Markdown file in a repo's `.agents/prompts` whose Slash command expands into a
 _Avoid_: Prompt, snippet, macro
 
 **Attachment**:
-A file the owner gives with a message, stored in the Workspace and pointed at by its path; an attached image is also shown to the model.
+A file the owner gives with a message, stored on the Machine and pointed at by its path; an attached image is also shown to the model.
 _Avoid_: Upload (for the file), file mention
 
 ## Diffs and review
 
 **Changes**:
-A repo's uncommitted working tree against its HEAD, shared by every Session on the Workspace.
+A Workspace's uncommitted working tree against its HEAD, shared by every Session on that Workspace.
 _Avoid_: Diff (for the whole set), working copy, pending edits
 
 **Comparison**:
@@ -104,42 +104,64 @@ _Avoid_: Comment, remark, note (that is an agent's Note)
 A batch of Annotations the owner sends to one conversation as a single message.
 _Avoid_: Feedback, comment batch, code review (for the message)
 
-## Workspaces and execution
+## Machines, Repos and Workspaces
+
+**Machine**:
+A persistent file tree at `/workspace` with its own Container, holding one or more Repos and the Workspaces made from them.
+_Avoid_: Workspace (for the whole tree), sandbox, box, environment
+
+**Repo**:
+A git repository cloned onto a Machine, in a directory of its own below `/workspace`; its directory is its main checkout.
+_Avoid_: Project, repository directory
 
 **Workspace**:
-A persistent project file tree, holding one or more repos, shared by every Session bound to it.
-_Avoid_: Sandbox, project directory, box
+One working tree of a Repo on one branch, that Sessions bind to: the Repo's main checkout, or a git worktree of its own made for it. A Session at the Machine's root has the root as its Workspace.
+_Avoid_: Checkout, worktree (for the thing Sessions bind to), sandbox, project directory
+
+**Main checkout**:
+The Workspace that is a Repo's own directory, shared by every Session started in it.
+_Avoid_: Default workspace, primary worktree
+
+**Workspace of its own**:
+A Workspace that is a git worktree of a Repo, made for the Sessions started in it, on a branch of its own; unlike the main checkout it has a record of its own and can be removed. Its worktree is the directory, not the Workspace.
+_Avoid_: Worktree (for the Workspace), managed workspace, branch workspace
+
+**Workspace removal**:
+Deleting a Workspace's Sessions and its working tree, keeping its branch and the commits on it. Uncommitted changes are lost.
+_Avoid_: Cleanup (for the owner's action), reset
 
 **Slug**:
-A Workspace's fixed identifier, chosen when it is created; it never changes, and a deleted Workspace's slug may be used again.
-_Avoid_: ID, key (for the Workspace's identifier)
+A Machine's fixed identifier, chosen when it is created; it never changes, and a deleted Machine's slug may be used again.
+_Avoid_: ID, key (for the Machine's identifier)
 
-**Workspace name**:
-The label the owner gives a Workspace and may rename, shown in place of its Slug; unique among Workspaces.
+**Machine name**:
+The label the owner gives a Machine and may rename, shown in place of its Slug; unique among Machines.
 _Avoid_: Title, display name, slug (for the label)
 
-**Workspace reset**:
-Returning a Workspace to a fresh start: its Sessions, files, Container and Snapshot are deleted, and its Slug, Workspace name and Container settings stay.
-_Avoid_: Wipe, clear (for the owner's action), delete (which also forgets the Workspace)
+**Machine reset**:
+Returning a Machine to a fresh start: its Sessions, Workspaces, files, Container and Snapshot are deleted, and its Slug, Machine name and Container settings stay.
+_Avoid_: Wipe, clear (for the owner's action), delete (which also forgets the Machine)
+
+## Execution
 
 **Container restart**:
-Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from the image, installs the Toolchains and runs the Setup Scripts again; the files and Sessions stay.
+Stopping a Machine's Container and forgetting its Snapshot, so the next message or command starts one from the image, installs the Toolchains and runs the Setup Scripts again; the files and Sessions stay.
 _Avoid_: Reset (for the Container alone), reboot
 
 **Backend**:
-A place a Workspace runs commands: the Worker Shell or the Container.
+A place a Machine runs commands: the Worker Shell or the Container.
 _Avoid_: Runtime, executor
 
 **Worker Shell**:
-The fast in-Worker shell Backend that runs text commands against the Workspace without real binaries.
+The fast in-Worker shell Backend that runs text commands against the Machine's files without real binaries.
 _Avoid_: just-bash (as a product name), lite shell
 
 **Container**:
-The Linux Backend of a Workspace, which runs real programs against the same files.
+The Linux Backend of a Machine, which runs real programs against the same files.
 _Avoid_: Sandbox, VM, box
 
 **Terminal**:
-An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as a Pane. The agent does not see it.
+An interactive shell the owner runs on a Machine's Container from a Session, in the Session's directory, shown as a Pane. The agent does not see it.
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
@@ -147,7 +169,7 @@ A panel beside a conversation that shows something live the owner can look at or
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Early start**:
-Starting a Workspace's Container (restoring its Snapshot or launching the image, then the bootstrap, Setup Scripts included) when the owner sends a message, before any command asks for it, so the turn's first command does not wait; it does nothing while the Container runs or is starting.
+Starting a Machine's Container (restoring its Snapshot or launching the image, then the bootstrap, Setup Scripts included) when the owner sends a message, before any command asks for it, so the turn's first command does not wait; it does nothing while the Container runs or is starting.
 _Avoid_: Warm-up, prewarm, preload
 
 **Offered tool**:
@@ -163,15 +185,15 @@ A directory with a `SKILL.md` (name, description, instructions) and supporting f
 _Avoid_: Plugin, command
 
 **Toolchain**:
-A program a Workspace declares in its mise configuration, which the Container finds among the image's preinstalled versions or installs on demand.
+A program a Machine or Repo declares in its mise configuration, which the Container finds among the image's preinstalled versions or installs on demand.
 _Avoid_: Dependency, package (for tools)
 
 **Setup Script**:
-A repo's `.agents/setup.sh`, which the Container runs after installing the Toolchains to prepare the repo (typically installing its dependencies), again only when it changes or the Container starts from the image; one that failed runs again at the next Container start.
+A Repo's `.agents/setup.sh`, which the Container runs to prepare each of the Repo's Workspaces (typically installing its dependencies): after installing the Toolchains, when a Workspace's worktree is made, and again only when it changes or the Container starts from the image; one that failed runs again at the next Container start.
 _Avoid_: Install script, setup hook
 
 **Container-only path**:
-A path in a Workspace that its Container keeps to itself on its own disk, out of the Workspace's files (dependency directories, build output, caches): the built-in ones and those the Workspace's Container settings add.
+A path on a Machine that its Container keeps to itself on its own disk, out of the Machine's files (dependency directories, build output, caches): the built-in ones and those the Machine's Container settings add.
 _Avoid_: Ignored path (computer's term), excluded path
 
 **Snapshot**:
@@ -179,7 +201,7 @@ A saved copy of the Container's disk, taken after the Toolchains are installed a
 _Avoid_: Backup, checkpoint, image (for the saved disk)
 
 **Registry**:
-The single index of Workspaces, Sessions, settings overrides, and notification subscriptions.
+The single index of Machines, Workspaces, Sessions, settings overrides, and notification subscriptions.
 _Avoid_: Catalog, directory
 
 **Notification**:

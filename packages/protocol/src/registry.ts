@@ -1,11 +1,11 @@
-// The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions and Workspaces. They
+// The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions and Machines. They
 // hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import { Settings, SettingsError, WorkspaceSettings } from "@cloudpid/config";
+import { Settings, SettingsError, MachineSettings } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
-import { RepoName, WorkspaceError } from "./repo.ts";
+import { BranchName, MachineError, RepoName, WorkspaceId } from "./repo.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -29,11 +29,11 @@ export const TitleSource = Schema.Literals(["generated", "owner"]);
 
 export type TitleSource = typeof TitleSource.Type;
 
-/** A Workspace slug, which is also its directory and its Workspace DO's name. */
-export const WorkspaceSlug = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
+/** A Machine slug, which is also its directory and its Workspace DO's name. */
+export const MachineSlug = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
 
-/** The Workspace a Session is bound to when it is created without one. */
-export const DEFAULT_WORKSPACE = "default";
+/** The Machine a Session is bound to when it is created without one. */
+export const DEFAULT_MACHINE = "default";
 
 /** A Session as the Registry lists it. Times are epoch milliseconds. */
 export const SessionRecord = Schema.Struct({
@@ -46,10 +46,15 @@ export const SessionRecord = Schema.Struct({
    * (`docs/spec.md` → Client and protocol → Titles).
    */
   titleSource: Schema.NullOr(TitleSource),
-  /** The slug of the Workspace the Session works on; it never changes. */
-  workspace: Schema.String,
-  /** The repo directory below `/workspace` the Session's `cwd` is, or null for the Workspace root; it never changes. */
+  /** The slug of the Machine the Session works on; it never changes. */
+  machine: Schema.String,
+  /** The repo the Session works in, or null for the Machine's root; it never changes. */
   repo: Schema.NullOr(Schema.String),
+  /**
+   * The id of the Workspace of its own the Session works in (a worktree of `repo`: `WorkspaceRecord`), or null for the
+   * repo's main checkout, or the Machine's root without a repo; it never changes.
+   */
+  workspace: Schema.NullOr(Schema.String),
   status: SessionStatus,
   createdAt: Schema.Finite,
   /** When the Session was created or its status last changed. */
@@ -76,25 +81,49 @@ export class SessionActionError extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
-/** The longest Workspace name. */
-export const MAX_WORKSPACE_NAME_LENGTH = 80;
-
-/** A Workspace name: trimmed, then neither empty nor longer than `MAX_WORKSPACE_NAME_LENGTH`. */
-export const WorkspaceName = Schema.Trim.check(
-  Schema.isNonEmpty(),
-  Schema.isMaxLength(MAX_WORKSPACE_NAME_LENGTH),
-);
-
-/** A Workspace as the Registry lists it. */
+/**
+ * A Workspace of its own (ADR-0015): a git worktree of a repo on one branch, at `worktreeDirectory(repo, id)`, made
+ * when a Session first works in it. A repo's main checkout and a Machine's root are Workspaces too, without a record:
+ * a Session names them by its Machine and repo alone.
+ */
 export const WorkspaceRecord = Schema.Struct({
-  /** Its fixed identifier: the Workspace DO's name, and what its Sessions are bound to. */
-  slug: Schema.String,
-  /** The owner's label for it, unique among Workspaces whatever the case. It starts as the slug. */
-  name: Schema.String,
+  /** Eight lowercase hex digits (`WorkspaceId`), also its worktree's directory name. */
+  id: Schema.String,
+  /** The slug of the Machine it is on. */
+  machine: Schema.String,
+  /** The repo it is a worktree of. */
+  repo: Schema.String,
+  /** The branch it works on: `cloudpid/<id>` unless the owner named one. It outlives the worktree. */
+  branch: Schema.String,
+  /** Its worktree: `/workspace/.worktrees/<repo>/<id>`. */
+  directory: Schema.String,
   createdAt: Schema.Finite,
 });
 
 export type WorkspaceRecord = typeof WorkspaceRecord.Type;
+
+/** What `createSession` is told to make the Session's Workspace a new one of the repo's own. */
+export const NEW_WORKSPACE = "new";
+
+/** The longest Machine name. */
+export const MAX_MACHINE_NAME_LENGTH = 80;
+
+/** A Machine name: trimmed, then neither empty nor longer than `MAX_MACHINE_NAME_LENGTH`. */
+export const MachineName = Schema.Trim.check(
+  Schema.isNonEmpty(),
+  Schema.isMaxLength(MAX_MACHINE_NAME_LENGTH),
+);
+
+/** A Machine as the Registry lists it. */
+export const MachineRecord = Schema.Struct({
+  /** Its fixed identifier: the Workspace DO's name, and what its Sessions are bound to. */
+  slug: Schema.String,
+  /** The owner's label for it, unique among Machines whatever the case. It starts as the slug. */
+  name: Schema.String,
+  createdAt: Schema.Finite,
+});
+
+export type MachineRecord = typeof MachineRecord.Type;
 
 /** The settings in force, and the overrides saved over the defaults (`docs/spec.md` → Settings). */
 export const SettingsState = Schema.Struct({
@@ -107,17 +136,17 @@ export const SettingsState = Schema.Struct({
 export type SettingsState = typeof SettingsState.Type;
 
 /**
- * A Workspace's own settings in force (`docs/spec.md` → Container and Toolchains → Size and idle), and the overrides
- * they come from. They apply at the Workspace's next Container launch.
+ * A Machine's own settings in force (`docs/spec.md` → Container and Toolchains → Size and idle), and the overrides
+ * they come from. They apply at the Machine's next Container launch.
  */
-export const WorkspaceSettingsState = Schema.Struct({
-  settings: WorkspaceSettings,
+export const MachineSettingsState = Schema.Struct({
+  settings: MachineSettings,
   overrides: Schema.Json,
   /** Why the saved overrides were only partly used, when some no longer resolve: the rest still apply. */
   problem: Schema.optionalKey(Schema.String),
 });
 
-export type WorkspaceSettingsState = typeof WorkspaceSettingsState.Type;
+export type MachineSettingsState = typeof MachineSettingsState.Type;
 
 /** The hosts of the push services browsers use: Google's FCM, Mozilla's autopush, Apple's and Windows'. */
 const PUSH_SERVICE_HOSTS: ReadonlyArray<(host: string) => boolean> = [
@@ -193,20 +222,34 @@ export const sessionSocketPath = (sessionId: string): string =>
 export class RegistryRpcs extends RpcGroup.make(
   /** Every Session, newest first. */
   Rpc.make("listSessions", { success: Schema.Array(SessionRecord) }),
-  /** Register a new Session, idle, under a fresh UUIDv7, bound to a Workspace (registered when new). */
+  /** Register a new Session, idle, under a fresh UUIDv7, bound to a Machine (registered when new). */
   Rpc.make("createSession", {
     payload: {
       title: Schema.optionalKey(SessionTitle),
-      /** Defaults to `DEFAULT_WORKSPACE`. */
-      workspace: Schema.optionalKey(WorkspaceSlug),
+      /** Defaults to `DEFAULT_MACHINE`. */
+      machine: Schema.optionalKey(MachineSlug),
       /**
-       * A repo already in the Workspace (`listRepos`) that becomes the Session's `cwd`: `/workspace/<repo>`. Without
-       * one the `cwd` is `/workspace`. A repo the Workspace does not hold fails with a `WorkspaceError`.
+       * A repo already in the Machine (`listRepos`) that the Session works in. Without one the `cwd` is `/workspace`.
+       * A repo the Machine does not hold fails with a `MachineError`.
        */
       repo: Schema.optionalKey(RepoName),
+      /**
+       * The Session's Workspace in `repo`: `NEW_WORKSPACE` makes one of its own (a worktree on its own branch, made when
+       * the Session first works in it), and a `WorkspaceId` names one that exists (its Machine and repo are then the
+       * Session's, and `machine` and `repo`, if given, must be them). Without it the Session works in the repo's main
+       * checkout.
+       */
+      workspace: Schema.optionalKey(Schema.Union([Schema.Literal(NEW_WORKSPACE), WorkspaceId])),
+      /**
+       * The branch of a new Workspace: one the repo or its `origin` has is checked out, any other is made from the
+       * remote's default branch. Defaults to `cloudpid/<id>`. Only with `workspace: NEW_WORKSPACE`; a branch another
+       * Workspace of the repo is on fails, since git checks a branch out in one worktree at a time (one the main
+       * checkout is on fails too, when the worktree is made: the Session's first use reports git's message).
+       */
+      branch: Schema.optionalKey(BranchName),
     },
     success: SessionRecord,
-    error: WorkspaceError,
+    error: MachineError,
   }),
   /**
    * Name a Session. The title is the owner's from then on: the title task never replaces it. Fails with a
@@ -235,98 +278,109 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * Delete a Session for good: stop everything it runs, close its browser and its clients' sockets, wipe its storage,
-   * then forget it. The files it wrote in its Workspace stay. A `SessionActionError` leaves it listed, to try again.
+   * then forget it. The files it wrote in its Machine stay. A `SessionActionError` leaves it listed, to try again.
    */
   Rpc.make("deleteSession", {
     payload: { id: Schema.String },
     error: Schema.Union([SessionNotFound, SessionActionError]),
   }),
-  Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
-  /** Register a Workspace by slug; one already registered keeps its record. */
-  Rpc.make("createWorkspace", { payload: { slug: WorkspaceSlug }, success: WorkspaceRecord }),
+  Rpc.make("listMachines", { success: Schema.Array(MachineRecord) }),
+  /** Register a Machine by slug; one already registered keeps its record. */
+  Rpc.make("createMachine", { payload: { slug: MachineSlug }, success: MachineRecord }),
   /**
-   * Name a Workspace. Its slug never changes. Fails with a `WorkspaceError` when the Registry does not list it or another
-   * Workspace has the name, whatever the case.
+   * Name a Machine. Its slug never changes. Fails with a `MachineError` when the Registry does not list it or another
+   * Machine has the name, whatever the case.
    */
-  Rpc.make("renameWorkspace", {
-    payload: { workspace: WorkspaceSlug, name: WorkspaceName },
-    success: WorkspaceRecord,
-    error: WorkspaceError,
+  Rpc.make("renameMachine", {
+    payload: { machine: MachineSlug, name: MachineName },
+    success: MachineRecord,
+    error: MachineError,
   }),
   /**
-   * Delete a Workspace for good: every Session bound to it (archived ones too, each as `deleteSession`), then its files,
-   * Container and settings, then its record. The default Workspace cannot be deleted. A failure partway leaves what is
+   * Delete a Machine for good: every Session bound to it (archived ones too, each as `deleteSession`), then its files,
+   * Container and settings, then its record. The default Machine cannot be deleted. A failure partway leaves what is
    * not yet deleted listed, to try again.
    */
-  Rpc.make("deleteWorkspace", {
-    payload: { workspace: WorkspaceSlug },
-    error: WorkspaceError,
+  Rpc.make("deleteMachine", {
+    payload: { machine: MachineSlug },
+    error: MachineError,
   }),
   /**
-   * Reset a Workspace to a fresh start, keeping its slug, name and Container settings: every Session bound to it
+   * Reset a Machine to a fresh start, keeping its slug, name and Container settings: every Session bound to it
    * (archived ones too, each as `deleteSession`), then its files, Container and saved disk. The next command starts a
-   * Container from the image. The default Workspace can be reset. A failure partway leaves what is not yet deleted, to
+   * Container from the image. The default Machine can be reset. A failure partway leaves what is not yet deleted, to
    * try again.
    */
-  Rpc.make("resetWorkspace", {
-    payload: { workspace: WorkspaceSlug },
-    error: WorkspaceError,
+  Rpc.make("resetMachine", {
+    payload: { machine: MachineSlug },
+    error: MachineError,
   }),
   /**
-   * Stop a Workspace's Container and forget its saved disk, keeping its files and Sessions: the next command starts a
+   * Stop a Machine's Container and forget its saved disk, keeping its files and Sessions: the next command starts a
    * Container from the image and installs the Toolchains again. What only the Container held (dependency directories,
    * build output, caches) is gone, and commands running in it end.
    */
   Rpc.make("restartContainer", {
-    payload: { workspace: WorkspaceSlug },
-    error: WorkspaceError,
+    payload: { machine: MachineSlug },
+    error: MachineError,
   }),
-  /** The repos a Workspace holds: the directories below `/workspace` that are git repositories, by name. */
+  /** The repos a Machine holds: the directories below `/workspace` that are git repositories, by name. */
   Rpc.make("listRepos", {
-    payload: { workspace: WorkspaceSlug },
+    payload: { machine: MachineSlug },
     success: Schema.Array(Schema.String),
-    error: WorkspaceError,
+    error: MachineError,
   }),
   /**
-   * Clone a repo into `/workspace/<name>` of a Workspace (registered when new), on the Container where the network and
+   * Clone a repo into `/workspace/<name>` of a Machine (registered when new), on the Container where the network and
    * the GitHub token are. `source` is `owner/repo` or an `https` URL (`parseRepoSource`); `name` defaults to the repo's
-   * own. Fails with a `WorkspaceError` carrying git's message when the address is not valid, the directory is taken or
+   * own. Fails with a `MachineError` carrying git's message when the address is not valid, the directory is taken or
    * the clone does not finish. Answers the directory name.
    */
   Rpc.make("cloneRepo", {
     payload: {
-      workspace: WorkspaceSlug,
+      machine: MachineSlug,
       source: Schema.String,
       name: Schema.optionalKey(RepoName),
     },
     success: RepoName,
-    error: WorkspaceError,
+    error: MachineError,
   }),
   /**
-   * Remove a repo from a Workspace: every Session bound to it (archived ones too, each as `deleteSession`), then its
+   * Remove a repo from a Machine: every Session bound to it (archived ones too, each as `deleteSession`), then its
    * directory, on the Container, so what only the Container held under it goes too. Work that was not pushed is lost.
-   * Fails with a `WorkspaceError` when the Workspace is not listed, or neither holds the repo nor has a Session bound to
+   * Fails with a `MachineError` when the Machine is not listed, or neither holds the repo nor has a Session bound to
    * it. A failure partway leaves what is not yet deleted, to try again.
    */
   Rpc.make("removeRepo", {
-    payload: { workspace: WorkspaceSlug, repo: RepoName },
-    error: WorkspaceError,
+    payload: { machine: MachineSlug, repo: RepoName },
+    error: MachineError,
   }),
-  /** A Workspace's own settings (Container size, idle time, Container-only paths) in force, and their overrides. */
-  Rpc.make("getWorkspaceSettings", {
-    payload: { workspace: WorkspaceSlug },
-    success: WorkspaceSettingsState,
-    error: WorkspaceError,
+  /** Every Workspace of its own (a worktree), on every Machine, newest first. */
+  Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
+  /**
+   * Remove a Workspace of its own: every Session bound to it (archived ones too, each as `deleteSession`), then its
+   * worktree, on the Container, uncommitted changes and what only the Container held there included, then its record.
+   * Its branch and the commits on it stay in the repo. A failure partway leaves what is not yet deleted, to try again.
+   */
+  Rpc.make("removeWorkspace", {
+    payload: { id: WorkspaceId },
+    error: MachineError,
+  }),
+  /** A Machine's own settings (Container size, idle time, Container-only paths) in force, and their overrides. */
+  Rpc.make("getMachineSettings", {
+    payload: { machine: MachineSlug },
+    success: MachineSettingsState,
+    error: MachineError,
   }),
   /**
-   * Replace a Workspace's saved overrides, a partial of its settings that differs from the defaults. Overrides that do
-   * not resolve fail with a `WorkspaceError` whose message lists each problem, and nothing is saved. The Workspace
+   * Replace a Machine's saved overrides, a partial of its settings that differs from the defaults. Overrides that do
+   * not resolve fail with a `MachineError` whose message lists each problem, and nothing is saved. The Machine
    * applies them at its next Container launch: a running Container keeps the settings it started with.
    */
-  Rpc.make("updateWorkspaceSettings", {
-    payload: { workspace: WorkspaceSlug, overrides: Schema.Json },
-    success: WorkspaceSettingsState,
-    error: WorkspaceError,
+  Rpc.make("updateMachineSettings", {
+    payload: { machine: MachineSlug, overrides: Schema.Json },
+    success: MachineSettingsState,
+    error: MachineError,
   }),
   /** The settings in force and the overrides they come from. */
   Rpc.make("getSettings", { success: SettingsState }),

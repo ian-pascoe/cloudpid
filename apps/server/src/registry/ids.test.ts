@@ -1,7 +1,8 @@
 import { expect, it } from "vitest";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { newSessionId } from "./ids.ts";
+import { isWorkspaceId } from "@cloudpid/protocol";
+import { newSessionId, newWorkspaceId } from "./ids.ts";
 
 const V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -29,3 +30,14 @@ it("mints a different id each time, later ones sorting later", () =>
     expect(second > first).toBe(true);
     // @effect-diagnostics-next-line strictEffectProvide:off
   }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise));
+
+it("mints Workspace ids of eight lowercase hex digits, a different one each time", () =>
+  Effect.gen(function* () {
+    const ids = new Set<string>();
+
+    for (let i = 0; i < 20; i++) ids.add(yield* newWorkspaceId);
+
+    expect(ids.size).toBe(20);
+
+    for (const id of ids) expect(isWorkspaceId(id)).toBe(true);
+  }).pipe(Effect.runPromise));

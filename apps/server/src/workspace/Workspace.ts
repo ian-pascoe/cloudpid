@@ -311,13 +311,13 @@ export class Workspace extends ContainerHost {
     );
   }
 
-  /** The Workspace's own settings in force (Container size, idle time and Container-only paths), for the UI: `getWorkspaceSettings`. */
+  /** The Workspace's own settings in force (Container size, idle time and Container-only paths), for the UI: `getMachineSettings`. */
   containerSettings(): Promise<WorkspaceSettingsAnswer> {
     return this.#settings.read();
   }
 
   /**
-   * Replace the saved overrides of the Workspace's settings: `updateWorkspaceSettings`. Overrides that do not resolve
+   * Replace the saved overrides of the Workspace's settings: `updateMachineSettings`. Overrides that do not resolve
    * are refused and nothing is saved. A Container that runs keeps the settings it launched with.
    */
   updateContainerSettings(overrides: Schema.Json): Promise<WriteAnswer> {
@@ -337,7 +337,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Reset the Workspace to a fresh start (`LifecycleHost.clear`, for `resetWorkspace`): as `destroy`, but its own
+   * Reset the Workspace to a fresh start (`LifecycleHost.clear`, for `resetMachine`): as `destroy`, but its own
    * settings (Container size, idle time and Container-only paths) are put back after the wipe. The caller resets the instance with `reset`.
    */
   async clear(): Promise<void> {
