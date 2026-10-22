@@ -24,9 +24,12 @@ import {
   pendingSetupScripts,
   ROOT_MISE_TOML,
   SETUP_SCRIPT,
+  setupRecordName,
   setupScriptRun,
+  setupScriptRunIfDue,
   setupScriptTimedOut,
   setupRecord,
+  WORKTREES_DIRECTORY,
   PNPM_GLOBAL_CONFIG,
   PNPM_STORE_DIRECTORY_NAME,
   TOOLCHAIN_IGNORE,
@@ -327,6 +330,23 @@ describe("the bootstrap", () => {
     run();
 
     expect(calls()).toContain(`${root}/app: mise install`);
+  });
+
+  it("installs the Toolchains of each Workspace's worktree that declares its own", () => {
+    const { root, run, calls } = sandbox();
+
+    writeFileSync(join(root, "mise.toml"), "[tools]\n");
+    writeFileSync(join(root, "mise.lock"), "");
+    utimesSync(join(root, "mise.toml"), 1000, 1000);
+    mkdirSync(join(root, WORKTREES_DIRECTORY, "app", "1a2b3c4d"), { recursive: true });
+    writeFileSync(join(root, WORKTREES_DIRECTORY, "app", "1a2b3c4d", "mise.toml"), "[tools]\n");
+
+    run();
+
+    expect(calls()).toEqual([
+      `${root}: mise install`,
+      `${root}/${WORKTREES_DIRECTORY}/app/1a2b3c4d: mise install`,
+    ]);
   });
 
   it("writes the base mise.toml, git, gh and the image's other Toolchains in it, where the Workspace has none", () => {
@@ -728,7 +748,7 @@ const setupSandbox = () => {
   mkdirSync(root, { recursive: true });
 
   const repo = (name: string, script?: string) => {
-    const dir = join(root, name);
+    const dir = join(root, ...name.split("/"));
 
     mkdirSync(join(dir, ".agents"), { recursive: true });
 
@@ -742,14 +762,30 @@ const setupSandbox = () => {
       .stdout.split("\n")
       .filter((line) => line !== "");
 
+  const env = { PATH: process.env.PATH ?? "", CLOUDPID_MARK: "from the environment" };
+
   const run = (dir: string, timeoutSeconds?: number) =>
-    spawnSync("bash", ["-c", setupScriptRun(dir, state, timeoutSeconds)], {
+    spawnSync("bash", ["-c", setupScriptRun(dir, state, timeoutSeconds, root)], {
       encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "", CLOUDPID_MARK: "from the environment" },
+      env,
     });
 
-  return { root, state, repo, pending, run };
+  const runIfDue = (dir: string) =>
+    spawnSync("bash", ["-c", setupScriptRunIfDue(dir, state, undefined, root)], {
+      encoding: "utf8",
+      env,
+    });
+
+  return { root, state, repo, pending, run, runIfDue };
 };
+
+describe("a Setup Script's record", () => {
+  it("is named after the repo for its main checkout, and after the repo and the Workspace for a worktree", () => {
+    expect(setupRecordName("/workspace/app")).toBe("app");
+    expect(setupRecordName(`/workspace/${WORKTREES_DIRECTORY}/app/1a2b3c4d`)).toBe("app@1a2b3c4d");
+    expect(setupRecordName("/tmp/root/app", "/tmp/root")).toBe("app");
+  });
+});
 
 describe("the Setup Scripts", () => {
   it("are due for each repo that has one, and only those", () => {
@@ -822,6 +858,40 @@ describe("the Setup Scripts", () => {
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(setupScriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
     expect(pending()).toEqual([dir]);
+  });
+
+  it("are due for each Workspace's worktree that has one, after the repos", () => {
+    const { repo, pending } = setupSandbox();
+    const a = repo("a", "echo a\n");
+    const tree = repo(`${WORKTREES_DIRECTORY}/a/1a2b3c4d`, "echo a\n");
+
+    repo(`${WORKTREES_DIRECTORY}/a/5e6f7a8b`);
+
+    expect(pending()).toEqual([a, tree]);
+  });
+
+  it("are recorded per worktree, apart from the repo's main checkout and from other repos' worktrees", () => {
+    const { repo, pending, run, state } = setupSandbox();
+    const main = repo("a", "true\n");
+    const tree = repo(`${WORKTREES_DIRECTORY}/a/1a2b3c4d`, "true\n");
+    const other = repo(`${WORKTREES_DIRECTORY}/b/1a2b3c4d`, "true\n");
+
+    expect(run(tree).status).toBe(0);
+
+    expect(existsSync(setupRecord("a@1a2b3c4d", state))).toBe(true);
+    expect(existsSync(setupRecord("a", state))).toBe(false);
+    expect(pending()).toEqual([main, other]);
+  });
+
+  it("run when due only, and not at all where there is none", () => {
+    const { repo, runIfDue } = setupSandbox();
+    const dir = repo("a", "echo ran\n");
+    const none = repo("b");
+
+    expect(runIfDue(dir).stdout).toBe("ran\n");
+    expect(runIfDue(dir).stdout).toBe("");
+    expect(runIfDue(none).status).toBe(0);
+    expect(runIfDue(none).stdout).toBe("");
   });
 
   it("are not taken for stopped when they exit with timeout's status on their own", () => {

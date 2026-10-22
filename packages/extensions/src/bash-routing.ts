@@ -10,7 +10,7 @@
 // module), the shell's built-ins, and a `git` over computer's isomorphic-git client. The sets below are that, copied: a
 // workerd test in apps/server runs every name in `WORKER_SHELL_COMMANDS` through the real Worker Shell, so an upgrade
 // that drops one fails there.
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
 import type { BashBackend } from "./coding-tools.ts";
 
 /** Where a command runs and why: the reason names the command that decided it. */
@@ -650,7 +650,12 @@ const gitNeeds = (args: readonly Word[]): string | undefined => {
     : `${label} without ${spec.oneOf?.join(" or ")}: its output is not git's`;
 };
 
-type Context = { readonly functions: ReadonlySet<string>; readonly depth: number };
+type Context = {
+  readonly functions: ReadonlySet<string>;
+  readonly depth: number;
+  /** Whether `git` may run on the Worker Shell at all: not in a linked worktree (`inLinkedWorktree`). */
+  readonly gitOnWorker: boolean;
+};
 
 /** The first of `words` (a command with its arguments) that the Worker Shell cannot run; undefined if none. */
 const commandNeeds = (words: readonly Word[], context: Context): string | undefined => {
@@ -668,7 +673,9 @@ const commandNeeds = (words: readonly Word[], context: Context): string | undefi
 
   switch (name) {
     case "git":
-      return gitNeeds(args);
+      return context.gitOnWorker
+        ? gitNeeds(args)
+        : "git in a Workspace's worktree runs on the Container: the Worker Shell's git does not follow a linked worktree";
 
     case "source":
     case ".":
@@ -827,8 +834,8 @@ const scriptNeeds = (source: string, context: Context): string | undefined => {
   if (parsed.unreadable !== undefined) return parsed.unreadable;
 
   const inner = {
+    ...context,
     functions: new Set([...context.functions, ...parsed.functions]),
-    depth: context.depth,
   };
 
   for (const words of parsed.commands) {
@@ -840,12 +847,36 @@ const scriptNeeds = (source: string, context: Context): string | undefined => {
   return undefined;
 };
 
+/** How a command is routed besides what it runs. */
+export type RouteOptions = {
+  /** Whether the Worker Shell's git may run it: false in a Workspace's linked worktree (`inLinkedWorktree`). */
+  readonly gitOnWorker?: boolean;
+};
+
+/**
+ * Where a Workspace's own worktree lives: `/workspace/.worktrees/<repo>/<id>` (`worktreeDirectory` in
+ * `@cloudpid/protocol`).
+ */
+const LINKED_WORKTREE = /(^|[\s/'"=])\.worktrees\//;
+
+/**
+ * Whether a command run in `cwd` works in a Workspace's linked worktree, or names one. Its `.git` is a file that points
+ * into the main checkout's `.git/worktrees`, with the objects and refs in the main checkout (`commondir`), which the
+ * Worker Shell's git (isomorphic-git) does not follow, so git there runs on the Container (ADR-0015).
+ */
+export const inLinkedWorktree = (cwd: string, command: string): boolean =>
+  LINKED_WORKTREE.test(`${cwd}/`) || LINKED_WORKTREE.test(command);
+
 /**
  * Where `command` runs: the Worker Shell when every command in it is one the Worker Shell runs, and the Container
  * otherwise, or when it is not understood.
  */
-export const routeCommand = (command: string): BashRoute => {
-  const needs = scriptNeeds(command, { functions: new Set(), depth: 0 });
+export const routeCommand = (command: string, options: RouteOptions = {}): BashRoute => {
+  const needs = scriptNeeds(command, {
+    functions: new Set(),
+    depth: 0,
+    gitOnWorker: options.gitOnWorker ?? true,
+  });
 
   return needs === undefined
     ? { backend: "worker", reason: "every command in it runs on the Worker Shell" }
