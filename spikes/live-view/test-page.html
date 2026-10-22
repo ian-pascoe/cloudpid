@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spike test page</title>
+    <style>
+      body {
+        font:
+          16px/1.4 system-ui,
+          sans-serif;
+        margin: 12px;
+      }
+      label {
+        display: block;
+        margin: 6px 0;
+      }
+      input {
+        font-size: 16px;
+        width: 220px;
+      }
+      #editable {
+        border: 1px solid #888;
+        padding: 6px;
+        min-height: 40px;
+        margin: 8px 0;
+      }
+      .row > * {
+        display: inline-block;
+        margin: 6px 6px 6px 0;
+        padding: 8px;
+        border: 1px solid #36c;
+      }
+      #tall {
+        height: 3000px;
+        background: linear-gradient(#fff, #9cf);
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="which">Test page</h1>
+    <form id="form">
+      <label>text <input id="text" type="text" /></label>
+      <label>email <input id="email" type="email" /></label>
+      <label>password <input id="password" type="password" /></label>
+      <label>number <input id="number" type="number" /></label>
+      <button id="submit">Submit</button>
+    </form>
+    <div id="editable" contenteditable="true">Editable</div>
+    <div class="row">
+      <button
+        id="popup-btn"
+        onclick="window.open('/popup?kind=windowopen', 'pop', 'popup,width=400,height=600')"
+      >
+        window.open pop-up
+      </button>
+      <button
+        id="noopener-open"
+        onclick="window.open('/popup?kind=open-noopener', '_blank', 'noopener')"
+      >
+        window.open noopener
+      </button>
+      <a id="blank-link" href="/popup?kind=blank" target="_blank">target=_blank link</a>
+      <a id="noopener-link" href="/popup?kind=noopener" target="_blank" rel="noopener"
+        >rel=noopener link</a
+      >
+    </div>
+    <p id="selectable">
+      Selectable text: The quick brown fox jumps over the lazy dog. Pack my box with five dozen
+      liquor jugs.
+    </p>
+    <p id="status"></p>
+    <div id="tall">tall</div>
+    <script>
+      const which = new URLSearchParams(location.search).get("which") ?? "?";
+      document.getElementById("which").textContent = `Test page (${which})`;
+      document.title = `Spike test page (${which})`;
+      window.__submits = 0;
+      window.__events = [];
+      const record = (event) => {
+        const entry = { type: event.type, t: Math.round(performance.now()) };
+        if (event.target && event.target.id) entry.target = event.target.id;
+        if ("pointerType" in event) entry.pointerType = event.pointerType;
+        if (event.key !== undefined) entry.key = event.key;
+        if (event.inputType !== undefined) entry.inputType = event.inputType;
+        window.__events.push(entry);
+        if (window.__events.length > 300) window.__events.shift();
+      };
+      for (const type of [
+        "touchstart",
+        "touchend",
+        "touchcancel",
+        "pointerdown",
+        "pointerup",
+        "click",
+        "contextmenu",
+        "focusin",
+        "keydown",
+        "keyup",
+        "input",
+        "beforeinput",
+      ]) {
+        document.addEventListener(type, record, true);
+      }
+      let lastScroll = 0;
+      document.addEventListener("scroll", (event) => {
+        if (performance.now() - lastScroll > 200) {
+          lastScroll = performance.now();
+          record(event);
+        }
+      });
+      document.addEventListener("selectionchange", () => {
+        document.getElementById("status").textContent = `selection: ${getSelection().toString()}`;
+      });
+      document.getElementById("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        window.__submits++;
+        record(event);
+      });
+    </script>
+  </body>
+</html>

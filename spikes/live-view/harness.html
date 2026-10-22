@@ -1,0 +1,1775 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="/manifest.webmanifest?t=__TOKEN__" crossorigin="use-credentials" />
+    <link rel="apple-touch-icon" href="/icon.svg?t=__TOKEN__" />
+    <title>Live View spike (#152)</title>
+    <style>
+      body {
+        font:
+          14px/1.35 system-ui,
+          sans-serif;
+        margin: 0;
+        padding: 8px;
+        padding-top: max(8px, env(safe-area-inset-top));
+        background: #111;
+        color: #eee;
+      }
+      button {
+        font: inherit;
+        padding: 8px 10px;
+        margin: 3px 3px 3px 0;
+        border-radius: 6px;
+        border: 1px solid #555;
+        background: #2a2a2a;
+        color: #eee;
+      }
+      button.phone {
+        border-color: #f38020;
+      }
+      h2 {
+        font-size: 15px;
+        margin: 10px 0 4px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      td {
+        border-top: 1px solid #333;
+        padding: 3px 4px;
+        vertical-align: top;
+        word-break: break-word;
+      }
+      td.pass {
+        color: #6d6;
+      }
+      td.fail {
+        color: #f66;
+      }
+      td.info {
+        color: #fc6;
+      }
+      #log {
+        font:
+          11px/1.3 ui-monospace,
+          monospace;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 40vh;
+        overflow: auto;
+        background: #000;
+        padding: 4px;
+      }
+      #viewer {
+        position: relative;
+        display: none;
+        margin-top: 6px;
+      }
+      #screen {
+        display: block;
+        width: 100%;
+        touch-action: none;
+        background: #333;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+      }
+      #kbd {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        font-size: 16px;
+        pointer-events: none;
+        resize: none;
+        border: 0;
+        padding: 0;
+      }
+      #kbdstate,
+      #bgtable {
+        font:
+          12px ui-monospace,
+          monospace;
+        white-space: pre-wrap;
+      }
+      .small {
+        font-size: 12px;
+        color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="env" class="small"></div>
+    <div>
+      <button id="setup">Setup / reuse session</button>
+      <button id="fresh">New session</button>
+      <span id="info" class="small"></span>
+    </div>
+
+    <h2>Desktop checks</h2>
+    <div>
+      <button data-check="10">10 viewport</button>
+      <button data-check="1">1 connect</button>
+      <button data-check="8">8 handoff state</button>
+      <button data-check="2">2 target in path</button>
+      <button data-check="4">4 commands</button>
+      <button data-check="5">5 metrics</button>
+      <button data-check="6">6 windows</button>
+      <button data-check="7">7 handoffComplete</button>
+      <button data-check="3">3 expiry (65 s)</button>
+      <button id="runall">Run all</button>
+      <button id="keep5">5k set override, keep open</button>
+    </div>
+
+    <h2>iPhone</h2>
+    <div>
+      <button class="phone" data-check="1">1 connect</button>
+      <button class="phone" id="bgstart">9 background test</button>
+      <button class="phone" id="vopen">11/12 open viewer</button>
+      <button class="phone" id="vclose">close viewer</button>
+    </div>
+    <div id="bgtable"></div>
+
+    <div id="viewer">
+      <canvas id="screen"></canvas>
+      <textarea
+        id="kbd"
+        autocomplete="off"
+        autocorrect="off"
+        spellcheck="false"
+        aria-hidden="true"
+      ></textarea>
+      <div>
+        <button class="phone" id="vcopy">Copy (11)</button>
+        <button id="vsel">Read tab selection</button>
+        <button class="phone" id="vkbd">⌨︎ force</button>
+        <button class="phone" id="vblur">Blur (12)</button>
+        <button class="phone" id="vmode">inputmode: text</button>
+        <button class="phone" id="vhint">enterkeyhint: enter</button>
+        <button class="phone" id="vcap">autocapitalize: sentences</button>
+        <button id="vscroll">scroll tab to top</button>
+        <button class="phone" id="vlp">long press: touch events</button>
+      </div>
+      <div id="kbdstate"></div>
+      <textarea
+        id="pastecheck"
+        rows="2"
+        style="width: 95%; font-size: 16px"
+        placeholder="11: after Copy, long-press here and Paste to verify"
+      ></textarea>
+    </div>
+
+    <h2>Results</h2>
+    <table id="results"></table>
+    <h2>Log <button id="clearlog">clear screen</button></h2>
+    <div id="log"></div>
+
+    <script>
+      const TOKEN = "__TOKEN__";
+      const $ = (id) => document.getElementById(id);
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const withToken = (path) =>
+        `${path}${path.includes("?") ? "&" : "?"}t=${encodeURIComponent(TOKEN)}`;
+      const redact = (text) => String(text).replace(/jwt=[^&"'\s\\]+/g, "jwt=<redacted>");
+      const isTouch =
+        navigator.maxTouchPoints > 0 &&
+        (matchMedia("(pointer: coarse)").matches ||
+          /iPhone|iPad|Android/.test(navigator.userAgent));
+      const ENV = {
+        ua: navigator.userAgent,
+        standalone:
+          navigator.standalone === true || matchMedia("(display-mode: standalone)").matches,
+        origin: location.origin,
+        touch: navigator.maxTouchPoints,
+        coarse: matchMedia("(pointer: coarse)").matches,
+        dpr: devicePixelRatio,
+        inner: `${innerWidth}x${innerHeight}`,
+      };
+      const device = ENV.standalone ? "pwa" : isTouch ? "phone" : "desktop";
+      $("env").textContent = `${device} · ${ENV.ua}`;
+
+      // ---- log: on screen and to /api/log ------------------------------------------------------
+      let outbox = [];
+      const logEl = $("log");
+      function log(src, msg) {
+        const text = redact(typeof msg === "string" ? msg : JSON.stringify(msg));
+        const entry = { ts: Date.now(), src: `${device}:${src}`, msg: text };
+        outbox.push(entry);
+        const line = document.createElement("div");
+        line.textContent = `${new Date(entry.ts).toISOString().slice(11, 23)} ${entry.src} ${text.slice(0, 600)}`;
+        logEl.prepend(line);
+        while (logEl.childNodes.length > 400) logEl.lastChild.remove();
+      }
+      async function flush() {
+        if (outbox.length === 0) return;
+        const entries = outbox;
+        outbox = [];
+        try {
+          const response = await fetch(withToken("/api/log"), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ entries }),
+            keepalive: entries.length < 50,
+          });
+          if (!response.ok) throw new Error(String(response.status));
+        } catch {
+          outbox = entries.concat(outbox);
+        }
+      }
+      setInterval(flush, 1000);
+      $("clearlog").onclick = () => (logEl.textContent = "");
+      log("env", ENV);
+
+      async function api(path, body) {
+        const init =
+          body === undefined
+            ? {}
+            : {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              };
+        const response = await fetch(withToken(`/api/${path}`), init);
+        const value = await response.json();
+        if (!response.ok) throw new Error(value.error ?? String(response.status));
+        return value;
+      }
+
+      // ---- results ------------------------------------------------------------------------------
+      const rows = new Map();
+      function result(name, status, summary, data) {
+        let row = rows.get(name);
+        if (row === undefined) {
+          row = document.createElement("tr");
+          row.innerHTML = "<td></td><td></td><td></td>";
+          $("results").append(row);
+          rows.set(name, row);
+        }
+        row.cells[0].textContent = name;
+        row.cells[1].textContent = status;
+        row.cells[1].className = status;
+        row.cells[2].textContent = summary;
+        if (status !== "running")
+          log(
+            "RESULT",
+            `${name} [${status}] ${summary}${data === undefined ? "" : ` ${JSON.stringify(data)}`}`,
+          );
+      }
+
+      // ---- CDP over a Live View link ---------------------------------------------------------------
+      let frameLogEvery = 50;
+      class Cdp {
+        constructor(label, wss) {
+          this.label = label;
+          this.wss = wss;
+          this.nextId = 1;
+          this.pending = new Map();
+          this.listeners = new Map();
+          this.closed = null;
+          this.frames = 0;
+        }
+        open(timeoutMs = 15000) {
+          return new Promise((resolve, reject) => {
+            const started = performance.now();
+            let ws;
+            try {
+              ws = new WebSocket(`wss://${this.wss}`);
+            } catch (error) {
+              reject(error);
+              return;
+            }
+            this.ws = ws;
+            const timer = setTimeout(() => {
+              log(this.label, "open timed out");
+              reject(new Error("open timed out"));
+              ws.close();
+            }, timeoutMs);
+            ws.onopen = () => {
+              clearTimeout(timer);
+              this.openedAt = Date.now();
+              log(
+                this.label,
+                `open (${Math.round(performance.now() - started)} ms) protocol="${ws.protocol}" extensions="${ws.extensions}"`,
+              );
+              resolve(this);
+            };
+            ws.onerror = () => log(this.label, "error event");
+            ws.onclose = (event) => {
+              clearTimeout(timer);
+              this.closed = {
+                code: event.code,
+                reason: event.reason,
+                wasClean: event.wasClean,
+                at: Date.now(),
+              };
+              log(
+                this.label,
+                `close code=${event.code} reason="${event.reason}" clean=${event.wasClean}${this.openedAt ? ` after ${Date.now() - this.openedAt} ms open` : " (never opened)"}`,
+              );
+              for (const [, pending] of this.pending)
+                pending.reject(new Error(`socket closed (${event.code})`));
+              this.pending.clear();
+              reject(new Error(`closed before open (code ${event.code})`));
+              this.emit("__close", this.closed);
+            };
+            ws.onmessage = (event) => {
+              const message = JSON.parse(event.data);
+              if (message.method === "Page.screencastFrame") {
+                this.frames++;
+                if (this.frames <= 3 || this.frames % frameLogEvery === 0) {
+                  const { data, ...rest } = message.params;
+                  log(
+                    this.label,
+                    `recv Page.screencastFrame #${this.frames} ${JSON.stringify({ ...rest, bytes: data.length })}`,
+                  );
+                }
+              } else {
+                log(this.label, `recv ${event.data.slice(0, 3000)}`);
+              }
+              if (message.id !== undefined) {
+                const pending = this.pending.get(message.id);
+                if (pending === undefined) return;
+                this.pending.delete(message.id);
+                if (message.error)
+                  pending.reject(new Error(`${pending.method}: ${JSON.stringify(message.error)}`));
+                else pending.resolve(message.result);
+              } else {
+                this.emit(message.method, message.params);
+              }
+            };
+          });
+        }
+        get alive() {
+          return this.ws !== undefined && this.ws.readyState === WebSocket.OPEN;
+        }
+        send(method, params = {}, timeoutMs = 15000, quiet = false) {
+          if (!this.alive)
+            return Promise.reject(
+              new Error(`${method}: socket not open (readyState ${this.ws?.readyState})`),
+            );
+          const id = this.nextId++;
+          const payload = JSON.stringify({ id, method, params });
+          if (!quiet) log(this.label, `send ${payload.slice(0, 1500)}`);
+          this.ws.send(payload);
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              this.pending.delete(id);
+              reject(new Error(`${method}: no answer in ${timeoutMs} ms`));
+            }, timeoutMs);
+            this.pending.set(id, {
+              method,
+              resolve: (value) => {
+                clearTimeout(timer);
+                resolve(value);
+              },
+              reject: (error) => {
+                clearTimeout(timer);
+                reject(error);
+              },
+            });
+          });
+        }
+        on(method, listener) {
+          const set = this.listeners.get(method) ?? new Set();
+          set.add(listener);
+          this.listeners.set(method, set);
+          return () => set.delete(listener);
+        }
+        once(method, timeoutMs) {
+          return new Promise((resolve, reject) => {
+            const off = this.on(method, (params) => {
+              off();
+              clearTimeout(timer);
+              resolve(params);
+            });
+            const timer = setTimeout(() => {
+              off();
+              reject(new Error(`no ${method} in ${timeoutMs} ms`));
+            }, timeoutMs);
+          });
+        }
+        emit(method, params) {
+          for (const listener of this.listeners.get(method) ?? []) listener(params);
+        }
+        close() {
+          this.ws?.close(1000, "harness close");
+        }
+        async closedNow(timeoutMs = 5000) {
+          if (this.closed) return this.closed;
+          this.close();
+          const deadline = Date.now() + timeoutMs;
+          while (!this.closed && Date.now() < deadline) await sleep(50);
+          return this.closed;
+        }
+      }
+
+      let info;
+      async function ensureSetup(fresh = false) {
+        if (info !== undefined && !fresh) return info;
+        info = await api("setup", { fresh });
+        $("info").textContent =
+          `browser ${info.sessionId} · tab ${info.tabTargetId} · other ${info.otherTargetId}`;
+        log("setup", info);
+        return info;
+      }
+      $("setup").onclick = () =>
+        ((info = undefined), ensureSetup(false)).catch((error) => log("setup", `ERROR ${error}`));
+      $("fresh").onclick = () => ensureSetup(true).catch((error) => log("setup", `ERROR ${error}`));
+
+      async function mint(options = {}) {
+        await ensureSetup();
+        const minted = await api("mint", options);
+        log(
+          "mint",
+          `${JSON.stringify(options)} -> keys ${minted.replyKeys} wss ${redact(minted.wss)}`,
+        );
+        return minted;
+      }
+      async function connect(label, options = {}) {
+        const { wss } = await mint(options);
+        const cdp = new Cdp(label, wss);
+        await cdp.open();
+        return cdp;
+      }
+      async function evalIn(cdp, expression) {
+        const reply = await cdp.send("Runtime.evaluate", {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        });
+        if (reply.exceptionDetails)
+          throw new Error(`evaluate: ${JSON.stringify(reply.exceptionDetails).slice(0, 300)}`);
+        return reply.result.value;
+      }
+      async function agentEval(expression, target) {
+        await ensureSetup();
+        const { result: reply } = await api("cdp", {
+          method: "Runtime.evaluate",
+          params: { expression, returnByValue: true, awaitPromise: true },
+          target: target ?? info.tabTargetId,
+        });
+        return reply.result.value;
+      }
+      const METRICS = `({ w: innerWidth, h: innerHeight, dpr: devicePixelRatio, ow: outerWidth, oh: outerHeight, sw: screen.width, sh: screen.height, vv: window.visualViewport ? [visualViewport.width, visualViewport.height, visualViewport.scale] : null, touchPoints: navigator.maxTouchPoints, coarse: matchMedia("(pointer: coarse)").matches, ontouchstart: "ontouchstart" in window, mobileUA: /Mobile/.test(navigator.userAgent) })`;
+      const short = (m) => (m ? `${m.w}x${m.h}@${m.dpr}` : String(m));
+
+      // Start a screencast and wait for its first frame. A background tab sends none
+      // (Page.screencastVisibilityChanged {visible: false}): then bring it to the front and wait again.
+      async function screencast(cdp, params, r) {
+        const visibility = [];
+        cdp.on("Page.screencastVisibilityChanged", (p) => visibility.push(p.visible));
+        let first = cdp.once("Page.screencastFrame", 3000);
+        await cdp.send("Page.startScreencast", params);
+        try {
+          const frame = await first;
+          r.screencastStart = { frameWithoutBringToFront: true, visibility };
+          return frame;
+        } catch {
+          r.screencastStart = {
+            frameWithoutBringToFront: false,
+            visibilityEvents: [...visibility],
+            visibilityState: await evalIn(
+              cdp,
+              "document.visibilityState + '/' + document.hasFocus()",
+            ),
+          };
+          first = cdp.once("Page.screencastFrame", 10000);
+          await cdp.send("Page.bringToFront");
+          const frame = await first;
+          r.screencastStart.afterBringToFront = {
+            frame: true,
+            visibilityEvents: [...visibility],
+            visibilityState: await evalIn(
+              cdp,
+              "document.visibilityState + '/' + document.hasFocus()",
+            ),
+          };
+          return frame;
+        }
+      }
+
+      async function centerOf(cdp, selector) {
+        return evalIn(
+          cdp,
+          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: Math.round(r.left + Math.min(r.width / 2, 40)), y: Math.round(r.top + r.height / 2) }; })()`,
+        );
+      }
+      async function tap(cdp, { x, y }) {
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x, y, id: 1 }],
+        });
+        await sleep(60);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      }
+      async function click(cdp, { x, y }) {
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+        await cdp.send("Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x,
+          y,
+          button: "left",
+          clickCount: 1,
+        });
+        await cdp.send("Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x,
+          y,
+          button: "left",
+          clickCount: 1,
+        });
+      }
+      async function key(cdp, { key, code, keyCode, text }) {
+        await cdp.send("Input.dispatchKeyEvent", {
+          type: text ? "keyDown" : "rawKeyDown",
+          key,
+          code,
+          windowsVirtualKeyCode: keyCode,
+          nativeVirtualKeyCode: keyCode,
+          ...(text ? { text, unmodifiedText: text } : {}),
+        });
+        await cdp.send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key,
+          code,
+          windowsVirtualKeyCode: keyCode,
+          nativeVirtualKeyCode: keyCode,
+        });
+      }
+      async function step(results, name, fn) {
+        try {
+          results[name] = await fn();
+        } catch (error) {
+          results[name] = `ERROR ${error.message}`;
+        }
+        log("step", `${name}: ${JSON.stringify(results[name])}`);
+        return results[name];
+      }
+
+      // ---- checks -------------------------------------------------------------------------------
+      const checks = {};
+
+      checks[1] = async () => {
+        const cdp = await connect("c1");
+        const session = await cdp.send("Cloudflare.getSessionId");
+        const href = await evalIn(cdp, "location.href");
+        await cdp.closedNow();
+        return [
+          "pass",
+          `connected from ${location.origin} (${device}${ENV.standalone ? ", standalone" : ""}); getSessionId answered; tab is ${href}`,
+          { session, env: ENV },
+        ];
+      };
+
+      checks[2] = async () => {
+        await ensureSetup();
+        const r = {};
+        const where = async (label, wss) => {
+          const cdp = new Cdp(label, wss);
+          try {
+            await cdp.open();
+          } catch (error) {
+            return `refused: ${error.message}`;
+          }
+          try {
+            return `connected to ${await evalIn(cdp, "location.search")}`;
+          } catch (error) {
+            return `open, but ${error.message}`;
+          } finally {
+            await cdp.closedNow();
+          }
+        };
+        const tabLink = await mint();
+        r.tabLinkPathHasTab = tabLink.wss.includes(`/page/${info.tabTargetId}`);
+        r.unchanged = await where("c2-tab", tabLink.wss);
+        r.swappedToOther = await where(
+          "c2-swap",
+          tabLink.wss.replace(`/page/${info.tabTargetId}`, `/page/${info.otherTargetId}`),
+        );
+        r.swappedToBogus = await where(
+          "c2-bogus",
+          tabLink.wss.replace(
+            `/page/${info.tabTargetId}`,
+            "/page/0123456789ABCDEF0123456789ABCDEF",
+          ),
+        );
+        const otherViaTab = await mint({ targetId: info.otherTargetId });
+        r.mintOtherViaTabSessionPathHasOther = otherViaTab.wss.includes(
+          `/page/${info.otherTargetId}`,
+        );
+        r.mintOtherViaTabSession = await where("c2-other-tab", otherViaTab.wss);
+        const otherViaBrowser = await mint({ targetId: info.otherTargetId, via: "browser" });
+        r.mintOtherViaBrowserPathHasOther = otherViaBrowser.wss.includes(
+          `/page/${info.otherTargetId}`,
+        );
+        r.mintOtherViaBrowser = await where("c2-other-browser", otherViaBrowser.wss);
+        const bound = !r.swappedToOther.includes("which=other");
+        return [
+          bound ? "pass" : "info",
+          bound
+            ? "the target in the path is bound to the link"
+            : "swapping the target id in the path reaches the other page",
+          r,
+        ];
+      };
+
+      checks[3] = async (waitMs = 65000) => {
+        const { wss } = await mint();
+        const minted = Date.now();
+        const a = new Cdp("c3a", wss);
+        await a.open();
+        const r = {};
+        const b = new Cdp("c3b", wss);
+        try {
+          await b.open();
+          r.secondWithin60s = `accepted, eval=${await evalIn(b, "1+1")}`;
+        } catch (error) {
+          r.secondWithin60s = `refused: ${error.message}`;
+        }
+        await b.closedNow();
+        while (Date.now() - minted < waitMs) {
+          result(
+            "3 expiry",
+            "running",
+            `waiting ${Math.round((waitMs - (Date.now() - minted)) / 1000)} s`,
+          );
+          await sleep(1000);
+        }
+        r.openAfterExpiry = await evalIn(a, "1+1").then(
+          (value) =>
+            `answers (${value}) ${Math.round((Date.now() - a.openedAt) / 1000)} s after open`,
+          (error) => `dead: ${error.message}`,
+        );
+        const c = new Cdp("c3c", wss);
+        try {
+          await c.open();
+          r.newAfterExpiry = `accepted, eval=${await evalIn(c, "1+1")}`;
+        } catch (error) {
+          r.newAfterExpiry = `refused: ${error.message}`;
+        }
+        await c.closedNow();
+        await a.closedNow();
+        const ok =
+          r.openAfterExpiry.startsWith("answers") && r.newAfterExpiry.startsWith("refused");
+        return [
+          ok ? "pass" : "fail",
+          `open conn: ${r.openAfterExpiry}; new conn after ${Math.round(waitMs / 1000)} s: ${r.newAfterExpiry}; 2nd conn in window: ${r.secondWithin60s}`,
+          r,
+        ];
+      };
+
+      checks[4] = async () => {
+        const cdp = await connect("c4");
+        const r = {};
+        await step(r, "Page.enable", () => cdp.send("Page.enable"));
+        await step(r, "Runtime.enable", () => cdp.send("Runtime.enable"));
+        cdp.on("Page.screencastFrame", (p) =>
+          cdp
+            .send("Page.screencastFrameAck", { sessionId: p.sessionId }, 5000, true)
+            .catch(() => {}),
+        );
+        await step(r, "firstFrame", async () => {
+          const frame = await screencast(
+            cdp,
+            { format: "jpeg", quality: 60, maxWidth: 1024, maxHeight: 1024 },
+            r,
+          );
+          return { metadata: frame.metadata, bytes: frame.data.length };
+        });
+        await sleep(1500);
+        r.framesAfter1500ms = cdp.frames;
+        await step(r, "metricsBefore", () => evalIn(cdp, METRICS));
+        await step(r, "setDeviceMetricsOverride", () =>
+          cdp.send("Emulation.setDeviceMetricsOverride", {
+            width: 390,
+            height: 844,
+            deviceScaleFactor: 3,
+            mobile: true,
+          }),
+        );
+        await step(r, "metricsAfterOverride", () => evalIn(cdp, METRICS));
+        await step(r, "setTouchEmulationEnabled", () =>
+          cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }),
+        );
+        await step(r, "metricsAfterTouch", () => evalIn(cdp, METRICS));
+        await evalIn(
+          cdp,
+          "window.__events = []; document.getElementById('form').reset(); document.getElementById('editable').innerText = 'Editable'; document.activeElement && document.activeElement.blur(); scrollTo(0, 0); true",
+        );
+        await step(r, "tapTextFocus", async () => {
+          await tap(cdp, await centerOf(cdp, "#text"));
+          await sleep(300);
+          return evalIn(cdp, "document.activeElement && document.activeElement.id");
+        });
+        await step(r, "insertText", async () => {
+          await cdp.send("Input.insertText", { text: "héllo 👋" });
+          return evalIn(cdp, "document.getElementById('text').value");
+        });
+        await step(r, "keyX_Backspace3", async () => {
+          await key(cdp, { key: "x", code: "KeyX", keyCode: 88, text: "x" });
+          for (let i = 0; i < 3; i++)
+            await key(cdp, { key: "Backspace", code: "Backspace", keyCode: 8 });
+          return evalIn(cdp, "document.getElementById('text').value");
+        });
+        await step(r, "enterSubmits", async () => {
+          await key(cdp, { key: "Enter", code: "Enter", keyCode: 13, text: "\r" });
+          await sleep(200);
+          return evalIn(cdp, "window.__submits");
+        });
+        await step(r, "email", async () => {
+          await tap(cdp, await centerOf(cdp, "#email"));
+          await sleep(200);
+          await cdp.send("Input.insertText", { text: "a@b.co" });
+          return evalIn(cdp, "[document.activeElement.id, document.getElementById('email').value]");
+        });
+        await step(r, "number", async () => {
+          await tap(cdp, await centerOf(cdp, "#number"));
+          await sleep(200);
+          await cdp.send("Input.insertText", { text: "42" });
+          return evalIn(
+            cdp,
+            "[document.activeElement.id, document.getElementById('number').value]",
+          );
+        });
+        await step(r, "contenteditable", async () => {
+          await tap(cdp, await centerOf(cdp, "#editable"));
+          await sleep(200);
+          await key(cdp, { key: "End", code: "End", keyCode: 35 });
+          await cdp.send("Input.insertText", { text: " +ce" });
+          return evalIn(
+            cdp,
+            "[document.activeElement.id, document.getElementById('editable').innerText]",
+          );
+        });
+        await step(r, "touchDragScroll", async () => {
+          await evalIn(cdp, "document.activeElement.blur(); scrollTo(0, 0); true");
+          await sleep(300);
+          const before = await evalIn(cdp, "scrollY");
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchStart",
+            touchPoints: [{ x: 200, y: 700, id: 1 }],
+          });
+          for (let i = 1; i <= 12; i++) {
+            await cdp.send(
+              "Input.dispatchTouchEvent",
+              { type: "touchMove", touchPoints: [{ x: 200, y: 700 - i * 40, id: 1 }] },
+              15000,
+              i > 2,
+            );
+            await sleep(16);
+          }
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+          await sleep(800);
+          return { before, after: await evalIn(cdp, "scrollY") };
+        });
+        await step(r, "touchLongPressSelects", async () => {
+          await evalIn(cdp, "getSelection().removeAllRanges(); true");
+          const at = await centerOf(cdp, "#selectable");
+          await sleep(200);
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchStart",
+            touchPoints: [{ ...at, id: 1 }],
+          });
+          await sleep(1200);
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+          await sleep(400);
+          return evalIn(cdp, "getSelection().toString()");
+        });
+        await step(r, "synthesizeTapGesture1200msSelects", async () => {
+          await evalIn(cdp, "getSelection().removeAllRanges(); true");
+          const at = await centerOf(cdp, "#selectable");
+          await sleep(200);
+          await cdp.send("Input.synthesizeTapGesture", {
+            ...at,
+            duration: 1200,
+            tapCount: 1,
+            gestureSourceType: "touch",
+          });
+          await sleep(400);
+          return evalIn(cdp, "getSelection().toString()");
+        });
+        await step(r, "mouseDoubleClickSelects", async () => {
+          await evalIn(cdp, "getSelection().removeAllRanges(); true");
+          const { x, y } = await centerOf(cdp, "#selectable");
+          const send = (type, clickCount) =>
+            cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount });
+          await send("mousePressed", 1);
+          await send("mouseReleased", 1);
+          await send("mousePressed", 2);
+          await send("mouseReleased", 2);
+          await sleep(300);
+          return evalIn(cdp, "getSelection().toString()");
+        });
+        await step(r, "selectionInFieldViaEval", () =>
+          evalIn(
+            cdp,
+            "(() => { const el = document.getElementById('text'); el.focus(); el.setSelectionRange(0, 3); const a = document.activeElement; return a.value.slice(a.selectionStart, a.selectionEnd); })()",
+          ),
+        );
+        await step(r, "pageEvents", () =>
+          evalIn(
+            cdp,
+            "window.__events.map((e) => [e.type, e.target, e.pointerType, e.key, e.inputType].filter((x) => x !== undefined).join(':')).join(' ')",
+          ),
+        );
+        await step(r, "clearDeviceMetricsOverride", () =>
+          cdp.send("Emulation.clearDeviceMetricsOverride"),
+        );
+        await step(r, "touchEmulationOff", () =>
+          cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }),
+        );
+        await step(r, "metricsAfterClear", () => evalIn(cdp, METRICS));
+        await step(r, "stopScreencast", () => cdp.send("Page.stopScreencast"));
+        await cdp.closedNow();
+        const errors = Object.entries(r).filter(
+          ([, value]) => typeof value === "string" && value.startsWith("ERROR"),
+        );
+        return [
+          errors.length === 0 ? "pass" : "fail",
+          `errors: ${errors.map(([k]) => k).join(", ") || "none"}; tap focus=${r.tapTextFocus}; text=${JSON.stringify(r.keyX_Backspace3)}; scroll ${JSON.stringify(r.touchDragScroll)}; long press selection=${JSON.stringify(r.touchLongPressSelects)}`,
+          r,
+        ];
+      };
+
+      checks[5] = async () => {
+        const r = {};
+        const agent = () => agentEval(METRICS).then(short);
+        r.agentBaseline = await agent();
+        const a = await connect("c5a");
+        await a.send("Emulation.setDeviceMetricsOverride", {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 3,
+          mobile: true,
+        });
+        r.agentWhileASet390 = await agent();
+        await a.closedNow();
+        await sleep(1500);
+        r.agentAfterACleanClose = await agent();
+
+        const a2 = await connect("c5a2");
+        await a2.send("Emulation.setDeviceMetricsOverride", {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 3,
+          mobile: true,
+        });
+        const b = await connect("c5b");
+        await b.send("Emulation.setDeviceMetricsOverride", {
+          width: 800,
+          height: 600,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+        r.bothSet_agent = await agent();
+        r.bothSet_a2sees = short(await evalIn(a2, METRICS));
+        r.bothSet_bsees = short(await evalIn(b, METRICS));
+        await a2.send("Emulation.setDeviceMetricsOverride", {
+          width: 391,
+          height: 845,
+          deviceScaleFactor: 3,
+          mobile: true,
+        });
+        r.a2SetAgain_agent = await agent();
+        await b.closedNow();
+        await sleep(1500);
+        r.afterBClose_agent = await agent();
+        r.afterBClose_a2sees = short(await evalIn(a2, METRICS));
+        await a2.send("Emulation.clearDeviceMetricsOverride");
+        r.afterA2Clear_agent = await agent();
+        await a2.closedNow();
+        await sleep(1000);
+
+        // The agent's own override, and a Live View that sets and clears its own.
+        await api("cdp", {
+          method: "Emulation.setDeviceMetricsOverride",
+          params: { width: 1000, height: 700, deviceScaleFactor: 1, mobile: false },
+          target: info.tabTargetId,
+        });
+        r.agentOwn1000 = await agent();
+        const c = await connect("c5c");
+        await c.send("Emulation.setDeviceMetricsOverride", {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 3,
+          mobile: true,
+        });
+        r.agentOwnPlusLive390 = await agent();
+        await c.send("Emulation.clearDeviceMetricsOverride");
+        r.agentOwnAfterLiveClear = await agent();
+        await c.send("Emulation.setDeviceMetricsOverride", {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 3,
+          mobile: true,
+        });
+        await c.closedNow();
+        await sleep(1500);
+        r.agentOwnAfterLiveClose = await agent();
+        await api("cdp", {
+          method: "Emulation.clearDeviceMetricsOverride",
+          params: {},
+          target: info.tabTargetId,
+        });
+        r.agentAfterOwnClear = await agent();
+        return [
+          "info",
+          `baseline ${r.agentBaseline}; A sets 390 -> agent ${r.agentWhileASet390}; A closes -> ${r.agentAfterACleanClose}; A2 390 + B 800 -> agent ${r.bothSet_agent}; B closes -> ${r.afterBClose_agent}`,
+          r,
+        ];
+      };
+
+      let kept;
+      $("keep5").onclick = async () => {
+        kept = await connect("c5k");
+        await kept.send("Emulation.setDeviceMetricsOverride", {
+          width: 390,
+          height: 844,
+          deviceScaleFactor: 3,
+          mobile: true,
+        });
+        result(
+          "5k keep",
+          "info",
+          `override set and connection kept open; agent sees ${short(await agentEval(METRICS))}`,
+        );
+      };
+
+      checks[6] = async () => {
+        await ensureSetup();
+        const r = { clicks: {} };
+        const cdp = await connect("c6");
+        await cdp.send("Page.enable");
+        const opens = [];
+        cdp.on("Page.windowOpen", (params) => opens.push(params));
+        const pages = async () =>
+          (await api("targets")).targetInfos.filter((t) => t.type === "page");
+        r.before = (await pages()).map((t) => [t.targetId, t.url, t.openerId ?? null]);
+        for (const [selector, kind] of [
+          ["#popup-btn", "windowopen"],
+          ["#noopener-open", "open-noopener"],
+          ["#blank-link", "blank"],
+          ["#noopener-link", "noopener"],
+        ]) {
+          const seen = opens.length;
+          await click(cdp, await centerOf(cdp, selector));
+          await sleep(2000);
+          const found = (await pages()).filter((t) => t.url.includes(`kind=${kind}`));
+          r.clicks[kind] = {
+            windowOpen: opens.slice(seen),
+            targets: found.map(
+              ({
+                targetId,
+                openerId,
+                openerFrameId,
+                canAccessOpener,
+                url,
+                attached,
+                browserContextId,
+              }) => ({
+                targetId,
+                openerId,
+                openerFrameId,
+                canAccessOpener,
+                url,
+                attached,
+                browserContextId,
+              }),
+            ),
+            openerIsTab: found.map((t) => t.openerId === info.tabTargetId),
+            tabStillAnswers: await evalIn(cdp, "location.search").catch(
+              (error) => `ERROR ${error.message}`,
+            ),
+          };
+        }
+        const popup = r.clicks.windowopen.targets[0];
+        if (popup !== undefined) {
+          await step(r, "nested", async () => {
+            const pc = await connect("c6-popup", { targetId: popup.targetId });
+            await pc.send("Page.enable");
+            const popupOpens = [];
+            pc.on("Page.windowOpen", (params) => popupOpens.push(params));
+            const where = await evalIn(
+              pc,
+              "location.search + ' opener=' + (window.opener ? 'set' : 'null') + ' ' + innerWidth + 'x' + innerHeight",
+            );
+            await click(pc, await centerOf(pc, "#nested-btn"));
+            await sleep(2000);
+            const nested = (await pages()).filter((t) => t.url.includes("kind=nested"));
+            await pc.closedNow();
+            return {
+              popupConnection: where,
+              windowOpenOnPopup: popupOpens,
+              nested: nested.map(({ targetId, openerId, canAccessOpener }) => ({
+                targetId,
+                openerId,
+                canAccessOpener,
+                openerIsPopup: openerId === popup.targetId,
+              })),
+            };
+          });
+        }
+        r.allPagesAfter = (await pages()).map(({ targetId, url, openerId, canAccessOpener }) => ({
+          targetId,
+          url,
+          openerId: openerId ?? null,
+          canAccessOpener,
+        }));
+        await cdp.closedNow();
+        // Close the windows again.
+        for (const page of await pages()) {
+          if (page.url.includes("/popup"))
+            await api("cdp", {
+              method: "Target.closeTarget",
+              params: { targetId: page.targetId },
+            }).catch(() => {});
+        }
+        const summary = Object.entries(r.clicks)
+          .map(
+            ([kind, c]) =>
+              `${kind}: windowOpen ${c.windowOpen.length ? "yes" : "no"}, targets ${c.targets.length}, opener=tab ${c.openerIsTab.join("/") || "-"}`,
+          )
+          .join("; ");
+        return ["info", summary, r];
+      };
+
+      checks[7] = async () => {
+        await ensureSetup();
+        const r = {};
+        const cdp = await connect("c7");
+        const ownEvents = [];
+        cdp.on("Cloudflare.handoffComplete", (params) => ownEvents.push(params));
+        const handoffEvent = cdp
+          .once("Cloudflare.handoff", 5000)
+          .catch((error) => `none: ${error.message}`);
+        r.startFail = await api("handoff", {
+          instructions: "Spike check 7 (to fail)",
+          timeout: 600000,
+        });
+        r.cloudflareHandoffEventOnLiveViewConn = await handoffEvent;
+        r.stateWhileActive_live = await cdp.send("Cloudflare.getHandoffState", {});
+        const completions = async () => (await api("info")).completions;
+        let before = (await completions()).length;
+        r.replyFail = await cdp.send("Cloudflare.handoffComplete", {
+          success: false,
+          reason: "spike: failed from our origin",
+        });
+        r.hostHeardFail = await waitFor(async () => (await completions()).slice(before)[0], 8000);
+        r.stateAfterFail_live = await cdp.send("Cloudflare.getHandoffState", {});
+
+        r.startDone = await api("handoff", {
+          instructions: "Spike check 7 (to finish)",
+          timeout: 600000,
+        });
+        before = (await completions()).length;
+        r.replyDone = await cdp.send("Cloudflare.handoffComplete", {
+          success: true,
+          reason: "User clicked 'Done'",
+        });
+        r.hostHeardDone = await waitFor(async () => (await completions()).slice(before)[0], 8000);
+
+        r.startNoReason = await api("handoff", {
+          instructions: "Spike check 7 (no reason)",
+          timeout: 600000,
+        });
+        before = (await completions()).length;
+        r.replyNoReason = await cdp.send("Cloudflare.handoffComplete", { success: true });
+        r.hostHeardNoReason = await waitFor(
+          async () => (await completions()).slice(before)[0],
+          8000,
+        );
+        r.replyWhenNoHandoff = await cdp
+          .send("Cloudflare.handoffComplete", { success: true })
+          .catch((error) => `ERROR ${error.message}`);
+        r.liveViewConnHeardOwnComplete = ownEvents;
+        await cdp.closedNow();
+        const fail = r.hostHeardFail?.params;
+        const ok =
+          fail?.success === false &&
+          fail?.reason === "spike: failed from our origin" &&
+          r.hostHeardDone?.params?.success === true;
+        return [
+          ok ? "pass" : "fail",
+          `host heard fail=${JSON.stringify(fail)} done=${JSON.stringify(r.hostHeardDone?.params)}`,
+          r,
+        ];
+      };
+      async function waitFor(fn, timeoutMs) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const value = await fn();
+          if (value !== undefined) return value;
+          await sleep(300);
+        }
+        return "TIMED OUT";
+      }
+
+      checks[8] = async () => {
+        await ensureSetup();
+        const r = {};
+        const cdp = await connect("c8");
+        r.idle_live = await cdp.send("Cloudflare.getHandoffState", {});
+        r.idle_host = (
+          await api("cdp", {
+            method: "Cloudflare.getHandoffState",
+            params: {},
+            target: info.tabTargetId,
+          })
+        ).result;
+        r.start = await api("handoff", { instructions: "Spike check 8", timeout: 600000 });
+        await sleep(1500);
+        r.active_live = await cdp.send("Cloudflare.getHandoffState", {});
+        r.active_host = (
+          await api("cdp", {
+            method: "Cloudflare.getHandoffState",
+            params: {},
+            target: info.tabTargetId,
+          })
+        ).result;
+        r.active_host_browserLevelWithTargetId = await api("cdp", {
+          method: "Cloudflare.getHandoffState",
+          params: { targetId: info.tabTargetId },
+        }).then(
+          (x) => x.result,
+          (error) => `ERROR ${error.message}`,
+        );
+        await cdp.send("Cloudflare.handoffComplete", {
+          success: false,
+          reason: "spike check 8 cleanup",
+        });
+        await sleep(1000);
+        r.after_live = await cdp.send("Cloudflare.getHandoffState", {});
+        await cdp.closedNow();
+        return [
+          "info",
+          `active reply keys: ${Object.keys(r.active_live ?? {}).join(",")}; idle: ${JSON.stringify(r.idle_live)}`,
+          r,
+        ];
+      };
+
+      checks[10] = async () => {
+        const cdp = await connect("c10");
+        const r = {};
+        r.liveViewSees = await evalIn(cdp, METRICS);
+        r.agentSees = await agentEval(METRICS);
+        await cdp.send("Page.enable");
+        const frame = await screencast(
+          cdp,
+          { format: "jpeg", quality: 80, maxWidth: 2048, maxHeight: 2048 },
+          r,
+        );
+        await cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId });
+        r.frameMetadata = frame.metadata;
+        r.frameImage = await new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve(`${img.naturalWidth}x${img.naturalHeight}`);
+          img.onerror = () => resolve("decode failed");
+          img.src = `data:image/jpeg;base64,${frame.data}`;
+        });
+        r.layoutMetrics = await cdp.send("Page.getLayoutMetrics");
+        await cdp.send("Page.stopScreencast");
+        await cdp.closedNow();
+        return [
+          "info",
+          `tab ${short(r.liveViewSees)} (agent ${short(r.agentSees)}), frame ${r.frameImage}, metadata ${JSON.stringify(r.frameMetadata)}`,
+          r,
+        ];
+      };
+
+      const names = {
+        1: "1 connect",
+        2: "2 target in path",
+        3: "3 expiry",
+        4: "4 commands",
+        5: "5 metrics",
+        6: "6 windows",
+        7: "7 handoffComplete",
+        8: "8 handoff state",
+        10: "10 viewport",
+      };
+      async function run(n) {
+        const name = names[n];
+        result(name, "running", "…");
+        try {
+          const [status, summary, data] = await checks[n]();
+          result(name, status, summary, data);
+        } catch (error) {
+          result(name, "fail", `threw: ${error.message}`);
+        }
+        await flush();
+      }
+      for (const button of document.querySelectorAll("[data-check]"))
+        button.onclick = () => run(Number(button.dataset.check));
+      $("runall").onclick = async () => {
+        for (const n of [10, 1, 8, 2, 4, 5, 6, 7, 3]) await run(n);
+        log("RESULT", "ALL DONE");
+        await flush();
+      };
+      window.spike = { run, checks, api, connect, mint, ensureSetup, agentEval, flush, result };
+
+      // ---- 9: background test -------------------------------------------------------------------
+      const bg = { periods: [] };
+      function renderBg() {
+        const head = `away(s)  on return       closed(s after leaving)  ping on return   reconnect\n`;
+        $("bgtable").textContent =
+          `9: socket ${bg.cdp?.alive ? "OPEN" : "closed"} · ${bg.pings ?? 0} pings ok, ${bg.pingFails ?? 0} failed\n` +
+          head +
+          bg.periods
+            .map(
+              (p) =>
+                `${String(p.away).padEnd(9)}${p.state.padEnd(15)}${String(p.closedAfter ?? "-").padEnd(25)}${p.ping.padEnd(17)}${p.reconnect ?? "-"}`,
+            )
+            .join("\n");
+      }
+      async function bgConnect() {
+        bg.cdp = await connect("c9");
+        bg.cdp.on("__close", () => renderBg());
+        renderBg();
+      }
+      $("bgstart").onclick = async () => {
+        try {
+          await bgConnect();
+          bg.pings = 0;
+          bg.pingFails = 0;
+          clearInterval(bg.timer);
+          // Like the hosted page: a Cloudflare.getSessionId every 5 s.
+          bg.timer = setInterval(async () => {
+            if (document.visibilityState !== "visible" || !bg.cdp?.alive) return;
+            try {
+              await bg.cdp.send("Cloudflare.getSessionId", {}, 4000, true);
+              bg.pings++;
+            } catch {
+              bg.pingFails++;
+            }
+            renderBg();
+          }, 5000);
+          result(
+            "9 background",
+            "running",
+            "connected: switch to another app, come back, repeat (10 s, 30 s, 2 min)",
+          );
+        } catch (error) {
+          result("9 background", "fail", `could not connect: ${error.message}`);
+        }
+      };
+      document.addEventListener("visibilitychange", async () => {
+        log("page", `visibility ${document.visibilityState}`);
+        if (bg.cdp === undefined) return;
+        if (document.visibilityState === "hidden") {
+          bg.hiddenAt = Date.now();
+          bg.closedBefore = bg.cdp.closed;
+          await flush();
+          return;
+        }
+        const away = Math.round((Date.now() - bg.hiddenAt) / 1000);
+        const period = {
+          away,
+          state: bg.cdp.alive ? "open" : `closed ${bg.cdp.closed?.code ?? ""}`,
+        };
+        if (bg.cdp.closed) period.closedAfter = Math.round((bg.cdp.closed.at - bg.hiddenAt) / 1000);
+        period.ping = await bg.cdp.send("Cloudflare.getSessionId", {}, 4000).then(
+          () => "answered",
+          (error) => `no: ${error.message.slice(0, 40)}`,
+        );
+        if (period.ping !== "answered") {
+          const started = Date.now();
+          try {
+            bg.cdp.close();
+            await bgConnect();
+            period.reconnect = `new link ok in ${Date.now() - started} ms`;
+          } catch (error) {
+            period.reconnect = `failed: ${error.message}`;
+          }
+        }
+        bg.periods.push(period);
+        result(
+          "9 background",
+          "info",
+          bg.periods
+            .map(
+              (p) =>
+                `${p.away}s: ${p.state}, ping ${p.ping}${p.reconnect ? `, ${p.reconnect}` : ""}`,
+            )
+            .join(" | "),
+          period,
+        );
+        renderBg();
+      });
+      for (const type of ["pagehide", "pageshow", "freeze", "resume", "online", "offline"]) {
+        window.addEventListener(type, () => log("page", type));
+        document.addEventListener(type, () => log("page", `doc ${type}`));
+      }
+
+      // ---- viewer (11, 12) ----------------------------------------------------------------------
+      const view = { touches: new Map() };
+      const canvas = $("screen");
+      const ctx = canvas.getContext("2d");
+      const kbd = $("kbd");
+      const image = new Image();
+      let drawing = false;
+      let nextFrame = null;
+      function kbdState(extra = "") {
+        const vv = window.visualViewport;
+        $("kbdstate").textContent =
+          `textarea focused: ${document.activeElement === kbd} · inputmode=${kbd.inputMode || "(none)"} enterkeyhint=${kbd.enterKeyHint || "(none)"} autocapitalize=${kbd.autocapitalize} · innerHeight ${innerHeight} · visualViewport.height ${vv ? Math.round(vv.height) : "?"} ${extra}`;
+      }
+      window.visualViewport?.addEventListener("resize", () => {
+        kbdState();
+        log(
+          "vv",
+          `visualViewport ${Math.round(visualViewport.width)}x${Math.round(visualViewport.height)} focused=${document.activeElement === kbd}`,
+        );
+      });
+      kbd.addEventListener("focus", () => {
+        log("kbd", "textarea focus");
+        kbdState();
+      });
+      kbd.addEventListener("blur", () => {
+        log("kbd", "textarea blur");
+        kbdState();
+      });
+      async function draw(frame) {
+        drawing = true;
+        view.meta = frame.metadata;
+        await new Promise((resolve) => {
+          image.onload = resolve;
+          image.onerror = resolve;
+          image.src = `data:image/jpeg;base64,${frame.data}`;
+        });
+        const width = canvas.clientWidth;
+        const height = Math.round(
+          (width * frame.metadata.deviceHeight) / frame.metadata.deviceWidth,
+        );
+        canvas.style.height = `${height}px`;
+        canvas.width = Math.round(width * devicePixelRatio);
+        canvas.height = Math.round(height * devicePixelRatio);
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        drawing = false;
+        if (nextFrame) {
+          const pending = nextFrame;
+          nextFrame = null;
+          draw(pending);
+        }
+      }
+      function toPage(event) {
+        const rect = canvas.getBoundingClientRect();
+        const zoom = rect.width / (view.meta?.deviceWidth ?? rect.width);
+        return {
+          x: Math.round((event.clientX - rect.left) / zoom),
+          y: Math.round((event.clientY - rect.top) / zoom - (view.meta?.offsetTop ?? 0)),
+        };
+      }
+      $("vopen").onclick = async () => {
+        try {
+          $("viewer").style.display = "block";
+          view.cdp?.close();
+          frameLogEvery = 200;
+          const cdp = await connect("viewer");
+          view.cdp = cdp;
+          await cdp.send("Page.enable");
+          await cdp.send("Runtime.enable");
+          const width = canvas.clientWidth;
+          const height = Math.round(Math.min(innerHeight * 0.62, width * 1.6));
+          await cdp.send("Emulation.setDeviceMetricsOverride", {
+            width,
+            height,
+            deviceScaleFactor: Math.min(devicePixelRatio, 3),
+            mobile: isTouch,
+          });
+          if (isTouch)
+            await cdp.send("Emulation.setTouchEmulationEnabled", {
+              enabled: true,
+              maxTouchPoints: 5,
+            });
+          cdp.on("Page.screencastFrame", (frame) => {
+            cdp
+              .send("Page.screencastFrameAck", { sessionId: frame.sessionId }, 5000, true)
+              .catch(() => {});
+            if (drawing) nextFrame = frame;
+            else draw(frame);
+          });
+          cdp.on("Page.windowOpen", (params) =>
+            log("viewer", `windowOpen ${JSON.stringify(params)}`),
+          );
+          await cdp.send("Page.startScreencast", {
+            format: "jpeg",
+            quality: 70,
+            maxWidth: Math.round(width * devicePixelRatio),
+            maxHeight: Math.round(height * devicePixelRatio),
+          });
+          // A background tab sends no frames.
+          await cdp.send("Page.bringToFront");
+          result(
+            "11/12 viewer",
+            "info",
+            `open ${width}x${height}@${devicePixelRatio} mobile=${isTouch}`,
+          );
+          kbdState();
+        } catch (error) {
+          result("11/12 viewer", "fail", `open failed: ${error.message}`);
+        }
+      };
+      $("vclose").onclick = async () => {
+        if (view.cdp?.alive) {
+          await view.cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+          await view.cdp
+            .send("Emulation.setTouchEmulationEnabled", { enabled: false })
+            .catch(() => {});
+          await view.cdp.closedNow();
+        }
+        $("viewer").style.display = "none";
+      };
+      const touchPoints = () => [...view.touches.values()];
+      canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+      canvas.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        if (!view.cdp?.alive) return;
+        canvas.setPointerCapture(event.pointerId);
+        const at = toPage(event);
+        if (event.pointerType === "mouse") {
+          view.cdp
+            .send("Input.dispatchMouseEvent", {
+              type: "mousePressed",
+              ...at,
+              button: "left",
+              clickCount: 1,
+            })
+            .catch(() => {});
+          return;
+        }
+        view.touches.set(event.pointerId, { ...at, id: event.pointerId });
+        view.cdp
+          .send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: touchPoints() })
+          .catch(() => {});
+        // Long press as mouse selection: Browser Run's headless Chrome makes no long-press gesture from touch events.
+        clearTimeout(view.press?.timer);
+        view.press = undefined;
+        if (view.selectMode && view.touches.size === 1) {
+          const press = { id: event.pointerId, start: at, selecting: false };
+          press.timer = setTimeout(async () => {
+            if (view.press !== press) return;
+            press.selecting = true;
+            log("viewer", `long press -> touchCancel + mouse double press at ${at.x},${at.y}`);
+            const send = (params) =>
+              view.cdp.send("Input.dispatchMouseEvent", { ...at, button: "left", ...params });
+            await view.cdp.send("Input.dispatchTouchEvent", {
+              type: "touchCancel",
+              touchPoints: [],
+            });
+            await send({ type: "mousePressed", clickCount: 1 });
+            await send({ type: "mouseReleased", clickCount: 1 });
+            await send({ type: "mousePressed", clickCount: 2 });
+          }, 500);
+          view.press = press;
+        }
+      });
+      let lastMove = 0;
+      canvas.addEventListener("pointermove", (event) => {
+        if (!view.cdp?.alive) return;
+        if (performance.now() - lastMove < 16) return;
+        lastMove = performance.now();
+        const at = toPage(event);
+        if (event.pointerType === "mouse") {
+          view.cdp
+            .send(
+              "Input.dispatchMouseEvent",
+              { type: "mouseMoved", ...at, button: event.buttons ? "left" : "none" },
+              5000,
+              true,
+            )
+            .catch(() => {});
+          return;
+        }
+        if (view.press?.selecting && view.press.id === event.pointerId) {
+          view.cdp
+            .send(
+              "Input.dispatchMouseEvent",
+              { type: "mouseMoved", ...at, button: "left" },
+              5000,
+              true,
+            )
+            .catch(() => {});
+          return;
+        }
+        if (
+          view.press !== undefined &&
+          Math.hypot(at.x - view.press.start.x, at.y - view.press.start.y) > 10
+        ) {
+          clearTimeout(view.press.timer);
+          view.press = undefined;
+        }
+        if (!view.touches.has(event.pointerId)) return;
+        view.touches.set(event.pointerId, { ...at, id: event.pointerId });
+        view.cdp
+          .send(
+            "Input.dispatchTouchEvent",
+            { type: "touchMove", touchPoints: touchPoints() },
+            5000,
+            true,
+          )
+          .catch(() => {});
+      });
+      async function afterTap() {
+        await sleep(150);
+        try {
+          const focused = await evalIn(
+            view.cdp,
+            `(() => { const el = document.activeElement; if (!el) return { editable: false }; const tag = el.tagName; const type = (el.type || "").toLowerCase(); const editable = (tag === "INPUT" && !["button","submit","checkbox","radio","range","color","file","image","reset","hidden"].includes(type)) || tag === "TEXTAREA" || el.isContentEditable; return { editable, tag, type, id: el.id, inputMode: el.inputMode || "", enterKeyHint: el.enterKeyHint || "" }; })()`,
+          );
+          if (!focused.editable) {
+            kbd.blur();
+            kbdState(`· tab focus: ${focused.tag ?? "none"} (not editable) -> blurred`);
+            return;
+          }
+          const modes = {
+            email: ["email", "off"],
+            number: ["decimal", "off"],
+            tel: ["tel", "off"],
+            url: ["url", "off"],
+            search: ["search", "off"],
+            password: ["text", "off"],
+          };
+          const [mode, cap] = modes[focused.type] ?? ["text", "sentences"];
+          kbd.inputMode = focused.inputMode || mode;
+          kbd.autocapitalize = cap;
+          kbd.enterKeyHint =
+            focused.enterKeyHint ||
+            (focused.tag === "TEXTAREA" || focused.tag !== "INPUT" ? "enter" : "go");
+          log(
+            "kbd",
+            `tab focus ${focused.tag}#${focused.id} type=${focused.type} -> inputmode=${kbd.inputMode} autocapitalize=${kbd.autocapitalize} enterkeyhint=${kbd.enterKeyHint} (set while focused=${document.activeElement === kbd})`,
+          );
+          kbdState(`· tab focus: ${focused.tag}#${focused.id} (${focused.type})`);
+        } catch (error) {
+          log("kbd", `focus check failed: ${error.message}`);
+        }
+      }
+      function endPointer(event, type) {
+        if (!view.cdp?.alive) return;
+        const at = toPage(event);
+        const press = view.press;
+        clearTimeout(press?.timer);
+        view.press = undefined;
+        if (press?.selecting && press.id === event.pointerId) {
+          view.touches.delete(event.pointerId);
+          view.cdp
+            .send("Input.dispatchMouseEvent", {
+              type: "mouseReleased",
+              ...at,
+              button: "left",
+              clickCount: 2,
+            })
+            .catch(() => {});
+          return;
+        }
+        if (event.pointerType === "mouse") {
+          view.cdp
+            .send("Input.dispatchMouseEvent", {
+              type: "mouseReleased",
+              ...at,
+              button: "left",
+              clickCount: 1,
+            })
+            .catch(() => {});
+        } else {
+          view.touches.delete(event.pointerId);
+          view.cdp
+            .send("Input.dispatchTouchEvent", { type, touchPoints: touchPoints() })
+            .catch(() => {});
+        }
+        if (type === "touchEnd") {
+          // 12: focus synchronously, inside the gesture, then ask the tab whether its focused element is editable.
+          kbd.focus({ preventScroll: true });
+          afterTap();
+        }
+      }
+      canvas.addEventListener("pointerup", (event) => endPointer(event, "touchEnd"));
+      canvas.addEventListener("pointercancel", (event) => endPointer(event, "touchCancel"));
+      canvas.addEventListener(
+        "wheel",
+        (event) => {
+          event.preventDefault();
+          if (!view.cdp?.alive) return;
+          view.cdp
+            .send(
+              "Input.dispatchMouseEvent",
+              {
+                type: "mouseWheel",
+                ...toPage(event),
+                button: "none",
+                deltaX: event.deltaX,
+                deltaY: event.deltaY,
+              },
+              5000,
+              true,
+            )
+            .catch(() => {});
+        },
+        { passive: false },
+      );
+      const sendKey = (name, code, keyCode, text) =>
+        key(view.cdp, { key: name, code, keyCode, text }).catch((error) =>
+          log("kbd", `key failed ${error.message}`),
+        );
+      kbd.addEventListener("beforeinput", (event) => {
+        log(
+          "kbd",
+          `beforeinput ${event.inputType} data=${JSON.stringify(event.data)} cancelable=${event.cancelable}`,
+        );
+        if (!view.cdp?.alive) return;
+        switch (event.inputType) {
+          case "insertText":
+          case "insertReplacementText": {
+            const text = event.data ?? event.dataTransfer?.getData("text/plain") ?? "";
+            event.preventDefault();
+            if (text) view.cdp.send("Input.insertText", { text }).catch(() => {});
+            return;
+          }
+          case "deleteContentBackward":
+            event.preventDefault();
+            sendKey("Backspace", "Backspace", 8);
+            return;
+          case "insertLineBreak":
+          case "insertParagraph":
+            event.preventDefault();
+            sendKey("Enter", "Enter", 13, "\r");
+            return;
+          default:
+        }
+      });
+      kbd.addEventListener("compositionend", (event) => {
+        log("kbd", `compositionend ${JSON.stringify(event.data)}`);
+        if (event.data) view.cdp?.send("Input.insertText", { text: event.data }).catch(() => {});
+        kbd.value = "";
+      });
+      kbd.addEventListener("input", () => {
+        if (!kbd.matches(":focus") || kbd.value === "") return;
+        // Anything the beforeinput cases let through (composition) is cleared at its end; keep the field short.
+        if (kbd.value.length > 200) kbd.value = "";
+      });
+      kbd.addEventListener("paste", (event) => {
+        event.preventDefault();
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        log("kbd", `paste ${text.length} chars`);
+        if (text) view.cdp?.send("Input.insertText", { text }).catch(() => {});
+      });
+      kbd.addEventListener("keydown", (event) => {
+        const keys = {
+          ArrowLeft: 37,
+          ArrowUp: 38,
+          ArrowRight: 39,
+          ArrowDown: 40,
+          Tab: 9,
+          Escape: 27,
+        };
+        if (keys[event.key] !== undefined) {
+          event.preventDefault();
+          sendKey(event.key, event.key, keys[event.key]);
+        }
+      });
+      const SELECTION = `(() => { const el = document.activeElement; if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && typeof el.selectionStart === "number") return el.value.slice(el.selectionStart, el.selectionEnd); return String(getSelection()); })()`;
+      $("vcopy").onclick = () => {
+        if (!view.cdp?.alive) return;
+        const started = performance.now();
+        const text = evalIn(view.cdp, SELECTION).then((value) => {
+          log(
+            "copy",
+            `selection read in ${Math.round(performance.now() - started)} ms: ${JSON.stringify(value)}`,
+          );
+          view.copied = value;
+          return new Blob([value ?? ""], { type: "text/plain" });
+        });
+        try {
+          navigator.clipboard.write([new ClipboardItem({ "text/plain": text })]).then(
+            () =>
+              result(
+                "11 copy",
+                "info",
+                `clipboard.write resolved after ${Math.round(performance.now() - started)} ms with ${JSON.stringify(view.copied)}; paste into the box below to confirm`,
+              ),
+            (error) =>
+              result("11 copy", "fail", `clipboard.write rejected: ${error.name} ${error.message}`),
+          );
+        } catch (error) {
+          result("11 copy", "fail", `clipboard.write threw: ${error.name} ${error.message}`);
+        }
+      };
+      $("pastecheck").addEventListener("input", () => {
+        const pasted = $("pastecheck").value;
+        result(
+          "11 paste check",
+          pasted === view.copied ? "pass" : "info",
+          `pasted ${JSON.stringify(pasted)} vs copied ${JSON.stringify(view.copied)}`,
+        );
+      });
+      $("vsel").onclick = async () => {
+        if (!view.cdp?.alive) return;
+        result("11 tab selection", "info", JSON.stringify(await evalIn(view.cdp, SELECTION)));
+      };
+      $("vkbd").onclick = () => {
+        kbd.focus({ preventScroll: true });
+        kbdState("· forced");
+      };
+      $("vlp").onclick = () => {
+        view.selectMode = !view.selectMode;
+        $("vlp").textContent = view.selectMode
+          ? "long press: mouse select"
+          : "long press: touch events";
+      };
+      $("vscroll").onclick = () => view.cdp?.alive && evalIn(view.cdp, "scrollTo(0, 0); true");
+      // These keep the textarea focused: pointerdown's default (moving focus) is prevented.
+      const keepFocus = (id, handler) => {
+        $(id).addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          handler();
+          kbdState();
+        });
+        $(id).addEventListener("mousedown", (event) => event.preventDefault());
+      };
+      keepFocus("vblur", () => kbd.blur());
+      const cycle = (id, attribute, label, values) => {
+        let index = 0;
+        keepFocus(id, () => {
+          index = (index + 1) % values.length;
+          kbd[attribute] = values[index];
+          $(id).textContent = `${label}: ${values[index]}`;
+          log(
+            "kbd",
+            `${label} -> ${values[index]} while focused=${document.activeElement === kbd}`,
+          );
+        });
+      };
+      cycle("vmode", "inputMode", "inputmode", [
+        "text",
+        "email",
+        "numeric",
+        "decimal",
+        "tel",
+        "url",
+        "search",
+        "none",
+      ]);
+      cycle("vhint", "enterKeyHint", "enterkeyhint", [
+        "enter",
+        "go",
+        "send",
+        "search",
+        "next",
+        "done",
+      ]);
+      cycle("vcap", "autocapitalize", "autocapitalize", [
+        "sentences",
+        "words",
+        "characters",
+        "off",
+      ]);
+    </script>
+  </body>
+</html>
