@@ -8,6 +8,7 @@ import {
 } from "@cloudpid/config";
 import {
   MachineError,
+  type WorkspaceRecord,
   type SessionRecord,
   type MachineRecord,
   type MachineSettingsState,
@@ -29,6 +30,10 @@ import {
   newMachineSlugAtom,
   removeRepoAtom,
   removeTypedAtom,
+  removeWorkspaceAtom,
+  workspaceBranchesAtom,
+  workspaceListAtom,
+  workspacesAtom,
   reposAtom,
   resetTypedAtom,
   resetMachineAtom,
@@ -49,6 +54,7 @@ const session = (id: string, on: string): SessionRecord => ({
   titleSource: null,
   machine: on,
   repo: null,
+  workspace: null,
   status: "idle",
   createdAt: 1,
   updatedAt: 1,
@@ -922,4 +928,108 @@ describe("removing a repo", () => {
     expect(registry.get(resetTypedAtom("work"))).toBe("");
     registry.dispose();
   });
+});
+
+describe("a repo's Workspaces", () => {
+  const workspace = (id: string, branch: string): WorkspaceRecord => ({
+    id,
+    machine: "work",
+    repo: "pi",
+    branch,
+    directory: `/workspace/.worktrees/pi/${id}`,
+    createdAt: 1,
+  });
+
+  /** A Registry holding Workspaces and the Sessions in them; removing `stuck` fails. */
+  const holdingWorkspaces = () => {
+    const workspaces = [workspace("0a1b2c3d", "fix/build"), workspace("deadbeef", "stuck")];
+
+    const sessions = [
+      { ...session("a", "work"), repo: "pi", workspace: "0a1b2c3d" },
+      { ...session("b", "work"), repo: "pi" },
+    ];
+
+    const removed: string[] = [];
+
+    const registry = registryWith({
+      listWorkspaces: () => Effect.sync(() => [...workspaces]),
+      listSessions: () => Effect.sync(() => [...sessions]),
+      removeWorkspace: ({ id }) => {
+        removed.push(id);
+
+        if (id === "deadbeef")
+          return Effect.fail(new MachineError({ message: "Could not remove the worktree." }));
+
+        return Effect.sync(() => {
+          workspaces.splice(
+            workspaces.findIndex((known) => known.id === id),
+            1,
+          );
+          sessions.splice(
+            sessions.findIndex((known) => known.workspace === id),
+            1,
+          );
+        });
+      },
+    });
+
+    return { registry, removed };
+  };
+
+  it.effect("lists them, and names each by its branch", () =>
+    Effect.gen(function* () {
+      const { registry } = holdingWorkspaces();
+
+      registry.mount(workspaceBranchesAtom);
+      yield* settled(registry, workspacesAtom);
+
+      expect(registry.get(workspaceListAtom)?.map((known) => known.id)).toEqual([
+        "0a1b2c3d",
+        "deadbeef",
+      ]);
+      expect(registry.get(workspaceBranchesAtom)).toEqual({
+        "0a1b2c3d": "fix/build",
+        deadbeef: "stuck",
+      });
+    }),
+  );
+
+  it.effect("removes one, closes the dialog and asks for the Workspaces and Sessions again", () =>
+    Effect.gen(function* () {
+      const { registry, removed } = holdingWorkspaces();
+
+      registry.mount(machineDialogAtom("work"));
+      registry.mount(sessionsAtom);
+      registry.mount(workspacesAtom);
+      yield* settled(registry, sessionsAtom);
+      yield* settled(registry, workspacesAtom);
+      registry.set(machineDialogAtom("work"), { removeWorkspace: "0a1b2c3d" });
+      registry.set(removeWorkspaceAtom("work"), "0a1b2c3d");
+      yield* settled(registry, removeWorkspaceAtom("work"));
+
+      expect(removed).toEqual(["0a1b2c3d"]);
+      expect(registry.get(machineDialogAtom("work"))).toBeNull();
+      expect(
+        AsyncResult.getOrThrow(yield* settled(registry, workspacesAtom)).map((known) => known.id),
+      ).toEqual(["deadbeef"]);
+      expect(
+        AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom)).map((known) => known.id),
+      ).toEqual(["b"]);
+    }),
+  );
+
+  it.effect("keeps the dialog open when the removal fails, and says why", () =>
+    Effect.gen(function* () {
+      const { registry } = holdingWorkspaces();
+
+      registry.mount(machineDialogAtom("work"));
+      registry.set(machineDialogAtom("work"), { removeWorkspace: "deadbeef" });
+      registry.set(removeWorkspaceAtom("work"), "deadbeef");
+
+      const result = yield* settled(registry, removeWorkspaceAtom("work"));
+
+      expect(failureOf(result)).toBe("Could not remove the worktree.");
+      expect(registry.get(machineDialogAtom("work"))).toEqual({ removeWorkspace: "deadbeef" });
+    }),
+  );
 });

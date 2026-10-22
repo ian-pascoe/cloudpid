@@ -42,6 +42,7 @@ const session = (id: string, machine: string, archivedAt: number | null = null):
   titleSource: null,
   machine,
   repo: null,
+  workspace: null,
   status: "idle",
   createdAt: 1,
   updatedAt: 1,

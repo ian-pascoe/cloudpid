@@ -4,14 +4,25 @@ import { INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
 import {
   DEFAULT_MACHINE,
   MAX_MACHINE_NAME_LENGTH,
+  NEW_WORKSPACE,
   type SessionRecord,
   type MachineRecord,
+  type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { ArrowLeft, Eraser, GitBranch, Pencil, Play, RotateCw, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Eraser,
+  GitBranch,
+  GitFork,
+  Pencil,
+  Play,
+  RotateCw,
+  Trash2,
+} from "lucide-react";
 import {
   useAtom,
   useAtomMount,
@@ -29,7 +40,12 @@ import { callOf } from "./calls.ts";
 import { navigate } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
 import { failureOf, settledFailureOf } from "./registry.ts";
-import { createSessionAtom, sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
+import {
+  createSessionAtom,
+  type PlaceInMachine,
+  sessionListAtom,
+  sessionsErrorAtom,
+} from "./sessions.ts";
 import {
   cloneRepoAtom,
   cloneSourceAtom,
@@ -39,7 +55,10 @@ import {
   newMachineSlugAtom,
   removeRepoAtom,
   removeTypedAtom,
+  removeWorkspaceAtom,
+  removeWorkspaceTypedAtom,
   reposAtom,
+  workspaceListAtom,
   resetTypedAtom,
   resetMachineAtom,
   restartContainerAtom,
@@ -724,6 +743,215 @@ const RemoveRepoDialog = ({
   );
 };
 
+/** Confirm removing a Workspace by typing its branch, after saying what goes with it and what stays. */
+const RemoveWorkspaceDialog = ({
+  slug,
+  workspace,
+  sessions,
+}: {
+  slug: string;
+  workspace: WorkspaceRecord;
+  /** The Sessions bound to the Workspace, archived ones included. */
+  sessions: readonly SessionRecord[];
+}) => {
+  const [typed, setTyped] = useAtom(removeWorkspaceTypedAtom(workspace.id));
+  const [removed, run] = useAtom(removeWorkspaceAtom(slug));
+  const setDialog = useAtomSet(machineDialogAtom(slug));
+  const busy = removed.waiting;
+  const confirmed = deleteConfirmed(workspace.branch, typed);
+  const count = sessionCount(sessions);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!confirmed || busy) return;
+
+    run(workspace.id);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        <li>
+          {count === null
+            ? "It has no sessions."
+            : `${count} in it, with their conversations and history. Running ones stop first.`}
+        </li>
+        <li>
+          Its worktree, <span className="font-mono">{workspace.directory}</span>, including changes
+          that were not committed.
+        </li>
+        <li>It is deleted on the Container, which starts if it is not running.</li>
+      </ul>
+      <p className="text-sm text-muted-foreground">
+        Its branch, <span className="font-mono">{workspace.branch}</span>, and the commits on it
+        stay in the repo.
+      </p>
+      <ConfirmField
+        id={`remove-workspace-confirm-${workspace.id}`}
+        expected={workspace.branch}
+        typed={typed}
+        busy={busy}
+        onTyped={setTyped}
+      />
+      {busy && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Deleting its sessions, then its worktree. This can take a little while.
+        </p>
+      )}
+      <DialogProblem problem={settledFailureOf(removed)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
+          {busy ? "Removing…" : "Remove workspace"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/** A Start button for a place in a Machine's card, named for screen readers by where it starts the Session. */
+const StartButton = ({
+  label,
+  starting,
+  onStart,
+}: {
+  label: string;
+  starting: boolean;
+  onStart: () => void;
+}) => (
+  <Button
+    size="sm"
+    variant="outline"
+    disabled={starting}
+    aria-label={label}
+    title={label}
+    onClick={onStart}
+  >
+    <Play />
+    Start
+  </Button>
+);
+
+/**
+ * A repo in a Machine's card: Start begins a Session in a new Workspace of its own; below it, its main checkout and
+ * its Workspaces that exist, each to start a Session that shares its files, and each Workspace to remove.
+ */
+const RepoRow = ({
+  slug,
+  repo,
+  workspaces,
+  sessions,
+  starting,
+  onStart,
+  onRemoveRepo,
+  onRemoveWorkspace,
+}: {
+  slug: string;
+  repo: string;
+  /** The repo's Workspaces of their own, newest first. */
+  workspaces: readonly WorkspaceRecord[];
+  /** Every Session bound to the Machine, archived ones included. */
+  sessions: readonly SessionRecord[];
+  starting: boolean;
+  onStart: (place: PlaceInMachine) => void;
+  onRemoveRepo: () => void;
+  onRemoveWorkspace: (id: string) => void;
+}) => {
+  const inMain = sessionCount(
+    sessions.filter((session) => session.repo === repo && session.workspace === null),
+  );
+
+  return (
+    <li className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate font-mono text-sm">/workspace/{repo}</span>
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="size-8"
+            aria-label={`Remove ${repo}`}
+            title={`Remove ${repo}`}
+            onClick={onRemoveRepo}
+          >
+            <Trash2 />
+          </Button>
+          <StartButton
+            label={`Start a session in a new workspace of ${repo}`}
+            starting={starting}
+            onStart={() => {
+              onStart({ machine: slug, repo, workspace: NEW_WORKSPACE });
+            }}
+          />
+        </div>
+      </div>
+      <ul aria-label={`Workspaces of ${repo}`} className="flex flex-col gap-1 border-l pl-3">
+        <li className="flex items-center justify-between gap-2">
+          <span className="flex min-w-0 items-baseline gap-2 text-sm text-muted-foreground">
+            <span className="truncate">main checkout</span>
+            {inMain !== null && <span className="shrink-0 text-xs">{inMain}</span>}
+          </span>
+          <StartButton
+            label={`Start a session in the main checkout of ${repo}`}
+            starting={starting}
+            onStart={() => {
+              onStart({ machine: slug, repo });
+            }}
+          />
+        </li>
+        {workspaces.map((workspace) => {
+          const count = sessionCount(
+            sessions.filter((session) => session.workspace === workspace.id),
+          );
+
+          return (
+            <li key={workspace.id} className="flex items-center justify-between gap-2">
+              <span className="flex min-w-0 items-center gap-2 text-sm">
+                <GitFork className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="truncate font-mono">{workspace.branch}</span>
+                {count !== null && (
+                  <span className="shrink-0 text-xs text-muted-foreground">{count}</span>
+                )}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-8"
+                  aria-label={`Remove the ${workspace.branch} workspace`}
+                  title={`Remove the ${workspace.branch} workspace`}
+                  onClick={() => {
+                    onRemoveWorkspace(workspace.id);
+                  }}
+                >
+                  <Trash2 />
+                </Button>
+                <StartButton
+                  label={`Start a session in the ${workspace.branch} workspace`}
+                  starting={starting}
+                  onStart={() => {
+                    onStart({ machine: slug, repo, workspace: workspace.id });
+                  }}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </li>
+  );
+};
+
 const MachineCard = ({
   machine,
   otherNames,
@@ -737,10 +965,12 @@ const MachineCard = ({
   /** Every Session bound to the Machine, archived ones included. */
   sessions: readonly SessionRecord[];
   starting: boolean;
-  onStart: (machine: string, repo?: string) => void;
+  onStart: (place: PlaceInMachine) => void;
 }) => {
   const { slug } = machine;
   const listed = useAtomValue(reposAtom(slug));
+  const workspaceList = useAtomValue(workspaceListAtom);
+  const workspaces = (workspaceList ?? []).filter((workspace) => workspace.machine === slug);
   const cloned = useAtomValue(cloneRepoAtom(slug));
   // The Container's settings are asked for with the card, so the Edit dialog has them when it opens.
   useAtomMount(machineSettingsAtom(slug));
@@ -750,30 +980,42 @@ const MachineCard = ({
   const reset = useAtomValue(resetMachineAtom(slug));
   const restarted = useAtomValue(restartContainerAtom(slug));
   const removed = useAtomValue(removeRepoAtom(slug));
+  const removedWorkspace = useAtomValue(removeWorkspaceAtom(slug));
   const forgetEdit = useAtomSet(saveMachineAtom(slug));
   const forgetDelete = useAtomSet(deleteMachineAtom(slug));
   const forgetReset = useAtomSet(resetMachineAtom(slug));
   const forgetRestart = useAtomSet(restartContainerAtom(slug));
   const forgetRemove = useAtomSet(removeRepoAtom(slug));
+  const forgetRemoveWorkspace = useAtomSet(removeWorkspaceAtom(slug));
   const shown = sessions.filter((session) => session.archivedAt === null);
   const repos = listed.pipe(AsyncResult.value, Option.getOrNull);
 
   // A dialog's form is saving: the card holds it, so the dialog stays open until the request answers.
   const busy =
-    edited.waiting || deleted.waiting || reset.waiting || restarted.waiting || removed.waiting;
+    edited.waiting ||
+    deleted.waiting ||
+    reset.waiting ||
+    restarted.waiting ||
+    removed.waiting ||
+    removedWorkspace.waiting;
 
   const removing = Predicate.hasProperty(dialog, "removeRepo") ? dialog.removeRepo : null;
+
+  const removingWorkspace = Predicate.hasProperty(dialog, "removeWorkspace")
+    ? (workspaces.find((workspace) => workspace.id === dialog.removeWorkspace) ?? null)
+    : null;
 
   // A clone's failure shows until the next clone starts.
   const reposError = settledFailureOf(cloned) ?? failureOf(listed);
 
   const open = (next: MachineDialog) => {
-    // A failure of an earlier save, delete, reset, restart or removal shows no more once a dialog is opened again.
+    // A failure of an earlier save, delete, reset, restart or removal (of a repo or a Workspace) shows no more once a dialog is opened again.
     forgetEdit(Atom.Reset);
     forgetDelete(Atom.Reset);
     forgetReset(Atom.Reset);
     forgetRestart(Atom.Reset);
     forgetRemove(Atom.Reset);
+    forgetRemoveWorkspace(Atom.Reset);
     setDialog(next);
   };
 
@@ -834,47 +1076,30 @@ const MachineCard = ({
         <ul className="flex flex-col gap-1.5">
           <li className="flex items-center justify-between gap-2">
             <span className="font-mono text-sm text-muted-foreground">/workspace</span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={starting}
-              onClick={() => {
-                onStart(slug);
+            <StartButton
+              label={`Start a session at the root of ${machine.name}`}
+              starting={starting}
+              onStart={() => {
+                onStart({ machine: slug });
               }}
-            >
-              <Play />
-              Start
-            </Button>
+            />
           </li>
           {(repos ?? []).map((repo) => (
-            <li key={repo} className="flex items-center justify-between gap-2">
-              <span className="truncate font-mono text-sm">/workspace/{repo}</span>
-              <div className="flex items-center gap-1.5">
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-8"
-                  aria-label={`Remove ${repo}`}
-                  title={`Remove ${repo}`}
-                  onClick={() => {
-                    open({ removeRepo: repo });
-                  }}
-                >
-                  <Trash2 />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={starting}
-                  onClick={() => {
-                    onStart(slug, repo);
-                  }}
-                >
-                  <Play />
-                  Start
-                </Button>
-              </div>
-            </li>
+            <RepoRow
+              key={repo}
+              slug={slug}
+              repo={repo}
+              workspaces={workspaces.filter((workspace) => workspace.repo === repo)}
+              sessions={sessions}
+              starting={starting}
+              onStart={onStart}
+              onRemoveRepo={() => {
+                open({ removeRepo: repo });
+              }}
+              onRemoveWorkspace={(id) => {
+                open({ removeWorkspace: id });
+              }}
+            />
           ))}
         </ul>
         {repos === null && reposError === null && (
@@ -951,6 +1176,21 @@ const MachineCard = ({
           />
         )}
       </Dialog>
+      <Dialog
+        open={removingWorkspace !== null}
+        onClose={close}
+        dismissible={!busy}
+        title={`Remove the ${removingWorkspace?.branch ?? ""} workspace?`}
+        description="Everything below is deleted for good."
+      >
+        {removingWorkspace !== null && (
+          <RemoveWorkspaceDialog
+            slug={slug}
+            workspace={removingWorkspace}
+            sessions={sessions.filter((session) => session.workspace === removingWorkspace.id)}
+          />
+        )}
+      </Dialog>
     </section>
   );
 };
@@ -967,8 +1207,8 @@ export const MachinesPage = () => {
   const starting = useAtomValue(createSessionAtom).waiting;
   const error = failureOf(createdMachine) ?? listError;
 
-  const start = (machine: string, repo?: string) => {
-    createSession(callOf(repo === undefined ? { machine } : { machine, repo }));
+  const start = (place: PlaceInMachine) => {
+    createSession(callOf(place));
   };
 
   return (
@@ -988,8 +1228,10 @@ export const MachinesPage = () => {
           <h1 className="text-lg font-semibold">Machines</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          A machine holds the files of one or more repos, shared by every session that works in it.
-          A session started in a repo has its directory as the working directory.
+          A machine holds the files of one or more repos, and one Container that runs their
+          commands. A session started in a repo gets a workspace of its own: a git worktree on a
+          branch of its own, so sessions working at once do not step on each other. Start one in the
+          main checkout or in a workspace to share its files.
         </p>
         <NewMachineForm />
         {(error ?? sessionsError) !== null && (

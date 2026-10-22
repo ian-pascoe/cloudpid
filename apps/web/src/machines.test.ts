@@ -22,6 +22,7 @@ const session = (id: string, machine: string, repo: string | null = null): Sessi
   titleSource: null,
   machine,
   repo,
+  workspace: null,
   status: "idle",
   createdAt: 1,
   updatedAt: 1,

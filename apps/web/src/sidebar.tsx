@@ -1,6 +1,6 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- a list's relative times are read against the wall clock as it renders, and its rows are JSX lists over native arrays.
 
-import type { SessionRecord } from "@cloudpid/protocol";
+import { NEW_WORKSPACE, type SessionRecord } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Option from "effect/Option";
@@ -11,6 +11,7 @@ import {
   ChevronRight,
   FolderGit2,
   GitBranch,
+  GitFork,
   Plus,
   Settings as SettingsIcon,
   X,
@@ -41,10 +42,27 @@ import {
   machineListAtom,
   machineNamesAtom,
   machinesErrorAtom,
+  workspaceBranchesAtom,
+  workspaceListAtom,
 } from "./machines-state.ts";
 import { groupByMachine, splitArchived, type MachineGroup } from "./machines.ts";
 
 export const sessionTitle = (session: SessionRecord): string => session.title ?? "Untitled session";
+
+/** Where a Session works, as its list item says: its repo, and its Workspace's branch when it has one of its own. */
+const SessionPlaceNote = ({ session }: { session: SessionRecord }) => {
+  const branches = useAtomValue(workspaceBranchesAtom);
+
+  if (session.repo === null) return null;
+
+  const branch = session.workspace === null ? undefined : branches[session.workspace];
+
+  return (
+    <span className="truncate font-mono">
+      {branch === undefined ? session.repo : `${session.repo} · ${branch}`}
+    </span>
+  );
+};
 
 export const SessionLink = ({
   session,
@@ -72,7 +90,7 @@ export const SessionLink = ({
   >
     <span className="truncate font-medium">{sessionTitle(session)}</span>
     <span className="flex items-center gap-2 text-xs text-muted-foreground">
-      {session.repo !== null && <span className="truncate font-mono">{session.repo}</span>}
+      <SessionPlaceNote session={session} />
       {session.status === "running" ? (
         <>
           <span className="pulse-dot size-1.5 rounded-full bg-success" aria-hidden />
@@ -213,7 +231,10 @@ const MenuNote = ({ children, indented = false }: { children: string; indented?:
   </p>
 );
 
-/** The repos of Machine `machine` in the New session menu, each starting a Session in its directory. */
+/**
+ * The repos of Machine `machine` in the New session menu: each starts a Session in a new Workspace of its own, and
+ * below it in the repo's main checkout or in one of its Workspaces that exist, to share its files.
+ */
 const RepoItems = ({
   machine,
   disabled,
@@ -224,6 +245,7 @@ const RepoItems = ({
   start: (place: PlaceInMachine) => void;
 }) => {
   const listed = useAtomValue(reposAtom(machine));
+  const workspaces = useAtomValue(workspaceListAtom) ?? [];
   const repos = listed.pipe(AsyncResult.value, Option.getOrNull);
 
   if (repos === null)
@@ -234,17 +256,43 @@ const RepoItems = ({
     );
 
   return repos.map((repo) => (
-    <MenuItem
-      key={repo}
-      disabled={disabled}
-      onSelect={() => {
-        start({ machine, repo });
-      }}
-      className="pl-8 font-mono text-xs"
-    >
-      <GitBranch aria-hidden />
-      <span className="truncate">{repo}</span>
-    </MenuItem>
+    <div key={repo} role="group" aria-label={repo}>
+      <MenuItem
+        disabled={disabled}
+        onSelect={() => {
+          start({ machine, repo, workspace: NEW_WORKSPACE });
+        }}
+        className="pl-8 text-xs"
+      >
+        <GitBranch aria-hidden />
+        <span className="truncate font-mono">{repo}</span>
+        <span className="ml-auto shrink-0 text-muted-foreground">new workspace</span>
+      </MenuItem>
+      <MenuItem
+        disabled={disabled}
+        onSelect={() => {
+          start({ machine, repo });
+        }}
+        className="pl-12 text-xs text-muted-foreground"
+      >
+        <span className="truncate">main checkout</span>
+      </MenuItem>
+      {workspaces
+        .filter((workspace) => workspace.machine === machine && workspace.repo === repo)
+        .map((workspace) => (
+          <MenuItem
+            key={workspace.id}
+            disabled={disabled}
+            onSelect={() => {
+              start({ machine, repo, workspace: workspace.id });
+            }}
+            className="pl-12 text-xs"
+          >
+            <GitFork aria-hidden />
+            <span className="truncate font-mono">{workspace.branch}</span>
+          </MenuItem>
+        ))}
+    </div>
   ));
 };
 
@@ -252,19 +300,21 @@ const RepoItems = ({
 const PlacesOpen = ScopedAtom.make(() => Atom.make(false));
 
 /**
- * The New session button: its main part starts a Session where the shown Session works (the default Machine's root
- * when none is shown); its chevron opens a menu of every Machine, each with its repos, to start one anywhere.
+ * The New session button: its main part starts a Session where the shown Session works, in a new Workspace of its repo
+ * (the default Machine's root when none is shown); its chevron opens a menu of every Machine, each with its repos and
+ * their Workspaces, to start one anywhere.
  */
 const NewSessionButton = () => {
   const shown = useAtomValue(currentSessionAtom);
   const names = useAtomValue(machineNamesAtom);
+  const branches = useAtomValue(workspaceBranchesAtom);
   const machines = useAtomValue(machineListAtom);
   const machinesError = useAtomValue(machinesErrorAtom);
   const created = useAtomValue(createSessionAtom);
   const createSession = useAtomSet(createSessionAtom);
   const [open, setOpen] = useAtom(PlacesOpen.use());
   const place = newSessionPlace(shown);
-  const label = `New session in ${placeLabel(place, names)}`;
+  const label = `New session in ${placeLabel(place, names, branches)}`;
   const creating = created.waiting;
 
   const start = (where: PlaceInMachine) => {

@@ -16,6 +16,7 @@ import {
   deleteSessionAtom,
   newSessionPlace,
   placeLabel,
+  sameWorkspacePlace,
   renameSessionAtom,
   sessionsAtom,
   unarchiveSessionAtom,
@@ -27,6 +28,7 @@ const session = (id: string, title: string | null = null): SessionRecord => ({
   titleSource: title === null ? null : "owner",
   machine: "default",
   repo: null,
+  workspace: null,
   status: "idle",
   createdAt: 1,
   updatedAt: 1,
@@ -96,10 +98,11 @@ const listed = (list: SessionRecord[]) => {
 };
 
 describe("where a new Session starts", () => {
-  it("starts where the shown Session works: its Machine, and its repo if it has one", () => {
+  it("starts in a new Workspace of the shown Session's repo, or at its Machine's root", () => {
     expect(newSessionPlace({ ...session("a"), machine: "work", repo: "cloudpid" })).toEqual({
       machine: "work",
       repo: "cloudpid",
+      workspace: "new",
     });
     expect(newSessionPlace({ ...session("a"), machine: "work" })).toEqual({ machine: "work" });
   });
@@ -108,10 +111,34 @@ describe("where a new Session starts", () => {
     expect(newSessionPlace(undefined)).toEqual({ machine: "default" });
   });
 
-  it("is named by the Machine's name and the repo, or the slug when the name is not known", () => {
-    const names = { work: "Work" };
+  it("starts in the shown Session's own Workspace when asked to share it", () => {
+    const inRepo = { ...session("a"), machine: "work", repo: "cloudpid" };
 
-    expect(placeLabel({ machine: "work", repo: "cloudpid" }, names)).toBe("Work · cloudpid");
+    expect(sameWorkspacePlace({ ...inRepo, workspace: "0a1b2c3d" })).toEqual({
+      machine: "work",
+      repo: "cloudpid",
+      workspace: "0a1b2c3d",
+    });
+    expect(sameWorkspacePlace(inRepo)).toEqual({ machine: "work", repo: "cloudpid" });
+    expect(sameWorkspacePlace({ ...session("a"), machine: "work" })).toEqual({ machine: "work" });
+  });
+
+  it("is named by the Machine's name, the repo and the Workspace, or the slug when the name is not known", () => {
+    const names = { work: "Work" };
+    const branches = { "0a1b2c3d": "fix/build" };
+
+    expect(placeLabel({ machine: "work", repo: "cloudpid", workspace: "new" }, names)).toBe(
+      "Work · cloudpid · new workspace",
+    );
+    expect(placeLabel({ machine: "work", repo: "cloudpid" }, names)).toBe(
+      "Work · cloudpid · main checkout",
+    );
+    expect(
+      placeLabel({ machine: "work", repo: "cloudpid", workspace: "0a1b2c3d" }, names, branches),
+    ).toBe("Work · cloudpid · fix/build");
+    expect(placeLabel({ machine: "work", repo: "cloudpid", workspace: "ffffffff" }, names)).toBe(
+      "Work · cloudpid · workspace ffffffff",
+    );
     expect(placeLabel({ machine: "work" }, names)).toBe("Work");
     expect(placeLabel({ machine: "gone" }, names)).toBe("gone");
   });

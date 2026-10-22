@@ -47,13 +47,17 @@ export const createMachineAtom = appRuntime.fn(
   { concurrent: true },
 );
 
-/** Which of the dialogs of Machine `slug`'s card is open, if any: removing a repo names the repo. */
+/**
+ * Which of the dialogs of Machine `slug`'s card is open, if any: removing a repo names the repo, and removing a
+ * Workspace its id.
+ */
 export type MachineDialog =
   | "edit"
   | "delete"
   | "reset"
   | "restart"
-  | { readonly removeRepo: string };
+  | { readonly removeRepo: string }
+  | { readonly removeWorkspace: string };
 
 /** The dialog of Machine `slug`'s card that is open: null when none is. */
 export const machineDialogAtom = Atom.family((_slug: string) =>
@@ -115,7 +119,13 @@ export const deleteMachineAtom = Atom.family((slug: string) =>
     (_: void, get) =>
       RegistryClient.use((registry) => registry("deleteMachine", { machine: slug })).pipe(
         Effect.asVoid,
-        changing(["machines", "sessions", `repos:${slug}`, `machine-settings:${slug}`]),
+        changing([
+          "machines",
+          "sessions",
+          "workspaces",
+          `repos:${slug}`,
+          `machine-settings:${slug}`,
+        ]),
         Effect.tap(() =>
           Effect.sync(() => {
             get.set(machineDialogAtom(slug), null);
@@ -139,7 +149,7 @@ export const resetMachineAtom = Atom.family((slug: string) =>
     (_: void, get) =>
       RegistryClient.use((registry) => registry("resetMachine", { machine: slug })).pipe(
         Effect.asVoid,
-        changing(["machines", "sessions", `repos:${slug}`]),
+        changing(["machines", "sessions", "workspaces", `repos:${slug}`]),
         Effect.tap(() =>
           Effect.sync(() => {
             get.set(machineDialogAtom(slug), null);
@@ -181,7 +191,45 @@ export const removeRepoAtom = Atom.family((slug: string) =>
     (repo: string, get) =>
       RegistryClient.use((registry) => registry("removeRepo", { machine: slug, repo })).pipe(
         Effect.asVoid,
-        changing(["sessions", `repos:${slug}`]),
+        changing(["sessions", "workspaces", `repos:${slug}`]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(machineDialogAtom(slug), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** Every Workspace of its own (a worktree of a repo), on every Machine, newest first. */
+export const workspacesAtom = RegistryClient.query("listWorkspaces", undefined, {
+  reactivityKeys: ["workspaces"],
+});
+
+/** The Workspaces of their own as of the last answer; null until the first. */
+export const workspaceListAtom = Atom.map(workspacesAtom, (result) =>
+  result.pipe(AsyncResult.value, Option.getOrNull),
+);
+
+/** Each Workspace's branch, by id, which names it to the owner. */
+export const workspaceBranchesAtom = Atom.map(workspaceListAtom, (workspaces) =>
+  Record.fromEntries(Arr.map(workspaces ?? [], (known) => [known.id, known.branch] as const)),
+);
+
+/** What is typed in the Remove dialog of Workspace `id`: its branch, to confirm. */
+export const removeWorkspaceTypedAtom = Atom.family((_id: string) => Atom.make(""));
+
+/**
+ * Remove a Workspace of Machine `slug` by id: the Sessions bound to it, then its worktree; its branch stays. A removal
+ * that stopped partway deleted some Sessions, so the lists ask again either way. Once it is removed, the dialog closes.
+ */
+export const removeWorkspaceAtom = Atom.family((slug: string) =>
+  appRuntime.fn(
+    (id: string, get) =>
+      RegistryClient.use((registry) => registry("removeWorkspace", { id })).pipe(
+        Effect.asVoid,
+        changing(["sessions", "workspaces"]),
         Effect.tap(() =>
           Effect.sync(() => {
             get.set(machineDialogAtom(slug), null);
