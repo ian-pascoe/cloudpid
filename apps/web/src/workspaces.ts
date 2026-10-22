@@ -17,6 +17,8 @@ export type WorkspaceGroup = {
   /** The Workspace's name, or its slug when it is not known. */
   readonly name: string;
   readonly sessions: readonly SessionRecord[];
+  /** Whether any of them is running, so a collapsed group still shows it. */
+  readonly running: boolean;
 };
 
 /**
@@ -40,6 +42,7 @@ export const groupByWorkspace = (
     workspace,
     name: names[workspace] ?? workspace,
     sessions: grouped,
+    running: grouped.some((session) => session.status === "running"),
   }));
 };
 

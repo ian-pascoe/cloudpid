@@ -24,6 +24,7 @@
           "@effect/platform-browser",
           "@effect/vitest",
           "effect/http",
+          "effect/persistence",
           "effect/reactivity",
           "effect/rpc",
           "effect/socket"

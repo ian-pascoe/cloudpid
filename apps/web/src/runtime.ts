@@ -10,6 +10,7 @@ import { UploadsLive } from "./chat/uploads.ts";
 import { PushManagerLive } from "./push.ts";
 import { RegistryClient } from "./registry.ts";
 import { layerSessionProbe } from "./session/client.ts";
+import { keyValueStoreLayer } from "./storage.ts";
 
 /** The browser's own services: the WebSocket constructor, the clipboard, and the Session probe over `fetch`. */
 export const BrowserLayer = Layer.mergeAll(
@@ -23,7 +24,8 @@ export const BrowserLayer = Layer.mergeAll(
  * factory, which builds a layer once per registry, so there is one client, and one `Reactivity` that a mutation here
  * invalidates the client's queries through. Web Push (`PushManagerLive`), the composer's uploads (`UploadsLive`) and its
  * image encoder (`ImageEncoderLive`) touch the page only when an operation runs, so building the layer is safe where
- * there is none (a test). A test replaces either layer through the registry's `initialValues`.
+ * there is none (a test). The device's key-value store (`keyValueStoreLayer`) reads `localStorage` only when an atom
+ * asks. A test replaces the Registry client's layer or the store's through the registry's `initialValues`.
  */
 export const appRuntime = Atom.runtime((get) =>
   Layer.mergeAll(
@@ -32,5 +34,6 @@ export const appRuntime = Atom.runtime((get) =>
     UploadsLive,
     ImageEncoderLive,
     get(RegistryClient.runtime.layer),
+    get(keyValueStoreLayer),
   ),
 );

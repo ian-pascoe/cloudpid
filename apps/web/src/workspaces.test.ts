@@ -41,6 +41,19 @@ describe("groupByWorkspace", () => {
     ]);
   });
 
+  it("says whether any of a group's Sessions is running", () => {
+    const groups = groupByWorkspace([
+      { ...session("c", "pi"), status: "running" },
+      session("b", "cloudpid"),
+      session("a", "pi"),
+    ]);
+
+    expect(groups.map((group) => [group.workspace, group.running])).toEqual([
+      ["pi", true],
+      ["cloudpid", false],
+    ]);
+  });
+
   it("is empty without Sessions", () => {
     expect(groupByWorkspace([])).toEqual([]);
   });
