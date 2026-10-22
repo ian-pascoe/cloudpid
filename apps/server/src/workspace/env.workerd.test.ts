@@ -239,6 +239,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
 
     const launch = new ContainerLaunch({
       settings: async () => ({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-3" }),
+      ignore: () => undefined,
       snapshots: {
         restorable: async () => ({ id: "snap-1", image: undefined }),
         restored: async () => undefined,

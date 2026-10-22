@@ -8,6 +8,8 @@
 // - It is tied to the image it was taken from, so the handle is kept with the image of the Container it was taken
 //   from (not the one a launch would run now: Containers outlive a deploy) and forgotten when a deploy changes it. A
 //   Container on an older image than the deployed one is not snapshotted.
+// - It is tied to the Container-only paths (computer's `ignore`) the Container launched with, the same way: computerd's
+//   store and the disk's copies of those paths are laid out for them, so a launch with others starts from the image.
 // - A snapshot lives 30 days from its creation or latest restore, so one that is near that is not restored.
 // - The disk is searched for the GitHub token before a snapshot (`scanContainerDisk`: everything but the pseudo file
 //   systems, the Workspace mount and pnpm's stores, for the token and its common base64 forms), and a snapshot that
@@ -34,6 +36,8 @@ export type SnapshotRecord = {
   readonly tookMs: number;
   /** The reference of the image the Container ran, which the snapshot is not portable beyond. */
   readonly image: string | undefined;
+  /** The Container-only paths the Container launched with; none where it had none. Absent from older records. */
+  readonly ignore?: readonly string[] | undefined;
   readonly reason: SnapshotReason;
 };
 
@@ -76,10 +80,14 @@ export class ContainerSnapshots {
    * Snapshot the running Container, which runs `image`. Never rejects: a snapshot is an optimisation, and what failed is
    * reported. A Container on an image other than the deployed one is not snapshotted.
    */
-  take(reason: SnapshotReason, image: string | undefined): Promise<SnapshotOutcome> {
+  take(
+    reason: SnapshotReason,
+    image: string | undefined,
+    ignore?: readonly string[],
+  ): Promise<SnapshotOutcome> {
     if (this.#inflight !== undefined) return this.#inflight;
 
-    const inflight = this.#take(reason, image).finally(() => {
+    const inflight = this.#take(reason, image, ignore).finally(() => {
       this.#inflight = undefined;
     });
 
@@ -88,19 +96,26 @@ export class ContainerSnapshots {
     return inflight;
   }
 
-  /** The snapshot to start the next Container from, if there is a live one of the image it would run. */
-  async restorable(): Promise<
-    { readonly id: string; readonly image: string | undefined } | undefined
-  > {
+  /**
+   * The snapshot to start the next Container from, if there is a live one of the image it would run, taken with the
+   * Container-only paths it launches with (`ignore`).
+   */
+  async restorable(
+    ignore?: readonly string[],
+  ): Promise<{ readonly id: string; readonly image: string | undefined } | undefined> {
     if (!this.#deps.enabled) return undefined;
 
     const record = await this.#deps.load();
 
     if (record === undefined) return undefined;
 
-    // A deploy changed the image (the snapshot is not portable to it), or the snapshot is about to expire: a new one is
-    // taken from the next Container that starts from the image.
-    if (record.image !== this.#deps.image() || this.#deps.now() - record.refreshedAt > MAX_AGE_MS) {
+    // A deploy changed the image (the snapshot is not portable to it), the Container-only paths changed, or the snapshot
+    // is about to expire: a new one is taken from the next Container that starts from the image.
+    if (
+      record.image !== this.#deps.image() ||
+      !samePaths(record.ignore, ignore) ||
+      this.#deps.now() - record.refreshedAt > MAX_AGE_MS
+    ) {
       await this.#deps.clear();
 
       return undefined;
@@ -121,7 +136,11 @@ export class ContainerSnapshots {
     return this.#deps.clear();
   }
 
-  async #take(reason: SnapshotReason, image: string | undefined): Promise<SnapshotOutcome> {
+  async #take(
+    reason: SnapshotReason,
+    image: string | undefined,
+    ignore: readonly string[] | undefined,
+  ): Promise<SnapshotOutcome> {
     const deps = this.#deps;
 
     if (!deps.enabled || !deps.running()) return "skipped";
@@ -162,6 +181,7 @@ export class ContainerSnapshots {
         refreshedAt: deps.now(),
         tookMs: deps.now() - started,
         image,
+        ignore,
         reason,
       });
 
@@ -195,6 +215,10 @@ export class ContainerSnapshots {
     });
   }
 }
+
+/** Whether two lists of Container-only paths are the same, in the same order (the last match wins). */
+const samePaths = (a: readonly string[] | undefined, b: readonly string[] | undefined): boolean =>
+  a === undefined || b === undefined ? a === b : a.join(",") === b.join(",");
 
 /**
  * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` (one per line), anywhere on the Container's

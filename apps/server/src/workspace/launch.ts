@@ -10,7 +10,10 @@
 //   the image (computer's one restart), and the snapshot is forgotten when the Container died, not when it was slow. A
 //   start the platform rejects outright for a snapshot (an expired handle) is retried once from the image;
 // - the image the Container runs is recorded per launch (the image of the snapshot it restored, else the deployed one),
-//   because Containers outlive a deploy: a snapshot is labelled with that, never with the image a launch would run now.
+//   because Containers outlive a deploy: a snapshot is labelled with that, never with the image a launch would run now;
+// - the Container-only paths (computer's `ignore`: the built-in ones, then the Workspace's own) are decided before
+//   computer builds the launch (`ignore`), kept for as long as that Container runs, and recorded from the launch itself,
+//   so a snapshot is restored only by a launch with the paths it was taken with.
 // @effect-diagnostics asyncFunction:off
 import type {
   ContainerInstanceSize,
@@ -30,6 +33,8 @@ export type LaunchRecord = {
   readonly restoredFrom: string | undefined;
   /** The reference of the image it runs; undefined when not known (a Container adopted with no record). */
   readonly image: string | undefined;
+  /** The Container-only paths it launched with; none where it had none. Absent from older records. */
+  readonly ignore?: readonly string[] | undefined;
   /** Epoch milliseconds. */
   readonly launchedAt: number;
 };
@@ -37,6 +42,8 @@ export type LaunchRecord = {
 export type ContainerLaunchDeps = {
   /** The Workspace's settings now. */
   readonly settings: () => Promise<WorkspaceSettings>;
+  /** The Container-only paths a launch with `settings` has: the built-in ones, then the Workspace's own. */
+  readonly ignore: (settings: WorkspaceSettings) => readonly string[] | undefined;
   readonly snapshots: Pick<ContainerSnapshots, "restorable" | "restored" | "forget" | "take">;
   /** The reference of the image a Container launched now would run. */
   readonly image: () => string | undefined;
@@ -49,6 +56,13 @@ export type ContainerLaunchDeps = {
 };
 
 const MINUTE = 60_000;
+
+/** The Container-only paths of a launch, as computer passes them to computerd (`MOUNT_IGNORE`), if it has any. */
+const ignoreOf = (spec: ContainerLaunchSpec): readonly string[] | undefined => {
+  const joined = spec.env?.["MOUNT_IGNORE"];
+
+  return joined === undefined ? undefined : joined.split(",");
+};
 
 export class ContainerLaunch {
   readonly #deps: ContainerLaunchDeps;
@@ -74,6 +88,23 @@ export class ContainerLaunch {
       status: () => api.status(),
       exitInfo: () => api.exitInfo(),
     };
+  }
+
+  /**
+   * The Container-only paths of the Container a connection reaches: what the running one launched with, else what a
+   * launch now would have. computer takes them when its backend is built, before the launch, so they are asked for here
+   * first; one found running with no launch on record gets the built-in ones, which it was launched with.
+   */
+  async ignore(): Promise<readonly string[] | undefined> {
+    if (this.#deps.running()) {
+      const kept = await this.#current();
+
+      return kept !== undefined && "ignore" in kept
+        ? kept.ignore
+        : this.#deps.ignore(DEFAULT_WORKSPACE_SETTINGS);
+    }
+
+    return this.#deps.ignore(await this.#deps.settings());
   }
 
   /** How long the running Container may go unused: what it was launched with, not what the settings say now. */
@@ -106,7 +137,7 @@ export class ContainerLaunch {
 
     return record?.image === undefined
       ? "skipped"
-      : this.#deps.snapshots.take(reason, record.image);
+      : this.#deps.snapshots.take(reason, record.image, record.ignore);
   }
 
   async #current(): Promise<LaunchRecord | undefined> {
@@ -129,7 +160,8 @@ export class ContainerLaunch {
     const instance =
       kept?.instance ?? (running ? DEFAULT_WORKSPACE_SETTINGS.instance : settings.instance);
 
-    let snapshot = running ? undefined : await this.#deps.snapshots.restorable();
+    const ignore = ignoreOf(spec);
+    let snapshot = running ? undefined : await this.#deps.snapshots.restorable(ignore);
 
     this.#restoring = snapshot?.id;
 
@@ -166,6 +198,7 @@ export class ContainerLaunch {
           needsSnapshot: false,
           restoredFrom: undefined,
           image: undefined,
+          ignore,
           launchedAt: this.#deps.now(),
         });
       }
@@ -179,6 +212,7 @@ export class ContainerLaunch {
       needsSnapshot: snapshot === undefined,
       restoredFrom: snapshot?.id,
       image: snapshot === undefined ? this.#deps.image() : snapshot.image,
+      ignore,
       launchedAt: this.#deps.now(),
     });
 

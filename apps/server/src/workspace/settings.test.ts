@@ -36,11 +36,15 @@ describe("workspaceSettingsStore", () => {
     expect(answer).toEqual({
       ok: true,
       state: {
-        settings: { instance: "standard-4", idleMinutes: 45 },
+        settings: { instance: "standard-4", idleMinutes: 45, ignore: [] },
         overrides: { instance: "standard-4", idleMinutes: 45 },
       },
     });
-    expect((await store.read()).settings).toEqual({ instance: "standard-4", idleMinutes: 45 });
+    expect((await store.read()).settings).toEqual({
+      instance: "standard-4",
+      idleMinutes: 45,
+      ignore: [],
+    });
   });
 
   it("keeps only what differs from the defaults, so a setting left alone follows later defaults", async () => {
@@ -68,7 +72,7 @@ describe("workspaceSettingsStore", () => {
 
     const state = await store.read();
 
-    expect(state.settings).toEqual({ instance: "standard-2", idleMinutes: 30 });
+    expect(state.settings).toEqual({ instance: "standard-2", idleMinutes: 30, ignore: [] });
     expect(state.problem).toContain("instance");
   });
 });

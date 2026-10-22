@@ -274,6 +274,22 @@ describe("ContainerSnapshots.restorable", () => {
     expect(await snapshots.restorable()).toEqual({ id: "snap-1", image: IMAGE });
   });
 
+  it("offers a snapshot only to a launch with the Container-only paths it was taken with", async () => {
+    const { state, snapshots } = open();
+
+    await snapshots.take("idle", IMAGE, ["**/node_modules", "/data"]);
+
+    expect(state.stored?.ignore).toEqual(["**/node_modules", "/data"]);
+    expect(await snapshots.restorable(["**/node_modules", "/data"])).toEqual({
+      id: "snap-1",
+      image: IMAGE,
+    });
+
+    // The Workspace's paths changed: what the disk holds for them, and computerd's store, are for the old ones.
+    expect(await snapshots.restorable(["**/node_modules"])).toBeUndefined();
+    expect(state.stored).toBeUndefined();
+  });
+
   it("forgets a snapshot of another image: a deploy that changed it makes the snapshot useless", async () => {
     const { state, snapshots } = open();
 

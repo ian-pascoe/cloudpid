@@ -11,6 +11,15 @@ type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
 
 const SPEC: Spec = { env: { PORT: "8080" }, enableInternet: true, name: "WorkspaceContainer" };
 
+/** The built-in Container-only paths of the fake: the Workspace's own come after them. */
+const BUILT_IN = ["**/node_modules"];
+
+/** A launch's spec, as computer's `ContainerBackend` builds it for the Container-only paths `ignore`. */
+const specFor = (ignore: readonly string[]): Spec => ({
+  ...SPEC,
+  env: { ...SPEC.env, MOUNT_IGNORE: ignore.join(",") },
+});
+
 type Fake = {
   settings: WorkspaceSettings;
   running: boolean;
@@ -25,6 +34,10 @@ type Fake = {
   rejectSnapshotStart: boolean;
   restores: number;
   takeImages: Array<string | undefined>;
+  /** The Container-only paths each snapshot was labelled with. */
+  takeIgnores: Array<readonly string[] | undefined>;
+  /** The Container-only paths each launch asked for a snapshot of. */
+  restorableIgnores: Array<readonly string[] | undefined>;
   record: LaunchRecord | undefined;
   starts: Spec[];
   restarts: Spec[];
@@ -46,6 +59,8 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
     rejectSnapshotStart: false,
     restores: 0,
     takeImages: [],
+    takeIgnores: [],
+    restorableIgnores: [],
     record: undefined,
     starts: [],
     restarts: [],
@@ -87,9 +102,14 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
   const make = () =>
     new ContainerLaunch({
       settings: async () => state.settings,
+      ignore: (settings) => [...BUILT_IN, ...settings.ignore],
       image: () => state.image,
       snapshots: {
-        restorable: async () => state.restorable,
+        restorable: async (ignore) => {
+          state.restorableIgnores.push(ignore);
+
+          return state.restorable;
+        },
         forget: async () => {
           state.forgotten++;
           state.restorable = undefined;
@@ -97,9 +117,10 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
         restored: async () => {
           state.restores++;
         },
-        take: async (reason, image) => {
+        take: async (reason, image, ignore) => {
           state.takes.push(reason);
           state.takeImages.push(image);
+          state.takeIgnores.push(ignore);
 
           return state.takeOutcome;
         },
@@ -168,7 +189,7 @@ describe("a launch", () => {
     // The owner changes the settings, and the Workspace DO reconnects to the Container that still runs.
     state.running = true;
     state.outcome = "adopted";
-    state.settings = { instance: "standard-4", idleMinutes: 60 };
+    state.settings = { ...state.settings, instance: "standard-4", idleMinutes: 60 };
     await container.start(SPEC);
 
     expect(state.starts[1]?.instance).toBe("basic");
@@ -212,6 +233,59 @@ describe("a launch", () => {
 
     expect(state.starts[0]?.instance).toBe(DEFAULT_WORKSPACE_SETTINGS.instance);
     expect(state.record?.needsSnapshot).toBe(false);
+  });
+});
+
+describe("the Container-only paths of a launch", () => {
+  it("are the built-in ones and then the Workspace's, as its settings are when it launches", async () => {
+    const { launch } = open({ ignore: ["/data"] });
+
+    expect(await launch.ignore()).toEqual(["**/node_modules", "/data"]);
+  });
+
+  it("are what the running Container launched with, whatever the settings say now, after an eviction too", async () => {
+    const { state, container, launch, make } = open({ ignore: ["/data"] });
+
+    await container.start(specFor((await launch.ignore()) ?? []));
+    state.running = true;
+    state.settings = { ...state.settings, ignore: ["/other"] };
+
+    expect(await launch.ignore()).toEqual(["**/node_modules", "/data"]);
+    expect(await make().ignore()).toEqual(["**/node_modules", "/data"]);
+
+    state.running = false;
+
+    expect(await launch.ignore()).toEqual(["**/node_modules", "/other"]);
+  });
+
+  it("are the built-in ones for a Container found running with no launch on record", async () => {
+    const { state, launch } = open({ ignore: ["/data"] });
+
+    state.running = true;
+
+    expect(await launch.ignore()).toEqual(["**/node_modules"]);
+  });
+
+  it("restore only a snapshot taken with the same paths, and label the next one with them", async () => {
+    const { state, container, launch } = open({ ignore: ["/data"] });
+
+    await container.start(specFor(["**/node_modules", "/data"]));
+    state.running = true;
+    await launch.snapshot("idle");
+
+    expect(state.restorableIgnores).toEqual([["**/node_modules", "/data"]]);
+    expect(state.takeIgnores).toEqual([["**/node_modules", "/data"]]);
+  });
+
+  it("are none where the launch has none (the local Container, which cannot keep any)", async () => {
+    const { state, container, launch } = open();
+
+    await container.start(SPEC);
+    state.running = true;
+    await launch.snapshot("idle");
+
+    expect(state.restorableIgnores).toEqual([undefined]);
+    expect(state.takeIgnores).toEqual([undefined]);
   });
 });
 
@@ -283,6 +357,7 @@ describe("a start the platform rejects for the snapshot", () => {
     await expect(
       new ContainerLaunch({
         settings: async () => state.settings,
+        ignore: () => undefined,
         image: () => state.image,
         snapshots: {
           restorable: async () => undefined,

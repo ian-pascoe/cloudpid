@@ -1,5 +1,6 @@
 // A Workspace's own settings (`docs/spec.md` → Container and Toolchains → Size and idle): the Container's instance
-// size and how long it may sit unused before the Workspace stops it. Like the global settings, every field has a
+// size, how long it may sit unused before the Workspace stops it, and the paths it keeps to itself on top of the
+// built-in ones. Like the global settings, every field has a
 // decoding default, so decoding the saved overrides gives the resolved settings and the schema's `Encoded` side is the
 // overrides' shape. They live in the Workspace DO, which reads them at each Container launch.
 import * as Arr from "effect/Array";
@@ -45,11 +46,74 @@ const IdleMinutes = Schema.Int.check(
   Schema.isLessThanOrEqualTo(MAX_IDLE_MINUTES),
 );
 
+/** The most extra Container-only paths a Workspace may have. */
+export const MAX_IGNORE_PATTERNS = 50;
+
+/** The longest extra Container-only path. */
+const MAX_IGNORE_PATTERN_LENGTH = 255;
+
+/**
+ * Why `pattern` cannot be an extra Container-only path, or undefined when it can: the rules of `@cloudflare/computer`
+ * 0.5.1's `ignore` (`checkIgnorePatterns`), which refuses a bad pattern when the Container backend is built, and so
+ * would keep the Container from starting. A pattern starts with `/` (from the mount's root) or with `**` and a slash
+ * (at any depth), may start with `!` to keep a path synced again, and has only `*` and `**` (a whole segment) as wildcards.
+ */
+export const ignorePatternProblem = (pattern: string): string | undefined => {
+  if (pattern.trim() !== pattern) return "has spaces around it";
+
+  if (pattern.length > MAX_IGNORE_PATTERN_LENGTH) {
+    return `is longer than ${MAX_IGNORE_PATTERN_LENGTH} characters`;
+  }
+
+  const body = pattern.startsWith("!") ? pattern.slice(1) : pattern;
+
+  if (!body.startsWith("/") && !body.startsWith("**/")) {
+    return 'must start with "/" (from /workspace) or "**/" (at any depth)';
+  }
+
+  if (/[{}[\]?\\]/.test(body)) return 'uses syntax that is not supported: only "*" and "**"';
+
+  if (body.includes(",")) return "contains a comma";
+
+  const trimmed = body.replace(/^\/+|\/+$/g, "");
+  const parts = trimmed === "" ? [] : trimmed.split("/");
+
+  if (parts.includes("")) return "contains an empty path segment";
+
+  if (Arr.some(parts, (part) => part === "." || part === ".."))
+    return 'contains a "." or ".." segment';
+
+  if (Arr.some(parts, (part) => part !== "**" && part.includes("**"))) {
+    return 'uses "**" inside a segment: it must be a whole one';
+  }
+
+  if (Arr.every(parts, (part) => part === "**" || part === "*")) {
+    return "would keep the whole Workspace on the Container";
+  }
+
+  return undefined;
+};
+
+const IgnorePattern = Schema.String.check(
+  Schema.makeFilter((pattern: string) => {
+    const problem = ignorePatternProblem(pattern);
+
+    return problem === undefined ? undefined : `${JSON.stringify(pattern)} ${problem}`;
+  }),
+);
+
 export const WorkspaceSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("standard-2"))),
   /** Minutes without a command on the Container before it is stopped (a disk snapshot is taken first). */
   idleMinutes: IdleMinutes.pipe(Schema.withDecodingDefaultKey(Effect.succeed(15))),
+  /**
+   * Paths the Container keeps to itself, out of the Workspace, after the built-in ones (`TOOLCHAIN_IGNORE`), as
+   * computer's `ignore` patterns: the last one that matches a path wins, so `!` keeps a built-in one synced.
+   */
+  ignore: Schema.Array(IgnorePattern)
+    .check(Schema.isMaxLength(MAX_IGNORE_PATTERNS))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 
 export type WorkspaceSettings = typeof WorkspaceSettings.Type;
@@ -116,6 +180,8 @@ export const workspaceOverridesFrom = (settings: WorkspaceSettings): WorkspaceSe
   if (settings.idleMinutes !== DEFAULT_WORKSPACE_SETTINGS.idleMinutes) {
     overrides.idleMinutes = settings.idleMinutes;
   }
+
+  if (settings.ignore.length > 0) overrides.ignore = settings.ignore;
 
   return overrides;
 };

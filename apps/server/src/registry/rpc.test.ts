@@ -709,7 +709,7 @@ it("saves a Workspace's settings in its object and answers the state in force", 
     fake,
   );
 
-  expect(state.settings).toEqual({ instance: "standard-4", idleMinutes: 5 });
+  expect(state.settings).toEqual({ instance: "standard-4", idleMinutes: 5, ignore: [] });
   expect(fake.saved.get("cloudpid")).toEqual({ instance: "standard-4", idleMinutes: 5 });
 });
 
