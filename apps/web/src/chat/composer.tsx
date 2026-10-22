@@ -462,6 +462,9 @@ const ComposerBox = ({
             rows={1}
             autoFocus={autoFocus}
             cancelOnEscape={false}
+            // On a phone or tablet without a mouse, Return starts a new line and the Send button sends, as in a native
+            // messaging app; with a mouse or trackpad, Enter still sends.
+            unstable_insertNewlineOnTouchEnter
             addAttachmentOnPaste={false}
             onPaste={onPaste}
             placeholder={placeholder}
@@ -596,7 +599,8 @@ const ComposerBox = ({
  * The composer: one bordered box holding the input and a toolbar, with `tools` (the model and thinking pickers) on the
  * left and the send controls on the right. While a Run is in progress a message is a steer by default (it joins the
  * Run at its next boundary, after the tool calls in progress) and Alt+Enter, or the Queue button, makes it a follow-up
- * (it waits for the next Run); with nothing typed, the main button stops the Run instead. Messages waiting in the
+ * (it waits for the next Run); with nothing typed, the main button stops the Run instead. Enter sends, except on a touch
+ * screen without a mouse, where it starts a new line and only the buttons send. Messages waiting in the
  * Session's inbox show above the box, by lane, after the ones still being sent.
  *
  * A `/` at the start of the message opens a menu of the Slash commands: `commands`, the ones of any conversation

@@ -113,6 +113,18 @@
   }
 }
 
+/*
+ * iOS zooms the page into any focused field whose text is under 16px. On touch screens every field gets 16px instead;
+ * the viewport is left zoomable, so pinch-zoom still works. Unlayered, so it beats the `text-sm` utilities.
+ */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
 @keyframes pulse-dot {
   50% {
     opacity: 0.35;
