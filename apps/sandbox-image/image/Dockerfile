@@ -1,6 +1,6 @@
 # The Workspace Container's image (docs/spec.md → Container and Toolchains, ADR-0004): debian:stable-slim, fuse3,
-# ca-certificates, computerd, and mise. Everything else is a mise Toolchain. The image is glibc-based because computerd
-# is a glibc Node SEA, and linux/amd64 because that is what Cloudflare Containers run.
+# ca-certificates, computerd under its supervisor, and mise. Everything else is a mise Toolchain. The image is
+# glibc-based because computerd is a glibc Node SEA, and linux/amd64 because that is what Cloudflare Containers run.
 
 # Keep in step with the version of @cloudflare/computer the Workspace DO runs (apps/sandbox-image/src/index.test.ts
 # fails when they differ): the Workspace and computerd speak a sync protocol that is not stable across releases.
@@ -33,6 +33,7 @@ RUN apt-get update \
 
 COPY --from=computerd /usr/local/bin/computerd /usr/local/bin/computerd
 COPY --from=mise /mise /usr/local/bin/mise
+COPY --chmod=755 supervise /usr/local/bin/cloudpid-supervise
 
 # computerd mounts its file system at MOUNT_POINT, so commands see the Workspace's files at /workspace. FUSE_MOUNT=auto
 # mounts through /dev/fuse where the platform exposes it (Cloudflare Containers) and falls back to a userspace shim
@@ -45,4 +46,6 @@ ENV PORT=8080 \
     PATH=/root/.local/share/mise/shims:${PATH}
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/computerd"]
+# computerd runs under a supervisor that reports why it stopped, when it stops on its own, to the Workspace DO
+# (`supervise`; docs/spec.md → Container and Toolchains → Exit reports).
+ENTRYPOINT ["/usr/local/bin/cloudpid-supervise"]

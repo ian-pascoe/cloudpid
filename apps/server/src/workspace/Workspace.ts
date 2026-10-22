@@ -18,6 +18,7 @@ import {
 } from "@cloudflare/computer/backends/container";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import jq from "@cloudflare/computer/shell/jq";
+import { EXIT_REPORT_HOST } from "@cloudpid/sandbox-image/supervisor";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
   type EnvRequest,
@@ -30,6 +31,7 @@ import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import { DurableObject } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
+import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
@@ -60,6 +62,11 @@ export type WorkspaceEnv = {
    * userspace shim refuses an ignore list and exits. Anything else applies `TOOLCHAIN_IGNORE`.
    */
   readonly CONTAINER_FUSE?: string;
+};
+
+/** The loopback bindings of the Workspaces Worker's entry (`worker.ts`) that the Workspace DO hands the platform. */
+type WorkspaceExports = {
+  readonly ContainerExitReports: (options: { readonly props: ExitReportProps }) => Fetcher;
 };
 
 /** A Durable Object that can start the Container it is bound to (`getWorkspaceContainer()`, for `ContainerBackend`). */
@@ -163,8 +170,16 @@ export class Workspace extends ContainerHost {
 
     // The Container starts when a command first asks for it, not with the object.
     const container: ContainerBackendOptions = {
-      // The launch goes through `launch`, which picks the instance type and the snapshot.
-      container: () => ({ getWorkspaceContainer: () => launch.wrap(this.getWorkspaceContainer()) }),
+      // The launch goes through `launch`, which picks the instance type and the snapshot, and each Container started can
+      // report why it stopped (`withExitReports`).
+      container: () => ({
+        getWorkspaceContainer: () =>
+          withExitReports(
+            launch.wrap(this.getWorkspaceContainer()),
+            () => this.#interceptExitReports(),
+            (message) => console.warn(message),
+          ),
+      }),
       workspace: { binding: WORKSPACE_BINDING, id: ctx.id.toString() },
       name: WORKSPACE_CONTAINER,
       connectTimeoutMs: CONNECT_TIMEOUT_MS,
@@ -241,6 +256,21 @@ export class Workspace extends ContainerHost {
         return noopObserver.span(name, attributes, run).finally(touch);
       },
     };
+  }
+
+  /** Routes the report host of the Container that runs now to `ContainerExitReports`, which logs what it is sent. */
+  async #interceptExitReports(): Promise<void> {
+    const container = this.ctx.container;
+
+    if (container === undefined) return;
+
+    // SAFETY: the Workspaces Worker's entry (`worker.ts`) exports `ContainerExitReports`; `ctx.exports` is untyped here.
+    const exports = this.ctx.exports as WorkspaceExports;
+
+    await container.interceptOutboundHttp(
+      EXIT_REPORT_HOST,
+      exports.ContainerExitReports({ props: { workspace: this.ctx.id.toString() } }),
+    );
   }
 
   /** The Workspace's own settings in force (Container size and idle time), for the UI: `getWorkspaceSettings`. */

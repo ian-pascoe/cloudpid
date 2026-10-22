@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./toolchains": "./src/toolchains.ts"
+    "./toolchains": "./src/toolchains.ts",
+    "./supervisor": "./src/supervisor.ts"
   },
   "scripts": {
     "typecheck": "tsc",
