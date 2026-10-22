@@ -50,6 +50,9 @@ import { SessionRegistry } from "./status.ts";
 /** Set once the child may answer; until then its requests hang until they are interrupted. */
 const RELEASED = "released";
 
+/** How many times the host asked the Workspace to start its Container. */
+const WARMS = "warms";
+
 const text = (content: Message["content"]): string =>
   Predicate.isString(content)
     ? content
@@ -107,6 +110,8 @@ export class TestSubagentSession extends DurableObject {
           extensions: Effect.map(subagents, (extension) => [extension]),
           env: fakeWorkspaceEnv(ctx.storage.kv),
           expandTimeout: "1 second",
+          // Counts the Container starts the owner's messages ask the Workspace for.
+          onSubmit: Effect.sync(() => ctx.storage.kv.put(WARMS, this.warms() + 1)),
         }).pipe(
           Layer.provide(
             Layer.mergeAll(
@@ -238,6 +243,11 @@ export class TestSubagentSession extends DurableObject {
         }),
       ),
     );
+  }
+
+  /** How many times a message asked the Workspace to start its Container (`onSubmit`). */
+  warms(): number {
+    return this.ctx.storage.kv.get<number>(WARMS) ?? 0;
   }
 
   /** Let the child answer, from its next request on. */

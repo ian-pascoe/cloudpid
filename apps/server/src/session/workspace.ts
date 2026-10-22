@@ -17,7 +17,10 @@ const computer = () => import("@cloudpid/computer-env");
 
 /** The Workspace DO namespace, as a Session DO binds it: the raw namespace, whose stubs `ComputerExecutionEnv` needs. */
 export type WorkspaceNamespace = {
-  getByName(slug: string): ComputerWorkspaceStub;
+  getByName(slug: string): ComputerWorkspaceStub & {
+    /** Start the Container for a message, answering at once (`Workspace.warmContainer`). */
+    warmContainer(): Promise<void>;
+  };
 };
 
 /** Where a Session works: its Workspace's slug, and the repo directory below `/workspace` it works in (null: the root). */
@@ -72,6 +75,11 @@ export type SessionWorkspace = {
   readonly env: NonNullable<HarnessOptions["env"]>;
   /** The Workspace's file search, for `ls`, `find`, and `grep`. */
   readonly files: FileSearch;
+  /**
+   * Ask the Workspace to start its Container for a message the owner sent (docs/spec.md → Backends). It answers once
+   * the Workspace has the request, not once the Container is up.
+   */
+  readonly warm: () => Promise<void>;
 };
 
 export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorkspace => {
@@ -101,5 +109,10 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
       });
     },
     files,
+    warm: async () => {
+      const { slug } = await options.placement();
+
+      await options.namespace.getByName(slug).warmContainer();
+    },
   };
 };

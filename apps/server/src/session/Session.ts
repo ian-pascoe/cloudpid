@@ -318,6 +318,13 @@ export const SessionLive = Session.make(
                 ),
                 reload: reloadSessionExtensions,
                 env: workspace.env,
+                // A message the owner sends starts the Workspace's Container, so the turn's first command does not wait
+                // for it. A request that fails only loses that head start.
+                onSubmit: Effect.tryPromise(() => workspace.warm()).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Starting the Workspace's Container failed", error),
+                  ),
+                ),
                 // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time, and when the
                 // browser falls idle past its keep-alive, so it is closed.
                 wakeAt: Effect.flatMap(

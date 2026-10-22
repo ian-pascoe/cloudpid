@@ -46,6 +46,7 @@ import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } fr
 import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
+import { ContainerWarmup } from "./warm.ts";
 import { SKILLS_MOUNT, WORKSPACE_CONTAINER, WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
 
 export type WorkspaceEnv = {
@@ -106,6 +107,7 @@ export class Workspace extends ContainerHost {
   readonly #idle: IdleStop;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
+  readonly #warmup: ContainerWarmup;
   readonly #sql: SqlStorage;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
@@ -241,6 +243,27 @@ export class Workspace extends ContainerHost {
       ],
     });
 
+    // A message the owner sends starts the Container before its first command asks for it (`warmContainer`).
+    this.#warmup = new ContainerWarmup({
+      running: () => ctx.container?.running === true,
+      connect: async () => {
+        await this.#ready();
+        await this.#workspace.ready(CONTAINER_BACKEND_ID);
+
+        let pushed = 0;
+
+        for await (const block of this.#workspace.push(CONTAINER_BACKEND_ID))
+          pushed += block.entries;
+
+        return pushed;
+      },
+      bootstrap: () => toolchains.prepare(),
+      tracker: this.#idle,
+      now: () => Date.now(),
+      info: (message) => console.info(message),
+      warn: (message) => console.warn(message),
+    });
+
     this.#host = new WorkspaceEnvHost(this.#workspace);
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
   }
@@ -340,6 +363,17 @@ export class Workspace extends ContainerHost {
    */
   reset(): void {
     this.ctx.abort(WORKSPACE_DELETED_REASON);
+  }
+
+  /**
+   * Start the Container for a message the owner sent (docs/spec.md → Backends): restore or launch it, push the files and
+   * run the bootstrap, with no command, so the turn's first command does not wait for it. It answers at once and never
+   * fails; it does nothing while the Container runs or is starting, and counts as use for the idle stop.
+   */
+  warmContainer(): Promise<void> {
+    this.ctx.waitUntil(this.#warmup.start());
+
+    return Promise.resolve();
   }
 
   /** The idle stop's alarm. */

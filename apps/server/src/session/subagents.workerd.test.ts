@@ -355,3 +355,33 @@ it("holds a subagent to the Session's spend limit, and the root's next request t
   expect(errors).not.toHaveLength(0);
   expect(Arr.every(errors, (message) => message.includes("out of budget"))).toBe(true);
 });
+
+it("starts the Workspace's Container for each owner message, not for a subagent's turns or the reports the root gets", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  // The child works and answers at once, and its answer reaches the root as a follow-up, which the root answers.
+  await runInDurableObject(stub, async (instance: TestSubagentSession) => {
+    instance.release();
+    await instance.submit("Delegate quietly");
+  });
+  await eventually(stub, async (instance) => (await instance.texts("user")).length === 2);
+  await eventually(stub, (instance) => instance.idle());
+
+  expect(await runInDurableObject(stub, (instance: TestSubagentSession) => instance.warms())).toBe(
+    1,
+  );
+
+  // A message the owner sends a subagent is a message too.
+  const state = await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.subagents(),
+  );
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.submitTo(state!.agents["agent-1"]!.conversationId, "A word from the owner"),
+  );
+  await eventually(stub, (instance) => instance.idle());
+
+  expect(await runInDurableObject(stub, (instance: TestSubagentSession) => instance.warms())).toBe(
+    2,
+  );
+});

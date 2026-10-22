@@ -572,3 +572,64 @@ describe("a command's output", () => {
     expect(seen.stdout).toBe("ghp_secret");
   });
 });
+
+describe("the bootstrap without a command (`prepare`, the early start on a message)", () => {
+  it("runs on the Container connected last, and the first command then waits for nothing", async () => {
+    const container = fakeContainer();
+    const { toolchains } = open(container);
+    const handle = await toolchains.connect(host);
+
+    await toolchains.prepare();
+
+    expect(bootstraps(container.execs)).toHaveLength(1);
+    expect(commands(container.execs)).toEqual([]);
+
+    await handle.rpc.shell.exec({ source: "git status" });
+
+    expect(bootstraps(container.execs)).toHaveLength(1);
+    expect(commands(container.execs).map((input) => input.source)).toEqual(["git status"]);
+  });
+
+  it("is the one bootstrap a command that arrives meanwhile waits for", async () => {
+    let release: () => void = () => undefined;
+
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const container = fakeContainer((input) => (isBootstrap(input) ? { gate } : {}));
+    const { toolchains } = open(container);
+    const handle = await toolchains.connect(host);
+
+    const prepared = toolchains.prepare();
+    const command = handle.rpc.shell.exec({ source: "git status" });
+
+    release();
+    await Promise.all([prepared, command]);
+
+    expect(bootstraps(container.execs)).toHaveLength(1);
+    expect(commands(container.execs)).toHaveLength(1);
+  });
+
+  it("does nothing before any connection", async () => {
+    const container = fakeContainer();
+    const { toolchains } = open(container);
+
+    await toolchains.prepare();
+
+    expect(container.execs).toEqual([]);
+  });
+
+  it("does not fail when the bootstrap does, and the next command gets its note", async () => {
+    const container = fakeContainer((input) => (isBootstrap(input) ? { code: 1 } : {}));
+    const { toolchains, warnings } = open(container);
+    const handle = await toolchains.connect(host);
+
+    await expect(toolchains.prepare()).resolves.toBeUndefined();
+    expect(warnings.join("\n")).toContain("Toolchain bootstrap failed");
+
+    await handle.rpc.shell.exec({ source: "true" });
+
+    expect(commands(container.execs)[0]?.source).toContain("bootstrap failed earlier");
+  });
+});

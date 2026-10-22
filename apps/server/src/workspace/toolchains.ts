@@ -70,6 +70,8 @@ export class ToolchainBackend implements WorkspaceBackend {
   readonly #env: CommandEnv;
   /** The Container run the bootstrap last finished in: a new connection to the same Container needs none. */
   #bootstrapped: string | undefined;
+  /** The bootstrap of the connection made last, for `prepare`. */
+  #latest: Bootstrap | undefined;
 
   constructor(options: ToolchainOptions) {
     this.#options = options;
@@ -94,6 +96,15 @@ export class ToolchainBackend implements WorkspaceBackend {
     return { ...handle, rpc: this.#rpc(handle) };
   }
 
+  /**
+   * Run the bootstrap of the connection made last, if it has not run, without a command (the early start on a message:
+   * docs/spec.md → Backends). A command that arrives meanwhile waits for this one. It never throws: a failure is reported
+   * as for a command, and the next command gets its note. Without a connection it does nothing.
+   */
+  async prepare(): Promise<void> {
+    await this.#latest?.ensure();
+  }
+
   /** The token, if there is one, as the strings to take out of output. */
   get #secret(): string | undefined {
     const { githubToken } = this.#options;
@@ -113,6 +124,8 @@ export class ToolchainBackend implements WorkspaceBackend {
         this.#bootstrapped = handle.runtimeId;
       },
     );
+
+    this.#latest = ready;
 
     /** Commands waiting for the bootstrap, and those among them killed meanwhile: computerd cannot kill what it has not started. */
     const waiting = new Set<string>();
