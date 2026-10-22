@@ -1,7 +1,7 @@
 // The Container's Toolchain contract with the Workspace DO (docs/spec.md → Container and Toolchains, ADR-0004): which
 // paths stay container-local, what a command's environment carries, and what the bootstrap does on Container start.
 // The bootstrap runs for real, under bash, against a fake `mise` that records what it is asked.
-// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off
+// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off globalDate:off
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -19,7 +19,12 @@ import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   BASE_MISE_TOML,
   bootstrapScript,
+  pendingSetupScripts,
   ROOT_MISE_TOML,
+  SETUP_SCRIPT,
+  setupScriptRun,
+  setupScriptTimedOut,
+  setupRecord,
   TOOLCHAIN_IGNORE,
   toolchainEnv,
 } from "@cloudpid/sandbox-image/toolchains";
@@ -408,5 +413,119 @@ describe("git after the bootstrap", () => {
     const found = spawnSync("grep", ["-r", "ghp_secret", home, root], { encoding: "utf8" });
 
     expect(found.stdout).toBe("");
+  });
+});
+
+/** A Workspace root with repos, a Container state directory, and the two Setup Script commands run for real. */
+const setupSandbox = () => {
+  const base = mkdtempSync(join(tmpdir(), "setup-"));
+  const root = join(base, "workspace");
+  const state = join(base, "state");
+
+  mkdirSync(root, { recursive: true });
+
+  const repo = (name: string, script?: string) => {
+    const dir = join(root, name);
+
+    mkdirSync(join(dir, ".agents"), { recursive: true });
+
+    if (script !== undefined) writeFileSync(join(dir, SETUP_SCRIPT), script);
+
+    return dir;
+  };
+
+  const pending = () =>
+    spawnSync("bash", ["-c", pendingSetupScripts(root, state)], { encoding: "utf8" })
+      .stdout.split("\n")
+      .filter((line) => line !== "");
+
+  const run = (dir: string, timeoutSeconds?: number) =>
+    spawnSync("bash", ["-c", setupScriptRun(dir, state, timeoutSeconds)], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", CLOUDPID_MARK: "from the environment" },
+    });
+
+  return { root, state, repo, pending, run };
+};
+
+describe("the Setup Scripts", () => {
+  it("are due for each repo that has one, and only those", () => {
+    const { repo, pending } = setupSandbox();
+    const a = repo("a", "echo a\n");
+
+    repo("b");
+    const c = repo("c", "echo c\n");
+
+    expect(pending()).toEqual([a, c]);
+  });
+
+  it("are not due in a Workspace without repos", () => {
+    expect(setupSandbox().pending()).toEqual([]);
+  });
+
+  it("run with bash in the repo's directory, with the environment they are given, and no input", () => {
+    const { repo, run } = setupSandbox();
+
+    const dir = repo(
+      "a",
+      'printf "%s|%s|%s" "$PWD" "$CLOUDPID_MARK" "${BASH_VERSION:+bash}"\nread -r line || echo " no input"\n',
+    );
+
+    const result = run(dir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${dir}|from the environment|bash no input\n`);
+  });
+
+  it("are not due again once they succeeded, until their content changes", () => {
+    const { repo, pending, run } = setupSandbox();
+    const dir = repo("a", "true\n");
+
+    expect(run(dir).status).toBe(0);
+    expect(pending()).toEqual([]);
+
+    writeFileSync(join(dir, SETUP_SCRIPT), "true # changed\n");
+
+    expect(pending()).toEqual([dir]);
+  });
+
+  it("record their success outside the repo, in the state directory", () => {
+    const { repo, run, state } = setupSandbox();
+    const dir = repo("a", "true\n");
+
+    run(dir);
+
+    expect(readFileSync(setupRecord("a", state), "utf8").trim()).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("stay due after a failure, which exits with the script's status", () => {
+    const { repo, pending, run } = setupSandbox();
+    const dir = repo("a", "echo broken >&2\nexit 3\n");
+
+    const result = run(dir);
+
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain("broken");
+    expect(pending()).toEqual([dir]);
+  });
+
+  it("are stopped, with what they started, once past their time, and stay due", () => {
+    const { repo, pending, run } = setupSandbox();
+    const dir = repo("a", "sleep 30 &\nwait\n");
+    const started = Date.now();
+
+    const result = run(dir, 1);
+
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(setupScriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
+    expect(pending()).toEqual([dir]);
+  });
+
+  it("are not taken for stopped when they exit with timeout's status on their own", () => {
+    const { repo, run } = setupSandbox();
+    const result = run(repo("a", "exit 124\n"), 60);
+
+    expect(result.status).toBe(124);
+    expect(setupScriptTimedOut(result.status ?? undefined, result.stderr)).toBe(false);
   });
 });
