@@ -164,21 +164,21 @@ const ContainerFields = ({
   instance,
   idle,
   idleProblem,
-  ignore,
-  ignoreProblem,
+  paths,
+  pathsProblem,
   onInstance,
   onIdle,
-  onIgnore,
+  onPaths,
 }: {
   slug: string;
   instance: InstanceType;
   idle: string;
   idleProblem: string | null;
-  ignore: string;
-  ignoreProblem: string | null;
+  paths: string;
+  pathsProblem: string | null;
   onInstance: (instance: InstanceType) => void;
   onIdle: (idle: string) => void;
-  onIgnore: (ignore: string) => void;
+  onPaths: (paths: string) => void;
 }) => (
   <fieldset className="flex min-w-0 flex-col gap-3">
     <legend className="mb-2 text-xs font-medium text-muted-foreground">Container</legend>
@@ -220,29 +220,29 @@ const ContainerFields = ({
       {idleProblem !== null && <p className="text-xs text-destructive">{idleProblem}</p>}
     </div>
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={`ignore-${slug}`} className="text-sm font-medium">
+      <label htmlFor={`paths-${slug}`} className="text-sm font-medium">
         More Container-only paths (one per line)
       </label>
       <textarea
-        id={`ignore-${slug}`}
+        id={`paths-${slug}`}
         rows={3}
-        value={ignore}
+        value={paths}
         placeholder={"/data\n**/.gradle-cache"}
         spellCheck={false}
         onChange={(event) => {
-          onIgnore(event.target.value);
+          onPaths(event.target.value);
         }}
-        aria-invalid={ignoreProblem !== null}
+        aria-invalid={pathsProblem !== null}
         className="min-w-0 rounded-md border border-input bg-background px-2.5 py-2 font-mono text-sm focus-visible:outline-2 focus-visible:outline-ring"
       />
-      {ignoreProblem === null ? (
+      {pathsProblem === null ? (
         <p className="text-xs text-muted-foreground">
           Kept on the Container, out of the Workspace, like node_modules. Start with / (from
           /workspace) or **/ (at any depth); a line starting with ! keeps a path synced. What the
           Workspace already holds there stays until it is deleted.
         </p>
       ) : (
-        <p className="text-xs text-destructive">{ignoreProblem}</p>
+        <p className="text-xs text-destructive">{pathsProblem}</p>
       )}
     </div>
     <p className="text-xs text-muted-foreground">
@@ -284,14 +284,14 @@ const EditWorkspaceDialog = ({
   const idleProblem = saved === undefined ? null : idleMinutesProblem(idle);
   const pathsProblem = ignore === undefined ? null : ignoreProblem(ignore);
   const renamed = name.trim() !== workspace.name;
-  const paths = ignore === undefined ? [] : ignorePatternsFrom(ignore);
+  const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
 
-  const resized =
+  const settingsChanged =
     saved !== undefined &&
     instance !== undefined &&
     (instance !== saved.instance ||
       idle !== String(saved.idleMinutes) ||
-      paths.join("\n") !== saved.ignore.join("\n"));
+      patterns.join("\n") !== saved.ignore.join("\n"));
 
   const invalid = nameProblem !== null || idleProblem !== null || pathsProblem !== null;
 
@@ -303,8 +303,8 @@ const EditWorkspaceDialog = ({
     save({
       name: renamed ? name.trim() : undefined,
       settings:
-        resized && instance !== undefined
-          ? { instance, idleMinutes: Number(idle), ignore: paths }
+        settingsChanged && instance !== undefined
+          ? { instance, idleMinutes: Number(idle), ignore: patterns }
           : undefined,
     });
   };
@@ -342,9 +342,9 @@ const EditWorkspaceDialog = ({
           instance={instance}
           idle={idle}
           idleProblem={idleProblem}
-          ignore={ignore ?? ""}
-          ignoreProblem={pathsProblem}
-          onIgnore={(typed) => {
+          paths={ignore ?? ""}
+          pathsProblem={pathsProblem}
+          onPaths={(typed) => {
             setDraft((current) => ({ ...current, ignore: typed }));
           }}
           onInstance={(picked) => {
@@ -382,7 +382,7 @@ const EditWorkspaceDialog = ({
         >
           Cancel
         </Button>
-        <Button type="submit" disabled={saving || invalid || !(renamed || resized)}>
+        <Button type="submit" disabled={saving || invalid || !(renamed || settingsChanged)}>
           {saving ? "Saving…" : "Save"}
         </Button>
       </DialogActions>

@@ -216,9 +216,17 @@ export class ContainerSnapshots {
   }
 }
 
-/** Whether two lists of Container-only paths are the same, in the same order (the last match wins). */
-const samePaths = (a: readonly string[] | undefined, b: readonly string[] | undefined): boolean =>
-  a === undefined || b === undefined ? a === b : a.join(",") === b.join(",");
+/**
+ * Whether two lists of Container-only paths are the same, in the same order (the last match wins). No list (an older
+ * record, or a Container that has none) is the same only as no list.
+ */
+export const samePaths = (
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean =>
+  a === undefined || b === undefined
+    ? a === b
+    : a.length === b.length && a.every((pattern, index) => pattern === b[index]);
 
 /**
  * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` (one per line), anywhere on the Container's

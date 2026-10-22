@@ -14,7 +14,7 @@
 // - the Container-only paths (computer's `ignore`: the built-in ones, then the Workspace's own) are decided before
 //   computer builds the launch (`ignore`), kept for as long as that Container runs, and recorded from the launch itself,
 //   so a snapshot is restored only by a launch with the paths it was taken with.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import type {
   ContainerInstanceSize,
   ContainerLaunchSpec,
@@ -61,7 +61,23 @@ const MINUTE = 60_000;
 const ignoreOf = (spec: ContainerLaunchSpec): readonly string[] | undefined => {
   const joined = spec.env?.["MOUNT_IGNORE"];
 
-  return joined === undefined ? undefined : joined.split(",");
+  if (joined === undefined) return undefined;
+
+  return joined === "" ? [] : joined.split(",");
+};
+
+/**
+ * The Container-only paths of a launch: the built-in ones, then the Workspace's own, so that a `!` pattern of its own
+ * keeps a built-in one synced. A pattern given twice is kept only where it comes last, which is the one that decides
+ * (the last match wins), so the list computer checks computerd against has no repeats.
+ */
+export const containerIgnore = (
+  builtIn: readonly string[],
+  own: readonly string[],
+): readonly string[] => {
+  const all = [...builtIn, ...own];
+
+  return all.filter((pattern, index) => all.lastIndexOf(pattern) === index);
 };
 
 export class ContainerLaunch {
@@ -93,7 +109,8 @@ export class ContainerLaunch {
   /**
    * The Container-only paths of the Container a connection reaches: what the running one launched with, else what a
    * launch now would have. computer takes them when its backend is built, before the launch, so they are asked for here
-   * first; one found running with no launch on record gets the built-in ones, which it was launched with.
+   * first. One found running with no list on record (launched before lists were recorded) gets the built-in ones; when
+   * a deploy changed those since, computer relaunches it, as for any change to its launch.
    */
   async ignore(): Promise<readonly string[] | undefined> {
     if (this.#deps.running()) {

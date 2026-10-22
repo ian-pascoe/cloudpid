@@ -75,6 +75,11 @@ export const ignorePatternProblem = (pattern: string): string | undefined => {
 
   if (body.includes(",")) return "contains a comma";
 
+  // computer reads a path under its mount point as one from the mount's root, so `/workspace/data` would be `/data`.
+  if (body === "/workspace" || body.startsWith("/workspace/")) {
+    return 'starts at /workspace already: write "/data" for /workspace/data';
+  }
+
   const trimmed = body.replace(/^\/+|\/+$/g, "");
   const parts = trimmed === "" ? [] : trimmed.split("/");
 

@@ -1,11 +1,12 @@
-// Each Container launch (docs/spec.md → Container and Toolchains → Size and idle, Snapshots): the instance type and idle
-// time are the Workspace's settings at that moment, kept for as long as that Container runs; a snapshot of the image's
-// Toolchains is restored when there is one, and a restore that does not come up falls back to the image.
+// Each Container launch (docs/spec.md → Container and Toolchains → Size and idle, Snapshots): the instance type, idle
+// time and Container-only paths are the Workspace's settings at that moment, kept for as long as that Container runs; a
+// snapshot of the image's Toolchains is restored when there is one, and a restore that does not come up falls back to
+// the image.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
 import { DEFAULT_WORKSPACE_SETTINGS, type WorkspaceSettings } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
-import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
+import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 
 type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
 
@@ -233,6 +234,22 @@ describe("a launch", () => {
 
     expect(state.starts[0]?.instance).toBe(DEFAULT_WORKSPACE_SETTINGS.instance);
     expect(state.record?.needsSnapshot).toBe(false);
+  });
+});
+
+describe("containerIgnore", () => {
+  it("is the built-in paths, then the Workspace's own", () => {
+    expect(containerIgnore(["**/node_modules", "**/.cache"], ["/data"])).toEqual([
+      "**/node_modules",
+      "**/.cache",
+      "/data",
+    ]);
+  });
+
+  it("keeps only the last of a pattern given twice, which decides what it matches (the last match wins)", () => {
+    expect(
+      containerIgnore(["**/node_modules", "**/.cache"], ["!**/node_modules", "**/node_modules"]),
+    ).toEqual(["**/.cache", "!**/node_modules", "**/node_modules"]);
   });
 });
 

@@ -6,6 +6,7 @@
 // instance reaching the running Container.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
+import { samePaths } from "./snapshots.ts";
 
 /** computer's `ContainerBackend`, as this uses it. */
 export type LaunchedBackend = WorkspaceBackend & {
@@ -19,16 +20,12 @@ export type PerLaunchBackendOptions = {
   readonly ignore: () => Promise<readonly string[] | undefined>;
 };
 
-/** A list of paths as a key: their order matters (the last match wins). */
-const keyOf = (ignore: readonly string[] | undefined): string =>
-  ignore === undefined ? "" : `[${ignore.join(",")}]`;
-
 export class PerLaunchContainerBackend implements WorkspaceBackend {
   readonly #options: PerLaunchBackendOptions;
   /** The backend built last: what connects, and what the Container's requests go to. */
   #current: LaunchedBackend;
-  /** The paths it was built with; undefined until a connection decided them. */
-  #key: string | undefined;
+  /** The paths it was built with, once a connection decided them. */
+  #built: { readonly ignore: readonly string[] | undefined } | undefined;
 
   constructor(options: PerLaunchBackendOptions) {
     this.#options = options;
@@ -50,11 +47,11 @@ export class PerLaunchContainerBackend implements WorkspaceBackend {
 
   async connect(host: Parameters<WorkspaceBackend["connect"]>[0]): Promise<BackendHandle> {
     const ignore = await this.#options.ignore();
-    const key = keyOf(ignore);
 
-    if (key !== this.#key) {
+    // computer's Workspace keeps a live connection and asks again only once it closed, so the one replaced has none.
+    if (this.#built === undefined || !samePaths(this.#built.ignore, ignore)) {
       this.#current = this.#options.build(ignore);
-      this.#key = key;
+      this.#built = { ignore };
     }
 
     return this.#current.connect(host);

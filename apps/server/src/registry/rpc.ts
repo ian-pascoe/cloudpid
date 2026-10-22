@@ -37,7 +37,7 @@ export type SessionObjects = {
 export type RegistryRpcObjects = {
   /** Lists the repos of a Workspace, clones into one and removes one. */
   readonly repos: Repos;
-  /** Reads and saves a Workspace's Container size and idle time. */
+  /** Reads and saves a Workspace's Container settings (size, idle time, Container-only paths). */
   readonly workspaceSettings: WorkspaceSettingsRemote;
   /** Wipes a Workspace's object when it is deleted or reset, and restarts its Container. */
   readonly workspaces: WorkspaceObjects;

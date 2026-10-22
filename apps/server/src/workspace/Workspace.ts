@@ -34,7 +34,7 @@ import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import { IdleStop } from "./idle.ts";
-import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
+import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
@@ -77,7 +77,7 @@ const ContainerHost = withWorkspaceContainer(class extends DurableObject<Workspa
 /** Where the last use of the Container is kept, for an alarm that wakes an evicted object. */
 const LAST_USE_KEY = "cloudpid:container-last-use";
 
-/** Where the Container's launch (its instance type, idle time, snapshot) and its latest snapshot are kept. */
+/** Where the Container's launch (its instance type, idle time, paths, snapshot) and its latest snapshot are kept. */
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
@@ -151,7 +151,9 @@ export class Workspace extends ContainerHost {
       // Container and Toolchains): the built-in paths, then the Workspace's own, so its `!` patterns can take one back.
       // mise's Toolchains are on the Container's disk and need no entry. The local Container cannot keep any.
       ignore: (settings) =>
-        env.CONTAINER_FUSE === "false" ? undefined : [...TOOLCHAIN_IGNORE, ...settings.ignore],
+        env.CONTAINER_FUSE === "false"
+          ? undefined
+          : containerIgnore(TOOLCHAIN_IGNORE, settings.ignore),
       snapshots,
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       load: () => ctx.storage.get<LaunchRecord>(LAUNCH_KEY),

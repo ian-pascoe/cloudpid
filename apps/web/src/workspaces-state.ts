@@ -245,7 +245,7 @@ export interface WorkspaceDraft {
   readonly ignore: string | undefined;
 }
 
-/** `draft`, with the size and idle time it has not got yet taken from `saved`, the settings in force once they answer. */
+/** `draft`, with the settings it has not got yet taken from `saved`, the settings in force once they answer. */
 const filledFrom = (draft: WorkspaceDraft, saved: WorkspaceSettingsState | null): WorkspaceDraft =>
   saved === null
     ? draft

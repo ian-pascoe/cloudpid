@@ -99,6 +99,8 @@ describe("resolveWorkspaceSettings", () => {
       "**",
       "/*",
       "/",
+      "/workspace",
+      "/workspace/data",
       `/${"a".repeat(256)}`,
     ]) {
       expect(ignorePatternProblem(pattern), pattern).toBeDefined();
