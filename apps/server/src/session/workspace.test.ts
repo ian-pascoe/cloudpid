@@ -109,7 +109,9 @@ describe("earlyStartOnSubmit", () => {
     });
 
     const exit = await Effect.runPromiseExit(
-      earlyStartOnSubmit({ startContainerEarly }).pipe(Effect.provide(Logger.layer([collector]))),
+      earlyStartOnSubmit({ startContainerEarly }).pipe(
+        Effect.provideService(Logger.CurrentLoggers, new Set([collector])),
+      ),
     );
 
     return { succeeded: Exit.isSuccess(exit), logged };
