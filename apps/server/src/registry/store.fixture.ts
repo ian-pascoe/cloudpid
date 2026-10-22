@@ -11,9 +11,9 @@ import {
   type RegistryStore,
   type SessionRecord,
   type SessionStatus,
-  type WorkspaceDeletion,
-  type WorkspaceRecord,
-  type WorkspaceRename,
+  type MachineDeletion,
+  type MachineRecord,
+  type MachineRename,
 } from "./store.ts";
 
 export class TestRegistry extends DurableObject {
@@ -25,7 +25,7 @@ export class TestRegistry extends DurableObject {
   }
 
   createSession(
-    input: { id: string; title: string | null; workspace?: string; repo?: string },
+    input: { id: string; title: string | null; machine?: string; repo?: string },
     now: number,
   ): SessionRecord {
     return this.#store.createSession(input, now);
@@ -63,24 +63,24 @@ export class TestRegistry extends DurableObject {
     return this.#store.deleteSession(id);
   }
 
-  createWorkspace(slug: string, now: number): WorkspaceRecord {
-    return this.#store.createWorkspace(slug, now);
+  createMachine(slug: string, now: number): MachineRecord {
+    return this.#store.createMachine(slug, now);
   }
 
-  getWorkspace(slug: string): WorkspaceRecord | null {
-    return this.#store.getWorkspace(slug);
+  getMachine(slug: string): MachineRecord | null {
+    return this.#store.getMachine(slug);
   }
 
-  listWorkspaces(): WorkspaceRecord[] {
-    return this.#store.listWorkspaces();
+  listMachines(): MachineRecord[] {
+    return this.#store.listMachines();
   }
 
-  renameWorkspace(slug: string, name: string): WorkspaceRename {
-    return this.#store.renameWorkspace(slug, name);
+  renameMachine(slug: string, name: string): MachineRename {
+    return this.#store.renameMachine(slug, name);
   }
 
-  deleteWorkspace(slug: string): WorkspaceDeletion {
-    return this.#store.deleteWorkspace(slug);
+  deleteMachine(slug: string): MachineDeletion {
+    return this.#store.deleteMachine(slug);
   }
 
   getDocument(name: string): string | null {

@@ -1,16 +1,16 @@
 // @effect-diagnostics preferEffectArray:off newSchemaClass:off -- in-memory fakes of the Registry over native arrays.
 
 import {
-  DEFAULT_WORKSPACE_SETTINGS,
+  DEFAULT_MACHINE_SETTINGS,
   INSTANCE_TYPES,
-  workspaceOverridesFrom,
-  type WorkspaceSettings,
+  machineOverridesFrom,
+  type MachineSettings,
 } from "@cloudpid/config";
 import {
-  WorkspaceError,
+  MachineError,
   type SessionRecord,
-  type WorkspaceRecord,
-  type WorkspaceSettingsState,
+  type MachineRecord,
+  type MachineSettingsState,
 } from "@cloudpid/protocol";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -23,31 +23,31 @@ import { sessionsAtom } from "./sessions.ts";
 import {
   cloneRepoAtom,
   cloneSourceAtom,
-  createWorkspaceAtom,
+  createMachineAtom,
   deleteTypedAtom,
-  deleteWorkspaceAtom,
-  newWorkspaceSlugAtom,
+  deleteMachineAtom,
+  newMachineSlugAtom,
   removeRepoAtom,
   removeTypedAtom,
   reposAtom,
   resetTypedAtom,
-  resetWorkspaceAtom,
+  resetMachineAtom,
   restartContainerAtom,
-  saveWorkspaceAtom,
-  workspaceDialogAtom,
-  workspaceDraftAtom,
-  workspaceNamesAtom,
-  workspaceSettingsAtom,
-  workspacesAtom,
-} from "./workspaces-state.ts";
+  saveMachineAtom,
+  machineDialogAtom,
+  machineDraftAtom,
+  machineNamesAtom,
+  machineSettingsAtom,
+  machinesAtom,
+} from "./machines-state.ts";
 
-const workspace = (slug: string, name = slug): WorkspaceRecord => ({ slug, name, createdAt: 1 });
+const machine = (slug: string, name = slug): MachineRecord => ({ slug, name, createdAt: 1 });
 
 const session = (id: string, on: string): SessionRecord => ({
   id,
   title: null,
   titleSource: null,
-  workspace: on,
+  machine: on,
   repo: null,
   status: "idle",
   createdAt: 1,
@@ -55,46 +55,42 @@ const session = (id: string, on: string): SessionRecord => ({
   archivedAt: null,
 });
 
-const slugs = (result: AsyncResult.AsyncResult<readonly WorkspaceRecord[], unknown>) =>
+const slugs = (result: AsyncResult.AsyncResult<readonly MachineRecord[], unknown>) =>
   AsyncResult.getOrThrow(result).map((known) => known.slug);
 
-/** A Registry holding `workspaces` and `sessions`; deleting `stuck` stops partway, deleting its Sessions only. */
-const holding = (workspaces: WorkspaceRecord[], sessions: SessionRecord[]) =>
+/** A Registry holding `machines` and `sessions`; deleting `stuck` stops partway, deleting its Sessions only. */
+const holding = (machines: MachineRecord[], sessions: SessionRecord[]) =>
   registryWith({
-    listWorkspaces: () => Effect.sync(() => [...workspaces]),
+    listMachines: () => Effect.sync(() => [...machines]),
     listSessions: () => Effect.sync(() => [...sessions]),
-    createWorkspace: ({ slug }) =>
+    createMachine: ({ slug }) =>
       Effect.sync(() => {
-        const created = workspace(slug);
+        const created = machine(slug);
 
-        workspaces.unshift(created);
+        machines.unshift(created);
 
         return created;
       }),
-    renameWorkspace: ({ workspace: slug, name }) =>
-      workspaces.some((known) => known.name === name)
-        ? Effect.fail(new WorkspaceError({ message: `A workspace is already named ${name}.` }))
+    renameMachine: ({ machine: slug, name }) =>
+      machines.some((known) => known.name === name)
+        ? Effect.fail(new MachineError({ message: `A machine is already named ${name}.` }))
         : Effect.sync(() => {
-            const index = workspaces.findIndex((known) => known.slug === slug);
-            const renamed = { ...workspaces[index]!, name };
+            const index = machines.findIndex((known) => known.slug === slug);
+            const renamed = { ...machines[index]!, name };
 
-            workspaces[index] = renamed;
+            machines[index] = renamed;
 
             return renamed;
           }),
-    deleteWorkspace: ({ workspace: slug }) =>
+    deleteMachine: ({ machine: slug }) =>
       Effect.suspend(() => {
-        sessions.splice(
-          0,
-          sessions.length,
-          ...sessions.filter((known) => known.workspace !== slug),
-        );
+        sessions.splice(0, sessions.length, ...sessions.filter((known) => known.machine !== slug));
 
         if (slug === "stuck")
-          return Effect.fail(new WorkspaceError({ message: "Could not stop it." }));
+          return Effect.fail(new MachineError({ message: "Could not stop it." }));
 
-        workspaces.splice(
-          workspaces.findIndex((known) => known.slug === slug),
+        machines.splice(
+          machines.findIndex((known) => known.slug === slug),
           1,
         );
 
@@ -102,75 +98,73 @@ const holding = (workspaces: WorkspaceRecord[], sessions: SessionRecord[]) =>
       }),
   });
 
-describe("the Workspace list", () => {
-  it.effect("lists the Workspaces the Registry answers with", () =>
+describe("the Machine list", () => {
+  it.effect("lists the Machines the Registry answers with", () =>
     Effect.gen(function* () {
-      const registry = holding([workspace("work"), workspace("default")], []);
+      const registry = holding([machine("work"), machine("default")], []);
 
-      registry.mount(workspacesAtom);
+      registry.mount(machinesAtom);
 
-      expect(slugs(yield* settled(registry, workspacesAtom))).toEqual(["work", "default"]);
+      expect(slugs(yield* settled(registry, machinesAtom))).toEqual(["work", "default"]);
     }),
   );
 
-  it.effect("asks again after a Workspace is created or renamed", () =>
+  it.effect("asks again after a Machine is created or renamed", () =>
     Effect.gen(function* () {
-      const registry = holding([workspace("default")], []);
+      const registry = holding([machine("default")], []);
 
-      registry.mount(workspacesAtom);
-      yield* settled(registry, workspacesAtom);
+      registry.mount(machinesAtom);
+      yield* settled(registry, machinesAtom);
 
-      registry.set(createWorkspaceAtom, "work");
-      yield* settled(registry, createWorkspaceAtom);
-      expect(slugs(yield* settled(registry, workspacesAtom))).toEqual(["work", "default"]);
+      registry.set(createMachineAtom, "work");
+      yield* settled(registry, createMachineAtom);
+      expect(slugs(yield* settled(registry, machinesAtom))).toEqual(["work", "default"]);
 
-      registry.set(saveWorkspaceAtom("work"), { name: "Work", settings: undefined });
-      yield* settled(registry, saveWorkspaceAtom("work"));
-      expect(AsyncResult.getOrThrow(yield* settled(registry, workspacesAtom))[0]?.name).toBe(
-        "Work",
-      );
+      registry.set(saveMachineAtom("work"), { name: "Work", settings: undefined });
+      yield* settled(registry, saveMachineAtom("work"));
+      expect(AsyncResult.getOrThrow(yield* settled(registry, machinesAtom))[0]?.name).toBe("Work");
     }),
   );
 
   it.effect("says why a rename was refused", () =>
     Effect.gen(function* () {
-      const registry = holding([workspace("default"), workspace("work")], []);
+      const registry = holding([machine("default"), machine("work")], []);
 
-      registry.set(saveWorkspaceAtom("work"), { name: "default", settings: undefined });
+      registry.set(saveMachineAtom("work"), { name: "default", settings: undefined });
 
-      expect(failureOf(yield* settled(registry, saveWorkspaceAtom("work")))).toBe(
-        "A workspace is already named default.",
+      expect(failureOf(yield* settled(registry, saveMachineAtom("work")))).toBe(
+        "A machine is already named default.",
       );
     }),
   );
 
-  it.effect("asks for the Workspaces and the Sessions again after a delete", () =>
+  it.effect("asks for the Machines and the Sessions again after a delete", () =>
     Effect.gen(function* () {
-      const registry = holding([workspace("work"), workspace("default")], [session("a", "work")]);
+      const registry = holding([machine("work"), machine("default")], [session("a", "work")]);
 
-      registry.mount(workspacesAtom);
+      registry.mount(machinesAtom);
       registry.mount(sessionsAtom);
-      yield* settled(registry, workspacesAtom);
+      yield* settled(registry, machinesAtom);
       yield* settled(registry, sessionsAtom);
 
-      registry.set(deleteWorkspaceAtom("work"), undefined);
-      yield* settled(registry, deleteWorkspaceAtom("work"));
+      registry.set(deleteMachineAtom("work"), undefined);
+      yield* settled(registry, deleteMachineAtom("work"));
 
-      expect(slugs(yield* settled(registry, workspacesAtom))).toEqual(["default"]);
+      expect(slugs(yield* settled(registry, machinesAtom))).toEqual(["default"]);
       expect(AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom))).toEqual([]);
     }),
   );
 
   it.effect("asks again after a delete that stopped partway, and says why", () =>
     Effect.gen(function* () {
-      const registry = holding([workspace("stuck")], [session("a", "stuck")]);
+      const registry = holding([machine("stuck")], [session("a", "stuck")]);
 
       registry.mount(sessionsAtom);
       yield* settled(registry, sessionsAtom);
 
-      registry.set(deleteWorkspaceAtom("stuck"), undefined);
+      registry.set(deleteMachineAtom("stuck"), undefined);
 
-      expect(failureOf(yield* settled(registry, deleteWorkspaceAtom("stuck")))).toBe(
+      expect(failureOf(yield* settled(registry, deleteMachineAtom("stuck")))).toBe(
         "Could not stop it.",
       );
       expect(AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom))).toEqual([]);
@@ -178,17 +172,17 @@ describe("the Workspace list", () => {
   );
 });
 
-/** A Registry whose Workspace `work` holds `repos`; cloning `bad` fails with git's message, and `slow` never ends. */
+/** A Registry whose Machine `work` holds `repos`; cloning `bad` fails with git's message, and `slow` never ends. */
 const cloning = (repos: string[]) => {
   const registry = registryWith({
-    listRepos: ({ workspace: slug }) =>
+    listRepos: ({ machine: slug }) =>
       slug === "down"
-        ? Effect.fail(new WorkspaceError({ message: "The Workspace is down." }))
+        ? Effect.fail(new MachineError({ message: "The Machine is down." }))
         : Effect.sync(() => (slug === "work" ? [...repos] : [])),
     cloneRepo: ({ source }) =>
       Effect.suspend(() => {
         if (source === "bad") {
-          return Effect.fail(new WorkspaceError({ message: "fatal: repository 'bad' not found" }));
+          return Effect.fail(new MachineError({ message: "fatal: repository 'bad' not found" }));
         }
 
         if (source === "slow") return Effect.never;
@@ -204,13 +198,13 @@ const cloning = (repos: string[]) => {
   return registry;
 };
 
-describe("deleting a Workspace", () => {
+describe("deleting a Machine", () => {
   it.effect("asks again for its repos and its own settings, as well as the lists", () =>
     Effect.gen(function* () {
       const asked = { repos: 0, settings: 0 };
 
       const registry = registryWith({
-        listWorkspaces: () => Effect.succeed([workspace("work")]),
+        listMachines: () => Effect.succeed([machine("work")]),
         listSessions: () => Effect.succeed([]),
         listRepos: () =>
           Effect.sync(() => {
@@ -218,30 +212,30 @@ describe("deleting a Workspace", () => {
 
             return [];
           }),
-        getWorkspaceSettings: () =>
-          Effect.die(asked.settings++ < 0 ? "unreachable" : "The Workspace is not answering."),
-        deleteWorkspace: () => Effect.void,
+        getMachineSettings: () =>
+          Effect.die(asked.settings++ < 0 ? "unreachable" : "The Machine is not answering."),
+        deleteMachine: () => Effect.void,
       });
 
       registry.mount(reposAtom("work"));
-      registry.mount(workspaceSettingsAtom("work"));
+      registry.mount(machineSettingsAtom("work"));
       yield* settled(registry, reposAtom("work"));
-      yield* settled(registry, workspaceSettingsAtom("work"));
+      yield* settled(registry, machineSettingsAtom("work"));
 
       expect(asked).toEqual({ repos: 1, settings: 1 });
 
-      registry.set(deleteWorkspaceAtom("work"), undefined);
-      yield* settled(registry, deleteWorkspaceAtom("work"));
+      registry.set(deleteMachineAtom("work"), undefined);
+      yield* settled(registry, deleteMachineAtom("work"));
       yield* settled(registry, reposAtom("work"));
-      yield* settled(registry, workspaceSettingsAtom("work"));
+      yield* settled(registry, machineSettingsAtom("work"));
 
       expect(asked).toEqual({ repos: 2, settings: 2 });
     }),
   );
 });
 
-describe("the repos of a Workspace", () => {
-  it.effect("lists the repos the Workspace holds, each Workspace its own", () =>
+describe("the repos of a Machine", () => {
+  it.effect("lists the repos the Machine holds, each Machine its own", () =>
     Effect.gen(function* () {
       const registry = cloning(["api", "web"]);
 
@@ -262,7 +256,7 @@ describe("the repos of a Workspace", () => {
 
       registry.mount(reposAtom("down"));
 
-      expect(failureOf(yield* settled(registry, reposAtom("down")))).toBe("The Workspace is down.");
+      expect(failureOf(yield* settled(registry, reposAtom("down")))).toBe("The Machine is down.");
     }),
   );
 
@@ -302,7 +296,7 @@ describe("the repos of a Workspace", () => {
     }),
   );
 
-  it("keeps one Workspace's clone apart from another's", () => {
+  it("keeps one Machine's clone apart from another's", () => {
     const registry = cloning([]);
 
     registry.mount(cloneRepoAtom("work"));
@@ -315,27 +309,27 @@ describe("the repos of a Workspace", () => {
   });
 });
 
-const stateOf = (settings: WorkspaceSettings): WorkspaceSettingsState => ({
+const stateOf = (settings: MachineSettings): MachineSettingsState => ({
   settings,
-  overrides: workspaceOverridesFrom(settings),
+  overrides: machineOverridesFrom(settings),
 });
 
-/** A Registry holding the settings of Workspace `work`; the first `failures` loads fail, and an idle time of 9999 is refused. */
+/** A Registry holding the settings of Machine `work`; the first `failures` loads fail, and an idle time of 9999 is refused. */
 const configured = (failures = 0) => {
-  let held = DEFAULT_WORKSPACE_SETTINGS;
+  let held = DEFAULT_MACHINE_SETTINGS;
   let left = failures;
   const saved: unknown[] = [];
 
   const registry = registryWith({
-    getWorkspaceSettings: () =>
+    getMachineSettings: () =>
       Effect.suspend(() =>
         left-- > 0
-          ? Effect.fail(new WorkspaceError({ message: "The Workspace is waking up." }))
+          ? Effect.fail(new MachineError({ message: "The Machine is waking up." }))
           : Effect.succeed(stateOf(held)),
       ),
-    updateWorkspaceSettings: ({ overrides }) =>
+    updateMachineSettings: ({ overrides }) =>
       JSON.stringify(overrides).includes("9999")
-        ? Effect.fail(new WorkspaceError({ message: "idleMinutes: at most 1440" }))
+        ? Effect.fail(new MachineError({ message: "idleMinutes: at most 1440" }))
         : Effect.sync(() => {
             saved.push(overrides);
             held = { ...held, instance: "basic" };
@@ -347,16 +341,16 @@ const configured = (failures = 0) => {
   return { registry, saved };
 };
 
-describe("the settings of a Workspace", () => {
-  it.effect("loads the settings the Workspace answers with", () =>
+describe("the settings of a Machine", () => {
+  it.effect("loads the settings the Machine answers with", () =>
     Effect.gen(function* () {
       const { registry } = configured();
 
-      registry.mount(workspaceSettingsAtom("work"));
+      registry.mount(machineSettingsAtom("work"));
 
       expect(
-        AsyncResult.getOrThrow(yield* settled(registry, workspaceSettingsAtom("work"))).settings,
-      ).toEqual(DEFAULT_WORKSPACE_SETTINGS);
+        AsyncResult.getOrThrow(yield* settled(registry, machineSettingsAtom("work"))).settings,
+      ).toEqual(DEFAULT_MACHINE_SETTINGS);
     }),
   );
 
@@ -364,19 +358,19 @@ describe("the settings of a Workspace", () => {
     Effect.gen(function* () {
       const { registry } = configured(1);
 
-      registry.mount(workspaceSettingsAtom("work"));
+      registry.mount(machineSettingsAtom("work"));
 
-      expect(settledFailureOf(yield* settled(registry, workspaceSettingsAtom("work")))).toBe(
-        "The Workspace is waking up.",
+      expect(settledFailureOf(yield* settled(registry, machineSettingsAtom("work")))).toBe(
+        "The Machine is waking up.",
       );
 
-      registry.refresh(workspaceSettingsAtom("work"));
+      registry.refresh(machineSettingsAtom("work"));
 
       // The message goes as the new attempt starts.
-      expect(settledFailureOf(registry.get(workspaceSettingsAtom("work")))).toBeNull();
+      expect(settledFailureOf(registry.get(machineSettingsAtom("work")))).toBeNull();
       expect(
-        AsyncResult.getOrThrow(yield* settled(registry, workspaceSettingsAtom("work"))).settings,
-      ).toEqual(DEFAULT_WORKSPACE_SETTINGS);
+        AsyncResult.getOrThrow(yield* settled(registry, machineSettingsAtom("work"))).settings,
+      ).toEqual(DEFAULT_MACHINE_SETTINGS);
     }),
   );
 
@@ -386,34 +380,34 @@ describe("the settings of a Workspace", () => {
       Effect.gen(function* () {
         const { registry, saved } = configured();
 
-        registry.mount(workspaceSettingsAtom("work"));
-        yield* settled(registry, workspaceSettingsAtom("work"));
-        registry.set(saveWorkspaceAtom("work"), {
+        registry.mount(machineSettingsAtom("work"));
+        yield* settled(registry, machineSettingsAtom("work"));
+        registry.set(saveMachineAtom("work"), {
           name: undefined,
           settings: { instance: "basic", idleMinutes: 5, ignore: ["/data"] },
         });
 
-        const answer = yield* settled(registry, saveWorkspaceAtom("work"));
+        const answer = yield* settled(registry, saveMachineAtom("work"));
 
         expect(AsyncResult.getOrThrow(answer)?.settings.instance).toBe("basic");
         expect(saved).toEqual([{ instance: "basic", ignore: ["/data"] }]);
         expect(
-          AsyncResult.getOrThrow(yield* settled(registry, workspaceSettingsAtom("work"))).settings
+          AsyncResult.getOrThrow(yield* settled(registry, machineSettingsAtom("work"))).settings
             .instance,
         ).toBe("basic");
       }),
   );
 
-  it.effect("says why a save was refused, with the Workspace's message", () =>
+  it.effect("says why a save was refused, with the Machine's message", () =>
     Effect.gen(function* () {
       const { registry, saved } = configured();
 
-      registry.set(saveWorkspaceAtom("work"), {
+      registry.set(saveMachineAtom("work"), {
         name: undefined,
         settings: { instance: "basic", idleMinutes: 9999, ignore: [] },
       });
 
-      expect(failureOf(yield* settled(registry, saveWorkspaceAtom("work")))).toBe(
+      expect(failureOf(yield* settled(registry, saveMachineAtom("work")))).toBe(
         "idleMinutes: at most 1440",
       );
       expect(saved).toEqual([]);
@@ -421,46 +415,46 @@ describe("the settings of a Workspace", () => {
   );
 });
 
-/** A Registry for the page's forms and dialogs: Workspace `work`, which refuses what is named `bad` or `stuck`. */
+/** A Registry for the page's forms and dialogs: Machine `work`, which refuses what is named `bad` or `stuck`. */
 const paging = (settingsGate?: Deferred.Deferred<void>) => {
-  const workspaces = [workspace("work", "Work")];
+  const machines = [machine("work", "Work")];
   const repos: string[] = [];
   const saved: unknown[] = [];
   const renamed: string[] = [];
-  let held = DEFAULT_WORKSPACE_SETTINGS;
+  let held = DEFAULT_MACHINE_SETTINGS;
 
   const registry = registryWith({
-    listWorkspaces: () => Effect.sync(() => [...workspaces]),
-    createWorkspace: ({ slug }) =>
+    listMachines: () => Effect.sync(() => [...machines]),
+    createMachine: ({ slug }) =>
       slug === "bad"
         ? Effect.die(new Error("That slug is taken."))
-        : Effect.sync(() => workspace(slug)),
-    renameWorkspace: ({ name }) =>
+        : Effect.sync(() => machine(slug)),
+    renameMachine: ({ name }) =>
       name === "bad"
-        ? Effect.fail(new WorkspaceError({ message: "That name is taken." }))
+        ? Effect.fail(new MachineError({ message: "That name is taken." }))
         : Effect.sync(() => {
             renamed.push(name);
 
-            return workspace("work", name);
+            return machine("work", name);
           }),
-    deleteWorkspace: ({ workspace: slug }) =>
+    deleteMachine: ({ machine: slug }) =>
       slug === "stuck"
-        ? Effect.fail(new WorkspaceError({ message: "Could not stop it." }))
+        ? Effect.fail(new MachineError({ message: "Could not stop it." }))
         : Effect.void,
     listRepos: () => Effect.sync(() => [...repos]),
     cloneRepo: ({ source }) =>
       source === "bad"
-        ? Effect.fail(new WorkspaceError({ message: "fatal: repository 'bad' not found" }))
+        ? Effect.fail(new MachineError({ message: "fatal: repository 'bad' not found" }))
         : Effect.sync(() => {
             repos.push(source);
 
             return source;
           }),
-    getWorkspaceSettings: () =>
+    getMachineSettings: () =>
       (settingsGate === undefined ? Effect.void : Deferred.await(settingsGate)).pipe(
         Effect.map(() => stateOf(held)),
       ),
-    updateWorkspaceSettings: ({ overrides }) =>
+    updateMachineSettings: ({ overrides }) =>
       Effect.sync(() => {
         saved.push(overrides);
         held = { ...held, instance: "basic" };
@@ -472,17 +466,17 @@ const paging = (settingsGate?: Deferred.Deferred<void>) => {
   return { registry, saved, renamed };
 };
 
-describe("the new-Workspace form", () => {
-  it.effect("empties once the Workspace is registered", () =>
+describe("the new-Machine form", () => {
+  it.effect("empties once the Machine is registered", () =>
     Effect.gen(function* () {
       const { registry } = paging();
 
-      registry.mount(newWorkspaceSlugAtom);
-      registry.set(newWorkspaceSlugAtom, "api");
-      registry.set(createWorkspaceAtom, "api");
-      yield* settled(registry, createWorkspaceAtom);
+      registry.mount(newMachineSlugAtom);
+      registry.set(newMachineSlugAtom, "api");
+      registry.set(createMachineAtom, "api");
+      yield* settled(registry, createMachineAtom);
 
-      expect(registry.get(newWorkspaceSlugAtom)).toBe("");
+      expect(registry.get(newMachineSlugAtom)).toBe("");
     }),
   );
 
@@ -490,17 +484,17 @@ describe("the new-Workspace form", () => {
     Effect.gen(function* () {
       const { registry } = paging();
 
-      registry.mount(newWorkspaceSlugAtom);
-      registry.set(newWorkspaceSlugAtom, "bad");
-      registry.set(createWorkspaceAtom, "bad");
+      registry.mount(newMachineSlugAtom);
+      registry.set(newMachineSlugAtom, "bad");
+      registry.set(createMachineAtom, "bad");
 
-      expect(failureOf(yield* settled(registry, createWorkspaceAtom))).toBe("That slug is taken.");
-      expect(registry.get(newWorkspaceSlugAtom)).toBe("bad");
+      expect(failureOf(yield* settled(registry, createMachineAtom))).toBe("That slug is taken.");
+      expect(registry.get(newMachineSlugAtom)).toBe("bad");
     }),
   );
 });
 
-describe("the clone form of a Workspace", () => {
+describe("the clone form of a Machine", () => {
   it.effect("empties once the repo is cloned", () =>
     Effect.gen(function* () {
       const { registry } = paging();
@@ -527,7 +521,7 @@ describe("the clone form of a Workspace", () => {
     }),
   );
 
-  it.effect("keeps one Workspace's source apart from another's", () =>
+  it.effect("keeps one Machine's source apart from another's", () =>
     Effect.gen(function* () {
       const { registry } = paging();
 
@@ -544,16 +538,16 @@ describe("the clone form of a Workspace", () => {
   );
 });
 
-describe("the dialogs of a Workspace's card", () => {
-  it("keeps one Workspace's open dialog apart from another's", () => {
+describe("the dialogs of a Machine's card", () => {
+  it("keeps one Machine's open dialog apart from another's", () => {
     const { registry } = paging();
 
-    registry.mount(workspaceDialogAtom("work"));
-    registry.mount(workspaceDialogAtom("other"));
-    registry.set(workspaceDialogAtom("work"), "edit");
+    registry.mount(machineDialogAtom("work"));
+    registry.mount(machineDialogAtom("other"));
+    registry.set(machineDialogAtom("work"), "edit");
 
-    expect(registry.get(workspaceDialogAtom("work"))).toBe("edit");
-    expect(registry.get(workspaceDialogAtom("other"))).toBeNull();
+    expect(registry.get(machineDialogAtom("work"))).toBe("edit");
+    expect(registry.get(machineDialogAtom("other"))).toBeNull();
     registry.dispose();
   });
 
@@ -561,17 +555,17 @@ describe("the dialogs of a Workspace's card", () => {
     Effect.gen(function* () {
       const { registry, saved, renamed } = paging();
 
-      registry.mount(workspaceDialogAtom("work"));
-      registry.set(workspaceDialogAtom("work"), "edit");
-      registry.set(saveWorkspaceAtom("work"), {
+      registry.mount(machineDialogAtom("work"));
+      registry.set(machineDialogAtom("work"), "edit");
+      registry.set(saveMachineAtom("work"), {
         name: "Renamed",
         settings: { instance: "basic", idleMinutes: 30, ignore: [] },
       });
-      yield* settled(registry, saveWorkspaceAtom("work"));
+      yield* settled(registry, saveMachineAtom("work"));
 
       expect(renamed).toEqual(["Renamed"]);
       expect(saved).toEqual([{ instance: "basic", idleMinutes: 30 }]);
-      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+      expect(registry.get(machineDialogAtom("work"))).toBeNull();
     }),
   );
 
@@ -579,31 +573,31 @@ describe("the dialogs of a Workspace's card", () => {
     Effect.gen(function* () {
       const { registry, saved } = paging();
 
-      registry.mount(workspaceDialogAtom("work"));
-      registry.set(workspaceDialogAtom("work"), "edit");
-      registry.set(saveWorkspaceAtom("work"), {
+      registry.mount(machineDialogAtom("work"));
+      registry.set(machineDialogAtom("work"), "edit");
+      registry.set(saveMachineAtom("work"), {
         name: "bad",
         settings: { instance: "basic", idleMinutes: 30, ignore: [] },
       });
 
-      expect(settledFailureOf(yield* settled(registry, saveWorkspaceAtom("work")))).toBe(
+      expect(settledFailureOf(yield* settled(registry, saveMachineAtom("work")))).toBe(
         "That name is taken.",
       );
       expect(saved).toEqual([]);
-      expect(registry.get(workspaceDialogAtom("work"))).toBe("edit");
+      expect(registry.get(machineDialogAtom("work"))).toBe("edit");
     }),
   );
 
-  it.effect("closes the Delete dialog once the Workspace is deleted", () =>
+  it.effect("closes the Delete dialog once the Machine is deleted", () =>
     Effect.gen(function* () {
       const { registry } = paging();
 
-      registry.mount(workspaceDialogAtom("work"));
-      registry.set(workspaceDialogAtom("work"), "delete");
-      registry.set(deleteWorkspaceAtom("work"), undefined);
-      yield* settled(registry, deleteWorkspaceAtom("work"));
+      registry.mount(machineDialogAtom("work"));
+      registry.set(machineDialogAtom("work"), "delete");
+      registry.set(deleteMachineAtom("work"), undefined);
+      yield* settled(registry, deleteMachineAtom("work"));
 
-      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+      expect(registry.get(machineDialogAtom("work"))).toBeNull();
     }),
   );
 
@@ -611,27 +605,27 @@ describe("the dialogs of a Workspace's card", () => {
     Effect.gen(function* () {
       const { registry } = paging();
 
-      registry.mount(workspaceDialogAtom("stuck"));
-      registry.set(workspaceDialogAtom("stuck"), "delete");
-      registry.set(deleteWorkspaceAtom("stuck"), undefined);
+      registry.mount(machineDialogAtom("stuck"));
+      registry.set(machineDialogAtom("stuck"), "delete");
+      registry.set(deleteMachineAtom("stuck"), undefined);
 
-      expect(settledFailureOf(yield* settled(registry, deleteWorkspaceAtom("stuck")))).toBe(
+      expect(settledFailureOf(yield* settled(registry, deleteMachineAtom("stuck")))).toBe(
         "Could not stop it.",
       );
-      expect(registry.get(workspaceDialogAtom("stuck"))).toBe("delete");
+      expect(registry.get(machineDialogAtom("stuck"))).toBe("delete");
     }),
   );
 
-  it.effect("keeps one Workspace's save apart from another's", () =>
+  it.effect("keeps one Machine's save apart from another's", () =>
     Effect.gen(function* () {
       const { registry } = paging();
 
-      registry.mount(saveWorkspaceAtom("work"));
-      registry.mount(saveWorkspaceAtom("other"));
-      registry.set(saveWorkspaceAtom("work"), { name: "bad", settings: undefined });
-      yield* settled(registry, saveWorkspaceAtom("work"));
+      registry.mount(saveMachineAtom("work"));
+      registry.mount(saveMachineAtom("other"));
+      registry.set(saveMachineAtom("work"), { name: "bad", settings: undefined });
+      yield* settled(registry, saveMachineAtom("work"));
 
-      expect(AsyncResult.isInitial(registry.get(saveWorkspaceAtom("other")))).toBe(true);
+      expect(AsyncResult.isInitial(registry.get(saveMachineAtom("other")))).toBe(true);
     }),
   );
 
@@ -639,12 +633,12 @@ describe("the dialogs of a Workspace's card", () => {
     Effect.gen(function* () {
       const { registry } = paging();
 
-      registry.mount(saveWorkspaceAtom("work"));
-      registry.set(saveWorkspaceAtom("work"), { name: "bad", settings: undefined });
-      yield* settled(registry, saveWorkspaceAtom("work"));
-      registry.set(saveWorkspaceAtom("work"), Atom.Reset);
+      registry.mount(saveMachineAtom("work"));
+      registry.set(saveMachineAtom("work"), { name: "bad", settings: undefined });
+      yield* settled(registry, saveMachineAtom("work"));
+      registry.set(saveMachineAtom("work"), Atom.Reset);
 
-      expect(AsyncResult.isInitial(registry.get(saveWorkspaceAtom("work")))).toBe(true);
+      expect(AsyncResult.isInitial(registry.get(saveMachineAtom("work")))).toBe(true);
     }),
   );
 
@@ -664,16 +658,16 @@ describe("the dialogs of a Workspace's card", () => {
 });
 
 describe("the Edit dialog's draft", () => {
-  /** Mount the atoms the dialog reads, and wait for the list of Workspaces, so the draft starts with a name. */
+  /** Mount the atoms the dialog reads, and wait for the list of Machines, so the draft starts with a name. */
   const opened = (registry: ReturnType<typeof paging>["registry"]) =>
     Effect.gen(function* () {
-      registry.mount(workspaceNamesAtom);
-      registry.mount(workspaceSettingsAtom("work"));
-      yield* settled(registry, workspacesAtom);
-      registry.mount(workspaceDraftAtom("work"));
+      registry.mount(machineNamesAtom);
+      registry.mount(machineSettingsAtom("work"));
+      yield* settled(registry, machinesAtom);
+      registry.mount(machineDraftAtom("work"));
     });
 
-  it.effect("starts with the Workspace's name, and fills in the settings when they answer", () =>
+  it.effect("starts with the Machine's name, and fills in the settings when they answer", () =>
     Effect.gen(function* () {
       const gate = Deferred.makeUnsafe<void>();
       const { registry } = paging(gate);
@@ -681,7 +675,7 @@ describe("the Edit dialog's draft", () => {
       yield* opened(registry);
 
       // The dialog is open and the settings have not answered.
-      expect(registry.get(workspaceDraftAtom("work"))).toEqual({
+      expect(registry.get(machineDraftAtom("work"))).toEqual({
         name: "Work",
         instance: undefined,
         idle: "",
@@ -689,12 +683,12 @@ describe("the Edit dialog's draft", () => {
       });
 
       yield* Deferred.succeed(gate, undefined);
-      yield* settled(registry, workspaceSettingsAtom("work"));
+      yield* settled(registry, machineSettingsAtom("work"));
 
-      expect(registry.get(workspaceDraftAtom("work"))).toEqual({
+      expect(registry.get(machineDraftAtom("work"))).toEqual({
         name: "Work",
-        instance: DEFAULT_WORKSPACE_SETTINGS.instance,
-        idle: String(DEFAULT_WORKSPACE_SETTINGS.idleMinutes),
+        instance: DEFAULT_MACHINE_SETTINGS.instance,
+        idle: String(DEFAULT_MACHINE_SETTINGS.idleMinutes),
         ignore: "",
       });
     }),
@@ -707,21 +701,21 @@ describe("the Edit dialog's draft", () => {
 
       yield* opened(registry);
 
-      const other = INSTANCE_TYPES.find((type) => type !== DEFAULT_WORKSPACE_SETTINGS.instance)!;
+      const other = INSTANCE_TYPES.find((type) => type !== DEFAULT_MACHINE_SETTINGS.instance)!;
 
-      registry.set(workspaceDraftAtom("work"), {
+      registry.set(machineDraftAtom("work"), {
         name: "Renamed",
         instance: other,
         idle: "",
         ignore: "/data",
       });
       yield* Deferred.succeed(gate, undefined);
-      yield* settled(registry, workspaceSettingsAtom("work"));
+      yield* settled(registry, machineSettingsAtom("work"));
 
-      expect(registry.get(workspaceDraftAtom("work"))).toEqual({
+      expect(registry.get(machineDraftAtom("work"))).toEqual({
         name: "Renamed",
         instance: other,
-        idle: String(DEFAULT_WORKSPACE_SETTINGS.idleMinutes),
+        idle: String(DEFAULT_MACHINE_SETTINGS.idleMinutes),
         ignore: "/data",
       });
     }),
@@ -732,17 +726,17 @@ describe("the Edit dialog's draft", () => {
       const { registry } = paging();
 
       yield* opened(registry);
-      yield* settled(registry, workspaceSettingsAtom("work"));
-      registry.set(workspaceDraftAtom("work"), {
+      yield* settled(registry, machineSettingsAtom("work"));
+      registry.set(machineDraftAtom("work"), {
         name: "Work",
         instance: "lite",
         idle: "20",
         ignore: "",
       });
-      registry.refresh(workspaceSettingsAtom("work"));
-      yield* settled(registry, workspaceSettingsAtom("work"));
+      registry.refresh(machineSettingsAtom("work"));
+      yield* settled(registry, machineSettingsAtom("work"));
 
-      expect(registry.get(workspaceDraftAtom("work"))).toEqual({
+      expect(registry.get(machineDraftAtom("work"))).toEqual({
         name: "Work",
         instance: "lite",
         idle: "20",
@@ -757,15 +751,15 @@ const destructive = () => {
   const calls: unknown[] = [];
   const sessions = [{ ...session("a", "work"), repo: "web" }, session("b", "work")];
   const repos = ["api", "web"];
-  const stuck = (message: string) => Effect.fail(new WorkspaceError({ message }));
+  const stuck = (message: string) => Effect.fail(new MachineError({ message }));
 
   const registry = registryWith({
     listSessions: () => Effect.sync(() => [...sessions]),
     listRepos: () => Effect.sync(() => [...repos]),
-    resetWorkspace: (payload) => {
-      calls.push(["resetWorkspace", payload]);
+    resetMachine: (payload) => {
+      calls.push(["resetMachine", payload]);
 
-      return payload.workspace === "stuck"
+      return payload.machine === "stuck"
         ? stuck("Could not reset it.")
         : Effect.sync(() => {
             sessions.length = 0;
@@ -775,12 +769,12 @@ const destructive = () => {
     restartContainer: (payload) => {
       calls.push(["restartContainer", payload]);
 
-      return payload.workspace === "stuck" ? stuck("Could not stop it.") : Effect.void;
+      return payload.machine === "stuck" ? stuck("Could not stop it.") : Effect.void;
     },
     removeRepo: (payload) => {
       calls.push(["removeRepo", payload]);
 
-      return payload.workspace === "stuck"
+      return payload.machine === "stuck"
         ? stuck("Could not remove it.")
         : Effect.sync(() => {
             sessions.splice(
@@ -796,22 +790,22 @@ const destructive = () => {
   return { registry, calls };
 };
 
-describe("resetting a Workspace", () => {
+describe("resetting a Machine", () => {
   it.effect("resets it, closes the dialog and asks for the Sessions and repos again", () =>
     Effect.gen(function* () {
       const { registry, calls } = destructive();
 
-      registry.mount(workspaceDialogAtom("work"));
+      registry.mount(machineDialogAtom("work"));
       registry.mount(sessionsAtom);
       registry.mount(reposAtom("work"));
       yield* settled(registry, sessionsAtom);
       yield* settled(registry, reposAtom("work"));
-      registry.set(workspaceDialogAtom("work"), "reset");
-      registry.set(resetWorkspaceAtom("work"), undefined);
-      yield* settled(registry, resetWorkspaceAtom("work"));
+      registry.set(machineDialogAtom("work"), "reset");
+      registry.set(resetMachineAtom("work"), undefined);
+      yield* settled(registry, resetMachineAtom("work"));
 
-      expect(calls).toEqual([["resetWorkspace", { workspace: "work" }]]);
-      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+      expect(calls).toEqual([["resetMachine", { machine: "work" }]]);
+      expect(registry.get(machineDialogAtom("work"))).toBeNull();
       expect(AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom))).toEqual([]);
       expect(AsyncResult.getOrThrow(yield* settled(registry, reposAtom("work")))).toEqual([]);
     }),
@@ -821,14 +815,14 @@ describe("resetting a Workspace", () => {
     Effect.gen(function* () {
       const { registry } = destructive();
 
-      registry.mount(workspaceDialogAtom("stuck"));
-      registry.set(workspaceDialogAtom("stuck"), "reset");
-      registry.set(resetWorkspaceAtom("stuck"), undefined);
+      registry.mount(machineDialogAtom("stuck"));
+      registry.set(machineDialogAtom("stuck"), "reset");
+      registry.set(resetMachineAtom("stuck"), undefined);
 
-      expect(settledFailureOf(yield* settled(registry, resetWorkspaceAtom("stuck")))).toBe(
+      expect(settledFailureOf(yield* settled(registry, resetMachineAtom("stuck")))).toBe(
         "Could not reset it.",
       );
-      expect(registry.get(workspaceDialogAtom("stuck"))).toBe("reset");
+      expect(registry.get(machineDialogAtom("stuck"))).toBe("reset");
     }),
   );
 
@@ -847,18 +841,18 @@ describe("resetting a Workspace", () => {
   );
 });
 
-describe("restarting a Workspace's Container", () => {
+describe("restarting a Machine's Container", () => {
   it.effect("restarts it and closes the dialog", () =>
     Effect.gen(function* () {
       const { registry, calls } = destructive();
 
-      registry.mount(workspaceDialogAtom("work"));
-      registry.set(workspaceDialogAtom("work"), "restart");
+      registry.mount(machineDialogAtom("work"));
+      registry.set(machineDialogAtom("work"), "restart");
       registry.set(restartContainerAtom("work"), undefined);
       yield* settled(registry, restartContainerAtom("work"));
 
-      expect(calls).toEqual([["restartContainer", { workspace: "work" }]]);
-      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+      expect(calls).toEqual([["restartContainer", { machine: "work" }]]);
+      expect(registry.get(machineDialogAtom("work"))).toBeNull();
     }),
   );
 
@@ -866,14 +860,14 @@ describe("restarting a Workspace's Container", () => {
     Effect.gen(function* () {
       const { registry } = destructive();
 
-      registry.mount(workspaceDialogAtom("stuck"));
-      registry.set(workspaceDialogAtom("stuck"), "restart");
+      registry.mount(machineDialogAtom("stuck"));
+      registry.set(machineDialogAtom("stuck"), "restart");
       registry.set(restartContainerAtom("stuck"), undefined);
 
       expect(settledFailureOf(yield* settled(registry, restartContainerAtom("stuck")))).toBe(
         "Could not stop it.",
       );
-      expect(registry.get(workspaceDialogAtom("stuck"))).toBe("restart");
+      expect(registry.get(machineDialogAtom("stuck"))).toBe("restart");
     }),
   );
 });
@@ -883,17 +877,17 @@ describe("removing a repo", () => {
     Effect.gen(function* () {
       const { registry, calls } = destructive();
 
-      registry.mount(workspaceDialogAtom("work"));
+      registry.mount(machineDialogAtom("work"));
       registry.mount(sessionsAtom);
       registry.mount(reposAtom("work"));
       yield* settled(registry, sessionsAtom);
       yield* settled(registry, reposAtom("work"));
-      registry.set(workspaceDialogAtom("work"), { removeRepo: "web" });
+      registry.set(machineDialogAtom("work"), { removeRepo: "web" });
       registry.set(removeRepoAtom("work"), "web");
       yield* settled(registry, removeRepoAtom("work"));
 
-      expect(calls).toEqual([["removeRepo", { workspace: "work", repo: "web" }]]);
-      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+      expect(calls).toEqual([["removeRepo", { machine: "work", repo: "web" }]]);
+      expect(registry.get(machineDialogAtom("work"))).toBeNull();
       expect(AsyncResult.getOrThrow(yield* settled(registry, reposAtom("work")))).toEqual(["api"]);
       expect(
         AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom)).map((known) => known.id),
@@ -905,18 +899,18 @@ describe("removing a repo", () => {
     Effect.gen(function* () {
       const { registry } = destructive();
 
-      registry.mount(workspaceDialogAtom("stuck"));
-      registry.set(workspaceDialogAtom("stuck"), { removeRepo: "web" });
+      registry.mount(machineDialogAtom("stuck"));
+      registry.set(machineDialogAtom("stuck"), { removeRepo: "web" });
       registry.set(removeRepoAtom("stuck"), "web");
 
       expect(settledFailureOf(yield* settled(registry, removeRepoAtom("stuck")))).toBe(
         "Could not remove it.",
       );
-      expect(registry.get(workspaceDialogAtom("stuck"))).toEqual({ removeRepo: "web" });
+      expect(registry.get(machineDialogAtom("stuck"))).toEqual({ removeRepo: "web" });
     }),
   );
 
-  it("keeps the typed name apart from the other dialogs' and other Workspaces'", () => {
+  it("keeps the typed name apart from the other dialogs' and other Machines'", () => {
     const { registry } = destructive();
 
     registry.mount(removeTypedAtom("work"));

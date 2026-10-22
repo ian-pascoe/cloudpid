@@ -56,7 +56,6 @@ import { onIdle, wakeAt } from "./wake.ts";
 import {
   cachedPlacement,
   earlyStartOnSubmit,
-  type Placement,
   sessionWorkspace,
   type WorkspaceNamespace,
 } from "./workspace.ts";
@@ -205,20 +204,29 @@ export const SessionLive = Session.make(
         const placement = cachedPlacement({
           name,
           get: () => {
-            const known = kv.get<Placement>(PLACEMENT_KEY);
+            // Placements stored before the rename of Workspaces to Machines hold the machine as `slug`.
+            const known = kv.get<{
+              readonly slug?: string;
+              readonly machine?: string;
+              readonly repo: string | null;
+            }>(PLACEMENT_KEY);
 
-            if (known !== undefined) return known;
+            const stored = known?.machine ?? known?.slug;
+
+            if (known !== undefined && stored !== undefined) {
+              return { machine: stored, repo: known.repo };
+            }
 
             const slug = kv.get<string>(WORKSPACE_KEY);
 
-            return slug === undefined ? undefined : { slug, repo: null };
+            return slug === undefined ? undefined : { machine: slug, repo: null };
           },
           put: (known) => kv.put(PLACEMENT_KEY, known),
           lookup: (id) =>
             runtime
               .runPromise(registries.getByName(REGISTRY_NAME).getSession({ id }))
               .then((session) =>
-                session === null ? null : { slug: session.workspace, repo: session.repo ?? null },
+                session === null ? null : { machine: session.machine, repo: session.repo ?? null },
               ),
         });
 

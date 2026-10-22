@@ -14,7 +14,7 @@ const session = (id: string): SessionRecord => ({
   id,
   title: null,
   titleSource: null,
-  workspace: "default",
+  machine: "default",
   repo: null,
   status: "idle",
   createdAt: 1,

@@ -1,4 +1,4 @@
-// Uploading an Attachment to the Session's Workspace, and removing one that was not sent, over the main Worker's
+// Uploading an Attachment to the Session's Machine, and removing one that was not sent, over the main Worker's
 // `/sessions/:id/attachments/:name` route: the `Uploads` service, so the composer's Attachments run in a test without
 // a network. An upload is an `XMLHttpRequest`, the one browser API that reports how much of a request body has gone
 // (neither `fetch` nor Effect's `HttpClient` does); a removal is a `DELETE` over `HttpClient`.
@@ -22,7 +22,7 @@ export class UploadError extends Schema.TaggedError<
 export interface UploadsApi {
   /**
    * Upload `file` as Attachment `name` of Session `sessionId`, telling `onProgress` the share of it sent (0–1) as it
-   * goes: the name and path the Workspace stored it under. Interrupting it stops the upload.
+   * goes: the name and path the Machine stored it under. Interrupting it stops the upload.
    */
   readonly upload: (
     sessionId: string,
@@ -34,7 +34,7 @@ export interface UploadsApi {
   readonly remove: (sessionId: string, name: string) => Effect.Effect<void>;
 }
 
-/** Where the composer's Attachments go: the Session's Workspace. */
+/** Where the composer's Attachments go: the Session's Machine. */
 export class Uploads extends Context.Service<Uploads, UploadsApi>()("@cloudpid/web/chat/uploads") {}
 
 const decodeStored = Schema.decodeUnknownOption(Schema.fromJsonString(StoredAttachment));
@@ -89,7 +89,7 @@ export const UploadsLive: Layer.Layer<Uploads> = Layer.effect(
     return Uploads.of({
       upload,
       remove: (sessionId, name) =>
-        // The file stays in the Workspace's `.uploads`, as a sent one does.
+        // The file stays in the Machine's `.uploads`, as a sent one does.
         http.del(attachmentRoutePath(sessionId, name)).pipe(Effect.ignore),
     });
   }),

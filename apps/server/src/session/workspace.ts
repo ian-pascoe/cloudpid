@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { FileSearch } from "@cloudpid/extensions/files";
-import { DEFAULT_WORKSPACE, repoDirectory } from "@cloudpid/protocol";
+import { DEFAULT_MACHINE, repoDirectory } from "@cloudpid/protocol";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { WORKSPACE_ROOT } from "../workspace/binding.ts";
@@ -24,8 +24,8 @@ export type WorkspaceNamespace = {
   ): ComputerWorkspaceStub & Pick<DurableObjectStub<Workspace>, "startContainerEarly">;
 };
 
-/** Where a Session works: its Workspace's slug, and the repo directory below `/workspace` it works in (null: the root). */
-export type Placement = { readonly slug: string; readonly repo: string | null };
+/** Where a Session works: its Machine's slug, and the repo directory below `/workspace` it works in (null: the root). */
+export type Placement = { readonly machine: string; readonly repo: string | null };
 
 export type CachedPlacementOptions = {
   /** The Session's name, its ID in the Registry; undefined when unknown. */
@@ -39,7 +39,7 @@ export type CachedPlacementOptions = {
 };
 
 /** Where a Session the Registry does not list works: the root of the default Workspace. */
-const DEFAULT_PLACEMENT: Placement = { slug: DEFAULT_WORKSPACE, repo: null };
+const DEFAULT_PLACEMENT: Placement = { machine: DEFAULT_MACHINE, repo: null };
 
 /**
  * Where a Session works. It is fixed when the Registry creates the Session, so it is asked once and kept. A Session the
@@ -87,7 +87,7 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
   const search = async () => {
     const { ComputerFiles } = await computer();
 
-    return new ComputerFiles(options.namespace.getByName((await options.placement()).slug));
+    return new ComputerFiles(options.namespace.getByName((await options.placement()).machine));
   };
 
   const files: FileSearch = {
@@ -99,21 +99,21 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
   return {
     env: async (target) => {
       const { ComputerExecutionEnv } = await computer();
-      const { slug, repo } = await options.placement();
+      const { machine, repo } = await options.placement();
 
       return new ComputerExecutionEnv({
-        workspace: options.namespace.getByName(slug),
+        workspace: options.namespace.getByName(machine),
         // Environments with equal ids see the same files: one per Workspace.
-        id: `computer:${slug}`,
+        id: `computer:${machine}`,
         // A conversation's own `cwd` first, then the Session's repo, then the Workspace root.
         cwd: target.cwd ?? (repo === null ? WORKSPACE_ROOT : repoDirectory(repo)),
       });
     },
     files,
     startContainerEarly: async () => {
-      const { slug } = await options.placement();
+      const { machine } = await options.placement();
 
-      await options.namespace.getByName(slug).startContainerEarly();
+      await options.namespace.getByName(machine).startContainerEarly();
     },
   };
 };

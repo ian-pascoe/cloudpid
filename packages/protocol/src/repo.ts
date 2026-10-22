@@ -1,11 +1,11 @@
-// Repos in a Workspace (`docs/spec.md` → Filesystem and tools): one directory per repo below `/workspace`, named by
+// Repos in a Machine (`docs/spec.md` → Filesystem and tools): one directory per repo below `/workspace`, named by
 // the owner or taken from the clone URL. Both the web app (to check input as it is typed) and the server (before a
 // name reaches a path or a URL reaches `git`) use these, so the rules are in one place.
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-/** The Workspace root: one directory per repo below it. */
+/** The Machine root: one directory per repo below it. */
 export const WORKSPACE_ROOT = "/workspace";
 
 /** The longest repo directory name. */
@@ -26,7 +26,7 @@ export const RepoName = Schema.String.check(
 export const isRepoName = (name: string): boolean =>
   REPO_NAME.test(name) && name.length <= MAX_REPO_NAME_LENGTH;
 
-/** The directory of repo `name` in a Workspace. */
+/** The directory of repo `name` in a Machine. */
 export const repoDirectory = (name: string): string => `${WORKSPACE_ROOT}/${name}`;
 
 /** The longest repo address a person may enter. */
@@ -120,10 +120,10 @@ export const parseRepoSource = (input: string): Result.Result<RepoSource, string
   );
 };
 
-/** A Workspace operation that failed, with a message for a person: a clone that did not finish, a repo that is not there. */
-export class WorkspaceError extends Schema.TaggedError<
-  WorkspaceError,
+/** A Machine operation that failed, with a message for a person: a clone that did not finish, a repo that is not there. */
+export class MachineError extends Schema.TaggedError<
+  MachineError,
   { readonly brand: unique symbol }
->()("WorkspaceError", {
+>()("MachineError", {
   message: Schema.String,
 }) {}

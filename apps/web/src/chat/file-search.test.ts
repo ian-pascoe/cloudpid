@@ -390,7 +390,7 @@ describe("a conversation's file search atoms", () => {
 
       yield* type("x");
       yield* wait(FILE_SEARCH_DEBOUNCE_MS);
-      yield* latest().say({ type: "error", id: asked()[0]?.id, message: "No Workspace" });
+      yield* latest().say({ type: "error", id: asked()[0]?.id, message: "No Machine" });
 
       expect(view("x")).toMatchObject({ failed: true, searching: false });
 

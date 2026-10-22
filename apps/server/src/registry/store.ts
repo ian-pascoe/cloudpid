@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE, type PushSubscription, TitleSource } from "@cloudpid/protocol";
+import { DEFAULT_MACHINE, type PushSubscription, TitleSource } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
@@ -16,8 +16,8 @@ export type SessionRecord = {
   readonly title: string | null;
   /** Who set the title: null while there is none. A title the owner set is never replaced; a generated one is set once. */
   readonly titleSource: TitleSource | null;
-  /** The slug of the Workspace the Session works on, fixed when it is created. */
-  readonly workspace: string;
+  /** The slug of the Machine the Session works on, fixed when it is created. */
+  readonly machine: string;
   /** The repo directory below `/workspace` that is the Session's `cwd`, fixed when it is created; null for the root. */
   readonly repo: string | null;
   readonly status: SessionStatus;
@@ -28,31 +28,31 @@ export type SessionRecord = {
   readonly archivedAt: number | null;
 };
 
-/** A Workspace as the Registry lists it. */
-export type WorkspaceRecord = {
+/** A Machine as the Registry lists it. */
+export type MachineRecord = {
   /** Its fixed identifier: the Workspace DO's name, and what its Sessions are bound to. */
   readonly slug: string;
-  /** The owner's label for it, unique among Workspaces whatever the case. It starts as the slug. */
+  /** The owner's label for it, unique among Machines whatever the case. It starts as the slug. */
   readonly name: string;
   readonly createdAt: number;
 };
 
-/** How renaming a Workspace went. */
-export type WorkspaceRename =
-  | { readonly status: "renamed"; readonly workspace: WorkspaceRecord }
+/** How renaming a Machine went. */
+export type MachineRename =
+  | { readonly status: "renamed"; readonly machine: MachineRecord }
   | { readonly status: "missing" }
   | { readonly status: "taken" };
 
-/** What became of a Workspace's record: deleted, not registered, or kept because a Session is still bound to it. */
-export type WorkspaceDeletion = "deleted" | "missing" | "in-use";
+/** What became of a Machine's record: deleted, not registered, or kept because a Session is still bound to it. */
+export type MachineDeletion = "deleted" | "missing" | "in-use";
 
 export type RegistryStore = {
-  /** Register a Session, idle, bound to `workspace` (default `DEFAULT_WORKSPACE`), which is registered too. */
+  /** Register a Session, idle, bound to `machine` (default `DEFAULT_MACHINE`), which is registered too. */
   readonly createSession: (
     input: {
       readonly id: string;
       readonly title: string | null;
-      readonly workspace?: string | undefined;
+      readonly machine?: string | undefined;
       readonly repo?: string | undefined;
     },
     now: number,
@@ -77,17 +77,17 @@ export type RegistryStore = {
   /** Forget a Session; says whether it was registered. */
   readonly deleteSession: (id: string) => boolean;
   /**
-   * Register a Workspace by slug, named after it; one that is already registered keeps its record. When another
-   * Workspace already has that name, the new one is named `<slug> 2` (or 3, …).
+   * Register a Machine by slug, named after it; one that is already registered keeps its record. When another
+   * Machine already has that name, the new one is named `<slug> 2` (or 3, …).
    */
-  readonly createWorkspace: (slug: string, now: number) => WorkspaceRecord;
-  /** The Workspace registered under `slug`, or null. */
-  readonly getWorkspace: (slug: string) => WorkspaceRecord | null;
-  readonly listWorkspaces: () => WorkspaceRecord[];
-  /** Give a Workspace a new name, which no other Workspace may have in any case. */
-  readonly renameWorkspace: (slug: string, name: string) => WorkspaceRename;
-  /** Forget a Workspace's record, only while no Session is bound to it (they are never touched). */
-  readonly deleteWorkspace: (slug: string) => WorkspaceDeletion;
+  readonly createMachine: (slug: string, now: number) => MachineRecord;
+  /** The Machine registered under `slug`, or null. */
+  readonly getMachine: (slug: string) => MachineRecord | null;
+  readonly listMachines: () => MachineRecord[];
+  /** Give a Machine a new name, which no other Machine may have in any case. */
+  readonly renameMachine: (slug: string, name: string) => MachineRename;
+  /** Forget a Machine's record, only while no Session is bound to it (they are never touched). */
+  readonly deleteMachine: (slug: string) => MachineDeletion;
   /** The JSON text of the document called `name`, or null. Documents hold the Registry's own settings. */
   readonly getDocument: (name: string) => string | null;
   /** Save a document, replacing the one with its name. */
@@ -106,9 +106,9 @@ type SessionRow = {
   id: string;
   title: string | null;
   title_source: string | null;
-  /** Null for a Session stored before Sessions had Workspaces. */
+  /** Null for a Session stored before Sessions had Machines. */
   workspace: string | null;
-  /** Null for the Workspace root, and for a Session stored before Sessions had repos. */
+  /** Null for the Machine root, and for a Session stored before Sessions had repos. */
   repo: string | null;
   status: string;
   created_at: number;
@@ -117,7 +117,9 @@ type SessionRow = {
 };
 
 /** `name` is null only between migration 8's two statements. */
-type WorkspaceRow = { slug: string; name: string | null; created_at: number };
+// The `workspaces` table and the `sessions.workspace` column predate the rename of Workspaces to Machines. Their
+// names are kept (migrations are released and immutable); `SessionRow.workspace` is the machine's slug.
+type MachineRow = { slug: string; name: string | null; created_at: number };
 
 type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
 
@@ -147,7 +149,7 @@ const toSession = (row: SessionRow): SessionRecord => ({
   id: row.id,
   title: row.title,
   titleSource: checkedTitleSource(row.title_source),
-  workspace: row.workspace ?? DEFAULT_WORKSPACE,
+  machine: row.workspace ?? DEFAULT_MACHINE,
   repo: row.repo,
   status: checkedStatus(row.status),
   createdAt: row.created_at,
@@ -155,7 +157,7 @@ const toSession = (row: SessionRow): SessionRecord => ({
   archivedAt: row.archived_at,
 });
 
-const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => ({
+const toMachine = (row: MachineRow): MachineRecord => ({
   slug: row.slug,
   name: row.name ?? row.slug,
   createdAt: row.created_at,
@@ -200,7 +202,7 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec(
       `INSERT OR IGNORE INTO workspaces (slug, created_at)
        VALUES (?, CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
-      DEFAULT_WORKSPACE,
+      DEFAULT_MACHINE,
     );
   },
   // 4: documents by name, which hold the settings overrides.
@@ -270,14 +272,14 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
   const { sql } = storage;
 
-  const getWorkspace = (slug: string): WorkspaceRecord | null => {
-    const [row] = sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE slug = ?", slug).toArray();
+  const getMachine = (slug: string): MachineRecord | null => {
+    const [row] = sql.exec<MachineRow>("SELECT * FROM workspaces WHERE slug = ?", slug).toArray();
 
-    return row === undefined ? null : toWorkspace(row);
+    return row === undefined ? null : toMachine(row);
   };
 
   /**
-   * Whether a Workspace other than `slug` is named `name`, whatever the case. The names are compared here, folded as
+   * Whether a Machine other than `slug` is named `name`, whatever the case. The names are compared here, folded as
    * the web app folds them (`toLowerCase`), since the index's `NOCASE` folds only ASCII letters; there are few.
    */
   const nameTaken = (name: string, slug: string): boolean => {
@@ -291,8 +293,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     );
   };
 
-  const createWorkspace = (slug: string, now: number): WorkspaceRecord => {
-    const known = getWorkspace(slug);
+  const createMachine = (slug: string, now: number): MachineRecord => {
+    const known = getMachine(slug);
 
     if (known !== null) return known;
 
@@ -313,15 +315,15 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
   return {
     createSession: (input, now) => {
-      const workspace = input.workspace ?? DEFAULT_WORKSPACE;
+      const machine = input.machine ?? DEFAULT_MACHINE;
 
-      createWorkspace(workspace, now);
+      createMachine(machine, now);
       sql.exec(
         "INSERT INTO sessions (id, title, title_source, workspace, repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)",
         input.id,
         input.title,
         input.title === null ? null : "owner",
-        workspace,
+        machine,
         input.repo ?? null,
         now,
         now,
@@ -331,7 +333,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         id: input.id,
         title: input.title,
         titleSource: input.title === null ? null : "owner",
-        workspace,
+        machine,
         repo: input.repo ?? null,
         status: "idle",
         createdAt: now,
@@ -386,18 +388,18 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         id,
       ).rowsWritten > 0,
 
-    createWorkspace,
+    createMachine,
 
-    getWorkspace,
+    getMachine,
 
-    listWorkspaces: () =>
+    listMachines: () =>
       Arr.map(
-        sql.exec<WorkspaceRow>("SELECT * FROM workspaces ORDER BY created_at DESC, slug").toArray(),
-        toWorkspace,
+        sql.exec<MachineRow>("SELECT * FROM workspaces ORDER BY created_at DESC, slug").toArray(),
+        toMachine,
       ),
 
-    renameWorkspace: (slug, name) => {
-      const known = getWorkspace(slug);
+    renameMachine: (slug, name) => {
+      const known = getMachine(slug);
 
       if (known === null) return { status: "missing" };
 
@@ -405,11 +407,11 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
       sql.exec("UPDATE workspaces SET name = ? WHERE slug = ?", name, slug);
 
-      return { status: "renamed", workspace: { ...known, name } };
+      return { status: "renamed", machine: { ...known, name } };
     },
 
-    deleteWorkspace: (slug) => {
-      if (getWorkspace(slug) === null) return "missing";
+    deleteMachine: (slug) => {
+      if (getMachine(slug) === null) return "missing";
 
       if (
         sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", slug).toArray().length > 0

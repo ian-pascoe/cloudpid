@@ -27,7 +27,7 @@ export const serveAttachment = Effect.fn("serveAttachment")(function* (
   const web = yield* Effect.orDie(HttpServerRequest.toWeb(request));
 
   const response = yield* Effect.promise(() =>
-    answerAttachment(web, route, filesFor(session.workspace)),
+    answerAttachment(web, route, filesFor(session.machine)),
   );
 
   return HttpServerResponse.fromWeb(response);

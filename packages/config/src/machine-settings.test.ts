@@ -3,19 +3,19 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   containerInstance,
-  DEFAULT_WORKSPACE_SETTINGS,
+  DEFAULT_MACHINE_SETTINGS,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
   INSTANCE_TYPES,
   MAX_IGNORE_PATTERNS,
-  resolveWorkspaceSettings,
-  resolveWorkspaceSettingsLeniently,
-  workspaceOverridesFrom,
-  type WorkspaceSettings,
-} from "./workspace-settings.ts";
+  resolveMachineSettings,
+  resolveMachineSettingsLeniently,
+  machineOverridesFrom,
+  type MachineSettings,
+} from "./machine-settings.ts";
 
-const resolved = (overrides: Schema.Json): WorkspaceSettings => {
-  const result = resolveWorkspaceSettings(overrides);
+const resolved = (overrides: Schema.Json): MachineSettings => {
+  const result = resolveMachineSettings(overrides);
 
   if (Result.isFailure(result)) throw new Error(result.failure.message);
 
@@ -23,7 +23,7 @@ const resolved = (overrides: Schema.Json): WorkspaceSettings => {
 };
 
 const rejected = (overrides: Schema.Json): string => {
-  const result = resolveWorkspaceSettings(overrides);
+  const result = resolveMachineSettings(overrides);
 
   if (Result.isSuccess(result)) throw new Error("Expected the overrides to be rejected");
 
@@ -32,7 +32,7 @@ const rejected = (overrides: Schema.Json): string => {
 
 describe("the defaults", () => {
   it("are the 2 vCPU / 6 GiB custom size and a 5-minute idle stop, as the spec says", () => {
-    expect(DEFAULT_WORKSPACE_SETTINGS).toEqual({
+    expect(DEFAULT_MACHINE_SETTINGS).toEqual({
       instance: "custom-2",
       idleMinutes: 5,
       ignore: [],
@@ -40,7 +40,7 @@ describe("the defaults", () => {
   });
 
   it("are what no overrides resolve to", () => {
-    expect(resolved({})).toEqual(DEFAULT_WORKSPACE_SETTINGS);
+    expect(resolved({})).toEqual(DEFAULT_MACHINE_SETTINGS);
   });
 });
 
@@ -61,7 +61,7 @@ describe("containerInstance", () => {
   });
 });
 
-describe("resolveWorkspaceSettings", () => {
+describe("resolveMachineSettings", () => {
   it("gives each override over the default, and leaves the rest", () => {
     expect(resolved({ instance: "basic" })).toEqual({
       instance: "basic",
@@ -143,28 +143,28 @@ describe("resolveWorkspaceSettings", () => {
   });
 });
 
-describe("workspaceOverridesFrom", () => {
+describe("machineOverridesFrom", () => {
   it("keeps only what differs from the defaults, so a setting left alone follows later defaults", () => {
-    expect(workspaceOverridesFrom(DEFAULT_WORKSPACE_SETTINGS)).toEqual({});
-    expect(
-      workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-4" }),
-    ).toEqual({ instance: "standard-4" });
-    // standard-2 was the default: a Workspace that picks it now keeps it as an override.
-    expect(
-      workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-2" }),
-    ).toEqual({ instance: "standard-2" });
-    expect(workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, idleMinutes: 15 })).toEqual({
+    expect(machineOverridesFrom(DEFAULT_MACHINE_SETTINGS)).toEqual({});
+    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, instance: "standard-4" })).toEqual({
+      instance: "standard-4",
+    });
+    // standard-2 was the default: a Machine that picks it now keeps it as an override.
+    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, instance: "standard-2" })).toEqual({
+      instance: "standard-2",
+    });
+    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, idleMinutes: 15 })).toEqual({
       idleMinutes: 15,
     });
-    expect(workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, ignore: ["/data"] })).toEqual({
+    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, ignore: ["/data"] })).toEqual({
       ignore: ["/data"],
     });
   });
 });
 
-describe("resolveWorkspaceSettingsLeniently", () => {
+describe("resolveMachineSettingsLeniently", () => {
   it("drops a stale override and keeps the rest", () => {
-    const { settings, dropped } = resolveWorkspaceSettingsLeniently({
+    const { settings, dropped } = resolveMachineSettingsLeniently({
       instance: "retired-9",
       idleMinutes: 30,
     });
@@ -175,8 +175,6 @@ describe("resolveWorkspaceSettingsLeniently", () => {
   });
 
   it("gives the defaults for overrides that are not an object", () => {
-    expect(resolveWorkspaceSettingsLeniently("nonsense").settings).toEqual(
-      DEFAULT_WORKSPACE_SETTINGS,
-    );
+    expect(resolveMachineSettingsLeniently("nonsense").settings).toEqual(DEFAULT_MACHINE_SETTINGS);
   });
 });

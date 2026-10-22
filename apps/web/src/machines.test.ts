@@ -1,11 +1,11 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 
-import { DEFAULT_WORKSPACE_SETTINGS, INSTANCE_TYPES, MAX_IGNORE_PATTERNS } from "@cloudpid/config";
+import { DEFAULT_MACHINE_SETTINGS, INSTANCE_TYPES, MAX_IGNORE_PATTERNS } from "@cloudpid/config";
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   deleteConfirmed,
-  groupByWorkspace,
+  groupByMachine,
   idleMinutesProblem,
   ignorePatternsFrom,
   ignoreProblem,
@@ -13,14 +13,14 @@ import {
   slugProblem,
   sourceProblem,
   splitArchived,
-  workspaceNameProblem,
-} from "./workspaces.ts";
+  machineNameProblem,
+} from "./machines.ts";
 
-const session = (id: string, workspace: string, repo: string | null = null): SessionRecord => ({
+const session = (id: string, machine: string, repo: string | null = null): SessionRecord => ({
   id,
   title: null,
   titleSource: null,
-  workspace,
+  machine,
   repo,
   status: "idle",
   createdAt: 1,
@@ -28,45 +28,45 @@ const session = (id: string, workspace: string, repo: string | null = null): Ses
   archivedAt: null,
 });
 
-describe("groupByWorkspace", () => {
-  it("groups Sessions by Workspace, the newest Session's Workspace first", () => {
-    const groups = groupByWorkspace([
+describe("groupByMachine", () => {
+  it("groups Sessions by Machine, the newest Session's Machine first", () => {
+    const groups = groupByMachine([
       session("c", "pi"),
       session("b", "cloudpid", "web"),
       session("a", "pi", "docs"),
     ]);
 
-    expect(groups.map((group) => [group.workspace, group.sessions.map((s) => s.id)])).toEqual([
+    expect(groups.map((group) => [group.machine, group.sessions.map((s) => s.id)])).toEqual([
       ["pi", ["c", "a"]],
       ["cloudpid", ["b"]],
     ]);
   });
 
   it("says whether any of a group's Sessions is running", () => {
-    const groups = groupByWorkspace([
+    const groups = groupByMachine([
       { ...session("c", "pi"), status: "running" },
       session("b", "cloudpid"),
       session("a", "pi"),
     ]);
 
-    expect(groups.map((group) => [group.workspace, group.running])).toEqual([
+    expect(groups.map((group) => [group.machine, group.running])).toEqual([
       ["pi", true],
       ["cloudpid", false],
     ]);
   });
 
   it("is empty without Sessions", () => {
-    expect(groupByWorkspace([])).toEqual([]);
+    expect(groupByMachine([])).toEqual([]);
   });
 });
 
-describe("groupByWorkspace with names", () => {
-  it("labels each group with its Workspace's name, and with the slug for a Workspace it does not know", () => {
-    const groups = groupByWorkspace([session("a", "pi"), session("b", "gone")], {
+describe("groupByMachine with names", () => {
+  it("labels each group with its Machine's name, and with the slug for a Machine it does not know", () => {
+    const groups = groupByMachine([session("a", "pi"), session("b", "gone")], {
       pi: "Pi on Cloudflare",
     });
 
-    expect(groups.map((group) => [group.workspace, group.name])).toEqual([
+    expect(groups.map((group) => [group.machine, group.name])).toEqual([
       ["pi", "Pi on Cloudflare"],
       ["gone", "gone"],
     ]);
@@ -88,15 +88,15 @@ describe("splitArchived", () => {
   });
 });
 
-describe("workspaceNameProblem", () => {
-  it("accepts a name another Workspace does not have, in any case, and says what is wrong otherwise", () => {
+describe("machineNameProblem", () => {
+  it("accepts a name another Machine does not have, in any case, and says what is wrong otherwise", () => {
     const others = ["Pi on Cloudflare"];
 
-    expect(workspaceNameProblem("  Docs ", others)).toBeNull();
-    expect(workspaceNameProblem("   ", others)).toBe("Give the workspace a name");
-    expect(workspaceNameProblem("a".repeat(81), others)).toBe("Use at most 80 characters");
-    expect(workspaceNameProblem("pi on cloudflare", others)).toBe(
-      "Another workspace is already named that",
+    expect(machineNameProblem("  Docs ", others)).toBeNull();
+    expect(machineNameProblem("   ", others)).toBe("Give the machine a name");
+    expect(machineNameProblem("a".repeat(81), others)).toBe("Use at most 80 characters");
+    expect(machineNameProblem("pi on cloudflare", others)).toBe(
+      "Another machine is already named that",
     );
   });
 });
@@ -138,7 +138,7 @@ describe("instanceLabel", () => {
 
   it("marks exactly one of the offered sizes", () => {
     expect(INSTANCE_TYPES.filter((type) => instanceLabel(type).endsWith("(default)"))).toEqual([
-      DEFAULT_WORKSPACE_SETTINGS.instance,
+      DEFAULT_MACHINE_SETTINGS.instance,
     ]);
   });
 });
@@ -174,7 +174,7 @@ describe("ignoreProblem", () => {
     expect(ignoreProblem("/a/{b,c}")).not.toBeNull();
   });
 
-  it("refuses more patterns than a Workspace may have", () => {
+  it("refuses more patterns than a Machine may have", () => {
     const many = Array.from({ length: MAX_IGNORE_PATTERNS + 1 }, (_, i) => `/data-${i}`);
 
     expect(ignoreProblem(many.join("\n"))).toContain(String(MAX_IGNORE_PATTERNS));

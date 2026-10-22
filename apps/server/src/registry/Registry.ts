@@ -13,9 +13,9 @@ import {
   openRegistryStore,
   type SessionRecord,
   type SessionStatus,
-  type WorkspaceRecord,
-  type WorkspaceDeletion,
-  type WorkspaceRename,
+  type MachineRecord,
+  type MachineDeletion,
+  type MachineRename,
 } from "./store.ts";
 
 /** The Registry is a singleton: every caller addresses the object with this name. */
@@ -23,10 +23,10 @@ export const REGISTRY_NAME = "registry";
 
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
-  /** Register a new Session, idle, under a fresh UUIDv7, bound to `workspace` (default `DEFAULT_WORKSPACE`). */
+  /** Register a new Session, idle, under a fresh UUIDv7, bound to `machine` (default `DEFAULT_MACHINE`). */
   readonly createSession: (input: {
     readonly title?: string | undefined;
-    readonly workspace?: string | undefined;
+    readonly machine?: string | undefined;
     readonly repo?: string | undefined;
   }) => Effect.Effect<SessionRecord>;
   /** The Session registered under `id`, or null. */
@@ -59,16 +59,16 @@ export type RegistryMethods = {
   }) => Effect.Effect<SessionRecord | null>;
   /** Forget a Session, once its object is wiped; says whether it was registered. */
   readonly deleteSession: (input: { readonly id: string }) => Effect.Effect<boolean>;
-  /** Register a Workspace by slug, named after it; one already registered keeps its record. */
-  readonly createWorkspace: (input: { readonly slug: string }) => Effect.Effect<WorkspaceRecord>;
-  readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
-  /** Give a Workspace a new name, which no other Workspace may have in any case. */
-  readonly renameWorkspace: (input: {
+  /** Register a Machine by slug, named after it; one already registered keeps its record. */
+  readonly createMachine: (input: { readonly slug: string }) => Effect.Effect<MachineRecord>;
+  readonly listMachines: () => Effect.Effect<ReadonlyArray<MachineRecord>>;
+  /** Give a Machine a new name, which no other Machine may have in any case. */
+  readonly renameMachine: (input: {
     readonly slug: string;
     readonly name: string;
-  }) => Effect.Effect<WorkspaceRename>;
-  /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
-  readonly deleteWorkspace: (input: { readonly slug: string }) => Effect.Effect<WorkspaceDeletion>;
+  }) => Effect.Effect<MachineRename>;
+  /** Forget a Machine once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
+  readonly deleteMachine: (input: { readonly slug: string }) => Effect.Effect<MachineDeletion>;
   /** The settings in force and the overrides saved over the defaults. */
   readonly getSettings: () => Effect.Effect<SettingsState>;
   /** Save `overrides` in place of the saved ones if they resolve; otherwise say why not, and save nothing. */
@@ -97,7 +97,7 @@ export type RegistryMethods = {
 };
 
 /**
- * The index of Sessions and Workspaces (`docs/spec.md` → Durable Objects), over this object's SQLite storage.
+ * The index of Sessions and Machines (`docs/spec.md` → Durable Objects), over this object's SQLite storage.
  * The class name is the Durable Object class name in every stage's migrations, so it cannot be renamed once deployed.
  */
 export class Registry extends Cloudflare.DurableObject<Registry, RegistryMethods>()("Registry") {}
@@ -110,12 +110,12 @@ export const RegistryLive = Registry.make(
         const notify = pushNotifier({ store, vapid: push.vapid });
 
         return {
-          createSession: ({ title, workspace, repo }) =>
+          createSession: ({ title, machine, repo }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
-              return store.createSession({ id, title: title ?? null, workspace, repo }, now);
+              return store.createSession({ id, title: title ?? null, machine, repo }, now);
             }),
           getSession: ({ id }) => Effect.sync(() => store.getSession(id)),
           listSessions: () => Effect.sync(() => store.listSessions()),
@@ -130,11 +130,11 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(Effect.map((now) => store.archiveSession(id, now))),
           unarchiveSession: ({ id }) => Effect.sync(() => store.unarchiveSession(id)),
           deleteSession: ({ id }) => Effect.sync(() => store.deleteSession(id)),
-          createWorkspace: ({ slug }) =>
-            Clock.currentTimeMillis.pipe(Effect.map((now) => store.createWorkspace(slug, now))),
-          listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
-          renameWorkspace: ({ slug, name }) => Effect.sync(() => store.renameWorkspace(slug, name)),
-          deleteWorkspace: ({ slug }) => Effect.sync(() => store.deleteWorkspace(slug)),
+          createMachine: ({ slug }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => store.createMachine(slug, now))),
+          listMachines: () => Effect.sync(() => store.listMachines()),
+          renameMachine: ({ slug, name }) => Effect.sync(() => store.renameMachine(slug, name)),
+          deleteMachine: ({ slug }) => Effect.sync(() => store.deleteMachine(slug)),
           getSettings: () => Effect.sync(() => readSettings(store)),
           updateSettings: ({ overrides }) =>
             Clock.currentTimeMillis.pipe(

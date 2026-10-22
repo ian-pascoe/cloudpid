@@ -10,11 +10,11 @@ import {
   searchAtom,
   sessionIdAtom,
   isSettingsPath,
-  isWorkspacesPath,
+  isMachinesPath,
   SETTINGS_PATH,
   sessionIdOf,
   sessionPath,
-  WORKSPACES_PATH,
+  MACHINES_PATH,
   withPaneParams,
 } from "./router.ts";
 
@@ -43,14 +43,14 @@ describe("the settings path", () => {
   });
 });
 
-describe("the Workspaces path", () => {
-  it("shows the Workspaces, and no Session or settings", () => {
-    expect(isWorkspacesPath(WORKSPACES_PATH)).toBe(true);
-    expect(isWorkspacesPath("/workspaces/")).toBe(true);
-    expect(isWorkspacesPath("/workspaces/x")).toBe(false);
-    expect(isWorkspacesPath("/sessions/workspaces")).toBe(false);
-    expect(sessionIdOf(WORKSPACES_PATH)).toBeUndefined();
-    expect(isSettingsPath(WORKSPACES_PATH)).toBe(false);
+describe("the Machines path", () => {
+  it("shows the Machines, and no Session or settings", () => {
+    expect(isMachinesPath(MACHINES_PATH)).toBe(true);
+    expect(isMachinesPath("/machines/")).toBe(true);
+    expect(isMachinesPath("/machines/x")).toBe(false);
+    expect(isMachinesPath("/sessions/machines")).toBe(false);
+    expect(sessionIdOf(MACHINES_PATH)).toBeUndefined();
+    expect(isSettingsPath(MACHINES_PATH)).toBe(false);
   });
 });
 
@@ -78,8 +78,8 @@ describe("the page's path", () => {
     browser.forward();
     expect(registry.get(pageAtom)).toEqual({ kind: "settings" });
 
-    registry.set(pathAtom, WORKSPACES_PATH);
-    expect(registry.get(pageAtom)).toEqual({ kind: "workspaces" });
+    registry.set(pathAtom, MACHINES_PATH);
+    expect(registry.get(pageAtom)).toEqual({ kind: "machines" });
 
     browser.back();
     browser.back();

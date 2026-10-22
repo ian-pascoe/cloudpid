@@ -2,10 +2,10 @@
 
 import { INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
 import {
-  DEFAULT_WORKSPACE,
-  MAX_WORKSPACE_NAME_LENGTH,
+  DEFAULT_MACHINE,
+  MAX_MACHINE_NAME_LENGTH,
   type SessionRecord,
-  type WorkspaceRecord,
+  type MachineRecord,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -33,24 +33,24 @@ import { createSessionAtom, sessionListAtom, sessionsErrorAtom } from "./session
 import {
   cloneRepoAtom,
   cloneSourceAtom,
-  createWorkspaceAtom,
+  createMachineAtom,
   deleteTypedAtom,
-  deleteWorkspaceAtom,
-  newWorkspaceSlugAtom,
+  deleteMachineAtom,
+  newMachineSlugAtom,
   removeRepoAtom,
   removeTypedAtom,
   reposAtom,
   resetTypedAtom,
-  resetWorkspaceAtom,
+  resetMachineAtom,
   restartContainerAtom,
-  saveWorkspaceAtom,
-  workspaceDialogAtom,
-  workspaceDraftAtom,
-  workspaceListAtom,
-  workspaceSettingsAtom,
-  workspacesErrorAtom,
-  type WorkspaceDialog,
-} from "./workspaces-state.ts";
+  saveMachineAtom,
+  machineDialogAtom,
+  machineDraftAtom,
+  machineListAtom,
+  machineSettingsAtom,
+  machinesErrorAtom,
+  type MachineDialog,
+} from "./machines-state.ts";
 import {
   deleteConfirmed,
   idleMinutesProblem,
@@ -59,12 +59,12 @@ import {
   instanceLabel,
   slugProblem,
   sourceProblem,
-  workspaceNameProblem,
-} from "./workspaces.ts";
+  machineNameProblem,
+} from "./machines.ts";
 
-const NewWorkspaceForm = () => {
-  const [slug, setSlug] = useAtom(newWorkspaceSlugAtom);
-  const [created, create] = useAtom(createWorkspaceAtom);
+const NewMachineForm = () => {
+  const [slug, setSlug] = useAtom(newMachineSlugAtom);
+  const [created, create] = useAtom(createMachineAtom);
   const problem = slug === "" ? null : slugProblem(slug);
 
   const submit = (event: FormEvent) => {
@@ -77,12 +77,12 @@ const NewWorkspaceForm = () => {
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-1.5">
-      <label htmlFor="new-workspace" className="text-sm font-medium">
-        New workspace
+      <label htmlFor="new-machine" className="text-sm font-medium">
+        New machine
       </label>
       <div className="flex gap-2">
         <Input
-          id="new-workspace"
+          id="new-machine"
           value={slug}
           onChange={(event) => {
             setSlug(event.target.value);
@@ -151,8 +151,8 @@ const CloneForm = ({ slug }: { slug: string }) => {
       {problem !== null && <p className="text-xs text-destructive">{problem}</p>}
       {cloning && (
         <p role="status" className="text-xs text-muted-foreground">
-          Cloning into /workspace. The first command of a Workspace starts its Container, which
-          takes a little while.
+          Cloning into /workspace. The first command of a Machine starts its Container, which takes
+          a little while.
         </p>
       )}
     </form>
@@ -238,9 +238,9 @@ const ContainerFields = ({
       />
       {pathsProblem === null ? (
         <p className="text-xs text-muted-foreground">
-          Kept on the Container, out of the Workspace, like node_modules. Start with / (from
+          Kept on the Container, out of the Machine, like node_modules. Start with / (from
           /workspace) or **/ (at any depth); a line starting with ! keeps a path synced. What the
-          Workspace already holds there stays until it is deleted.
+          Machine already holds there stays until it is deleted.
         </p>
       ) : (
         <p className="text-xs text-destructive">{pathsProblem}</p>
@@ -254,21 +254,21 @@ const ContainerFields = ({
   </fieldset>
 );
 
-/** Edit a Workspace: its name, and its Container's size, idle time and extra paths. Its slug never changes. */
-const EditWorkspaceDialog = ({
-  workspace,
+/** Edit a Machine: its name, and its Container's size, idle time and extra paths. Its slug never changes. */
+const EditMachineDialog = ({
+  machine,
   otherNames,
 }: {
-  workspace: WorkspaceRecord;
+  machine: MachineRecord;
   otherNames: readonly string[];
 }) => {
-  const { slug } = workspace;
-  const loaded = useAtomValue(workspaceSettingsAtom(slug));
+  const { slug } = machine;
+  const loaded = useAtomValue(machineSettingsAtom(slug));
   // Ask for the settings again, after a failure to load them (one call to a cold Durable Object can fail).
-  const retry = useAtomRefresh(workspaceSettingsAtom(slug));
-  const [draft, setDraft] = useAtom(workspaceDraftAtom(slug));
-  const [edited, save] = useAtom(saveWorkspaceAtom(slug));
-  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const retry = useAtomRefresh(machineSettingsAtom(slug));
+  const [draft, setDraft] = useAtom(machineDraftAtom(slug));
+  const [edited, save] = useAtom(saveMachineAtom(slug));
+  const setDialog = useAtomSet(machineDialogAtom(slug));
   const { name, instance, idle, ignore } = draft;
 
   const saved = loaded.pipe(
@@ -281,10 +281,10 @@ const EditWorkspaceDialog = ({
   // A refused save shows until the next save starts; a failed load until it is asked for again.
   const loadError = settledFailureOf(loaded);
   const saveError = settledFailureOf(edited);
-  const nameProblem = workspaceNameProblem(name, otherNames);
+  const nameProblem = machineNameProblem(name, otherNames);
   const idleProblem = saved === undefined ? null : idleMinutesProblem(idle);
   const pathsProblem = ignore === undefined ? null : ignoreProblem(ignore);
-  const renamed = name.trim() !== workspace.name;
+  const renamed = name.trim() !== machine.name;
   const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
 
   const settingsChanged =
@@ -321,7 +321,7 @@ const EditWorkspaceDialog = ({
         <Input
           id={`name-${slug}`}
           value={name}
-          maxLength={MAX_WORKSPACE_NAME_LENGTH}
+          maxLength={MAX_MACHINE_NAME_LENGTH}
           onChange={(event) => {
             setDraft((current) => ({ ...current, name: event.target.value }));
           }}
@@ -391,18 +391,18 @@ const EditWorkspaceDialog = ({
   );
 };
 
-/** Confirm deleting a Workspace by typing its slug, after saying everything that goes with it. */
-const DeleteWorkspaceDialog = ({
-  workspace,
+/** Confirm deleting a Machine by typing its slug, after saying everything that goes with it. */
+const DeleteMachineDialog = ({
+  machine,
   sessions,
 }: {
-  workspace: WorkspaceRecord;
+  machine: MachineRecord;
   sessions: readonly SessionRecord[];
 }) => {
-  const { slug } = workspace;
+  const { slug } = machine;
   const [typed, setTyped] = useAtom(deleteTypedAtom(slug));
-  const [deleted, remove] = useAtom(deleteWorkspaceAtom(slug));
-  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const [deleted, remove] = useAtom(deleteMachineAtom(slug));
+  const setDialog = useAtomSet(machineDialogAtom(slug));
   const busy = deleted.waiting;
   const problem = settledFailureOf(deleted);
   const archived = sessions.filter((session) => session.archivedAt !== null).length;
@@ -470,7 +470,7 @@ const DeleteWorkspaceDialog = ({
           Cancel
         </Button>
         <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
-          {busy ? "Deleting…" : "Delete workspace"}
+          {busy ? "Deleting…" : "Delete machine"}
         </Button>
       </DialogActions>
     </form>
@@ -531,18 +531,18 @@ const DialogProblem = ({ problem }: { problem: string | null }) =>
     </p>
   );
 
-/** Confirm resetting a Workspace by typing its slug, after saying what goes and what stays. */
-const ResetWorkspaceDialog = ({
-  workspace,
+/** Confirm resetting a Machine by typing its slug, after saying what goes and what stays. */
+const ResetMachineDialog = ({
+  machine,
   sessions,
 }: {
-  workspace: WorkspaceRecord;
+  machine: MachineRecord;
   sessions: readonly SessionRecord[];
 }) => {
-  const { slug } = workspace;
+  const { slug } = machine;
   const [typed, setTyped] = useAtom(resetTypedAtom(slug));
-  const [reset, run] = useAtom(resetWorkspaceAtom(slug));
-  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const [reset, run] = useAtom(resetMachineAtom(slug));
+  const setDialog = useAtomSet(machineDialogAtom(slug));
   const busy = reset.waiting;
   const confirmed = deleteConfirmed(slug, typed);
   const count = sessionCount(sessions);
@@ -594,18 +594,18 @@ const ResetWorkspaceDialog = ({
           Cancel
         </Button>
         <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
-          {busy ? "Resetting…" : "Reset workspace"}
+          {busy ? "Resetting…" : "Reset machine"}
         </Button>
       </DialogActions>
     </form>
   );
 };
 
-/** Confirm restarting a Workspace's Container, after saying what it keeps and what it loses. */
-const RestartContainerDialog = ({ workspace }: { workspace: WorkspaceRecord }) => {
-  const { slug } = workspace;
+/** Confirm restarting a Machine's Container, after saying what it keeps and what it loses. */
+const RestartContainerDialog = ({ machine }: { machine: MachineRecord }) => {
+  const { slug } = machine;
   const [restarted, run] = useAtom(restartContainerAtom(slug));
-  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const setDialog = useAtomSet(machineDialogAtom(slug));
   const busy = restarted.waiting;
 
   const submit = (event: FormEvent) => {
@@ -668,7 +668,7 @@ const RemoveRepoDialog = ({
 }) => {
   const [typed, setTyped] = useAtom(removeTypedAtom(slug));
   const [removed, run] = useAtom(removeRepoAtom(slug));
-  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const setDialog = useAtomSet(machineDialogAtom(slug));
   const busy = removed.waiting;
   const confirmed = deleteConfirmed(repo, typed);
   const count = sessionCount(sessions);
@@ -724,35 +724,35 @@ const RemoveRepoDialog = ({
   );
 };
 
-const WorkspaceCard = ({
-  workspace,
+const MachineCard = ({
+  machine,
   otherNames,
   sessions,
   starting,
   onStart,
 }: {
-  workspace: WorkspaceRecord;
-  /** The names of the other Workspaces, which this one cannot take. */
+  machine: MachineRecord;
+  /** The names of the other Machines, which this one cannot take. */
   otherNames: readonly string[];
-  /** Every Session bound to the Workspace, archived ones included. */
+  /** Every Session bound to the Machine, archived ones included. */
   sessions: readonly SessionRecord[];
   starting: boolean;
-  onStart: (workspace: string, repo?: string) => void;
+  onStart: (machine: string, repo?: string) => void;
 }) => {
-  const { slug } = workspace;
+  const { slug } = machine;
   const listed = useAtomValue(reposAtom(slug));
   const cloned = useAtomValue(cloneRepoAtom(slug));
   // The Container's settings are asked for with the card, so the Edit dialog has them when it opens.
-  useAtomMount(workspaceSettingsAtom(slug));
-  const [dialog, setDialog] = useAtom(workspaceDialogAtom(slug));
-  const edited = useAtomValue(saveWorkspaceAtom(slug));
-  const deleted = useAtomValue(deleteWorkspaceAtom(slug));
-  const reset = useAtomValue(resetWorkspaceAtom(slug));
+  useAtomMount(machineSettingsAtom(slug));
+  const [dialog, setDialog] = useAtom(machineDialogAtom(slug));
+  const edited = useAtomValue(saveMachineAtom(slug));
+  const deleted = useAtomValue(deleteMachineAtom(slug));
+  const reset = useAtomValue(resetMachineAtom(slug));
   const restarted = useAtomValue(restartContainerAtom(slug));
   const removed = useAtomValue(removeRepoAtom(slug));
-  const forgetEdit = useAtomSet(saveWorkspaceAtom(slug));
-  const forgetDelete = useAtomSet(deleteWorkspaceAtom(slug));
-  const forgetReset = useAtomSet(resetWorkspaceAtom(slug));
+  const forgetEdit = useAtomSet(saveMachineAtom(slug));
+  const forgetDelete = useAtomSet(deleteMachineAtom(slug));
+  const forgetReset = useAtomSet(resetMachineAtom(slug));
   const forgetRestart = useAtomSet(restartContainerAtom(slug));
   const forgetRemove = useAtomSet(removeRepoAtom(slug));
   const shown = sessions.filter((session) => session.archivedAt === null);
@@ -767,7 +767,7 @@ const WorkspaceCard = ({
   // A clone's failure shows until the next clone starts.
   const reposError = settledFailureOf(cloned) ?? failureOf(listed);
 
-  const open = (next: WorkspaceDialog) => {
+  const open = (next: MachineDialog) => {
     // A failure of an earlier save, delete, reset, restart or removal shows no more once a dialog is opened again.
     forgetEdit(Atom.Reset);
     forgetDelete(Atom.Reset);
@@ -782,15 +782,15 @@ const WorkspaceCard = ({
   };
 
   return (
-    <section aria-label={workspace.name} className="flex flex-col gap-4 rounded-lg border p-4">
+    <section aria-label={machine.name} className="flex flex-col gap-4 rounded-lg border p-4">
       <div className="flex items-start gap-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
-          <h2 className="truncate text-sm font-semibold">{workspace.name}</h2>
-          {workspace.name !== slug && (
+          <h2 className="truncate text-sm font-semibold">{machine.name}</h2>
+          {machine.name !== slug && (
             <span className="truncate font-mono text-xs text-muted-foreground">{slug}</span>
           )}
         </div>
-        <Menu label={`Actions for the ${workspace.name} workspace`} className="-mt-1.5 -mr-1.5">
+        <Menu label={`Actions for the ${machine.name} machine`} className="-mt-1.5 -mr-1.5">
           <MenuItem
             onSelect={() => {
               open("edit");
@@ -816,7 +816,7 @@ const WorkspaceCard = ({
             <Eraser aria-hidden />
             Reset…
           </MenuItem>
-          {slug !== DEFAULT_WORKSPACE && (
+          {slug !== DEFAULT_MACHINE && (
             <MenuItem
               destructive
               onSelect={() => {
@@ -906,35 +906,35 @@ const WorkspaceCard = ({
         open={dialog === "edit"}
         onClose={close}
         dismissible={!busy}
-        title={`Edit ${workspace.name}`}
+        title={`Edit ${machine.name}`}
       >
-        <EditWorkspaceDialog workspace={workspace} otherNames={otherNames} />
+        <EditMachineDialog machine={machine} otherNames={otherNames} />
       </Dialog>
       <Dialog
         open={dialog === "delete"}
         onClose={close}
         dismissible={!busy}
-        title={`Delete the ${workspace.name} workspace?`}
+        title={`Delete the ${machine.name} machine?`}
         description="Everything below is deleted for good. Its saved Container disk expires on its own within 30 days."
       >
-        <DeleteWorkspaceDialog workspace={workspace} sessions={sessions} />
+        <DeleteMachineDialog machine={machine} sessions={sessions} />
       </Dialog>
       <Dialog
         open={dialog === "reset"}
         onClose={close}
         dismissible={!busy}
-        title={`Reset the ${workspace.name} workspace?`}
-        description="Everything below is deleted for good, and the workspace starts over."
+        title={`Reset the ${machine.name} machine?`}
+        description="Everything below is deleted for good, and the machine starts over."
       >
-        <ResetWorkspaceDialog workspace={workspace} sessions={sessions} />
+        <ResetMachineDialog machine={machine} sessions={sessions} />
       </Dialog>
       <Dialog
         open={dialog === "restart"}
         onClose={close}
         dismissible={!busy}
-        title={`Restart the ${workspace.name} container?`}
+        title={`Restart the ${machine.name} container?`}
       >
-        <RestartContainerDialog workspace={workspace} />
+        <RestartContainerDialog machine={machine} />
       </Dialog>
       <Dialog
         open={removing !== null}
@@ -955,20 +955,20 @@ const WorkspaceCard = ({
   );
 };
 
-/** The Workspaces page: create a Workspace, clone repos into it, and start Sessions in a repo or at its root. */
-export const WorkspacesPage = () => {
+/** The Machines page: create a Machine, clone repos into it, and start Sessions in a repo or at its root. */
+export const MachinesPage = () => {
   const sessions = useAtomValue(sessionListAtom);
   const sessionsError = useAtomValue(sessionsErrorAtom);
-  const workspaces = useAtomValue(workspaceListAtom);
-  const listError = useAtomValue(workspacesErrorAtom);
-  const createdWorkspace = useAtomValue(createWorkspaceAtom);
+  const machines = useAtomValue(machineListAtom);
+  const listError = useAtomValue(machinesErrorAtom);
+  const createdMachine = useAtomValue(createMachineAtom);
   const createSession = useAtomSet(createSessionAtom);
   // Starting a Session holds every Start button until the new Session is registered and opened.
   const starting = useAtomValue(createSessionAtom).waiting;
-  const error = failureOf(createdWorkspace) ?? listError;
+  const error = failureOf(createdMachine) ?? listError;
 
-  const start = (workspace: string, repo?: string) => {
-    createSession(callOf(repo === undefined ? { workspace } : { workspace, repo }));
+  const start = (machine: string, repo?: string) => {
+    createSession(callOf(repo === undefined ? { machine } : { machine, repo }));
   };
 
   return (
@@ -985,32 +985,30 @@ export const WorkspacesPage = () => {
           >
             <ArrowLeft className="size-4" />
           </button>
-          <h1 className="text-lg font-semibold">Workspaces</h1>
+          <h1 className="text-lg font-semibold">Machines</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          A workspace holds the files of one or more repos, shared by every session that works in
-          it. A session started in a repo has its directory as the working directory.
+          A machine holds the files of one or more repos, shared by every session that works in it.
+          A session started in a repo has its directory as the working directory.
         </p>
-        <NewWorkspaceForm />
+        <NewMachineForm />
         {(error ?? sessionsError) !== null && (
           <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
             {error ?? sessionsError}
           </p>
         )}
-        {workspaces === null ? (
+        {machines === null ? (
           error === null && <p className="text-sm text-muted-foreground">Loading…</p>
         ) : (
           <div className="flex flex-col gap-4">
-            {workspaces.map((workspace) => (
-              <WorkspaceCard
-                key={workspace.slug}
-                workspace={workspace}
-                otherNames={workspaces
-                  .filter((other) => other.slug !== workspace.slug)
+            {machines.map((machine) => (
+              <MachineCard
+                key={machine.slug}
+                machine={machine}
+                otherNames={machines
+                  .filter((other) => other.slug !== machine.slug)
                   .map((other) => other.name)}
-                sessions={(sessions ?? []).filter(
-                  (session) => session.workspace === workspace.slug,
-                )}
+                sessions={(sessions ?? []).filter((session) => session.machine === machine.slug)}
                 starting={starting}
                 onStart={start}
               />

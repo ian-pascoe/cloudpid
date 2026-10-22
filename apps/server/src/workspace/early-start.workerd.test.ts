@@ -80,7 +80,7 @@ it("answers at once, and a start that fails leaves the Workspace working and cou
 
   const files = sessionWorkspace({
     namespace: env.WORKSPACES,
-    placement: () => Promise.resolve({ slug: "early-start-2", repo: null }),
+    placement: () => Promise.resolve({ machine: "early-start-2", repo: null }),
   }).files;
 
   expect(await files.readdir("/workspace")).toEqual(

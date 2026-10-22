@@ -38,7 +38,7 @@ const setup = async (endpoints: Readonly<Record<string, number>>) => {
       id === SESSION.id
         ? {
             ...SESSION,
-            workspace: "default",
+            machine: "default",
             repo: null,
             status: "idle" as const,
             createdAt: 1,
@@ -103,7 +103,7 @@ describe("the notifier", () => {
       store: {
         getSession: () => ({
           ...SESSION,
-          workspace: "default",
+          machine: "default",
           repo: null,
           status: "idle",
           createdAt: 1,

@@ -148,12 +148,12 @@ export default class Server extends Cloudflare.Worker<Server>()(
       workspaceAttachmentFiles(worker[WORKSPACE_BINDING] as WorkspaceNamespace, slug);
 
     // SAFETY: the same binding; the Workspace DO answers the settings methods `SettingsHost` names.
-    const workspaceSettings = workspaceSettingsRemote(
+    const machineSettings = workspaceSettingsRemote(
       worker[WORKSPACE_BINDING] as Parameters<typeof workspaceSettingsRemote>[0],
     );
 
     // SAFETY: the same binding; the Workspace DO answers `LifecycleHost.destroy`.
-    const workspaces = workspaceObjectsRemote(
+    const machines = workspaceObjectsRemote(
       worker[WORKSPACE_BINDING] as Parameters<typeof workspaceObjectsRemote>[0],
     );
 
@@ -187,8 +187,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
         if (isRegistryRpc(request))
           return yield* serveRegistryRpc(registries, {
             repos,
-            workspaceSettings,
-            workspaces,
+            machineSettings,
+            machines,
             sessions: sessionObjects,
           });
 

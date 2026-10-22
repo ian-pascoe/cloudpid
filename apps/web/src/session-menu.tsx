@@ -24,10 +24,10 @@ const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
  */
 const DeleteSessionDialog = ({
   session,
-  workspaceName,
+  machineName,
 }: {
   session: SessionRecord;
-  workspaceName: string;
+  machineName: string;
 }) => {
   const [open, setOpen] = useAtom(DeleteOpen.use());
   const [deleted, remove] = useAtom(deleteSessionAtom(session.id));
@@ -49,7 +49,7 @@ const DeleteSessionDialog = ({
         <>
           <span className="font-medium text-foreground">{sessionTitle(session)}</span> and its
           conversation, subagents and history are deleted for good. Files it wrote in the{" "}
-          <span className="font-medium text-foreground">{workspaceName}</span> workspace stay.
+          <span className="font-medium text-foreground">{machineName}</span> machine stay.
           {session.status === "running" && " It is running: everything it runs stops first."}
         </>
       }
@@ -73,12 +73,12 @@ const DeleteSessionDialog = ({
 
 const Actions = ({
   session,
-  workspaceName,
+  machineName,
   actions,
   className,
 }: {
   session: SessionRecord;
-  workspaceName: string;
+  machineName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => {
@@ -120,7 +120,7 @@ const Actions = ({
           Delete…
         </MenuItem>
       </Menu>
-      <DeleteSessionDialog session={session} workspaceName={workspaceName} />
+      <DeleteSessionDialog session={session} machineName={machineName} />
     </>
   );
 };
@@ -131,7 +131,7 @@ const Actions = ({
  */
 export const SessionMenu = (props: {
   session: SessionRecord;
-  workspaceName: string;
+  machineName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => (

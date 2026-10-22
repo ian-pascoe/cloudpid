@@ -121,11 +121,11 @@ export const SETTINGS_PATH = "/settings";
 /** Whether a page path shows the settings. */
 export const isSettingsPath = (path: string): boolean => /^\/settings\/?$/.test(path);
 
-/** The Workspaces page: create Workspaces, clone repos into them, and start Sessions in them. */
-export const WORKSPACES_PATH = "/workspaces";
+/** The Machines page: create Machines, clone repos into them, and start Sessions in them. */
+export const MACHINES_PATH = "/machines";
 
-/** Whether a page path shows the Workspaces. */
-export const isWorkspacesPath = (path: string): boolean => /^\/workspaces\/?$/.test(path);
+/** Whether a page path shows the Machines. */
+export const isMachinesPath = (path: string): boolean => /^\/machines\/?$/.test(path);
 
 /** The Session a page path shows, if any. */
 export const sessionIdOf = (path: string): string | undefined => {
@@ -137,7 +137,7 @@ export const sessionIdOf = (path: string): string | undefined => {
 /** What a page path shows. */
 export type Page =
   | { readonly kind: "settings" }
-  | { readonly kind: "workspaces" }
+  | { readonly kind: "machines" }
   | { readonly kind: "session"; readonly sessionId: string }
   | { readonly kind: "empty" };
 
@@ -145,7 +145,7 @@ export type Page =
 export const pageOf = (path: string): Page => {
   if (isSettingsPath(path)) return { kind: "settings" };
 
-  if (isWorkspacesPath(path)) return { kind: "workspaces" };
+  if (isMachinesPath(path)) return { kind: "machines" };
 
   const sessionId = sessionIdOf(path);
 

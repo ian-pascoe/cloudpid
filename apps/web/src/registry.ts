@@ -14,14 +14,14 @@ import * as RpcClient from "effect/rpc/RpcClient";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
 /**
- * What a query listens to and a mutation invalidates: the Session list, the Workspace list, a Workspace's repos and
+ * What a query listens to and a mutation invalidates: the Session list, the Machine list, a Machine's repos and
  * its own settings by slug, the settings, and this browser's push subscription.
  */
 export type RegistryKey =
   | "sessions"
-  | "workspaces"
+  | "machines"
   | `repos:${string}`
-  | `workspace-settings:${string}`
+  | `machine-settings:${string}`
   | "settings"
   | "push";
 

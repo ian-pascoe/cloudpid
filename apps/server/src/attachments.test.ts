@@ -183,7 +183,7 @@ describe("serveAttachment", () => {
     const registries = {
       getByName: () => ({
         getSession: ({ id }: { id: string }) =>
-          Effect.succeed(id === known ? { id, workspace: "cloudpid" } : null),
+          Effect.succeed(id === known ? { id, machine: "cloudpid" } : null),
       }),
     } as never;
 

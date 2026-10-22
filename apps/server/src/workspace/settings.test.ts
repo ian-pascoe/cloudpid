@@ -1,6 +1,6 @@
 // A Workspace's own settings in its Durable Object's storage (docs/spec.md → Container and Toolchains → Size and idle).
 // @effect-diagnostics asyncFunction:off
-import { DEFAULT_WORKSPACE_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_MACHINE_SETTINGS } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { workspaceSettingsStore } from "./settings.ts";
@@ -25,7 +25,7 @@ describe("workspaceSettingsStore", () => {
   it("reads the defaults from a Workspace that saved nothing", async () => {
     const { store } = open();
 
-    expect(await store.read()).toEqual({ settings: DEFAULT_WORKSPACE_SETTINGS, overrides: {} });
+    expect(await store.read()).toEqual({ settings: DEFAULT_MACHINE_SETTINGS, overrides: {} });
   });
 
   it("saves overrides and reads them back as the settings in force", async () => {
