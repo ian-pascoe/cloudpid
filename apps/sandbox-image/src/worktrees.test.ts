@@ -1,8 +1,8 @@
 // A Workspace's worktree on the Container (ADR-0015): the scripts run for real, under bash, with real git, against a
 // throwaway root holding a Repo cloned from a local "remote".
-// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off newPromise:off asyncFunction:off
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ import {
   type Worktree,
   WORKTREE_KEPT,
   worktreePath,
+  worktreeSetupScript,
 } from "@cloudpid/sandbox-image/worktrees";
 
 /** A root with Repo `app` cloned from a bare `origin` whose default branch is `main`, and a Setup Script state. */
@@ -65,7 +66,13 @@ const machine = (options: { readonly remote?: boolean } = {}) => {
 
   const run = (script: string) => sh(script);
 
-  return { base, root, state, repo, origin, git, sh, run };
+  /** Run `script` in bash as `run` does, without waiting for it: its exit status. */
+  const start = (script: string) =>
+    new Promise<number | null>((resolve) => {
+      spawn("bash", ["-c", script], { cwd: root, env, stdio: "ignore" }).on("close", resolve);
+    });
+
+  return { base, root, state, repo, origin, git, sh, run, start };
 };
 
 const tree = (id: string, branch = `cloudpid/${id}`): Worktree => ({ repo: "app", id, branch });
@@ -102,6 +109,22 @@ describe("preparing a Workspace's worktree", () => {
 
     run(prepareWorktreeScript(tree("1a2b3c4d"), root, state));
 
+    expect(existsSync(join(worktreePath("app", "1a2b3c4d", root), "local.txt"))).toBe(false);
+  });
+
+  it("asks the remote for its default branch when the Repo does not know it", () => {
+    const { root, state, repo, git, run } = machine();
+
+    // A remote added by hand, not cloned from, has no `origin/HEAD`.
+    git("remote set-head origin -d", repo);
+    git("checkout -q -b local-work", repo);
+    writeFileSync(join(repo, "local.txt"), "only here\n");
+    git("add local.txt", repo);
+    git("commit -q -m local", repo);
+
+    const made = run(prepareWorktreeScript(tree("1a2b3c4d"), root, state));
+
+    expect(made.status, made.stderr).toBe(0);
     expect(existsSync(join(worktreePath("app", "1a2b3c4d", root), "local.txt"))).toBe(false);
   });
 
@@ -157,6 +180,21 @@ describe("preparing a Workspace's worktree", () => {
     expect(readFileSync(join(dir, "done.txt"), "utf8")).toBe("committed\n");
   });
 
+  it("repairs a worktree whose .git file was deleted, keeping its changes", () => {
+    const { root, state, run } = machine();
+    const dir = worktreePath("app", "1a2b3c4d", root);
+
+    run(prepareWorktreeScript(tree("1a2b3c4d"), root, state));
+    writeFileSync(join(dir, "draft.txt"), "kept\n");
+    rmSync(join(dir, ".git"));
+
+    const made = run(prepareWorktreeScript(tree("1a2b3c4d"), root, state));
+
+    expect(made.status, made.stderr).toBe(0);
+    expect(readFileSync(join(dir, "draft.txt"), "utf8")).toBe("kept\n");
+    expect(existsSync(join(dir, ".git"))).toBe(true);
+  });
+
   it("clears what a removal left behind, with the Setup Script's record, so the script runs again", () => {
     const { root, state, run } = machine();
     const dir = worktreePath("app", "1a2b3c4d", root);
@@ -187,6 +225,28 @@ describe("preparing a Workspace's worktree", () => {
     expect(setup.status, setup.stderr).toBe(0);
     expect(readFileSync(join(dir, "prepared.txt"), "utf8").trim()).toBe(dir);
     expect(existsSync(setupRecord("app@1a2b3c4d", state))).toBe(true);
+  });
+});
+
+describe("a Workspace's Setup Script", () => {
+  it("runs once for two Sessions that made the worktree at once: the second waits for the first's run", async () => {
+    const { root, state, repo, git, run, start } = machine();
+    const dir = worktreePath("app", "5e7a0001", root);
+    const runs = join(root, "runs.txt");
+
+    mkdirSync(join(repo, ".agents"));
+    writeFileSync(join(repo, SETUP_SCRIPT), `echo ran >> ${runs}\nsleep 1\n`);
+    git("add .agents", repo);
+    git("commit -q -m setup", repo);
+    git("push -q origin main", repo);
+    run(prepareWorktreeScript(tree("5e7a0001"), root, state));
+
+    const script = worktreeSetupScript(tree("5e7a0001"), root, state, 60);
+
+    expect(await Promise.all([start(script), start(script)])).toEqual([0, 0]);
+    expect(readFileSync(runs, "utf8")).toBe("ran\n");
+    expect(existsSync(setupRecord("app@5e7a0001", state))).toBe(true);
+    expect(existsSync(dir)).toBe(true);
   });
 });
 

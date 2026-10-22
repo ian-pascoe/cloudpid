@@ -5,8 +5,10 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   SETUP_STATE_DIRECTORY,
+  SETUP_TIMEOUT_SECONDS,
   setupRecord,
   setupRecordName,
+  setupScriptRunIfDue,
   shellQuote,
   WORKSPACE_ROOT,
   WORKTREES_DIRECTORY,
@@ -38,18 +40,32 @@ record=${shellQuote(setupRecord(setupRecordName(dir, root), state))}
  * Take a lock of the worktree's own (`flock`, where the Container has it), so two Sessions that start in the Workspace
  * at once do not both make it: the second finds it made.
  */
-const locked = (worktree: Worktree): string => `
+const locked = (worktree: Worktree, what = "worktree"): string => `
 if command -v flock >/dev/null 2>&1; then
-  exec 9>${shellQuote(`/tmp/cloudpid-worktree-${worktree.repo}-${worktree.id}.lock`)}
+  exec 9>${shellQuote(`/tmp/cloudpid-${what}-${worktree.repo}-${worktree.id}.lock`)}
   flock 9
 fi
 `;
 
 /**
+ * The bash script that runs the worktree's Setup Script if it is due (`setupScriptRunIfDue`), under a lock of its own
+ * (not the worktree's, which a removal takes): of two Sessions that made the worktree at once, the second waits for the
+ * first's run, then finds the script done.
+ */
+export const worktreeSetupScript = (
+  worktree: Worktree,
+  root: string = WORKSPACE_ROOT,
+  state: string = SETUP_STATE_DIRECTORY,
+  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
+): string =>
+  `${locked(worktree, "setup")}${setupScriptRunIfDue(worktreePath(worktree.repo, worktree.id, root), state, timeoutSeconds, root)}`;
+
+/**
  * The bash script that makes the worktree unless it is there. The branch is checked out when the Repo has it, tracked
  * from `origin` when only the remote has it, and otherwise made from the remote's default branch (fetched first), or
- * from the main checkout's HEAD when there is no remote. A directory without a worktree in it (what a removal left) is
- * cleared first, with its Setup Script's record, so the script runs again in the new worktree.
+ * from the main checkout's HEAD when there is no remote. A worktree git knows whose `.git` file is gone is repaired; a
+ * directory git does not know (what a removal left) is cleared first, with its Setup Script's record, so the script
+ * runs again in the new worktree.
  */
 export const prepareWorktreeScript = (
   worktree: Worktree,
@@ -58,6 +74,13 @@ export const prepareWorktreeScript = (
 ): string => `${preamble(worktree, root, state)}${locked(worktree)}
 [ -e "$dir/.git" ] && exit 0
 cd "$repo" || exit 1
+# A worktree git still knows whose .git file is gone is repaired, its changes kept; never cleared.
+if [ -e "$dir" ] && git worktree list --porcelain | grep -qxF "worktree $dir"; then
+  git worktree repair "$dir" >/dev/null 2>&1
+  [ -e "$dir/.git" ] && exit 0
+  echo "cloudpid: $dir is a worktree git cannot repair; move what it holds away, or remove the workspace" >&2
+  exit 1
+fi
 rm -rf -- "$dir" "$record"
 git worktree prune
 mkdir -p -- "\${dir%/*}" || exit 1
@@ -68,6 +91,8 @@ else
   if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     git worktree add --track -b "$branch" "$dir" "origin/$branch"
   else
+    # Older gits do not learn the remote's default branch from a fetch: ask the remote.
+    git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1 || git remote set-head origin --auto >/dev/null 2>&1
     base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || base=HEAD
     git worktree add --no-track -b "$branch" "$dir" "$base"
   fi

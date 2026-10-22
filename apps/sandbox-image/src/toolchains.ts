@@ -30,10 +30,12 @@ export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
 export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/node_modules",
   "**/.venv",
-  // Cargo's target directory, in a repo (`/<repo>/target`) or at the Workspace root. Not at any depth: a source
+  // Cargo's target directory, in a repo (`/<repo>/target`), in a Workspace's worktree of one
+  // (`/.worktrees/<repo>/<id>/target`: `WORKTREES_DIRECTORY`) or at the Machine's root. Not at any depth: a source
   // directory called `target` is not a build directory.
   "/target",
   "/*/target",
+  "/.worktrees/*/*/target",
   "**/.cache",
   // pnpm's content-addressed store. The Container's global pnpm configuration puts it on the Container's disk
   // (`PNPM_STORE_DIRECTORY_NAME` under the home directory), but with the home directory on the Container's disk and the
@@ -332,7 +334,7 @@ export const SETUP_SCRIPT = ".agents/setup.sh";
 export const SETUP_STATE_DIRECTORY = "/var/lib/cloudpid/setup";
 
 /**
- * The directory below the Workspace root that holds the Workspaces' own worktrees: `<root>/.worktrees/<repo>/<id>`
+ * The directory below the Machine's root, `/workspace`, that holds the Workspaces' own worktrees: `<root>/.worktrees/<repo>/<id>`
  * (`worktreeDirectory` in `@cloudpid/protocol`, which a test keeps equal). Hidden, so it is never taken for a repo.
  */
 export const WORKTREES_DIRECTORY = ".worktrees";

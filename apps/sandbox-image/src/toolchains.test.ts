@@ -100,14 +100,22 @@ describe("the ignore list", () => {
       ".output",
       "deps",
       ".alchemy",
-      ".worktrees",
     ]) {
       expect(TOOLCHAIN_IGNORE.filter((pattern) => pattern.split("/").includes(name))).toEqual([]);
     }
+
+    // Only what is ignored in a repo is ignored in its worktrees.
+    expect(
+      TOOLCHAIN_IGNORE.filter((pattern) => pattern.split("/").at(-1) === ".worktrees"),
+    ).toEqual([]);
   });
 
   it("does not make a source directory called target local to the Container", () => {
     expect(TOOLCHAIN_IGNORE).not.toContain("**/target");
+  });
+
+  it("keeps Cargo's target directory of a Workspace's worktree off the synced Machine, as a repo's", () => {
+    expect(TOOLCHAIN_IGNORE).toContain(`/${WORKTREES_DIRECTORY}/*/*/target`);
   });
 
   it("leaves mise to the Container's own disk: its data and temp files are on one filesystem, off the ignore boundary", () => {

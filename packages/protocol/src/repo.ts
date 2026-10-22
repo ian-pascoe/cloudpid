@@ -44,6 +44,7 @@ export const worktreeDirectory = (repo: string, id: string): string =>
 /** A Workspace's id: eight lowercase hex digits, also the name of its worktree's directory. Never `new`. */
 export const WORKSPACE_ID = /^[0-9a-f]{8}$/;
 
+/** A Workspace's id, as a payload carries it: `WORKSPACE_ID`. */
 export const WorkspaceId = Schema.String.check(Schema.isPattern(WORKSPACE_ID));
 
 /** Whether `id` is a Workspace's id (`WorkspaceId`). */
@@ -78,6 +79,7 @@ export const branchProblem = (name: string): string | undefined => {
     : "Use letters, digits, dots, underscores and dashes, in parts split by single slashes";
 };
 
+/** A branch a new Workspace may be on, as a payload carries it: one `branchProblem` finds nothing wrong with. */
 export const BranchName = Schema.String.check(Schema.makeFilter(branchProblem));
 
 /** The longest repo address a person may enter. */

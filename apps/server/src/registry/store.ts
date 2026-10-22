@@ -56,12 +56,12 @@ export type WorkspaceRecord = {
   readonly createdAt: number;
 };
 
-/** What became of a Workspace's record: deleted, not registered, or kept because a Session is still bound to it. */
 /** A Session's Workspace of its own, as `createSession` is told it: one that exists, or a new one. */
 export type StoredWorkspaceChoice =
   | { readonly kind: "existing"; readonly id: string }
   | { readonly kind: "new"; readonly id: string; readonly branch: string };
 
+/** What became of a Workspace's record: deleted, not registered, or kept because a Session is still bound to it. */
 export type WorkspaceDeletion = "deleted" | "missing" | "in-use";
 
 /** How renaming a Machine went. */
@@ -82,7 +82,7 @@ export type RegistryStore = {
       readonly machine?: string | undefined;
       readonly repo?: string | undefined;
       /**
-       * The Session's Workspace of its own: one that exists (which must be of `machine` and `repo`), or a new one to
+       * The Session's Workspace of its own: one that exists (of `machine` and `repo`, or it throws), or a new one to
        * register with it, in the same transaction. Without it the Session works in the repo's main checkout.
        */
       readonly workspace?: StoredWorkspaceChoice | undefined;
@@ -316,6 +316,10 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
       branch TEXT NOT NULL,
       created_at INTEGER NOT NULL
     ) STRICT`);
+    // git checks a branch out in one worktree of a repo at a time.
+    sql.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS worktrees_by_branch ON worktrees (machine, repo, branch)",
+    );
     sql.exec("ALTER TABLE sessions ADD COLUMN worktree TEXT");
   },
 ];
@@ -408,6 +412,14 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
       storage.transactionSync(() => {
         createMachine(machine, now);
+
+        if (workspace?.kind === "existing") {
+          const known = getWorkspace(workspace.id);
+
+          if (known === null || known.machine !== machine || known.repo !== repo) {
+            throw new Error(`No Workspace ${workspace.id} of ${repo} on Machine ${machine}`);
+          }
+        }
 
         if (workspace?.kind === "new") {
           if (repo === null) throw new Error("A Workspace of its own needs a repo");

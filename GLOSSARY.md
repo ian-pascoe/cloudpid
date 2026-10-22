@@ -122,6 +122,10 @@ _Avoid_: Checkout, worktree (for the thing Sessions bind to), sandbox, project d
 The Workspace that is a Repo's own directory, shared by every Session started in it.
 _Avoid_: Default workspace, primary worktree
 
+**Workspace of its own**:
+A Workspace that is a git worktree of a Repo, made for the Sessions started in it, on a branch of its own; unlike the main checkout it has a record of its own and can be removed. Its worktree is the directory, not the Workspace.
+_Avoid_: Worktree (for the Workspace), managed workspace, branch workspace
+
 **Workspace removal**:
 Deleting a Workspace's Sessions and its working tree, keeping its branch and the commits on it. Uncommitted changes are lost.
 _Avoid_: Cleanup (for the owner's action), reset

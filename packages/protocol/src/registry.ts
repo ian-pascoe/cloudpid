@@ -243,7 +243,8 @@ export class RegistryRpcs extends RpcGroup.make(
       /**
        * The branch of a new Workspace: one the repo or its `origin` has is checked out, any other is made from the
        * remote's default branch. Defaults to `cloudpid/<id>`. Only with `workspace: NEW_WORKSPACE`; a branch another
-       * Workspace of the repo is on fails, since git checks a branch out in one worktree at a time.
+       * Workspace of the repo is on fails, since git checks a branch out in one worktree at a time (one the main
+       * checkout is on fails too, when the worktree is made: the Session's first use reports git's message).
        */
       branch: Schema.optionalKey(BranchName),
     },

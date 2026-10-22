@@ -91,6 +91,7 @@ export type PrepareWorktree = (
   worktree: PlacedWorktree & { readonly repo: string },
 ) => Promise<void>;
 
+/** What `readyPlacement` checks: where the Session works, and how its worktree is made. */
 export type ReadyPlacementOptions = {
   readonly placement: () => Promise<Placement>;
   readonly prepare: PrepareWorktree;

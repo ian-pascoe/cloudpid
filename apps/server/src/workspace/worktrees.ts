@@ -7,17 +7,14 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as Arr from "effect/Array";
 import { WORKSPACE_ROOT, worktreeDirectory } from "@cloudpid/protocol";
 import type { Shell } from "@earendil-works/pi-durable/env";
-import {
-  SETUP_SCRIPT,
-  SETUP_TIMEOUT_SECONDS,
-  setupScriptRunIfDue,
-} from "@cloudpid/sandbox-image/toolchains";
+import { SETUP_SCRIPT, SETUP_TIMEOUT_SECONDS } from "@cloudpid/sandbox-image/toolchains";
 import {
   prepareWorktreeScript,
   releaseWorktreeScript,
   removeWorktreeScript,
   type Worktree,
   WORKTREE_KEPT,
+  worktreeSetupScript,
 } from "@cloudpid/sandbox-image/worktrees";
 import type { WorkspaceNamespace } from "../session/workspace.ts";
 import { computer, isMissing, onContainer } from "./repos.ts";
@@ -64,6 +61,7 @@ const failure = (what: string, ran: ScriptRun): Error => {
   return new Error(tail === "" ? `${what} (${status})` : `${what} (${status}): ${tail}`);
 };
 
+/** The worktrees of the Machine `host` reaches: made, removed and released through its files and its Container. */
 export const worktreesOn = ({ exists, run, warn }: WorktreeHost): MachineWorktrees => ({
   prepare: async (worktree) => {
     const directory = worktreeDirectory(worktree.repo, worktree.id);
@@ -76,7 +74,8 @@ export const worktreesOn = ({ exists, run, warn }: WorktreeHost): MachineWorktre
       throw failure(`The worktree of branch ${worktree.branch} could not be made`, made);
     }
 
-    const setup = await run(setupScriptRunIfDue(directory), SETUP_TIMEOUT_SECONDS + 60);
+    // Another Session's run of it, in the same new worktree, is waited for: the lock is held for the script's time.
+    const setup = await run(worktreeSetupScript(worktree), SETUP_TIMEOUT_SECONDS + 120);
 
     if (setup.exitCode !== 0) {
       warn(
@@ -142,6 +141,7 @@ export type Worktrees = {
   readonly on: (machine: string) => MachineWorktrees;
 };
 
+/** The worktrees of the Machines of DO `namespace`; what goes wrong in a Setup Script is told to `warn`. */
 export const machineWorktrees = (
   namespace: WorkspaceNamespace,
   warn: (message: string) => void,

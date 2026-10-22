@@ -27,6 +27,18 @@ const slugs = async (registry: DurableObjectStub<TestRegistry>) =>
 
 const fresh = () => env.REGISTRIES.get(env.REGISTRIES.newUniqueId());
 
+/**
+ * Expect the store to refuse to create a Session. It is called in the object, not over RPC: a refusal in a storage
+ * transaction is otherwise also reported as an unhandled rejection.
+ */
+const refuses = (
+  registry: DurableObjectStub<TestRegistry>,
+  ...input: Parameters<TestRegistry["createSession"]>
+) =>
+  runInDurableObject(registry, (instance: TestRegistry) => {
+    expect(() => instance.createSession(...input)).toThrow();
+  });
+
 /** Undo migration 10 (Workspaces of their own), as the stores before it were. */
 const withoutWorkspaces = (sql: SqlStorage) => {
   sql.exec("DROP TABLE worktrees");
@@ -616,10 +628,67 @@ describe("the Registry store", () => {
 
     await registry.createSession({ id: "first", title: null, repo: "app", workspace }, 1_000);
 
-    await expect(
-      registry.createSession({ id: "second", title: null, repo: "app", workspace }, 2_000),
-    ).rejects.toThrow();
+    await refuses(registry, { id: "second", title: null, repo: "app", workspace }, 2_000);
     expect(await registry.getSession("second")).toBeNull();
+  });
+
+  it("registers no Session in a Workspace that is gone, or of another Machine or repo", async () => {
+    const registry = fresh();
+    const workspace = { kind: "new" as const, id: "1a2b3c4d", branch: "feature" };
+
+    await registry.createSession({ id: "first", title: null, repo: "app", workspace }, 1_000);
+
+    for (const [input, id] of [
+      [{ repo: "app", workspace: { kind: "existing" as const, id: "deadbeef" } }, "gone"],
+      [{ repo: "other", workspace: { kind: "existing" as const, id: "1a2b3c4d" } }, "repo"],
+      [
+        { machine: "m", repo: "app", workspace: { kind: "existing" as const, id: "1a2b3c4d" } },
+        "machine",
+      ],
+    ] as const) {
+      await refuses(registry, { id, title: null, ...input }, 2_000);
+      expect(await registry.getSession(id)).toBeNull();
+    }
+  });
+
+  it("registers no second Workspace of a repo on a branch one is on", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      {
+        id: "first",
+        title: null,
+        repo: "app",
+        workspace: { kind: "new", id: "1a2b3c4d", branch: "feature" },
+      },
+      1_000,
+    );
+
+    await refuses(
+      registry,
+      {
+        id: "second",
+        title: null,
+        repo: "app",
+        workspace: { kind: "new", id: "5e6f7a8b", branch: "feature" },
+      },
+      2_000,
+    );
+    expect(await registry.getSession("second")).toBeNull();
+    expect(await registry.listWorkspaces()).toHaveLength(1);
+
+    // Another repo's, or another Machine's, may be on it.
+    await registry.createSession(
+      {
+        id: "third",
+        title: null,
+        machine: "m",
+        repo: "app",
+        workspace: { kind: "new", id: "9c0d1e2f", branch: "feature" },
+      },
+      3_000,
+    );
+    expect(await registry.listWorkspaces()).toHaveLength(2);
   });
 
   it("deletes a Workspace's record only once no Session is bound to it", async () => {
