@@ -1,11 +1,14 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 
+import { MAX_IGNORE_PATTERNS } from "@cloudpid/config";
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   deleteConfirmed,
   groupByWorkspace,
   idleMinutesProblem,
+  ignorePatternsFrom,
+  ignoreProblem,
   slugProblem,
   sourceProblem,
   splitArchived,
@@ -123,5 +126,30 @@ describe("idleMinutesProblem", () => {
     expect(idleMinutesProblem("1441")).not.toBeNull();
     expect(idleMinutesProblem("2.5")).not.toBeNull();
     expect(idleMinutesProblem("soon")).not.toBeNull();
+  });
+});
+
+describe("ignorePatternsFrom", () => {
+  it("takes one pattern per line, without the spaces around it or the blank lines", () => {
+    expect(ignorePatternsFrom("  /data \n\n**/.gradle-cache\n")).toEqual([
+      "/data",
+      "**/.gradle-cache",
+    ]);
+    expect(ignorePatternsFrom("")).toEqual([]);
+  });
+});
+
+describe("ignoreProblem", () => {
+  it("accepts computer's ignore patterns, one per line, and names the line of one it would refuse", () => {
+    expect(ignoreProblem("")).toBeNull();
+    expect(ignoreProblem("/data\n**/.gradle-cache\n!/repo/node_modules")).toBeNull();
+    expect(ignoreProblem("/data\ndata")).toContain("data");
+    expect(ignoreProblem("/a/{b,c}")).not.toBeNull();
+  });
+
+  it("refuses more patterns than a Workspace may have", () => {
+    const many = Array.from({ length: MAX_IGNORE_PATTERNS + 1 }, (_, i) => `/data-${i}`);
+
+    expect(ignoreProblem(many.join("\n"))).toContain(String(MAX_IGNORE_PATTERNS));
   });
 });

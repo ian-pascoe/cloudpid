@@ -6,7 +6,7 @@ import {
   type SessionRecord,
   WorkspaceSlug,
 } from "@cloudpid/protocol";
-import { MAX_IDLE_MINUTES } from "@cloudpid/config";
+import { ignorePatternProblem, MAX_IDLE_MINUTES, MAX_IGNORE_PATTERNS } from "@cloudpid/config";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -102,4 +102,29 @@ export const idleMinutesProblem = (text: string): string | null => {
     minutes <= MAX_IDLE_MINUTES
     ? null
     : `Use a whole number of minutes from 1 to ${MAX_IDLE_MINUTES}`;
+};
+
+/** The extra Container-only paths typed in the Edit dialog: one per line, blank lines left out. */
+export const ignorePatternsFrom = (text: string): readonly string[] =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+
+/**
+ * Why `text` cannot be a Workspace's extra Container-only paths, or null when it can: the server's rules
+ * (`ignorePatternProblem`), with the first pattern that breaks them.
+ */
+export const ignoreProblem = (text: string): string | null => {
+  const patterns = ignorePatternsFrom(text);
+
+  if (patterns.length > MAX_IGNORE_PATTERNS) return `Use at most ${MAX_IGNORE_PATTERNS} paths`;
+
+  for (const pattern of patterns) {
+    const problem = ignorePatternProblem(pattern);
+
+    if (problem !== undefined) return `${pattern} ${problem}`;
+  }
+
+  return null;
 };
