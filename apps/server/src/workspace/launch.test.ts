@@ -150,6 +150,59 @@ describe("a launch", () => {
     expect(state.starts[0]?.env).toEqual(SPEC.env);
   });
 
+  it("starts a Workspace with no saved settings on the 2 vCPU / 6 GiB custom size, as resources", async () => {
+    const { state, container } = open();
+
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
+    expect(state.record?.instance).toBe("custom-2");
+  });
+
+  it("keeps a Workspace that saved standard-2 on it, as the named type", async () => {
+    const { state, container } = open({ instance: "standard-2" });
+
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.instance).toBe("standard-2");
+    expect(state.record?.instance).toBe("standard-2");
+  });
+
+  it("does not relaunch a Container running on standard-2 when the default changed meanwhile", async () => {
+    const { state, api, container, make } = open({ instance: "standard-2" });
+
+    await container.start(SPEC);
+
+    // The deploy moves the default and the Workspace's setting follows it (the saved one is dropped), while it runs.
+    state.running = true;
+    state.outcome = "adopted";
+    state.settings = DEFAULT_WORKSPACE_SETTINGS;
+    await container.start(SPEC);
+
+    // Neither the reconnect nor an evicted Workspace DO asks for anything but what the Container launched with.
+    await make().wrap(api).start(SPEC);
+    await container.restart(SPEC);
+
+    expect(state.starts.map((spec) => spec.instance)).toEqual([
+      "standard-2",
+      "standard-2",
+      "standard-2",
+    ]);
+    expect(state.restarts[0]?.instance).toBe("standard-2");
+    expect(state.record?.instance).toBe("standard-2");
+  });
+
+  it("restores a snapshot taken on standard-2 on the new default size", async () => {
+    const { state, container } = open();
+
+    state.restorable = { id: "snap-from-standard-2", image: "img-1" };
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.containerSnapshot).toEqual({ id: "snap-from-standard-2" });
+    expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
+    expect(state.record?.restoredFrom).toBe("snap-from-standard-2");
+  });
+
   it("uses the settings as they are at the launch: a change applies at the next one", async () => {
     const { state, container } = open({ instance: "basic" });
 
@@ -225,14 +278,16 @@ describe("a launch", () => {
     expect(await launch.idleMs()).toBe(DEFAULT_WORKSPACE_SETTINGS.idleMinutes * 60_000);
   });
 
-  it("starts a Container found running with no launch on record on the default instance, so it is adopted", async () => {
+  it("starts a Container found running with no launch on record on standard-2, so it is adopted", async () => {
     const { state, container } = open({ instance: "standard-4" });
 
     state.running = true;
     state.outcome = "adopted";
     await container.start(SPEC);
 
-    expect(state.starts[0]?.instance).toBe(DEFAULT_WORKSPACE_SETTINGS.instance);
+    // standard-2 was every Workspace's default when launches began to be recorded; today's default would relaunch it.
+    expect(state.starts[0]?.instance).toBe("standard-2");
+    expect(state.record?.instance).toBe("standard-2");
     expect(state.record?.needsSnapshot).toBe(false);
   });
 });
@@ -303,6 +358,25 @@ describe("the Container-only paths of a launch", () => {
 
     expect(state.restorableIgnores).toEqual([undefined]);
     expect(state.takeIgnores).toEqual([undefined]);
+  });
+});
+
+describe("a restart with no launch on record", () => {
+  it("keeps a running Container on standard-2, the default when launches began to be recorded", async () => {
+    const { state, container } = open();
+
+    state.running = true;
+    await container.restart(SPEC);
+
+    expect(state.restarts[0]?.instance).toBe("standard-2");
+  });
+
+  it("uses the Workspace's settings when nothing runs", async () => {
+    const { state, container } = open({ instance: "standard-3" });
+
+    await container.restart(SPEC);
+
+    expect(state.restarts[0]?.instance).toBe("standard-3");
   });
 });
 

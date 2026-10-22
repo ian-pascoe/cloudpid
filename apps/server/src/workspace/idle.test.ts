@@ -90,6 +90,30 @@ describe("IdleStop", () => {
     expect(state.alarm).toBe(state.now + MINUTE);
   });
 
+  it("does not stop a Container whose own idle time is longer than the default it was armed with", async () => {
+    const { state, idle, setIdle, fire } = open(5 * MINUTE);
+
+    // The first use comes before the launch is recorded, so it sees the 5-minute default.
+    await idle.touch();
+
+    const lastUse = state.now;
+
+    expect(state.alarm).toBe(lastUse + 5 * MINUTE);
+
+    // The launch is recorded with the Workspace's own, longer time.
+    setIdle(90 * MINUTE);
+    await fire(idle);
+
+    // The first alarm finds the Container not yet due, and waits for the rest of the 90.
+    expect(state.stops).toBe(0);
+    expect(state.snapshots).toBe(0);
+    expect(state.alarm).toBe(lastUse + 90 * MINUTE);
+
+    await fire(idle);
+
+    expect(state.stops).toBe(1);
+  });
+
   it("does not move the alarm earlier on ordinary use", async () => {
     const { state, idle } = open();
 

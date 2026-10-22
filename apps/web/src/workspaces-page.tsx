@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of cards, repos and Sessions are native arrays.
 
-import { INSTANCE_DESCRIPTIONS, INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
+import { INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
 import {
   DEFAULT_WORKSPACE,
   MAX_WORKSPACE_NAME_LENGTH,
@@ -56,6 +56,7 @@ import {
   idleMinutesProblem,
   ignorePatternsFrom,
   ignoreProblem,
+  instanceLabel,
   slugProblem,
   sourceProblem,
   workspaceNameProblem,
@@ -197,7 +198,7 @@ const ContainerFields = ({
       >
         {INSTANCE_TYPES.map((type) => (
           <option key={type} value={type}>
-            {type}: {INSTANCE_DESCRIPTIONS[type]}
+            {instanceLabel(type)}
           </option>
         ))}
       </NativeSelect>

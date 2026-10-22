@@ -2,8 +2,10 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  containerInstance,
   DEFAULT_WORKSPACE_SETTINGS,
   ignorePatternProblem,
+  INSTANCE_DESCRIPTIONS,
   INSTANCE_TYPES,
   MAX_IGNORE_PATTERNS,
   resolveWorkspaceSettings,
@@ -29,10 +31,10 @@ const rejected = (overrides: Schema.Json): string => {
 };
 
 describe("the defaults", () => {
-  it("are standard-2 and a 15-minute idle stop, as the spec says", () => {
+  it("are the 2 vCPU / 6 GiB custom size and a 5-minute idle stop, as the spec says", () => {
     expect(DEFAULT_WORKSPACE_SETTINGS).toEqual({
-      instance: "standard-2",
-      idleMinutes: 15,
+      instance: "custom-2",
+      idleMinutes: 5,
       ignore: [],
     });
   });
@@ -42,15 +44,32 @@ describe("the defaults", () => {
   });
 });
 
+describe("containerInstance", () => {
+  it("passes a named instance type through", () => {
+    for (const type of INSTANCE_TYPES) {
+      if (!type.startsWith("custom-")) expect(containerInstance(type)).toBe(type);
+    }
+  });
+
+  it("maps custom-2 to 2 vCPU, 6 GiB memory and 12 GB disk", () => {
+    expect(containerInstance("custom-2")).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
+  });
+
+  it("describes every instance type", () => {
+    for (const type of INSTANCE_TYPES) expect(INSTANCE_DESCRIPTIONS[type]).not.toBe("");
+    expect(INSTANCE_DESCRIPTIONS["custom-2"]).toBe("2 vCPU, 6 GiB memory, 12 GB disk");
+  });
+});
+
 describe("resolveWorkspaceSettings", () => {
   it("gives each override over the default, and leaves the rest", () => {
     expect(resolved({ instance: "basic" })).toEqual({
       instance: "basic",
-      idleMinutes: 15,
+      idleMinutes: 5,
       ignore: [],
     });
     expect(resolved({ idleMinutes: 90 })).toEqual({
-      instance: "standard-2",
+      instance: "custom-2",
       idleMinutes: 90,
       ignore: [],
     });
@@ -130,8 +149,12 @@ describe("workspaceOverridesFrom", () => {
     expect(
       workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-4" }),
     ).toEqual({ instance: "standard-4" });
-    expect(workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, idleMinutes: 5 })).toEqual({
-      idleMinutes: 5,
+    // standard-2 was the default: a Workspace that picks it now keeps it as an override.
+    expect(
+      workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-2" }),
+    ).toEqual({ instance: "standard-2" });
+    expect(workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, idleMinutes: 15 })).toEqual({
+      idleMinutes: 15,
     });
     expect(workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, ignore: ["/data"] })).toEqual({
       ignore: ["/data"],
@@ -146,7 +169,7 @@ describe("resolveWorkspaceSettingsLeniently", () => {
       idleMinutes: 30,
     });
 
-    expect(settings).toEqual({ instance: "standard-2", idleMinutes: 30, ignore: [] });
+    expect(settings).toEqual({ instance: "custom-2", idleMinutes: 30, ignore: [] });
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("instance");
   });

@@ -2,7 +2,7 @@
 // `@cloudflare/computer`'s `ContainerBackend` builds each launch's spec itself and has no hook for either a size that
 // changes or a snapshot, so this wraps the Container API it launches through (`wrap`):
 //
-// - the instance type is the Workspace's setting when the Container launches, and is then kept for as long as that
+// - the size is the Workspace's setting when the Container launches, and is then kept for as long as that
 //   Container runs. computer relaunches a running Container whose launch differs from the one asked for, so a setting
 //   saved meanwhile must not reach a reconnect to it: it applies at the next launch;
 // - the idle time is kept the same way, for the idle stop;
@@ -16,16 +16,21 @@
 //   so a snapshot is restored only by a launch with the paths it was taken with.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import type {
-  ContainerInstanceSize,
   ContainerLaunchSpec,
   IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
-import { DEFAULT_WORKSPACE_SETTINGS, type WorkspaceSettings } from "@cloudpid/config";
+import {
+  containerInstance,
+  DEFAULT_WORKSPACE_SETTINGS,
+  type InstanceType,
+  type WorkspaceSettings,
+} from "@cloudpid/config";
 import type { ContainerSnapshots, SnapshotOutcome, SnapshotReason } from "./snapshots.ts";
 
 /** What the Container that is running (or was last launched) was launched with. */
 export type LaunchRecord = {
-  readonly instance: ContainerInstanceSize;
+  /** The stored size name (`InstanceType`), not its resources: `containerInstance` maps it at each start. */
+  readonly instance: InstanceType;
   readonly idleMinutes: number;
   /** Whether it still wants a snapshot once its Toolchains are installed: it did not start from one. */
   readonly needsSnapshot: boolean;
@@ -56,6 +61,13 @@ export type ContainerLaunchDeps = {
 };
 
 const MINUTE = 60_000;
+
+/**
+ * The size of a running Container found with no launch record: one launched before launches were recorded, when every
+ * Workspace's default was `standard-2`. It is adopted as that, not as today's default, so a default that changed
+ * meanwhile does not make computer relaunch it.
+ */
+const UNRECORDED_INSTANCE: InstanceType = "standard-2";
 
 /** The Container-only paths of a launch, as computer passes them to computerd (`MOUNT_IGNORE`), if it has any. */
 const ignoreOf = (spec: ContainerLaunchSpec): readonly string[] | undefined => {
@@ -174,15 +186,15 @@ export class ContainerLaunch {
     const kept = running ? await this.#current() : undefined;
     const settings = await this.#deps.settings();
 
-    const instance =
-      kept?.instance ?? (running ? DEFAULT_WORKSPACE_SETTINGS.instance : settings.instance);
+    const instance = kept?.instance ?? (running ? UNRECORDED_INSTANCE : settings.instance);
+    const size = containerInstance(instance);
 
     const ignore = ignoreOf(spec);
     let snapshot = running ? undefined : await this.#deps.snapshots.restorable(ignore);
 
     this.#restoring = snapshot?.id;
 
-    let launch: ContainerLaunchSpec = { ...spec, instance };
+    let launch: ContainerLaunchSpec = { ...spec, instance: size };
 
     if (snapshot !== undefined) launch.containerSnapshot = { id: snapshot.id };
 
@@ -200,7 +212,7 @@ export class ContainerLaunch {
       await this.#deps.snapshots.forget();
       snapshot = undefined;
       this.#restoring = undefined;
-      launch = { ...spec, instance };
+      launch = { ...spec, instance: size };
       info = await api.start(launch);
     }
 
@@ -268,9 +280,12 @@ export class ContainerLaunch {
       }
     }
 
-    return api.restart({
-      ...spec,
-      instance: record?.instance ?? DEFAULT_WORKSPACE_SETTINGS.instance,
-    });
+    // Without a record the Container is one found running that was launched before launches were recorded (as in
+    // `#start`), else this is a launch of its own and the settings decide.
+    const instance =
+      record?.instance ??
+      (this.#deps.running() ? UNRECORDED_INSTANCE : (await this.#deps.settings()).instance);
+
+    return api.restart({ ...spec, instance: containerInstance(instance) });
   }
 }

@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 
-import { MAX_IGNORE_PATTERNS } from "@cloudpid/config";
+import { DEFAULT_WORKSPACE_SETTINGS, INSTANCE_TYPES, MAX_IGNORE_PATTERNS } from "@cloudpid/config";
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,6 +9,7 @@ import {
   idleMinutesProblem,
   ignorePatternsFrom,
   ignoreProblem,
+  instanceLabel,
   slugProblem,
   sourceProblem,
   splitArchived,
@@ -126,6 +127,19 @@ describe("sourceProblem", () => {
     expect(sourceProblem("https://github.com/octocat/Hello-World.git")).toBeNull();
     expect(sourceProblem("file:///etc/passwd")).toContain("https");
     expect(sourceProblem("")).not.toBeNull();
+  });
+});
+
+describe("instanceLabel", () => {
+  it("names the size and what it offers, and marks the default one", () => {
+    expect(instanceLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
+    expect(instanceLabel("standard-2")).toBe("standard-2: 1 vCPU, 6 GiB memory, 12 GB disk");
+  });
+
+  it("marks exactly one of the offered sizes", () => {
+    expect(INSTANCE_TYPES.filter((type) => instanceLabel(type).endsWith("(default)"))).toEqual([
+      DEFAULT_WORKSPACE_SETTINGS.instance,
+    ]);
   });
 });
 
