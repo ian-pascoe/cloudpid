@@ -6,9 +6,14 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PNPM_STORE_DIRECTORY_NAME, TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
-import { ContainerSnapshots, scanContainerDisk, type SnapshotRecord } from "./snapshots.ts";
+import {
+  ContainerSnapshots,
+  SNAPSHOT_TIMEOUT_MS,
+  scanContainerDisk,
+  type SnapshotRecord,
+} from "./snapshots.ts";
 
 type Fake = {
   running: boolean;
@@ -37,7 +42,7 @@ const open = (
   overrides: {
     enabled?: boolean;
     secret?: string | undefined;
-    timeoutMs?: { install: number; idle: number };
+    timeoutMs?: number;
   } = {},
 ) => {
   const state: Fake = {
@@ -59,7 +64,7 @@ const open = (
   const snapshots = new ContainerSnapshots({
     enabled: overrides.enabled ?? true,
     secret: "secret" in overrides ? overrides.secret : SECRET,
-    timeoutMs: overrides.timeoutMs ?? { install: 1_000, idle: 1_000 },
+    timeoutMs: overrides.timeoutMs ?? 1_000,
     image: () => state.image,
     running: () => state.running,
     snapshot: async (name) => {
@@ -192,7 +197,7 @@ describe("ContainerSnapshots.take", () => {
   });
 
   it("gives up on a snapshot that takes too long, and records nothing", async () => {
-    const { state, snapshots } = open({ timeoutMs: { install: 20, idle: 20 } });
+    const { state, snapshots } = open({ timeoutMs: 20 });
 
     state.gate = new Promise(() => undefined);
 
@@ -241,7 +246,7 @@ describe("ContainerSnapshots.take, for a Container of another image", () => {
 
 describe("ContainerSnapshots.take, within its time", () => {
   it("gives up on a scan that does not finish, and snapshots nothing", async () => {
-    const { state, snapshots } = open({ timeoutMs: { install: 20, idle: 1_000 } });
+    const { state, snapshots } = open({ timeoutMs: 20 });
 
     state.scanGate = new Promise(() => undefined);
 
@@ -250,13 +255,43 @@ describe("ContainerSnapshots.take, within its time", () => {
     expect(state.warnings.join("\n")).toContain("did not finish");
   });
 
-  it("gives the install, which commands wait for, less time than the idle stop", async () => {
-    const { state, snapshots } = open({ timeoutMs: { install: 20, idle: 1_000 } });
+  it("takes and records an install snapshot that needs between 60 and 120 s, as one of this repo's install can (#156)", async () => {
+    vi.useFakeTimers();
 
-    state.gate = new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      const { state, snapshots } = open({ timeoutMs: SNAPSHOT_TIMEOUT_MS });
 
-    expect(await snapshots.take("install", IMAGE)).toBe("failed");
-    expect(await snapshots.take("idle", IMAGE)).toBe("taken");
+      state.gate = new Promise((resolve) => setTimeout(resolve, 90_000));
+
+      const taking = snapshots.take("install", IMAGE);
+
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      expect(await taking).toBe("taken");
+      expect(state.stored).toMatchObject({ id: "snap-1", reason: "install" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up on a snapshot that needs more than the limit, which is 120 s", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { state, snapshots } = open({ timeoutMs: SNAPSHOT_TIMEOUT_MS });
+
+      state.gate = new Promise((resolve) => setTimeout(resolve, 130_000));
+
+      const taking = snapshots.take("install", IMAGE);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(await taking).toBe("failed");
+      expect(SNAPSHOT_TIMEOUT_MS).toBe(120_000);
+      expect(state.stored).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

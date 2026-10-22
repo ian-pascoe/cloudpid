@@ -44,7 +44,12 @@ import {
 } from "./settings.ts";
 import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
 import { ContainerEarlyStart } from "./early-start.ts";
-import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
+import {
+  ContainerSnapshots,
+  SNAPSHOT_TIMEOUT_MS,
+  type SnapshotRecord,
+  scanContainerDisk,
+} from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
 import { SKILLS_MOUNT, WORKSPACE_CONTAINER, WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
@@ -81,12 +86,6 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 /** Where the Container's launch (its instance type, idle time, paths, snapshot) and its latest snapshot are kept. */
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
-
-/**
- * How long a snapshot, its scan included, may take. The install's is short because the Container's first commands wait
- * for it; the idle stop's can be long, since nothing waits.
- */
-const SNAPSHOT_TIMEOUT_MS = { install: 60_000, idle: 2 * 60_000 } as const;
 
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
