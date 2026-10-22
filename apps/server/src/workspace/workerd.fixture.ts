@@ -158,14 +158,8 @@ export class TestWorkspace extends Workspace {
     return this.#earlyStarts;
   }
 
-  /** Counted; it fails in a Workspace named `early-start-failing-…`, as a request that does not reach the object would. */
   override startContainerEarly(): void {
     this.#earlyStarts++;
-
-    if (this.ctx.id.name?.startsWith("early-start-failing") === true) {
-      throw new Error("no early start here");
-    }
-
     super.startContainerEarly();
   }
 

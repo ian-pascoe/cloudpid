@@ -36,6 +36,11 @@ declare global {
 
 const KEY = "workspace";
 
+/** The prefix of the Workspaces an early start cannot reach, and where the attempts are counted. */
+const UNREACHABLE = "early-start-unreachable";
+
+const UNREACHABLE_KEY = "early-start-unreachable";
+
 export class TestWorkspaceSession extends TestSession {
   /** The Session's Workspace, as the Session DO makes it from its Registry record and its `WORKSPACES` binding. */
   #workspace() {
@@ -85,9 +90,31 @@ export class TestWorkspaceSession extends TestSession {
     );
   }
 
-  /** As the Session DO's: each message the owner sends asks its Workspace for the early start of the Container. */
+  /**
+   * As the Session DO's: each message the owner sends asks its Workspace for the early start of the Container. On a
+   * Workspace named `early-start-unreachable-…` the request fails as an RPC that cannot reach the object does, with a
+   * rejection the Session gets and the Workspace never sees.
+   */
   protected override hostOnSubmit(): Effect.Effect<void> {
-    return earlyStartOnSubmit(this.#workspace());
+    const workspace = this.#workspace();
+    const { kv } = this.ctx.storage;
+
+    return earlyStartOnSubmit({
+      startContainerEarly: async () => {
+        if (kv.get<Placement>(KEY)?.slug.startsWith(UNREACHABLE) !== true) {
+          return workspace.startContainerEarly();
+        }
+
+        kv.put(UNREACHABLE_KEY, this.unreachableEarlyStarts() + 1);
+
+        throw new Error("the Workspace is unreachable");
+      },
+    });
+  }
+
+  /** Early starts asked of an unreachable Workspace. */
+  unreachableEarlyStarts(): number {
+    return this.ctx.storage.kv.get<number>(UNREACHABLE_KEY) ?? 0;
   }
 
   protected override hostEnv(): HarnessOptions["env"] {

@@ -19,17 +19,17 @@ const earlyStarts = (slug: string) =>
     instance.earlyStarts(),
   );
 
-/** Send one message, as the owner does, to a new Session on Workspace `slug`: its submission ID. */
-const send = (slug: string) =>
-  runInDurableObject(
-    env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId()),
-    async (instance: TestWorkspaceSession) => {
-      instance.bindWorkspace(slug);
-      instance.script(["done"]);
+/** Send one message, as the owner does, to `session` (a new Session by default) on Workspace `slug`: its submission ID. */
+const send = (
+  slug: string,
+  session = env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId()),
+) =>
+  runInDurableObject(session, async (instance: TestWorkspaceSession) => {
+    instance.bindWorkspace(slug);
+    instance.script(["done"]);
 
-      return instance.submit({ requestId: crypto.randomUUID(), text: "go" });
-    },
-  );
+    return instance.submit({ requestId: crypto.randomUUID(), text: "go" });
+  });
 
 it("asks the Session's Workspace for one early start per message the owner sends", async () => {
   const slug = "early-start-1";
@@ -42,10 +42,20 @@ it("asks the Session's Workspace for one early start per message the owner sends
 });
 
 it("admits the message when the request for the early start fails", async () => {
-  const slug = "early-start-failing-1";
+  const slug = "early-start-unreachable-1";
+  const session = env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId());
 
-  expect(await send(slug)).toEqual(expect.any(Number));
-  await vi.waitFor(async () => expect(await earlyStarts(slug)).toBe(1), waits);
+  expect(await send(slug, session)).toEqual(expect.any(Number));
+  await vi.waitFor(
+    async () =>
+      expect(
+        await runInDurableObject(session, (instance: TestWorkspaceSession) =>
+          instance.unreachableEarlyStarts(),
+        ),
+      ).toBe(1),
+    waits,
+  );
+  expect(await earlyStarts(slug)).toBe(0);
 });
 
 it("answers at once, and a start that fails leaves the Workspace working and counts as use", async () => {

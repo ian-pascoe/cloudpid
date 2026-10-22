@@ -1,7 +1,10 @@
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_WORKSPACE } from "@cloudpid/protocol";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Logger from "effect/Logger";
 import { describe, expect, it } from "vitest";
-import { cachedPlacement, type Placement } from "./workspace.ts";
+import { cachedPlacement, earlyStartOnSubmit, type Placement } from "./workspace.ts";
 
 const ROOT_OF_DEFAULT: Placement = { slug: DEFAULT_WORKSPACE, repo: null };
 
@@ -93,5 +96,48 @@ describe("cachedPlacement", () => {
 
     expect(await placement()).toEqual({ slug: "acme", repo: null });
     expect(asked).toEqual(["s1", "s1"]);
+  });
+});
+
+describe("earlyStartOnSubmit", () => {
+  /** Run the early start for a message over `startContainerEarly`: whether it succeeded, and the levels it logged. */
+  const run = async (startContainerEarly: () => Promise<void>) => {
+    const logged: string[] = [];
+
+    const collector = Logger.make((options) => {
+      logged.push(options.logLevel);
+    });
+
+    const exit = await Effect.runPromiseExit(
+      earlyStartOnSubmit({ startContainerEarly }).pipe(Effect.provide(Logger.layer([collector]))),
+    );
+
+    return { succeeded: Exit.isSuccess(exit), logged };
+  };
+
+  it("asks the Workspace once and logs nothing when the request lands", async () => {
+    let asked = 0;
+
+    const outcome = await run(async () => {
+      asked++;
+    });
+
+    expect(outcome).toEqual({ succeeded: true, logged: [] });
+    expect(asked).toBe(1);
+  });
+
+  it("succeeds with a warning when the request is rejected", async () => {
+    expect(await run(() => Promise.reject(new Error("unreachable")))).toEqual({
+      succeeded: true,
+      logged: ["Warn"],
+    });
+  });
+
+  it("succeeds with a warning when the request throws before it is made", async () => {
+    expect(
+      await run(() => {
+        throw new Error("no binding");
+      }),
+    ).toEqual({ succeeded: true, logged: ["Warn"] });
   });
 });
