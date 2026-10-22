@@ -1,5 +1,5 @@
 // What assistant-ui's runtime of a conversation is built from, as atoms: the messages it renders and its queue lanes,
-// each new only when the part of the conversation it comes from changes; and whether a Session's task panel is open.
+// each new only when the part of the conversation it comes from changes.
 
 import type { ExternalThreadQueueAdapter, ThreadMessageLike } from "@assistant-ui/react";
 import * as Atom from "effect/reactivity/Atom";
@@ -14,11 +14,6 @@ import type { QueueLanes, ThreadState } from "../session/state.ts";
 import { toThreadMessages } from "../session/thread-messages.ts";
 import type { ConversationKey } from "./conversation.ts";
 import { queueAdapter } from "./queue-adapter.ts";
-
-/** Whether Session `sessionId`'s task panel is open: closed each time the Session is opened. */
-export const taskPanelOpenAtom = Atom.family<string, Atom.Writable<boolean>>(() =>
-  Atom.make(false),
-);
 
 /** A subagent's thread, picked apart: each field is new only when it changes. */
 const threadFieldAtom = <A>(pick: (thread: ThreadState) => A) =>
