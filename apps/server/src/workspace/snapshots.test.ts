@@ -250,7 +250,7 @@ describe("ContainerSnapshots.take, within its time", () => {
     expect(state.warnings.join("\n")).toContain("did not finish");
   });
 
-  it("gives the install, which commands wait for, less time than the idle stop", async () => {
+  it("gives each reason its own time", async () => {
     const { state, snapshots } = open({ timeoutMs: { install: 20, idle: 1_000 } });
 
     state.gate = new Promise((resolve) => setTimeout(resolve, 100));

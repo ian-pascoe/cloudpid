@@ -253,6 +253,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
       save: async (saved) => {
         record = saved;
       },
+      holdMs: 60_000,
       running: () => false,
       now: () => Date.now(),
       warn: () => undefined,

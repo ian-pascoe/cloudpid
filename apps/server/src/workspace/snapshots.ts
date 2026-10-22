@@ -47,7 +47,7 @@ export type ContainerSnapshotDeps = {
   readonly enabled: boolean;
   /** The GitHub token commands run with, to keep off the snapshot; none means nothing to scan for. */
   readonly secret: string | undefined;
-  /** How long a snapshot, its scan included, may take before it is given up on. An install's is short: commands wait. */
+  /** How long a snapshot, its scan included, may take before it is given up on. The commands that wait for the install's are released earlier (`ContainerLaunch`'s hold); the snapshot goes on. */
   readonly timeoutMs: Readonly<Record<SnapshotReason, number>>;
   /** The reference of the image a Container launched now would run. */
   readonly image: () => string | undefined;
