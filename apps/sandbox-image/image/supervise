@@ -1,0 +1,70 @@
+#!/bin/bash
+# The Container's entrypoint (docs/spec.md → Container and Toolchains → Exit reports). It runs computerd, passing its
+# output through to the Container's own log as before, and keeps the last lines of it. When computerd exits without
+# having been asked to (no SIGTERM or SIGINT reached this script), its status, how long it ran and those lines are
+# posted to the Workspace DO's report host, which writes them to the Workers logs: the platform keeps a Container's
+# output where no API reads it, and computer records only that the Container exited. The lines are kept in memory (a
+# tmpfs where there is one), never on the Container's disk, which a snapshot captures. A report that cannot be sent is
+# dropped; the exit status is computerd's either way.
+#
+# The host, the path and the number of lines are those of `@cloudpid/sandbox-image/supervisor`; CLOUDPID_COMPUTERD and
+# CLOUDPID_REPORT_* exist for its tests, and the image sets none of them.
+set -u
+
+computerd=${CLOUDPID_COMPUTERD:-/usr/local/bin/computerd}
+report_host=${CLOUDPID_REPORT_HOST:-cloudpid.internal}
+report_port=${CLOUDPID_REPORT_PORT:-80}
+report_path=/container-exit
+keep_lines=200
+# The most of the kept lines sent, in bytes: the end of them when they are longer.
+keep_bytes=32768
+
+scratch=$(mktemp -d /dev/shm/cloudpid-supervise.XXXXXX 2>/dev/null || mktemp -d)
+mkfifo "$scratch/out" "$scratch/keep"
+
+# tee passes computerd's output on and copies it to tail, which holds the last lines until the output ends.
+tail -n "$keep_lines" <"$scratch/keep" >"$scratch/tail" &
+tail_pid=$!
+tee "$scratch/keep" <"$scratch/out" &
+tee_pid=$!
+
+started=$SECONDS
+"$computerd" "$@" >"$scratch/out" 2>&1 &
+computerd_pid=$!
+
+asked=0
+trap 'asked=1; kill -TERM "$computerd_pid" 2>/dev/null' TERM INT
+
+# A trapped signal ends `wait` early, with computerd still running: wait again until it is gone.
+while :; do
+  wait "$computerd_pid"
+  status=$?
+  kill -0 "$computerd_pid" 2>/dev/null || break
+done
+
+# The output ends when computerd's last writer closes it. A process it left behind could hold it open: give tee two
+# seconds, then stop it, which ends tail's input too.
+(sleep 2 && kill "$tee_pid" 2>/dev/null) &
+watchdog=$!
+wait "$tee_pid" 2>/dev/null
+kill "$watchdog" 2>/dev/null
+wait "$tail_pid" 2>/dev/null
+
+if [ "$asked" = 0 ]; then
+  {
+    printf 'status=%s\nuptime=%s\n\n' "$status" "$((SECONDS - started))"
+    tail -c "$keep_bytes" "$scratch/tail"
+  } >"$scratch/report"
+
+  # bash's /dev/tcp, so the image needs no HTTP client. Five seconds at most: the Container is on its way down.
+  timeout 5 bash -c '
+    exec 3<>"/dev/tcp/$1/$2" || exit 1
+    printf "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %s\r\nConnection: close\r\n\r\n" \
+      "$3" "$1" "$(wc -c <"$4")" >&3
+    cat "$4" >&3
+    head -c 64 <&3 >/dev/null
+  ' _ "$report_host" "$report_port" "$report_path" "$scratch/report" 2>/dev/null || true
+fi
+
+rm -rf "$scratch"
+exit "$status"
