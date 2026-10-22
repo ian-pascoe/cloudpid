@@ -90,7 +90,7 @@ const MAX_IGNORE_PATTERN_LENGTH = 255;
 
 /**
  * Why `pattern` cannot be an extra Container-only path, or undefined when it can: the rules of `@cloudflare/computer`
- * 0.5.1's `ignore` (`checkIgnorePatterns`), which refuses a bad pattern when the Container backend is built, and so
+ * 0.6.0's `ignore` (`checkIgnorePatterns`), which refuses a bad pattern when the Container backend is built, and so
  * would keep the Container from starting. A pattern starts with `/` (from the mount's root) or with `**` and a slash
  * (at any depth), may start with `!` to keep a path synced again, and has only `*` and `**` (a whole segment) as wildcards.
  */

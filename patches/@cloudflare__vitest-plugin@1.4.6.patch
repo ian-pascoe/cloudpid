@@ -1,8 +1,8 @@
 diff --git a/dist/pool/index.mjs b/dist/pool/index.mjs
-index 7cc8335d47b5362ba7903540b8919df867ffc73f..dbd6640c10f1cf2f3e762015b6b3901f33312348 100644
+index e137e557f9aac77ef32a67e1fee349ac52eb4b3d..0c5c0e2c4cb86c00d1740e05baf01a09bcaa1c69 100644
 --- a/dist/pool/index.mjs
 +++ b/dist/pool/index.mjs
-@@ -69253,7 +69253,21 @@ function inlineCachedModule(module$1, cacheContents) {
+@@ -69254,7 +69254,21 @@ function inlineCachedModule(module$1, cacheContents) {
  * module IDs to results. Vitest checks the map before calling `fetch()`, so
  * both paths need inlining. Reuse reads within this reply because aliases in
  * the map can reference the same cache file.
@@ -24,7 +24,7 @@ index 7cc8335d47b5362ba7903540b8919df867ffc73f..dbd6640c10f1cf2f3e762015b6b3901f
  function inlineCachedModules(response) {
  	const cacheContents = /* @__PURE__ */ new Map();
  	let inlined;
-@@ -69264,10 +69278,19 @@ function inlineCachedModules(response) {
+@@ -69265,10 +69279,19 @@ function inlineCachedModules(response) {
  	}
  	if (inlined !== response || response === null || typeof response !== "object" || Array.isArray(response)) return inlined;
  	let hasCachedModules = false;

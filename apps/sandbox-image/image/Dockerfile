@@ -6,19 +6,19 @@
 
 # Keep in step with the version of @cloudflare/computer the Workspace DO runs (apps/sandbox-image/src/index.test.ts
 # fails when they differ): the Workspace and computerd speak a sync protocol that is not stable across releases.
-ARG COMPUTERD_VERSION=0.5.1
-ARG MISE_VERSION=v2026.10.15
-ARG MISE_SHA256=e3b186d4c70627f27037be615becaf4acfb30e41fb6a1819486717dc94e4e2a9
+ARG COMPUTERD_VERSION=0.6.0
+ARG MISE_VERSION=v2026.10.17
+ARG MISE_SHA256=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a
 
 # Every base image is pinned by digest as well as by tag, so a rebuild cannot move to another computerd build or Debian
 # release (`libfuse2t64` is a trixie package name). Refresh a digest together with its tag: computerd's is the manifest of
 # `ghcr.io/cloudflare/computer-computerd-linux-x64:<COMPUTERD_VERSION>`, Debian's the index of `debian:stable-slim`.
 
 # A single layer over scratch whose only content is the computerd binary at /usr/local/bin/computerd.
-FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:63b743262f9e854bde861c5d4a08fb57539012997f6b9e7d231cb32667c65c6a AS computerd
+FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:2be45dcb1143bf4a7f15665c9a448fc991eacab0c880ae12c10031f7d764a3f8 AS computerd
 
 # mise is fetched and checked in a stage of its own, so the image keeps no curl.
-FROM --platform=linux/amd64 debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5 AS mise
+FROM --platform=linux/amd64 debian:stable-slim@sha256:a717a33469731894e77e912ea7d714e27c2dc38ee6554fd1a3102e92999cfc66 AS mise
 ARG MISE_VERSION
 ARG MISE_SHA256
 RUN apt-get update \
@@ -27,7 +27,7 @@ RUN apt-get update \
  && echo "${MISE_SHA256}  /mise" | sha256sum -c - \
  && chmod 755 /mise
 
-FROM --platform=linux/amd64 debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
+FROM --platform=linux/amd64 debian:stable-slim@sha256:a717a33469731894e77e912ea7d714e27c2dc38ee6554fd1a3102e92999cfc66
 
 # gcc, g++, make and libc6-dev are build-essential without dpkg-dev (and the perl it brings): what node-gyp and pip
 # need to build a native package from source, with Python and Node's headers from their mise installs.
