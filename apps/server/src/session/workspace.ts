@@ -7,7 +7,9 @@ import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { FileSearch } from "@cloudpid/extensions/files";
 import { DEFAULT_WORKSPACE, repoDirectory } from "@cloudpid/protocol";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
+import * as Effect from "effect/Effect";
 import { WORKSPACE_ROOT } from "../workspace/binding.ts";
+import type { Workspace } from "../workspace/Workspace.ts";
 
 /**
  * `@cloudpid/computer-env` loads on first use. `@cloudflare/computer` imports `cloudflare:workers`, which Node cannot
@@ -17,10 +19,9 @@ const computer = () => import("@cloudpid/computer-env");
 
 /** The Workspace DO namespace, as a Session DO binds it: the raw namespace, whose stubs `ComputerExecutionEnv` needs. */
 export type WorkspaceNamespace = {
-  getByName(slug: string): ComputerWorkspaceStub & {
-    /** Start the Container for a message, answering at once (`Workspace.warmContainer`). */
-    warmContainer(): Promise<void>;
-  };
+  getByName(
+    slug: string,
+  ): ComputerWorkspaceStub & Pick<DurableObjectStub<Workspace>, "startContainerEarly">;
 };
 
 /** Where a Session works: its Workspace's slug, and the repo directory below `/workspace` it works in (null: the root). */
@@ -76,10 +77,10 @@ export type SessionWorkspace = {
   /** The Workspace's file search, for `ls`, `find`, and `grep`. */
   readonly files: FileSearch;
   /**
-   * Ask the Workspace to start its Container for a message the owner sent (docs/spec.md → Backends). It answers once
-   * the Workspace has the request, not once the Container is up.
+   * Ask the Workspace for the early start of its Container, for a message the owner sent (docs/spec.md → Backends). It
+   * answers once the Workspace has the request, not once the Container is up.
    */
-  readonly warm: () => Promise<void>;
+  readonly startContainerEarly: () => Promise<void>;
 };
 
 export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorkspace => {
@@ -109,10 +110,21 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
       });
     },
     files,
-    warm: async () => {
+    startContainerEarly: async () => {
       const { slug } = await options.placement();
 
-      await options.namespace.getByName(slug).warmContainer();
+      await options.namespace.getByName(slug).startContainerEarly();
     },
   };
 };
+
+/**
+ * The early start for each message the owner sends (`SessionHostOptions.onSubmit`). A request that fails is logged and
+ * fails nothing: the turn's first command starts the Container as it would have.
+ */
+export const earlyStartOnSubmit = (
+  workspace: Pick<SessionWorkspace, "startContainerEarly">,
+): Effect.Effect<void> =>
+  Effect.tryPromise(() => workspace.startContainerEarly()).pipe(
+    Effect.catch((error) => Effect.logWarning("The early start of the Container failed", error)),
+  );

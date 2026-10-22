@@ -239,10 +239,10 @@ export type SessionHostOptions<R = never> = {
   readonly onIdle?: Effect.Effect<void, never, R>;
   /**
    * Runs, detached, after each message the owner sends (`submit`) is admitted, and never delays or fails it: the
-   * Session's Workspace starts its Container (docs/spec.md → Backends). A subagent's turns and the prompts the Session
+   * Session's Workspace starts its Container early (docs/spec.md → Backends: _Early start_). A subagent's turns and the prompts the Session
    * makes itself (a subagent's report, a follow-up) do not run it.
    */
-  readonly onSubmit?: Effect.Effect<void, never, R>;
+  readonly onSubmit?: Effect.Effect<void, never, R> | undefined;
   /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
   readonly env?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */

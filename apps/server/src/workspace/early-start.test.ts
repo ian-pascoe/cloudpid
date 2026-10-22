@@ -1,10 +1,10 @@
-// The Container's early start on a message (docs/spec.md → Backends): the Workspace connects its Container (launching or
+// The Container's early start (docs/spec.md → Backends): the Workspace connects its Container (launching or
 // restoring it), pushes its files and runs the bootstrap, with no command, while the model works on its first response.
 // The Container is faked; the idle stop is the real one, over a fake clock and alarm.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
 import { describe, expect, it } from "vitest";
 import { IdleStop } from "./idle.ts";
-import { ContainerWarmup, type WarmupDeps } from "./warm.ts";
+import { ContainerEarlyStart, type EarlyStartDeps } from "./early-start.ts";
 
 const MINUTE = 60_000;
 
@@ -19,7 +19,7 @@ const gate = () => {
   return { opened, open };
 };
 
-const setup = (overrides: Partial<WarmupDeps> = {}) => {
+const setup = (overrides: Partial<EarlyStartDeps> = {}) => {
   const steps: string[] = [];
   const infos: string[] = [];
   const warnings: string[] = [];
@@ -42,7 +42,7 @@ const setup = (overrides: Partial<WarmupDeps> = {}) => {
     },
   });
 
-  const warmup = new ContainerWarmup({
+  const earlyStart = new ContainerEarlyStart({
     running: () => container.running,
     connect: async () => {
       steps.push("connect");
@@ -50,10 +50,15 @@ const setup = (overrides: Partial<WarmupDeps> = {}) => {
 
       return 0;
     },
-    bootstrap: async () => {
+    runBootstrap: async () => {
       steps.push("bootstrap");
     },
-    tracker: {
+    idle: {
+      touch: () => {
+        steps.push("touch");
+
+        return idle.touch();
+      },
       begin: () => {
         steps.push("begin");
 
@@ -72,7 +77,7 @@ const setup = (overrides: Partial<WarmupDeps> = {}) => {
   });
 
   return {
-    warmup,
+    earlyStart,
     idle,
     steps,
     infos,
@@ -85,30 +90,49 @@ const setup = (overrides: Partial<WarmupDeps> = {}) => {
 
 describe("the Container's early start on a message", () => {
   it("connects the Container, then runs the bootstrap, as one use of it", async () => {
-    const { warmup, steps, infos } = setup();
+    const { earlyStart, steps, infos } = setup();
 
-    await warmup.start();
+    await earlyStart.start();
 
     expect(steps).toEqual(["begin", "connect", "bootstrap", "end"]);
-    expect(infos.join("\n")).toContain("workspace.container.warm");
+    expect(infos.join("\n")).toContain("workspace.container.early_start");
   });
 
-  it("does nothing while the Container is running", async () => {
-    const { warmup, steps, container } = setup();
+  it("starts nothing while the Container is running, but counts the message as a use of it", async () => {
+    const { earlyStart, steps, container } = setup();
 
     container.running = true;
-    await warmup.start();
+    await earlyStart.start();
 
-    expect(steps).toEqual([]);
+    expect(steps).toEqual(["touch"]);
+  });
+
+  it("keeps a running Container one idle time after a message that came near the end of the last", async () => {
+    const { earlyStart, idle, clock, container } = setup();
+
+    await earlyStart.start();
+
+    // The model thinks past the idle time the Container's start began.
+    clock.now += 14 * MINUTE;
+    await earlyStart.start();
+    clock.now += 2 * MINUTE;
+    await idle.alarm();
+
+    expect(container.stops).toBe(0);
+
+    clock.now += 13 * MINUTE;
+    await idle.alarm();
+
+    expect(container.stops).toBe(1);
   });
 
   it("does nothing while a start is under way: one connect and one bootstrap", async () => {
     const bootstrapped = gate();
 
-    const { warmup, steps } = setup({
+    const { earlyStart, steps } = setup({
       // `running` stays false until the start is done, as a launching Container may.
       running: () => false,
-      bootstrap: async () => {
+      runBootstrap: async () => {
         steps.push("bootstrap");
         await bootstrapped.opened;
       },
@@ -119,9 +143,9 @@ describe("the Container's early start on a message", () => {
       },
     });
 
-    const first = warmup.start();
+    const first = earlyStart.start();
 
-    const second = warmup.start();
+    const second = earlyStart.start();
 
     bootstrapped.open();
     await Promise.all([first, second]);
@@ -130,28 +154,28 @@ describe("the Container's early start on a message", () => {
     expect(steps.filter((step) => step === "bootstrap")).toHaveLength(1);
 
     // Once it is over, a later message may start the Container again (it was stopped meanwhile, say).
-    await warmup.start();
+    await earlyStart.start();
 
     expect(steps.filter((step) => step === "connect")).toHaveLength(2);
   });
 
   it("never fails: a start that fails is logged, and ends its use", async () => {
-    const { warmup, steps, warnings } = setup({
+    const { earlyStart, steps, warnings } = setup({
       connect: async () => {
         throw new Error("no Container for you");
       },
     });
 
-    await expect(warmup.start()).resolves.toBeUndefined();
+    await expect(earlyStart.start()).resolves.toBeUndefined();
 
     expect(steps).toEqual(["begin", "end"]);
     expect(warnings.join("\n")).toContain("no Container for you");
   });
 
   it("counts as use: the idle stop stops the Container one idle time after the start", async () => {
-    const { warmup, idle, clock, container, alarm } = setup();
+    const { earlyStart, idle, clock, container, alarm } = setup();
 
-    await warmup.start();
+    await earlyStart.start();
 
     expect(alarm()).toBe(clock.now + 15 * MINUTE);
 
@@ -164,13 +188,13 @@ describe("the Container's early start on a message", () => {
   it("keeps the Container while its bootstrap runs, however long", async () => {
     const bootstrapped = gate();
 
-    const { warmup, idle, clock, container } = setup({
-      bootstrap: async () => {
+    const { earlyStart, idle, clock, container } = setup({
+      runBootstrap: async () => {
         await bootstrapped.opened;
       },
     });
 
-    const started = warmup.start();
+    const started = earlyStart.start();
 
     // Let the start reach the bootstrap.
     await new Promise((resolve) => setTimeout(resolve, 0));

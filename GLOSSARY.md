@@ -123,7 +123,7 @@ Returning a Workspace to a fresh start: its Sessions, files, Container and Snaps
 _Avoid_: Wipe, clear (for the owner's action), delete (which also forgets the Workspace)
 
 **Container restart**:
-Stopping a Workspace's Container and forgetting its Snapshot, so the next command starts one from the image and installs the Toolchains again; the files and Sessions stay.
+Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from the image and installs the Toolchains again; the files and Sessions stay.
 _Avoid_: Reset (for the Container alone), reboot
 
 **Backend**:
@@ -145,6 +145,10 @@ _Avoid_: Console, shell (alone), PTY
 **Pane**:
 A panel beside a conversation that shows something live the owner can look at or work in: a Terminal, the browser's Live View, an open file. (Planned; a Terminal is the first.)
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
+
+**Early start**:
+Starting a Workspace's Container (restoring its Snapshot or launching the image, then the bootstrap) when the owner sends a message, before any command asks for it, so the turn's first command does not wait; it does nothing while the Container runs or is starting.
+_Avoid_: Warm-up, prewarm, preload
 
 **Offered tool**:
 A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, and `secret_ask` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.

@@ -147,8 +147,26 @@ export class TestWorkspace extends Workspace {
     execs: 0,
   };
 
+  /** Early starts asked for since the object started. */
+  #earlyStarts = 0;
+
   liveStubs(): LiveStubs {
     return { ...this.#counter };
+  }
+
+  earlyStarts(): number {
+    return this.#earlyStarts;
+  }
+
+  /** Counted; it fails in a Workspace named `early-start-failing-…`, as a request that does not reach the object would. */
+  override startContainerEarly(): void {
+    this.#earlyStarts++;
+
+    if (this.ctx.id.name?.startsWith("early-start-failing") === true) {
+      throw new Error("no early start here");
+    }
+
+    super.startContainerEarly();
   }
 
   protected override workspaceStub(workspace: ComputerWorkspace): WorkspaceStub {

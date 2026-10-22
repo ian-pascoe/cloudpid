@@ -43,10 +43,10 @@ import {
   type WriteAnswer,
 } from "./settings.ts";
 import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
+import { ContainerEarlyStart } from "./early-start.ts";
 import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
-import { ContainerWarmup } from "./warm.ts";
 import { SKILLS_MOUNT, WORKSPACE_CONTAINER, WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
 
 export type WorkspaceEnv = {
@@ -107,7 +107,7 @@ export class Workspace extends ContainerHost {
   readonly #idle: IdleStop;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
-  readonly #warmup: ContainerWarmup;
+  readonly #earlyStart: ContainerEarlyStart;
   readonly #sql: SqlStorage;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
@@ -243,8 +243,8 @@ export class Workspace extends ContainerHost {
       ],
     });
 
-    // A message the owner sends starts the Container before its first command asks for it (`warmContainer`).
-    this.#warmup = new ContainerWarmup({
+    // A message the owner sends starts the Container before its first command asks for it (`startContainerEarly`).
+    this.#earlyStart = new ContainerEarlyStart({
       running: () => ctx.container?.running === true,
       connect: async () => {
         await this.#ready();
@@ -257,8 +257,8 @@ export class Workspace extends ContainerHost {
 
         return pushed;
       },
-      bootstrap: () => toolchains.prepare(),
-      tracker: this.#idle,
+      runBootstrap: () => toolchains.runBootstrap(),
+      idle: this.#idle,
       now: () => Date.now(),
       info: (message) => console.info(message),
       warn: (message) => console.warn(message),
@@ -366,12 +366,16 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Start the Container for a message the owner sent (docs/spec.md → Backends): restore or launch it, push the files and
-   * run the bootstrap, with no command, so the turn's first command does not wait for it. It answers at once and never
-   * fails; it does nothing while the Container runs or is starting, and counts as use for the idle stop.
+   * The early start (docs/spec.md → Backends), for a message the owner sent: restore or launch the Container, push the
+   * files and run the bootstrap, with no command, so the turn's first command does not wait for it. It answers at once
+   * and never fails. While the Container runs or is starting it starts nothing; either way the message is a use of the
+   * Container for the idle stop.
    */
-  async warmContainer(): Promise<void> {
-    this.ctx.waitUntil(this.#warmup.start());
+  startContainerEarly(): void {
+    // Not awaited: the start goes on after this call has answered. Nothing needs to hold the object for it
+    // (`ctx.waitUntil` has no effect in a Durable Object): one is evicted only after tens of seconds without a request,
+    // and once computer has connected, its connection to computerd keeps the object in memory, as for a command.
+    void this.#earlyStart.start();
   }
 
   /** The idle stop's alarm. */

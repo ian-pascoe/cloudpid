@@ -19,7 +19,7 @@ import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
-import { type Placement, sessionWorkspace } from "../session/workspace.ts";
+import { earlyStartOnSubmit, type Placement, sessionWorkspace } from "../session/workspace.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -83,6 +83,11 @@ export class TestWorkspaceSession extends TestSession {
       // No search keys: the tests script the model, and none searches.
       Effect.provideService(WebConfig, { exaApiKey: Option.none(), parallelApiKey: Option.none() }),
     );
+  }
+
+  /** As the Session DO's: each message the owner sends asks its Workspace for the early start of the Container. */
+  protected override hostOnSubmit(): Effect.Effect<void> {
+    return earlyStartOnSubmit(this.#workspace());
   }
 
   protected override hostEnv(): HarnessOptions["env"] {
