@@ -92,6 +92,10 @@
         border: 0;
         padding: 0;
       }
+      button.attn {
+        background: #f38020;
+        color: #000;
+      }
       #kbdstate,
       #bgtable {
         font:
@@ -156,6 +160,7 @@
         <button class="phone" id="vcap">autocapitalize: sentences</button>
         <button id="vscroll">scroll tab to top</button>
         <button class="phone" id="vlp">long press: touch events</button>
+        <button class="phone" id="vrefocus">field→field: blur+focus to apply hints</button>
       </div>
       <div id="kbdstate"></div>
       <textarea
@@ -1212,7 +1217,23 @@
         log("RESULT", "ALL DONE");
         await flush();
       };
-      window.spike = { run, checks, api, connect, mint, ensureSetup, agentEval, flush, result };
+      window.spike = {
+        get bg() {
+          return bg;
+        },
+        get view() {
+          return view;
+        },
+        run,
+        checks,
+        api,
+        connect,
+        mint,
+        ensureSetup,
+        agentEval,
+        flush,
+        result,
+      };
 
       // ---- 9: background test -------------------------------------------------------------------
       const bg = { periods: [] };
@@ -1259,85 +1280,146 @@
           result("9 background", "fail", `could not connect: ${error.message}`);
         }
       };
+      // A socket can still say OPEN after iOS suspended the page: ping it with a short timeout, and on no answer
+      // drop it and connect again with a fresh link.
+      const RETURN_PING_MS = 1500;
+      const alive = (cdp) =>
+        cdp?.alive
+          ? cdp.send("Cloudflare.getSessionId", {}, RETURN_PING_MS).then(
+              () => "answered",
+              (error) => `no: ${error.message.slice(0, 40)}`,
+            )
+          : Promise.resolve(`no: socket ${cdp?.closed ? `closed ${cdp.closed.code}` : "missing"}`);
+      let returning;
+      async function onReturn(trigger) {
+        if (document.visibilityState !== "visible" || returning) return;
+        returning = (async () => {
+          log("page", `back (${trigger})`);
+          if (bg.cdp !== undefined && bg.hiddenAt !== undefined) {
+            const period = {
+              away: Math.round((Date.now() - bg.hiddenAt) / 1000),
+              state: bg.cdp.alive ? "open" : `closed ${bg.cdp.closed?.code ?? ""}`,
+            };
+            if (bg.cdp.closed) {
+              period.closedAfter = Math.round((bg.cdp.closed.at - bg.hiddenAt) / 1000);
+            }
+            period.ping = await alive(bg.cdp);
+            if (period.ping !== "answered") {
+              const started = Date.now();
+              try {
+                bg.cdp.close();
+                await bgConnect();
+                period.reconnect = `new link ok in ${Date.now() - started} ms`;
+              } catch (error) {
+                period.reconnect = `failed: ${error.message}`;
+              }
+            }
+            log("c9", `return via ${trigger}: ${JSON.stringify(period)}`);
+            bg.hiddenAt = undefined;
+            bg.periods.push(period);
+            result(
+              "9 background",
+              "info",
+              bg.periods
+                .map(
+                  (p) =>
+                    `${p.away}s: ${p.state}, ping ${p.ping}${p.reconnect ? `, ${p.reconnect}` : ""}`,
+                )
+                .join(" | "),
+              period,
+            );
+            renderBg();
+          }
+          if (view.open) {
+            const ping = await alive(view.cdp);
+            if (ping === "answered") {
+              log("viewer", `return via ${trigger}: socket answers`);
+            } else {
+              const started = Date.now();
+              log("viewer", `return via ${trigger}: ${ping} -> reconnecting with a new link`);
+              view.cdp?.close();
+              await openViewer("reconnect");
+              log("viewer", `reconnected in ${Date.now() - started} ms (alive=${view.cdp?.alive})`);
+            }
+          }
+        })();
+        try {
+          await returning;
+        } finally {
+          returning = undefined;
+        }
+      }
       document.addEventListener("visibilitychange", async () => {
         log("page", `visibility ${document.visibilityState}`);
-        if (bg.cdp === undefined) return;
         if (document.visibilityState === "hidden") {
-          bg.hiddenAt = Date.now();
-          bg.closedBefore = bg.cdp.closed;
+          if (bg.cdp !== undefined) bg.hiddenAt = Date.now();
           await flush();
           return;
         }
-        const away = Math.round((Date.now() - bg.hiddenAt) / 1000);
-        const period = {
-          away,
-          state: bg.cdp.alive ? "open" : `closed ${bg.cdp.closed?.code ?? ""}`,
-        };
-        if (bg.cdp.closed) period.closedAfter = Math.round((bg.cdp.closed.at - bg.hiddenAt) / 1000);
-        period.ping = await bg.cdp.send("Cloudflare.getSessionId", {}, 4000).then(
-          () => "answered",
-          (error) => `no: ${error.message.slice(0, 40)}`,
-        );
-        if (period.ping !== "answered") {
-          const started = Date.now();
-          try {
-            bg.cdp.close();
-            await bgConnect();
-            period.reconnect = `new link ok in ${Date.now() - started} ms`;
-          } catch (error) {
-            period.reconnect = `failed: ${error.message}`;
-          }
-        }
-        bg.periods.push(period);
-        result(
-          "9 background",
-          "info",
-          bg.periods
-            .map(
-              (p) =>
-                `${p.away}s: ${p.state}, ping ${p.ping}${p.reconnect ? `, ${p.reconnect}` : ""}`,
-            )
-            .join(" | "),
-          period,
-        );
-        renderBg();
+        onReturn("visibilitychange");
       });
-      for (const type of ["pagehide", "pageshow", "freeze", "resume", "online", "offline"]) {
+      window.addEventListener("pageshow", (event) => {
+        log("page", `pageshow persisted=${event.persisted}`);
+        onReturn("pageshow");
+      });
+      for (const type of ["pagehide", "freeze", "resume", "online", "offline"]) {
         window.addEventListener(type, () => log("page", type));
         document.addEventListener(type, () => log("page", `doc ${type}`));
       }
 
       // ---- viewer (11, 12) ----------------------------------------------------------------------
-      const view = { touches: new Map() };
+      const view = {
+        touches: new Map(),
+        open: false,
+        editables: { items: [], at: 0, scrollX: 0, scrollY: 0 },
+        gesture: null,
+        refocusOnHints: true,
+        stats: { focus: 0, blur: 0, decisions: [] },
+      };
       const canvas = $("screen");
       const ctx = canvas.getContext("2d");
       const kbd = $("kbd");
       const image = new Image();
       let drawing = false;
       let nextFrame = null;
+      const kbdFocused = () => document.activeElement === kbd;
       function kbdState(extra = "") {
         const vv = window.visualViewport;
         $("kbdstate").textContent =
-          `textarea focused: ${document.activeElement === kbd} · inputmode=${kbd.inputMode || "(none)"} enterkeyhint=${kbd.enterKeyHint || "(none)"} autocapitalize=${kbd.autocapitalize} · innerHeight ${innerHeight} · visualViewport.height ${vv ? Math.round(vv.height) : "?"} ${extra}`;
+          `textarea focused: ${kbdFocused()} · inputmode=${kbd.inputMode || "(none)"} enterkeyhint=${kbd.enterKeyHint || "(none)"} autocapitalize=${kbd.autocapitalize} · visualViewport.height ${vv ? Math.round(vv.height) : "?"} · ${view.editables.items.length} editable rects ${extra}`;
       }
+      let lastVv = window.visualViewport ? Math.round(visualViewport.height) : 0;
       window.visualViewport?.addEventListener("resize", () => {
+        const height = Math.round(visualViewport.height);
         kbdState();
         log(
           "vv",
-          `visualViewport ${Math.round(visualViewport.width)}x${Math.round(visualViewport.height)} focused=${document.activeElement === kbd}`,
+          `visualViewport height ${lastVv} -> ${height} (textarea focused=${kbdFocused()})`,
         );
+        lastVv = height;
       });
       kbd.addEventListener("focus", () => {
+        view.stats.focus++;
         log("kbd", "textarea focus");
         kbdState();
       });
       kbd.addEventListener("blur", () => {
+        view.stats.blur++;
         log("kbd", "textarea blur");
         kbdState();
       });
       async function draw(frame) {
         drawing = true;
+        const previous = view.meta;
         view.meta = frame.metadata;
+        if (
+          previous === undefined ||
+          previous.scrollOffsetX !== frame.metadata.scrollOffsetX ||
+          previous.scrollOffsetY !== frame.metadata.scrollOffsetY ||
+          previous.deviceWidth !== frame.metadata.deviceWidth
+        ) {
+          scheduleRefresh("frame");
+        }
         await new Promise((resolve) => {
           image.onload = resolve;
           image.onerror = resolve;
@@ -1366,13 +1448,172 @@
           y: Math.round((event.clientY - rect.top) / zoom - (view.meta?.offsetTop ?? 0)),
         };
       }
-      $("vopen").onclick = async () => {
+
+      // The tab's editable elements, in its viewport's CSS px when read: inputs that take text, textareas,
+      // contenteditable roots, labels of those (tapping a label focuses its field), in open shadow roots and
+      // same-origin iframes. Disabled, readonly, select and date-like inputs are left out.
+      const EDITABLES = `(() => {
+        const TEXT = new Set(["text", "email", "number", "tel", "url", "search", "password"]);
+        const editable = (el) => {
+          if (el.tagName === "INPUT") return TEXT.has(el.type) && !el.disabled && !el.readOnly;
+          if (el.tagName === "TEXTAREA") return !el.disabled && !el.readOnly;
+          return el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable);
+        };
+        const out = [];
+        const H = innerHeight;
+        const add = (el, hintsOf, dx, dy, via) => {
+          for (const r of el.getClientRects()) {
+            if (r.width === 0 || r.height === 0 || r.bottom + dy < -H || r.top + dy > 2 * H) continue;
+            if (getComputedStyle(el).visibility === "hidden") return;
+            out.push({
+              x: Math.round(r.left + dx), y: Math.round(r.top + dy), w: Math.round(r.width), h: Math.round(r.height),
+              via, tag: hintsOf.tagName, id: hintsOf.id,
+              type: hintsOf.tagName === "INPUT" ? hintsOf.type : hintsOf.tagName === "TEXTAREA" ? "textarea" : "contenteditable",
+              inputMode: hintsOf.getAttribute("inputmode") || "",
+              enterKeyHint: hintsOf.getAttribute("enterkeyhint") || "",
+              autocapitalize: hintsOf.getAttribute("autocapitalize") || "",
+            });
+          }
+        };
+        let seen = 0;
+        const walk = (root, dx, dy, via) => {
+          for (const el of root.querySelectorAll("input, textarea, [contenteditable], label")) {
+            if (el.tagName === "LABEL") {
+              const control = el.control;
+              if (control && editable(control)) add(el, control, dx, dy, via + "label");
+            } else if (editable(el)) add(el, el, dx, dy, via);
+          }
+          for (const el of root.querySelectorAll("*")) {
+            if (++seen > 20000) return;
+            if (el.shadowRoot) walk(el.shadowRoot, dx, dy, via + "shadow/");
+            if (el.tagName === "IFRAME") {
+              try {
+                const doc = el.contentDocument;
+                if (!doc) continue;
+                const r = el.getBoundingClientRect();
+                walk(doc, dx + r.left + el.clientLeft, dy + r.top + el.clientTop, via + "iframe/");
+              } catch {}
+            }
+          }
+        };
+        walk(document, 0, 0, "");
+        return { scrollX, scrollY, items: out };
+      })()`;
+      let refreshTimer;
+      let refreshing = false;
+      let lastRefresh = 0;
+      function scheduleRefresh(reason) {
+        if (refreshTimer !== undefined || !view.open) return;
+        refreshTimer = setTimeout(
+          () => {
+            refreshTimer = undefined;
+            refreshEditables(reason);
+          },
+          Math.max(0, 250 - (Date.now() - lastRefresh)),
+        );
+      }
+      async function refreshEditables(reason) {
+        if (!view.cdp?.alive || refreshing) return;
+        refreshing = true;
+        lastRefresh = Date.now();
+        try {
+          const reply = await view.cdp.send(
+            "Runtime.evaluate",
+            { expression: EDITABLES, returnByValue: true },
+            5000,
+            true,
+          );
+          const value = reply.result?.value;
+          if (value === undefined) throw new Error(JSON.stringify(reply).slice(0, 200));
+          const before = view.editables.items.map((i) => i.id).join(",");
+          view.editables = { ...value, at: Date.now() };
+          const after = value.items.map((i) => i.id).join(",");
+          if (before !== after) {
+            log(
+              "map",
+              `${reason}: ${value.items.length} editable rects at scroll ${value.scrollY}: ${value.items.map((i) => `${i.via}${i.id || i.tag}@${i.x},${i.y} ${i.w}x${i.h}`).join(" ")}`,
+            );
+          }
+          kbdState();
+        } catch (error) {
+          log("map", `refresh (${reason}) failed: ${error.message}`);
+        } finally {
+          refreshing = false;
+        }
+      }
+      // A point in the tab's viewport now, against the rects read at another scroll position.
+      function hitTest(point) {
+        const cache = view.editables;
+        const dx = (view.meta?.scrollOffsetX ?? cache.scrollX) - cache.scrollX;
+        const dy = (view.meta?.scrollOffsetY ?? cache.scrollY) - cache.scrollY;
+        const slack = 4;
+        let best;
+        for (const item of cache.items) {
+          const x = item.x - dx;
+          const y = item.y - dy;
+          if (
+            point.x >= x - slack &&
+            point.x <= x + item.w + slack &&
+            point.y >= y - slack &&
+            point.y <= y + item.h + slack &&
+            (best === undefined || item.w * item.h < best.w * best.h)
+          ) {
+            best = item;
+          }
+        }
+        return { hit: best, dx, dy, age: Date.now() - cache.at, count: cache.items.length };
+      }
+      function hintsFor(item) {
+        const byType = {
+          email: ["email", "off", "go"],
+          number: ["decimal", "off", "go"],
+          tel: ["tel", "off", "go"],
+          url: ["url", "off", "go"],
+          search: ["search", "off", "search"],
+          password: ["text", "off", "go"],
+          text: ["text", "sentences", "go"],
+          textarea: ["text", "sentences", "enter"],
+          contenteditable: ["text", "sentences", "enter"],
+        };
+        const [inputMode, autocapitalize, enterKeyHint] = byType[item.type] ?? byType.text;
+        return {
+          inputMode: item.inputMode || inputMode,
+          autocapitalize: item.autocapitalize || autocapitalize,
+          enterKeyHint: item.enterKeyHint || enterKeyHint,
+          autocorrect: ["email", "url", "password", "number", "tel"].includes(item.type)
+            ? "off"
+            : "on",
+        };
+      }
+      // Set the textarea's hints; says whether any changed.
+      function applyHints(hints) {
+        let changed = false;
+        for (const [name, value] of [
+          ["inputmode", hints.inputMode],
+          ["autocapitalize", hints.autocapitalize],
+          ["enterkeyhint", hints.enterKeyHint],
+          ["autocorrect", hints.autocorrect],
+        ]) {
+          if (kbd.getAttribute(name) !== value) {
+            kbd.setAttribute(name, value);
+            changed = true;
+          }
+        }
+        return changed;
+      }
+      function attention(on) {
+        $("vkbd").classList.toggle("attn", on);
+        $("vkbd").textContent = on ? "⌨︎ tap to type" : "⌨︎ force";
+      }
+
+      async function openViewer(reason = "open") {
         try {
           $("viewer").style.display = "block";
           view.cdp?.close();
           frameLogEvery = 200;
           const cdp = await connect("viewer");
           view.cdp = cdp;
+          view.open = true;
           await cdp.send("Page.enable");
           await cdp.send("Runtime.enable");
           const width = canvas.clientWidth;
@@ -1398,6 +1639,7 @@
           cdp.on("Page.windowOpen", (params) =>
             log("viewer", `windowOpen ${JSON.stringify(params)}`),
           );
+          cdp.on("Page.frameNavigated", () => scheduleRefresh("navigated"));
           await cdp.send("Page.startScreencast", {
             format: "jpeg",
             quality: 70,
@@ -1406,17 +1648,23 @@
           });
           // A background tab sends no frames.
           await cdp.send("Page.bringToFront");
+          clearInterval(view.timer);
+          view.timer = setInterval(() => scheduleRefresh("timer"), 1000);
+          await refreshEditables(reason);
           result(
             "11/12 viewer",
             "info",
-            `open ${width}x${height}@${devicePixelRatio} mobile=${isTouch}`,
+            `${reason} ${width}x${height}@${devicePixelRatio} mobile=${isTouch}`,
           );
           kbdState();
         } catch (error) {
-          result("11/12 viewer", "fail", `open failed: ${error.message}`);
+          result("11/12 viewer", "fail", `${reason} failed: ${error.message}`);
         }
-      };
+      }
+      $("vopen").onclick = () => openViewer("open");
       $("vclose").onclick = async () => {
+        view.open = false;
+        clearInterval(view.timer);
         if (view.cdp?.alive) {
           await view.cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
           await view.cdp
@@ -1424,14 +1672,53 @@
             .catch(() => {});
           await view.cdp.closedNow();
         }
+        kbd.blur();
         $("viewer").style.display = "none";
       };
+      $("vrefocus").onclick = () => {
+        view.refocusOnHints = !view.refocusOnHints;
+        $("vrefocus").textContent =
+          `field→field: ${view.refocusOnHints ? "blur+focus to apply hints" : "keep focus, set hints only"}`;
+      };
+
       const touchPoints = () => [...view.touches.values()];
       canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+      // Keep iOS from moving focus (blurring the textarea, closing the keyboard) when the frame is touched, and from
+      // making mouse events and clicks out of the touches.
+      canvas.addEventListener("touchstart", (event) => event.preventDefault(), { passive: false });
+      canvas.addEventListener("touchend", (event) => event.preventDefault(), { passive: false });
+      canvas.addEventListener("mousedown", (event) => event.preventDefault());
       canvas.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         if (!view.cdp?.alive) return;
         canvas.setPointerCapture(event.pointerId);
+        log(
+          "ptr",
+          `pointerdown ${event.pointerType} id=${event.pointerId} primary=${event.isPrimary} (touches held ${view.touches.size})`,
+        );
+        // A primary pointer starts a new gesture: drop whatever an earlier one left (a pointerup that never came).
+        if (event.isPrimary && (view.gesture !== null || view.touches.size > 0)) {
+          log("ptr", `stale gesture dropped (${view.touches.size} touches held)`);
+          if (view.touches.size > 0) {
+            view.cdp
+              .send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })
+              .catch(() => {});
+          }
+          view.touches.clear();
+          view.gesture = null;
+        }
+        if (view.gesture === null) {
+          view.gesture = {
+            start: performance.now(),
+            x: event.clientX,
+            y: event.clientY,
+            moved: 0,
+            pointers: 1,
+            pointerType: event.pointerType,
+          };
+        } else {
+          view.gesture.pointers++;
+        }
         const at = toPage(event);
         if (event.pointerType === "mouse") {
           view.cdp
@@ -1456,6 +1743,7 @@
           press.timer = setTimeout(async () => {
             if (view.press !== press) return;
             press.selecting = true;
+            if (view.gesture) view.gesture.selecting = true;
             log("viewer", `long press -> touchCancel + mouse double press at ${at.x},${at.y}`);
             const send = (params) =>
               view.cdp.send("Input.dispatchMouseEvent", { ...at, button: "left", ...params });
@@ -1473,6 +1761,12 @@
       let lastMove = 0;
       canvas.addEventListener("pointermove", (event) => {
         if (!view.cdp?.alive) return;
+        if (view.gesture !== null && event.buttons !== 0) {
+          view.gesture.moved = Math.max(
+            view.gesture.moved,
+            Math.round(Math.hypot(event.clientX - view.gesture.x, event.clientY - view.gesture.y)),
+          );
+        }
         if (performance.now() - lastMove < 16) return;
         lastMove = performance.now();
         const at = toPage(event);
@@ -1516,49 +1810,119 @@
           )
           .catch(() => {});
       });
-      async function afterTap() {
-        await sleep(150);
+
+      // What the tab has focused, through open shadow roots and same-origin iframes.
+      const FOCUSED = `(() => {
+        let el = document.activeElement;
+        for (;;) {
+          let inner = null;
+          try { inner = el && (el.shadowRoot ? el.shadowRoot.activeElement : el.contentDocument ? el.contentDocument.activeElement : null); } catch {}
+          if (!inner || inner === el) break;
+          el = inner;
+        }
+        if (!el) return { editable: false, tag: "none" };
+        const TEXT = new Set(["text", "email", "number", "tel", "url", "search", "password"]);
+        const editable = (el.tagName === "INPUT" && TEXT.has(el.type) && !el.disabled && !el.readOnly) || (el.tagName === "TEXTAREA" && !el.disabled && !el.readOnly) || el.isContentEditable;
+        return { editable, tag: el.tagName, id: el.id, type: el.tagName === "INPUT" ? el.type : el.tagName === "TEXTAREA" ? "textarea" : el.isContentEditable ? "contenteditable" : "", inputMode: el.getAttribute("inputmode") || "", enterKeyHint: el.getAttribute("enterkeyhint") || "", autocapitalize: el.getAttribute("autocapitalize") || "" };
+      })()`;
+      // The safety net, after a tap: compare what the tab focused with what we predicted.
+      async function afterTap(decision) {
+        await sleep(250);
+        if (!view.cdp?.alive) return;
         try {
-          const focused = await evalIn(
-            view.cdp,
-            `(() => { const el = document.activeElement; if (!el) return { editable: false }; const tag = el.tagName; const type = (el.type || "").toLowerCase(); const editable = (tag === "INPUT" && !["button","submit","checkbox","radio","range","color","file","image","reset","hidden"].includes(type)) || tag === "TEXTAREA" || el.isContentEditable; return { editable, tag, type, id: el.id, inputMode: el.inputMode || "", enterKeyHint: el.enterKeyHint || "" }; })()`,
-          );
-          if (!focused.editable) {
+          const focused = await evalIn(view.cdp, FOCUSED);
+          const ours = kbdFocused();
+          let outcome;
+          if (focused.editable && !ours) {
+            attention(true);
+            outcome = `MISPREDICTED: tab focused ${focused.tag}#${focused.id} (${focused.type}) but the textarea is not focused -> highlight ⌨︎`;
+          } else if (!focused.editable && ours && decision.hit) {
             kbd.blur();
-            kbdState(`· tab focus: ${focused.tag ?? "none"} (not editable) -> blurred`);
-            return;
+            attention(false);
+            outcome = `MISPREDICTED: predicted ${decision.hit.id || decision.hit.tag} but the tab focus is ${focused.tag}#${focused.id} -> blur`;
+          } else {
+            attention(false);
+            if (focused.editable && ours) applyHints(hintsFor(focused));
+            outcome = `ok: tab focus ${focused.tag}#${focused.id || ""} (${focused.type || "-"}), textarea focused=${ours}`;
           }
-          const modes = {
-            email: ["email", "off"],
-            number: ["decimal", "off"],
-            tel: ["tel", "off"],
-            url: ["url", "off"],
-            search: ["search", "off"],
-            password: ["text", "off"],
-          };
-          const [mode, cap] = modes[focused.type] ?? ["text", "sentences"];
-          kbd.inputMode = focused.inputMode || mode;
-          kbd.autocapitalize = cap;
-          kbd.enterKeyHint =
-            focused.enterKeyHint ||
-            (focused.tag === "TEXTAREA" || focused.tag !== "INPUT" ? "enter" : "go");
+          decision.outcome = outcome;
+          log("kbd", `after tap: ${outcome}`);
+          kbdState(`· tab focus: ${focused.tag}#${focused.id || ""}`);
+        } catch (error) {
+          log("kbd", `after tap check failed: ${error.message}`);
+        }
+        scheduleRefresh("tap");
+      }
+      // 12: decided synchronously at pointerup, so a focus is still inside the gesture iOS needs to open the keyboard.
+      function decide(event, gesture) {
+        const duration = Math.round(performance.now() - gesture.start);
+        const kind = gesture.selecting
+          ? "select"
+          : gesture.pointers > 1
+            ? "multi-touch"
+            : gesture.moved >= 10
+              ? "drag"
+              : duration >= 500
+                ? "long press"
+                : "tap";
+        const point = toPage(event);
+        const decision = {
+          kind,
+          duration,
+          moved: gesture.moved,
+          pointers: gesture.pointers,
+          point,
+        };
+        view.stats.decisions.push(decision);
+        if (kind !== "tap") {
+          decision.action = "none";
           log(
             "kbd",
-            `tab focus ${focused.tag}#${focused.id} type=${focused.type} -> inputmode=${kbd.inputMode} autocapitalize=${kbd.autocapitalize} enterkeyhint=${kbd.enterKeyHint} (set while focused=${document.activeElement === kbd})`,
+            `decision: ${kind} (${duration} ms, moved ${gesture.moved} px, ${gesture.pointers} pointer(s)) at ${point.x},${point.y} -> no focus change (textarea focused=${kbdFocused()})`,
           );
-          kbdState(`· tab focus: ${focused.tag}#${focused.id} (${focused.type})`);
-        } catch (error) {
-          log("kbd", `focus check failed: ${error.message}`);
+          return;
         }
+        const test = hitTest(point);
+        decision.hit = test.hit;
+        decision.cacheAge = test.age;
+        const where = `tap (${duration} ms, moved ${gesture.moved} px) at ${point.x},${point.y}, cache ${test.count} rects, age ${test.age} ms, scroll delta ${test.dx},${test.dy}`;
+        if (test.hit !== undefined) {
+          const wasFocused = kbdFocused();
+          const changed = applyHints(hintsFor(test.hit));
+          const refocus = wasFocused && changed && view.refocusOnHints;
+          if (refocus) kbd.blur();
+          kbd.focus({ preventScroll: true });
+          decision.action = refocus ? "refocus" : wasFocused ? "keep" : "focus";
+          log(
+            "kbd",
+            `decision: ${where} -> HIT ${test.hit.via}${test.hit.tag}#${test.hit.id} (${test.hit.type}) -> inputmode=${kbd.getAttribute("inputmode")} enterkeyhint=${kbd.getAttribute("enterkeyhint")} autocapitalize=${kbd.getAttribute("autocapitalize")}; ${decision.action} (was focused ${wasFocused}, hints changed ${changed})`,
+          );
+        } else {
+          const wasFocused = kbdFocused();
+          if (wasFocused) kbd.blur();
+          decision.action = wasFocused ? "blur" : "none";
+          log("kbd", `decision: ${where} -> miss -> ${wasFocused ? "blur" : "stay unfocused"}`);
+        }
+        afterTap(decision);
       }
       function endPointer(event, type) {
+        log(
+          "ptr",
+          `${event.type} ${event.pointerType} id=${event.pointerId} primary=${event.isPrimary}`,
+        );
         if (!view.cdp?.alive) return;
         const at = toPage(event);
         const press = view.press;
         clearTimeout(press?.timer);
         view.press = undefined;
+        const gesture = view.gesture;
         if (press?.selecting && press.id === event.pointerId) {
           view.touches.delete(event.pointerId);
+          view.gesture = null;
+          if (gesture) {
+            gesture.selecting = true;
+            decide(event, gesture);
+          }
           view.cdp
             .send("Input.dispatchMouseEvent", {
               type: "mouseReleased",
@@ -1584,11 +1948,14 @@
             .send("Input.dispatchTouchEvent", { type, touchPoints: touchPoints() })
             .catch(() => {});
         }
-        if (type === "touchEnd") {
-          // 12: focus synchronously, inside the gesture, then ask the tab whether its focused element is editable.
-          kbd.focus({ preventScroll: true });
-          afterTap();
+        // The gesture ends with its last pointer.
+        if (gesture === null || (event.pointerType !== "mouse" && view.touches.size > 0)) return;
+        view.gesture = null;
+        if (type === "touchCancel") {
+          log("kbd", "decision: pointercancel -> no focus change");
+          return;
         }
+        decide(event, gesture);
       }
       canvas.addEventListener("pointerup", (event) => endPointer(event, "touchEnd"));
       canvas.addEventListener("pointercancel", (event) => endPointer(event, "touchCancel"));
@@ -1624,6 +1991,7 @@
           `beforeinput ${event.inputType} data=${JSON.stringify(event.data)} cancelable=${event.cancelable}`,
         );
         if (!view.cdp?.alive) return;
+        scheduleRefresh("input");
         switch (event.inputType) {
           case "insertText":
           case "insertReplacementText": {
@@ -1715,6 +2083,7 @@
       };
       $("vkbd").onclick = () => {
         kbd.focus({ preventScroll: true });
+        attention(false);
         kbdState("· forced");
       };
       $("vlp").onclick = () => {
@@ -1732,6 +2101,8 @@
           kbdState();
         });
         $(id).addEventListener("mousedown", (event) => event.preventDefault());
+        // iOS moves focus on touch even when pointerdown's default is prevented.
+        $(id).addEventListener("touchstart", (event) => event.preventDefault(), { passive: false });
       };
       keepFocus("vblur", () => kbd.blur());
       const cycle = (id, attribute, label, values) => {

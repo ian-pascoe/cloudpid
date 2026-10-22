@@ -70,12 +70,67 @@
       liquor jugs.
     </p>
     <p id="status"></p>
-    <div id="tall">tall</div>
+    <h2>Keyboard fixtures</h2>
+    <label id="label-wrap" style="display: block; padding: 8px; border: 1px dashed #999"
+      >Label text: tap here to focus the field <input id="labeled" type="text"
+    /></label>
+    <div class="row">
+      <input
+        id="near-btn-input"
+        type="email"
+        placeholder="email next to a button"
+        style="width: 170px"
+      />
+      <button
+        id="near-btn"
+        type="button"
+        onclick="window.__nearClicks = (window.__nearClicks || 0) + 1"
+      >
+        Go
+      </button>
+    </div>
+    <label>disabled <input id="disabled" type="text" disabled value="disabled" /></label>
+    <label>readonly <input id="readonly" type="text" readonly value="readonly" /></label>
+    <label
+      >select
+      <select id="select">
+        <option>one</option>
+        <option>two</option>
+      </select></label
+    >
+    <label>textarea <textarea id="textarea" rows="2"></textarea></label>
+    <div id="shadow-host"></div>
+    <iframe
+      id="frame"
+      srcdoc="<input id='in-frame' type='tel' placeholder='tel in a same-origin iframe' style='font-size:16px;width:220px'>"
+      style="height: 44px; width: 260px; border: 1px solid #888"
+    ></iframe>
+    <div class="row">
+      <button id="js-focus" type="button" onclick="document.getElementById('text').focus()">
+        focus "text" with JS
+      </button>
+      <a id="hash-link" href="#nowhere">a link (#nowhere)</a>
+    </div>
+    <div id="tall">
+      tall: fields below the fold
+      <div style="height: 900px"></div>
+      <label>search <input id="below-search" type="search" /></label>
+      <div style="height: 700px"></div>
+      <div id="editable2" contenteditable="true" style="border: 1px solid #888; padding: 6px">
+        Below-the-fold editable
+      </div>
+      <label
+        >numeric, enterkeyhint=done
+        <input id="below-number" type="text" inputmode="numeric" enterkeyhint="done"
+      /></label>
+    </div>
     <script>
       const which = new URLSearchParams(location.search).get("which") ?? "?";
       document.getElementById("which").textContent = `Test page (${which})`;
       document.title = `Spike test page (${which})`;
       window.__submits = 0;
+      document.getElementById("shadow-host").attachShadow({ mode: "open" }).innerHTML =
+        "<label>url in an open shadow root <input id='in-shadow' type='url' style='font-size:16px'></label>";
       window.__events = [];
       const record = (event) => {
         const entry = { type: event.type, t: Math.round(performance.now()) };

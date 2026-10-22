@@ -133,6 +133,60 @@ View connection, in the host's session on the tab, and on the browser with `targ
   deviceHeight: 493}`.
 - The agent's connection sees the same.
 
+## iPhone, first pass (iOS 18.7 Safari)
+
+- **1:** connects from our origin in 602 ms.
+- **9:** after 17 s in another app the socket still reported `OPEN` but was dead: the ping on return closed it with
+  `1006`. A freshly minted link reconnected in 831 ms. The viewer's socket died the same way. Do not trust
+  `readyState` on return. Ping with a short timeout on `visibilitychange` and `pageshow`, and reconnect with a new link
+  on no answer. The harness now does this for the check 9 socket and the viewer, with a 1.5 s ping.
+- **12:**
+  - Focusing the hidden textarea in `pointerup` opens the iOS keyboard, and `inputmode` takes effect.
+  - Focusing on every `pointerup` opens it far too often: every tap on a button or link, and the end of every drag,
+    brought it up (`visualViewport` 739 → 396), and the after-tap check closed it again about 300 ms later.
+- Opening a pop-up from the tab sends the tab `Page.screencastVisibilityChanged {visible: false}`: the window took the
+  front.
+
+## Keyboard: decided at `pointerup` from a map of the tab's fields (harness viewer, second version)
+
+1. **Only a tap may focus.** That is one pointer, under 500 ms and under 10 CSS px of movement, and not a long-press
+   selection. Drags, scrolls, long presses and multi-touch never change the focus.
+2. **A map of the fields.** One `Runtime.evaluate` returns the rects (in the tab's viewport) of every editable element,
+   with their `type` and their `inputmode`, `enterkeyhint` and `autocapitalize` attributes:
+   - inputs that take text, `<textarea>`, `contenteditable` roots, and `<label>`s of those;
+   - in open shadow roots and same-origin iframes too;
+   - not disabled or readonly fields, nor `<select>`.
+
+   It is read again when a frame's scroll offset changes (at most every 250 ms), after each tap, after input, and every
+   second while the viewer is open. At `pointerup` the tap is hit-tested against it, corrected by how far the frame
+   has scrolled since. A hit sets the hints, then focuses synchronously; a miss blurs the textarea if it was focused.
+   Each decision is logged with the hit, the number of rects and the map's age.
+
+3. **The keyboard stays up between fields.** The canvas prevents the default of `touchstart`, `touchend` and
+   `mousedown`, so touching the frame does not move focus. Going from one field to another keeps the textarea focused
+   and only changes the hints. A toggle chooses between blur-then-focus (in case iOS applies `inputmode` only on focus)
+   and keeping the focus.
+4. **Safety net.** After each tap, `Runtime.evaluate` reads the tab's focused element, through shadow roots and
+   iframes:
+   - It focused something editable we did not predict (a field focused by script): ⌨︎ is highlighted ("tap to
+     type").
+   - We predicted a field but it focused nothing editable: blur.
+
+Playwright: Chromium (Pixel 7, touch through CDP) passed 26/26 and WebKit (iPhone 15, taps) passed 19/19:
+
+- **The keyboard opens** on a text, email, number or password field, a label's text, a field beside a button, a
+  textarea, a field in an open shadow root, a field in a same-origin iframe, a contenteditable, and fields below the fold
+  after scrolling.
+- **The hints follow the field:** inputmode `email`, `decimal`, `url`, `tel`, `search`, `numeric` with
+  `enterkeyhint=done`, and `enter` for a textarea.
+- **Field to field** keeps the focus, with no blur in keep mode.
+- **The keyboard stays closed** for a button, a link, a disabled input, a readonly input, a `<select>`, a drag, a long
+  press and a two-finger tap. Dragging while typing keeps it open.
+- **A field focused by script** gets ⌨︎ highlighted.
+
+Faking `visibilitychange` with a socket whose answers are dropped: the check 9 socket and the viewer both reconnected
+with a fresh link (446 ms and 991 ms).
+
 ## Pending on a real device
 
 - iPhone Safari and the installed PWA: 1, 9, 11, 12, and touch input generally.
