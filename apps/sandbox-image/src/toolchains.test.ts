@@ -39,6 +39,29 @@ describe("the ignore list", () => {
     expect(TOOLCHAIN_IGNORE).toContain("**/.pnpm-store");
   });
 
+  it("keeps build tools' caches and environments off the synced Workspace, by names no source directory has", () => {
+    expect(TOOLCHAIN_IGNORE).toEqual(
+      expect.arrayContaining([
+        "**/.turbo",
+        "**/.next",
+        "**/.nuxt",
+        "**/.svelte-kit",
+        "**/.parcel-cache",
+        "**/.terraform",
+        "**/.gradle",
+        "**/.tox",
+        "**/.nox",
+        "**/.direnv",
+      ]),
+    );
+  });
+
+  it("does not make a directory some repos commit local to the Container", () => {
+    for (const name of ["dist", "build", "coverage", "vendor", "venv", ".yarn"]) {
+      expect(TOOLCHAIN_IGNORE.filter((pattern) => pattern.split("/").includes(name))).toEqual([]);
+    }
+  });
+
   it("does not make a source directory called target local to the Container", () => {
     expect(TOOLCHAIN_IGNORE).not.toContain("**/target");
   });
