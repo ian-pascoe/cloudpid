@@ -51,8 +51,13 @@ export const createWorkspaceAtom = appRuntime.fn(
   { concurrent: true },
 );
 
-/** Which of the dialogs of Workspace `slug`'s card is open, if any. */
-export type WorkspaceDialog = "edit" | "delete";
+/** Which of the dialogs of Workspace `slug`'s card is open, if any: removing a repo names the repo. */
+export type WorkspaceDialog =
+  | "edit"
+  | "delete"
+  | "reset"
+  | "restart"
+  | { readonly removeRepo: string };
 
 /** The dialog of Workspace `slug`'s card that is open: null when none is. */
 export const workspaceDialogAtom = Atom.family((_slug: string) =>
@@ -115,6 +120,72 @@ export const deleteWorkspaceAtom = Atom.family((slug: string) =>
       RegistryClient.use((registry) => registry("deleteWorkspace", { workspace: slug })).pipe(
         Effect.asVoid,
         changing(["workspaces", "sessions", `repos:${slug}`, `workspace-settings:${slug}`]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(workspaceDialogAtom(slug), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** What is typed in the Reset dialog of Workspace `slug`: its slug, to confirm. Apart from the Delete dialog's. */
+export const resetTypedAtom = Atom.family((_slug: string) => Atom.make(""));
+
+/**
+ * Reset Workspace `slug` to a fresh start: its Sessions, files, Container and saved disk go, its slug, name and Container
+ * settings stay. A reset that stopped partway deleted some Sessions, so the lists ask again either way. Once it is
+ * reset, its dialog closes.
+ */
+export const resetWorkspaceAtom = Atom.family((slug: string) =>
+  appRuntime.fn(
+    (_: void, get) =>
+      RegistryClient.use((registry) => registry("resetWorkspace", { workspace: slug })).pipe(
+        Effect.asVoid,
+        changing(["workspaces", "sessions", `repos:${slug}`]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(workspaceDialogAtom(slug), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/**
+ * Stop Workspace `slug`'s Container and forget its saved disk; its files and Sessions stay. Once it is stopped, its
+ * dialog closes.
+ */
+export const restartContainerAtom = Atom.family((slug: string) =>
+  appRuntime.fn(
+    (_: void, get) =>
+      RegistryClient.use((registry) => registry("restartContainer", { workspace: slug })).pipe(
+        Effect.asVoid,
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(workspaceDialogAtom(slug), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** What is typed in the Remove dialog of Workspace `slug`'s card: the repo's name, to confirm. */
+export const removeTypedAtom = Atom.family((_slug: string) => Atom.make(""));
+
+/**
+ * Remove repo `repo` from Workspace `slug`: the Sessions bound to it, then its directory. A removal that stopped partway
+ * deleted some Sessions, so the lists ask again either way. Once it is removed, the dialog closes.
+ */
+export const removeRepoAtom = Atom.family((slug: string) =>
+  appRuntime.fn(
+    (repo: string, get) =>
+      RegistryClient.use((registry) => registry("removeRepo", { workspace: slug, repo })).pipe(
+        Effect.asVoid,
+        changing(["sessions", `repos:${slug}`]),
         Effect.tap(() =>
           Effect.sync(() => {
             get.set(workspaceDialogAtom(slug), null);

@@ -8,9 +8,10 @@ import {
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { ArrowLeft, GitBranch, Pencil, Play, Trash2 } from "lucide-react";
+import { ArrowLeft, Eraser, GitBranch, Pencil, Play, RotateCw, Trash2 } from "lucide-react";
 import {
   useAtom,
   useAtomMount,
@@ -36,7 +37,12 @@ import {
   deleteTypedAtom,
   deleteWorkspaceAtom,
   newWorkspaceSlugAtom,
+  removeRepoAtom,
+  removeTypedAtom,
   reposAtom,
+  resetTypedAtom,
+  resetWorkspaceAtom,
+  restartContainerAtom,
   saveWorkspaceAtom,
   workspaceDialogAtom,
   workspaceDraftAtom,
@@ -426,6 +432,253 @@ const DeleteWorkspaceDialog = ({
   );
 };
 
+/** "1 session (1 archived)" for `sessions`, or null when there are none. */
+const sessionCount = (sessions: readonly SessionRecord[]): string | null => {
+  if (sessions.length === 0) return null;
+
+  const archived = sessions.filter((session) => session.archivedAt !== null).length;
+
+  return `${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}${
+    archived > 0 ? ` (${archived} archived)` : ""
+  }`;
+};
+
+/** The field that asks for `expected` to be typed before a destructive dialog's button works. */
+const ConfirmField = ({
+  id,
+  expected,
+  typed,
+  busy,
+  onTyped,
+}: {
+  id: string;
+  expected: string;
+  typed: string;
+  busy: boolean;
+  onTyped: (typed: string) => void;
+}) => (
+  <div className="flex flex-col gap-1.5">
+    <label htmlFor={id} className="text-sm">
+      Type <span className="font-mono font-medium">{expected}</span> to confirm
+    </label>
+    <Input
+      id={id}
+      value={typed}
+      onChange={(event) => {
+        onTyped(event.target.value);
+      }}
+      autoCapitalize="none"
+      autoCorrect="off"
+      autoComplete="off"
+      data-1p-ignore
+      spellCheck={false}
+      disabled={busy}
+      className="font-mono"
+    />
+  </div>
+);
+
+/** The failure of a dialog's action, shown until the action starts again. */
+const DialogProblem = ({ problem }: { problem: string | null }) =>
+  problem === null ? null : (
+    <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+      {problem}
+    </p>
+  );
+
+/** Confirm resetting a Workspace by typing its slug, after saying what goes and what stays. */
+const ResetWorkspaceDialog = ({
+  workspace,
+  sessions,
+}: {
+  workspace: WorkspaceRecord;
+  sessions: readonly SessionRecord[];
+}) => {
+  const { slug } = workspace;
+  const [typed, setTyped] = useAtom(resetTypedAtom(slug));
+  const [reset, run] = useAtom(resetWorkspaceAtom(slug));
+  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const busy = reset.waiting;
+  const confirmed = deleteConfirmed(slug, typed);
+  const count = sessionCount(sessions);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!confirmed || busy) return;
+
+    run();
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        <li>
+          {count === null
+            ? "It has no sessions."
+            : `${count}, with their conversations and history. Running ones stop first.`}
+        </li>
+        <li>Every repo and file in it, including work that was not pushed.</li>
+        <li>Its Container and its saved disk.</li>
+      </ul>
+      <p className="text-sm text-muted-foreground">
+        Its name, its slug and its Container settings stay. The next command starts a new Container.
+      </p>
+      <ConfirmField
+        id={`reset-confirm-${slug}`}
+        expected={slug}
+        typed={typed}
+        busy={busy}
+        onTyped={setTyped}
+      />
+      {busy && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Deleting its sessions, then its files. This can take a little while.
+        </p>
+      )}
+      <DialogProblem problem={settledFailureOf(reset)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
+          {busy ? "Resetting…" : "Reset workspace"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/** Confirm restarting a Workspace's Container, after saying what it keeps and what it loses. */
+const RestartContainerDialog = ({ workspace }: { workspace: WorkspaceRecord }) => {
+  const { slug } = workspace;
+  const [restarted, run] = useAtom(restartContainerAtom(slug));
+  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const busy = restarted.waiting;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (busy) return;
+
+    run();
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        <li>Its files and sessions stay.</li>
+        <li>Commands running in the Container stop.</li>
+        <li>
+          The next command starts a new Container from the image and installs the Toolchains again,
+          which takes a while.
+        </li>
+        <li>
+          What only the Container held is gone: dependency directories such as node_modules, build
+          output and caches.
+        </li>
+      </ul>
+      {busy && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Stopping the Container.
+        </p>
+      )}
+      <DialogProblem problem={settledFailureOf(restarted)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy}>
+          {busy ? "Restarting…" : "Restart container"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/** Confirm removing a repo by typing its name, after saying what goes with it. */
+const RemoveRepoDialog = ({
+  slug,
+  repo,
+  sessions,
+}: {
+  slug: string;
+  repo: string;
+  /** The Sessions bound to the repo, archived ones included. */
+  sessions: readonly SessionRecord[];
+}) => {
+  const [typed, setTyped] = useAtom(removeTypedAtom(slug));
+  const [removed, run] = useAtom(removeRepoAtom(slug));
+  const setDialog = useAtomSet(workspaceDialogAtom(slug));
+  const busy = removed.waiting;
+  const confirmed = deleteConfirmed(repo, typed);
+  const count = sessionCount(sessions);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!confirmed || busy) return;
+
+    run(repo);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        <li>
+          {count === null
+            ? "It has no sessions."
+            : `${count} started in it, with their conversations and history. Running ones stop first.`}
+        </li>
+        <li>Its files, including work that was not pushed.</li>
+        <li>It is deleted on the Container, which starts if it is not running.</li>
+      </ul>
+      <ConfirmField
+        id={`remove-confirm-${slug}`}
+        expected={repo}
+        typed={typed}
+        busy={busy}
+        onTyped={setTyped}
+      />
+      {busy && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Deleting its sessions, then its files. This can take a little while.
+        </p>
+      )}
+      <DialogProblem problem={settledFailureOf(removed)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
+          {busy ? "Removing…" : "Remove repo"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
 const WorkspaceCard = ({
   workspace,
   otherNames,
@@ -449,19 +702,33 @@ const WorkspaceCard = ({
   const [dialog, setDialog] = useAtom(workspaceDialogAtom(slug));
   const edited = useAtomValue(saveWorkspaceAtom(slug));
   const deleted = useAtomValue(deleteWorkspaceAtom(slug));
+  const reset = useAtomValue(resetWorkspaceAtom(slug));
+  const restarted = useAtomValue(restartContainerAtom(slug));
+  const removed = useAtomValue(removeRepoAtom(slug));
   const forgetEdit = useAtomSet(saveWorkspaceAtom(slug));
   const forgetDelete = useAtomSet(deleteWorkspaceAtom(slug));
+  const forgetReset = useAtomSet(resetWorkspaceAtom(slug));
+  const forgetRestart = useAtomSet(restartContainerAtom(slug));
+  const forgetRemove = useAtomSet(removeRepoAtom(slug));
   const shown = sessions.filter((session) => session.archivedAt === null);
   const repos = listed.pipe(AsyncResult.value, Option.getOrNull);
+
   // A dialog's form is saving: the card holds it, so the dialog stays open until the request answers.
-  const busy = edited.waiting || deleted.waiting;
+  const busy =
+    edited.waiting || deleted.waiting || reset.waiting || restarted.waiting || removed.waiting;
+
+  const removing = Predicate.hasProperty(dialog, "removeRepo") ? dialog.removeRepo : null;
+
   // A clone's failure shows until the next clone starts.
   const reposError = settledFailureOf(cloned) ?? failureOf(listed);
 
   const open = (next: WorkspaceDialog) => {
-    // A failure of an earlier save or delete shows no more once its dialog is opened again.
+    // A failure of an earlier save, delete, reset, restart or removal shows no more once a dialog is opened again.
     forgetEdit(Atom.Reset);
     forgetDelete(Atom.Reset);
+    forgetReset(Atom.Reset);
+    forgetRestart(Atom.Reset);
+    forgetRemove(Atom.Reset);
     setDialog(next);
   };
 
@@ -486,6 +753,23 @@ const WorkspaceCard = ({
           >
             <Pencil aria-hidden />
             Edit…
+          </MenuItem>
+          <MenuItem
+            onSelect={() => {
+              open("restart");
+            }}
+          >
+            <RotateCw aria-hidden />
+            Restart container…
+          </MenuItem>
+          <MenuItem
+            destructive
+            onSelect={() => {
+              open("reset");
+            }}
+          >
+            <Eraser aria-hidden />
+            Reset…
           </MenuItem>
           {slug !== DEFAULT_WORKSPACE && (
             <MenuItem
@@ -520,17 +804,31 @@ const WorkspaceCard = ({
           {(repos ?? []).map((repo) => (
             <li key={repo} className="flex items-center justify-between gap-2">
               <span className="truncate font-mono text-sm">/workspace/{repo}</span>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={starting}
-                onClick={() => {
-                  onStart(slug, repo);
-                }}
-              >
-                <Play />
-                Start
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-8"
+                  aria-label={`Remove ${repo}`}
+                  title={`Remove ${repo}`}
+                  onClick={() => {
+                    open({ removeRepo: repo });
+                  }}
+                >
+                  <Trash2 />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={starting}
+                  onClick={() => {
+                    onStart(slug, repo);
+                  }}
+                >
+                  <Play />
+                  Start
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
@@ -575,6 +873,38 @@ const WorkspaceCard = ({
         description="Everything below is deleted for good. Its saved Container disk expires on its own within 30 days."
       >
         <DeleteWorkspaceDialog workspace={workspace} sessions={sessions} />
+      </Dialog>
+      <Dialog
+        open={dialog === "reset"}
+        onClose={close}
+        dismissible={!busy}
+        title={`Reset the ${workspace.name} workspace?`}
+        description="Everything below is deleted for good, and the workspace starts over."
+      >
+        <ResetWorkspaceDialog workspace={workspace} sessions={sessions} />
+      </Dialog>
+      <Dialog
+        open={dialog === "restart"}
+        onClose={close}
+        dismissible={!busy}
+        title={`Restart the ${workspace.name} container?`}
+      >
+        <RestartContainerDialog workspace={workspace} />
+      </Dialog>
+      <Dialog
+        open={removing !== null}
+        onClose={close}
+        dismissible={!busy}
+        title={`Remove ${removing ?? ""}?`}
+        description="Everything below is deleted for good."
+      >
+        {removing !== null && (
+          <RemoveRepoDialog
+            slug={slug}
+            repo={removing}
+            sessions={sessions.filter((session) => session.repo === removing)}
+          />
+        )}
       </Dialog>
     </section>
   );

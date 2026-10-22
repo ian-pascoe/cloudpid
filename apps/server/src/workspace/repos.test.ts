@@ -2,7 +2,15 @@
 import type { Context } from "@earendil-works/chord";
 import { err, ExecutionError, ok, type Shell } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
-import { CLONE_TIMEOUT_SECONDS, cloneCommand, cloneInto, listRepos } from "./repos.ts";
+import {
+  CLONE_TIMEOUT_SECONDS,
+  cloneCommand,
+  cloneInto,
+  listRepos,
+  REMOVE_TIMEOUT_SECONDS,
+  removeFrom,
+  stillThere,
+} from "./repos.ts";
 
 type Exec = Shell["exec"];
 
@@ -23,6 +31,62 @@ const shell = (answer: Awaited<ReturnType<Exec>>, output = "") => {
 };
 
 const source = { url: "https://github.com/octocat/Hello-World.git", name: "Hello-World" };
+
+describe("removeFrom", () => {
+  it("runs rm -rf -- <name> as an argument vector in /workspace", async () => {
+    const container = shell(ok({ exitCode: 0 }));
+
+    await removeFrom(container, "Hello-World");
+
+    expect(container.calls).toHaveLength(1);
+    expect(container.calls[0]?.command).toEqual(["rm", "-rf", "--", "Hello-World"]);
+    expect(container.calls[0]?.options).toMatchObject({
+      cwd: "/workspace",
+      timeout: REMOVE_TIMEOUT_SECONDS,
+    });
+  });
+
+  it("runs nothing for a name that is a path, the parent, hidden or an option", async () => {
+    for (const name of ["..", ".", "a/b", "/", "-rf", ".git", ""]) {
+      const container = shell(ok({ exitCode: 0 }));
+
+      await expect(removeFrom(container, name)).rejects.toThrow("is not a repo name");
+      expect(container.calls).toEqual([]);
+    }
+  });
+
+  it("fails with the end of rm's output when it exits nonzero, and when it cannot run or times out", async () => {
+    await expect(
+      removeFrom(shell(ok({ exitCode: 1 }), "rm: cannot remove 'x': Permission denied\n"), "x"),
+    ).rejects.toThrow("rm failed (exit 1): rm: cannot remove 'x': Permission denied");
+
+    await expect(
+      removeFrom(shell(err(new ExecutionError("spawn_error", "No Container"))), "x"),
+    ).rejects.toThrow("The removal could not run: No Container");
+
+    await expect(
+      removeFrom(shell(err(new ExecutionError("timeout", "Command timed out"))), "x"),
+    ).rejects.toThrow("The removal did not finish in 5 minutes");
+  });
+});
+
+describe("stillThere", () => {
+  const entry = (name: string) => ({ name, isDirectory: true, isSymbolicLink: false });
+
+  it("says whether /workspace still has the entry, and that a /workspace that is not there has none", async () => {
+    const files = { readdir: async () => [entry("pi"), entry("other")] };
+
+    expect(await stillThere(files, "pi")).toBe(true);
+    expect(await stillThere(files, "gone")).toBe(false);
+
+    const missing = {
+      readdir: () =>
+        Promise.reject(Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" })),
+    };
+
+    expect(await stillThere(missing, "pi")).toBe(false);
+  });
+});
 
 describe("cloneInto", () => {
   it("runs git clone as an argument vector in /workspace, with only https allowed", async () => {

@@ -1,6 +1,7 @@
 // Repos in a Workspace (`docs/spec.md` → Filesystem and tools): which directories below `/workspace` are git repositories,
-// and cloning one into the Workspace. The clone runs on the Container, which has the network and the GitHub token; the
-// Worker Shell has neither. Both are for the owner's UI (`RegistryRpcs`), and neither starts a Session.
+// cloning one into the Workspace, and removing one. The clone runs on the Container, which has the network and the GitHub
+// token; the Worker Shell has neither. The removal runs there too, so what only the Container's disk holds under the
+// directory (`TOOLCHAIN_IGNORE`) goes with it. All are for the owner's UI (`RegistryRpcs`), and none starts a Session.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -20,6 +21,8 @@ export type Repos = {
   readonly list: (slug: string) => Promise<ReadonlyArray<string>>;
   /** Clone `source.url` into `/workspace/<source.name>`. Rejects with git's message when it does not finish. */
   readonly clone: (slug: string, source: RepoSource) => Promise<void>;
+  /** Delete `/workspace/<name>`, on the Container. Rejects with why when the directory is still there. */
+  readonly remove: (slug: string, name: string) => Promise<void>;
 };
 
 /**
@@ -34,35 +37,52 @@ export const cloneCommand = (source: RepoSource): ReadonlyArray<string> => [
   source.name,
 ];
 
+/** How long a removal may take, in seconds: a big tree, dependency directories included, after a cold start. */
+export const REMOVE_TIMEOUT_SECONDS = 5 * 60;
+
 /**
- * Clone `source` into `/workspace/<name>` through `shell` (the Container's). Only `https` is allowed to `git`
- * (`GIT_ALLOW_PROTOCOL`), whatever a URL or a redirect asks for. Rejects with git's last output when it fails.
+ * `rm -rf -- <name>` as an argument vector, run in `/workspace` without a shell. The name is a repo name (`isRepoName`),
+ * so it is one directory directly below `/workspace`, never a path, `.`, `..` or an option; `--` ends `rm`'s options
+ * besides.
  */
-export const cloneInto = async (
+export const removeCommand = (name: string): ReadonlyArray<string> => ["rm", "-rf", "--", name];
+
+/** What a command run in `/workspace` is called in its failures. */
+type Doing = {
+  /** The noun: "The clone did not finish". */
+  readonly noun: string;
+  /** The program, in "git clone failed (exit 128)". */
+  readonly program: string;
+  readonly timeoutSeconds: number;
+  readonly env?: Readonly<Record<string, string>>;
+};
+
+/** Run `command` in `/workspace` through `shell`. Rejects with the end of its output when it does not exit 0. */
+const runInWorkspace = async (
   shell: Pick<Shell, "exec">,
-  source: RepoSource,
-  context: Context = BACKGROUND_CONTEXT,
+  command: ReadonlyArray<string>,
+  doing: Doing,
+  context: Context,
 ): Promise<void> => {
   let output = "";
 
-  const result = await shell.exec(
-    cloneCommand(source),
-    {
-      cwd: WORKSPACE_ROOT,
-      env: { GIT_ALLOW_PROTOCOL: "https", GIT_TERMINAL_PROMPT: "0" },
-      timeout: CLONE_TIMEOUT_SECONDS,
-      onOutput: (text) => {
-        output = (output + text).slice(-REPORTED_OUTPUT * 2);
-      },
+  const options: NonNullable<Parameters<Shell["exec"]>[1]> = {
+    cwd: WORKSPACE_ROOT,
+    timeout: doing.timeoutSeconds,
+    onOutput: (text) => {
+      output = (output + text).slice(-REPORTED_OUTPUT * 2);
     },
-    context,
-  );
+  };
+
+  if (doing.env !== undefined) options.env = doing.env;
+
+  const result = await shell.exec(command, options, context);
 
   if (!result.ok) {
     throw new Error(
       result.error.code === "timeout"
-        ? `The clone did not finish in ${CLONE_TIMEOUT_SECONDS / 60} minutes`
-        : `The clone could not run: ${result.error.message}`,
+        ? `The ${doing.noun} did not finish in ${doing.timeoutSeconds / 60} minutes`
+        : `The ${doing.noun} could not run: ${result.error.message}`,
     );
   }
 
@@ -71,10 +91,51 @@ export const cloneInto = async (
 
     throw new Error(
       tail === ""
-        ? `git clone failed (exit ${result.value.exitCode})`
-        : `git clone failed (exit ${result.value.exitCode}): ${tail}`,
+        ? `${doing.program} failed (exit ${result.value.exitCode})`
+        : `${doing.program} failed (exit ${result.value.exitCode}): ${tail}`,
     );
   }
+};
+
+/**
+ * Clone `source` into `/workspace/<name>` through `shell` (the Container's). Only `https` is allowed to `git`
+ * (`GIT_ALLOW_PROTOCOL`), whatever a URL or a redirect asks for. Rejects with git's last output when it fails.
+ */
+export const cloneInto = (
+  shell: Pick<Shell, "exec">,
+  source: RepoSource,
+  context: Context = BACKGROUND_CONTEXT,
+): Promise<void> =>
+  runInWorkspace(
+    shell,
+    cloneCommand(source),
+    {
+      noun: "clone",
+      program: "git clone",
+      timeoutSeconds: CLONE_TIMEOUT_SECONDS,
+      env: { GIT_ALLOW_PROTOCOL: "https", GIT_TERMINAL_PROMPT: "0" },
+    },
+    context,
+  );
+
+/**
+ * Delete `/workspace/<name>` through `shell` (the Container's), with what only the Container holds under it (the
+ * ignored dependency directories and build output), which a deletion in the Workspace's files would leave on its disk.
+ * Rejects a name that is not a repo name before anything runs, and with `rm`'s last output when it fails.
+ */
+export const removeFrom = async (
+  shell: Pick<Shell, "exec">,
+  name: string,
+  context: Context = BACKGROUND_CONTEXT,
+): Promise<void> => {
+  if (!isRepoName(name)) throw new Error(`"${name}" is not a repo name`);
+
+  await runInWorkspace(
+    shell,
+    removeCommand(name),
+    { noun: "removal", program: "rm", timeoutSeconds: REMOVE_TIMEOUT_SECONDS },
+    context,
+  );
 };
 
 /** What listing needs of the Workspace's files: `ComputerFiles.readdir`. */
@@ -141,27 +202,50 @@ export const listRepos = async (files: Directories): Promise<ReadonlyArray<strin
  */
 const computer = () => import("@cloudpid/computer-env");
 
-/** The repos of the Workspace DOs `namespace` holds, listed from their files and cloned on their Containers. */
+/** The Container's shell of Workspace `slug`, for one call, cleaned up after it. */
+const onContainer = async (
+  namespace: WorkspaceNamespace,
+  slug: string,
+  run: (shell: Pick<Shell, "exec">) => Promise<void>,
+): Promise<void> => {
+  const { ComputerExecutionEnv } = await computer();
+
+  const container = new ComputerExecutionEnv({
+    workspace: namespace.getByName(slug),
+    // The id the Session's environment has, so both see the same files.
+    id: `computer:${slug}`,
+    cwd: WORKSPACE_ROOT,
+  }).onBackend("container");
+
+  try {
+    await run(container);
+  } finally {
+    await container.cleanup(BACKGROUND_CONTEXT);
+  }
+};
+
+/**
+ * Whether `/workspace` still has an entry `name` once it was removed on the Container: the deletion reaches the
+ * Workspace's files through computer's sync after the command, so one still listed did not.
+ */
+export const stillThere = async (files: Directories, name: string): Promise<boolean> =>
+  (await entriesOf(files, WORKSPACE_ROOT)).some((entry) => entry.name === name);
+
+/** The repos of the Workspace DOs `namespace` holds, listed from their files and cloned and removed on their Containers. */
 export const workspaceRepos = (namespace: WorkspaceNamespace): Repos => ({
   list: async (slug) => {
     const { ComputerFiles } = await computer();
 
     return listRepos(new ComputerFiles(namespace.getByName(slug)));
   },
-  clone: async (slug, source) => {
-    const { ComputerExecutionEnv } = await computer();
+  clone: (slug, source) => onContainer(namespace, slug, (shell) => cloneInto(shell, source)),
+  remove: async (slug, name) => {
+    await onContainer(namespace, slug, (shell) => removeFrom(shell, name));
 
-    const container = new ComputerExecutionEnv({
-      workspace: namespace.getByName(slug),
-      // The id the Session's environment has, so both see the same files.
-      id: `computer:${slug}`,
-      cwd: WORKSPACE_ROOT,
-    }).onBackend("container");
+    const { ComputerFiles } = await computer();
 
-    try {
-      await cloneInto(container, source);
-    } finally {
-      await container.cleanup(BACKGROUND_CONTEXT);
+    if (await stillThere(new ComputerFiles(namespace.getByName(slug)), name)) {
+      throw new Error(`${repoDirectory(name)} is still in the Workspace's files`);
     }
   },
 });
