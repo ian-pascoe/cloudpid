@@ -139,11 +139,11 @@ The Linux Backend of a Workspace, which runs real programs against the same file
 _Avoid_: Sandbox, VM, box
 
 **Terminal**:
-An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as one tab of the Session's terminal panel. The agent does not see it.
+An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as a Pane. The agent does not see it.
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: a Terminal, the browser's Live View, an open file. (Planned; a Terminal is the first.)
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's tasks, a Terminal, a Live View, an open file. (Planned.)
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Early start**:
@@ -215,3 +215,7 @@ _Avoid_: Login, password (for the item)
 **Browser Handoff**:
 Giving the user live control of the agent's browser for a step the agent cannot do.
 _Avoid_: Handoff (alone), takeover, live view (for the act)
+
+**Live View**:
+A Pane that shows an agent's browser tab live and lets the owner use it, open while a Browser Handoff waits.
+_Avoid_: Viewer, screencast, hosted Live View (that is Browser Run's own page)
