@@ -1,7 +1,12 @@
 // The Container's disk snapshots (docs/spec.md → Container and Toolchains → Snapshots): when one is taken, what
-// stops it, and when a taken one is offered back. The Container, its storage and the clock are fakes.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off
-import { describe, expect, it } from "vitest";
+// stops it, and when a taken one is offered back. The Container, its storage and the clock are fakes; the disk scan's
+// script runs in a local bash over a temporary directory.
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ContainerSnapshots, scanContainerDisk, type SnapshotRecord } from "./snapshots.ts";
 
 type Fake = {
@@ -363,7 +368,7 @@ describe("scanContainerDisk", () => {
     expect(patterns).toEqual([SECRET, btoa(SECRET), btoa(`x-access-token:${SECRET}`)]);
   });
 
-  it("searches the whole disk but the pseudo file systems and the Workspace mount, which a snapshot does not hold", async () => {
+  it("searches the whole disk but the pseudo file systems and the Workspace mount, whose files are in computerd's store", async () => {
     let script = "";
 
     await scanContainerDisk(
@@ -411,6 +416,72 @@ describe("scanContainerDisk", () => {
     );
 
     expect(found).toEqual(["/root/.netrc", "/tmp/x"]);
+  });
+
+  describe("run by bash over a directory tree", () => {
+    // The real script, run here by bash and given a root to search as its first argument, in place of the disk.
+    const scan = (dir: string) =>
+      scanContainerDisk(
+        {
+          exec: async (cmd, options) => {
+            const [command, ...args] = cmd;
+
+            expect(command).toBe("bash");
+
+            const run = spawnSync("bash", [...args, "scan", dir], {
+              env: { ...process.env, ...options?.env },
+            });
+
+            if (run.error !== undefined) throw run.error;
+
+            return output(run.stdout.toString(), run.status ?? 2);
+          },
+        },
+        SECRET,
+      );
+
+    let root = "";
+
+    const write = (path: string, content: string) => {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), content);
+    };
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), "scan-"));
+    });
+
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("finds the token and its base64 forms, and nothing in clean files", async () => {
+      write("root/.netrc", `machine github.com password ${SECRET}`);
+      write("etc/auth", btoa(`x-access-token:${SECRET}`));
+      write("etc/clean", "nothing here");
+
+      expect([...(await scan(root))].sort()).toEqual([
+        join(root, "etc/auth"),
+        join(root, "root/.netrc"),
+      ]);
+    });
+
+    it("skips pnpm's store and the virtual store in node_modules, which hold only the packages pnpm installed", async () => {
+      write("workspace/.pnpm-store/v11/files/ab/cdef", `registry file ${SECRET}`);
+      write("workspace/repo/node_modules/.pnpm/pkg@1.0.0/node_modules/pkg/index.js", SECRET);
+
+      expect(await scan(root)).toEqual([]);
+    });
+
+    it("still searches the rest of node_modules, where tools and commands write", async () => {
+      write("workspace/repo/node_modules/.cache/build.js", `const token = "${SECRET}"`);
+
+      expect(await scan(root)).toEqual([join(root, "workspace/repo/node_modules/.cache/build.js")]);
+    });
+
+    it("fails when the tree cannot be walked, which is not the same as finding nothing", async () => {
+      await expect(scan(join(root, "missing"))).rejects.toThrow(/exit/);
+    });
   });
 
   it("fails when grep itself fails, which is not the same as finding nothing", async () => {

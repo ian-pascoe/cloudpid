@@ -33,6 +33,12 @@ describe("the ignore list", () => {
     );
   });
 
+  it("keeps pnpm's content-addressed store off the synced Workspace, wherever pnpm puts it", () => {
+    // pnpm puts the store at the root of the project's filesystem when the home directory is on another one: on the
+    // Container that is `/workspace/.pnpm-store`.
+    expect(TOOLCHAIN_IGNORE).toContain("**/.pnpm-store");
+  });
+
   it("does not make a source directory called target local to the Container", () => {
     expect(TOOLCHAIN_IGNORE).not.toContain("**/target");
   });

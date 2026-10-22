@@ -28,6 +28,11 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   "/target",
   "/*/target",
   "**/.cache",
+  // pnpm's content-addressed store. With the home directory on the Container's disk and the project on the FUSE mount,
+  // pnpm puts it at the mount's root, `/workspace/.pnpm-store`, where one install synced most of a Workspace's files
+  // (docs/spec.md → Container and Toolchains → Snapshots). Local-only, it sits on the same side as `node_modules`, so
+  // pnpm still hard-links between them.
+  "**/.pnpm-store",
   "**/__pycache__",
   "**/.pytest_cache",
   "**/.mypy_cache",
