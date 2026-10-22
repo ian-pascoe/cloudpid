@@ -16,3 +16,9 @@ export const EXIT_REPORT_LINES = 200;
 
 /** The most of those lines it sends, in bytes: the end of them when they are longer. */
 export const EXIT_REPORT_BYTES = 32_768;
+
+/** A base64 payload of a `data:<mime>;base64,` run this long (or longer) is replaced by a marker in the kept lines. */
+export const EXIT_REPORT_BASE64_MIN = 64;
+
+/** What replaces such a payload in the kept lines. */
+export const EXIT_REPORT_BASE64_MARKER = "[base64 dropped]";

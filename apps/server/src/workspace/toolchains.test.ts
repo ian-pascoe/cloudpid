@@ -477,7 +477,7 @@ describe("the bootstrap", () => {
 });
 
 describe("a command's environment", () => {
-  it("has the token, mise's trust settings, and no git prompts", async () => {
+  it("has the token, mise's trust settings, no git prompts, and Turborepo's cache on the Container's disk", async () => {
     const container = fakeContainer();
     const handle = await open(container).toolchains.connect(host);
 
@@ -490,6 +490,7 @@ describe("a command's environment", () => {
       MISE_TRUSTED_CONFIG_PATHS: "/workspace",
       MISE_YES: "1",
       GIT_TERMINAL_PROMPT: "0",
+      TURBO_CACHE_DIR: "/root/.cache/turbo",
     });
   });
 

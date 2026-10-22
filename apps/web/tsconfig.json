@@ -3,7 +3,17 @@
   "compilerOptions": {
     "lib": ["esnext", "dom", "dom.iterable"],
     "types": ["vite/client"],
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    // Libraries that type their props with React's types but do not declare `@types/react` (atom-react, assistant-ui,
+    // lucide-react, streamdown, …) find it only where pnpm hoists it, which a global virtual store (the Container's
+    // pnpm setting: docs/spec.md → Container and Toolchains → pnpm and Turborepo off the mount) keeps out of their real path. Point them
+    // at this package's own.
+    "paths": {
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"]
+    }
   },
   "include": ["src", "*.ts"]
 }
