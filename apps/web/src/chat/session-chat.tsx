@@ -6,6 +6,7 @@ import {
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { ReactNode } from "react";
+import { PaneArea } from "../pane-area.tsx";
 import { canStopAllBelow } from "../session/agents.ts";
 import {
   abortAtom,
@@ -20,8 +21,8 @@ import type { ConnectionStatus } from "../session/state.ts";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
-import { TaskPanel, TaskPanelToggle } from "./task-panel.tsx";
-import { taskPanelOpenAtom, threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
+import { TasksPaneToggle } from "./tasks-pane.tsx";
+import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
 import type { Rename } from "./title-state.ts";
 import { UsageBadge } from "./usage-badge.tsx";
@@ -80,7 +81,7 @@ const LiveSession = ({
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
   const queue = useAtomValue(threadQueueAtom(root));
-  // The cards and the panel read the task graph, and the header what the Session has spent: their atoms watch them
+  // The cards and the Tasks Pane read the task graph, and the header what the Session has spent: their atoms watch them
   // for as long as the Session is shown.
   const taskGraph = useAtomValue(taskGraphAtom(sessionId));
 
@@ -90,7 +91,6 @@ const LiveSession = ({
 
   const submit = useAtomSet(submitAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));
-  const panelOpen = useAtomValue(taskPanelOpenAtom(sessionId));
   const stoppable = canStopAllBelow(taskGraph, "root", view.running);
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
@@ -139,16 +139,14 @@ const LiveSession = ({
               actions={
                 <>
                   <UsageBadge />
-                  <TaskPanelToggle />
+                  <TasksPaneToggle />
                   {menu}
                 </>
               }
             />
           </AssistantRuntimeProvider>
         </div>
-        {panelOpen && (
-          <TaskPanel className="fixed inset-0 z-20 md:static md:inset-auto md:z-auto md:w-96 md:shrink-0" />
-        )}
+        <PaneArea />
       </div>
     </ShownSession.Provider>
   );
@@ -169,7 +167,7 @@ export const SessionChat = ({
   const built = useAtomValue(sessionClientAtom(sessionId), AsyncResult.isSuccess);
 
   return built ? (
-    // Another Session starts over, as its page's own state (the task panel) belongs to the one before.
+    // Another Session starts over, as its page's own state (an agent's open row in the Tasks Pane) belongs to the one before.
     <LiveSession key={sessionId} sessionId={sessionId} title={title} rename={rename} {...page} />
   ) : null;
 };

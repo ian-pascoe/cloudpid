@@ -65,7 +65,7 @@ The flat list of Todo Items an agent keeps in its conversation to track what it 
 _Avoid_: Plan, checklist, task list
 
 **Todo Item**:
-One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Tasks panel lists.
+One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Tasks Pane lists.
 _Avoid_: Task (alone, in prose about the product), to-do
 
 ## Messages
@@ -143,7 +143,7 @@ An interactive shell the owner runs on a Workspace's Container from a Session, i
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's tasks, a Terminal, a Live View, an open file. (Planned.)
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's tasks (the Tasks Pane), a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Early start**:

@@ -204,7 +204,7 @@ A single cool, blue-slate family, light or dark by the system setting, with thre
 
 A two-column app shell at full viewport height (`100dvh`): a 288 px sidebar with a right border, and the main column. Below the `md` breakpoint (768 px) the two take turns: the Session list alone on `/`, and any page alone with a back arrow in its header.
 
-Pages and the transcript sit in a centered column capped at `max-w-3xl` (768 px) with 16 px side padding and 24 px top and bottom. Headers are a single row, 16 px horizontal and 10 px vertical padding, over a bottom border. Side panels (Tasks) are 384 px on desktop and take the whole screen on a phone.
+Pages and the transcript sit in a centered column capped at `max-w-3xl` (768 px) with 16 px side padding and 24 px top and bottom. Headers are a single row, 16 px horizontal and 10 px vertical padding, over a bottom border. The Pane area (Tasks, later the Live View and Terminals) is a column to the right of the chat from `md` up, 384 px until dragged (288–720 px, kept per device), and takes the whole screen on a phone.
 
 Spacing is a 4 px grid: 8 px between related controls, 12–16 px between groups inside a card, 24 px between page sections. Lists are tight (2 px between items, 8 × 12 px item padding).
 
@@ -278,6 +278,10 @@ Above the box, the queue lanes (Sending, Steering, Next up) as dashed 8 px rows 
 ### Transcript
 
 The owner's message is right-aligned on Tinted Wash (10 px radius, at most 85% wide), as typed, its images (an Attachment's) under the text at most 256 px high with an 8 px radius and a 1 px Ruled Line; the Skill a `/skill:` embedded in it follows the text as a closed disclosure labelled "Skill · name" (12 px Faded Ink, 14 px chevron), opening on the block the model got, mono on the page color and capped at 288 px high. The agent's message is unboxed prose. Thinking and tool calls are bordered disclosures, closed once done; output inside is mono on Tinted Wash, capped at 288 px high. Notices (Handoffs, compactions, Rollover requests) are a centered 12 px label between two hairlines, opening on demand.
+
+### Pane Area
+
+A column beside the transcript (a 1 px Ruled Line on its left, no shadow: it does not wait on the owner), or on a phone a full-screen sheet over the page. At the top, one row of tabs in a `tablist`: each tab is a 32 px pill (36 px on a phone) holding its label (14 px medium; an agent it is tied to after it in 12 px mono Faded Ink) and a 28 px close button with a 14 px X; the shown tab is on Tinted Wash with Ink text, the others Faded Ink washing on hover. The row scrolls sideways rather than wrapping. Under it the shown Pane fills the column; the others stay mounted, hidden. On its left edge a 12 px wide strip (not on a phone) is a keyboard-focusable `separator` that resizes the column: a 2 px line of Signal Blue appears on hover, drag and focus, and the arrow keys, Home and End move it.
 
 ### Waiting-On-You Card
 

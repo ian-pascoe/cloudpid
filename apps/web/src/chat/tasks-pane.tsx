@@ -1,14 +1,13 @@
-// The Session's live work: its subagents, each openable into its thread, and the background tasks running, from the
-// task graph the Session streams.
+// The Tasks Pane: the Session's live work, its Todo List, its subagents (each openable into its thread) and the
+// background tasks running, from the task graph the Session streams.
 
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
-import { ListTree, Square, X } from "lucide-react";
+import { ListTree, Square } from "lucide-react";
 import { Button } from "../components/ui/button.tsx";
-import { cn } from "../lib/utils.ts";
 import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
 import {
   abortAtom,
@@ -21,9 +20,10 @@ import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
 import { AgentStatus, shortModel } from "./subagent-card.tsx";
-import { taskPanelOpenAtom } from "./thread-state.ts";
 import { TodoList } from "./todo-list.tsx";
 import { todoProgress } from "../session/todos.ts";
+import { panesAtom } from "../panes-state.ts";
+import { TASKS_PANE } from "../panes.ts";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
 const kindLabel = (kind: string): string =>
@@ -99,10 +99,14 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   </li>
 );
 
-/** The button that shows or hides the panel, with how many agents are working and how far the Todo List is. */
-export const TaskPanelToggle = () => {
+/**
+ * The button that opens the Tasks Pane (and shows it when another Pane is shown, and closes it when it is shown), with
+ * how many agents are working and how far the Todo List is.
+ */
+export const TasksPaneToggle = () => {
   const sessionId = useShownSessionId();
-  const [open, setOpen] = useAtom(taskPanelOpenAtom(sessionId));
+  const [{ shown }, act] = useAtom(panesAtom);
+  const open = shown === TASKS_PANE;
 
   const working = useAtomValue(
     taskGraphAtom(sessionId),
@@ -120,7 +124,7 @@ export const TaskPanelToggle = () => {
       aria-pressed={open}
       aria-label="Tasks"
       onClick={() => {
-        setOpen(!open);
+        act({ type: "toggle", key: TASKS_PANE });
       }}
     >
       <ListTree />
@@ -135,10 +139,9 @@ export const TaskPanelToggle = () => {
   );
 };
 
-/** The task graph panel: shown beside the thread on a wide screen, over it on a narrow one. */
-export const TaskPanel = ({ className }: { className?: string }) => {
+/** The Tasks Pane: the Todo List, then the task graph, with Stop all while something below the root can be stopped. */
+export const TasksPane = () => {
   const sessionId = useShownSessionId();
-  const setOpen = useAtomSet(taskPanelOpenAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));
   const graph = useAtomValue(taskGraphAtom(sessionId));
   const todos = useAtomValue(todosAtom(sessionId));
@@ -147,13 +150,9 @@ export const TaskPanel = ({ className }: { className?: string }) => {
   const stoppable = canStopAllBelow(graph, "root", running);
 
   return (
-    <aside
-      aria-label="Task graph"
-      className={cn("flex min-h-0 flex-col border-l bg-background", className)}
-    >
-      <header className="flex items-center gap-2 border-b px-4 py-2.5">
-        <h3 className="flex-1 text-sm font-semibold">Tasks</h3>
-        {stoppable && (
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      {stoppable && (
+        <div className="mb-3 flex justify-end">
           <Button
             type="button"
             variant="destructive"
@@ -166,53 +165,39 @@ export const TaskPanel = ({ className }: { className?: string }) => {
             <Square />
             Stop all
           </Button>
-        )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="size-8 px-0"
-          aria-label="Close"
-          onClick={() => {
-            setOpen(false);
-          }}
-        >
-          <X />
-        </Button>
-      </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <TodoList tasks={todos} stale={!live} className="mb-4" />
-        {graph === null ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : graph.agents.length === 0 && graph.background.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Nothing is running. Subagents and background work show here.
-          </p>
-        ) : (
-          <>
-            {graph.agents.length > 0 && (
-              <section aria-label="Subagents">
-                <h4 className="text-xs font-medium text-muted-foreground">Subagents</h4>
-                <ul className="mt-1">
-                  {Arr.map(graph.agents, (agent) => (
-                    <AgentRow key={agent.id} agent={agent} depth={depthOf(graph, agent)} />
-                  ))}
-                </ul>
-              </section>
-            )}
-            {graph.background.length > 0 && (
-              <section aria-label="Background work" className="mt-4">
-                <h4 className="text-xs font-medium text-muted-foreground">Background work</h4>
-                <ul className="mt-1">
-                  {Arr.map(graph.background, (task) => (
-                    <BackgroundRow key={task.id} task={task} />
-                  ))}
-                </ul>
-              </section>
-            )}
-          </>
-        )}
-      </div>
-    </aside>
+        </div>
+      )}
+      <TodoList tasks={todos} stale={!live} className="mb-4" />
+      {graph === null ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : graph.agents.length === 0 && graph.background.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Nothing is running. Subagents and background work show here.
+        </p>
+      ) : (
+        <>
+          {graph.agents.length > 0 && (
+            <section aria-label="Subagents">
+              <h4 className="text-xs font-medium text-muted-foreground">Subagents</h4>
+              <ul className="mt-1">
+                {Arr.map(graph.agents, (agent) => (
+                  <AgentRow key={agent.id} agent={agent} depth={depthOf(graph, agent)} />
+                ))}
+              </ul>
+            </section>
+          )}
+          {graph.background.length > 0 && (
+            <section aria-label="Background work" className="mt-4">
+              <h4 className="text-xs font-medium text-muted-foreground">Background work</h4>
+              <ul className="mt-1">
+                {Arr.map(graph.background, (task) => (
+                  <BackgroundRow key={task.id} task={task} />
+                ))}
+              </ul>
+            </section>
+          )}
+        </>
+      )}
+    </div>
   );
 };

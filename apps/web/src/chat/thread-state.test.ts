@@ -9,7 +9,7 @@ import { sessionStatusAtom } from "../session/atoms.ts";
 import { settle } from "../session/client.testing.ts";
 import { chatRegistry, live, sent } from "./chat.testing.ts";
 import { conversationKey } from "./conversation.ts";
-import { taskPanelOpenAtom, threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
+import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 
 const ROOT = conversationKey("s1", undefined);
 
@@ -86,18 +86,6 @@ describe("a conversation's runtime atoms", () => {
         { input: "this way", whenBusy: "steer", conversationId: 2 },
       ]);
       expect(sent(chat.latest(), "submit")[0]).not.toHaveProperty("conversationId");
-    }),
-  );
-
-  it.effect("keep each Session's task panel closed until it is opened", () =>
-    Effect.sync(() => {
-      const { registry } = chatRegistry();
-
-      registry.mount(taskPanelOpenAtom("s1"));
-      registry.set(taskPanelOpenAtom("s1"), true);
-
-      expect(registry.get(taskPanelOpenAtom("s1"))).toBe(true);
-      expect(registry.get(taskPanelOpenAtom("s2"))).toBe(false);
     }),
   );
 });
