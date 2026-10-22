@@ -262,6 +262,25 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { workspace: WorkspaceSlug },
     error: WorkspaceError,
   }),
+  /**
+   * Reset a Workspace to a fresh start, keeping its slug, name and Container settings: every Session bound to it
+   * (archived ones too, each as `deleteSession`), then its files, Container and saved disk. The next command starts a
+   * Container from the image. The default Workspace can be reset. A failure partway leaves what is not yet deleted, to
+   * try again.
+   */
+  Rpc.make("resetWorkspace", {
+    payload: { workspace: WorkspaceSlug },
+    error: WorkspaceError,
+  }),
+  /**
+   * Stop a Workspace's Container and forget its saved disk, keeping its files and Sessions: the next command starts a
+   * Container from the image and installs the Toolchains again. What only the Container held (dependency directories,
+   * build output, caches) is gone, and commands running in it end.
+   */
+  Rpc.make("restartContainer", {
+    payload: { workspace: WorkspaceSlug },
+    error: WorkspaceError,
+  }),
   /** The repos a Workspace holds: the directories below `/workspace` that are git repositories, by name. */
   Rpc.make("listRepos", {
     payload: { workspace: WorkspaceSlug },
@@ -281,6 +300,16 @@ export class RegistryRpcs extends RpcGroup.make(
       name: Schema.optionalKey(RepoName),
     },
     success: RepoName,
+    error: WorkspaceError,
+  }),
+  /**
+   * Remove a repo from a Workspace: every Session bound to it (archived ones too, each as `deleteSession`), then its
+   * directory, on the Container, so what only the Container held under it goes too. Work that was not pushed is lost.
+   * Fails with a `WorkspaceError` when the Workspace is not listed, or neither holds the repo nor has a Session bound to
+   * it. A failure partway leaves what is not yet deleted, to try again.
+   */
+  Rpc.make("removeRepo", {
+    payload: { workspace: WorkspaceSlug, repo: RepoName },
     error: WorkspaceError,
   }),
   /** A Workspace's own settings (Container size and idle time) in force, and the overrides they come from. */

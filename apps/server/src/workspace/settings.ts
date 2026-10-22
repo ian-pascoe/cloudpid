@@ -57,7 +57,15 @@ export const workspaceSettingsStore = (storage: SettingsStorage) => {
     return { ok: true, state: { settings: resolved.success, overrides: kept } };
   };
 
-  return { read, write };
+  /** The overrides as stored, to put back once the rest of the storage is wiped (`Workspace.clear`). */
+  const saved = () => storage.get<Schema.Json>(SETTINGS_KEY);
+
+  /** Put back what `saved` answered; nothing saved stays nothing. */
+  const restore = async (overrides: Schema.Json | undefined): Promise<void> => {
+    if (overrides !== undefined) await storage.put(SETTINGS_KEY, overrides);
+  };
+
+  return { read, write, saved, restore };
 };
 
 /** The Workspaces' settings, as the main Worker reaches them: asked of each Workspace's Durable Object. */

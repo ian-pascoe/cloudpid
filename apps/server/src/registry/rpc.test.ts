@@ -131,7 +131,25 @@ const fakeRegistries = () => {
 
       return Promise.resolve();
     },
+    clear: (slug) => {
+      calls.push(`clearWorkspace:${slug}`);
+      duringDestroy?.();
+      duringDestroy = undefined;
+      held.delete(slug);
+
+      return Promise.resolve();
+    },
+    restartContainer: (slug) => {
+      calls.push(`restartContainer:${slug}`);
+
+      return workspaceFails === undefined
+        ? Promise.resolve()
+        : Promise.reject(new Error(workspaceFails));
+    },
   };
+
+  /** Why the next Workspace object call fails, if it does. */
+  let workspaceFails: string | undefined;
 
   const registry = {
     createSession: ({
@@ -274,6 +292,20 @@ const fakeRegistries = () => {
 
       return Promise.resolve(held.get(slug) ?? []);
     },
+    remove: (slug, name) => {
+      calls.push(`removeRepo:${slug}/${name}`);
+      duringDestroy?.();
+      duringDestroy = undefined;
+
+      if (workspaceFails !== undefined) return Promise.reject(new Error(workspaceFails));
+
+      held.set(
+        slug,
+        Arr.filter(held.get(slug) ?? [], (repo) => repo !== name),
+      );
+
+      return Promise.resolve();
+    },
     clone: (slug, { url, name }) => {
       calls.push("clone");
 
@@ -336,6 +368,11 @@ const fakeRegistries = () => {
     failClones: (message: string) => {
       cloneFails = message;
     },
+    /** Fail the Workspace object's calls that can fail (the repo removal, the Container restart) with `message`. */
+    failWorkspace: (message: string) => {
+      workspaceFails = message;
+    },
+    held,
     // SAFETY: the endpoint only calls `getByName` on the namespace, and the result only through the methods above.
     registries: {
       getByName: (name: string) => {
@@ -863,7 +900,7 @@ const call = <A, E>(
 /** The calls that reached a Session's or a Workspace's object, or forgot or archived one, in order. */
 const lifecycle = (fake: ReturnType<typeof fakeRegistries>) =>
   Arr.filter(fake.calls, (name) =>
-    /^(stop|destroy|destroyWorkspace|deleteSession|deleteWorkspace):|^(archive|unarchive)Session$/.test(
+    /^(stop|destroy|destroyWorkspace|clearWorkspace|restartContainer|removeRepo|deleteSession|deleteWorkspace):|^(archive|unarchive)Session$/.test(
       name,
     ),
   );
@@ -1072,4 +1109,239 @@ it("stops a Workspace delete at a Session that cannot be wiped, keeping the Work
       (workspace) => workspace.slug,
     ),
   ).toContain("cloudpid");
+});
+
+it("resets a Workspace: every Session bound to it, archived ones too, then its object but its settings, keeping its record", async () => {
+  const fake = fakeRegistries();
+  const elsewhere = await call(fake, (registry) => registry.createSession({}));
+  const first = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  const second = await call(fake, (registry) =>
+    registry.createSession({ workspace: "cloudpid", repo: "pi" }),
+  );
+
+  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.resetWorkspace({ workspace: "cloudpid" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${second.id}`,
+    `deleteSession:${second.id}`,
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    "clearWorkspace:cloudpid",
+  ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
+  expect(
+    Arr.map(
+      await call(fake, (registry) => registry.listWorkspaces()),
+      (workspace) => workspace.slug,
+    ),
+  ).toEqual(["default", "cloudpid"]);
+});
+
+it("resets the default Workspace too", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.resetWorkspace({ workspace: "default" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    `deleteSession:${session.id}`,
+    "clearWorkspace:default",
+  ]);
+});
+
+it("deletes a Session started in a Workspace while it was reset, and wipes the files again", async () => {
+  const fake = fakeRegistries();
+  const first = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  fake.startDuringDestroy({ ...first, id: "late" });
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.resetWorkspace({ workspace: "cloudpid" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    "clearWorkspace:cloudpid",
+    "destroy:late",
+    "deleteSession:late",
+    "clearWorkspace:cloudpid",
+  ]);
+});
+
+it("stops a Workspace reset at a Session that cannot be wiped, before its files", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  fake.breakSession(session.id, "storage error");
+  fake.calls.length = 0;
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.resetWorkspace({ workspace: "cloudpid" })),
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toContain("storage error");
+  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`]);
+});
+
+it("refuses to reset or restart a Workspace the Registry does not list, and touches no object", async () => {
+  const fake = fakeRegistries();
+
+  const reset = await call(fake, (registry) =>
+    Effect.flip(registry.resetWorkspace({ workspace: "typo" })),
+  );
+
+  const restart = await call(fake, (registry) =>
+    Effect.flip(registry.restartContainer({ workspace: "typo" })),
+  );
+
+  expect(reset.message).toContain("typo");
+  expect(restart.message).toContain("typo");
+  expect(lifecycle(fake)).toEqual([]);
+});
+
+it("restarts a Workspace's Container, keeping its Sessions", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.restartContainer({ workspace: "cloudpid" }));
+
+  expect(lifecycle(fake)).toEqual(["restartContainer:cloudpid"]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
+});
+
+it("fails a Container restart the Workspace could not do with its message", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.createWorkspace({ slug: "cloudpid" }));
+  fake.failWorkspace("no Container");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.restartContainer({ workspace: "cloudpid" })),
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toBe("Could not restart the Container: no Container");
+});
+
+it("removes a repo: every Session bound to it, archived ones too, then its directory; other Sessions stay", async () => {
+  const fake = fakeRegistries();
+  const atRoot = await call(fake, (registry) => registry.createSession({ workspace: "cloudpid" }));
+
+  const first = await call(fake, (registry) =>
+    registry.createSession({ workspace: "cloudpid", repo: "pi" }),
+  );
+
+  const second = await call(fake, (registry) =>
+    registry.createSession({ workspace: "cloudpid", repo: "pi" }),
+  );
+
+  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeRepo({ workspace: "cloudpid", repo: "pi" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${second.id}`,
+    `deleteSession:${second.id}`,
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    "removeRepo:cloudpid/pi",
+  ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([atRoot]);
+  expect(await call(fake, (registry) => registry.listRepos({ workspace: "cloudpid" }))).toEqual([]);
+});
+
+it("deletes a Session started in a repo while it was removed, and removes the directory again", async () => {
+  const fake = fakeRegistries();
+
+  const first = await call(fake, (registry) =>
+    registry.createSession({ workspace: "cloudpid", repo: "pi" }),
+  );
+
+  fake.startDuringDestroy({ ...first, id: "late" });
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeRepo({ workspace: "cloudpid", repo: "pi" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    "removeRepo:cloudpid/pi",
+    "destroy:late",
+    "deleteSession:late",
+    "removeRepo:cloudpid/pi",
+  ]);
+});
+
+it("removes a repo that is gone but still has Sessions bound to it", async () => {
+  const fake = fakeRegistries();
+
+  const session = await call(fake, (registry) =>
+    registry.createSession({ workspace: "cloudpid", repo: "pi" }),
+  );
+
+  fake.held.set("cloudpid", []);
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeRepo({ workspace: "cloudpid", repo: "pi" }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    `deleteSession:${session.id}`,
+    "removeRepo:cloudpid/pi",
+  ]);
+});
+
+it("refuses to remove a repo the Workspace neither holds nor has Sessions in, or of a Workspace it does not list", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.createWorkspace({ slug: "cloudpid" }));
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.removeRepo({ workspace: "cloudpid", repo: "ghost" })),
+  );
+
+  const unlisted = await call(fake, (registry) =>
+    Effect.flip(registry.removeRepo({ workspace: "typo", repo: "pi" })),
+  );
+
+  expect(missing.message).toBe('Workspace "cloudpid" has no repo "ghost"');
+  expect(unlisted.message).toContain("typo");
+  expect(lifecycle(fake)).toEqual([]);
+});
+
+it("rejects a repo to remove that is a path or an option, before it reaches the Workspace", async () => {
+  for (const repo of ["..", "a/b", "-rf"]) {
+    const { text, calls } = await callRaw("removeRepo", { workspace: "cloudpid", repo });
+
+    expect(text).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+});
+
+it("fails a removal that did not finish with its message, keeping the repo", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.createWorkspace({ slug: "cloudpid" }));
+  fake.failWorkspace("rm failed (exit 1): Permission denied");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.removeRepo({ workspace: "cloudpid", repo: "pi" })),
+  );
+
+  expect(error).toBeInstanceOf(WorkspaceError);
+  expect(error.message).toBe("Could not remove the repo: rm failed (exit 1): Permission denied");
+  expect(await call(fake, (registry) => registry.listRepos({ workspace: "cloudpid" }))).toEqual([
+    "pi",
+  ]);
 });

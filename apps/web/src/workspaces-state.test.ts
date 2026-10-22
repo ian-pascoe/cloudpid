@@ -27,7 +27,12 @@ import {
   deleteTypedAtom,
   deleteWorkspaceAtom,
   newWorkspaceSlugAtom,
+  removeRepoAtom,
+  removeTypedAtom,
   reposAtom,
+  resetTypedAtom,
+  resetWorkspaceAtom,
+  restartContainerAtom,
   saveWorkspaceAtom,
   workspaceDialogAtom,
   workspaceDraftAtom,
@@ -731,4 +736,182 @@ describe("the Edit dialog's draft", () => {
       });
     }),
   );
+});
+
+/** A Registry that records what it is asked to reset, restart and remove, and refuses what is on `stuck`. */
+const destructive = () => {
+  const calls: unknown[] = [];
+  const sessions = [{ ...session("a", "work"), repo: "web" }, session("b", "work")];
+  const repos = ["api", "web"];
+  const stuck = (message: string) => Effect.fail(new WorkspaceError({ message }));
+
+  const registry = registryWith({
+    listSessions: () => Effect.sync(() => [...sessions]),
+    listRepos: () => Effect.sync(() => [...repos]),
+    resetWorkspace: (payload) => {
+      calls.push(["resetWorkspace", payload]);
+
+      return payload.workspace === "stuck"
+        ? stuck("Could not reset it.")
+        : Effect.sync(() => {
+            sessions.length = 0;
+            repos.length = 0;
+          });
+    },
+    restartContainer: (payload) => {
+      calls.push(["restartContainer", payload]);
+
+      return payload.workspace === "stuck" ? stuck("Could not stop it.") : Effect.void;
+    },
+    removeRepo: (payload) => {
+      calls.push(["removeRepo", payload]);
+
+      return payload.workspace === "stuck"
+        ? stuck("Could not remove it.")
+        : Effect.sync(() => {
+            sessions.splice(
+              0,
+              sessions.length,
+              ...sessions.filter((known) => known.repo !== payload.repo),
+            );
+            repos.splice(repos.indexOf(payload.repo), 1);
+          });
+    },
+  });
+
+  return { registry, calls };
+};
+
+describe("resetting a Workspace", () => {
+  it.effect("resets it, closes the dialog and asks for the Sessions and repos again", () =>
+    Effect.gen(function* () {
+      const { registry, calls } = destructive();
+
+      registry.mount(workspaceDialogAtom("work"));
+      registry.mount(sessionsAtom);
+      registry.mount(reposAtom("work"));
+      yield* settled(registry, sessionsAtom);
+      yield* settled(registry, reposAtom("work"));
+      registry.set(workspaceDialogAtom("work"), "reset");
+      registry.set(resetWorkspaceAtom("work"), undefined);
+      yield* settled(registry, resetWorkspaceAtom("work"));
+
+      expect(calls).toEqual([["resetWorkspace", { workspace: "work" }]]);
+      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+      expect(AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom))).toEqual([]);
+      expect(AsyncResult.getOrThrow(yield* settled(registry, reposAtom("work")))).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps the dialog open when it is refused, and says why", () =>
+    Effect.gen(function* () {
+      const { registry } = destructive();
+
+      registry.mount(workspaceDialogAtom("stuck"));
+      registry.set(workspaceDialogAtom("stuck"), "reset");
+      registry.set(resetWorkspaceAtom("stuck"), undefined);
+
+      expect(settledFailureOf(yield* settled(registry, resetWorkspaceAtom("stuck")))).toBe(
+        "Could not reset it.",
+      );
+      expect(registry.get(workspaceDialogAtom("stuck"))).toBe("reset");
+    }),
+  );
+
+  it.live("keeps the typed slug apart from the Delete dialog's", () =>
+    Effect.gen(function* () {
+      const { registry } = destructive();
+
+      registry.mount(resetTypedAtom("work"));
+      registry.mount(deleteTypedAtom("work"));
+      registry.set(resetTypedAtom("work"), "work");
+
+      expect(registry.get(deleteTypedAtom("work"))).toBe("");
+      registry.dispose();
+      yield* Effect.void;
+    }),
+  );
+});
+
+describe("restarting a Workspace's Container", () => {
+  it.effect("restarts it and closes the dialog", () =>
+    Effect.gen(function* () {
+      const { registry, calls } = destructive();
+
+      registry.mount(workspaceDialogAtom("work"));
+      registry.set(workspaceDialogAtom("work"), "restart");
+      registry.set(restartContainerAtom("work"), undefined);
+      yield* settled(registry, restartContainerAtom("work"));
+
+      expect(calls).toEqual([["restartContainer", { workspace: "work" }]]);
+      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+    }),
+  );
+
+  it.effect("keeps the dialog open when it is refused, and says why", () =>
+    Effect.gen(function* () {
+      const { registry } = destructive();
+
+      registry.mount(workspaceDialogAtom("stuck"));
+      registry.set(workspaceDialogAtom("stuck"), "restart");
+      registry.set(restartContainerAtom("stuck"), undefined);
+
+      expect(settledFailureOf(yield* settled(registry, restartContainerAtom("stuck")))).toBe(
+        "Could not stop it.",
+      );
+      expect(registry.get(workspaceDialogAtom("stuck"))).toBe("restart");
+    }),
+  );
+});
+
+describe("removing a repo", () => {
+  it.effect("removes it, closes the dialog and asks for the Sessions and repos again", () =>
+    Effect.gen(function* () {
+      const { registry, calls } = destructive();
+
+      registry.mount(workspaceDialogAtom("work"));
+      registry.mount(sessionsAtom);
+      registry.mount(reposAtom("work"));
+      yield* settled(registry, sessionsAtom);
+      yield* settled(registry, reposAtom("work"));
+      registry.set(workspaceDialogAtom("work"), { removeRepo: "web" });
+      registry.set(removeRepoAtom("work"), "web");
+      yield* settled(registry, removeRepoAtom("work"));
+
+      expect(calls).toEqual([["removeRepo", { workspace: "work", repo: "web" }]]);
+      expect(registry.get(workspaceDialogAtom("work"))).toBeNull();
+      expect(AsyncResult.getOrThrow(yield* settled(registry, reposAtom("work")))).toEqual(["api"]);
+      expect(
+        AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom)).map((known) => known.id),
+      ).toEqual(["b"]);
+    }),
+  );
+
+  it.effect("keeps the dialog open when it is refused, and says why", () =>
+    Effect.gen(function* () {
+      const { registry } = destructive();
+
+      registry.mount(workspaceDialogAtom("stuck"));
+      registry.set(workspaceDialogAtom("stuck"), { removeRepo: "web" });
+      registry.set(removeRepoAtom("stuck"), "web");
+
+      expect(settledFailureOf(yield* settled(registry, removeRepoAtom("stuck")))).toBe(
+        "Could not remove it.",
+      );
+      expect(registry.get(workspaceDialogAtom("stuck"))).toEqual({ removeRepo: "web" });
+    }),
+  );
+
+  it("keeps the typed name apart from the other dialogs' and other Workspaces'", () => {
+    const { registry } = destructive();
+
+    registry.mount(removeTypedAtom("work"));
+    registry.mount(removeTypedAtom("other"));
+    registry.mount(resetTypedAtom("work"));
+    registry.set(removeTypedAtom("work"), "web");
+
+    expect(registry.get(removeTypedAtom("other"))).toBe("");
+    expect(registry.get(resetTypedAtom("work"))).toBe("");
+    registry.dispose();
+  });
 });

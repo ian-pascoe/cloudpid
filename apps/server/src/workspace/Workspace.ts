@@ -103,6 +103,7 @@ export class Workspace extends ContainerHost {
   readonly #host: WorkspaceEnvHost;
   readonly #container: ContainerBackend;
   readonly #idle: IdleStop;
+  readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
   readonly #sql: SqlStorage;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
@@ -114,7 +115,7 @@ export class Workspace extends ContainerHost {
     this.#settings = workspaceSettingsStore(ctx.storage);
     this.#sql = ctx.storage.sql;
 
-    const snapshots = new ContainerSnapshots({
+    const snapshots = (this.#snapshots = new ContainerSnapshots({
       // The local Container has no real mount, and no snapshots.
       enabled: env.CONTAINER_FUSE !== "false",
       secret: env.CLOUDPID_GITHUB_TOKEN,
@@ -139,7 +140,7 @@ export class Workspace extends ContainerHost {
       now: () => Date.now(),
       warn: (message) => console.warn(message),
       info: (message) => console.info(message),
-    });
+    }));
 
     // The size and idle time of each launch are the Workspace's settings at that moment, and a snapshot is restored.
     const launch = new ContainerLaunch({
@@ -300,7 +301,30 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Reset the object (`ctx.abort`) after `destroy` has answered, so the next call to this slug opens an empty Workspace
+   * Reset the Workspace to a fresh start (`LifecycleHost.clear`, for `resetWorkspace`): as `destroy`, but its own
+   * settings (Container size and idle time) are put back after the wipe. The caller resets the instance with `reset`.
+   */
+  async clear(): Promise<void> {
+    const settings = await this.#settings.saved();
+
+    await this.destroy();
+    await this.#settings.restore(settings);
+  }
+
+  /**
+   * Stop the Container and forget its snapshot (`LifecycleHost.restartContainer`), so the next command starts one from
+   * the image, installs the Toolchains again and snapshots it. The files are the Workspace's and stay; what only the
+   * Container's disk held is gone. Commands running in the Container end. The idle alarm finds no Container to stop.
+   */
+  async restartContainer(): Promise<void> {
+    // Forgotten first, so a launch that slips in before the stop does not restore it.
+    await this.#snapshots.forget();
+
+    if (this.ctx.container?.running === true) await this.ctx.container.destroy();
+  }
+
+  /**
+   * Reset the object (`ctx.abort`) after `destroy` or `clear` has answered, so the next call to this slug opens an empty Workspace
    * instead of an instance over the wiped storage. The call always fails with `WORKSPACE_DELETED_REASON`, as an abort
    * fails the call that makes it. A reset from a timer in `destroy` raced the reply and failed the deletion.
    */

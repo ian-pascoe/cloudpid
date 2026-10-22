@@ -35,18 +35,21 @@ export type SessionObjects = {
 
 /** What the endpoint reaches besides the Registry: the objects behind the Workspaces and the Sessions. */
 export type RegistryRpcObjects = {
-  /** Lists the repos of a Workspace and clones into one. */
+  /** Lists the repos of a Workspace, clones into one and removes one. */
   readonly repos: Repos;
   /** Reads and saves a Workspace's Container size and idle time. */
   readonly workspaceSettings: WorkspaceSettingsRemote;
-  /** Wipes a Workspace's object when it is deleted. */
+  /** Wipes a Workspace's object when it is deleted or reset, and restarts its Container. */
   readonly workspaces: WorkspaceObjects;
   /** Stops a Session when it is archived, and wipes it when it is deleted. */
   readonly sessions: SessionObjects;
 };
 
-/** How many times a Workspace's deletion sweeps its Sessions before it gives up on ones that keep starting. */
-const DELETE_WORKSPACE_ROUNDS = 3;
+/** How many times a deletion sweeps the Sessions it takes before it gives up on ones that keep starting. */
+const SWEEP_ROUNDS = 3;
+
+/** What a sweep says when it stops: after what is kept when a Session cannot be deleted, and when Sessions keep starting. */
+type SweepWords = { readonly kept: string; readonly busy: string };
 
 /** What went wrong in `cause`, in a line. */
 const reason = (cause: Cause.Cause<unknown>): string => {
@@ -110,6 +113,37 @@ export const serveRegistryRpc = (
         }
       });
 
+    /** Whether no Session is bound where `bound` says, once the Registry is asked again. */
+    const noneBound = (bound: (session: SessionRecord) => boolean) =>
+      registry.listSessions().pipe(Effect.map((listed) => !Arr.some(listed, bound)));
+
+    /**
+     * Delete every Session `bound` picks (archived ones too), then `wipe` what they worked on, until `settled` says no
+     * Session is left: one started meanwhile is deleted the same way and the sweep runs again, a few rounds, then the
+     * owner is asked to try again. One Session at a time, so a failure stops it with what is left still listed.
+     */
+    const sweep = (
+      bound: (session: SessionRecord) => boolean,
+      wipe: Effect.Effect<void, WorkspaceError>,
+      settled: Effect.Effect<boolean>,
+      words: SweepWords,
+    ) =>
+      Effect.gen(function* () {
+        for (let round = 1; ; round++) {
+          for (const session of Arr.filter(yield* registry.listSessions(), bound)) {
+            yield* deleteSession(session).pipe(
+              Effect.mapError((error) => failed(`${error.message}. ${words.kept}`)),
+            );
+          }
+
+          yield* wipe;
+
+          if (yield* settled) return;
+
+          if (round === SWEEP_ROUNDS) return yield* failed(words.busy);
+        }
+      });
+
     const handlers = RegistryRpcs.toLayer({
       listSessions: () => registry.listSessions(),
       createSession: ({ title, workspace, repo }) =>
@@ -169,35 +203,44 @@ export const serveRegistryRpc = (
 
           yield* registered(workspace);
 
-          // A Session started in it while it is deleted is deleted too: the record goes only once none is bound, so
-          // no Session is left on a Workspace that is gone. A few rounds, then the owner is asked to try again.
-          for (let round = 1; ; round++) {
-            const bound = Arr.filter(
-              yield* registry.listSessions(),
-              (session) => session.workspace === workspace,
-            );
-
-            // One at a time, so a failure stops the delete with what is left still listed.
-            for (const session of bound) {
-              yield* deleteSession(session).pipe(
-                Effect.mapError((error) =>
-                  failed(`${error.message}. The workspace and its remaining sessions are kept.`),
-                ),
-              );
-            }
-
-            yield* inWorkspace("Could not delete the workspace's files", () =>
+          // The record goes only once none is bound, so no Session is left on a Workspace that is gone.
+          yield* sweep(
+            (session) => session.workspace === workspace,
+            inWorkspace("Could not delete the workspace's files", () =>
               workspaces.destroy(workspace),
-            );
+            ),
+            registry
+              .deleteWorkspace({ slug: workspace })
+              .pipe(Effect.map((deleted) => deleted !== "in-use")),
+            {
+              kept: "The workspace and its remaining sessions are kept.",
+              busy: "Sessions kept starting in the workspace while it was deleted: try again",
+            },
+          );
+        }),
+      resetWorkspace: ({ workspace }) =>
+        Effect.gen(function* () {
+          yield* registered(workspace);
 
-            if ((yield* registry.deleteWorkspace({ slug: workspace })) !== "in-use") return;
+          const bound = (session: SessionRecord) => session.workspace === workspace;
 
-            if (round === DELETE_WORKSPACE_ROUNDS) {
-              return yield* failed(
-                "Sessions kept starting in the workspace while it was deleted: try again",
-              );
-            }
-          }
+          // The record, name and Container settings stay; a Session bound to it would work on files that are gone.
+          yield* sweep(
+            bound,
+            inWorkspace("Could not reset the workspace's files", () => workspaces.clear(workspace)),
+            noneBound(bound),
+            {
+              kept: "The workspace's files and its remaining sessions are kept.",
+              busy: "Sessions kept starting in the workspace while it was reset: try again",
+            },
+          );
+        }),
+      restartContainer: ({ workspace }) =>
+        Effect.gen(function* () {
+          yield* registered(workspace);
+          yield* inWorkspace("Could not restart the Container", () =>
+            workspaces.restartContainer(workspace),
+          );
         }),
       listRepos: ({ workspace }) =>
         inWorkspace("Could not list the Workspace's repos", () => repos.list(workspace)),
@@ -215,6 +258,32 @@ export const serveRegistryRpc = (
           yield* inWorkspace("Clone failed", () => repos.clone(workspace, repo));
 
           return repo.name;
+        }),
+      removeRepo: ({ workspace, repo }) =>
+        Effect.gen(function* () {
+          yield* registered(workspace);
+
+          const bound = (session: SessionRecord) =>
+            session.workspace === workspace && session.repo === repo;
+
+          const held = yield* inWorkspace("Could not list the Workspace's repos", () =>
+            repos.list(workspace),
+          );
+
+          // A repo that is gone with Sessions still bound to it can be removed, which deletes them.
+          if (!held.includes(repo) && (yield* noneBound(bound))) {
+            return yield* failed(`Workspace "${workspace}" has no repo "${repo}"`);
+          }
+
+          yield* sweep(
+            bound,
+            inWorkspace("Could not remove the repo", () => repos.remove(workspace, repo)),
+            noneBound(bound),
+            {
+              kept: "The repo and its remaining sessions are kept.",
+              busy: "Sessions kept starting in the repo while it was removed: try again",
+            },
+          );
         }),
       getWorkspaceSettings: ({ workspace }) =>
         Effect.gen(function* () {

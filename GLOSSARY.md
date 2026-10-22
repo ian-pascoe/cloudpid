@@ -114,6 +114,14 @@ _Avoid_: ID, key (for the Workspace's identifier)
 The label the owner gives a Workspace and may rename, shown in place of its Slug; unique among Workspaces.
 _Avoid_: Title, display name, slug (for the label)
 
+**Workspace reset**:
+Returning a Workspace to a fresh start: its Sessions, files, Container and Snapshot are deleted, and its Slug, Workspace name and Container settings stay.
+_Avoid_: Wipe, clear (for the owner's action), delete (which also forgets the Workspace)
+
+**Container restart**:
+Stopping a Workspace's Container and forgetting its Snapshot, so the next command starts one from the image and installs the Toolchains again; the files and Sessions stay.
+_Avoid_: Reset (for the Container alone), reboot
+
 **Backend**:
 A place a Workspace runs commands: the Worker Shell or the Container.
 _Avoid_: Runtime, executor
