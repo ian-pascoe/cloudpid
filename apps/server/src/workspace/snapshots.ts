@@ -233,9 +233,11 @@ export const samePaths = (
  * disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount (`/workspace`, whose
  * files are searched in computerd's store); the directories given as arguments instead, if any (for the tests).
  *
- * Directories named `.pnpm-store` or `.pnpm` are not searched: pnpm's store and the virtual store in `node_modules`
- * hold only the packages pnpm installed, and after an install they are most of the disk (a cold search after this
- * repo's took 62 s, 7 s without them). The rest of `node_modules` (`.cache`, `.vite`, what a command wrote there) is
+ * Directories named `.pnpm-store` or `.pnpm` are not searched: pnpm's store (`/root/.pnpm-store`, which the Container's
+ * global pnpm configuration names, `PNPM_STORE_DIRECTORY_NAME`, with the global virtual store in it, `v11/links`) and
+ * the project virtual store in `node_modules` (`.pnpm`, an older install's, or a repo that chose that layout) hold only
+ * the packages pnpm installed, and after an install they are most of the disk (a cold search after this repo's, with
+ * the store at the mount's root and a virtual store in `node_modules`, took 62 s, 7 s without them). The rest of `node_modules` (`.cache`, `.vite`, what a command wrote there) is
  * searched.
  *
  * The patterns reach grep as a pattern file on its standard input, read from the environment, so they are in no command

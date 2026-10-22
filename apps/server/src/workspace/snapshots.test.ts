@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PNPM_STORE_DIRECTORY_NAME, TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import { ContainerSnapshots, scanContainerDisk, type SnapshotRecord } from "./snapshots.ts";
 
 type Fake = {
@@ -290,6 +291,21 @@ describe("ContainerSnapshots.restorable", () => {
     expect(state.stored).toBeUndefined();
   });
 
+  it("forgets a snapshot taken before the built-in Container-only paths grew, so the launch starts cold", async () => {
+    const { state, snapshots } = open();
+    const before = TOOLCHAIN_IGNORE.filter((pattern) => pattern !== "**/.wrangler");
+
+    await snapshots.take("idle", IMAGE, before);
+
+    expect(await snapshots.restorable(TOOLCHAIN_IGNORE)).toBeUndefined();
+    expect(state.stored).toBeUndefined();
+
+    // The next snapshot, of a Container launched with the new list, restores as usual.
+    await snapshots.take("install", IMAGE, TOOLCHAIN_IGNORE);
+
+    expect(await snapshots.restorable(TOOLCHAIN_IGNORE)).toEqual({ id: "snap-2", image: IMAGE });
+  });
+
   it("forgets a snapshot of another image: a deploy that changed it makes the snapshot useless", async () => {
     const { state, snapshots } = open();
 
@@ -485,6 +501,17 @@ describe("scanContainerDisk", () => {
     it("skips pnpm's store and the virtual store in node_modules, which hold only the packages pnpm installed", async () => {
       write("workspace/.pnpm-store/v11/files/ab/cdef", `registry file ${SECRET}`);
       write("workspace/repo/node_modules/.pnpm/pkg@1.0.0/node_modules/pkg/index.js", SECRET);
+
+      expect(await scan(root)).toEqual([]);
+    });
+
+    it("skips the store the Container's pnpm configuration names, with its global virtual store", async () => {
+      write(`root/${PNPM_STORE_DIRECTORY_NAME}/v11/files/ab/cdef`, `registry file ${SECRET}`);
+      write(
+        `root/${PNPM_STORE_DIRECTORY_NAME}/v11/links/@/pkg/1.0.0/0123abcd/node_modules/pkg/index.js`,
+        SECRET,
+      );
+      write("root/.local/share/mise/installs/node/24/lib/x.js", "clean");
 
       expect(await scan(root)).toEqual([]);
     });

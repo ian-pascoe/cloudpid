@@ -28,10 +28,12 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   "/target",
   "/*/target",
   "**/.cache",
-  // pnpm's content-addressed store. With the home directory on the Container's disk and the project on the FUSE mount,
-  // pnpm puts it at the mount's root, `/workspace/.pnpm-store`, where one install synced most of a Workspace's files
-  // (docs/spec.md → Container and Toolchains → Snapshots). Local-only, it sits on the same side as `node_modules`, so
-  // pnpm still hard-links between them.
+  // pnpm's content-addressed store. The Container's global pnpm configuration puts it on the Container's disk
+  // (`PNPM_STORE_DIRECTORY_NAME` under the home directory), but with the home directory on the Container's disk and the
+  // project on the FUSE mount, pnpm puts a store nobody configured at the mount's root, `/workspace/.pnpm-store`, where
+  // one install synced most of a Workspace's files (docs/spec.md → Container and Toolchains → Snapshots). That is what
+  // an install made before the configuration, or one with an older pnpm, leaves; it stays local, on the same side as
+  // `node_modules`, so pnpm still hard-links between them.
   "**/.pnpm-store",
   "**/__pycache__",
   "**/.pytest_cache",
@@ -51,7 +53,52 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/.tox",
   "**/.nox",
   "**/.direnv",
+  // More caches that regenerate and no repo commits: Cloudflare's wrangler, Astro, Angular, Expo, Nx, Docusaurus, nyc,
+  // Hypothesis, Dart and Zig and Haskell's stack. Not `.alchemy` (it can hold real deploy state) or `.worktrees` (it
+  // holds uncommitted work).
+  "**/.wrangler",
+  "**/.astro",
+  "**/.angular",
+  "**/.expo",
+  "**/.nx",
+  "**/.docusaurus",
+  "**/.nyc_output",
+  "**/.hypothesis",
+  "**/.dart_tool",
+  "**/.zig-cache",
+  "**/.stack-work",
 ];
+
+/**
+ * The name of the directory pnpm's store is in, under the Container's home directory (`/root/.pnpm-store`): its content-
+ * addressed files (`v11/files`) and the global virtual store (`v11/links`). It is a name the token scan before a snapshot
+ * skips (`SCAN_SCRIPT`, `apps/server/src/workspace/snapshots.ts`), since it holds only what pnpm installed.
+ */
+export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
+
+/**
+ * What the bootstrap puts in the Container's global pnpm configuration (`config.yaml` in `$XDG_CONFIG_HOME/pnpm` or
+ * `~/.config/pnpm`) unless the file already sets the key: the store on the Container's disk (`$HOME/.pnpm-store`: the
+ * default is the home directory's too, but pnpm puts the store of a project on another filesystem at that filesystem's
+ * root, and `/workspace` is one), the global virtual store (so a repo's `node_modules` holds only symlinks into the
+ * store, which stays on one filesystem with the store for hard links), and no prompt to purge `node_modules`. A
+ * repo's own `pnpm-workspace.yaml` wins over this file; an environment variable would not, so these are not set as
+ * one. `virtualStoreDir` is left out on purpose: set globally, it would also be where a repo that chooses the project
+ * layout keeps its virtual store, shared with every other repo; unset, the global virtual store is `<store>/links`.
+ * The values are YAML scalars; `$HOME` is the shell's.
+ */
+export const PNPM_GLOBAL_CONFIG: ReadonlyArray<readonly [key: string, value: string]> = [
+  ["storeDir", `"$HOME/${PNPM_STORE_DIRECTORY_NAME}"`],
+  ["virtualStoreType", "global"],
+  ["confirmModulesPurge", "false"],
+];
+
+/**
+ * Turborepo's cache directory in a command's environment, on the Container's disk next to mise's cache. Its default is
+ * `.turbo/cache` in the repo, a Container-only path that FUSE still serves. The environment variable wins over a
+ * repo's `turbo.json` `cacheDir` (`--cache-dir` wins over both).
+ */
+export const TURBO_CACHE_DIR = "/root/.cache/turbo";
 
 /** The Workspace's own mise config: the Toolchains of every command, whatever its directory. */
 export const ROOT_MISE_TOML = `${WORKSPACE_ROOT}/mise.toml`;
@@ -104,6 +151,7 @@ export type ToolchainEnv = {
   MISE_TRUSTED_CONFIG_PATHS: string;
   MISE_YES: string;
   GIT_TERMINAL_PROMPT: string;
+  TURBO_CACHE_DIR: string;
   GH_TOKEN?: string;
   GITHUB_TOKEN?: string;
 };
@@ -133,6 +181,7 @@ export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
     MISE_YES: "1",
     // A prompt nobody answers would hang the command.
     GIT_TERMINAL_PROMPT: "0",
+    TURBO_CACHE_DIR,
   };
 
   if (options.githubToken !== undefined && options.githubToken !== "") {
@@ -147,6 +196,12 @@ export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
 const CREDENTIAL_HELPER = String.raw`!f() { if [ "$1" = get ] && [ -n "$GITHUB_TOKEN" ]; then echo username=x-access-token; echo "password=$GITHUB_TOKEN"; fi; }; f`;
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+/** The bash lines that write `PNPM_GLOBAL_CONFIG`'s keys to `$pnpm_config` where it does not have them. */
+const pnpmConfigSteps = PNPM_GLOBAL_CONFIG.map(
+  ([key, value]) =>
+    `grep -qs '^${key}:' "$pnpm_config" || printf '%s\\n' "${key}: ${value.replaceAll('"', '\\"')}" >>"$pnpm_config" 2>/dev/null`,
+).join("\n");
 
 /**
  * The bash script that makes a freshly started Container ready for commands, run once per Container start before the
@@ -165,7 +220,8 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  *    Container's global config has one, and points git's credentials for github.com at `$GITHUB_TOKEN` at the time
  *    git asks. Those go to the Container's `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds
  *    the token,
- * 5. ends its output with `BOOTSTRAP_CHANGED` when a step set `changed=1` (step 3 does when mise's installs differ
+ * 5. writes the Container's global pnpm configuration (`PNPM_GLOBAL_CONFIG`), each key only when the file does not have it,
+ * 6. ends its output with `BOOTSTRAP_CHANGED` when a step set `changed=1` (step 3 does when mise's installs differ
  *    from before it).
  */
 export const bootstrapScript = (
@@ -236,6 +292,12 @@ if command -v git >/dev/null 2>&1; then
   git config --global --get user.email >/dev/null || git config --global user.email "\${CLOUDPID_GIT_EMAIL:-cloudpid@users.noreply.github.com}"
   git config --global credential.https://github.com.helper ${shellQuote(CREDENTIAL_HELPER)}
 fi
+
+# pnpm's global configuration (PNPM_GLOBAL_CONFIG), where pnpm reads it: a key the file has is the Container's own.
+# Best effort: pnpm then works as it did, with its store at the mount's root.
+pnpm_config="\${XDG_CONFIG_HOME:-$HOME/.config}/pnpm/config.yaml"
+mkdir -p "\${pnpm_config%/*}" 2>/dev/null
+${pnpmConfigSteps}
 
 [ "$changed" -eq 1 ] && echo ${shellQuote(BOOTSTRAP_CHANGED)}
 

@@ -27,7 +27,10 @@ import {
   setupScriptRun,
   setupScriptTimedOut,
   setupRecord,
+  PNPM_GLOBAL_CONFIG,
+  PNPM_STORE_DIRECTORY_NAME,
   TOOLCHAIN_IGNORE,
+  TURBO_CACHE_DIR,
   toolchainEnv,
 } from "@cloudpid/sandbox-image/toolchains";
 
@@ -44,6 +47,24 @@ describe("the ignore list", () => {
     // pnpm puts the store at the root of the project's filesystem when the home directory is on another one: on the
     // Container that is `/workspace/.pnpm-store`.
     expect(TOOLCHAIN_IGNORE).toContain("**/.pnpm-store");
+  });
+
+  it("keeps more build caches that regenerate off the synced Workspace", () => {
+    expect(TOOLCHAIN_IGNORE).toEqual(
+      expect.arrayContaining([
+        "**/.wrangler",
+        "**/.astro",
+        "**/.angular",
+        "**/.expo",
+        "**/.nx",
+        "**/.docusaurus",
+        "**/.nyc_output",
+        "**/.hypothesis",
+        "**/.dart_tool",
+        "**/.zig-cache",
+        "**/.stack-work",
+      ]),
+    );
   });
 
   it("keeps build tools' caches and environments off the synced Workspace, by names no source directory has", () => {
@@ -64,7 +85,20 @@ describe("the ignore list", () => {
   });
 
   it("does not make a directory some repos commit local to the Container", () => {
-    for (const name of ["dist", "build", "coverage", "vendor", "venv", ".yarn"]) {
+    // `.alchemy` can hold real deploy state and `.worktrees` uncommitted work.
+    for (const name of [
+      "dist",
+      "build",
+      "coverage",
+      "vendor",
+      "venv",
+      ".yarn",
+      "_build",
+      ".output",
+      "deps",
+      ".alchemy",
+      ".worktrees",
+    ]) {
       expect(TOOLCHAIN_IGNORE.filter((pattern) => pattern.split("/").includes(name))).toEqual([]);
     }
   });
@@ -155,6 +189,17 @@ describe("a command's environment", () => {
 
   it("never lets git ask a question nobody can answer", () => {
     expect(toolchainEnv({}).GIT_TERMINAL_PROMPT).toBe("0");
+  });
+
+  it("keeps Turborepo's cache on the Container's disk, under /root/.cache, off the mount", () => {
+    expect(toolchainEnv({}).TURBO_CACHE_DIR).toBe("/root/.cache/turbo");
+    expect(TURBO_CACHE_DIR.startsWith("/root/.cache/")).toBe(true);
+  });
+
+  it("sets nothing that would override a repo's own pnpm settings", () => {
+    // An environment variable (`pnpm_config_*`) wins over a repo's pnpm-workspace.yaml: the Container's pnpm settings
+    // are in pnpm's global config.yaml, which the repo wins over.
+    expect(JSON.stringify(toolchainEnv({ githubToken: "x" }))).not.toMatch(/pnpm/i);
   });
 });
 
@@ -338,6 +383,85 @@ describe("the bootstrap", () => {
     const { run } = sandbox({ miseExit: 3 });
 
     expect(run().status).toBe(3);
+  });
+});
+
+describe("the Container's global pnpm configuration", () => {
+  const configOf = (home: string) => join(home, ".config/pnpm/config.yaml");
+
+  it("puts pnpm's store and global virtual store on the Container's disk and never asks before purging node_modules", () => {
+    const { home, run } = sandbox();
+
+    expect(run().status).toBe(0);
+
+    const config = readFileSync(configOf(home), "utf8");
+
+    expect(config).toBe(
+      [
+        `storeDir: "${home}/.pnpm-store"`,
+        "virtualStoreType: global",
+        "confirmModulesPurge: false",
+        "",
+      ].join("\n"),
+    );
+    // Not under /workspace, which is the FUSE mount.
+    expect(config).not.toContain("/workspace");
+  });
+
+  it("names the store with a directory the token scan skips", () => {
+    expect(PNPM_GLOBAL_CONFIG).toContainEqual(["storeDir", `"$HOME/${PNPM_STORE_DIRECTORY_NAME}"`]);
+    expect(PNPM_STORE_DIRECTORY_NAME).toBe(".pnpm-store");
+  });
+
+  it("leaves virtualStoreDir unset, so a repo that keeps its virtual store in the project does not share one", () => {
+    expect(PNPM_GLOBAL_CONFIG.map(([key]) => key)).not.toContain("virtualStoreDir");
+  });
+
+  it("keeps a setting the file has, and adds the others", () => {
+    const { home, run } = sandbox();
+
+    mkdirSync(dirname(configOf(home)), { recursive: true });
+    writeFileSync(configOf(home), "virtualStoreType: project\nregistry: https://example.test/\n");
+
+    run();
+
+    expect(readFileSync(configOf(home), "utf8")).toBe(
+      [
+        "virtualStoreType: project",
+        "registry: https://example.test/",
+        `storeDir: "${home}/.pnpm-store"`,
+        "confirmModulesPurge: false",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("is written once: a second start leaves the file as it is", () => {
+    const { home, run } = sandbox();
+
+    run();
+
+    const first = readFileSync(configOf(home), "utf8");
+
+    run();
+
+    expect(readFileSync(configOf(home), "utf8")).toBe(first);
+  });
+
+  it("is written where pnpm looks for it when XDG_CONFIG_HOME is set", () => {
+    const { base, home, run } = sandbox();
+    const xdg = join(base, "xdg");
+
+    run({ XDG_CONFIG_HOME: xdg });
+
+    expect(existsSync(join(xdg, "pnpm/config.yaml"))).toBe(true);
+    expect(existsSync(configOf(home))).toBe(false);
+  });
+
+  it("does not count as a change worth a snapshot", () => {
+    const { run } = sandbox();
+
+    expect(run().stdout).not.toContain(BOOTSTRAP_CHANGED);
   });
 });
 
