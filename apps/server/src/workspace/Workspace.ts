@@ -43,6 +43,7 @@ import {
   type WriteAnswer,
 } from "./settings.ts";
 import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
+import { ContainerEarlyStart } from "./early-start.ts";
 import { ContainerSnapshots, type SnapshotRecord, scanContainerDisk } from "./snapshots.ts";
 import { ToolchainBackend } from "./toolchains.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
@@ -106,6 +107,7 @@ export class Workspace extends ContainerHost {
   readonly #idle: IdleStop;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
+  readonly #earlyStart: ContainerEarlyStart;
   readonly #sql: SqlStorage;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
@@ -241,6 +243,27 @@ export class Workspace extends ContainerHost {
       ],
     });
 
+    // A message the owner sends starts the Container before its first command asks for it (`startContainerEarly`).
+    this.#earlyStart = new ContainerEarlyStart({
+      running: () => ctx.container?.running === true,
+      connect: async () => {
+        await this.#ready();
+        await this.#workspace.ready(CONTAINER_BACKEND_ID);
+
+        let pushed = 0;
+
+        for await (const block of this.#workspace.push(CONTAINER_BACKEND_ID))
+          pushed += block.entries;
+
+        return pushed;
+      },
+      runBootstrap: () => toolchains.runBootstrap(),
+      idle: this.#idle,
+      now: () => Date.now(),
+      info: (message) => console.info(message),
+      warn: (message) => console.warn(message),
+    });
+
     this.#host = new WorkspaceEnvHost(this.#workspace);
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
   }
@@ -340,6 +363,19 @@ export class Workspace extends ContainerHost {
    */
   reset(): void {
     this.ctx.abort(WORKSPACE_DELETED_REASON);
+  }
+
+  /**
+   * The early start (docs/spec.md → Backends), for a message the owner sent: restore or launch the Container, push the
+   * files and run the bootstrap, with no command, so the turn's first command does not wait for it. It answers at once
+   * and never fails. While the Container runs or is starting it starts nothing; either way the message is a use of the
+   * Container for the idle stop.
+   */
+  startContainerEarly(): void {
+    // Not awaited: the start goes on after this call has answered. Nothing needs to hold the object for it
+    // (`ctx.waitUntil` has no effect in a Durable Object): one is evicted only after tens of seconds without a request,
+    // and once computer has connected, its connection to computerd keeps the object in memory, as for a command.
+    void this.#earlyStart.start();
   }
 
   /** The idle stop's alarm. */

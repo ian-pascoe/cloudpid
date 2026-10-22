@@ -255,6 +255,11 @@ export class TestSession extends DurableObject {
   }
 
   /** What builds a conversation's execution environment, if this Session has one. */
+  /** What runs after each message the owner sends (`SessionHostOptions.onSubmit`), if anything. */
+  protected hostOnSubmit(): Effect.Effect<void> | undefined {
+    return undefined;
+  }
+
   protected hostEnv(): HarnessOptions["env"] | undefined {
     return undefined;
   }
@@ -303,6 +308,7 @@ export class TestSession extends DurableObject {
               extensions: this.hostExtensions(),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               env: this.hostEnv(),
+              onSubmit: this.hostOnSubmit(),
               // Short only for a Registry that hangs; a loaded runner can take longer than that for a report that
               // lands, which would count it failed and report it again.
               reportTimeout:
