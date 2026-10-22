@@ -163,7 +163,7 @@ A directory with a `SKILL.md` (name, description, instructions) and supporting f
 _Avoid_: Plugin, command
 
 **Toolchain**:
-A program a Workspace declares in its mise configuration and the Container installs on demand.
+A program a Workspace declares in its mise configuration, which the Container finds among the image's preinstalled versions or installs on demand.
 _Avoid_: Dependency, package (for tools)
 
 **Setup Script**:

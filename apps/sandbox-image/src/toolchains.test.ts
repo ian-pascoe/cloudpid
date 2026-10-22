@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
+  BASE_MISE_LOCK,
   BASE_MISE_TOML,
   bootstrapScript,
   pendingSetupScripts,
@@ -86,6 +87,51 @@ describe("the ignore list", () => {
     const path = /^\s*PATH=(\S+)/m.exec(dockerfile)?.[1];
 
     expect(path?.split(":")[0]).toBe("/root/.local/share/mise/shims");
+  });
+});
+
+/** The `[tools]` of a mise.toml, as a map from tool to version. */
+const toolsOf = (toml: string): Map<string, string> =>
+  new Map(
+    [...toml.slice(toml.indexOf("[tools]")).matchAll(/^"?([^"=\s]+)"? = "([^"]+)"$/gm)].map(
+      (match) => [match[1] ?? "", match[2] ?? ""] as const,
+    ),
+  );
+
+describe("the image's preinstalled Toolchains", () => {
+  // The image installs the tools of its copy of the base mise.toml (`image/mise.toml`) into mise's system directory.
+  const image = readFileSync(join(sandboxImageContext, "mise.toml"), "utf8");
+
+  it("are the common ones: Node, pnpm, Python and uv, besides git and gh", () => {
+    expect([...toolsOf(image).keys()].toSorted()).toEqual(
+      ["conda:git", "gh", "node", "pnpm", "python", "uv"].toSorted(),
+    );
+  });
+
+  it("are what the base mise.toml asks for, version for version, so a new Workspace downloads none", () => {
+    expect(image).toBe(BASE_MISE_TOML);
+    expect(dockerfile).toContain(`COPY mise.toml ${dirname(BASE_MISE_LOCK)}/mise.toml\n`);
+    expect(dockerfile).toContain(`MISE_GLOBAL_CONFIG_FILE=${dirname(BASE_MISE_LOCK)}/mise.toml `);
+    expect(dockerfile).toMatch(/&& mise install --system \\\n/);
+  });
+
+  it("are pinned to exact versions, since mise locks a prefix to the newest release, which the image may not have", () => {
+    for (const version of toolsOf(image).values()) expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("come with the base mise.toml's lockfile, made where the bootstrap copies it from", () => {
+    expect(BASE_MISE_LOCK).toBe("/usr/local/share/cloudpid/mise.lock");
+    expect(dockerfile).toMatch(/&& mise lock --global --platform linux-x64 \\\n/);
+  });
+
+  it("are in mise's system directory, whose shims come after the Workspace's own on PATH", () => {
+    const path = /^\s*PATH=(\S+)/m.exec(dockerfile)?.[1]?.split(":") ?? [];
+
+    expect(path.slice(0, 2)).toEqual([
+      "/root/.local/share/mise/shims",
+      "/usr/local/share/mise/shims",
+    ]);
+    expect(dockerfile).toMatch(/&& mise reshim --system/);
   });
 });
 
@@ -222,7 +268,7 @@ describe("the bootstrap", () => {
     expect(calls()).toContain(`${root}/app: mise install`);
   });
 
-  it("writes the base mise.toml, git and gh in it, where the Workspace has none", () => {
+  it("writes the base mise.toml, git, gh and the image's other Toolchains in it, where the Workspace has none", () => {
     const { root, run, calls } = sandbox();
 
     run();
@@ -230,8 +276,33 @@ describe("the bootstrap", () => {
     expect(readFileSync(join(root, "mise.toml"), "utf8")).toBe(BASE_MISE_TOML);
     expect(BASE_MISE_TOML).toMatch(/"conda:git"/);
     expect(BASE_MISE_TOML).toMatch(/^gh = /m);
+    expect(BASE_MISE_TOML).toMatch(/^node = /m);
+    expect(BASE_MISE_TOML).toMatch(/^python = /m);
     expect(BASE_MISE_TOML).toMatch(/^lockfile = true$/m);
     expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
+  });
+
+  it("copies the image's lockfile of the base mise.toml with it, so nothing is downloaded to lock it", () => {
+    const { base, root, run, calls } = sandbox();
+    const lock = join(base, "image.mise.lock");
+
+    writeFileSync(lock, "# the image's lock\n");
+
+    expect(run({ CLOUDPID_BASE_MISE_LOCK: lock }).status).toBe(0);
+    expect(readFileSync(join(root, "mise.lock"), "utf8")).toBe("# the image's lock\n");
+    expect(calls()).toEqual([`${root}: mise install`]);
+  });
+
+  it("leaves a Workspace's own mise.lock alone, and its mise.toml", () => {
+    const { base, root, run } = sandbox();
+    const lock = join(base, "image.mise.lock");
+
+    writeFileSync(lock, "# the image's lock\n");
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+    writeFileSync(join(root, "mise.lock"), "# the Workspace's lock\n");
+    run({ CLOUDPID_BASE_MISE_LOCK: lock });
+
+    expect(readFileSync(join(root, "mise.lock"), "utf8")).toBe("# the Workspace's lock\n");
   });
 
   it("writes the base file where mise reads it as the global config, so git and gh resolve from any directory", () => {

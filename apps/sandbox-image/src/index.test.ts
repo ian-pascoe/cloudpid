@@ -56,6 +56,14 @@ it("keeps computerd's store on the Container's disk, outside the mount, so a res
   expect(dockerfile).toContain(`mkdir -p ${store.slice(0, store.lastIndexOf("/"))}\n`);
 });
 
+it("carries a C toolchain, so native npm and pip packages build", () => {
+  const packages = /apt-get install -y --no-install-recommends ([^\\\n]+)/g;
+  // The last stage's install: the mise stage installs curl only.
+  const installed = [...dockerfile.matchAll(packages)].at(-1)?.[1]?.trim().split(/\s+/) ?? [];
+
+  expect(installed).toEqual(expect.arrayContaining(["gcc", "g++", "make", "libc6-dev"]));
+});
+
 it("pins every base image by digest, so a rebuild does not move to another release", () => {
   const images = [...dockerfile.matchAll(/^FROM (?:--platform=\S+ )?(\S+)/gm)].map(
     (match) => match[1],
