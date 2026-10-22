@@ -56,9 +56,11 @@ import { onIdle, wakeAt } from "./wake.ts";
 import {
   cachedPlacement,
   earlyStartOnSubmit,
+  type PlacedWorktree,
   sessionWorkspace,
   type WorkspaceNamespace,
 } from "./workspace.ts";
+import { machineWorktrees } from "../workspace/worktrees.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
 /**
@@ -75,8 +77,9 @@ const workersTracing = (): Promise<WorkersTracing | undefined> =>
 const NAME_KEY = "session-name";
 
 /**
- * The key the Session's placement (its Workspace's slug and repo) is kept under, once the Registry has told it. A Session
- * that kept only a slug, under `WORKSPACE_KEY`, was bound before repos existed and works at the Workspace root.
+ * The key the Session's placement (its Machine's slug, its repo and its worktree) is kept under, once the Registry has
+ * told it. A Session that kept only a slug, under `WORKSPACE_KEY`, was bound before repos existed and works at the
+ * Machine's root; one that kept no worktree was bound before Workspaces of their own, and works in the main checkout.
  */
 const PLACEMENT_KEY = "session-placement";
 
@@ -209,31 +212,56 @@ export const SessionLive = Session.make(
               readonly slug?: string;
               readonly machine?: string;
               readonly repo: string | null;
+              readonly worktree?: PlacedWorktree | null;
             }>(PLACEMENT_KEY);
 
             const stored = known?.machine ?? known?.slug;
 
             if (known !== undefined && stored !== undefined) {
-              return { machine: stored, repo: known.repo };
+              return { machine: stored, repo: known.repo, worktree: known.worktree ?? null };
             }
 
             const slug = kv.get<string>(WORKSPACE_KEY);
 
-            return slug === undefined ? undefined : { machine: slug, repo: null };
+            return slug === undefined ? undefined : { machine: slug, repo: null, worktree: null };
           },
           put: (known) => kv.put(PLACEMENT_KEY, known),
           lookup: (id) =>
-            runtime
-              .runPromise(registries.getByName(REGISTRY_NAME).getSession({ id }))
-              .then((session) =>
-                session === null ? null : { machine: session.machine, repo: session.repo ?? null },
-              ),
+            runtime.runPromise(
+              Effect.gen(function* () {
+                const registry = registries.getByName(REGISTRY_NAME);
+                const session = yield* registry.getSession({ id });
+
+                if (session === null) return null;
+
+                const worktree =
+                  session.workspace === null
+                    ? null
+                    : yield* registry.getWorkspace({ id: session.workspace });
+
+                return {
+                  machine: session.machine,
+                  repo: session.repo ?? null,
+                  // A Workspace removed meanwhile took the Session with it; until then it works in the main checkout.
+                  worktree: worktree === null ? null : { id: worktree.id, branch: worktree.branch },
+                };
+              }),
+            ),
         });
 
+        // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (`worker.ts`), a raw namespace.
+        const workspaces = worker[WORKSPACE_BINDING] as WorkspaceNamespace;
+
+        // A Setup Script that fails is reported in the Worker log; the Session's commands see its state.
+        const worktrees = machineWorktrees(workspaces, (message) =>
+          // @effect-diagnostics-next-line globalConsole:off
+          console.warn(message),
+        );
+
         const workspace = sessionWorkspace({
-          // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (`worker.ts`), a raw namespace.
-          namespace: worker[WORKSPACE_BINDING] as WorkspaceNamespace,
+          namespace: workspaces,
           placement,
+          prepare: (machine, worktree) => worktrees.on(machine).prepare(worktree),
         });
 
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.

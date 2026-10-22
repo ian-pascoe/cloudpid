@@ -26,12 +26,14 @@ import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { expect, it } from "vitest";
 import { isRegistryRpc } from "../routes.ts";
+import type { WorkspaceChoice } from "./Registry.ts";
 import { serveRegistryRpc, type SessionObjects } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type { Repos } from "../workspace/repos.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { WorkspaceSettingsRemote } from "../workspace/settings.ts";
-import type { SessionRecord, MachineRecord } from "./store.ts";
+import type { Worktree, Worktrees } from "../workspace/worktrees.ts";
+import type { SessionRecord, MachineRecord, WorkspaceRecord } from "./store.ts";
 
 /** The overrides the fake saved, as the fields of the settings they replace. */
 // SAFETY: the tests only save overrides of the settings' own shape.
@@ -40,6 +42,7 @@ const asSettings = (overrides: Schema.Json) => overrides as Partial<MachineSetti
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
   const sessions: SessionRecord[] = [];
+  const workspaces: WorkspaceRecord[] = [];
   const machines: MachineRecord[] = [{ slug: "default", name: "default", createdAt: 0 }];
   const names: string[] = [];
   /** The endpoints of the Web Push subscriptions kept. */
@@ -156,14 +159,30 @@ const fakeRegistries = () => {
       title,
       machine,
       repo,
+      workspace,
     }: {
       title?: string | undefined;
       machine?: string;
       repo?: string;
+      workspace?: WorkspaceChoice;
     }) =>
       Effect.sync(() => {
         calls.push("createSession");
         registerWorkspace(machine ?? "default");
+
+        let workspaceId = workspace?.kind === "existing" ? workspace.id : null;
+
+        if (workspace?.kind === "new") {
+          workspaceId = String(workspaces.length + 1).padStart(8, "0");
+          workspaces.unshift({
+            id: workspaceId,
+            machine: machine ?? "default",
+            repo: repo ?? "",
+            branch: workspace.branch ?? `cloudpid/${workspaceId}`,
+            directory: `/workspace/.worktrees/${repo}/${workspaceId}`,
+            createdAt: 1,
+          });
+        }
 
         const record: SessionRecord = {
           id: `session-${sessions.length + 1}`,
@@ -171,6 +190,7 @@ const fakeRegistries = () => {
           titleSource: title === undefined ? null : "owner",
           machine: machine ?? "default",
           repo: repo ?? null,
+          workspace: workspaceId,
           status: "idle",
           createdAt: 1,
           updatedAt: 1,
@@ -243,6 +263,35 @@ const fakeRegistries = () => {
         return remove(machines, (machine) => machine.slug === slug)
           ? ("deleted" as const)
           : ("missing" as const);
+      }),
+    getWorkspace: ({ id }: { id: string }) =>
+      Effect.sync(() =>
+        Option.getOrNull(Arr.findFirst(workspaces, (workspace) => workspace.id === id)),
+      ),
+    listWorkspaces: () => Effect.sync(() => [...workspaces]),
+    deleteWorkspace: ({ id }: { id: string }) =>
+      Effect.sync(() => {
+        calls.push(`deleteWorkspace:${id}`);
+
+        if (Arr.some(sessions, (session) => session.workspace === id)) return "in-use" as const;
+
+        return remove(workspaces, (workspace) => workspace.id === id)
+          ? ("deleted" as const)
+          : ("missing" as const);
+      }),
+    deleteWorkspacesOf: ({ machine, repo }: { machine: string; repo?: string | undefined }) =>
+      Effect.sync(() => {
+        calls.push(`deleteWorkspacesOf:${machine}${repo === undefined ? "" : `/${repo}`}`);
+
+        const kept = Arr.filter(
+          workspaces,
+          (workspace) =>
+            workspace.machine !== machine ||
+            (repo !== undefined && workspace.repo !== repo) ||
+            Arr.some(sessions, (session) => session.workspace === workspace.id),
+        );
+
+        workspaces.splice(0, workspaces.length, ...kept);
       }),
     getSettings: () =>
       Effect.sync(() => {
@@ -347,10 +396,39 @@ const fakeRegistries = () => {
     },
   };
 
+  /** Whether a released worktree holds uncommitted changes, and so is kept; why worktree calls fail, if they do. */
+  let worktreeDirty = false;
+  let worktreeFails: string | undefined;
+
+  const worktreeCall = (call: string, worktree: Worktree) => {
+    calls.push(`${call}:${worktree.id}`);
+
+    return worktreeFails === undefined
+      ? Promise.resolve()
+      : Promise.reject(new Error(worktreeFails));
+  };
+
+  const worktrees: Worktrees = {
+    on: () => ({
+      prepare: (worktree) => worktreeCall("prepareWorktree", worktree),
+      remove: (worktree) => worktreeCall("removeWorktree", worktree),
+      release: (worktree) => worktreeCall("releaseWorktree", worktree).then(() => !worktreeDirty),
+    }),
+  };
+
   return {
     names,
     calls,
     repos,
+    worktrees,
+    workspaces,
+    /** Make released worktrees hold uncommitted changes. */
+    dirtyWorktrees: () => {
+      worktreeDirty = true;
+    },
+    failWorktrees: (message: string) => {
+      worktreeFails = message;
+    },
     sessionObjects,
     workspaceObjects,
     breakSession: (id: string, message: string) => {
@@ -402,6 +480,7 @@ const worker =
       machineSettings: fake.machineSettings,
       sessions: fake.sessionObjects,
       machines: fake.workspaceObjects,
+      worktrees: fake.worktrees,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
       Effect.map(HttpServerResponse.toWeb),
@@ -1333,4 +1412,245 @@ it("fails a removal that did not finish with its message, keeping the repo", asy
   expect(await call(fake, (registry) => registry.listRepos({ machine: "cloudpid" }))).toEqual([
     "pi",
   ]);
+});
+
+/** The calls that reached a worktree, or forgot a Session or a Workspace, in order. */
+const worktreeCalls = (fake: ReturnType<typeof fakeRegistries>) =>
+  Arr.filter(fake.calls, (name) =>
+    /^(prepareWorktree|removeWorktree|releaseWorktree|deleteWorkspace|deleteSession|destroy):/.test(
+      name,
+    ),
+  );
+
+it("creates a Session in a new Workspace of a repo the Machine holds, on its own branch", async () => {
+  const fake = fakeRegistries();
+
+  const session = await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+  );
+
+  expect(session).toMatchObject({ machine: "cloudpid", repo: "pi", workspace: "00000001" });
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([
+    {
+      id: "00000001",
+      machine: "cloudpid",
+      repo: "pi",
+      branch: "cloudpid/00000001",
+      directory: "/workspace/.worktrees/pi/00000001",
+      createdAt: 1,
+    },
+  ]);
+  // The worktree is made when the Session first works in it, not now.
+  expect(worktreeCalls(fake)).toEqual([]);
+});
+
+it("creates a new Workspace on the branch the owner names, unless another Workspace of the repo is on it", async () => {
+  const fake = fakeRegistries();
+
+  const session = await call(fake, (registry) =>
+    registry.createSession({
+      machine: "cloudpid",
+      repo: "pi",
+      workspace: "new",
+      branch: "fix/build",
+    }),
+  );
+
+  const [workspace] = await call(fake, (registry) => registry.listWorkspaces());
+
+  expect(workspace).toMatchObject({ id: session.workspace, branch: "fix/build" });
+
+  const taken = await call(fake, (registry) =>
+    Effect.flip(
+      registry.createSession({
+        machine: "cloudpid",
+        repo: "pi",
+        workspace: "new",
+        branch: "fix/build",
+      }),
+    ),
+  );
+
+  expect(taken).toBeInstanceOf(MachineError);
+  expect(taken.message).toContain(String(session.workspace));
+  expect(await call(fake, (registry) => registry.listSessions())).toHaveLength(1);
+});
+
+it("refuses a branch without a new Workspace, and a new Workspace without a repo or of a repo the Machine lacks", async () => {
+  const fake = fakeRegistries();
+
+  for (const input of [
+    { machine: "cloudpid", repo: "pi", branch: "fix/build" },
+    { machine: "cloudpid", workspace: "new" as const },
+    { machine: "cloudpid", repo: "ghost", workspace: "new" as const },
+  ]) {
+    const error = await call(fake, (registry) => Effect.flip(registry.createSession(input)));
+
+    expect(error).toBeInstanceOf(MachineError);
+  }
+
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
+});
+
+it("rejects a branch git would not take, before it reaches the Registry", async () => {
+  for (const branch of ["-x", "a..b", "has space", "end.lock"]) {
+    const { text, calls } = await callRaw("createSession", {
+      machine: "cloudpid",
+      repo: "pi",
+      workspace: "new",
+      branch,
+    });
+
+    expect(text).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+});
+
+it("creates a Session in a Workspace that exists, which brings its Machine and repo", async () => {
+  const fake = fakeRegistries();
+
+  const first = await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+  );
+
+  const id = String(first.workspace);
+
+  const second = await call(fake, (registry) => registry.createSession({ workspace: id }));
+
+  expect(second).toMatchObject({ machine: "cloudpid", repo: "pi", workspace: id });
+
+  const elsewhere = await call(fake, (registry) =>
+    Effect.flip(registry.createSession({ machine: "default", workspace: id })),
+  );
+
+  const unknown = await call(fake, (registry) =>
+    Effect.flip(registry.createSession({ workspace: "deadbeef" })),
+  );
+
+  expect(elsewhere.message).toContain("cloudpid");
+  expect(unknown.message).toContain("deadbeef");
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toHaveLength(1);
+});
+
+it("releases a Workspace with the last Session bound to it, archived ones included", async () => {
+  const fake = fakeRegistries();
+
+  const first = await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+  );
+
+  const id = String(first.workspace);
+  const second = await call(fake, (registry) => registry.createSession({ workspace: id }));
+
+  await call(fake, (registry) => registry.archiveSession({ id: second.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: first.id }));
+  expect(worktreeCalls(fake)).toEqual([`destroy:${first.id}`, `deleteSession:${first.id}`]);
+
+  fake.calls.length = 0;
+  await call(fake, (registry) => registry.deleteSession({ id: second.id }));
+
+  expect(worktreeCalls(fake)).toEqual([
+    `destroy:${second.id}`,
+    `deleteSession:${second.id}`,
+    `releaseWorktree:${id}`,
+    `deleteWorkspace:${id}`,
+  ]);
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
+});
+
+it("keeps a Workspace whose worktree holds uncommitted changes, or could not be released, once its last Session is deleted", async () => {
+  for (const spoil of [
+    (fake: ReturnType<typeof fakeRegistries>) => fake.dirtyWorktrees(),
+    (fake: ReturnType<typeof fakeRegistries>) => fake.failWorktrees("no Container"),
+  ]) {
+    const fake = fakeRegistries();
+
+    const session = await call(fake, (registry) =>
+      registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+    );
+
+    spoil(fake);
+
+    // The Session's deletion is done either way.
+    await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+    expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
+    expect(await call(fake, (registry) => registry.listWorkspaces())).toHaveLength(1);
+  }
+});
+
+it("removes a Workspace: every Session bound to it, archived ones too, then its worktree, then its record", async () => {
+  const fake = fakeRegistries();
+
+  const inMain = await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi" }),
+  );
+
+  const first = await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+  );
+
+  const id = String(first.workspace);
+  const second = await call(fake, (registry) => registry.createSession({ workspace: id }));
+
+  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeWorkspace({ id }));
+
+  expect(worktreeCalls(fake)).toEqual([
+    `destroy:${second.id}`,
+    `deleteSession:${second.id}`,
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    `removeWorktree:${id}`,
+    `deleteWorkspace:${id}`,
+  ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([inMain]);
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
+});
+
+it("keeps a Workspace whose worktree could not be removed, and refuses one the Registry does not know", async () => {
+  const fake = fakeRegistries();
+
+  const session = await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+  );
+
+  fake.failWorktrees("rm failed");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.removeWorkspace({ id: String(session.workspace) })),
+  );
+
+  const unknown = await call(fake, (registry) =>
+    Effect.flip(registry.removeWorkspace({ id: "deadbeef" })),
+  );
+
+  expect(error).toBeInstanceOf(MachineError);
+  expect(error.message).toContain("rm failed");
+  expect(unknown.message).toContain("deadbeef");
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toHaveLength(1);
+});
+
+it("forgets the Workspaces of a repo once it is removed, and of a Machine once it is reset", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+  );
+
+  await call(fake, (registry) => registry.removeRepo({ machine: "cloudpid", repo: "pi" }));
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
+
+  fake.held.set("cloudpid", ["pi"]);
+  await call(fake, (registry) =>
+    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
+  );
+
+  await call(fake, (registry) => registry.resetMachine({ machine: "cloudpid" }));
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
 });

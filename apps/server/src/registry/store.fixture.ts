@@ -11,9 +11,12 @@ import {
   type RegistryStore,
   type SessionRecord,
   type SessionStatus,
+  type StoredWorkspaceChoice,
   type MachineDeletion,
   type MachineRecord,
   type MachineRename,
+  type WorkspaceDeletion,
+  type WorkspaceRecord,
 } from "./store.ts";
 
 export class TestRegistry extends DurableObject {
@@ -25,7 +28,13 @@ export class TestRegistry extends DurableObject {
   }
 
   createSession(
-    input: { id: string; title: string | null; machine?: string; repo?: string },
+    input: {
+      id: string;
+      title: string | null;
+      machine?: string;
+      repo?: string;
+      workspace?: StoredWorkspaceChoice;
+    },
     now: number,
   ): SessionRecord {
     return this.#store.createSession(input, now);
@@ -81,6 +90,22 @@ export class TestRegistry extends DurableObject {
 
   deleteMachine(slug: string): MachineDeletion {
     return this.#store.deleteMachine(slug);
+  }
+
+  getWorkspace(id: string): WorkspaceRecord | null {
+    return this.#store.getWorkspace(id);
+  }
+
+  listWorkspaces(): WorkspaceRecord[] {
+    return this.#store.listWorkspaces();
+  }
+
+  deleteWorkspace(id: string): WorkspaceDeletion {
+    return this.#store.deleteWorkspace(id);
+  }
+
+  deleteWorkspacesOf(machine: string, repo?: string): void {
+    this.#store.deleteWorkspacesOf(machine, repo);
   }
 
   getDocument(name: string): string | null {

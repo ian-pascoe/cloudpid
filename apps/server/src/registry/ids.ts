@@ -29,3 +29,8 @@ export const newSessionId: Effect.Effect<string> = Clock.currentTimeMillis.pipe(
     return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
   }),
 );
+
+/** A new Workspace ID: eight random lowercase hex digits (`WorkspaceId`), also its worktree's directory name. */
+export const newWorkspaceId: Effect.Effect<string> = Effect.sync(() =>
+  hex(crypto.getRandomValues(new Uint8Array(4))),
+);

@@ -1,11 +1,12 @@
-// A Session's Workspace (`docs/spec.md` → Filesystem and tools, ADR-0001): its conversations' execution environment is a
-// `ComputerExecutionEnv` over the Workspace DO named by the Session's slug, and `ls`, `find`, and `grep` search the same
-// Workspace's files. Every Session bound to a slug reaches the same DO, so they share one tree (ADR-0006). A Session
-// bound to a repo works in its directory, `/workspace/<repo>`, unless a conversation names another `cwd`.
-// @effect-diagnostics asyncFunction:off
+// A Session's Workspace (`docs/spec.md` → Filesystem and tools, ADR-0001, ADR-0015): its conversations' execution
+// environment is a `ComputerExecutionEnv` over the Workspace DO named by the Session's Machine, and `ls`, `find`, and
+// `grep` search the same Machine's files. Every Session on a Machine reaches the same DO, so they share one tree. A
+// Session works in its Workspace unless a conversation names another `cwd`: a worktree of its repo of its own,
+// `/workspace/.worktrees/<repo>/<id>` (made on first use), the repo's main checkout, `/workspace/<repo>`, or the root.
+// @effect-diagnostics asyncFunction:off globalDate:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { FileSearch } from "@cloudpid/extensions/files";
-import { DEFAULT_MACHINE, repoDirectory } from "@cloudpid/protocol";
+import { DEFAULT_MACHINE, repoDirectory, worktreeDirectory } from "@cloudpid/protocol";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { WORKSPACE_ROOT } from "../workspace/binding.ts";
@@ -24,8 +25,25 @@ export type WorkspaceNamespace = {
   ): ComputerWorkspaceStub & Pick<DurableObjectStub<Workspace>, "startContainerEarly">;
 };
 
-/** Where a Session works: its Machine's slug, and the repo directory below `/workspace` it works in (null: the root). */
-export type Placement = { readonly machine: string; readonly repo: string | null };
+/** A Workspace of its own: a worktree of the Session's repo, on its branch. */
+export type PlacedWorktree = { readonly id: string; readonly branch: string };
+
+/**
+ * Where a Session works: its Machine's slug, the repo it works in (null: the root), and its Workspace of its own in that
+ * repo (null: the repo's main checkout).
+ */
+export type Placement = {
+  readonly machine: string;
+  readonly repo: string | null;
+  readonly worktree: PlacedWorktree | null;
+};
+
+/** The directory a Session works in when a conversation names no `cwd`. */
+export const placementDirectory = ({ repo, worktree }: Placement): string => {
+  if (repo === null) return WORKSPACE_ROOT;
+
+  return worktree === null ? repoDirectory(repo) : worktreeDirectory(repo, worktree.id);
+};
 
 export type CachedPlacementOptions = {
   /** The Session's name, its ID in the Registry; undefined when unknown. */
@@ -39,7 +57,7 @@ export type CachedPlacementOptions = {
 };
 
 /** Where a Session the Registry does not list works: the root of the default Workspace. */
-const DEFAULT_PLACEMENT: Placement = { machine: DEFAULT_MACHINE, repo: null };
+const DEFAULT_PLACEMENT: Placement = { machine: DEFAULT_MACHINE, repo: null, worktree: null };
 
 /**
  * Where a Session works. It is fixed when the Registry creates the Session, so it is asked once and kept. A Session the
@@ -64,10 +82,63 @@ export const cachedPlacement =
     return placement;
   };
 
+/** How long a worktree found or made counts as there before it is checked again, in milliseconds. */
+export const WORKTREE_CHECKED_FOR = 60_000;
+
+/** Make a worktree of `worktree.repo` on Machine `machine` unless it is there (`MachineWorktrees.prepare`). */
+export type PrepareWorktree = (
+  machine: string,
+  worktree: PlacedWorktree & { readonly repo: string },
+) => Promise<void>;
+
+export type ReadyPlacementOptions = {
+  readonly placement: () => Promise<Placement>;
+  readonly prepare: PrepareWorktree;
+  /** The time in milliseconds; defaults to `Date.now`. */
+  readonly now?: () => number;
+};
+
+/**
+ * The Session's placement once its Workspace's worktree is there: made when the Session first works in it, and again
+ * after it was removed. A worktree found or made is not checked again for `WORKTREE_CHECKED_FOR`; callers meanwhile wait
+ * for the one check in flight. A check that fails fails the call and is tried again at the next.
+ */
+export const readyPlacement = ({
+  placement,
+  prepare,
+  now = Date.now,
+}: ReadyPlacementOptions): (() => Promise<Placement>) => {
+  let checkedAt: number | undefined;
+  let checking: Promise<void> | undefined;
+
+  return async () => {
+    const placed = await placement();
+    const { repo, worktree } = placed;
+
+    if (repo === null || worktree === null) return placed;
+
+    if (checkedAt !== undefined && now() - checkedAt < WORKTREE_CHECKED_FOR) return placed;
+
+    checking ??= prepare(placed.machine, { ...worktree, repo })
+      .then(() => {
+        checkedAt = now();
+      })
+      .finally(() => {
+        checking = undefined;
+      });
+
+    await checking;
+
+    return placed;
+  };
+};
+
 export type SessionWorkspaceOptions = {
   readonly namespace: WorkspaceNamespace;
-  /** The Workspace and repo the Session is bound to. Called at each use, so it may look them up. */
+  /** The Machine, repo and Workspace the Session is bound to. Called at each use, so it may look them up. */
   readonly placement: () => Promise<Placement>;
+  /** Makes the Session's worktree, if it has one, before its files are used. */
+  readonly prepare: PrepareWorktree;
 };
 
 /** What a Session runs its tools on. */
@@ -84,10 +155,12 @@ export type SessionWorkspace = {
 };
 
 export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorkspace => {
+  const ready = readyPlacement(options);
+
   const search = async () => {
     const { ComputerFiles } = await computer();
 
-    return new ComputerFiles(options.namespace.getByName((await options.placement()).machine));
+    return new ComputerFiles(options.namespace.getByName((await ready()).machine));
   };
 
   const files: FileSearch = {
@@ -99,14 +172,14 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
   return {
     env: async (target) => {
       const { ComputerExecutionEnv } = await computer();
-      const { machine, repo } = await options.placement();
+      const placed = await ready();
 
       return new ComputerExecutionEnv({
-        workspace: options.namespace.getByName(machine),
-        // Environments with equal ids see the same files: one per Workspace.
-        id: `computer:${machine}`,
-        // A conversation's own `cwd` first, then the Session's repo, then the Workspace root.
-        cwd: target.cwd ?? (repo === null ? WORKSPACE_ROOT : repoDirectory(repo)),
+        workspace: options.namespace.getByName(placed.machine),
+        // Environments with equal ids see the same files: one per Machine.
+        id: `computer:${placed.machine}`,
+        // A conversation's own `cwd` first, then the Session's Workspace.
+        cwd: target.cwd ?? placementDirectory(placed),
       });
     },
     files,
@@ -114,6 +187,9 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
       const { machine } = await options.placement();
 
       await options.namespace.getByName(machine).startContainerEarly();
+      // The worktree, if it is not there yet, is made meanwhile: the turn's first use waits for this same check, and
+      // one that fails is tried again there, and reported to it.
+      void ready().catch(() => undefined);
     },
   };
 };

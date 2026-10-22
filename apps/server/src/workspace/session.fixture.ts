@@ -48,8 +48,14 @@ export class TestWorkspaceSession extends TestSession {
       namespace: this.env.WORKSPACES,
       placement: () =>
         Promise.resolve(
-          this.ctx.storage.kv.get<Placement>(KEY) ?? { machine: DEFAULT_MACHINE, repo: null },
+          this.ctx.storage.kv.get<Placement>(KEY) ?? {
+            machine: DEFAULT_MACHINE,
+            repo: null,
+            worktree: null,
+          },
         ),
+      // The test Worker has no Container to make a worktree on; these Sessions work in main checkouts.
+      prepare: () => Promise.reject(new Error("The test Worker makes no worktrees")),
     });
   }
 
@@ -123,6 +129,6 @@ export class TestWorkspaceSession extends TestSession {
 
   /** Bind this Session to Workspace `slug` (and the repo directory in it), as the Registry binds a Session when it is created. */
   bindWorkspace(slug: string, repo: string | null = null): void {
-    this.ctx.storage.kv.put(KEY, { machine: slug, repo } satisfies Placement);
+    this.ctx.storage.kv.put(KEY, { machine: slug, repo, worktree: null } satisfies Placement);
   }
 }

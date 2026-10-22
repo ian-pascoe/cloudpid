@@ -7,7 +7,7 @@ import type { PushState, PushSubscription } from "@cloudpid/protocol";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
-import { newSessionId } from "./ids.ts";
+import { newSessionId, newWorkspaceId } from "./ids.ts";
 import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
 import {
   openRegistryStore,
@@ -16,18 +16,30 @@ import {
   type MachineRecord,
   type MachineDeletion,
   type MachineRename,
+  type WorkspaceDeletion,
+  type WorkspaceRecord,
 } from "./store.ts";
 
 /** The Registry is a singleton: every caller addresses the object with this name. */
 export const REGISTRY_NAME = "registry";
 
+/** A new Session's Workspace of its own: one that exists, or a new one, on `branch` if given. */
+export type WorkspaceChoice =
+  | { readonly kind: "existing"; readonly id: string }
+  | { readonly kind: "new"; readonly branch?: string | undefined };
+
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
-  /** Register a new Session, idle, under a fresh UUIDv7, bound to `machine` (default `DEFAULT_MACHINE`). */
+  /**
+   * Register a new Session, idle, under a fresh UUIDv7, bound to `machine` (default `DEFAULT_MACHINE`). `workspace` is
+   * a Workspace of `repo` it works in, or a new one to register with it, under a fresh id, on `branch` (default
+   * `cloudpid/<id>`).
+   */
   readonly createSession: (input: {
     readonly title?: string | undefined;
     readonly machine?: string | undefined;
     readonly repo?: string | undefined;
+    readonly workspace?: WorkspaceChoice | undefined;
   }) => Effect.Effect<SessionRecord>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
@@ -69,6 +81,17 @@ export type RegistryMethods = {
   }) => Effect.Effect<MachineRename>;
   /** Forget a Machine once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
   readonly deleteMachine: (input: { readonly slug: string }) => Effect.Effect<MachineDeletion>;
+  /** The Workspace registered under `id`, or null. */
+  readonly getWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceRecord | null>;
+  /** Every Workspace of its own, newest first. */
+  readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
+  /** Forget a Workspace once its Sessions are deleted and its worktree removed; kept while a Session is bound to it. */
+  readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceDeletion>;
+  /** Forget the Workspaces of a Machine (or of one of its repos) no Session is bound to, once their files are gone. */
+  readonly deleteWorkspacesOf: (input: {
+    readonly machine: string;
+    readonly repo?: string | undefined;
+  }) => Effect.Effect<void>;
   /** The settings in force and the overrides saved over the defaults. */
   readonly getSettings: () => Effect.Effect<SettingsState>;
   /** Save `overrides` in place of the saved ones if they resolve; otherwise say why not, and save nothing. */
@@ -110,12 +133,37 @@ export const RegistryLive = Registry.make(
         const notify = pushNotifier({ store, vapid: push.vapid });
 
         return {
-          createSession: ({ title, machine, repo }) =>
+          createSession: ({ title, machine, repo, workspace }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
-              return store.createSession({ id, title: title ?? null, machine, repo }, now);
+              if (workspace?.kind !== "new") {
+                return store.createSession(
+                  { id, title: title ?? null, machine, repo, workspace },
+                  now,
+                );
+              }
+
+              // Eight hex digits rarely collide; one that does is drawn again.
+              let workspaceId = yield* newWorkspaceId;
+
+              while (store.getWorkspace(workspaceId) !== null) workspaceId = yield* newWorkspaceId;
+
+              return store.createSession(
+                {
+                  id,
+                  title: title ?? null,
+                  machine,
+                  repo,
+                  workspace: {
+                    kind: "new",
+                    id: workspaceId,
+                    branch: workspace.branch ?? `cloudpid/${workspaceId}`,
+                  },
+                },
+                now,
+              );
             }),
           getSession: ({ id }) => Effect.sync(() => store.getSession(id)),
           listSessions: () => Effect.sync(() => store.listSessions()),
@@ -135,6 +183,11 @@ export const RegistryLive = Registry.make(
           listMachines: () => Effect.sync(() => store.listMachines()),
           renameMachine: ({ slug, name }) => Effect.sync(() => store.renameMachine(slug, name)),
           deleteMachine: ({ slug }) => Effect.sync(() => store.deleteMachine(slug)),
+          getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
+          listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
+          deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
+          deleteWorkspacesOf: ({ machine, repo }) =>
+            Effect.sync(() => store.deleteWorkspacesOf(machine, repo)),
           getSettings: () => Effect.sync(() => readSettings(store)),
           updateSettings: ({ overrides }) =>
             Clock.currentTimeMillis.pipe(

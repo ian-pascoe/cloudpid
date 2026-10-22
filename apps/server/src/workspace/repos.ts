@@ -42,15 +42,23 @@ export const cloneCommand = (source: RepoSource): ReadonlyArray<string> => [
 export const REMOVE_TIMEOUT_SECONDS = 5 * 60;
 
 /**
- * `rm -rf -- <name> <its Setup Script record>` as an argument vector, run in `/workspace` without a shell. The name is a
- * repo name (`isRepoName`), so it is one directory directly below `/workspace`, never a path, `.`, `..` or an option;
- * `--` ends `rm`'s options besides. The record of the repo's last successful Setup Script goes too, so a repo cloned
- * again under the name runs its script at the next Container start, though the script is the same.
+ * What removing a repo runs, in bash, in `/workspace`: `$1` is the repo's name and `$2` the record of its Setup Script.
+ * It deletes the repo's directory, its Workspaces' worktrees (`.worktrees/<name>`), the record of its main checkout's
+ * Setup Script and those of its worktrees (`<record>@<id>`), so a repo cloned again under the name runs its scripts
+ * at the next Container start, though they are the same.
+ */
+export const REMOVE_SCRIPT = 'rm -rf -- "$1" ".worktrees/$1" "$2" "$2"@*';
+
+/**
+ * `bash -c REMOVE_SCRIPT` with the repo's name and its Setup Script's record as arguments of their own, run without a
+ * shell around it, so neither is read by one. The name is a repo name (`isRepoName`), so it is one directory directly
+ * below `/workspace`, never a path, `.`, `..` or an option; `--` ends `rm`'s options besides.
  */
 export const removeCommand = (name: string): ReadonlyArray<string> => [
-  "rm",
-  "-rf",
-  "--",
+  "bash",
+  "-c",
+  REMOVE_SCRIPT,
+  "cloudpid-remove",
   name,
   setupRecord(name),
 ];
@@ -208,14 +216,14 @@ export const listRepos = async (files: Directories): Promise<ReadonlyArray<strin
  * `@cloudpid/computer-env` loads on first use. `@cloudflare/computer` imports `cloudflare:workers`, which Node cannot
  * load, and the deploy loads the Server's module graph, this file included, in Node.
  */
-const computer = () => import("@cloudpid/computer-env");
+export const computer = () => import("@cloudpid/computer-env");
 
-/** The Container's shell of Workspace `slug`, for one call, cleaned up after it. */
-const onContainer = async (
+/** The Container's shell of Machine `slug`, for one call, cleaned up after it. */
+export const onContainer = async <A>(
   namespace: WorkspaceNamespace,
   slug: string,
-  run: (shell: Pick<Shell, "exec">) => Promise<void>,
-): Promise<void> => {
+  run: (shell: Pick<Shell, "exec">) => Promise<A>,
+): Promise<A> => {
   const { ComputerExecutionEnv } = await computer();
 
   const container = new ComputerExecutionEnv({
@@ -226,7 +234,7 @@ const onContainer = async (
   }).onBackend("container");
 
   try {
-    await run(container);
+    return await run(container);
   } finally {
     await container.cleanup(BACKGROUND_CONTEXT);
   }

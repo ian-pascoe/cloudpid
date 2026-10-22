@@ -8,6 +8,7 @@ import {
   cloneInto,
   listRepos,
   REMOVE_TIMEOUT_SECONDS,
+  REMOVE_SCRIPT,
   removeFrom,
   stillThere,
 } from "./repos.ts";
@@ -33,19 +34,21 @@ const shell = (answer: Awaited<ReturnType<Exec>>, output = "") => {
 const source = { url: "https://github.com/octocat/Hello-World.git", name: "Hello-World" };
 
 describe("removeFrom", () => {
-  it("runs rm -rf -- <name> <its Setup Script record> as an argument vector in /workspace", async () => {
+  it("removes the repo, its Workspaces' worktrees and their Setup Script records, the name an argument of its own", async () => {
     const container = shell(ok({ exitCode: 0 }));
 
     await removeFrom(container, "Hello-World");
 
     expect(container.calls).toHaveLength(1);
     expect(container.calls[0]?.command).toEqual([
-      "rm",
-      "-rf",
-      "--",
+      "bash",
+      "-c",
+      REMOVE_SCRIPT,
+      "cloudpid-remove",
       "Hello-World",
       "/var/lib/cloudpid/setup/Hello-World",
     ]);
+    expect(REMOVE_SCRIPT).toBe('rm -rf -- "$1" ".worktrees/$1" "$2" "$2"@*');
     expect(container.calls[0]?.options).toMatchObject({
       cwd: "/workspace",
       timeout: REMOVE_TIMEOUT_SECONDS,

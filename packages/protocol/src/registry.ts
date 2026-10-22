@@ -5,7 +5,7 @@ import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
-import { RepoName, MachineError } from "./repo.ts";
+import { BranchName, MachineError, RepoName, WorkspaceId } from "./repo.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -48,8 +48,13 @@ export const SessionRecord = Schema.Struct({
   titleSource: Schema.NullOr(TitleSource),
   /** The slug of the Machine the Session works on; it never changes. */
   machine: Schema.String,
-  /** The repo directory below `/workspace` the Session's `cwd` is, or null for the Machine root; it never changes. */
+  /** The repo the Session works in, or null for the Machine's root; it never changes. */
   repo: Schema.NullOr(Schema.String),
+  /**
+   * The id of the Workspace of its own the Session works in (a worktree of `repo`: `WorkspaceRecord`), or null for the
+   * repo's main checkout, or the Machine's root without a repo; it never changes.
+   */
+  workspace: Schema.NullOr(Schema.String),
   status: SessionStatus,
   createdAt: Schema.Finite,
   /** When the Session was created or its status last changed. */
@@ -75,6 +80,30 @@ export class SessionActionError extends Schema.TaggedError<
 >()("SessionActionError", {
   message: Schema.String,
 }) {}
+
+/**
+ * A Workspace of its own (ADR-0015): a git worktree of a repo on one branch, at `worktreeDirectory(repo, id)`, made
+ * when a Session first works in it. A repo's main checkout and a Machine's root are Workspaces too, without a record:
+ * a Session names them by its Machine and repo alone.
+ */
+export const WorkspaceRecord = Schema.Struct({
+  /** Eight lowercase hex digits (`WorkspaceId`), also its worktree's directory name. */
+  id: Schema.String,
+  /** The slug of the Machine it is on. */
+  machine: Schema.String,
+  /** The repo it is a worktree of. */
+  repo: Schema.String,
+  /** The branch it works on: `cloudpid/<id>` unless the owner named one. It outlives the worktree. */
+  branch: Schema.String,
+  /** Its worktree: `/workspace/.worktrees/<repo>/<id>`. */
+  directory: Schema.String,
+  createdAt: Schema.Finite,
+});
+
+export type WorkspaceRecord = typeof WorkspaceRecord.Type;
+
+/** What `createSession` is told to make the Session's Workspace a new one of the repo's own. */
+export const NEW_WORKSPACE = "new";
 
 /** The longest Machine name. */
 export const MAX_MACHINE_NAME_LENGTH = 80;
@@ -200,10 +229,23 @@ export class RegistryRpcs extends RpcGroup.make(
       /** Defaults to `DEFAULT_MACHINE`. */
       machine: Schema.optionalKey(MachineSlug),
       /**
-       * A repo already in the Machine (`listRepos`) that becomes the Session's `cwd`: `/workspace/<repo>`. Without
-       * one the `cwd` is `/workspace`. A repo the Machine does not hold fails with a `MachineError`.
+       * A repo already in the Machine (`listRepos`) that the Session works in. Without one the `cwd` is `/workspace`.
+       * A repo the Machine does not hold fails with a `MachineError`.
        */
       repo: Schema.optionalKey(RepoName),
+      /**
+       * The Session's Workspace in `repo`: `NEW_WORKSPACE` makes one of its own (a worktree on its own branch, made when
+       * the Session first works in it), and a `WorkspaceId` names one that exists (its Machine and repo are then the
+       * Session's, and `machine` and `repo`, if given, must be them). Without it the Session works in the repo's main
+       * checkout.
+       */
+      workspace: Schema.optionalKey(Schema.Union([Schema.Literal(NEW_WORKSPACE), WorkspaceId])),
+      /**
+       * The branch of a new Workspace: one the repo or its `origin` has is checked out, any other is made from the
+       * remote's default branch. Defaults to `cloudpid/<id>`. Only with `workspace: NEW_WORKSPACE`; a branch another
+       * Workspace of the repo is on fails, since git checks a branch out in one worktree at a time.
+       */
+      branch: Schema.optionalKey(BranchName),
     },
     success: SessionRecord,
     error: MachineError,
@@ -310,6 +352,17 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("removeRepo", {
     payload: { machine: MachineSlug, repo: RepoName },
+    error: MachineError,
+  }),
+  /** Every Workspace of its own (a worktree), on every Machine, newest first. */
+  Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
+  /**
+   * Remove a Workspace of its own: every Session bound to it (archived ones too, each as `deleteSession`), then its
+   * worktree, on the Container, uncommitted changes and what only the Container held there included, then its record.
+   * Its branch and the commits on it stay in the repo. A failure partway leaves what is not yet deleted, to try again.
+   */
+  Rpc.make("removeWorkspace", {
+    payload: { id: WorkspaceId },
     error: MachineError,
   }),
   /** A Machine's own settings (Container size, idle time, Container-only paths) in force, and their overrides. */
