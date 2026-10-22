@@ -370,10 +370,8 @@ export class Workspace extends ContainerHost {
    * run the bootstrap, with no command, so the turn's first command does not wait for it. It answers at once and never
    * fails; it does nothing while the Container runs or is starting, and counts as use for the idle stop.
    */
-  warmContainer(): Promise<void> {
+  async warmContainer(): Promise<void> {
     this.ctx.waitUntil(this.#warmup.start());
-
-    return Promise.resolve();
   }
 
   /** The idle stop's alarm. */

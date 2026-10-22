@@ -359,9 +359,13 @@ it("holds a subagent to the Session's spend limit, and the root's next request t
 it("starts the Workspace's Container for each owner message, not for a subagent's turns or the reports the root gets", async () => {
   const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
 
-  // The child works and answers at once, and its answer reaches the root as a follow-up, which the root answers.
+  // The child works and answers at once, and its answer reaches the root as a follow-up, which the root answers. Opening
+  // the Session and reading it start nothing.
   await runInDurableObject(stub, async (instance: TestSubagentSession) => {
     instance.release();
+    await instance.idle();
+    await instance.texts("user");
+    expect(instance.warms()).toBe(0);
     await instance.submit("Delegate quietly");
   });
   await eventually(stub, async (instance) => (await instance.texts("user")).length === 2);
