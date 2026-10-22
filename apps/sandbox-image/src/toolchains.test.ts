@@ -400,6 +400,7 @@ describe("the Container's global pnpm configuration", () => {
       [
         `storeDir: "${home}/.pnpm-store"`,
         "virtualStoreType: global",
+        "enableGlobalVirtualStore: true",
         "confirmModulesPurge: false",
         "",
       ].join("\n"),
@@ -430,10 +431,69 @@ describe("the Container's global pnpm configuration", () => {
         "virtualStoreType: project",
         "registry: https://example.test/",
         `storeDir: "${home}/.pnpm-store"`,
+        "enableGlobalVirtualStore: true",
         "confirmModulesPurge: false",
         "",
       ].join("\n"),
     );
+  });
+
+  it("switches the global virtual store on under both its names, for pnpm before and after 11.23", () => {
+    expect(PNPM_GLOBAL_CONFIG).toContainEqual(["virtualStoreType", "global"]);
+    expect(PNPM_GLOBAL_CONFIG).toContainEqual(["enableGlobalVirtualStore", "true"]);
+  });
+
+  it("starts a new line when the file does not end with one", () => {
+    const { home, run } = sandbox();
+
+    mkdirSync(dirname(configOf(home)), { recursive: true });
+    writeFileSync(configOf(home), "registry: https://example.test/");
+
+    run();
+
+    const lines = readFileSync(configOf(home), "utf8").split("\n");
+
+    expect(lines[0]).toBe("registry: https://example.test/");
+    expect(lines).toContain("virtualStoreType: global");
+  });
+
+  it("does not add a key the file has in another spelling: kebab-case, quoted, or indented", () => {
+    const { home, run } = sandbox();
+
+    mkdirSync(dirname(configOf(home)), { recursive: true });
+    writeFileSync(
+      configOf(home),
+      [
+        "store-dir: /data/store",
+        '"virtualStoreType": project',
+        "'enable-global-virtual-store': false",
+        "  confirm-modules-purge: true",
+        "",
+      ].join("\n"),
+    );
+
+    run();
+
+    expect(readFileSync(configOf(home), "utf8")).toBe(
+      [
+        "store-dir: /data/store",
+        '"virtualStoreType": project',
+        "'enable-global-virtual-store': false",
+        "  confirm-modules-purge: true",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("does not take a comment or another key that starts the same for a setting", () => {
+    const { home, run } = sandbox();
+
+    mkdirSync(dirname(configOf(home)), { recursive: true });
+    writeFileSync(configOf(home), "# storeDir: /elsewhere\nstoreDirectory: x\n");
+
+    run();
+
+    expect(readFileSync(configOf(home), "utf8")).toContain(`storeDir: "${home}/.pnpm-store"`);
   });
 
   it("is written once: a second start leaves the file as it is", () => {

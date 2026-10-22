@@ -16,6 +16,7 @@
 //   cannot be shown clean is not taken. The bootstrap keeps the token off disk (git reads it from the environment), so
 //   this is for what a command wrote; a token encoded some other way is not found.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off missingPipeableSignature:off
+import { PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
 
 /** A snapshot lives 30 days from its creation or latest restore; one older than this is not trusted to still be there. */
 const MAX_AGE_MS = 29 * 24 * 60 * 60_000;
@@ -251,7 +252,7 @@ const SCAN_SCRIPT = [
   '    [ -d "$d" ] && set -- "$@" "$d"',
   "  done",
   "fi",
-  'printf \'%s\\n\' "$CLOUDPID_SCAN_SECRET" | grep -rlF --exclude-dir=.pnpm-store --exclude-dir=.pnpm -f - -- "$@"',
+  `printf '%s\\n' "$CLOUDPID_SCAN_SECRET" | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@"`,
 ].join("\n");
 
 /** What the scan needs of the platform's `ctx.container`. */

@@ -6,6 +6,13 @@
 export const WORKSPACE_ROOT = "/workspace";
 
 /**
+ * The name of the directory pnpm's store is in, under the Container's home directory (`/root/.pnpm-store`): its content-
+ * addressed files (`v11/files`) and the global virtual store (`v11/links`). It is a name the token scan before a snapshot
+ * skips (`SCAN_SCRIPT`, `apps/server/src/workspace/snapshots.ts`), since it holds only what pnpm installed.
+ */
+export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
+
+/**
  * Paths computer keeps container-local (computerd's `MOUNT_IGNORE`): they are never recorded in the Workspace DO's
  * file system, so dependency trees, build output and caches cost no DO storage and no sync. The patterns are computer's:
  * `/…` from the mount root, `**` + `/…` at any depth.
@@ -34,7 +41,7 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   // one install synced most of a Workspace's files (docs/spec.md → Container and Toolchains → Snapshots). That is what
   // an install made before the configuration, or one with an older pnpm, leaves; it stays local, on the same side as
   // `node_modules`, so pnpm still hard-links between them.
-  "**/.pnpm-store",
+  `**/${PNPM_STORE_DIRECTORY_NAME}`,
   "**/__pycache__",
   "**/.pytest_cache",
   "**/.mypy_cache",
@@ -70,26 +77,24 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
 ];
 
 /**
- * The name of the directory pnpm's store is in, under the Container's home directory (`/root/.pnpm-store`): its content-
- * addressed files (`v11/files`) and the global virtual store (`v11/links`). It is a name the token scan before a snapshot
- * skips (`SCAN_SCRIPT`, `apps/server/src/workspace/snapshots.ts`), since it holds only what pnpm installed.
- */
-export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
-
-/**
  * What the bootstrap puts in the Container's global pnpm configuration (`config.yaml` in `$XDG_CONFIG_HOME/pnpm` or
  * `~/.config/pnpm`) unless the file already sets the key: the store on the Container's disk (`$HOME/.pnpm-store`: the
  * default is the home directory's too, but pnpm puts the store of a project on another filesystem at that filesystem's
- * root, and `/workspace` is one), the global virtual store (so a repo's `node_modules` holds only symlinks into the
- * store, which stays on one filesystem with the store for hard links), and no prompt to purge `node_modules`. A
+ * root, and `/workspace` is one), the global virtual store (so a repo's `node_modules` is mostly symlinks into the
+ * store's `v11/links`, which stays on one filesystem with the store for hard links) and no prompt to purge `node_modules`.
+ * The virtual store is switched on under both of its names: `virtualStoreType` (pnpm 11.23 and later) and
+ * `enableGlobalVirtualStore` (before that, from 11.0, and still read later), since on 11.0–11.22 the store would else
+ * be on the Container's disk and the virtual store on the mount, which copies packages instead of hard-linking them.
+ * pnpm 11.0–11.22 ignores `virtualStoreType` and `confirmModulesPurge` here with a warning at each install. A
  * repo's own `pnpm-workspace.yaml` wins over this file; an environment variable would not, so these are not set as
  * one. `virtualStoreDir` is left out on purpose: set globally, it would also be where a repo that chooses the project
- * layout keeps its virtual store, shared with every other repo; unset, the global virtual store is `<store>/links`.
+ * layout keeps its virtual store, shared with every other repo; unset, the global virtual store is `<store>/v11/links`.
  * The values are YAML scalars; `$HOME` is the shell's.
  */
 export const PNPM_GLOBAL_CONFIG: ReadonlyArray<readonly [key: string, value: string]> = [
   ["storeDir", `"$HOME/${PNPM_STORE_DIRECTORY_NAME}"`],
   ["virtualStoreType", "global"],
+  ["enableGlobalVirtualStore", "true"],
   ["confirmModulesPurge", "false"],
 ];
 
@@ -197,10 +202,17 @@ const CREDENTIAL_HELPER = String.raw`!f() { if [ "$1" = get ] && [ -n "$GITHUB_T
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
-/** The bash lines that write `PNPM_GLOBAL_CONFIG`'s keys to `$pnpm_config` where it does not have them. */
+/** `storeDir` as pnpm also reads it from a file: `store-dir`. */
+const kebab = (key: string): string =>
+  key.replaceAll(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+
+/**
+ * The bash lines that write `PNPM_GLOBAL_CONFIG`'s keys to `$pnpm_config` where it does not have them, in either
+ * spelling (`storeDir`, `store-dir`), quoted or not, so a key the file sets is never added a second time.
+ */
 const pnpmConfigSteps = PNPM_GLOBAL_CONFIG.map(
   ([key, value]) =>
-    `grep -qs '^${key}:' "$pnpm_config" || printf '%s\\n' "${key}: ${value.replaceAll('"', '\\"')}" >>"$pnpm_config" 2>/dev/null`,
+    `has_pnpm_setting '${key}|${kebab(key)}' || add_pnpm_setting "${key}: ${value.replaceAll('"', '\\"')}"`,
 ).join("\n");
 
 /**
@@ -297,6 +309,11 @@ fi
 # Best effort: pnpm then works as it did, with its store at the mount's root.
 pnpm_config="\${XDG_CONFIG_HOME:-$HOME/.config}/pnpm/config.yaml"
 mkdir -p "\${pnpm_config%/*}" 2>/dev/null
+has_pnpm_setting() { grep -qsE "^[[:space:]]*[\\"']?($1)[\\"']?[[:space:]]*:" "$pnpm_config"; }
+# A file that does not end in a newline gets one first, so the line is not joined to the last.
+add_pnpm_setting() {
+  { [ ! -s "$pnpm_config" ] || [ -z "$(tail -c 1 "$pnpm_config")" ] || echo; printf '%s\\n' "$1"; } >>"$pnpm_config" 2>/dev/null
+}
 ${pnpmConfigSteps}
 
 [ "$changed" -eq 1 ] && echo ${shellQuote(BOOTSTRAP_CHANGED)}
