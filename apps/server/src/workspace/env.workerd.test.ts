@@ -256,6 +256,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
       running: () => false,
       now: () => Date.now(),
       warn: () => undefined,
+      info: () => undefined,
     });
 
     const backend = new ContainerBackend({

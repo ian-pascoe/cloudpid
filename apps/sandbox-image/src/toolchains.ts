@@ -86,6 +86,13 @@ uv = "0.13.4"
  */
 export const BASE_MISE_LOCK = "/usr/local/share/cloudpid/mise.lock";
 
+/**
+ * The line the bootstrap ends its output with when it changed the Container's disk in a way worth a snapshot (it
+ * installed a Toolchain), so the Workspace DO snapshots the disk before the first command. A bootstrap that only found
+ * what the image or a restored snapshot has prints none, and its Container waits for the idle stop's snapshot.
+ */
+export const BOOTSTRAP_CHANGED = "cloudpid-bootstrap: the Container's disk changed";
+
 /** Environment variables for a command. */
 export type CommandEnv = { [name: string]: string };
 
@@ -155,7 +162,9 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  * 4. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
  *    Container's global config has one, and points git's credentials for github.com at `$GITHUB_TOKEN` at the time
  *    git asks. Those go to the Container's `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds
- *    the token.
+ *    the token,
+ * 5. ends its output with `BOOTSTRAP_CHANGED` when a step set `changed=1` (step 3 does when mise's installs differ
+ *    from before it).
  */
 export const bootstrapScript = (
   root: string = WORKSPACE_ROOT,
@@ -195,6 +204,12 @@ fi
 
 status=0
 
+# A step that changes the Container's disk in a way worth a snapshot sets changed=1 (BOOTSTRAP_CHANGED).
+changed=0
+
+mise_installs() { printf '%s\n' "\${MISE_DATA_DIR:-$HOME/.local/share/mise}"/installs/*/*; }
+installs_before=$(mise_installs)
+
 note_failure() {
   if [ "$1" -ne 0 ] && [ "$status" -eq 0 ]; then status=$1; fi
 }
@@ -212,11 +227,15 @@ for dir in "$root" "$root"/*/; do
   fi
 done
 
+[ "$(mise_installs)" = "$installs_before" ] || changed=1
+
 if command -v git >/dev/null 2>&1; then
   git config --global --get user.name >/dev/null || git config --global user.name "\${CLOUDPID_GIT_NAME:-cloudpid}"
   git config --global --get user.email >/dev/null || git config --global user.email "\${CLOUDPID_GIT_EMAIL:-cloudpid@users.noreply.github.com}"
   git config --global credential.https://github.com.helper ${shellQuote(CREDENTIAL_HELPER)}
 fi
+
+[ "$changed" -eq 1 ] && echo ${shellQuote(BOOTSTRAP_CHANGED)}
 
 exit "$status"
 `;

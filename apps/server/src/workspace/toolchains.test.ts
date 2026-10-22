@@ -3,6 +3,7 @@
 // Container is a fake backend whose shell records what it is asked and answers from a script.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
+import { BOOTSTRAP_CHANGED } from "@cloudpid/sandbox-image/toolchains";
 import { describe, expect, it } from "vitest";
 import { SETUP_TIMED_OUT_MESSAGE } from "@cloudpid/sandbox-image/toolchains";
 import { ToolchainBackend } from "./toolchains.ts";
@@ -169,6 +170,48 @@ describe("the hook after a successful install", () => {
 
     // Only the bootstrap (and its look for Setup Scripts) had been sent when it ran, and it ran once.
     expect(seen).toEqual([2]);
+  });
+
+  it("is told the bootstrap changed the Container's disk when its output ends with the marker", async () => {
+    // The marker split across chunks, after more output than a failure's report keeps.
+    const [head, tail] = [BOOTSTRAP_CHANGED.slice(0, 9), BOOTSTRAP_CHANGED.slice(9)];
+
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? { stdout: ["x".repeat(5_000), `\n${head}`, `${tail}\n`] } : {},
+    );
+
+    const seen: boolean[] = [];
+
+    const { toolchains } = open(container, {
+      afterInstall: async (changed) => {
+        seen.push(changed);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    expect(seen).toEqual([true]);
+  });
+
+  it("is told nothing changed when the bootstrap printed no marker: everything was there already", async () => {
+    const container = fakeContainer((input) =>
+      isBootstrap(input)
+        ? { stdout: ["mise all tools are installed\n"], stderr: BOOTSTRAP_CHANGED }
+        : {},
+    );
+
+    const seen: boolean[] = [];
+
+    const { toolchains } = open(container, {
+      afterInstall: async (changed) => {
+        seen.push(changed);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    // On stderr it is not the bootstrap's marker (a tool could print anything there).
+    expect(seen).toEqual([false]);
   });
 
   it("does not run when the bootstrap failed", async () => {

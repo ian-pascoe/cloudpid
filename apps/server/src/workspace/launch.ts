@@ -34,6 +34,8 @@ export type LaunchRecord = {
   readonly idleMinutes: number;
   /** Whether it still wants a snapshot once its Toolchains are installed: it did not start from one. */
   readonly needsSnapshot: boolean;
+  /** Whether a bootstrap installed something that is not in a snapshot yet (the one after it was not taken). */
+  readonly installPending?: boolean | undefined;
   /** The snapshot it started from, if any. */
   readonly restoredFrom: string | undefined;
   /** The reference of the image it runs; undefined when not known (a Container adopted with no record). */
@@ -58,6 +60,7 @@ export type ContainerLaunchDeps = {
   readonly running: () => boolean;
   readonly now: () => number;
   readonly warn: (message: string) => void;
+  readonly info: (message: string) => void;
 };
 
 const MINUTE = 60_000;
@@ -144,16 +147,29 @@ export class ContainerLaunch {
   }
 
   /**
-   * The Toolchains are installed in the running Container. When it started from the image, snapshot it, so the next
-   * launch skips the downloads; one restored from a snapshot has nothing new to keep (the idle stop snapshots again).
+   * The Toolchains are installed in the running Container, and `changed` says whether the bootstrap installed any.
+   * When it started from the image and something was installed (now, or by an earlier bootstrap whose snapshot was not
+   * taken), snapshot it, so the next launch skips the downloads. A bootstrap that installed nothing (the image had
+   * every Toolchain) does not hold the first command for a snapshot: the idle stop's takes one. One restored from a
+   * snapshot has nothing new to keep (the idle stop snapshots again).
    */
-  async afterInstall(): Promise<void> {
+  async afterInstall(changed: boolean): Promise<void> {
     const record = await this.#current();
 
     if (record === undefined || !record.needsSnapshot) return;
 
+    if (!changed && record.installPending !== true) {
+      this.#deps.info(
+        "The Toolchain bootstrap installed nothing: no snapshot until the Container idles",
+      );
+
+      return;
+    }
+
     if ((await this.snapshot("install")) === "taken") {
-      await this.#remember({ ...record, needsSnapshot: false });
+      await this.#remember({ ...record, needsSnapshot: false, installPending: false });
+    } else if (changed && record.installPending !== true) {
+      await this.#remember({ ...record, installPending: true });
     }
   }
 

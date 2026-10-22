@@ -19,6 +19,7 @@ import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   BASE_MISE_LOCK,
   BASE_MISE_TOML,
+  BOOTSTRAP_CHANGED,
   bootstrapScript,
   pendingSetupScripts,
   ROOT_MISE_TOML,
@@ -158,7 +159,7 @@ describe("a command's environment", () => {
 });
 
 /** A throwaway Workspace root and HOME, and a `mise` on PATH that logs its calls and the directory they ran in. */
-const sandbox = (options: { readonly miseExit?: number } = {}) => {
+const sandbox = (options: { readonly miseExit?: number; readonly installs?: string } = {}) => {
   const base = mkdtempSync(join(tmpdir(), "bootstrap-"));
   const root = join(base, "workspace");
   const home = join(base, "home");
@@ -169,7 +170,16 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
 
   writeFileSync(
     join(bin, "mise"),
-    `#!/bin/sh\necho "$PWD: mise $*" >> ${log}\nexit ${options.miseExit ?? 0}\n`,
+    [
+      "#!/bin/sh",
+      `echo "$PWD: mise $*" >> ${log}`,
+      // `installs` is a Toolchain `mise install` puts in mise's data directory, as `<tool>/<version>`.
+      options.installs === undefined
+        ? ""
+        : `[ "$1" = install ] && mkdir -p "$HOME/.local/share/mise/installs/${options.installs}"`,
+      `exit ${options.miseExit ?? 0}`,
+      "",
+    ].join("\n"),
   );
   chmodSync(join(bin, "mise"), 0o755);
 
@@ -328,6 +338,40 @@ describe("the bootstrap", () => {
     const { run } = sandbox({ miseExit: 3 });
 
     expect(run().status).toBe(3);
+  });
+});
+
+describe("what the bootstrap says it changed", () => {
+  it("says the Container's disk changed when mise installed a Toolchain, so the Workspace DO snapshots it", () => {
+    const { root, run } = sandbox({ installs: "node/22.23.4" });
+
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+
+    const result = run();
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim().split("\n").at(-1)).toBe(BOOTSTRAP_CHANGED);
+  });
+
+  it("says nothing changed when every Toolchain was there already: the image's, or a snapshot's", () => {
+    const { home, root, run } = sandbox();
+
+    mkdirSync(join(home, ".local/share/mise/installs/node/22.23.4"), { recursive: true });
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+
+    const result = run();
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain(BOOTSTRAP_CHANGED);
+  });
+
+  it("looks for installs where MISE_DATA_DIR says mise keeps them", () => {
+    const { base, root, run } = sandbox({ installs: "node/22.23.4" });
+
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+
+    // The fake mise installs under $HOME; mise itself would install under MISE_DATA_DIR, which here holds nothing new.
+    expect(run({ MISE_DATA_DIR: join(base, "data") }).stdout).not.toContain(BOOTSTRAP_CHANGED);
   });
 });
 

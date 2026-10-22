@@ -46,6 +46,7 @@ type Fake = {
   takes: string[];
   takeOutcome: "taken" | "skipped" | "failed";
   warnings: string[];
+  infos: string[];
   now: number;
 };
 
@@ -69,6 +70,7 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
     takes: [],
     takeOutcome: "taken",
     warnings: [],
+    infos: [],
     now: 9_000,
   };
 
@@ -133,6 +135,7 @@ const open = (settings: Partial<WorkspaceSettings> = {}) => {
       running: () => state.running,
       now: () => state.now,
       warn: (message) => state.warnings.push(message),
+      info: (message) => state.infos.push(message),
     });
 
   const launch = make();
@@ -461,6 +464,7 @@ describe("a start the platform rejects for the snapshot", () => {
         running: () => false,
         now: () => 1,
         warn: () => undefined,
+        info: () => undefined,
       })
         .wrap(api)
         .start(SPEC),
@@ -524,22 +528,32 @@ describe("the image a Container runs", () => {
 });
 
 describe("afterInstall", () => {
-  it("snapshots a Container that was started from the image", async () => {
+  it("snapshots a Container that was started from the image when the bootstrap installed something", async () => {
     const { state, container, launch } = open();
 
     await container.start(SPEC);
-    await launch.afterInstall();
+    await launch.afterInstall(true);
 
     expect(state.takes).toEqual(["install"]);
     expect(state.record?.needsSnapshot).toBe(false);
+  });
+
+  it("skips the snapshot when the bootstrap installed nothing, leaving the Container to the idle stop's", async () => {
+    const { state, container, launch } = open();
+
+    await container.start(SPEC);
+    await launch.afterInstall(false);
+
+    expect(state.takes).toEqual([]);
+    expect(state.infos.join("\n")).toContain("installed nothing");
   });
 
   it("does not snapshot again for the same Container", async () => {
     const { state, container, launch } = open();
 
     await container.start(SPEC);
-    await launch.afterInstall();
-    await launch.afterInstall();
+    await launch.afterInstall(true);
+    await launch.afterInstall(true);
 
     expect(state.takes).toEqual(["install"]);
   });
@@ -549,22 +563,23 @@ describe("afterInstall", () => {
 
     state.restorable = { id: "snap-1", image: "img-1" };
     await container.start(SPEC);
-    await launch.afterInstall();
+    await launch.afterInstall(true);
 
     expect(state.takes).toEqual([]);
   });
 
-  it("tries again after the next install when the snapshot was not taken", async () => {
+  it("tries again after the next install when the snapshot was not taken, though that one installs nothing", async () => {
     const { state, container, launch } = open();
 
     await container.start(SPEC);
     state.takeOutcome = "failed";
-    await launch.afterInstall();
+    await launch.afterInstall(true);
 
     expect(state.record?.needsSnapshot).toBe(true);
 
+    // The next bootstrap in the same Container (after an eviction) finds the Toolchains the first one installed.
     state.takeOutcome = "taken";
-    await launch.afterInstall();
+    await launch.afterInstall(false);
 
     expect(state.takes).toEqual(["install", "install"]);
     expect(state.record?.needsSnapshot).toBe(false);
@@ -576,7 +591,7 @@ describe("afterInstall", () => {
     await container.start(SPEC);
     state.running = true;
 
-    await make().afterInstall();
+    await make().afterInstall(true);
 
     expect(state.takes).toEqual(["install"]);
   });

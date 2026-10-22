@@ -163,6 +163,7 @@ export class Workspace extends ContainerHost {
       running: () => ctx.container?.running === true,
       now: () => Date.now(),
       warn: (message) => console.warn(message),
+      info: (message) => console.info(message),
     });
 
     this.#idle = new IdleStop({
@@ -213,8 +214,9 @@ export class Workspace extends ContainerHost {
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
-      // Once the Toolchains are installed in a Container that started from the image, its disk is snapshotted.
-      afterInstall: () => launch.afterInstall(),
+      // Once the bootstrap has installed something (a Toolchain, a Setup Script's work) in a Container that started from
+      // the image, its disk is snapshotted.
+      afterInstall: (changed) => launch.afterInstall(changed),
       // A bootstrap (its Setup Scripts can take a quarter of an hour) keeps the Container from its idle stop.
       activity: this.#idle,
       // Under `alchemy dev` the Container's `/workspace` is no real mount (`CONTAINER_FUSE=false`): it cannot be locked.
