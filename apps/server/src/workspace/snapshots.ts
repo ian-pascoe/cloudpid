@@ -18,6 +18,15 @@
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off missingPipeableSignature:off
 import { PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
 
+/**
+ * How long a snapshot, its scan included, may take before it is given up on, after the install and on idle stop alike.
+ * The commands that wait for the bootstrap are held for the install's, so it is not short: the disk after this repo's
+ * install is 1.2–1.3 GB, and snapshots of that size took 45–64 s (idle stops, and one install snapshot of 50.9 s); one of
+ * 2.67 GB took 90.4 s (#156). A snapshot given up on at 60 s was lost: the platform's `snapshotContainer` ran on, with
+ * its handle dropped.
+ */
+export const SNAPSHOT_TIMEOUT_MS = 2 * 60_000;
+
 /** A snapshot lives 30 days from its creation or latest restore; one older than this is not trusted to still be there. */
 const MAX_AGE_MS = 29 * 24 * 60 * 60_000;
 
@@ -47,8 +56,8 @@ export type ContainerSnapshotDeps = {
   readonly enabled: boolean;
   /** The GitHub token commands run with, to keep off the snapshot; none means nothing to scan for. */
   readonly secret: string | undefined;
-  /** How long a snapshot, its scan included, may take before it is given up on. An install's is short: commands wait. */
-  readonly timeoutMs: Readonly<Record<SnapshotReason, number>>;
+  /** How long a snapshot, its scan included, may take before it is given up on (`SNAPSHOT_TIMEOUT_MS`). */
+  readonly timeoutMs: number;
   /** The reference of the image a Container launched now would run. */
   readonly image: () => string | undefined;
   readonly running: () => boolean;
@@ -157,7 +166,7 @@ export class ContainerSnapshots {
     const started = deps.now();
 
     try {
-      const taken = await this.#within(reason, async () => {
+      const taken = await this.#within(async () => {
         if (deps.secret !== undefined && deps.secret !== "") {
           const leaks = await deps.scan(deps.secret);
 
@@ -200,9 +209,9 @@ export class ContainerSnapshots {
     }
   }
 
-  /** `work`, unless it takes longer than the reason's time. */
-  #within<A>(reason: SnapshotReason, work: () => Promise<A>): Promise<A> {
-    const timeoutMs = this.#deps.timeoutMs[reason];
+  /** `work`, unless it takes longer than the time allowed. */
+  #within<A>(work: () => Promise<A>): Promise<A> {
+    const { timeoutMs } = this.#deps;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const expired = new Promise<never>((_, reject) => {
