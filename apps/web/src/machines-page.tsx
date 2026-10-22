@@ -819,15 +819,20 @@ const RemoveWorkspaceDialog = ({
   );
 };
 
-/** A Start button for a place in a Machine's card, named for screen readers by where it starts the Session. */
+/**
+ * A Start button for a place in a Machine's card, named for screen readers by where it starts the Session. A repo's
+ * says it makes a new Workspace.
+ */
 const StartButton = ({
   label,
   starting,
   onStart,
+  newWorkspace = false,
 }: {
   label: string;
   starting: boolean;
   onStart: () => void;
+  newWorkspace?: boolean;
 }) => (
   <Button
     size="sm"
@@ -837,13 +842,13 @@ const StartButton = ({
     title={label}
     onClick={onStart}
   >
-    <Play />
-    Start
+    {newWorkspace ? <GitFork /> : <Play />}
+    {newWorkspace ? "New workspace" : "Start"}
   </Button>
 );
 
 /**
- * A repo in a Machine's card: Start begins a Session in a new Workspace of its own; below it, its main checkout and
+ * A repo in a Machine's card: New workspace begins a Session in a new Workspace of its own; below it, its main checkout and
  * its Workspaces that exist, each to start a Session that shares its files, and each Workspace to remove.
  */
 const RepoRow = ({
@@ -888,6 +893,7 @@ const RepoRow = ({
           </Button>
           <StartButton
             label={`Start a session in a new workspace of ${repo}`}
+            newWorkspace
             starting={starting}
             onStart={() => {
               onStart({ machine: slug, repo, workspace: NEW_WORKSPACE });

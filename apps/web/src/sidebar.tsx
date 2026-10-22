@@ -97,7 +97,9 @@ export const SessionLink = ({
           Running
         </>
       ) : (
-        <span className="tabular">{relativeTime(session.updatedAt, Date.now())}</span>
+        <span className="tabular shrink-0 whitespace-nowrap">
+          {relativeTime(session.updatedAt, Date.now())}
+        </span>
       )}
     </span>
   </a>
