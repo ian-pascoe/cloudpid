@@ -89,7 +89,9 @@ export const BASE_MISE_LOCK = "/usr/local/share/cloudpid/mise.lock";
 /**
  * The line the bootstrap ends its output with when it changed the Container's disk in a way worth a snapshot (it
  * installed a Toolchain), so the Workspace DO snapshots the disk before the first command. A bootstrap that only found
- * what the image or a restored snapshot has prints none, and its Container waits for the idle stop's snapshot.
+ * what the image or a restored snapshot has prints none, and its Container waits for the idle stop's snapshot. The
+ * Setup Scripts, which the Workspace DO runs as execs of their own after this script, count on its side: one that
+ * succeeds is an install too (`apps/server/src/workspace/toolchains.ts`).
  */
 export const BOOTSTRAP_CHANGED = "cloudpid-bootstrap: the Container's disk changed";
 
