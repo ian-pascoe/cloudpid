@@ -1,0 +1,14 @@
+# The image's copy of the base mise.toml (BASE_MISE_TOML, apps/sandbox-image/src/toolchains.ts; a test keeps their
+# settings and tools equal). The image build installs these Toolchains into mise's system directory and locks them.
+
+[settings]
+lockfile = true
+lockfile_platforms = ["linux-x64"]
+
+[tools]
+"conda:git" = "2.56.0"
+gh = "2.102.1"
+node = "24.22.1"
+pnpm = "12.15.0"
+python = "3.14.8"
+uv = "0.13.4"

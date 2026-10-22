@@ -163,7 +163,7 @@ A directory with a `SKILL.md` (name, description, instructions) and supporting f
 _Avoid_: Plugin, command
 
 **Toolchain**:
-A program a Workspace declares in its mise configuration and the Container installs on demand.
+A program a Workspace declares in its mise configuration, which the Container finds among the image's preinstalled versions or installs on demand.
 _Avoid_: Dependency, package (for tools)
 
 **Setup Script**:
@@ -175,7 +175,7 @@ A path in a Workspace that its Container keeps to itself on its own disk, out of
 _Avoid_: Ignored path (computer's term), excluded path
 
 **Snapshot**:
-A saved copy of the Container's disk, taken after the Toolchains are installed and the Setup Scripts have run and when the Container stops for being idle, and restored at its next launch so the Toolchains and what the Setup Scripts installed come back without downloading.
+A saved copy of the Container's disk, taken after the Toolchains are installed and the Setup Scripts have run (when that installed anything) and when the Container stops for being idle, and restored at its next launch so the Toolchains and what the Setup Scripts installed come back without downloading.
 _Avoid_: Backup, checkpoint, image (for the saved disk)
 
 **Registry**:

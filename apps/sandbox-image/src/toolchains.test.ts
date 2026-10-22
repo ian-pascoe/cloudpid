@@ -17,7 +17,9 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
+  BASE_MISE_LOCK,
   BASE_MISE_TOML,
+  BOOTSTRAP_CHANGED,
   bootstrapScript,
   pendingSetupScripts,
   ROOT_MISE_TOML,
@@ -89,6 +91,54 @@ describe("the ignore list", () => {
   });
 });
 
+/** The `[tools]` of a mise.toml, as a map from tool to version. */
+const toolsOf = (toml: string): Map<string, string> =>
+  new Map(
+    [...toml.slice(toml.indexOf("[tools]")).matchAll(/^"?([^"=\s]+)"? = "([^"]+)"$/gm)].map(
+      (match) => [match[1] ?? "", match[2] ?? ""] as const,
+    ),
+  );
+
+describe("the image's preinstalled Toolchains", () => {
+  // The image installs the tools of its copy of the base mise.toml (`image/mise.toml`) into mise's system directory.
+  const image = readFileSync(join(sandboxImageContext, "mise.toml"), "utf8");
+
+  it("are the common ones: Node, pnpm, Python and uv, besides git and gh", () => {
+    expect([...toolsOf(image).keys()].toSorted()).toEqual(
+      ["conda:git", "gh", "node", "pnpm", "python", "uv"].toSorted(),
+    );
+  });
+
+  it("are what the base mise.toml asks for, version for version, so a new Workspace downloads none", () => {
+    // Equal but for the comment at the top, which says what each copy is for.
+    const body = (toml: string) => toml.slice(toml.indexOf("[settings]"));
+
+    expect(body(image)).toBe(body(BASE_MISE_TOML));
+    expect(dockerfile).toContain(`COPY mise.toml ${dirname(BASE_MISE_LOCK)}/mise.toml\n`);
+    expect(dockerfile).toContain(`MISE_GLOBAL_CONFIG_FILE=${dirname(BASE_MISE_LOCK)}/mise.toml `);
+    expect(dockerfile).toMatch(/&& mise install --system \\\n/);
+  });
+
+  it("are pinned to exact versions, since mise locks a prefix to the newest release, which the image may not have", () => {
+    for (const version of toolsOf(image).values()) expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("come with the base mise.toml's lockfile, made where the bootstrap copies it from", () => {
+    expect(BASE_MISE_LOCK).toBe("/usr/local/share/cloudpid/mise.lock");
+    expect(dockerfile).toMatch(/&& mise lock --global --platform linux-x64 \\\n/);
+  });
+
+  it("are in mise's system directory, whose shims come after the Workspace's own on PATH", () => {
+    const path = /^\s*PATH=(\S+)/m.exec(dockerfile)?.[1]?.split(":") ?? [];
+
+    expect(path.slice(0, 2)).toEqual([
+      "/root/.local/share/mise/shims",
+      "/usr/local/share/mise/shims",
+    ]);
+    expect(dockerfile).toMatch(/&& mise reshim --system/);
+  });
+});
+
 describe("a command's environment", () => {
   it("carries the GitHub token as GH_TOKEN and GITHUB_TOKEN", () => {
     const env = toolchainEnv({ githubToken: "ghp_secret" });
@@ -109,7 +159,7 @@ describe("a command's environment", () => {
 });
 
 /** A throwaway Workspace root and HOME, and a `mise` on PATH that logs its calls and the directory they ran in. */
-const sandbox = (options: { readonly miseExit?: number } = {}) => {
+const sandbox = (options: { readonly miseExit?: number; readonly installs?: string } = {}) => {
   const base = mkdtempSync(join(tmpdir(), "bootstrap-"));
   const root = join(base, "workspace");
   const home = join(base, "home");
@@ -120,12 +170,24 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
 
   writeFileSync(
     join(bin, "mise"),
-    `#!/bin/sh\necho "$PWD: mise $*" >> ${log}\nexit ${options.miseExit ?? 0}\n`,
+    [
+      "#!/bin/sh",
+      `echo "$PWD: mise $*" >> ${log}`,
+      // `installs` is a Toolchain `mise install` puts in mise's data directory, as `<tool>/<version>`.
+      options.installs === undefined
+        ? ""
+        : `[ "$1" = install ] && mkdir -p "$HOME/.local/share/mise/installs/${options.installs}"`,
+      `exit ${options.miseExit ?? 0}`,
+      "",
+    ].join("\n"),
   );
   chmodSync(join(bin, "mise"), 0o755);
 
+  // No image lockfile unless a test makes one there.
+  const imageLock = join(base, "image.mise.lock");
+
   const run = (env: Record<string, string> = {}, readOnly: readonly string[] = []) =>
-    spawnSync("bash", ["-c", bootstrapScript(root, readOnly)], {
+    spawnSync("bash", ["-c", bootstrapScript(root, readOnly, imageLock)], {
       encoding: "utf8",
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -136,7 +198,7 @@ const sandbox = (options: { readonly miseExit?: number } = {}) => {
 
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 
-  return { base, bin, root, home, run, calls };
+  return { base, bin, root, home, imageLock, run, calls };
 };
 
 const LOCK = "mise lock --global --platform linux-x64";
@@ -222,7 +284,7 @@ describe("the bootstrap", () => {
     expect(calls()).toContain(`${root}/app: mise install`);
   });
 
-  it("writes the base mise.toml, git and gh in it, where the Workspace has none", () => {
+  it("writes the base mise.toml, git, gh and the image's other Toolchains in it, where the Workspace has none", () => {
     const { root, run, calls } = sandbox();
 
     run();
@@ -230,8 +292,31 @@ describe("the bootstrap", () => {
     expect(readFileSync(join(root, "mise.toml"), "utf8")).toBe(BASE_MISE_TOML);
     expect(BASE_MISE_TOML).toMatch(/"conda:git"/);
     expect(BASE_MISE_TOML).toMatch(/^gh = /m);
+    expect(BASE_MISE_TOML).toMatch(/^node = /m);
+    expect(BASE_MISE_TOML).toMatch(/^python = /m);
     expect(BASE_MISE_TOML).toMatch(/^lockfile = true$/m);
     expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
+  });
+
+  it("copies the image's lockfile of the base mise.toml with it, so nothing is downloaded to lock it", () => {
+    const { imageLock, root, run, calls } = sandbox();
+
+    writeFileSync(imageLock, "# the image's lock\n");
+
+    expect(run().status).toBe(0);
+    expect(readFileSync(join(root, "mise.lock"), "utf8")).toBe("# the image's lock\n");
+    expect(calls()).toEqual([`${root}: mise install`]);
+  });
+
+  it("leaves a Workspace's own mise.lock alone, and its mise.toml", () => {
+    const { imageLock, root, run } = sandbox();
+
+    writeFileSync(imageLock, "# the image's lock\n");
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+    writeFileSync(join(root, "mise.lock"), "# the Workspace's lock\n");
+    run();
+
+    expect(readFileSync(join(root, "mise.lock"), "utf8")).toBe("# the Workspace's lock\n");
   });
 
   it("writes the base file where mise reads it as the global config, so git and gh resolve from any directory", () => {
@@ -253,6 +338,40 @@ describe("the bootstrap", () => {
     const { run } = sandbox({ miseExit: 3 });
 
     expect(run().status).toBe(3);
+  });
+});
+
+describe("what the bootstrap says it changed", () => {
+  it("says the Container's disk changed when mise installed a Toolchain, so the Workspace DO snapshots it", () => {
+    const { root, run } = sandbox({ installs: "node/22.23.4" });
+
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+
+    const result = run();
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim().split("\n").at(-1)).toBe(BOOTSTRAP_CHANGED);
+  });
+
+  it("says nothing changed when every Toolchain was there already: the image's, or a snapshot's", () => {
+    const { home, root, run } = sandbox();
+
+    mkdirSync(join(home, ".local/share/mise/installs/node/22.23.4"), { recursive: true });
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+
+    const result = run();
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain(BOOTSTRAP_CHANGED);
+  });
+
+  it("looks for installs where MISE_DATA_DIR says mise keeps them", () => {
+    const { base, root, run } = sandbox({ installs: "node/22.23.4" });
+
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+
+    // The fake mise installs under $HOME; mise itself would install under MISE_DATA_DIR, which here holds nothing new.
+    expect(run({ MISE_DATA_DIR: join(base, "data") }).stdout).not.toContain(BOOTSTRAP_CHANGED);
   });
 });
 

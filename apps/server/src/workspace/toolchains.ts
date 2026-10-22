@@ -19,6 +19,7 @@
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import { inBash, quote } from "@cloudpid/computer-env/shell";
 import {
+  BOOTSTRAP_CHANGED,
   bootstrapScript,
   type CommandEnv,
   pendingSetupScripts,
@@ -71,9 +72,12 @@ export type ToolchainOptions = {
   readonly git: { readonly name?: string | undefined; readonly email?: string | undefined };
   /**
    * Runs once a bootstrap has succeeded, before the commands that waited for it are sent: the Workspace snapshots the
-   * Container's disk here, while nothing else is writing to it. A failure is reported and changes nothing.
+   * Container's disk here, while nothing else is writing to it, when `changed` says the bootstrap changed it: the
+   * install ended its output with `BOOTSTRAP_CHANGED` (mise installed a Toolchain), or a Setup Script succeeded. A
+   * failed Setup Script alone does not count: it runs again at the next Container start. A failure of the hook is
+   * reported and changes nothing.
    */
-  readonly afterInstall?: (() => Promise<void>) | undefined;
+  readonly afterInstall?: ((changed: boolean) => Promise<void>) | undefined;
   /**
    * The directories the Workspace holds read-only (absolute paths), which the Container makes read-only too so a write
    * there fails instead of staying on the Container. Empty where the Container's `/workspace` is not a real mount.
@@ -224,11 +228,11 @@ export class ToolchainBackend implements WorkspaceBackend {
   }
 
   /** The after-install hook, which never throws: a snapshot is an optimisation. */
-  async #installed(): Promise<void> {
+  async #installed(changed: boolean): Promise<void> {
     const { afterInstall, warn } = this.#options;
 
     try {
-      await afterInstall?.();
+      await afterInstall?.(changed);
     } catch (cause) {
       warn(
         `After the Toolchain install: ${String(cause instanceof Error ? cause.message : cause)}`,
@@ -317,9 +321,9 @@ export class ToolchainBackend implements WorkspaceBackend {
       if (ran.code === 0) {
         const setup = await this.#runSetupScripts(shell);
 
-        await this.#installed();
+        await this.#installed(ran.changed || setup.succeeded);
 
-        return { ok: true, setup };
+        return { ok: true, setup: setup.report };
       }
 
       failure = this.#failure(ran);
@@ -334,9 +338,9 @@ export class ToolchainBackend implements WorkspaceBackend {
 
   /**
    * Run each due Setup Script, one after the other, with a command's environment; what to tell commands of those that
-   * did not succeed, if any. Never throws.
+   * did not succeed, if any, and whether any succeeded (which changed the disk). Never throws.
    */
-  async #runSetupScripts(shell: Shell): Promise<SetupReport | undefined> {
+  async #runSetupScripts(shell: Shell): Promise<SetupRun> {
     const { warn } = this.#options;
     let due: string[];
 
@@ -356,19 +360,26 @@ export class ToolchainBackend implements WorkspaceBackend {
 
       warn(`Setup Scripts: could not find the due ones: ${message}`);
 
-      return {
+      const report = {
         note: `cloudpid: could not tell which repos' Setup Script (${SETUP_SCRIPT}) to run (${message}), so their dependencies may be missing. They are looked for again at the next Container start.`,
         pointer: `cloudpid: the repos' Setup Scripts (${SETUP_SCRIPT}) could not be run at this Container's start, so their dependencies may be missing. They are looked for again at the next Container start.`,
       };
+
+      return { report, succeeded: false };
     }
 
     const notes: string[] = [];
     const failed: string[] = [];
+    let succeeded = false;
 
     for (const directory of due) {
       const failure = await this.#runSetupScript(shell, directory);
 
-      if (failure === undefined) continue;
+      if (failure === undefined) {
+        succeeded = true;
+
+        continue;
+      }
 
       warn(`Setup Script of ${directory} failed (${failure.reason}): ${failure.output}`);
       failed.push(directory);
@@ -377,12 +388,14 @@ export class ToolchainBackend implements WorkspaceBackend {
       );
     }
 
-    if (failed.length === 0) return undefined;
+    if (failed.length === 0) return { report: undefined, succeeded };
 
-    return {
+    const report = {
       note: notes.join("\n"),
       pointer: `cloudpid: the Setup Script (${SETUP_SCRIPT}) of ${failed.join(", ")} failed at this Container's start, so dependencies may be missing. It runs again at the next Container start; run \`bash ${SETUP_SCRIPT}\` in the repo to try it now.`,
     };
+
+    return { report, succeeded };
   }
 
   /** Run the Setup Script of the repo in `directory`; why it failed, if it did. Never throws. */
@@ -422,13 +435,25 @@ type Failure = { readonly reason: string; readonly output: string };
  */
 type SetupReport = { readonly note: string; readonly pointer: string };
 
+/** What a bootstrap's Setup Scripts came to: what to tell commands of those that failed, and whether any succeeded. */
+type SetupRun = { readonly report: SetupReport | undefined; readonly succeeded: boolean };
+
 /** What a bootstrap came to: why it failed, or, when it did not, what the Setup Scripts it ran have to report. */
 type Outcome =
   | { readonly ok: false; readonly failure: Failure }
   | { readonly ok: true; readonly setup: SetupReport | undefined };
 
-/** How an exec ended: its exit status, if it ended with one, and the end of its output, and whether that was `cut`. */
-type Ran = { readonly code: number | undefined; readonly output: string; readonly cut: boolean };
+/**
+ * How an exec ended: its exit status, if it ended with one, and the end of its output, and whether that was `cut`; and
+ * whether its stdout ended with `BOOTSTRAP_CHANGED` (the bootstrap's last line when it changed the Container's disk),
+ * read from stdout alone so no other output can come in between.
+ */
+type Ran = {
+  readonly code: number | undefined;
+  readonly output: string;
+  readonly cut: boolean;
+  readonly changed: boolean;
+};
 
 /** An exec's failure in a few words, from its exit status. */
 const exitReason = (code: number | undefined): string =>
@@ -542,9 +567,12 @@ const drain = async (
   keep?: number,
 ): Promise<Ran> => {
   const decoder = new TextDecoder();
+  const stdoutDecoder = new TextDecoder();
   const reader = stream.getReader();
   let output = "";
   let cut = false;
+  // The end of stdout, enough to hold the marker.
+  let stdout = "";
   let code: number | undefined;
 
   for (;;) {
@@ -562,10 +590,21 @@ const drain = async (
         output = output.slice(-keep);
         cut = true;
       }
+
+      if (event.name === "stdout") {
+        stdout = (stdout + stdoutDecoder.decode(event.value, { stream: true })).slice(
+          -(BOOTSTRAP_CHANGED.length + 2),
+        );
+      }
     }
   }
 
-  return { code, output: output.trimEnd(), cut };
+  return {
+    code,
+    output: output.trimEnd(),
+    cut,
+    changed: stdout.trimEnd().endsWith(BOOTSTRAP_CHANGED),
+  };
 };
 
 /** What a command killed while it waited for the bootstrap answers: it never started, and it ended. */

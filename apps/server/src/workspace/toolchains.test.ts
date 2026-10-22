@@ -3,8 +3,8 @@
 // Container is a fake backend whose shell records what it is asked and answers from a script.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
+import { BOOTSTRAP_CHANGED, SETUP_TIMED_OUT_MESSAGE } from "@cloudpid/sandbox-image/toolchains";
 import { describe, expect, it } from "vitest";
-import { SETUP_TIMED_OUT_MESSAGE } from "@cloudpid/sandbox-image/toolchains";
 import { ToolchainBackend } from "./toolchains.ts";
 
 type Shell = BackendHandle["rpc"]["shell"];
@@ -169,6 +169,48 @@ describe("the hook after a successful install", () => {
 
     // Only the bootstrap (and its look for Setup Scripts) had been sent when it ran, and it ran once.
     expect(seen).toEqual([2]);
+  });
+
+  it("is told the bootstrap changed the Container's disk when its output ends with the marker", async () => {
+    // The marker split across chunks, after more output than a failure's report keeps.
+    const [head, tail] = [BOOTSTRAP_CHANGED.slice(0, 9), BOOTSTRAP_CHANGED.slice(9)];
+
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? { stdout: ["x".repeat(5_000), `\n${head}`, `${tail}\n`] } : {},
+    );
+
+    const seen: boolean[] = [];
+
+    const { toolchains } = open(container, {
+      afterInstall: async (changed) => {
+        seen.push(changed);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    expect(seen).toEqual([true]);
+  });
+
+  it("is told nothing changed when the bootstrap printed no marker: everything was there already", async () => {
+    const container = fakeContainer((input) =>
+      isBootstrap(input)
+        ? { stdout: ["mise all tools are installed\n"], stderr: BOOTSTRAP_CHANGED }
+        : {},
+    );
+
+    const seen: boolean[] = [];
+
+    const { toolchains } = open(container, {
+      afterInstall: async (changed) => {
+        seen.push(changed);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    // On stderr it is not the bootstrap's marker (a tool could print anything there).
+    expect(seen).toEqual([false]);
   });
 
   it("does not run when the bootstrap failed", async () => {
@@ -698,6 +740,49 @@ describe("the Setup Scripts", () => {
 
   const runs = (execs: readonly ExecInput[]) =>
     execs.flatMap((input) => (isSetupRun(input) ? [input.cwd] : []));
+
+  /** What the after-install hook is told of a bootstrap on `container`: whether it installed something. */
+  const changedAfter = async (container: ReturnType<typeof fakeContainer>) => {
+    const seen: boolean[] = [];
+
+    const { toolchains } = open(container, {
+      afterInstall: async (changed) => {
+        seen.push(changed);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    return seen;
+  };
+
+  it("count as an install for the snapshot when one succeeded, though mise installed nothing", async () => {
+    expect(
+      await changedAfter(
+        withScripts(["/workspace/a", "/workspace/b"], { "/workspace/a": { code: 1 } }),
+      ),
+    ).toEqual([true]);
+  });
+
+  it("do not count when every one that ran failed: each runs again at the next Container start", async () => {
+    expect(
+      await changedAfter(withScripts(["/workspace/a"], { "/workspace/a": { code: 1 } })),
+    ).toEqual([false]);
+  });
+
+  it("leave the install's own signal standing when they fail", async () => {
+    const container = withScripts(
+      ["/workspace/a"],
+      { "/workspace/a": { code: 1 } },
+      { stdout: [`${BOOTSTRAP_CHANGED}\n`] },
+    );
+
+    expect(await changedAfter(container)).toEqual([true]);
+  });
+
+  it("do not count when none was due", async () => {
+    expect(await changedAfter(withScripts([]))).toEqual([false]);
+  });
 
   it("run after the install, each due one in its repo's directory, before the command that waited", async () => {
     const container = withScripts(["/workspace/a", "/workspace/b"]);

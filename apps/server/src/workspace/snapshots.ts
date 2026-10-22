@@ -1,6 +1,6 @@
 // The Container's disk snapshots (docs/spec.md → Container and Toolchains → Snapshots). A snapshot of the Container's root
-// file system, taken after a successful `mise install` and when the Container idles, is restored at the next launch, so
-// the Toolchains come back without a download. The platform keeps the snapshot; the Workspace DO keeps its handle.
+// file system, taken after a successful bootstrap that installed something (`ContainerLaunch.afterInstall`) and when the
+// Container idles, is restored at the next launch, so the Toolchains come back without a download. The platform keeps the snapshot; the Workspace DO keeps its handle.
 //
 // - A snapshot holds the Container's own disk only: `/workspace` is a separate (FUSE) mount, but computerd's store behind
 //   it is on the disk (`COMPUTERD_DB`), so the Workspace's files are in the snapshot through it and a restored Container

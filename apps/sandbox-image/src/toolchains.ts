@@ -56,7 +56,13 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
 /** The Workspace's own mise config: the Toolchains of every command, whatever its directory. */
 export const ROOT_MISE_TOML = `${WORKSPACE_ROOT}/mise.toml`;
 
-/** What the Workspace declares when it declares nothing: git and gh, which the image does not carry (ADR-0004). */
+/**
+ * What the Workspace declares when it declares nothing: git and gh, and Node, pnpm, Python and uv. These are the
+ * versions the image preinstalls in mise's system directory: the image holds a copy of this file (`image/mise.toml`;
+ * a test keeps the two equal) and installs its tools, so a new Workspace downloads none of them (ADR-0004). They are
+ * exact: mise locks a prefix such as `"24"` to the newest release, which the image would soon not have. The Workspace
+ * owns the file from then on, and a version it changes to is installed on the Container's disk as before.
+ */
 export const BASE_MISE_TOML = `# Toolchains of this Workspace. The Container installs them on start, from mise.lock.
 # https://mise.jdx.dev/configuration.html
 
@@ -65,9 +71,29 @@ lockfile = true
 lockfile_platforms = ["linux-x64"]
 
 [tools]
-"conda:git" = "2"
-gh = "2"
+"conda:git" = "2.56.0"
+gh = "2.102.1"
+node = "24.22.1"
+pnpm = "12.15.0"
+python = "3.14.8"
+uv = "0.13.4"
 `;
+
+/**
+ * The image's lockfile of `BASE_MISE_TOML`, made when the image is built. The bootstrap copies it next to the base file
+ * it writes: `mise lock` downloads aqua and Python artifacts to checksum them (90 MB for the base Toolchains), which
+ * would undo the preinstall.
+ */
+export const BASE_MISE_LOCK = "/usr/local/share/cloudpid/mise.lock";
+
+/**
+ * The line the bootstrap ends its output with when it changed the Container's disk in a way worth a snapshot (it
+ * installed a Toolchain), so the Workspace DO snapshots the disk before the first command. A bootstrap that only found
+ * what the image or a restored snapshot has prints none, and its Container waits for the idle stop's snapshot. The
+ * Setup Scripts, which the Workspace DO runs as execs of their own after this script, count on its side: one that
+ * succeeds is an install too (`apps/server/src/workspace/toolchains.ts`).
+ */
+export const BOOTSTRAP_CHANGED = "cloudpid-bootstrap: the Container's disk changed";
 
 /** Environment variables for a command. */
 export type CommandEnv = { [name: string]: string };
@@ -128,7 +154,8 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  *
  * 0. makes each of `readOnlyDirectories` (absolute paths: the Workspace's read-only mounts) read-only here too, when the
  *    Container can mount,
- * 1. writes `BASE_MISE_TOML` if the Workspace root has no mise config of any kind mise reads,
+ * 1. writes `BASE_MISE_TOML` if the Workspace root has no mise config of any kind mise reads, with the image's
+ *    lockfile for it (`baseLock`, by default `BASE_MISE_LOCK`) next to it when the image has one,
  * 2. makes sure `mise.lock` is there and current for the root's `mise.toml`, which is mise's global config
  *    (`toolchainEnv`) and so is only locked by `mise lock --global`: when the lockfile is missing or older than the
  *    config, to the one platform the Container is,
@@ -137,11 +164,14 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
  * 4. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
  *    Container's global config has one, and points git's credentials for github.com at `$GITHUB_TOKEN` at the time
  *    git asks. Those go to the Container's `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds
- *    the token.
+ *    the token,
+ * 5. ends its output with `BOOTSTRAP_CHANGED` when a step set `changed=1` (step 3 does when mise's installs differ
+ *    from before it).
  */
 export const bootstrapScript = (
   root: string = WORKSPACE_ROOT,
   readOnlyDirectories: readonly string[] = [],
+  baseLock: string = BASE_MISE_LOCK,
 ): string => `
 set -u
 root=${shellQuote(root)}
@@ -171,9 +201,16 @@ has_mise_config() {
 if ! has_mise_config "$root"; then
   cat > mise.toml <<'CLOUDPID_BASE_MISE_TOML'
 ${BASE_MISE_TOML}CLOUDPID_BASE_MISE_TOML
+  [ -f ${shellQuote(baseLock)} ] && [ ! -e mise.lock ] && cp ${shellQuote(baseLock)} mise.lock
 fi
 
 status=0
+
+# A step that changes the Container's disk in a way worth a snapshot sets changed=1 (BOOTSTRAP_CHANGED).
+changed=0
+
+mise_installs() { printf '%s\n' "\${MISE_DATA_DIR:-$HOME/.local/share/mise}"/installs/*/*; }
+installs_before=$(mise_installs)
 
 note_failure() {
   if [ "$1" -ne 0 ] && [ "$status" -eq 0 ]; then status=$1; fi
@@ -192,11 +229,15 @@ for dir in "$root" "$root"/*/; do
   fi
 done
 
+[ "$(mise_installs)" = "$installs_before" ] || changed=1
+
 if command -v git >/dev/null 2>&1; then
   git config --global --get user.name >/dev/null || git config --global user.name "\${CLOUDPID_GIT_NAME:-cloudpid}"
   git config --global --get user.email >/dev/null || git config --global user.email "\${CLOUDPID_GIT_EMAIL:-cloudpid@users.noreply.github.com}"
   git config --global credential.https://github.com.helper ${shellQuote(CREDENTIAL_HELPER)}
 fi
+
+[ "$changed" -eq 1 ] && echo ${shellQuote(BOOTSTRAP_CHANGED)}
 
 exit "$status"
 `;
