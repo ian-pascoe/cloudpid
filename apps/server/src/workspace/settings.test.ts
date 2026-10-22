@@ -50,9 +50,18 @@ describe("workspaceSettingsStore", () => {
   it("keeps only what differs from the defaults, so a setting left alone follows later defaults", async () => {
     const { store, kept } = open();
 
+    await store.write({ instance: "custom-2", idleMinutes: 15 });
+
+    expect(kept.get("cloudpid:workspace-settings")).toEqual({ idleMinutes: 15 });
+  });
+
+  it("keeps standard-2, the former default, as a saved size once it is chosen", async () => {
+    const { store, kept } = open();
+
     await store.write({ instance: "standard-2", idleMinutes: 5 });
 
-    expect(kept.get("cloudpid:workspace-settings")).toEqual({ idleMinutes: 5 });
+    expect(kept.get("cloudpid:workspace-settings")).toEqual({ instance: "standard-2" });
+    expect((await store.read()).settings.instance).toBe("standard-2");
   });
 
   it("refuses overrides that do not resolve, one problem per line, and saves nothing", async () => {
@@ -72,7 +81,7 @@ describe("workspaceSettingsStore", () => {
 
     const state = await store.read();
 
-    expect(state.settings).toEqual({ instance: "standard-2", idleMinutes: 30, ignore: [] });
+    expect(state.settings).toEqual({ instance: "custom-2", idleMinutes: 30, ignore: [] });
     expect(state.problem).toContain("instance");
   });
 });

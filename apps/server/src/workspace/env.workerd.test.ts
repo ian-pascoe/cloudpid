@@ -541,7 +541,7 @@ describe("deleting a Workspace", () => {
     getOrThrow(await executionEnv.createDir("/workspace/repo", { recursive: true }, context));
     getOrThrow(await executionEnv.writeFile("/workspace/repo/notes.md", "kept?", context));
     expect(
-      await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 5 }),
+      await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 10 }),
     ).toMatchObject({ ok: true });
 
     // As the main Worker deletes it: the wipe, then the reset in a call of its own, which breaks the stub that saw it;
@@ -579,7 +579,7 @@ describe("resetting a Workspace", () => {
     getOrThrow(await executionEnv.createDir("/workspace/repo", { recursive: true }, context));
     getOrThrow(await executionEnv.writeFile("/workspace/repo/notes.md", "kept?", context));
     expect(
-      await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 5 }),
+      await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 10 }),
     ).toMatchObject({ ok: true });
 
     // As the main Worker resets it: the clear, then the reset in a call of its own.
@@ -597,8 +597,8 @@ describe("resetting a Workspace", () => {
 
     expect(read.ok ? read.value : read.error.code).toBe("not_found");
     expect(await again.containerSettings()).toEqual({
-      settings: { ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-3", idleMinutes: 5 },
-      overrides: { instance: "standard-3", idleMinutes: 5 },
+      settings: { ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-3", idleMinutes: 10 },
+      overrides: { instance: "standard-3", idleMinutes: 10 },
     });
     // The bundled skills are mounted again in the fresh Workspace.
     expect((await after.discoverSkills(context)).map((skill) => skill.name)).toContain("tdd");
@@ -616,7 +616,7 @@ describe("restarting a Workspace's Container", () => {
     });
 
     getOrThrow(await executionEnv.writeFile("/workspace/notes.md", "kept", context));
-    expect(await workspace.updateContainerSettings({ idleMinutes: 5 })).toMatchObject({
+    expect(await workspace.updateContainerSettings({ idleMinutes: 10 })).toMatchObject({
       ok: true,
     });
 
@@ -634,7 +634,7 @@ describe("restarting a Workspace's Container", () => {
     expect(getOrThrow(await executionEnv.readTextFile("/workspace/notes.md", context))).toBe(
       "kept",
     );
-    expect((await workspace.containerSettings()).overrides).toEqual({ idleMinutes: 5 });
+    expect((await workspace.containerSettings()).overrides).toEqual({ idleMinutes: 10 });
     expect(
       await runInDurableObject(workspace, (_instance, state) =>
         state.storage.get("cloudpid:container-snapshot"),

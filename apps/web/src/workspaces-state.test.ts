@@ -390,7 +390,7 @@ describe("the settings of a Workspace", () => {
         yield* settled(registry, workspaceSettingsAtom("work"));
         registry.set(saveWorkspaceAtom("work"), {
           name: undefined,
-          settings: { instance: "basic", idleMinutes: 15, ignore: ["/data"] },
+          settings: { instance: "basic", idleMinutes: 5, ignore: ["/data"] },
         });
 
         const answer = yield* settled(registry, saveWorkspaceAtom("work"));

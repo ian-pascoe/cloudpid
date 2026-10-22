@@ -12,14 +12,18 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
 /**
- * The instance types a Container may start on under the `durable_object` scheduling policy, as Cloudflare's names for
- * them (custom `{ vcpu, memoryMib, diskMb }` sizes exist too, and are not offered). Smallest first.
+ * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in a Workspace's
+ * settings. Cloudflare's named instance types are stored under their own names; the others are custom sizes
+ * (`{ vcpu, memoryMib, diskMb }` in `ctx.container.start`), stored as `custom-<vCPU>` and mapped to their resources by
+ * `containerInstance` at each launch. A stored name never changes meaning, so a new custom size gets a new name.
+ * Smallest first.
  */
 export const INSTANCE_TYPES = [
   "lite",
   "basic",
   "standard-1",
   "standard-2",
+  "custom-2",
   "standard-3",
   "standard-4",
 ] as const;
@@ -28,12 +32,41 @@ export const InstanceType = Schema.Literals(INSTANCE_TYPES);
 
 export type InstanceType = typeof InstanceType.Type;
 
+/** What a Container is started with when it is not one of Cloudflare's named instance types. */
+export type ContainerResources = {
+  readonly vcpu: number;
+  readonly memoryMib: number;
+  readonly diskMb: number;
+};
+
+/**
+ * The custom sizes, by stored name. `custom-2` costs `standard-2`'s memory and disk with twice its CPU: Cloudflare bills
+ * CPU only for active use, and memory and disk for as long as the Container runs. A custom size needs at least 3 GiB of
+ * memory per vCPU.
+ */
+const CUSTOM_INSTANCES = {
+  "custom-2": { vcpu: 2, memoryMib: 6144, diskMb: 12_000 },
+} as const satisfies Partial<Record<InstanceType, ContainerResources>>;
+
+type CustomInstanceType = keyof typeof CUSTOM_INSTANCES;
+
+/** The instance types that are Cloudflare's own names. */
+export type NamedInstanceType = Exclude<InstanceType, CustomInstanceType>;
+
+const isCustomInstance = (type: InstanceType): type is CustomInstanceType =>
+  type in CUSTOM_INSTANCES;
+
+/** What `ctx.container.start({ instance })` takes for the stored `type`: a named type as it is, a custom size as its resources. */
+export const containerInstance = (type: InstanceType): NamedInstanceType | ContainerResources =>
+  isCustomInstance(type) ? CUSTOM_INSTANCES[type] : type;
+
 /** What each instance type offers, from Cloudflare's Containers limits page, for the settings form to show. */
 export const INSTANCE_DESCRIPTIONS: Readonly<Record<InstanceType, string>> = {
   lite: "1/16 vCPU, 256 MiB memory, 2 GB disk",
   basic: "1/4 vCPU, 1 GiB memory, 4 GB disk",
   "standard-1": "1/2 vCPU, 4 GiB memory, 8 GB disk",
   "standard-2": "1 vCPU, 6 GiB memory, 12 GB disk",
+  "custom-2": "2 vCPU, 6 GiB memory, 12 GB disk",
   "standard-3": "2 vCPU, 8 GiB memory, 16 GB disk",
   "standard-4": "4 vCPU, 12 GiB memory, 20 GB disk",
 };
@@ -109,9 +142,9 @@ const IgnorePattern = Schema.String.check(
 
 export const WorkspaceSettings = Schema.Struct({
   /** The instance type the Container starts on. */
-  instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("standard-2"))),
+  instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-2"))),
   /** Minutes without a command on the Container before it is stopped (a disk snapshot is taken first). */
-  idleMinutes: IdleMinutes.pipe(Schema.withDecodingDefaultKey(Effect.succeed(15))),
+  idleMinutes: IdleMinutes.pipe(Schema.withDecodingDefaultKey(Effect.succeed(5))),
   /**
    * Paths the Container keeps to itself, out of the Workspace, after the built-in ones (`TOOLCHAIN_IGNORE`), as
    * computer's `ignore` patterns: the last one that matches a path wins, so `!` keeps a built-in one synced.

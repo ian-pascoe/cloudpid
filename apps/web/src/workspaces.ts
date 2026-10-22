@@ -6,7 +6,14 @@ import {
   type SessionRecord,
   WorkspaceSlug,
 } from "@cloudpid/protocol";
-import { ignorePatternProblem, MAX_IDLE_MINUTES, MAX_IGNORE_PATTERNS } from "@cloudpid/config";
+import {
+  DEFAULT_WORKSPACE_SETTINGS,
+  ignorePatternProblem,
+  INSTANCE_DESCRIPTIONS,
+  type InstanceType,
+  MAX_IDLE_MINUTES,
+  MAX_IGNORE_PATTERNS,
+} from "@cloudpid/config";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -94,6 +101,10 @@ export const sourceProblem = (text: string): string | null => {
 
   return Result.isFailure(parsed) ? parsed.failure : null;
 };
+
+/** An instance type's line in the Edit dialog's size list: its name and what it offers, the default marked as such. */
+export const instanceLabel = (type: InstanceType): string =>
+  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_WORKSPACE_SETTINGS.instance ? " (default)" : ""}`;
 
 /** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
 export const idleMinutesProblem = (text: string): string | null => {
