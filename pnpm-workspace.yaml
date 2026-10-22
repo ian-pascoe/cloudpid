@@ -14,5 +14,5 @@ allowBuilds:
   workerd: true
 
 patchedDependencies:
-  '@cloudflare/vitest-plugin@1.4.5': patches/@cloudflare__vitest-plugin@1.4.5.patch
+  '@cloudflare/vitest-plugin@1.4.6': patches/@cloudflare__vitest-plugin@1.4.6.patch
   alchemy@2.0.0-beta.83: patches/alchemy@2.0.0-beta.83.patch

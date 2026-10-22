@@ -6,7 +6,7 @@
 
 # Keep in step with the version of @cloudflare/computer the Workspace DO runs (apps/sandbox-image/src/index.test.ts
 # fails when they differ): the Workspace and computerd speak a sync protocol that is not stable across releases.
-ARG COMPUTERD_VERSION=0.5.1
+ARG COMPUTERD_VERSION=0.6.0
 ARG MISE_VERSION=v2026.10.15
 ARG MISE_SHA256=e3b186d4c70627f27037be615becaf4acfb30e41fb6a1819486717dc94e4e2a9
 
@@ -15,7 +15,7 @@ ARG MISE_SHA256=e3b186d4c70627f27037be615becaf4acfb30e41fb6a1819486717dc94e4e2a9
 # `ghcr.io/cloudflare/computer-computerd-linux-x64:<COMPUTERD_VERSION>`, Debian's the index of `debian:stable-slim`.
 
 # A single layer over scratch whose only content is the computerd binary at /usr/local/bin/computerd.
-FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:63b743262f9e854bde861c5d4a08fb57539012997f6b9e7d231cb32667c65c6a AS computerd
+FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:2be45dcb1143bf4a7f15665c9a448fc991eacab0c880ae12c10031f7d764a3f8 AS computerd
 
 # mise is fetched and checked in a stage of its own, so the image keeps no curl.
 FROM --platform=linux/amd64 debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5 AS mise

@@ -6,7 +6,7 @@
 // program named inside a string or a heredoc body does not count and one inside `$(…)` does. Every simple command in it
 // must be one the Worker Shell runs, or the whole call goes to the Container: one call has one backend.
 //
-// What the Worker Shell runs is `@cloudflare/computer`'s (0.5.1) just-bash core, `jq` (the Workspace DO adds that
+// What the Worker Shell runs is `@cloudflare/computer`'s (0.6.0) just-bash core, `jq` (the Workspace DO adds that
 // module), the shell's built-ins, and a `git` over computer's isomorphic-git client. The sets below are that, copied: a
 // workerd test in apps/server runs every name in `WORKER_SHELL_COMMANDS` through the real Worker Shell, so an upgrade
 // that drops one fails there.
