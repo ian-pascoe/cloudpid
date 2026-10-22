@@ -3,7 +3,9 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_WORKSPACE_SETTINGS,
+  ignorePatternProblem,
   INSTANCE_TYPES,
+  MAX_IGNORE_PATTERNS,
   resolveWorkspaceSettings,
   resolveWorkspaceSettingsLeniently,
   workspaceOverridesFrom,
@@ -28,7 +30,11 @@ const rejected = (overrides: Schema.Json): string => {
 
 describe("the defaults", () => {
   it("are standard-2 and a 15-minute idle stop, as the spec says", () => {
-    expect(DEFAULT_WORKSPACE_SETTINGS).toEqual({ instance: "standard-2", idleMinutes: 15 });
+    expect(DEFAULT_WORKSPACE_SETTINGS).toEqual({
+      instance: "standard-2",
+      idleMinutes: 15,
+      ignore: [],
+    });
   });
 
   it("are what no overrides resolve to", () => {
@@ -38,8 +44,16 @@ describe("the defaults", () => {
 
 describe("resolveWorkspaceSettings", () => {
   it("gives each override over the default, and leaves the rest", () => {
-    expect(resolved({ instance: "basic" })).toEqual({ instance: "basic", idleMinutes: 15 });
-    expect(resolved({ idleMinutes: 90 })).toEqual({ instance: "standard-2", idleMinutes: 90 });
+    expect(resolved({ instance: "basic" })).toEqual({
+      instance: "basic",
+      idleMinutes: 15,
+      ignore: [],
+    });
+    expect(resolved({ idleMinutes: 90 })).toEqual({
+      instance: "standard-2",
+      idleMinutes: 90,
+      ignore: [],
+    });
   });
 
   it("accepts every instance type Cloudflare Containers offers", () => {
@@ -59,6 +73,48 @@ describe("resolveWorkspaceSettings", () => {
     expect(resolved({ idleMinutes: 1440 }).idleMinutes).toBe(1440);
   });
 
+  it("takes extra Container-only paths as computer's ignore patterns, from the mount's root or at any depth", () => {
+    expect(
+      resolved({ ignore: ["/data", "**/.gradle-cache", "/repo/*/out", "!/repo/node_modules"] })
+        .ignore,
+    ).toEqual(["/data", "**/.gradle-cache", "/repo/*/out", "!/repo/node_modules"]);
+  });
+
+  it("rejects a pattern computerd would refuse, so a bad one never stops a Container from starting", () => {
+    for (const pattern of [
+      "",
+      "data",
+      " /data",
+      "/data ",
+      "/a,b",
+      "/a/{b,c}",
+      "/a?",
+      "/a[0]",
+      "/a\\b",
+      "/a//b",
+      "/a/../b",
+      "/./a",
+      "/a**",
+      "/**",
+      "**",
+      "/*",
+      "/",
+      "/workspace",
+      "/workspace/data",
+      `/${"a".repeat(256)}`,
+    ]) {
+      expect(ignorePatternProblem(pattern), pattern).toBeDefined();
+      expect(rejected({ ignore: [pattern] })).toContain("ignore");
+    }
+  });
+
+  it(`takes at most ${MAX_IGNORE_PATTERNS} patterns`, () => {
+    const many = Array.from({ length: MAX_IGNORE_PATTERNS + 1 }, (_, i) => `/data-${i}`);
+
+    expect(rejected({ ignore: many })).toContain("ignore");
+    expect(resolved({ ignore: many.slice(1) }).ignore).toHaveLength(MAX_IGNORE_PATTERNS);
+  });
+
   it("rejects a key it does not know, so a typo is not silently ignored", () => {
     expect(rejected({ idleMinute: 5 })).toContain("idleMinute");
   });
@@ -71,11 +127,14 @@ describe("resolveWorkspaceSettings", () => {
 describe("workspaceOverridesFrom", () => {
   it("keeps only what differs from the defaults, so a setting left alone follows later defaults", () => {
     expect(workspaceOverridesFrom(DEFAULT_WORKSPACE_SETTINGS)).toEqual({});
-    expect(workspaceOverridesFrom({ instance: "standard-4", idleMinutes: 15 })).toEqual({
-      instance: "standard-4",
-    });
-    expect(workspaceOverridesFrom({ instance: "standard-2", idleMinutes: 5 })).toEqual({
+    expect(
+      workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, instance: "standard-4" }),
+    ).toEqual({ instance: "standard-4" });
+    expect(workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, idleMinutes: 5 })).toEqual({
       idleMinutes: 5,
+    });
+    expect(workspaceOverridesFrom({ ...DEFAULT_WORKSPACE_SETTINGS, ignore: ["/data"] })).toEqual({
+      ignore: ["/data"],
     });
   });
 });
@@ -87,7 +146,7 @@ describe("resolveWorkspaceSettingsLeniently", () => {
       idleMinutes: 30,
     });
 
-    expect(settings).toEqual({ instance: "standard-2", idleMinutes: 30 });
+    expect(settings).toEqual({ instance: "standard-2", idleMinutes: 30, ignore: [] });
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("instance");
   });

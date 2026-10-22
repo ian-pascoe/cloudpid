@@ -40,10 +40,15 @@ COPY --chmod=755 supervise /usr/local/bin/cloudpid-supervise
 # where it does not. mise keeps its Toolchains on the image's own disk, in its default place under /root, and its shims put
 # the programs it installs on PATH. PATH is the one variable computerd passes on to a command, so it is the one set
 # here: mise's other settings reach a command in its exec environment (apps/sandbox-image/src/toolchains.ts).
+# computerd keeps its copy of the Workspace in COMPUTERD_DB, on the Container's disk, so a snapshot holds it with its
+# sync positions: a Container restored from one is sent only what changed since, not every file (docs/spec.md →
+# Container and Toolchains → Snapshots). In memory, the default, it is rebuilt from the Workspace DO at each start.
 ENV PORT=8080 \
     MOUNT_POINT=/workspace \
     FUSE_MOUNT=auto \
+    COMPUTERD_DB=/var/lib/computerd/state.db \
     PATH=/root/.local/share/mise/shims:${PATH}
+RUN mkdir -p /var/lib/computerd
 EXPOSE 8080
 
 # computerd runs under a supervisor that reports why it stopped, when it stops on its own, to the Workspace DO

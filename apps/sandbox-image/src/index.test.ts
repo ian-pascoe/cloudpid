@@ -43,6 +43,19 @@ it("takes computerd from the image of the @cloudflare/computer version the Works
   );
 });
 
+it("keeps computerd's store on the Container's disk, outside the mount, so a restored snapshot is not sent every file", () => {
+  const env = (name: string) =>
+    new RegExp(`^\\s*(?:ENV\\s+)?${name}=(\\S+?)\\s*\\\\?$`, "m").exec(dockerfile)?.[1];
+
+  const store = env("COMPUTERD_DB") ?? "";
+  const mount = env("MOUNT_POINT") ?? "";
+
+  // Absolute (computerd refuses a relative path), not under the mount, and in a directory the image makes.
+  expect(store).toMatch(/^\/[^/]/);
+  expect(`${store}/`.startsWith(`${mount}/`)).toBe(false);
+  expect(dockerfile).toContain(`mkdir -p ${store.slice(0, store.lastIndexOf("/"))}\n`);
+});
+
 it("pins every base image by digest, so a rebuild does not move to another release", () => {
   const images = [...dockerfile.matchAll(/^FROM (?:--platform=\S+ )?(\S+)/gm)].map(
     (match) => match[1],

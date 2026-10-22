@@ -28,10 +28,29 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   "/target",
   "/*/target",
   "**/.cache",
+  // pnpm's content-addressed store. With the home directory on the Container's disk and the project on the FUSE mount,
+  // pnpm puts it at the mount's root, `/workspace/.pnpm-store`, where one install synced most of a Workspace's files
+  // (docs/spec.md → Container and Toolchains → Snapshots). Local-only, it sits on the same side as `node_modules`, so
+  // pnpm still hard-links between them.
+  "**/.pnpm-store",
   "**/__pycache__",
   "**/.pytest_cache",
   "**/.mypy_cache",
   "**/.ruff_cache",
+  // Build tools' caches and environments, regenerated on demand: Turborepo's (this repo's `pnpm check` writes thousands
+  // of files there), web frameworks', Terraform's providers, Gradle's, and Python and Nix environments other than
+  // `.venv`. Names like `dist`, `build`, `coverage`, `vendor` or `.yarn` stay synced: some repos commit them, and a
+  // tracked file on an ignored path shows as deleted in the Worker Shell's git.
+  "**/.turbo",
+  "**/.next",
+  "**/.nuxt",
+  "**/.svelte-kit",
+  "**/.parcel-cache",
+  "**/.terraform",
+  "**/.gradle",
+  "**/.tox",
+  "**/.nox",
+  "**/.direnv",
 ];
 
 /** The Workspace's own mise config: the Toolchains of every command, whatever its directory. */

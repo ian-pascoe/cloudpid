@@ -390,13 +390,13 @@ describe("the settings of a Workspace", () => {
         yield* settled(registry, workspaceSettingsAtom("work"));
         registry.set(saveWorkspaceAtom("work"), {
           name: undefined,
-          settings: { instance: "basic", idleMinutes: 15 },
+          settings: { instance: "basic", idleMinutes: 15, ignore: ["/data"] },
         });
 
         const answer = yield* settled(registry, saveWorkspaceAtom("work"));
 
         expect(AsyncResult.getOrThrow(answer)?.settings.instance).toBe("basic");
-        expect(saved).toEqual([{ instance: "basic" }]);
+        expect(saved).toEqual([{ instance: "basic", ignore: ["/data"] }]);
         expect(
           AsyncResult.getOrThrow(yield* settled(registry, workspaceSettingsAtom("work"))).settings
             .instance,
@@ -410,7 +410,7 @@ describe("the settings of a Workspace", () => {
 
       registry.set(saveWorkspaceAtom("work"), {
         name: undefined,
-        settings: { instance: "basic", idleMinutes: 9999 },
+        settings: { instance: "basic", idleMinutes: 9999, ignore: [] },
       });
 
       expect(failureOf(yield* settled(registry, saveWorkspaceAtom("work")))).toBe(
@@ -565,7 +565,7 @@ describe("the dialogs of a Workspace's card", () => {
       registry.set(workspaceDialogAtom("work"), "edit");
       registry.set(saveWorkspaceAtom("work"), {
         name: "Renamed",
-        settings: { instance: "basic", idleMinutes: 30 },
+        settings: { instance: "basic", idleMinutes: 30, ignore: [] },
       });
       yield* settled(registry, saveWorkspaceAtom("work"));
 
@@ -583,7 +583,7 @@ describe("the dialogs of a Workspace's card", () => {
       registry.set(workspaceDialogAtom("work"), "edit");
       registry.set(saveWorkspaceAtom("work"), {
         name: "bad",
-        settings: { instance: "basic", idleMinutes: 30 },
+        settings: { instance: "basic", idleMinutes: 30, ignore: [] },
       });
 
       expect(settledFailureOf(yield* settled(registry, saveWorkspaceAtom("work")))).toBe(
@@ -685,6 +685,7 @@ describe("the Edit dialog's draft", () => {
         name: "Work",
         instance: undefined,
         idle: "",
+        ignore: undefined,
       });
 
       yield* Deferred.succeed(gate, undefined);
@@ -694,6 +695,7 @@ describe("the Edit dialog's draft", () => {
         name: "Work",
         instance: DEFAULT_WORKSPACE_SETTINGS.instance,
         idle: String(DEFAULT_WORKSPACE_SETTINGS.idleMinutes),
+        ignore: "",
       });
     }),
   );
@@ -707,7 +709,12 @@ describe("the Edit dialog's draft", () => {
 
       const other = INSTANCE_TYPES.find((type) => type !== DEFAULT_WORKSPACE_SETTINGS.instance)!;
 
-      registry.set(workspaceDraftAtom("work"), { name: "Renamed", instance: other, idle: "" });
+      registry.set(workspaceDraftAtom("work"), {
+        name: "Renamed",
+        instance: other,
+        idle: "",
+        ignore: "/data",
+      });
       yield* Deferred.succeed(gate, undefined);
       yield* settled(registry, workspaceSettingsAtom("work"));
 
@@ -715,6 +722,7 @@ describe("the Edit dialog's draft", () => {
         name: "Renamed",
         instance: other,
         idle: String(DEFAULT_WORKSPACE_SETTINGS.idleMinutes),
+        ignore: "/data",
       });
     }),
   );
@@ -725,7 +733,12 @@ describe("the Edit dialog's draft", () => {
 
       yield* opened(registry);
       yield* settled(registry, workspaceSettingsAtom("work"));
-      registry.set(workspaceDraftAtom("work"), { name: "Work", instance: "lite", idle: "20" });
+      registry.set(workspaceDraftAtom("work"), {
+        name: "Work",
+        instance: "lite",
+        idle: "20",
+        ignore: "",
+      });
       registry.refresh(workspaceSettingsAtom("work"));
       yield* settled(registry, workspaceSettingsAtom("work"));
 
@@ -733,6 +746,7 @@ describe("the Edit dialog's draft", () => {
         name: "Work",
         instance: "lite",
         idle: "20",
+        ignore: "",
       });
     }),
   );

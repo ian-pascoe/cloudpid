@@ -150,6 +150,10 @@ _Avoid_: Plugin, command
 A program a Workspace declares in its mise configuration and the Container installs on demand.
 _Avoid_: Dependency, package (for tools)
 
+**Container-only path**:
+A path in a Workspace that its Container keeps to itself on its own disk, out of the Workspace's files (dependency directories, build output, caches): the built-in ones and those the Workspace's Container settings add.
+_Avoid_: Ignored path (computer's term), excluded path
+
 **Snapshot**:
 A saved copy of the Container's disk, taken after the Toolchains are installed and when the Container stops for being idle, and restored at its next launch so the Toolchains come back without downloading.
 _Avoid_: Backup, checkpoint, image (for the saved disk)

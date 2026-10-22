@@ -2,17 +2,19 @@
 // file system, taken after a successful `mise install` and when the Container idles, is restored at the next launch, so
 // the Toolchains come back without a download. The platform keeps the snapshot; the Workspace DO keeps its handle.
 //
-// - A snapshot holds the Container's own disk only: `/workspace` is a separate (FUSE) mount, so the files the Workspace
-//   syncs are not in it (the Workspace DO pushes them again at every launch), and computer's `ignore` paths are as local
-//   to the Container as they ever were.
+// - A snapshot holds the Container's own disk only: `/workspace` is a separate (FUSE) mount, but computerd's store behind
+//   it is on the disk (`COMPUTERD_DB`), so the Workspace's files are in the snapshot through it and a restored Container
+//   is pushed only what changed since; computer's `ignore` paths are as local to the Container as they ever were.
 // - It is tied to the image it was taken from, so the handle is kept with the image of the Container it was taken
 //   from (not the one a launch would run now: Containers outlive a deploy) and forgotten when a deploy changes it. A
 //   Container on an older image than the deployed one is not snapshotted.
+// - It is tied to the Container-only paths (computer's `ignore`) the Container launched with, the same way: computerd's
+//   store and the disk's copies of those paths are laid out for them, so a launch with others starts from the image.
 // - A snapshot lives 30 days from its creation or latest restore, so one that is near that is not restored.
 // - The disk is searched for the GitHub token before a snapshot (`scanContainerDisk`: everything but the pseudo file
-//   systems and the Workspace mount, for the token and its common base64 forms), and a snapshot that cannot be shown
-//   clean is not taken. The bootstrap keeps the token off disk (git reads it from the environment), so this is for what
-//   a command wrote; a token encoded some other way is not found.
+//   systems, the Workspace mount and pnpm's stores, for the token and its common base64 forms), and a snapshot that
+//   cannot be shown clean is not taken. The bootstrap keeps the token off disk (git reads it from the environment), so
+//   this is for what a command wrote; a token encoded some other way is not found.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off missingPipeableSignature:off
 
 /** A snapshot lives 30 days from its creation or latest restore; one older than this is not trusted to still be there. */
@@ -34,6 +36,8 @@ export type SnapshotRecord = {
   readonly tookMs: number;
   /** The reference of the image the Container ran, which the snapshot is not portable beyond. */
   readonly image: string | undefined;
+  /** The Container-only paths the Container launched with; none where it had none. Absent from older records. */
+  readonly ignore?: readonly string[] | undefined;
   readonly reason: SnapshotReason;
 };
 
@@ -76,10 +80,14 @@ export class ContainerSnapshots {
    * Snapshot the running Container, which runs `image`. Never rejects: a snapshot is an optimisation, and what failed is
    * reported. A Container on an image other than the deployed one is not snapshotted.
    */
-  take(reason: SnapshotReason, image: string | undefined): Promise<SnapshotOutcome> {
+  take(
+    reason: SnapshotReason,
+    image: string | undefined,
+    ignore?: readonly string[],
+  ): Promise<SnapshotOutcome> {
     if (this.#inflight !== undefined) return this.#inflight;
 
-    const inflight = this.#take(reason, image).finally(() => {
+    const inflight = this.#take(reason, image, ignore).finally(() => {
       this.#inflight = undefined;
     });
 
@@ -88,19 +96,26 @@ export class ContainerSnapshots {
     return inflight;
   }
 
-  /** The snapshot to start the next Container from, if there is a live one of the image it would run. */
-  async restorable(): Promise<
-    { readonly id: string; readonly image: string | undefined } | undefined
-  > {
+  /**
+   * The snapshot to start the next Container from, if there is a live one of the image it would run, taken with the
+   * Container-only paths it launches with (`ignore`).
+   */
+  async restorable(
+    ignore?: readonly string[],
+  ): Promise<{ readonly id: string; readonly image: string | undefined } | undefined> {
     if (!this.#deps.enabled) return undefined;
 
     const record = await this.#deps.load();
 
     if (record === undefined) return undefined;
 
-    // A deploy changed the image (the snapshot is not portable to it), or the snapshot is about to expire: a new one is
-    // taken from the next Container that starts from the image.
-    if (record.image !== this.#deps.image() || this.#deps.now() - record.refreshedAt > MAX_AGE_MS) {
+    // A deploy changed the image (the snapshot is not portable to it), the Container-only paths changed, or the snapshot
+    // is about to expire: a new one is taken from the next Container that starts from the image.
+    if (
+      record.image !== this.#deps.image() ||
+      !samePaths(record.ignore, ignore) ||
+      this.#deps.now() - record.refreshedAt > MAX_AGE_MS
+    ) {
       await this.#deps.clear();
 
       return undefined;
@@ -121,7 +136,11 @@ export class ContainerSnapshots {
     return this.#deps.clear();
   }
 
-  async #take(reason: SnapshotReason, image: string | undefined): Promise<SnapshotOutcome> {
+  async #take(
+    reason: SnapshotReason,
+    image: string | undefined,
+    ignore: readonly string[] | undefined,
+  ): Promise<SnapshotOutcome> {
     const deps = this.#deps;
 
     if (!deps.enabled || !deps.running()) return "skipped";
@@ -162,6 +181,7 @@ export class ContainerSnapshots {
         refreshedAt: deps.now(),
         tookMs: deps.now() - started,
         image,
+        ignore,
         reason,
       });
 
@@ -197,19 +217,39 @@ export class ContainerSnapshots {
 }
 
 /**
+ * Whether two lists of Container-only paths are the same, in the same order (the last match wins). No list (an older
+ * record, or a Container that has none) is the same only as no list.
+ */
+export const samePaths = (
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean =>
+  a === undefined || b === undefined
+    ? a === b
+    : a.length === b.length && a.every((pattern, index) => pattern === b[index]);
+
+/**
  * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` (one per line), anywhere on the Container's
- * disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount (`/workspace`, which a
- * snapshot does not hold). The patterns reach grep as a pattern file on its standard input, read from the environment, so
- * they are in no command line.
+ * disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount (`/workspace`, whose
+ * files are searched in computerd's store); the directories given as arguments instead, if any (for the tests).
+ *
+ * Directories named `.pnpm-store` or `.pnpm` are not searched: pnpm's store and the virtual store in `node_modules`
+ * hold only the packages pnpm installed, and after an install they are most of the disk (a cold search after this
+ * repo's took 62 s, 7 s without them). The rest of `node_modules` (`.cache`, `.vite`, what a command wrote there) is
+ * searched.
+ *
+ * The patterns reach grep as a pattern file on its standard input, read from the environment, so they are in no command
+ * line.
  */
 const SCAN_SCRIPT = [
-  "roots=()",
-  "for d in /*; do",
-  '  case "$d" in /proc|/sys|/dev|/run|/workspace) continue ;; esac',
-  '  [ -L "$d" ] && continue',
-  '  [ -d "$d" ] && roots+=("$d")',
-  "done",
-  'printf \'%s\\n\' "$CLOUDPID_SCAN_SECRET" | grep -rlF -f - -- "${roots[@]}"',
+  'if [ "$#" -eq 0 ]; then',
+  "  for d in /*; do",
+  '    case "$d" in /proc|/sys|/dev|/run|/workspace) continue ;; esac',
+  '    [ -L "$d" ] && continue',
+  '    [ -d "$d" ] && set -- "$@" "$d"',
+  "  done",
+  "fi",
+  'printf \'%s\\n\' "$CLOUDPID_SCAN_SECRET" | grep -rlF --exclude-dir=.pnpm-store --exclude-dir=.pnpm -f - -- "$@"',
 ].join("\n");
 
 /** What the scan needs of the platform's `ctx.container`. */

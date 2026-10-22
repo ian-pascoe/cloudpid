@@ -54,6 +54,8 @@ import {
 import {
   deleteConfirmed,
   idleMinutesProblem,
+  ignorePatternsFrom,
+  ignoreProblem,
   slugProblem,
   sourceProblem,
   workspaceNameProblem,
@@ -156,21 +158,27 @@ const CloneForm = ({ slug }: { slug: string }) => {
   );
 };
 
-/** The Container fields of the Edit dialog: size and idle time, saved together with the name. */
+/** The Container fields of the Edit dialog: size, idle time and extra paths, saved together with the name. */
 const ContainerFields = ({
   slug,
   instance,
   idle,
   idleProblem,
+  paths,
+  pathsProblem,
   onInstance,
   onIdle,
+  onPaths,
 }: {
   slug: string;
   instance: InstanceType;
   idle: string;
   idleProblem: string | null;
+  paths: string;
+  pathsProblem: string | null;
   onInstance: (instance: InstanceType) => void;
   onIdle: (idle: string) => void;
+  onPaths: (paths: string) => void;
 }) => (
   <fieldset className="flex min-w-0 flex-col gap-3">
     <legend className="mb-2 text-xs font-medium text-muted-foreground">Container</legend>
@@ -211,15 +219,41 @@ const ContainerFields = ({
       />
       {idleProblem !== null && <p className="text-xs text-destructive">{idleProblem}</p>}
     </div>
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={`paths-${slug}`} className="text-sm font-medium">
+        More Container-only paths (one per line)
+      </label>
+      <textarea
+        id={`paths-${slug}`}
+        rows={3}
+        value={paths}
+        placeholder={"/data\n**/.gradle-cache"}
+        spellCheck={false}
+        onChange={(event) => {
+          onPaths(event.target.value);
+        }}
+        aria-invalid={pathsProblem !== null}
+        className="min-w-0 rounded-md border border-input bg-background px-2.5 py-2 font-mono text-sm focus-visible:outline-2 focus-visible:outline-ring"
+      />
+      {pathsProblem === null ? (
+        <p className="text-xs text-muted-foreground">
+          Kept on the Container, out of the Workspace, like node_modules. Start with / (from
+          /workspace) or **/ (at any depth); a line starting with ! keeps a path synced. What the
+          Workspace already holds there stays until it is deleted.
+        </p>
+      ) : (
+        <p className="text-xs text-destructive">{pathsProblem}</p>
+      )}
+    </div>
     <p className="text-xs text-muted-foreground">
-      Size and idle time apply the next time the Container starts: a running one keeps what it
-      started with. A saved disk larger than a smaller size's disk cannot be restored there, and the
-      Container then starts from scratch.
+      These apply the next time the Container starts: a running one keeps what it started with. A
+      saved disk larger than a smaller size's disk cannot be restored there, and one saved with
+      other paths is not restored; the Container then starts from scratch.
     </p>
   </fieldset>
 );
 
-/** Edit a Workspace: its name, and its Container's size and idle time. Its slug never changes. */
+/** Edit a Workspace: its name, and its Container's size, idle time and extra paths. Its slug never changes. */
 const EditWorkspaceDialog = ({
   workspace,
   otherNames,
@@ -234,7 +268,7 @@ const EditWorkspaceDialog = ({
   const [draft, setDraft] = useAtom(workspaceDraftAtom(slug));
   const [edited, save] = useAtom(saveWorkspaceAtom(slug));
   const setDialog = useAtomSet(workspaceDialogAtom(slug));
-  const { name, instance, idle } = draft;
+  const { name, instance, idle, ignore } = draft;
 
   const saved = loaded.pipe(
     AsyncResult.value,
@@ -248,22 +282,30 @@ const EditWorkspaceDialog = ({
   const saveError = settledFailureOf(edited);
   const nameProblem = workspaceNameProblem(name, otherNames);
   const idleProblem = saved === undefined ? null : idleMinutesProblem(idle);
+  const pathsProblem = ignore === undefined ? null : ignoreProblem(ignore);
   const renamed = name.trim() !== workspace.name;
+  const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
 
-  const resized =
+  const settingsChanged =
     saved !== undefined &&
     instance !== undefined &&
-    (instance !== saved.instance || idle !== String(saved.idleMinutes));
+    (instance !== saved.instance ||
+      idle !== String(saved.idleMinutes) ||
+      patterns.join("\n") !== saved.ignore.join("\n"));
+
+  const invalid = nameProblem !== null || idleProblem !== null || pathsProblem !== null;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (nameProblem !== null || idleProblem !== null || saving) return;
+    if (invalid || saving) return;
 
     save({
       name: renamed ? name.trim() : undefined,
       settings:
-        resized && instance !== undefined ? { instance, idleMinutes: Number(idle) } : undefined,
+        settingsChanged && instance !== undefined
+          ? { instance, idleMinutes: Number(idle), ignore: patterns }
+          : undefined,
     });
   };
 
@@ -300,6 +342,11 @@ const EditWorkspaceDialog = ({
           instance={instance}
           idle={idle}
           idleProblem={idleProblem}
+          paths={ignore ?? ""}
+          pathsProblem={pathsProblem}
+          onPaths={(typed) => {
+            setDraft((current) => ({ ...current, ignore: typed }));
+          }}
           onInstance={(picked) => {
             setDraft((current) => ({ ...current, instance: picked }));
           }}
@@ -335,10 +382,7 @@ const EditWorkspaceDialog = ({
         >
           Cancel
         </Button>
-        <Button
-          type="submit"
-          disabled={saving || nameProblem !== null || idleProblem !== null || !(renamed || resized)}
-        >
+        <Button type="submit" disabled={saving || invalid || !(renamed || settingsChanged)}>
           {saving ? "Saving…" : "Save"}
         </Button>
       </DialogActions>

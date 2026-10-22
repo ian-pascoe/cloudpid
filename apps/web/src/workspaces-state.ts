@@ -225,7 +225,7 @@ export const cloneRepoAtom = Atom.family((slug: string) =>
   ),
 );
 
-/** The Container size and idle time of Workspace `slug` in force, which apply at its next Container launch. */
+/** The Container settings of Workspace `slug` in force (size, idle time, paths), which apply at its next launch. */
 export const workspaceSettingsAtom = Atom.family((slug: string) =>
   RegistryClient.query(
     "getWorkspaceSettings",
@@ -234,16 +234,18 @@ export const workspaceSettingsAtom = Atom.family((slug: string) =>
   ),
 );
 
-/** What the Edit dialog's form holds: the name, and the Container's size and idle time (minutes) as typed. */
+/** What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes) and paths as typed. */
 export interface WorkspaceDraft {
   readonly name: string;
   /** Undefined until the Workspace's settings have answered and nothing was picked. */
   readonly instance: InstanceType | undefined;
   /** Empty until the Workspace's settings have answered and nothing was typed. */
   readonly idle: string;
+  /** The extra Container-only paths, one per line; undefined until the settings have answered and nothing was typed. */
+  readonly ignore: string | undefined;
 }
 
-/** `draft`, with the size and idle time it has not got yet taken from `saved`, the settings in force once they answer. */
+/** `draft`, with the settings it has not got yet taken from `saved`, the settings in force once they answer. */
 const filledFrom = (draft: WorkspaceDraft, saved: WorkspaceSettingsState | null): WorkspaceDraft =>
   saved === null
     ? draft
@@ -251,6 +253,7 @@ const filledFrom = (draft: WorkspaceDraft, saved: WorkspaceSettingsState | null)
         ...draft,
         instance: draft.instance ?? saved.settings.instance,
         idle: draft.idle === "" ? String(saved.settings.idleMinutes) : draft.idle,
+        ignore: draft.ignore ?? Arr.join(saved.settings.ignore, "\n"),
       };
 
 /**
@@ -267,6 +270,7 @@ export const workspaceDraftAtom = Atom.family((slug: string) =>
           name: get(workspaceNamesAtom)[slug] ?? "",
           instance: undefined,
           idle: "",
+          ignore: undefined,
         })),
         saved,
       );

@@ -1,7 +1,7 @@
 // Repos in a Workspace (`docs/spec.md` → Filesystem and tools): which directories below `/workspace` are git repositories,
 // cloning one into the Workspace, and removing one. The clone runs on the Container, which has the network and the GitHub
 // token; the Worker Shell has neither. The removal runs there too, so what only the Container's disk holds under the
-// directory (`TOOLCHAIN_IGNORE`) goes with it. All are for the owner's UI (`RegistryRpcs`), and none starts a Session.
+// directory (its Container-only paths) goes with it. All are for the owner's UI (`RegistryRpcs`), and none starts a Session.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

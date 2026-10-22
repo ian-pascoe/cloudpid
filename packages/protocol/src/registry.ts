@@ -312,7 +312,7 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { workspace: WorkspaceSlug, repo: RepoName },
     error: WorkspaceError,
   }),
-  /** A Workspace's own settings (Container size and idle time) in force, and the overrides they come from. */
+  /** A Workspace's own settings (Container size, idle time, Container-only paths) in force, and their overrides. */
   Rpc.make("getWorkspaceSettings", {
     payload: { workspace: WorkspaceSlug },
     success: WorkspaceSettingsState,
@@ -321,7 +321,7 @@ export class RegistryRpcs extends RpcGroup.make(
   /**
    * Replace a Workspace's saved overrides, a partial of its settings that differs from the defaults. Overrides that do
    * not resolve fail with a `WorkspaceError` whose message lists each problem, and nothing is saved. The Workspace
-   * applies them at its next Container launch: a running Container keeps the size and idle time it started with.
+   * applies them at its next Container launch: a running Container keeps the settings it started with.
    */
   Rpc.make("updateWorkspaceSettings", {
     payload: { workspace: WorkspaceSlug, overrides: Schema.Json },

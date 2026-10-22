@@ -34,7 +34,8 @@ import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import { IdleStop } from "./idle.ts";
-import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
+import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
+import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
   type WorkspaceSettingsAnswer,
@@ -60,7 +61,7 @@ export type WorkspaceEnv = {
   readonly CLOUDPID_GIT_EMAIL?: string;
   /**
    * `"false"` where the Container's `/workspace` is not a real FUSE mount, as under `alchemy dev`: computerd's
-   * userspace shim refuses an ignore list and exits. Anything else applies `TOOLCHAIN_IGNORE`.
+   * userspace shim refuses an ignore list and exits. Anything else applies `TOOLCHAIN_IGNORE` and the Workspace's own.
    */
   readonly CONTAINER_FUSE?: string;
 };
@@ -76,7 +77,7 @@ const ContainerHost = withWorkspaceContainer(class extends DurableObject<Workspa
 /** Where the last use of the Container is kept, for an alarm that wakes an evicted object. */
 const LAST_USE_KEY = "cloudpid:container-last-use";
 
-/** Where the Container's launch (its instance type, idle time, snapshot) and its latest snapshot are kept. */
+/** Where the Container's launch (its instance type, idle time, paths, snapshot) and its latest snapshot are kept. */
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
@@ -101,7 +102,7 @@ export const CONTAINER_BACKEND_ID = "container-shell";
 export class Workspace extends ContainerHost {
   readonly #workspace: ComputerWorkspace;
   readonly #host: WorkspaceEnvHost;
-  readonly #container: ContainerBackend;
+  readonly #container: PerLaunchContainerBackend;
   readonly #idle: IdleStop;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
@@ -142,9 +143,17 @@ export class Workspace extends ContainerHost {
       info: (message) => console.info(message),
     }));
 
-    // The size and idle time of each launch are the Workspace's settings at that moment, and a snapshot is restored.
+    // The size, idle time and Container-only paths of each launch are the Workspace's settings at that moment, and a
+    // snapshot is restored.
     const launch = new ContainerLaunch({
       settings: async () => (await this.#settings.read()).settings,
+      // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/spec.md →
+      // Container and Toolchains): the built-in paths, then the Workspace's own, so its `!` patterns can take one back.
+      // mise's Toolchains are on the Container's disk and need no entry. The local Container cannot keep any.
+      ignore: (settings) =>
+        env.CONTAINER_FUSE === "false"
+          ? undefined
+          : containerIgnore(TOOLCHAIN_IGNORE, settings.ignore),
       snapshots,
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       load: () => ctx.storage.get<LaunchRecord>(LAUNCH_KEY),
@@ -189,11 +198,12 @@ export class Workspace extends ContainerHost {
       egress: { mode: "direct" },
     };
 
-    // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/spec.md →
-    // Container and Toolchains). mise's Toolchains are on the Container's disk and need no entry.
-    if (env.CONTAINER_FUSE !== "false") container.ignore = TOOLCHAIN_IGNORE;
-
-    this.#container = new ContainerBackend(container);
+    // computer takes the Container-only paths when its backend is built, so one is built for each launch's paths.
+    this.#container = new PerLaunchContainerBackend({
+      build: (ignore) =>
+        new ContainerBackend(ignore === undefined ? container : { ...container, ignore }),
+      ignore: () => launch.ignore(),
+    });
 
     // Before the first command of each Container start, the Toolchains are installed (the lockfile's); every command
     // gets the GitHub token and mise's settings, and the token is taken out of its output. The Workspace sees this as
@@ -275,7 +285,7 @@ export class Workspace extends ContainerHost {
     );
   }
 
-  /** The Workspace's own settings in force (Container size and idle time), for the UI: `getWorkspaceSettings`. */
+  /** The Workspace's own settings in force (Container size, idle time and Container-only paths), for the UI: `getWorkspaceSettings`. */
   containerSettings(): Promise<WorkspaceSettingsAnswer> {
     return this.#settings.read();
   }
@@ -302,7 +312,7 @@ export class Workspace extends ContainerHost {
 
   /**
    * Reset the Workspace to a fresh start (`LifecycleHost.clear`, for `resetWorkspace`): as `destroy`, but its own
-   * settings (Container size and idle time) are put back after the wipe. The caller resets the instance with `reset`.
+   * settings (Container size, idle time and Container-only paths) are put back after the wipe. The caller resets the instance with `reset`.
    */
   async clear(): Promise<void> {
     const settings = await this.#settings.saved();
