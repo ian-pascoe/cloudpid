@@ -72,11 +72,11 @@ lockfile_platforms = ["linux-x64"]
 
 [tools]
 "conda:git" = "2.56.0"
-gh = "2.102.1"
+gh = "2.103.0"
 node = "24.22.1"
 pnpm = "12.15.0"
-python = "3.14.8"
-uv = "0.13.4"
+python = "3.14.9"
+uv = "0.13.5"
 `;
 
 /**
