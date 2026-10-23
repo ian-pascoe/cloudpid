@@ -18,7 +18,7 @@ export const relativeTime = (time: number, now: number): string => {
   return format.format(Math.round(hours / 24), "day");
 };
 
-/** "12 ms", "1.5 s", "2 min 5 s", "1 h 12 min": how long something took. */
+/** "12 ms", "1.5 s", "2 min 5 s": how long a call took. */
 export const duration = (milliseconds: number): string => {
   if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
 
@@ -28,23 +28,7 @@ export const duration = (milliseconds: number): string => {
 
   if (seconds < 60) return `${Math.round(seconds)} s`;
 
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ${Math.floor(seconds % 60)} s`;
-
-  return `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
-};
-
-/** "950 B", "12.3 kB", "4.5 GB": a byte count, in powers of 1000. */
-export const byteSize = (bytes: number): string => {
-  const units = ["B", "kB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = 0;
-
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
-    unit++;
-  }
-
-  return unit === 0 ? `${Math.round(value)} B` : `${Math.round(value * 10) / 10} ${units[unit]}`;
+  return `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
 };
 
 /** "$0.42", "$12.50", "$0.003": US dollars, with the cents a small amount needs to show it is not nothing. */

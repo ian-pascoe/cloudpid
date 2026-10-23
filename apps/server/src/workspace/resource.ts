@@ -4,8 +4,6 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as Redacted from "effect/Redacted";
 import { OWNER_EMAIL } from "../deployment.ts";
 import { WORKSPACE_CONTAINER, WORKSPACE_BINDING } from "./binding.ts";
 import type { Workspace } from "./Workspace.ts";
@@ -34,26 +32,11 @@ export const DEFAULT_GIT_NAME = "cloudpid";
  *   DO seals its copy of the Environment's kept Secrets under, as the Session DOs and the Registry seal theirs
  *   (docs/spec.md → Secrets).
  * - `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` set who those commits are by (the owner's email by default).
- * - `CLOUDPID_ANALYTICS_TOKEN` is an optional deploy-time secret: an API token with Account Analytics Read, bound with
- *   the account it reads (`CLOUDFLARE_ACCOUNT_ID`), that the Workspace DO reads its Containers' usage analytics with
- *   (`container-analytics.ts`). Unset or empty, their cost is estimated (docs/spec.md → Operations → Usage).
  * - Under `alchemy dev` the Container runs in local Docker without `/dev/fuse`, where computerd's userspace shim
  *   cannot keep paths container-local: the Workspace DO is told not to ask for it (`CONTAINER_FUSE`).
  */
 export const Workspaces = Effect.gen(function* () {
   const { dev } = yield* AlchemyContext;
-
-  const analyticsToken = (yield* Config.option(Config.Redacted("CLOUDPID_ANALYTICS_TOKEN"))).pipe(
-    Option.filter((token) => Redacted.value(token) !== ""),
-  );
-
-  // The account is the deploy's own: its analytics are the ones the token reads.
-  const analytics = Option.isSome(analyticsToken)
-    ? {
-        CLOUDPID_ANALYTICS_TOKEN: analyticsToken.value,
-        CLOUDFLARE_ACCOUNT_ID: (yield* yield* Cloudflare.CloudflareEnvironment).accountId,
-      }
-    : {};
 
   return yield* Cloudflare.Worker("Workspaces", {
     main: new URL("./worker.ts", import.meta.url).href,
@@ -72,7 +55,6 @@ export const Workspaces = Effect.gen(function* () {
       ),
       CLOUDPID_GIT_EMAIL: Config.String("CLOUDPID_GIT_EMAIL").pipe(Config.withDefault(OWNER_EMAIL)),
       CONTAINER_FUSE: dev ? "false" : "true",
-      ...analytics,
     },
   });
 });

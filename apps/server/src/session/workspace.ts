@@ -29,7 +29,6 @@ export type WorkspaceNamespace = {
       | "updateEnvironmentBuild"
       | "updateEnvironmentSecrets"
       | "environmentSecretsUnavailable"
-      | "containerUsage"
     >;
 };
 

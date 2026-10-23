@@ -11,7 +11,6 @@
 //   start the platform rejects outright for a snapshot (an expired handle) is retried once from the image;
 // - the image the Container runs is recorded per launch (the image of the snapshot it restored, else the deployed one),
 //   because Containers outlive a deploy: a snapshot is labelled with that, never with the image a launch would run now;
-// - every launch carries the Workspace's labels (`labels`), which Cloudflare's usage analytics are filtered by;
 // - the Container-only paths (computer's `ignore`: the built-in ones, then the Workspace's own) are decided before
 //   computer builds the launch (`ignore`), kept for as long as that Container runs, and recorded from the launch itself,
 //   so a snapshot is restored only by a launch with the paths it was taken with;
@@ -86,8 +85,6 @@ export type ContainerLaunchDeps = {
   readonly now: () => number;
   readonly warn: (message: string) => void;
   readonly info: (message: string) => void;
-  /** Labels every Container is launched with, which Cloudflare's analytics are filtered by (`container-analytics.ts`). */
-  readonly labels?: Readonly<Record<string, string>> | undefined;
 };
 
 const MINUTE = 60_000;
@@ -249,13 +246,6 @@ export class ContainerLaunch {
       : { ok: false, reason: captured.reason };
   }
 
-  /** `spec` with the Workspace's labels. computer does not compare labels, so adding them relaunches nothing. */
-  #labelled(spec: ContainerLaunchSpec): ContainerLaunchSpec {
-    const { labels } = this.#deps;
-
-    return labels === undefined ? spec : { ...spec, labels: { ...spec.labels, ...labels } };
-  }
-
   async #current(): Promise<LaunchRecord | undefined> {
     this.#record ??= await this.#deps.load();
 
@@ -320,7 +310,7 @@ export class ContainerLaunch {
 
     // A Container that started from a Build was launched with the store reset, which a reconnect asks for again.
     let launch: ContainerLaunchSpec = resettingStore(
-      this.#labelled({ ...spec, instance: size }),
+      { ...spec, instance: size },
       build !== undefined || kept?.resetStore === true,
     );
 
@@ -356,7 +346,7 @@ export class ContainerLaunch {
       build = undefined;
       this.#restoring = undefined;
       this.#restoringBuild = false;
-      launch = this.#labelled({ ...spec, instance: size });
+      launch = { ...spec, instance: size };
       info = await api.start(launch);
     }
 
@@ -463,6 +453,6 @@ export class ContainerLaunch {
 
     this.#deps.info("Container launch: restarted from the image (computer's restart)");
 
-    return api.restart(this.#labelled({ ...spec, instance: containerInstance(instance) }));
+    return api.restart({ ...spec, instance: containerInstance(instance) });
   }
 }
