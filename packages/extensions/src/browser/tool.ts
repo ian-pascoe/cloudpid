@@ -122,12 +122,15 @@ export const browserTool = (description: string) =>
  * a window's URL may carry an OAuth code. It never holds a Live View link.
  */
 export const describeOutcome = (outcome: BrowserHandoffOutcome): string => {
-  const count = outcome.windows.length;
+  const origins = outcome.windowOrigins;
+  const count = origins?.length ?? 0;
 
   const windows =
-    count === 0
-      ? ""
-      : ` The tab opened ${count === 1 ? "a window that is" : `${count} windows that are`} still open (pop-ups or new tabs): ${Arr.join(outcome.windows, ", ")}.`;
+    origins === undefined
+      ? " Whether the tab left windows it opened (pop-ups or new tabs) open is not known: check with `browser`."
+      : count === 0
+        ? ""
+        : ` The tab opened ${count === 1 ? "a window that is" : `${count} windows that are`} still open (pop-ups or new tabs): ${Arr.join(origins, ", ")}.`;
 
   const look = `The page may have changed: look at it with \`browser\` before you continue.${windows}`;
 

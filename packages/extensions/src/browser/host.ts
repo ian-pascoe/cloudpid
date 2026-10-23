@@ -19,12 +19,12 @@ export {
   BROWSER_KEEP_ALIVE_MS,
   type BrowserOutputPart,
   type BrowserRun,
-  HANDOFF_OVER,
   HANDOFF_TIMEOUT_MS,
   type HandoffEnded,
   type HandoffStarted,
   type HandoffStartInput,
   type HandoffStatus,
+  LIVE_VIEW_HANDOFF_OVER,
   type LiveViewLinks,
   type LiveViewTarget,
   type LiveViewWindow,
@@ -57,7 +57,7 @@ export type BrowserHostService = {
   readonly startHandoff: (input: HandoffStartInput) => Effect.Effect<HandoffStarted, BrowserError>;
   /**
    * Fresh 60-second Live View links to handoff `requestId`'s tab and the windows it opened, for the one client that
-   * asked. Fails (its message holds `HANDOFF_OVER`) once the handoff has ended.
+   * asked. Fails (its message holds `LIVE_VIEW_HANDOFF_OVER`) once the handoff has ended.
    */
   readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, BrowserError>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */

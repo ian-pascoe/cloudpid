@@ -83,7 +83,7 @@ describe("a Browser Handoff", () => {
 
       yield* TestClock.adjust(POLL_MS);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "completed", windows: [] });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "completed", windowOrigins: [] });
       expect(calls.started).toEqual([
         {
           requestId: "7",
@@ -124,25 +124,44 @@ describe("a Browser Handoff", () => {
       expect(yield* handoffs.request(ASK)).toEqual({
         status: "failed",
         reason: "captcha is broken",
-        windows: [],
+        windowOrigins: [],
       });
+    }));
+
+  test("says it does not know which windows are open when the host could not end the handoff", () =>
+    Effect.gen(function* () {
+      const { host } = hostWaiting({ state: "complete", success: true });
+
+      const { handoffs } = sessionOver({
+        ...host,
+        endHandoff: () => Effect.fail(BrowserError.make({ message: "endHandoff: overloaded" })),
+      });
+
+      expect(yield* handoffs.request(ASK)).toEqual({ status: "completed" });
+
+      const quiet = hostWaiting({ state: "complete", success: true });
+
+      // An older host, or one whose cleanup ran out of time: it says nothing of the windows.
+      const unsure = sessionOver({ ...quiet.host, endHandoff: () => Effect.succeed({}) });
+
+      expect(yield* unsure.handoffs.request(ASK)).toEqual({ status: "completed" });
     }));
 
   test("says which windows the tab left open, by origin, however it ended", () =>
     Effect.gen(function* () {
       const { host } = fakeHandoffHost([{ state: "complete", success: true }], {
         now: () => 0,
-        windows: ["https://accounts.example.com"],
+        windowOrigins: ["https://accounts.example.com"],
       });
 
       expect(yield* sessionOver(host).handoffs.request(ASK)).toEqual({
         status: "completed",
-        windows: ["https://accounts.example.com"],
+        windowOrigins: ["https://accounts.example.com"],
       });
 
       const waiting = fakeHandoffHost([{ state: "waiting" }], {
         now: () => 0,
-        windows: ["https://accounts.example.com", "https://id.example.org"],
+        windowOrigins: ["https://accounts.example.com", "https://id.example.org"],
       });
 
       const asking = yield* Effect.forkChild(sessionOver(waiting.host).handoffs.request(ASK));
@@ -151,7 +170,7 @@ describe("a Browser Handoff", () => {
 
       expect(yield* Fiber.join(asking)).toEqual({
         status: "timeout",
-        windows: ["https://accounts.example.com", "https://id.example.org"],
+        windowOrigins: ["https://accounts.example.com", "https://id.example.org"],
       });
     }));
 
@@ -164,7 +183,7 @@ describe("a Browser Handoff", () => {
 
       yield* TestClock.adjust(TIMEOUT_MS + 20_000);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout", windows: [] });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout", windowOrigins: [] });
       expect(announced.at(-1)).toEqual([]);
       expect(calls.ended).toEqual(["7"]);
     }));
@@ -183,14 +202,14 @@ describe("a Browser Handoff", () => {
       // Round by round: each round's sleep starts when the last one ends.
       for (let round = 0; round < 60; round++) yield* TestClock.adjust(POLL_MS);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout", windows: [] });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout", windowOrigins: [] });
     }));
 
   test("says that the handoff ended unexplained when Browser Run lost it", () =>
     Effect.gen(function* () {
       const { handoffs } = sessionOver(hostWaiting({ state: "ended" }).host);
 
-      expect(yield* handoffs.request(ASK)).toEqual({ status: "ended", windows: [] });
+      expect(yield* handoffs.request(ASK)).toEqual({ status: "ended", windowOrigins: [] });
     }));
 
   test("withdraws the request and ends the handoff when its call is aborted", () =>
@@ -234,7 +253,7 @@ describe("a Browser Handoff", () => {
 
       yield* TestClock.adjust(POLL_MS);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "completed", windows: [] });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "completed", windowOrigins: [] });
       expect(calls.started).toHaveLength(1);
       // The rerun does not push again: the owner was already told.
       expect(after.notices).toEqual([]);
@@ -248,7 +267,7 @@ describe("a Browser Handoff", () => {
       const recovering = yield* Effect.forkChild(flaky.handoffs.request(ASK));
 
       yield* TestClock.adjust(10_000);
-      expect(yield* Fiber.join(recovering)).toEqual({ status: "completed", windows: [] });
+      expect(yield* Fiber.join(recovering)).toEqual({ status: "completed", windowOrigins: [] });
 
       const gone = sessionOver(hostWaiting(down).host);
       const failing = yield* Effect.forkChild(gone.handoffs.request(ASK).pipe(Effect.flip));
@@ -333,7 +352,7 @@ describe("a Browser Handoff", () => {
 
       const { handoffs, announced, notices } = sessionOver(host);
 
-      expect(yield* handoffs.request(ASK)).toEqual({ status: "completed", windows: [] });
+      expect(yield* handoffs.request(ASK)).toEqual({ status: "completed", windowOrigins: [] });
       expect(announced).toEqual([]);
       expect(notices).toEqual([]);
     }));

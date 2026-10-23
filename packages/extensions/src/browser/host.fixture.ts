@@ -48,7 +48,7 @@ export const fakeHandoffHost = (
     readonly start?: (input: HandoffStartInput) => Effect.Effect<HandoffStarted, BrowserError>;
     readonly now?: () => number;
     /** The origins of the windows the tab leaves open, which ending a handoff says. */
-    readonly windows?: ReadonlyArray<string>;
+    readonly windowOrigins?: ReadonlyArray<string>;
   } = {},
 ) => {
   const calls: HandoffCalls = { started: [], liveViews: [], waits: [], ended: [] };
@@ -94,7 +94,7 @@ export const fakeHandoffHost = (
       Effect.sync(() => {
         calls.ended.push(requestId);
 
-        return { windows: options.windows ?? [] };
+        return { windowOrigins: options.windowOrigins ?? [] };
       }),
   };
 

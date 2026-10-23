@@ -19,7 +19,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { OwnerNotifications } from "../notify.ts";
-import { HANDOFF_OVER, HANDOFF_TIMEOUT_MS, type LiveViewLinks } from "./contract.ts";
+import { LIVE_VIEW_HANDOFF_OVER, liveViewPaneQuery } from "@cloudpid/protocol/live-view";
+import { HANDOFF_TIMEOUT_MS, type LiveViewLinks } from "./contract.ts";
 import { BrowserError, type BrowserHostService } from "./host.ts";
 import { BrowserSession, type BrowserSessionService } from "./session.ts";
 
@@ -59,23 +60,18 @@ export const BrowserHandoffRequest = Schema.Struct({
 
 export type BrowserHandoffRequest = typeof BrowserHandoffRequest.Type;
 
-/**
- * How a handoff ended, as the tool tells the model, and the origins of the windows the tab left open (never their URLs,
- * which may carry an OAuth code; empty when the host could not say).
- */
-export type BrowserHandoffOutcome = (
-  | { readonly status: "completed" }
-  | { readonly status: "failed"; readonly reason?: string }
-  | { readonly status: "timeout" }
-  | { readonly status: "ended" }
-) & { readonly windows: ReadonlyArray<string> };
-
 /** How the wait for a handoff ended, before the host has said which windows are left. */
 type Ending =
   | { readonly status: "completed" }
   | { readonly status: "failed"; readonly reason?: string }
   | { readonly status: "timeout" }
   | { readonly status: "ended" };
+
+/**
+ * How a handoff ended, as the tool tells the model, and the origins of the windows the tab left open (never their URLs,
+ * which may carry an OAuth code; no `windowOrigins` when the host could not say).
+ */
+export type BrowserHandoffOutcome = Ending & { readonly windowOrigins?: ReadonlyArray<string> };
 
 export type BrowserHandoffsService = {
   /** The handoffs waiting for the owner, oldest first: those past their deadline (and grace) are not shown. */
@@ -92,7 +88,7 @@ export type BrowserHandoffsService = {
   }) => Effect.Effect<BrowserHandoffOutcome, BrowserError>;
   /**
    * Fresh Live View links for waiting handoff `requestId`, for the one client that asked (its Live View opening,
-   * reconnecting, or following a window). Fails with `HANDOFF_OVER` once the handoff is no longer waiting.
+   * reconnecting, or following a window). Fails with `LIVE_VIEW_HANDOFF_OVER` once the handoff is no longer waiting.
    */
   readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, BrowserError>;
   /**
@@ -125,13 +121,6 @@ export type BrowserHandoffsOptions = {
 /** The words of a push that asks the owner to take over. */
 const pushBody = (instructions: string): string => `Needs you in the browser: ${instructions}`;
 
-/**
- * Where a tap on the push goes: the Session's page with the handoff's Live View Pane open (`live-view:<requestId>`, the
- * web app's Pane key). A query, which the push resolves against the Session's page.
- */
-export const liveViewPaneQuery = (requestId: string): string =>
-  `?pane=live-view:${encodeURIComponent(requestId)}`;
-
 export const makeBrowserHandoffs = (
   {
     host,
@@ -158,15 +147,15 @@ export const makeBrowserHandoffs = (
     });
 
   /**
-   * End the handoff in the host, if it is there, and say which windows it left open: never fails or takes long, as it
-   * runs when a call ends. No windows are said when the host could not be asked.
+   * End the handoff in the host, if it is there, and say the origins of the windows it left open: never fails or takes
+   * long, as it runs when a call ends. Undefined when the host could not say (or could not be asked): unknown, not none.
    */
-  const endInHost = (id: string): Effect.Effect<ReadonlyArray<string>> =>
+  const endInHost = (id: string): Effect.Effect<ReadonlyArray<string> | undefined> =>
     host.endHandoff(id).pipe(
       Effect.timeout(CLEANUP_TIMEOUT),
-      Effect.map((ended) => ended.windows),
+      Effect.map((ended) => ended.windowOrigins),
       Effect.catch((error) =>
-        Effect.as(Effect.logWarning("Ending a Browser Handoff failed", error), []),
+        Effect.as(Effect.logWarning("Ending a Browser Handoff failed", error), undefined),
       ),
     );
 
@@ -247,10 +236,11 @@ export const makeBrowserHandoffs = (
       }
     });
 
-  /** Withdraw request `id` and end its handoff in the host, saying which windows it left open. */
+  /** Withdraw request `id` and end its handoff in the host, saying the origins of the windows it left open. */
   const finish = (id: string) => Effect.andThen(withdraw(id), endInHost(id));
 
-  const asking = ({
+  /** Start the handoff (or find the one started already), show and push it, and wait for how it ends. */
+  const startAndWait = ({
     id,
     conversationId,
     instructions,
@@ -302,11 +292,13 @@ export const makeBrowserHandoffs = (
   // it.
   const request: BrowserHandoffsService["request"] = (input) =>
     Effect.uninterruptibleMask((restore) =>
-      Effect.exit(restore(asking(input))).pipe(
+      Effect.exit(restore(startAndWait(input))).pipe(
         Effect.flatMap((exit) =>
-          Effect.flatMap(finish(input.id), (windows) =>
+          Effect.flatMap(finish(input.id), (windowOrigins) =>
             Exit.isSuccess(exit)
-              ? Effect.succeed({ ...exit.value, windows } satisfies BrowserHandoffOutcome)
+              ? Effect.succeed<BrowserHandoffOutcome>(
+                  windowOrigins === undefined ? exit.value : { ...exit.value, windowOrigins },
+                )
               : Effect.failCause(exit.cause),
           ),
         ),
@@ -323,12 +315,12 @@ export const makeBrowserHandoffs = (
     liveView: (requestId) =>
       Effect.flatMap(shown(requestId), (waitingRequest) =>
         waitingRequest === undefined
-          ? Effect.fail(BrowserError.make({ message: HANDOFF_OVER }))
+          ? Effect.fail(BrowserError.make({ message: LIVE_VIEW_HANDOFF_OVER }))
           : host.liveView(requestId).pipe(
               // The host's word for it, as the client reads it, without the call it came through.
               Effect.mapError((error) =>
-                error.message.includes(HANDOFF_OVER)
-                  ? BrowserError.make({ message: HANDOFF_OVER })
+                error.message.includes(LIVE_VIEW_HANDOFF_OVER)
+                  ? BrowserError.make({ message: LIVE_VIEW_HANDOFF_OVER })
                   : error,
               ),
             ),

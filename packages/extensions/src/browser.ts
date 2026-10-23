@@ -23,12 +23,12 @@ export {
   type BrowserHostService,
   type BrowserOutputPart,
   type BrowserRun,
-  HANDOFF_OVER,
   HANDOFF_TIMEOUT_MS,
   type HandoffEnded,
   type HandoffStarted,
   type HandoffStartInput,
   type HandoffStatus,
+  LIVE_VIEW_HANDOFF_OVER,
   type LiveViewLinks,
   type LiveViewTarget,
   type LiveViewWindow,
@@ -53,7 +53,6 @@ export {
   type BrowserHandoffsOptions,
   type BrowserHandoffsService,
   type BrowserHandoffStorage,
-  liveViewPaneQuery,
   makeBrowserHandoffs,
 } from "./browser/handoff.ts";
 

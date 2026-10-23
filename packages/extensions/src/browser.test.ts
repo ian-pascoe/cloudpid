@@ -391,7 +391,7 @@ describe("browser_handoff", () => {
 
   it("tells the model how many windows the tab left open, and each one's origin only", async () => {
     const { extension } = await handingOver([{ state: "complete", success: true }], {
-      windows: ["https://accounts.example.com", "about:blank"],
+      windowOrigins: ["https://accounts.example.com", "about:blank"],
     });
 
     const session = await openSubagentHarness(handoffScript, {}, [extension]);
@@ -408,6 +408,43 @@ describe("browser_handoff", () => {
         ),
       },
     ]);
+  });
+
+  it("tells the model it does not know which windows are open when the host could not say", async () => {
+    const { extension } = await handingOver([{ state: "complete", success: true }]);
+    const { host } = fakeHandoffHost([{ state: "complete", success: true }]);
+
+    const unsure = await Effect.runPromise(
+      Browser.pipe(
+        Effect.provideService(BrowserHost, host),
+        Effect.provideService(BrowserSession, fakeSession().session),
+        Effect.provideService(
+          BrowserHandoffs,
+          makeBrowserHandoffs(
+            {
+              host: { ...host, endHandoff: () => Effect.succeed({}) },
+              storage: memoryStorage(),
+              announce: () => Effect.void,
+            },
+            fakeSession().session,
+            { notify: () => Effect.void },
+          ),
+        ),
+      ),
+    );
+
+    for (const [installed, expected] of [
+      [extension, /^(?!.*not known).*$/s],
+      [unsure, /Whether the tab left windows it opened \(pop-ups or new tabs\) open is not known/],
+    ] as const) {
+      const session = await openSubagentHarness(handoffScript, {}, [installed]);
+
+      await session.prompt("Log me in");
+
+      const [result] = toolResults(await session.entries());
+
+      expect(result?.content).toEqual([{ type: "text", text: expect.stringMatching(expected) }]);
+    }
   });
 
   it("reports a browser that cannot hand over a tab as an error result", async () => {
