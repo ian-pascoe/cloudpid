@@ -41,6 +41,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { codingToolsWith } from "../coding-tools.ts";
 import { secretsExtension } from "./extension.ts";
 import { scrubbingModels } from "./models.ts";
+import type { KeptSecret } from "./kept.ts";
 import { type SecretAsk, Secrets, secretsLayer, type SecretStorage } from "./store.ts";
 import { openVault } from "./vault.ts";
 
@@ -161,6 +162,8 @@ export const answer = (text: string): AssistantMessage => fauxAssistantMessage(t
 export const openSecretsHarness = async (
   /** Extensions installed beside the stand-ins, before the secrets extension so its hooks see their results. */
   beside: readonly Extension[] = [],
+  /** The Secrets kept for the Session's Environment, as the Registry would hand them. */
+  kept?: ReadonlyArray<KeptSecret>,
 ) => {
   const runtime = ManagedRuntime.make(TestClock.layer());
   const execs: Exec[] = [];
@@ -191,6 +194,7 @@ export const openSecretsHarness = async (
             Effect.sync(() => {
               announced.push(asks);
             }),
+          kept: kept === undefined ? undefined : Effect.succeed(kept),
         }),
       );
     }),

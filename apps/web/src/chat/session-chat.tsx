@@ -6,6 +6,7 @@ import {
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { ReactNode } from "react";
+import { drainFirstMessageAtom } from "../draft-state.ts";
 import { PaneArea } from "../pane-area.tsx";
 import { canStopAllBelow } from "../session/agents.ts";
 import {
@@ -57,7 +58,7 @@ type SessionPageProps = {
   archived?: Archived | undefined;
   /** The Session's "⋯" menu, in the header. */
   menu?: ReactNode;
-  /** Why an archive or unarchive asked on this page failed, or null. */
+  /** Why a new Session, an archive or an unarchive asked on this page failed, or null. */
   problem?: string | null | undefined;
   /** What the composer's Session-wide Slash commands do. */
   commandActions?: SessionCommandActions | undefined;
@@ -88,6 +89,8 @@ const LiveSession = ({
   useAtomMount(usageAtom(sessionId));
   // Deleted (here or elsewhere): its socket closed saying so, and the page leaves it.
   useAtomMount(leaveWhenDeletedAtom(sessionId));
+  // A first message written in the draft is sent now that the Session's client is built.
+  useAtomMount(drainFirstMessageAtom(sessionId));
 
   const submit = useAtomSet(submitAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));

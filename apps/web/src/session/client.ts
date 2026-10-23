@@ -144,12 +144,14 @@ export interface SessionClient {
   /**
    * `submit`, waiting for how it ended: done once the Session took it, failing with why the Session refused it (or why
    * it was dropped), which the caller then shows itself: the refusal is not the state's `failure`. It settles once,
-   * even when it was sent again after a reconnect.
+   * even when it was sent again after a reconnect. A caller that may submit the same message again on another client
+   * gives its own `requestId`, so the Session takes it once.
    */
   readonly submitAndAwait: (
     message: string | OutgoingMessage,
     whenBusy: WhenBusy,
     conversationId?: number,
+    requestId?: string,
   ) => Effect.Effect<void, SessionCommandError>;
   /**
    * Watch subagent conversation `conversationId` on this socket, from a snapshot, and keep `threads[conversationId]`
@@ -926,6 +928,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     whenBusy: WhenBusy,
     conversationId: number | undefined,
     outcome: Deferred.Deferred<void, SessionCommandError> | undefined,
+    // @effect-diagnostics-next-line cryptoRandomUUID:off
+    requestId: string = crypto.randomUUID(),
   ): void => {
     const { input, display } = Predicate.isString(message)
       ? { input: message, display: message }
@@ -933,8 +937,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
     pending.push({
       commandId: nextCommandId(),
-      // @effect-diagnostics-next-line cryptoRandomUUID:off
-      requestId: crypto.randomUUID(),
+      requestId,
       input,
       text: display,
       whenBusy,
@@ -1091,12 +1094,12 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       step(() => {
         enqueue(message, whenBusy, conversationId, undefined);
       }),
-    submitAndAwait: (message, whenBusy, conversationId) =>
+    submitAndAwait: (message, whenBusy, conversationId, requestId) =>
       Effect.suspend(() => {
         const outcome = Deferred.makeUnsafe<void, SessionCommandError>();
 
         return step(() => {
-          enqueue(message, whenBusy, conversationId, outcome);
+          enqueue(message, whenBusy, conversationId, outcome, requestId);
         }).pipe(Effect.andThen(Deferred.await(outcome)));
       }),
     watchThread: (conversationId) => RcMap.get(threadMap, conversationId),

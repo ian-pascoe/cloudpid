@@ -56,12 +56,83 @@ it("keeps computerd's store on the Container's disk, outside the mount, so a res
   expect(dockerfile).toContain(`mkdir -p ${store.slice(0, store.lastIndexOf("/"))}\n`);
 });
 
-it("carries a C toolchain, so native npm and pip packages build", () => {
-  const packages = /apt-get install -y --no-install-recommends ([^\\\n]+)/g;
-  // The last stage's install: the mise stage installs curl only.
-  const installed = [...dockerfile.matchAll(packages)].at(-1)?.[1]?.trim().split(/\s+/) ?? [];
+/** The apt packages the last stage installs: the mise stage installs curl only. */
+const installed = (): string[] => {
+  const stage = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+  // Up to the next command: the list may go on over continued lines.
+  const install = /apt-get install -y --no-install-recommends([^&]*)/.exec(stage)?.[1] ?? "";
 
-  expect(installed).toEqual(expect.arrayContaining(["gcc", "g++", "make", "libc6-dev"]));
+  return install.split(/\s+/).filter((word) => /^[a-z0-9][a-z0-9.+-]*$/.test(word));
+};
+
+it("runs Ubuntu 24.04 LTS", () => {
+  expect(dockerfile).toMatch(/^FROM --platform=linux\/amd64 ubuntu:24\.04@sha256:[0-9a-f]{64}$/m);
+  expect(dockerfile).not.toMatch(/^FROM .*debian/m);
+});
+
+it("carries a C toolchain, so native npm and pip packages build", () => {
+  expect(installed()).toEqual(
+    expect.arrayContaining([
+      "build-essential",
+      "pkg-config",
+      "libssl-dev",
+      "zlib1g-dev",
+      "libffi-dev",
+    ]),
+  );
+});
+
+it("carries the everyday command-line tools agents and scripts expect (#169)", () => {
+  expect(installed()).toEqual(
+    expect.arrayContaining([
+      "fuse3",
+      "libfuse2t64",
+      "ca-certificates",
+      "curl",
+      "wget",
+      "jq",
+      "ripgrep",
+      "fd-find",
+      "unzip",
+      "zip",
+      "xz-utils",
+      "procps",
+      "psmisc",
+      "lsof",
+      "iproute2",
+      "dnsutils",
+      "netcat-openbsd",
+      "less",
+      "file",
+      "tree",
+      "openssh-client",
+      "gnupg",
+      "sudo",
+      "sqlite3",
+      "tzdata",
+      "rsync",
+      "socat",
+      "net-tools",
+      "iputils-ping",
+      "bubblewrap",
+      "locales",
+      "time",
+    ]),
+  );
+  // Debian and Ubuntu name fd's binary fdfind; the image gives it its own name too.
+  expect(dockerfile).toContain("ln -s /usr/bin/fdfind /usr/local/bin/fd");
+});
+
+it("carries Docker, with Compose and Buildx, for Start Scripts to run services in", () => {
+  expect(installed()).toEqual(
+    expect.arrayContaining(["docker.io", "docker-compose-v2", "docker-buildx"]),
+  );
+});
+
+it("leaves the versioned Toolchains to mise: no apt git, node or python is asked for", () => {
+  for (const toolchain of ["git", "gh", "nodejs", "python3", "python3-pip", "pipx"]) {
+    expect(installed()).not.toContain(toolchain);
+  }
 });
 
 it("pins every base image by digest, so a rebuild does not move to another release", () => {

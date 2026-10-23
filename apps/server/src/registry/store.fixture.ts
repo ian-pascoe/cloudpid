@@ -1,22 +1,41 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 // The workerd test Durable Object that hosts a `RegistryStore` over its SQLite storage, as the Registry DO does.
-import type { PushSubscription } from "@cloudpid/protocol";
+import {
+  type KeptSecret,
+  openKeptVault,
+  type SealedValue,
+} from "@cloudpid/extensions/secrets/core";
+import type {
+  EnvironmentRepo,
+  EnvironmentSecretRecord,
+  PushSubscription,
+} from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import { keepSecret, openEnvironmentSecrets, type SecretWrite } from "./environment-secrets.ts";
 import type * as Schema from "effect/Schema";
 import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
 import {
+  type BuildRecord,
+  type Deletion,
+  type EnvironmentDeletion,
+  type EnvironmentNaming,
+  type EnvironmentRecord,
+  type LegacyObject,
   openRegistryStore,
   type RegistryStore,
+  type RepoChange,
+  type SecretPut,
+  type StoredEnvironmentSecret,
   type SessionRecord,
+  type SessionRefusal,
   type SessionStatus,
+  type SpareUpkeep,
   type StoredWorkspaceChoice,
-  type MachineDeletion,
-  type MachineRecord,
-  type MachineRename,
-  type WorkspaceDeletion,
   type WorkspaceRecord,
+  type WorkspaceSetup,
 } from "./store.ts";
 
 export class TestRegistry extends DurableObject {
@@ -28,15 +47,9 @@ export class TestRegistry extends DurableObject {
   }
 
   createSession(
-    input: {
-      id: string;
-      title: string | null;
-      machine?: string;
-      repo?: string;
-      workspace?: StoredWorkspaceChoice;
-    },
+    input: { id: string; title: string | null; workspace: StoredWorkspaceChoice },
     now: number,
-  ): SessionRecord {
+  ): SessionRecord | SessionRefusal {
     return this.#store.createSession(input, now);
   }
 
@@ -72,40 +85,141 @@ export class TestRegistry extends DurableObject {
     return this.#store.deleteSession(id);
   }
 
-  createMachine(slug: string, now: number): MachineRecord {
-    return this.#store.createMachine(slug, now);
+  createEnvironment(id: string, name: string, now: number): EnvironmentNaming {
+    return this.#store.createEnvironment(id, name, now);
   }
 
-  getMachine(slug: string): MachineRecord | null {
-    return this.#store.getMachine(slug);
+  getBuild(environment: string): BuildRecord | null {
+    return this.#store.getBuild(environment);
   }
 
-  listMachines(): MachineRecord[] {
-    return this.#store.listMachines();
+  putBuild(environment: string, record: BuildRecord): boolean {
+    return this.#store.putBuild(environment, record);
   }
 
-  renameMachine(slug: string, name: string): MachineRename {
-    return this.#store.renameMachine(slug, name);
+  listBuilds(): Array<BuildRecord & { readonly environment: string }> {
+    return this.#store.listBuilds();
   }
 
-  deleteMachine(slug: string): MachineDeletion {
-    return this.#store.deleteMachine(slug);
+  getEnvironment(id: string): EnvironmentRecord | null {
+    return this.#store.getEnvironment(id);
+  }
+
+  listEnvironments(): EnvironmentRecord[] {
+    return this.#store.listEnvironments();
+  }
+
+  renameEnvironment(id: string, name: string): EnvironmentNaming {
+    return this.#store.renameEnvironment(id, name);
+  }
+
+  deleteEnvironment(id: string): EnvironmentDeletion {
+    return this.#store.deleteEnvironment(id);
+  }
+
+  addRepo(environment: string, repo: EnvironmentRepo): RepoChange {
+    return this.#store.addRepo(environment, repo);
+  }
+
+  removeRepo(environment: string, name: string): RepoChange {
+    return this.#store.removeRepo(environment, name);
+  }
+
+  getEnvironmentSettings(environment: string): Schema.Json | null {
+    return this.#store.getEnvironmentSettings(environment);
+  }
+
+  putEnvironmentSettings(environment: string, overrides: Schema.Json): boolean {
+    return this.#store.putEnvironmentSettings(environment, overrides);
   }
 
   getWorkspace(id: string): WorkspaceRecord | null {
     return this.#store.getWorkspace(id);
   }
 
+  getWorkspaceSetup(id: string): WorkspaceSetup | null {
+    return this.#store.getWorkspaceSetup(id);
+  }
+
   listWorkspaces(): WorkspaceRecord[] {
     return this.#store.listWorkspaces();
   }
 
-  deleteWorkspace(id: string): WorkspaceDeletion {
+  deleteWorkspace(id: string): Deletion {
     return this.#store.deleteWorkspace(id);
   }
 
-  deleteWorkspacesOf(machine: string, repo?: string): void {
-    this.#store.deleteWorkspacesOf(machine, repo);
+  /** `RegistryStore.upkeepSpares`, drawing fresh ids from `ids` in order (a function cannot cross RPC). */
+  upkeepSpares(environments: string[] | undefined, ids: string[], now: number): SpareUpkeep {
+    const left = [...ids];
+
+    return this.#store.upkeepSpares(environments, () => left.shift() ?? "ffffffff", now);
+  }
+
+  getSpare(environment: string): string | null {
+    return this.#store.getSpare(environment);
+  }
+
+  forgetSpare(id: string): boolean {
+    return this.#store.forgetSpare(id);
+  }
+
+  takeLegacy(limit: number, now: number, leaseMs: number): LegacyObject[] {
+    return this.#store.takeLegacy(limit, now, leaseMs);
+  }
+
+  forgetLegacy(object: LegacyObject): void {
+    this.#store.forgetLegacy(object);
+  }
+
+  listEnvironmentSecrets(): EnvironmentSecretRecord[] {
+    return this.#store.listEnvironmentSecrets();
+  }
+
+  getEnvironmentSecrets(environment: string): StoredEnvironmentSecret[] {
+    return this.#store.getEnvironmentSecrets(environment);
+  }
+
+  putEnvironmentSecret(
+    input: { environment: string | null; name: string; sealed: SealedValue; build?: boolean },
+    now: number,
+  ): SecretPut {
+    return this.#store.putEnvironmentSecret(input, now);
+  }
+
+  setEnvironmentSecretBuild(
+    environment: string | null,
+    name: string,
+    build: boolean,
+    now: number,
+  ): EnvironmentSecretRecord | null {
+    return this.#store.setEnvironmentSecretBuild(environment, name, build, now);
+  }
+
+  deleteEnvironmentSecret(environment: string | null, name: string): boolean {
+    return this.#store.deleteEnvironmentSecret(environment, name);
+  }
+
+  /** Keep a Secret as the Registry DO does, sealed under `master` (`keepSecret`). */
+  keepSecret(
+    master: string,
+    input: { environment: string | null; name: string; value: string; build?: boolean },
+    now: number,
+  ): Promise<SecretWrite> {
+    return Effect.runPromise(
+      Effect.flatMap(openKeptVault(master, "registry"), (vault) =>
+        keepSecret(this.#store, vault, input, now),
+      ),
+    );
+  }
+
+  /** What `environment` uses, opened under `master`, as the Registry DO hands it (`openEnvironmentSecrets`). */
+  openSecrets(master: string, environment: string): Promise<ReadonlyArray<KeptSecret>> {
+    return Effect.runPromise(
+      Effect.flatMap(openKeptVault(master, "registry"), (vault) =>
+        openEnvironmentSecrets(this.#store, vault, environment),
+      ),
+    );
   }
 
   getDocument(name: string): string | null {

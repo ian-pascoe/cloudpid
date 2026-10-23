@@ -67,61 +67,6 @@ describe("the composer's catalog", () => {
   });
 });
 
-const BRANCH_SKILL =
-  "---\nname: branch-only\ndescription: Only on the Workspace's branch.\n---\n\nBody.\n";
-
-/** A new Session in Workspace `abc` of repo `demo` of Machine `slug`; its worktree is never made by the test Worker. */
-const inWorktree = (slug: string) => {
-  const stub = env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId());
-
-  return <T>(run: (instance: TestWorkspaceSession) => Promise<T>) =>
-    runInDurableObject(stub, async (instance: TestWorkspaceSession) => {
-      instance.bindWorkspace(slug, "demo", { id: "abc", branch: "feature" });
-
-      return run(instance);
-    });
-};
-
-describe("the composer's lookups in a Workspace's worktree", () => {
-  it("list the worktree's Skills and files without waiting for the worktree to be made", async () => {
-    const slug = await workspaceWithRepo();
-
-    await sessionOn(slug).run([
-      call("write", {
-        path: ".worktrees/demo/abc/.git",
-        content: "gitdir: /workspace/demo/.git/worktrees/abc\n",
-      }),
-      call("write", {
-        path: ".worktrees/demo/abc/.agents/skills/branch-only/SKILL.md",
-        content: BRANCH_SKILL,
-      }),
-      call("write", { path: ".worktrees/demo/abc/notes.md", content: "branch notes\n" }),
-    ]);
-
-    const [catalog, files] = await inWorktree(slug)(
-      async (instance) => [await instance.catalog(), await instance.files("notes")] as const,
-    );
-
-    const names = catalog.skills.map(({ name }) => name);
-
-    expect(names[0]).toBe("branch-only");
-    expect(names).toContain("tdd");
-    expect(names).not.toContain("deploy");
-    expect(catalog.templates.map(({ name }) => name)).toEqual(["plan"]);
-    expect(files.paths).toContain("notes.md");
-  });
-
-  it("read the repo's main checkout until the worktree is there", async () => {
-    const catalog = await inWorktree(await workspaceWithRepo())((instance) => instance.catalog());
-
-    const names = catalog.skills.map(({ name }) => name);
-
-    expect(names[0]).toBe("deploy");
-    expect(names).toContain("tdd");
-    expect(catalog.templates.map(({ name }) => name)).toEqual(["review", "plan"]);
-  });
-});
-
 describe("a message that names a Skill or a template", () => {
   it("reaches the model expanded, and keeps what the owner typed", async () => {
     const run = inDemo(await workspaceWithRepo());

@@ -14,8 +14,14 @@ import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
+import { buildUpkeep } from "./registry/builds.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
-import { serveRegistryRpc, type SessionObjects } from "./registry/rpc.ts";
+import {
+  legacyCleanup,
+  serveRegistryRpc,
+  type SessionObjects,
+  spareUpkeep,
+} from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
 import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { serveAttachment } from "./serve-attachment.ts";
@@ -24,9 +30,6 @@ import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
-import { workspaceRepos } from "./workspace/repos.ts";
-import { machineWorktrees } from "./workspace/worktrees.ts";
-import { workspaceSettingsRemote } from "./workspace/settings.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
 import { Workspaces } from "./workspace/resource.ts";
@@ -141,28 +144,18 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const registries = yield* Registry;
     // The raw environment: the Workspace DO's own stub, as the Session DOs take it.
     const worker = yield* Cloudflare.WorkerEnvironment;
-    // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (above), a raw namespace.
-    const repos = workspaceRepos(worker[WORKSPACE_BINDING] as WorkspaceNamespace);
+    // What runs after an answer: the wipe of what is left from before Environments, and the upkeep of the spares and
+    // the Builds.
+    const execution = yield* Cloudflare.WorkerExecutionContext;
 
-    // SAFETY: the same binding; Attachments are written through the file operations a Session's environment uses.
-    const attachmentFiles = (slug: string) =>
-      workspaceAttachmentFiles(worker[WORKSPACE_BINDING] as WorkspaceNamespace, slug);
-
-    // SAFETY: the same binding; the Workspace DO answers the settings methods `SettingsHost` names.
-    const machineSettings = workspaceSettingsRemote(
-      worker[WORKSPACE_BINDING] as Parameters<typeof workspaceSettingsRemote>[0],
-    );
+    // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (above), a raw namespace; Attachments
+    // are written through the file operations a Session's environment uses.
+    const attachmentFiles = (objectName: string) =>
+      workspaceAttachmentFiles(worker[WORKSPACE_BINDING] as WorkspaceNamespace, objectName);
 
     // SAFETY: the same binding; the Workspace DO answers `LifecycleHost.destroy`.
-    const machines = workspaceObjectsRemote(
+    const workspaces = workspaceObjectsRemote(
       worker[WORKSPACE_BINDING] as Parameters<typeof workspaceObjectsRemote>[0],
-    );
-
-    // SAFETY: the same binding; the worktrees are read through its files and made on its Container.
-    // A Setup Script that fails runs outside any Effect (in the worktree's preparation); the Worker log keeps it.
-    const worktrees = machineWorktrees(worker[WORKSPACE_BINDING] as WorkspaceNamespace, (message) =>
-      // @effect-diagnostics-next-line globalConsole:off
-      console.warn(message),
     );
 
     // A Session's object is found anew for each call; any failure of the call is a defect the endpoint reports.
@@ -179,6 +172,13 @@ export default class Server extends Cloudflare.Worker<Server>()(
       },
     };
 
+    // Built once per isolate, so a cleanup that found nothing left is not asked again.
+    const legacy = legacyCleanup(registries, { sessions: sessionObjects, workspaces });
+    // Built once per isolate too: the upkeep of every spare stops once a run finds nothing to do, and so does the Builds'.
+    const spares = spareUpkeep(registries, { workspaces });
+    // A new good Build makes its Environment's spare stale, so the Builds' upkeep looks at the spare then.
+    const builds = buildUpkeep(registries, { workspaces, spares });
+
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -194,11 +194,12 @@ export default class Server extends Cloudflare.Worker<Server>()(
 
         if (isRegistryRpc(request))
           return yield* serveRegistryRpc(registries, {
-            repos,
-            machineSettings,
-            machines,
+            workspaces,
             sessions: sessionObjects,
-            worktrees,
+            legacy,
+            spares,
+            builds,
+            background: (effect) => execution.waitUntil(effect),
           });
 
         return hello;
@@ -210,7 +211,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
     Effect.provide(
       SessionLive.pipe(
         Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
-        Layer.provideMerge(RegistryLive.pipe(Layer.provide(PushConfigLive))),
+        Layer.provideMerge(
+          RegistryLive.pipe(Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive))),
+        ),
       ),
     ),
   ),

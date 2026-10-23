@@ -103,6 +103,20 @@ export class IdleStop {
       return;
     }
 
+    await this.#snapshotAndStop();
+  }
+
+  /**
+   * Snapshot and stop the Container now, whatever its idle time, as the alarm does once it is due: a spare Workspace
+   * once it is prepared. A command that runs keeps it, and so does one that arrives during the snapshot, as for the alarm.
+   */
+  async stop(): Promise<void> {
+    if (this.#running > 0) return;
+
+    await this.#snapshotAndStop();
+  }
+
+  async #snapshotAndStop(): Promise<void> {
     // Forgotten before the snapshot, not after: a use while it is taken is remembered and arms the next alarm.
     this.#lastUse = undefined;
     this.#saved = undefined;

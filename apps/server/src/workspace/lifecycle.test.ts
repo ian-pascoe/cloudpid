@@ -1,4 +1,4 @@
-// Deleting or resetting a Workspace's object from the main Worker: wipe, then reset in a call of its own.
+// Removing a Workspace's object from the main Worker: wipe, then reset in a call of its own.
 // @effect-diagnostics asyncFunction:off
 import { describe, expect, it } from "vitest";
 import {
@@ -12,9 +12,6 @@ const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): Lifecycl
   destroy: async () => {
     calls.push("destroy");
   },
-  clear: async () => {
-    calls.push("clear");
-  },
   reset: async () => {
     calls.push("reset");
 
@@ -22,6 +19,19 @@ const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): Lifecycl
   },
   restartContainer: async () => {
     calls.push("restartContainer");
+  },
+  prepareSpare: async (setup) => {
+    calls.push(`prepareSpare:${setup.branch}`);
+  },
+  startBuild: async (request) => {
+    calls.push(`startBuild:${request.key}`);
+
+    return { image: "img", last: null, progress: null, attemptedAt: null };
+  },
+  buildState: async () => {
+    calls.push("buildState");
+
+    return { image: "img", last: null, progress: null, attemptedAt: null };
   },
   ...overrides,
 });
@@ -70,32 +80,6 @@ describe("workspaceObjectsRemote", () => {
     expect(calls).toEqual(["destroy"]);
   });
 
-  it("clears the object but its settings, then resets it, as a deletion does", async () => {
-    const calls: string[] = [];
-    const { remote } = namespace(host(calls));
-
-    await expect(remote.clear("cloudpid")).resolves.toBeUndefined();
-
-    expect(calls).toEqual(["clear", "reset"]);
-  });
-
-  it("does not reset an object whose clear failed", async () => {
-    const calls: string[] = [];
-
-    const { remote } = namespace(
-      host(calls, {
-        clear: async () => {
-          calls.push("clear");
-          throw new Error("storage unavailable");
-        },
-      }),
-    );
-
-    await expect(remote.clear("cloudpid")).rejects.toThrow("storage unavailable");
-
-    expect(calls).toEqual(["clear"]);
-  });
-
   it("restarts the Container without wiping or resetting the object", async () => {
     const calls: string[] = [];
     const { remote } = namespace(host(calls));
@@ -103,5 +87,31 @@ describe("workspaceObjectsRemote", () => {
     await remote.restartContainer("cloudpid");
 
     expect(calls).toEqual(["restartContainer"]);
+  });
+
+  it("asks an Environment's Build object for a Build, and for its Builds", async () => {
+    const calls: string[] = [];
+    const { asked, remote } = namespace(host(calls));
+
+    await remote.startBuild("build:5a5a5a5a", { key: "k", repos: [], settings: {} }, []);
+    await remote.buildState("build:5a5a5a5a");
+
+    expect(asked).toEqual(["build:5a5a5a5a", "build:5a5a5a5a"]);
+    expect(calls).toEqual(["startBuild:k", "buildState"]);
+  });
+
+  it("asks the object to prepare itself as a spare, with what it is told", async () => {
+    const calls: string[] = [];
+    const { asked, remote } = namespace(host(calls));
+
+    await remote.prepareSpare("ws:5a5a5a5a", {
+      repos: [],
+      branch: "cloudpid/spare",
+      base: null,
+      settings: {},
+    });
+
+    expect(calls).toEqual(["prepareSpare:cloudpid/spare"]);
+    expect(asked).toEqual(["ws:5a5a5a5a"]);
   });
 });

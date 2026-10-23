@@ -30,12 +30,10 @@ export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
 export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/node_modules",
   "**/.venv",
-  // Cargo's target directory, in a repo (`/<repo>/target`), in a Workspace's worktree of one
-  // (`/.worktrees/<repo>/<id>/target`: `WORKTREES_DIRECTORY`) or at the Machine's root. Not at any depth: a source
+  // Cargo's target directory, in a repo (`/<repo>/target`) or at the Workspace's root. Not at any depth: a source
   // directory called `target` is not a build directory.
   "/target",
   "/*/target",
-  "/.worktrees/*/*/target",
   "**/.cache",
   // pnpm's content-addressed store. The Container's global pnpm configuration puts it on the Container's disk
   // (`PNPM_STORE_DIRECTORY_NAME` under the home directory), but with the home directory on the Container's disk and the
@@ -63,8 +61,7 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/.nox",
   "**/.direnv",
   // More caches that regenerate and no repo commits: Cloudflare's wrangler, Astro, Angular, Expo, Nx, Docusaurus, nyc,
-  // Hypothesis, Dart and Zig and Haskell's stack. Not `.alchemy` (it can hold real deploy state) or `.worktrees` (it
-  // holds uncommitted work).
+  // Hypothesis, Dart and Zig and Haskell's stack. Not `.alchemy` (it can hold real deploy state).
   "**/.wrangler",
   "**/.astro",
   "**/.angular",
@@ -139,6 +136,14 @@ uv = "0.13.5"
  * would undo the preinstall.
  */
 export const BASE_MISE_LOCK = "/usr/local/share/cloudpid/mise.lock";
+
+/**
+ * Where the bootstrap records the root `mise.toml` it last wrote (`mise.toml.sha256`, its SHA-256) and the lockfile
+ * made for it (`mise.lock`): on the Container's disk, outside `/workspace`, so nothing syncs them and a snapshot (a
+ * Build's too) carries them. A root `mise.toml` that still has that hash is the bootstrap's copy, which a changed
+ * Environment replaces; any other is the Workspace's own.
+ */
+export const TOOLCHAINS_STATE_DIRECTORY = "/var/lib/cloudpid/toolchains";
 
 /**
  * The line the bootstrap ends its output with when it changed the Container's disk in a way worth a snapshot (it
@@ -218,17 +223,32 @@ const pnpmConfigSteps = PNPM_GLOBAL_CONFIG.map(
     `has_pnpm_setting '${key}|${kebab(key)}' || add_pnpm_setting "${key}: ${value.replaceAll('"', '\\"')}"`,
 ).join("\n");
 
+/** The bash function `has_mise_config <dir>`: whether `dir` has a file mise reads a Toolchain declaration from. */
+export const HAS_MISE_CONFIG = `# Every file mise reads a Toolchain declaration from (mise.<env>.toml aside).
+has_mise_config() {
+  for file in mise.toml .mise.toml mise.local.toml .mise.local.toml .config/mise.toml .config/mise/config.toml .mise/config.toml mise/config.toml .tool-versions; do
+    [ -e "$1/$file" ] && return 0
+  done
+
+  return 1
+}
+`;
+
 /**
  * The bash script that makes a freshly started Container ready for commands, run once per Container start before the
  * first command (`apps/server/src/workspace/toolchains.ts`). It
  *
  * 0. makes each of `readOnlyDirectories` (absolute paths: the Workspace's read-only mounts) read-only here too, when the
  *    Container can mount,
- * 1. writes `BASE_MISE_TOML` if the Workspace root has no mise config of any kind mise reads, with the image's
- *    lockfile for it (`baseLock`, by default `BASE_MISE_LOCK`) next to it when the image has one,
+ * 1. writes the Environment's Toolchains (`environment.toolchains`, a mise.toml; `BASE_MISE_TOML` when empty) as the
+ *    root's `mise.toml` if the root has no mise config of any kind mise reads, or if its `mise.toml` is still the copy
+ *    the bootstrap wrote last (recorded in `environment.state`, by default `TOOLCHAINS_STATE_DIRECTORY`) or the base
+ *    file, and differs from it: an edit the Workspace made is kept. The lockfile goes with it: the image's for the
+ *    base file (`baseLock`, by default `BASE_MISE_LOCK`), when the image has one, or the one recorded for that same
+ *    copy,
  * 2. makes sure `mise.lock` is there and current for the root's `mise.toml`, which is mise's global config
  *    (`toolchainEnv`) and so is only locked by `mise lock --global`: when the lockfile is missing or older than the
- *    config, to the one platform the Container is,
+ *    config, to the one platform the Container is; the lockfile of the copy it wrote is recorded with it,
  * 3. runs `mise install` (which installs from `mise.lock` and does nothing for what is present) in the Workspace and
  *    in each repo directory that has a mise config, and exits with the first failure's status after trying all,
  * 4. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
@@ -243,7 +263,13 @@ export const bootstrapScript = (
   root: string = WORKSPACE_ROOT,
   readOnlyDirectories: readonly string[] = [],
   baseLock: string = BASE_MISE_LOCK,
-): string => `
+  environment: { readonly toolchains?: string; readonly state?: string } = {},
+): string => {
+  const { toolchains = "", state = TOOLCHAINS_STATE_DIRECTORY } = environment;
+  const recorded = `${state}/mise.toml.sha256`;
+  const recordedLock = `${state}/mise.lock`;
+
+  return `
 set -u
 root=${shellQuote(root)}
 cd "$root" || exit 1
@@ -260,19 +286,43 @@ for dir in ${readOnlyDirectories.map(shellQuote).join(" ")}; do
   fi
 done
 
-# Every file mise reads a Toolchain declaration from (mise.<env>.toml aside).
-has_mise_config() {
-  for file in mise.toml .mise.toml mise.local.toml .mise.local.toml .config/mise.toml .config/mise/config.toml .mise/config.toml mise/config.toml .tool-versions; do
-    [ -e "$1/$file" ] && return 0
-  done
+${HAS_MISE_CONFIG}
 
-  return 1
-}
-
+# The root's mise.toml: the Environment's Toolchains, or the base file, where the root has no mise config, or still
+# has the copy written last (or the base file, which the bootstrap wrote before it kept a record) and it differs from
+# the one wanted now. Any other mise.toml is the Workspace's own and stays.
+toolchains_hash() { sha256sum | cut -d' ' -f1; }
+wanted_toolchains=${shellQuote(base64(toolchains === "" ? BASE_MISE_TOML : toolchains))}
+wanted_hash=$(printf '%s' "$wanted_toolchains" | base64 -d | toolchains_hash)
+base_hash=$(printf '%s' ${shellQuote(base64(BASE_MISE_TOML))} | base64 -d | toolchains_hash)
+written_hash=$(cat ${shellQuote(recorded)} 2>/dev/null)
+write_toolchains=0
 if ! has_mise_config "$root"; then
-  cat > mise.toml <<'CLOUDPID_BASE_MISE_TOML'
-${BASE_MISE_TOML}CLOUDPID_BASE_MISE_TOML
-  [ -f ${shellQuote(baseLock)} ] && [ ! -e mise.lock ] && cp ${shellQuote(baseLock)} mise.lock
+  write_toolchains=1
+elif [ -f mise.toml ] && [ ! -L mise.toml ]; then
+  have_hash=$(toolchains_hash < mise.toml)
+  if [ "$have_hash" = "$wanted_hash" ]; then
+    # Already the wanted copy: recorded below, so a later change of the Environment's replaces it.
+    write_toolchains=2
+  elif [ "$have_hash" = "$written_hash" ] || [ "$have_hash" = "$base_hash" ]; then
+    write_toolchains=1
+  fi
+fi
+if [ "$write_toolchains" -eq 1 ]; then
+  printf '%s' "$wanted_toolchains" | base64 -d > mise.toml || write_toolchains=0
+fi
+if [ "$write_toolchains" -eq 1 ]; then
+  if [ "$wanted_hash" = "$base_hash" ] && [ -f ${shellQuote(baseLock)} ]; then
+    cp ${shellQuote(baseLock)} mise.lock
+  elif [ "$wanted_hash" = "$written_hash" ] && [ -f ${shellQuote(recordedLock)} ]; then
+    cp ${shellQuote(recordedLock)} mise.lock
+  fi
+fi
+if [ "$write_toolchains" -ne 0 ]; then
+  # Best effort: without the record, a later change of the Environment's leaves this copy alone.
+  mkdir -p ${shellQuote(state)} 2>/dev/null
+  [ "$wanted_hash" = "$written_hash" ] || rm -f ${shellQuote(recordedLock)} 2>/dev/null
+  printf '%s\n' "$wanted_hash" > ${shellQuote(recorded)} 2>/dev/null
 fi
 
 status=0
@@ -292,7 +342,13 @@ if [ -f mise.toml ] && { [ ! -e mise.lock ] || [ mise.toml -nt mise.lock ]; }; t
   note_failure $?
 fi
 
-for dir in "$root" "$root"/*/ "$root"/${WORKTREES_DIRECTORY}/*/*/; do
+# The lockfile of the copy written last, for a Container started from this disk (a Build's) that writes it again.
+if [ -f mise.toml ] && [ -f mise.lock ] && [ ! mise.toml -nt mise.lock ] \
+  && [ "$(toolchains_hash < mise.toml)" = "$(cat ${shellQuote(recorded)} 2>/dev/null)" ]; then
+  cp mise.lock ${shellQuote(recordedLock)} 2>/dev/null
+fi
+
+for dir in "$root" "$root"/*/; do
   dir=\${dir%/}
   if has_mise_config "$dir"; then
     (cd "$dir" && mise install)
@@ -323,88 +379,156 @@ ${pnpmConfigSteps}
 
 exit "$status"
 `;
+};
 
 /** A repo's Setup Script, relative to the repo's directory: what prepares the repo on a Container (its dependencies). */
 export const SETUP_SCRIPT = ".agents/setup.sh";
 
 /**
- * Where the Container records the Setup Scripts that succeeded, one file per repo directory holding the script's SHA-256.
- * On the Container's disk, outside `/workspace`: nothing syncs it, and a snapshot of the disk carries it.
+ * A repo's Start Script, relative to the repo's directory: what brings up the repo's services (a database, a dev
+ * dependency) at each Container start, which a snapshot of the disk cannot hold.
+ */
+export const START_SCRIPT = ".agents/start.sh";
+
+/**
+ * Where the Container records the Setup Scripts that succeeded, one file per script holding its SHA-256: a repo's under
+ * the repo's name, the Environment's under `ENVIRONMENT_SETUP_RECORD`. On the Container's disk, outside `/workspace`:
+ * nothing syncs it, and a snapshot of the disk carries it.
  */
 export const SETUP_STATE_DIRECTORY = "/var/lib/cloudpid/setup";
 
 /**
- * The directory below the Machine's root, `/workspace`, that holds the Workspaces' own worktrees: `<root>/.worktrees/<repo>/<id>`
- * (`worktreeDirectory` in `@cloudpid/protocol`, which a test keeps equal). Hidden, so it is never taken for a repo.
+ * Where the bootstrap writes the Environment's own Setup and Start Scripts (its Container settings) to run them: on the
+ * Container's disk, outside `/workspace`, so they never reach the Workspace's files.
  */
-export const WORKTREES_DIRECTORY = ".worktrees";
+export const ENVIRONMENT_SCRIPTS_DIRECTORY = "/var/lib/cloudpid/environment";
 
-/**
- * Where the Container records the Setup Script that last succeeded in a repo's main checkout or a Workspace's worktree,
- * by its record name (`setupRecordName`), not a path.
- */
+/** The file the Environment's Setup Script is written to. */
+export const ENVIRONMENT_SETUP_FILE = `${ENVIRONMENT_SCRIPTS_DIRECTORY}/setup.sh`;
+
+/** The file the Environment's Start Script is written to. */
+export const ENVIRONMENT_START_FILE = `${ENVIRONMENT_SCRIPTS_DIRECTORY}/start.sh`;
+
+/** The name the Environment's Setup Script is recorded under: no Repo's name starts with `@`. */
+export const ENVIRONMENT_SETUP_RECORD = "@environment";
+
+/** Where the Container records the Setup Script that last succeeded under the record name `name` (`setupRecordName`). */
 export const setupRecord = (name: string, state: string = SETUP_STATE_DIRECTORY): string =>
   `${state}/${name}`;
 
-/**
- * The name the Setup Script of `directory` is recorded under: the repo's name for its main checkout (`<root>/<repo>`),
- * and `<repo>@<id>` for a Workspace's worktree (`<root>/.worktrees/<repo>/<id>`), so each is prepared on its own. A repo
- * name never holds an `@`.
- */
+/** The name the Setup Script of `directory` (`<root>/<repo>`) is recorded under: the repo's name. */
 export const setupRecordName = (directory: string, root: string = WORKSPACE_ROOT): string => {
   const relative = directory.startsWith(`${root}/`) ? directory.slice(root.length + 1) : directory;
-
-  if (relative.startsWith(`${WORKTREES_DIRECTORY}/`)) {
-    const [repo = "", id = ""] = relative.slice(WORKTREES_DIRECTORY.length + 1).split("/");
-
-    return `${repo}@${id}`;
-  }
 
   return relative.slice(relative.lastIndexOf("/") + 1);
 };
 
+/** A script the Container runs: the directory it runs in, and its file, absolute or relative to that directory. */
+export type ContainerScript = { readonly directory: string; readonly file: string };
+
+/** A Setup Script, with the name its success is recorded under (`setupRecord`). */
+export type SetupScript = ContainerScript & { readonly record: string };
+
+/** The Setup Script of the repo in `directory` (`<root>/<repo>`). */
+export const repoSetupScriptOf = (
+  directory: string,
+  root: string = WORKSPACE_ROOT,
+): SetupScript => ({
+  directory,
+  file: SETUP_SCRIPT,
+  record: setupRecordName(directory, root),
+});
+
+/** The Environment's Setup Script, once written to `file` (`pendingSetupScripts`): run in the Workspace root. */
+export const environmentSetupScript = (
+  root: string = WORKSPACE_ROOT,
+  file: string = ENVIRONMENT_SETUP_FILE,
+): SetupScript => ({ directory: root, file, record: ENVIRONMENT_SETUP_RECORD });
+
 /** How long a Setup Script may run before it is stopped. */
 export const SETUP_TIMEOUT_SECONDS = 15 * 60;
+
+/** How long a Start Script may run before it is stopped: a service it starts must detach to outlive it. */
+export const START_TIMEOUT_SECONDS = 5 * 60;
 
 /** The last line a Setup Script's run prints, on stderr, when the script ran past its time and was stopped. */
 export const SETUP_TIMED_OUT_MESSAGE =
   "cloudpid: the Setup Script ran past its time and was stopped";
 
-/** The exit status of a Setup Script's run that ran past its time (`timeout`'s); a script may exit with it too. */
-const SETUP_TIMED_OUT_STATUS = 124;
+/** The last line a Start Script's run prints, on stderr, when the script ran past its time and was stopped. */
+export const START_TIMED_OUT_MESSAGE =
+  "cloudpid: the Start Script ran past its time and was stopped";
+
+/** The exit status of a script's run that ran past its time (`timeout`'s); a script may exit with it too. */
+const TIMED_OUT_STATUS = 124;
 
 /**
- * Whether a Setup Script's run that exited with `code` and printed `output` (its end will do) was stopped for running
- * past its time, not a script that exited with the same status on its own.
+ * Whether a Setup or Start Script's run that exited with `code` and printed `output` (its end will do) was stopped for
+ * running past its time, not a script that exited with the same status on its own.
  */
-export const setupScriptTimedOut = (code: number | undefined, output: string): boolean =>
-  code === SETUP_TIMED_OUT_STATUS && output.trimEnd().endsWith(SETUP_TIMED_OUT_MESSAGE);
+export const scriptTimedOut = (code: number | undefined, output: string): boolean => {
+  const end = output.trimEnd();
+
+  return (
+    code === TIMED_OUT_STATUS &&
+    (end.endsWith(SETUP_TIMED_OUT_MESSAGE) || end.endsWith(START_TIMED_OUT_MESSAGE))
+  );
+};
 
 /** The SHA-256 of the file at the bash word `file`, in bash: its hex digest alone. */
 const sha256 = (file: string): string => `sha256sum < ${file} | cut -d' ' -f1`;
 
+/** `text`'s UTF-8 bytes in base64. */
+export const base64 = (text: string): string => {
+  let binary = "";
+
+  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+
+  return btoa(binary);
+};
+
 /**
- * The bash script that prints, one per line, the directories whose Setup Script is due: each repo directly below `root`
- * and each Workspace's worktree (`<root>/.worktrees/<repo>/<id>`), repos first, with a `SETUP_SCRIPT` file whose content
- * differs from the last one that succeeded there (`setupRecord`). One that never ran its script is due.
+ * The bash lines that write `source` to `file` exactly (through base64, so no quoting or heredoc delimiter can meet
+ * the script's text, and the command stays one Linux argument for the largest script), or remove `file` when `source`
+ * is empty. They exit 1 when the file cannot be written.
+ */
+const writeScript = (source: string, file: string): string =>
+  source === ""
+    ? `rm -f -- ${shellQuote(file)}`
+    : `mkdir -p -- ${shellQuote(file.slice(0, file.lastIndexOf("/")) || "/")} && printf '%s' ${shellQuote(base64(source))} | base64 -d > ${shellQuote(file)} || exit 1`;
+
+/** The Environment's script `source`, and the file it is written to. */
+export type EnvironmentScript = { readonly source: string; readonly file: string };
+
+/**
+ * The bash script that prints, one per line, the Setup Scripts that are due: first the Environment's (its file, once
+ * written there), when `environment` has one, then each repo directly below `root` with a `SETUP_SCRIPT` file. A
+ * script is due when its content differs from the last one that succeeded under its record (`setupRecord`); one that
+ * never ran is due. An Environment with no Setup Script has its old file removed.
  */
 export const pendingSetupScripts = (
   root: string = WORKSPACE_ROOT,
   state: string = SETUP_STATE_DIRECTORY,
+  environment?: EnvironmentScript,
 ): string => `
 set -u -o pipefail
 state=${shellQuote(state)}
 root=${shellQuote(root)}
-for dir in "$root"/*/ "$root"/${WORKTREES_DIRECTORY}/*/*/; do
+${
+  environment === undefined
+    ? ""
+    : `${writeScript(environment.source, environment.file)}
+if [ -f ${shellQuote(environment.file)} ]; then
+  hash=$(${sha256(shellQuote(environment.file))}) || exit 1
+  [ "$(cat "$state"/${shellQuote(ENVIRONMENT_SETUP_RECORD)} 2>/dev/null)" = "$hash" ] || printf '%s\\n' ${shellQuote(environment.file)}
+fi`
+}
+for dir in "$root"/*/; do
   dir=\${dir%/}
   [ -f "$dir"/${SETUP_SCRIPT} ] || continue
   hash=$(${sha256(`"$dir"/${SETUP_SCRIPT}`)}) || continue
-  # setupRecordName's: the repo's name, or <repo>@<id> for a worktree.
-  relative=\${dir#"$root"/}
-  case $relative in
-    ${WORKTREES_DIRECTORY}/*) relative=\${relative#${WORKTREES_DIRECTORY}/}; name=\${relative%%/*}@\${relative#*/} ;;
-    *) name=$relative ;;
-  esac
+  # setupRecordName's: the repo's name.
+  name=\${dir#"$root"/}
   [ "$(cat "$state/$name" 2>/dev/null)" = "$hash" ] && continue
   printf '%s\\n' "$dir"
 done
@@ -412,38 +536,68 @@ exit 0
 `;
 
 /**
- * The bash script that runs the Setup Script of the repo in `directory`: with bash, in that directory, with no input,
- * stopped (with every process it started) after `timeoutSeconds`. When it succeeds, the content it ran is recorded
- * (`setupRecord`), so it is not run again until it changes. It exits with the script's status; one stopped for its time
- * ends with `SETUP_TIMED_OUT_MESSAGE` (`setupScriptTimedOut`).
+ * The bash script that runs `script`: with bash, in its directory, with no input, stopped (with every process it
+ * started) after `timeoutSeconds`, then `timedOut` printed on stderr and status 124. `record`, when given, is the bash
+ * lines run after a success with `$hash` the SHA-256 of the file that ran. It exits with the script's status.
  */
-export const setupScriptRun = (
-  directory: string,
-  state: string = SETUP_STATE_DIRECTORY,
-  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
-  root: string = WORKSPACE_ROOT,
+const scriptRun = (
+  { directory, file }: ContainerScript,
+  timeoutSeconds: number,
+  timedOut: string,
+  record?: string,
 ): string => `
 set -u -o pipefail
 cd ${shellQuote(directory)} || exit 1
-hash=$(${sha256(SETUP_SCRIPT)}) || exit 1
+${record === undefined ? "" : `hash=$(${sha256(shellQuote(file))}) || exit 1`}
 started=$SECONDS
 # timeout puts the script in a process group of its own and signals all of it, so what the script started stops too.
-timeout --kill-after=10 ${timeoutSeconds} bash ${SETUP_SCRIPT} </dev/null
+timeout --kill-after=10 ${timeoutSeconds} bash ${shellQuote(file)} </dev/null
 status=$?
 if [ "$status" -ne 0 ] && [ $((SECONDS - started)) -ge ${timeoutSeconds} ]; then
-  printf '%s\\n' ${shellQuote(SETUP_TIMED_OUT_MESSAGE)} >&2
-  exit ${SETUP_TIMED_OUT_STATUS}
+  printf '%s\\n' ${shellQuote(timedOut)} >&2
+  exit ${TIMED_OUT_STATUS}
 fi
-if [ "$status" -eq 0 ]; then
-  mkdir -p ${shellQuote(state)} && printf '%s\\n' "$hash" > ${shellQuote(setupRecord(setupRecordName(directory, root), state))} || exit 1
-fi
+${record === undefined ? "" : `if [ "$status" -eq 0 ]; then\n${record}\nfi`}
 exit "$status"
 `;
 
 /**
- * `setupScriptRun`, only when the Setup Script of `directory` is due: there is one, and it is not the one that last
- * succeeded there. It exits 0 without running anything otherwise. For a worktree made after the Container started,
- * which the bootstrap did not see.
+ * The bash script that runs the Setup Script `script` (`repoSetupScriptOf`, `environmentSetupScript`): with bash, in
+ * its directory, with no input, stopped (with every process it started) after `timeoutSeconds`. When it succeeds, the
+ * content it ran is recorded (`setupRecord`), so it is not run again until it changes. It exits with the script's
+ * status; one stopped for its time ends with `SETUP_TIMED_OUT_MESSAGE` (`scriptTimedOut`).
+ */
+export const setupScriptRun = (
+  script: SetupScript,
+  state: string = SETUP_STATE_DIRECTORY,
+  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
+): string =>
+  scriptRun(
+    script,
+    timeoutSeconds,
+    SETUP_TIMED_OUT_MESSAGE,
+    `  mkdir -p ${shellQuote(state)} && printf '%s\\n' "$hash" > ${shellQuote(setupRecord(script.record, state))} || exit 1`,
+  );
+
+/**
+ * The bash script that writes the Environment's Setup Script `source` to `file`, then runs it in `root`
+ * (`setupScriptRun`, which records it under `ENVIRONMENT_SETUP_RECORD` when it succeeds), whether or not it is due: for
+ * a Build, which runs it in its scratch root (`@cloudpid/sandbox-image/builds`). The bootstrap writes it and runs it
+ * only when due (`pendingSetupScripts`).
+ */
+export const environmentSetupScriptRun = (
+  source: string,
+  root: string = WORKSPACE_ROOT,
+  file: string = ENVIRONMENT_SETUP_FILE,
+  state: string = SETUP_STATE_DIRECTORY,
+  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
+): string =>
+  `${writeScript(source, file)}\n${setupScriptRun(environmentSetupScript(root, file), state, timeoutSeconds)}`;
+
+/**
+ * `setupScriptRun` of the repo in `directory`, only when its Setup Script is due: there is one, and it is not the one
+ * that last succeeded there. It exits 0 without running anything otherwise. For a repo cloned after the Container
+ * started, which the bootstrap did not see.
  */
 export const setupScriptRunIfDue = (
   directory: string,
@@ -453,4 +607,48 @@ export const setupScriptRunIfDue = (
 ): string => `
 [ -f ${shellQuote(`${directory}/${SETUP_SCRIPT}`)} ] || exit 0
 [ "$(cat ${shellQuote(setupRecord(setupRecordName(directory, root), state))} 2>/dev/null)" = "$(${sha256(shellQuote(`${directory}/${SETUP_SCRIPT}`))})" ] && exit 0
-${setupScriptRun(directory, state, timeoutSeconds, root)}`;
+${setupScriptRun(repoSetupScriptOf(directory, root), state, timeoutSeconds)}`;
+
+/** The bash script that prints, one per line, each repo directly below `root` that has a Start Script (`START_SCRIPT`). */
+export const startScriptDirectories = (root: string = WORKSPACE_ROOT): string => `
+root=${shellQuote(root)}
+for dir in "$root"/*/; do
+  dir=\${dir%/}
+  [ -f "$dir"/${START_SCRIPT} ] && printf '%s\\n' "$dir"
+done
+exit 0
+`;
+
+/**
+ * The bash script that runs the Start Script `script` (a repo's: `{ directory, file: START_SCRIPT }`) as
+ * `setupScriptRun` runs a Setup Script, bounded by `timeoutSeconds`, but records nothing: it runs at every Container
+ * start. One stopped for its time ends with `START_TIMED_OUT_MESSAGE` (`scriptTimedOut`). The run ends when the script
+ * and what holds its output have: a service it starts must detach (`setsid nohup cmd >/tmp/cmd.log 2>&1 &`).
+ */
+export const startScriptRun = (
+  script: ContainerScript,
+  timeoutSeconds: number = START_TIMEOUT_SECONDS,
+): string => scriptRun(script, timeoutSeconds, START_TIMED_OUT_MESSAGE);
+
+/**
+ * The bash script that writes the Environment's Start Script `source` to `file`, then runs it in the Workspace root
+ * (`startScriptRun`).
+ */
+export const environmentStartScriptRun = (
+  source: string,
+  root: string = WORKSPACE_ROOT,
+  file: string = ENVIRONMENT_START_FILE,
+  timeoutSeconds: number = START_TIMEOUT_SECONDS,
+): string =>
+  `${writeScript(source, file)}\n${startScriptRun({ directory: root, file }, timeoutSeconds)}`;
+
+/**
+ * `startScriptRun` of the repo in `directory`, when it has a Start Script; it exits 0 without running anything
+ * otherwise. For a repo cloned after the Container started, which the bootstrap did not see.
+ */
+export const startScriptRunIfThere = (
+  directory: string,
+  timeoutSeconds: number = START_TIMEOUT_SECONDS,
+): string => `
+[ -f ${shellQuote(`${directory}/${START_SCRIPT}`)} ] || exit 0
+${startScriptRun({ directory, file: START_SCRIPT }, timeoutSeconds)}`;

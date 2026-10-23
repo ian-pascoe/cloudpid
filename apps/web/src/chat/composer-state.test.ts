@@ -17,6 +17,7 @@ import {
   sessionCommandAtom,
   wideAtom,
 } from "./composer-state.ts";
+import { refusedFirstMessagesAtom } from "../draft-state.ts";
 import { conversationKey } from "./conversation.ts";
 import { FILE_SEARCH_DEBOUNCE_MS, fileSearchAtom } from "./file-search.ts";
 
@@ -216,10 +217,16 @@ const composerOf = (key = conversationKey("s1", undefined)) => {
       };
     },
     input: () => input,
+    setText: (next) => {
+      text = next;
+      told();
+    },
   });
 
   return {
     state,
+    /** What assistant-ui holds. */
+    text: () => text,
     /** The owner edits: the input shows `next`, the caret at `caret`, and then assistant-ui holds it. */
     type: (next: string, caret = next.length) => {
       input.value = next;
@@ -367,5 +374,71 @@ describe("one composer's state", () => {
 
         expect(sent(latest(), "files")).toMatchObject([{ query: "src" }]);
       }),
+  );
+
+  it.effect(
+    "takes back its Session's refused first message, before what was typed since, with the reason",
+    () =>
+      Effect.sync(() => {
+        const { registry } = chatRegistry();
+        const composer = composerOf();
+        const { state } = composer;
+
+        registry.mount(state.text);
+        registry.mount(state.note);
+        registry.mount(state.effects);
+        composer.type("and the tests");
+        registry.set(refusedFirstMessagesAtom, {
+          s1: { text: "Fix the build", reason: "The spend limit is reached." },
+          s2: { text: "Not mine", reason: "No." },
+        });
+
+        expect(composer.text()).toBe("Fix the build\n\nand the tests");
+        expect(registry.get(state.note)).toEqual({
+          tone: "error",
+          text: "The spend limit is reached.",
+        });
+        expect(registry.get(refusedFirstMessagesAtom)).toEqual({
+          s2: { text: "Not mine", reason: "No." },
+        });
+      }),
+  );
+
+  it.effect("takes a first message refused before it was shown as it is shown", () =>
+    Effect.sync(() => {
+      const { registry } = chatRegistry();
+      const composer = composerOf();
+      const { state } = composer;
+
+      registry.mount(refusedFirstMessagesAtom);
+      registry.set(refusedFirstMessagesAtom, {
+        s1: { text: "Fix the build", reason: "The spend limit is reached." },
+      });
+      registry.mount(state.text);
+      registry.mount(state.note);
+      registry.mount(state.effects);
+
+      expect(composer.text()).toBe("Fix the build");
+      expect(registry.get(state.note)?.text).toBe("The spend limit is reached.");
+      expect(registry.get(refusedFirstMessagesAtom)).toEqual({});
+    }),
+  );
+
+  it.effect("leaves the refused first message to the root's composer in a subagent's", () =>
+    Effect.sync(() => {
+      const { registry } = chatRegistry();
+      const composer = composerOf(conversationKey("s1", 2));
+      const { state } = composer;
+
+      registry.mount(state.effects);
+      registry.set(refusedFirstMessagesAtom, {
+        s1: { text: "Fix the build", reason: "The spend limit is reached." },
+      });
+
+      expect(composer.text()).toBe("");
+      expect(registry.get(refusedFirstMessagesAtom)).toEqual({
+        s1: { text: "Fix the build", reason: "The spend limit is reached." },
+      });
+    }),
   );
 });

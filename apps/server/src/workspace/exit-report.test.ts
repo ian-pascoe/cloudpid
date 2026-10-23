@@ -8,19 +8,31 @@ import {
   EXIT_REPORT_PATH,
 } from "@cloudpid/sandbox-image/supervisor";
 import { describe, expect, it } from "vitest";
-import { type ExitReport, exitReport, parseExitReport, withExitReports } from "./exit-report.ts";
+import {
+  type ExitReport,
+  type ExitReportRedaction,
+  exitReport,
+  parseExitReport,
+  WITHHELD_OUTPUT,
+  withExitReports,
+} from "./exit-report.ts";
 
 const url = (path: string) => `http://${EXIT_REPORT_HOST}${path}`;
 
 const post = (body: string, path = EXIT_REPORT_PATH) =>
   new Request(url(path), { method: "POST", body });
 
-const handle = async (request: Request, secret?: string) => {
+const handle = async (
+  request: Request,
+  secret?: string,
+  redact: ExitReportRedaction = async (output) => output,
+) => {
   const logged: ExitReport[] = [];
 
   const response = await exitReport(request, {
     workspace: "do-1",
     secret,
+    redact,
     log: (report) => logged.push(report),
   });
 
@@ -41,6 +53,7 @@ describe("a report", () => {
         status: 1,
         uptimeSeconds: 780,
         output: "mounting /workspace\nError: FUSE session lost",
+        withheld: null,
       },
     ]);
   });
@@ -54,6 +67,49 @@ describe("a report", () => {
     expect(logged[0]?.output).toBe("GET https://x-access-token:***@github.com");
   });
 
+  it("has the Environment's Secrets taken out of its lines by the Workspace DO, after the token", async () => {
+    const seen: string[] = [];
+
+    const { logged } = await handle(
+      post("status=1\nuptime=3\n\ntoken ghp_secret key sk-live-0123\n"),
+      "ghp_secret",
+      async (output) => {
+        seen.push(output);
+
+        return output.replaceAll("sk-live-0123", "<API_KEY>");
+      },
+    );
+
+    expect(seen).toEqual(["token *** key sk-live-0123"]);
+    expect(logged[0]).toMatchObject({ output: "token *** key <API_KEY>", withheld: null });
+  });
+
+  it("is logged without its lines, with its status and uptime and why, when the DO cannot take the Secrets out", async () => {
+    const body = "status=137\nuptime=42\n\nkey sk-live-0123\n";
+
+    for (const redact of [
+      async () => undefined,
+      async () => {
+        throw new Error("the Durable Object is unreachable");
+      },
+    ] satisfies ExitReportRedaction[]) {
+      const { response, logged } = await handle(post(body), undefined, redact);
+
+      expect(response.status).toBe(204);
+      expect(logged).toEqual([
+        {
+          message: "workspace.container.output",
+          workspace: "do-1",
+          status: 137,
+          uptimeSeconds: 42,
+          output: "",
+          withheld: WITHHELD_OUTPUT,
+        },
+      ]);
+      expect(JSON.stringify(logged)).not.toContain("sk-live-0123");
+    }
+  });
+
   it("keeps what it can read of a body that is not the supervisor's", () => {
     expect(parseExitReport("status=nope\n", "do-1", undefined)).toEqual({
       message: "workspace.container.output",
@@ -61,6 +117,7 @@ describe("a report", () => {
       status: null,
       uptimeSeconds: null,
       output: "",
+      withheld: null,
     });
   });
 

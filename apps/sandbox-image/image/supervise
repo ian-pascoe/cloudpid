@@ -38,6 +38,13 @@ tail_pid=$!
 tee "$scratch/keep" <"$scratch/out" &
 tee_pid=$!
 
+# A Container started from its Environment's Build (CLOUDPID_RESET_STORE=1 in the launch's environment) has the Build's
+# computerd store on its disk, with the sync positions of the Build's own Durable Object: computerd starts with an
+# empty one instead, so this Workspace's Durable Object pushes it every file (docs/spec.md → Builds).
+if [ "${CLOUDPID_RESET_STORE:-}" = 1 ] && [ -n "${COMPUTERD_DB:-}" ]; then
+  rm -f -- "$COMPUTERD_DB" "$COMPUTERD_DB-wal" "$COMPUTERD_DB-shm"
+fi
+
 started=$SECONDS
 "$computerd" "$@" >"$scratch/out" 2>&1 &
 computerd_pid=$!

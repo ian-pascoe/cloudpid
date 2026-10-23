@@ -36,13 +36,16 @@ const memoryStorage = (): Storage => {
   };
 };
 
-const session = (id: string, machine: string, archivedAt: number | null = null): SessionRecord => ({
+const session = (
+  id: string,
+  environment: string,
+  archivedAt: number | null = null,
+): SessionRecord => ({
   id,
   title: null,
   titleSource: null,
-  machine,
-  repo: null,
-  workspace: null,
+  environment,
+  workspace: "0a1b2c3d",
   status: "idle",
   createdAt: 1,
   updatedAt: 1,
@@ -64,7 +67,7 @@ const registryOver = (storage: Storage, list: SessionRecord[] = []) =>
     ],
   });
 
-describe("a Machine group", () => {
+describe("an Environment group", () => {
   it("starts expanded", () => {
     const registry = registryOver(memoryStorage());
 
@@ -82,7 +85,7 @@ describe("a Machine group", () => {
     expect(registryOver(storage).get(groupCollapsedAtom(key))).toBe(false);
   });
 
-  it("collapses apart from the same Machine's archived group and from other Machines", () => {
+  it("collapses apart from the same Environment's archived group and from other Environments", () => {
     const registry = registryOver(memoryStorage());
 
     registry.set(groupCollapsedAtom(groupKey("active", "work")), true);

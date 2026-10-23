@@ -5,7 +5,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, GitFork, Trash2 } from "lucide-react";
 import { Button } from "./components/ui/button.tsx";
-import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
+import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
@@ -27,10 +27,10 @@ const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
  */
 const DeleteSessionDialog = ({
   session,
-  machineName,
+  environmentName,
 }: {
   session: SessionRecord;
-  machineName: string;
+  environmentName: string;
 }) => {
   const [open, setOpen] = useAtom(DeleteOpen.use());
   const [deleted, remove] = useAtom(deleteSessionAtom(session.id));
@@ -52,19 +52,13 @@ const DeleteSessionDialog = ({
         <>
           <span className="font-medium text-foreground">{sessionTitle(session)}</span> and its
           conversation, subagents and history are deleted for good. Files it wrote in the{" "}
-          <span className="font-medium text-foreground">{machineName}</span> machine stay
-          {session.workspace === null
-            ? "."
-            : ", but for its workspace's worktree when no other session is in it: that goes unless it holds uncommitted changes, and its branch stays."}
+          <span className="font-medium text-foreground">{environmentName}</span> environment's
+          workspace stay until the workspace is removed.
           {session.status === "running" && " It is running: everything it runs stops first."}
         </>
       }
     >
-      {problem !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {problem}
-        </p>
-      )}
+      <DialogProblem problem={problem} />
       <DialogActions>
         <Button variant="outline" disabled={deleting} onClick={close}>
           Cancel
@@ -79,12 +73,12 @@ const DeleteSessionDialog = ({
 
 const Actions = ({
   session,
-  machineName,
+  environmentName,
   actions,
   className,
 }: {
   session: SessionRecord;
-  machineName: string;
+  environmentName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => {
@@ -96,7 +90,7 @@ const Actions = ({
   return (
     <>
       <Menu label={`Actions for ${sessionTitle(session)}`} className={className}>
-        {session.repo !== null && !archived && (
+        {!archived && (
           <MenuItem
             onSelect={() => {
               void actions.create(sameWorkspacePlace(session));
@@ -136,19 +130,19 @@ const Actions = ({
           Delete…
         </MenuItem>
       </Menu>
-      <DeleteSessionDialog session={session} machineName={machineName} />
+      <DeleteSessionDialog session={session} environmentName={environmentName} />
     </>
   );
 };
 
 /**
  * A Session's "⋯" menu: start another Session in its Workspace, archive or unarchive it, or delete it after a
- * confirmation. A menu has no room for a failure, so
- * an archive or unarchive that failed is reported by `actions` to the surface the menu is on.
+ * confirmation. A menu has no room for a failure, so a new Session, an archive or an unarchive that failed is reported
+ * by `actions` to the surface the menu is on.
  */
 export const SessionMenu = (props: {
   session: SessionRecord;
-  machineName: string;
+  environmentName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => (

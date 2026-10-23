@@ -12,19 +12,14 @@ import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagent
 import { fixedToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
 import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
-import { DEFAULT_MACHINE } from "@cloudpid/protocol";
+import { repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
-import {
-  earlyStartOnSubmit,
-  type PlacedWorktree,
-  type Placement,
-  sessionWorkspace,
-} from "../session/workspace.ts";
+import { type Placement, sessionWorkspace } from "../session/workspace.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -41,11 +36,6 @@ declare global {
 
 const KEY = "workspace";
 
-/** The prefix of the Workspaces an early start cannot reach, and where the attempts are counted. */
-const UNREACHABLE = "early-start-unreachable";
-
-const UNREACHABLE_KEY = "early-start-unreachable";
-
 export class TestWorkspaceSession extends TestSession {
   /** The Session's Workspace, as the Session DO makes it from its Registry record and its `WORKSPACES` binding. */
   #workspace() {
@@ -54,14 +44,13 @@ export class TestWorkspaceSession extends TestSession {
       placement: () =>
         Promise.resolve(
           this.ctx.storage.kv.get<Placement>(KEY) ?? {
-            machine: DEFAULT_MACHINE,
-            repo: null,
-            worktree: null,
+            workspace: null,
+            object: "default",
+            directory: WORKSPACE_ROOT,
           },
         ),
-      // The test Worker has no Container to make a worktree on: a Session placed in one can use only what does not
-      // wait for it to be made, such as the composer's lookups.
-      prepare: () => Promise.reject(new Error("The test Worker makes no worktrees")),
+      // The test Worker has no Container to clone on: its Sessions are placed in Workspaces nobody readies.
+      prepare: () => Promise.reject(new Error("The test Worker readies no Workspace")),
     });
   }
 
@@ -102,33 +91,6 @@ export class TestWorkspaceSession extends TestSession {
     );
   }
 
-  /**
-   * As the Session DO's: each message the owner sends asks its Workspace for the early start of the Container. On a
-   * Workspace named `early-start-unreachable-…` the request fails as an RPC that cannot reach the object does, with a
-   * rejection the Session gets and the Workspace never sees.
-   */
-  protected override hostOnSubmit(): Effect.Effect<void> {
-    const workspace = this.#workspace();
-    const { kv } = this.ctx.storage;
-
-    return earlyStartOnSubmit({
-      startContainerEarly: async () => {
-        if (kv.get<Placement>(KEY)?.machine.startsWith(UNREACHABLE) !== true) {
-          return workspace.startContainerEarly();
-        }
-
-        kv.put(UNREACHABLE_KEY, this.unreachableEarlyStarts() + 1);
-
-        throw new Error("the Workspace is unreachable");
-      },
-    });
-  }
-
-  /** Early starts asked of an unreachable Workspace. */
-  unreachableEarlyStarts(): number {
-    return this.ctx.storage.kv.get<number>(UNREACHABLE_KEY) ?? 0;
-  }
-
   protected override hostEnv(): HarnessOptions["env"] {
     return this.#workspace().env;
   }
@@ -138,14 +100,14 @@ export class TestWorkspaceSession extends TestSession {
   }
 
   /**
-   * Bind this Session to Workspace `slug` (and the repo directory in it, and its worktree of that repo), as the Registry
-   * binds a Session when it is created. The test Worker makes no worktree: a test writes the files of one it names.
+   * Bind this Session to the Workspace whose object is `object`, working in its clone of `repo` (or at its root), as the
+   * Registry binds a Session when it is created. The test Worker clones nothing: a test writes the files it needs.
    */
-  bindWorkspace(
-    slug: string,
-    repo: string | null = null,
-    worktree: PlacedWorktree | null = null,
-  ): void {
-    this.ctx.storage.kv.put(KEY, { machine: slug, repo, worktree } satisfies Placement);
+  bindWorkspace(object: string, repo: string | null = null): void {
+    this.ctx.storage.kv.put(KEY, {
+      workspace: null,
+      object,
+      directory: repo === null ? WORKSPACE_ROOT : repoDirectory(repo),
+    } satisfies Placement);
   }
 }

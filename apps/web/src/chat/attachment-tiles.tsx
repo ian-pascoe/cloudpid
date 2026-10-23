@@ -62,7 +62,7 @@ const Unshown = ScopedAtom.make(() => Atom.make(false));
 
 const Tile = ({ item, fit, onRemove }: TileProps) => {
   const note = noteOf(item, fit);
-  // The name the message will use: the stored one, once the Machine has suffixed it.
+  // The name the message will use: the stored one, once the Workspace has suffixed it.
   const name = item.stored?.name ?? item.name;
   // A picture the browser cannot show (a HEIC elsewhere than Safari, a corrupt file) gets a file's icon instead.
   const [unshown, setUnshown] = useAtom(Unshown.use());

@@ -1,6 +1,6 @@
-// A Workspace's own settings in its Durable Object's storage (docs/spec.md → Container and Toolchains → Size and idle).
+// A Workspace's own settings in its Durable Object's storage (docs/spec.md → Container and Toolchains → Container settings).
 // @effect-diagnostics asyncFunction:off
-import { DEFAULT_MACHINE_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { workspaceSettingsStore } from "./settings.ts";
@@ -25,7 +25,7 @@ describe("workspaceSettingsStore", () => {
   it("reads the defaults from a Workspace that saved nothing", async () => {
     const { store } = open();
 
-    expect(await store.read()).toEqual({ settings: DEFAULT_MACHINE_SETTINGS, overrides: {} });
+    expect(await store.read()).toEqual({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} });
   });
 
   it("saves overrides and reads them back as the settings in force", async () => {
@@ -36,14 +36,14 @@ describe("workspaceSettingsStore", () => {
     expect(answer).toEqual({
       ok: true,
       state: {
-        settings: { instance: "standard-4", idleMinutes: 45, ignore: [] },
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-4", idleMinutes: 45 },
         overrides: { instance: "standard-4", idleMinutes: 45 },
       },
     });
     expect((await store.read()).settings).toEqual({
+      ...DEFAULT_CONTAINER_SETTINGS,
       instance: "standard-4",
       idleMinutes: 45,
-      ignore: [],
     });
   });
 
@@ -81,7 +81,7 @@ describe("workspaceSettingsStore", () => {
 
     const state = await store.read();
 
-    expect(state.settings).toEqual({ instance: "custom-2", idleMinutes: 30, ignore: [] });
+    expect(state.settings).toEqual({ ...DEFAULT_CONTAINER_SETTINGS, idleMinutes: 30 });
     expect(state.problem).toContain("instance");
   });
 });

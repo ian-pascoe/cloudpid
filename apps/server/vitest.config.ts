@@ -51,6 +51,8 @@ export default defineConfig({
                 WORKSPACES: { className: "TestWorkspace", useSQLite: true },
               },
               workerLoaders: { LOADER: {} },
+              // The key the Workspace DO seals its copy of the Environment's Secrets under.
+              bindings: { SECRETS_ENCRYPTION_KEY: "test-master-key-0123456789abcdef0123456789" },
             },
           }),
         ],

@@ -1,5 +1,5 @@
 // The Container's backend, built again whenever a launch has other Container-only paths (docs/spec.md → Container and
-// Toolchains → Size and idle): computer takes them when its backend is built. computer's backend is a fake.
+// Toolchains → Container settings): computer takes them when its backend is built. computer's backend is a fake.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import { describe, expect, it } from "vitest";

@@ -3,7 +3,7 @@
 // around a fake computerd, and reports to a local HTTP server standing in for the Workspace DO's intercept.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off asyncFunction:off globalDate:off newPromise:off
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -68,7 +68,12 @@ const fakeComputerd = (behaviour: string) => {
 
 type Run = { readonly status: number | null; readonly stdout: string };
 
-const supervise = (computerd: string, port: number, signal?: NodeJS.Signals) =>
+const supervise = (
+  computerd: string,
+  port: number,
+  signal?: NodeJS.Signals,
+  env: Record<string, string> = {},
+) =>
   new Promise<Run>((resolve) => {
     const child = spawn("bash", [script], {
       env: {
@@ -76,6 +81,7 @@ const supervise = (computerd: string, port: number, signal?: NodeJS.Signals) =>
         CLOUDPID_COMPUTERD: computerd,
         CLOUDPID_REPORT_HOST: "127.0.0.1",
         CLOUDPID_REPORT_PORT: String(port),
+        ...env,
       },
     });
 
@@ -208,6 +214,43 @@ describe("the supervisor", () => {
 
     expect(run.status).toBe(1);
     expect(run.stdout).toBe("bye\n");
+  });
+
+  /** A computerd store, with SQLite's write-ahead log and shared memory files beside it, and a computerd that lists them. */
+  const storeOnDisk = () => {
+    const dir = mkdtempSync(join(tmpdir(), "computerd-store-"));
+    const db = join(dir, "state.db");
+
+    for (const file of [db, `${db}-wal`, `${db}-shm`]) writeFileSync(file, "sync state");
+
+    const computerd = fakeComputerd(
+      `for f in "$COMPUTERD_DB" "$COMPUTERD_DB-wal" "$COMPUTERD_DB-shm"; do [ -e "$f" ] && echo "kept \${f##*/}"; done; exit 0`,
+    );
+
+    return { db, computerd };
+  };
+
+  it("deletes computerd's store before computerd starts when the launch asks for a reset (a Build)", async () => {
+    const { port } = await reportServer();
+    const { db, computerd } = storeOnDisk();
+
+    const run = await supervise(computerd, port, undefined, {
+      COMPUTERD_DB: db,
+      CLOUDPID_RESET_STORE: "1",
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("");
+    expect(existsSync(db)).toBe(false);
+  });
+
+  it("keeps computerd's store otherwise (a Workspace's own snapshot)", async () => {
+    const { port } = await reportServer();
+    const { db, computerd } = storeOnDisk();
+
+    const run = await supervise(computerd, port, undefined, { COMPUTERD_DB: db });
+
+    expect(run.stdout).toBe("kept state.db\nkept state.db-wal\nkept state.db-shm\n");
   });
 
   it("does not wait on a process computerd left holding its output", async () => {

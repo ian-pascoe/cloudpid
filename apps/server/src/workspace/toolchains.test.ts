@@ -2,8 +2,16 @@
 // bootstrap that runs before the first command of each Container start, and the environment every command gets. The
 // Container is a fake backend whose shell records what it is asked and answers from a script.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
+import { secretEnvName, secretReference } from "@cloudpid/extensions/secrets/core";
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
-import { BOOTSTRAP_CHANGED, SETUP_TIMED_OUT_MESSAGE } from "@cloudpid/sandbox-image/toolchains";
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import {
+  BOOTSTRAP_CHANGED,
+  ENVIRONMENT_SETUP_FILE,
+  ENVIRONMENT_START_FILE,
+  SETUP_TIMED_OUT_MESSAGE,
+  START_TIMED_OUT_MESSAGE,
+} from "@cloudpid/sandbox-image/toolchains";
 import { describe, expect, it } from "vitest";
 import { ToolchainBackend } from "./toolchains.ts";
 
@@ -19,11 +27,31 @@ const isBootstrap = (input: ExecInput) => input.source.includes("has_mise_config
 /** Whether `input` lists the due Setup Scripts. */
 const isSetupList = (input: ExecInput) => input.source.includes("/.agents/setup.sh ] || continue");
 
-/** Whether `input` runs a Setup Script. */
-const isSetupRun = (input: ExecInput) => input.source.includes("timeout --kill-after");
+/** Whether `input` runs a script of the bootstrap's own, bounded in time (a command's note may quote one's output). */
+const isScriptRun = (input: ExecInput) =>
+  input.source.startsWith("exec bash -c") && input.source.includes("timeout --kill-after");
 
-/** Whether `input` is part of a bootstrap: its install, or its Setup Scripts. */
-const isOwn = (input: ExecInput) => isBootstrap(input) || isSetupList(input) || isSetupRun(input);
+/** Whether `input` runs a Setup Script: the only scripts that can print its time-out message. */
+const isSetupRun = (input: ExecInput) =>
+  isScriptRun(input) && input.source.includes("Setup Script ran past its time");
+
+/** Whether `input` lists the repos' Start Scripts. */
+const isStartList = (input: ExecInput) => input.source.includes("/.agents/start.sh ] && printf");
+
+/** Whether `input` runs a Start Script. */
+const isStartRun = (input: ExecInput) =>
+  isScriptRun(input) && input.source.includes("Start Script ran past its time");
+
+/** `source` with the quoting of a note taken off its apostrophes. */
+const unquoted = (source: string | undefined) => source?.replaceAll("'\\''", "'");
+
+/** Whether `input` is part of a bootstrap: its install, its Setup Scripts, or its Start Scripts. */
+const isOwn = (input: ExecInput) =>
+  isBootstrap(input) ||
+  isSetupList(input) ||
+  isSetupRun(input) ||
+  isStartList(input) ||
+  isStartRun(input);
 
 /** A stream of one command's events: its output (each of `stdout` a chunk), then its exit. */
 const events = (id: string, stdout: readonly string[], stderr: string, code: number) =>
@@ -339,8 +367,8 @@ describe("the bootstrap", () => {
 
     await handle.rpc.shell.exec({ source: "a" });
 
-    // The install's exec, and the look for Setup Scripts.
-    expect(container.disposed).toHaveLength(2);
+    // The install's exec, and the looks for Setup and Start Scripts.
+    expect(container.disposed).toHaveLength(3);
   });
 
   it("runs again after the Container restarts, and not after a mere reconnect", async () => {
@@ -595,6 +623,27 @@ describe("a command's output", () => {
     expect(seen.exits).toBe(1);
   });
 
+  it("has the Environment's Secrets taken out too, each as its reference", async () => {
+    const kept = {
+      name: "API_KEY",
+      value: "sk-live-0123456789",
+      scope: "environment" as const,
+      build: false,
+    };
+
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? {} : { stdout: ["KEY=sk-live-01", "23456789 token=ghp_secret\n"] },
+    );
+
+    const handle = await open(container, {
+      secrets: { read: async () => [kept], known: () => [kept] },
+    }).toolchains.connect(host);
+
+    const seen = await output(await handle.rpc.shell.exec({ source: "env" }));
+
+    expect(seen.stdout).toBe(`KEY=${secretReference("API_KEY")} token=***\n`);
+  });
+
   it("gets what was held back at the end before the exit", async () => {
     const container = fakeContainer((input) =>
       isBootstrap(input) ? {} : { stdout: ["almost ghp_sec"] },
@@ -624,101 +673,6 @@ describe("a command's output", () => {
     const seen = await output(await handle.rpc.shell.exec({ source: "x" }));
 
     expect(seen.stdout).toBe("ghp_secret");
-  });
-});
-
-describe("the bootstrap without a command (`runBootstrap`, the early start)", () => {
-  it("runs on the Container connected last, and the first command then waits for nothing", async () => {
-    const container = fakeContainer();
-    const { toolchains } = open(container);
-    const handle = await toolchains.connect(host);
-
-    await toolchains.runBootstrap();
-
-    expect(bootstraps(container.execs)).toHaveLength(1);
-    expect(commands(container.execs)).toEqual([]);
-
-    await handle.rpc.shell.exec({ source: "git status" });
-
-    expect(bootstraps(container.execs)).toHaveLength(1);
-    expect(commands(container.execs).map((input) => input.source)).toEqual(["git status"]);
-  });
-
-  it("is the one bootstrap a command that arrives meanwhile waits for", async () => {
-    let release: () => void = () => undefined;
-
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    const container = fakeContainer((input) => (isBootstrap(input) ? { gate } : {}));
-    const { toolchains } = open(container);
-    const handle = await toolchains.connect(host);
-
-    const ran = toolchains.runBootstrap();
-    const command = handle.rpc.shell.exec({ source: "git status" });
-
-    release();
-    await Promise.all([ran, command]);
-
-    expect(bootstraps(container.execs)).toHaveLength(1);
-    expect(commands(container.execs)).toHaveLength(1);
-  });
-
-  it("does nothing before any connection", async () => {
-    const container = fakeContainer();
-    const { toolchains } = open(container);
-
-    await toolchains.runBootstrap();
-
-    expect(container.execs).toEqual([]);
-  });
-
-  it("does not fail when the bootstrap does, and leaves the first command its own attempt", async () => {
-    let attempts = 0;
-
-    const container = fakeContainer((input) => {
-      if (!isBootstrap(input)) return {};
-
-      attempts++;
-
-      return { code: attempts === 1 ? 1 : 0 };
-    });
-
-    const { toolchains, warnings } = open(container);
-    const handle = await toolchains.connect(host);
-
-    await expect(toolchains.runBootstrap()).resolves.toBeUndefined();
-    expect(warnings.join("\n")).toContain("Toolchain bootstrap failed");
-
-    // No wait before the retry, as there would be after a command's own failure: the command bootstraps as it would
-    // have without the early start, and here it succeeds.
-    await handle.rpc.shell.exec({ source: "git status" });
-
-    expect(bootstraps(container.execs)).toHaveLength(2);
-    expect(commands(container.execs).map((input) => input.source)).toEqual(["git status"]);
-  });
-
-  it("gives a command that waited for a bootstrap that failed the note with its output", async () => {
-    let release: () => void = () => undefined;
-
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    const container = fakeContainer((input) =>
-      isBootstrap(input) ? { gate, code: 1, stderr: "mise broke" } : {},
-    );
-
-    const { toolchains } = open(container);
-    const handle = await toolchains.connect(host);
-    const ran = toolchains.runBootstrap();
-    const command = handle.rpc.shell.exec({ source: "true" });
-
-    release();
-    await Promise.all([ran, command]);
-
-    expect(commands(container.execs)[0]?.source).toContain("bootstrap failed (");
   });
 });
 
@@ -796,6 +750,8 @@ describe("the Setup Scripts", () => {
       "/workspace",
       "/workspace/a",
       "/workspace/b",
+      // The look for Start Scripts.
+      "/workspace",
       "ls node_modules",
     ]);
     expect(container.execs.filter(isSetupRun)[0]?.source).toContain(".agents/setup.sh");
@@ -812,6 +768,43 @@ describe("the Setup Scripts", () => {
     expect(script?.env).toMatchObject({ GITHUB_TOKEN: "ghp_secret", MISE_YES: "1" });
     expect(script?.source).toContain("timeout --kill-after=10 900 ");
     expect(script?.timeoutMs).toBeGreaterThan(15 * 60_000);
+  });
+
+  it("get the Secrets marked for the Build in their environment, which no other script or command gets", async () => {
+    const marked = {
+      name: "NPM_TOKEN",
+      value: "npm_0123456789abcdef",
+      scope: "environment" as const,
+      build: true,
+    };
+
+    const other = { ...marked, name: "API_KEY", value: "sk-live-0123456789", build: false };
+
+    const container = fakeContainer((input) => {
+      if (isSetupList(input)) return { stdout: ["/workspace/a\n"] };
+
+      if (isStartList(input)) return { stdout: ["/workspace/a\n"] };
+
+      return {};
+    });
+
+    const { toolchains } = open(container, {
+      secrets: { read: async () => [marked, other], known: () => [marked, other] },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    const [script] = container.execs.filter(isSetupRun);
+
+    expect(script?.env).toMatchObject({
+      [secretEnvName(marked.name)]: marked.value,
+      MISE_YES: "1",
+    });
+    expect(script?.env).not.toHaveProperty(secretEnvName(other.name));
+
+    for (const input of container.execs.filter((input) => !isSetupRun(input))) {
+      expect(input.env ?? {}).not.toHaveProperty(secretEnvName(marked.name));
+    }
   });
 
   it("are skipped when none is due: the command is sent as it is", async () => {
@@ -1024,44 +1017,6 @@ describe("the Setup Scripts", () => {
     expect(activity).toEqual(["begin", "end"]);
   });
 
-  it("run in a bootstrap without a command (the early start), whose failure the first command after it is told", async () => {
-    const container = withScripts(["/workspace/a"], {
-      "/workspace/a": { stderr: "ERR_PNPM_FETCH", code: 1 },
-    });
-
-    const activity: string[] = [];
-
-    const { toolchains } = open(container, {
-      activity: {
-        begin: async () => {
-          activity.push("begin");
-        },
-        end: async () => {
-          activity.push("end");
-        },
-      },
-    });
-
-    const handle = await toolchains.connect(host);
-
-    await toolchains.runBootstrap();
-
-    expect(runs(container.execs)).toEqual(["/workspace/a"]);
-    expect(commands(container.execs)).toEqual([]);
-    // The bootstrap held the Container once, and let it go.
-    expect(activity).toEqual(["begin", "end"]);
-
-    await handle.rpc.shell.exec({ source: "a" });
-    await handle.rpc.shell.exec({ source: "b" });
-
-    const [first, second] = commands(container.execs);
-
-    expect(runs(container.execs)).toEqual(["/workspace/a"]);
-    expect(first?.source).toContain("ERR_PNPM_FETCH");
-    expect(second?.source).toContain("Setup Script (.agents/setup.sh) of /workspace/a failed");
-    expect(second?.source).not.toContain("ERR_PNPM_FETCH");
-  });
-
   it("do not stop the command when they cannot be looked for", async () => {
     const container = fakeContainer((input) =>
       isSetupList(input) ? { stderr: "no disk", code: 2 } : {},
@@ -1072,6 +1027,378 @@ describe("the Setup Scripts", () => {
     await handle.rpc.shell.exec({ source: "a" });
 
     expect(commands(container.execs)[0]?.source).toContain("could not tell which repos");
+    expect(commands(container.execs)[0]?.source).toMatch(/\na$/);
+  });
+});
+
+/** The Environment's settings a bootstrap reads, with `changes` over the defaults. */
+const environment = (changes: Partial<typeof DEFAULT_CONTAINER_SETTINGS> = {}) => ({
+  ...DEFAULT_CONTAINER_SETTINGS,
+  ...changes,
+});
+
+describe("the Environment's variables", () => {
+  it("reach every command, under the Container's own variables and what the caller passes", async () => {
+    const container = fakeContainer();
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ variables: { NODE_ENV: "test", API_URL: "http://x" } }),
+    });
+
+    const handle = await toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "true", env: { NODE_ENV: "production" } });
+
+    expect(commands(container.execs)[0]?.env).toMatchObject({
+      NODE_ENV: "production",
+      API_URL: "http://x",
+      MISE_YES: "1",
+      GITHUB_TOKEN: "ghp_secret",
+    });
+  });
+
+  it("reach the bootstrap and every script it runs", async () => {
+    const container = fakeContainer((input) => {
+      if (isSetupList(input)) return { stdout: [`${ENVIRONMENT_SETUP_FILE}\n`, "/workspace/a\n"] };
+
+      if (isStartList(input)) return { stdout: ["/workspace/a\n"] };
+
+      return {};
+    });
+
+    const { toolchains } = open(container, {
+      settings: async () =>
+        environment({ variables: { API_URL: "http://x" }, setupScript: "a", startScript: "b" }),
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    const own = container.execs.filter(isOwn);
+
+    expect(own).toHaveLength(7);
+
+    for (const input of own)
+      expect(input.env).toMatchObject({ API_URL: "http://x", MISE_YES: "1" });
+  });
+
+  it("come with the Environment's Toolchains, which the bootstrap writes as the root's mise.toml", async () => {
+    const toml = '[tools]\nnode = "22.20.0"\n';
+    const container = fakeContainer();
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ toolchains: toml }),
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    expect(bootstraps(container.execs)[0]?.source).toContain(btoa(toml));
+  });
+
+  it("are read once per Container start, so a change applies at the next one", async () => {
+    const container = fakeContainer();
+    let value = "one";
+    let reads = 0;
+
+    const { toolchains } = open(container, {
+      settings: async () => {
+        reads++;
+
+        return environment({ variables: { WHICH: value } });
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "a" });
+    value = "two";
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "b" });
+    container.restart();
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "c" });
+
+    expect(commands(container.execs).map((input) => input.env?.WHICH)).toEqual([
+      "one",
+      "one",
+      "two",
+    ]);
+    expect(reads).toBe(2);
+  });
+
+  it("are left out, with the Environment's scripts, when the settings cannot be read, which stops nothing", async () => {
+    const container = fakeContainer();
+
+    const { toolchains, warnings } = open(container, {
+      settings: async () => {
+        throw new Error("storage is gone");
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "a" });
+
+    expect(commands(container.execs)[0]?.source).toBe("a");
+    expect(commands(container.execs)[0]?.env).toMatchObject({ MISE_YES: "1" });
+    expect(warnings.join("\n")).toContain("storage is gone");
+  });
+});
+
+describe("the Environment's Setup Script", () => {
+  /** A Container where the Environment's Setup Script and the repo `a`'s are due, each answering from `scripts`. */
+  const withEnvironmentScript = (scripts: Record<string, Answer> = {}) =>
+    fakeContainer((input) => {
+      if (isSetupList(input)) return { stdout: [`${ENVIRONMENT_SETUP_FILE}\n`, "/workspace/a\n"] };
+
+      if (isSetupRun(input)) {
+        return scripts[input.source.includes(ENVIRONMENT_SETUP_FILE) ? "environment" : "a"] ?? {};
+      }
+
+      return {};
+    });
+
+  it("is handed to the look for due ones, which writes it to its file", async () => {
+    const container = fakeContainer();
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ setupScript: "pnpm install\n" }),
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    const [list] = container.execs.filter(isSetupList);
+
+    // The script is in it base64-encoded: "pnpm install\n".
+    expect(list?.source).toContain(btoa("pnpm install\n"));
+    expect(list?.source).toContain(ENVIRONMENT_SETUP_FILE);
+  });
+
+  it("runs first when it is due, in the Workspace root, then the repos'", async () => {
+    const container = withEnvironmentScript();
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ setupScript: "pnpm install\n" }),
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    const runs = container.execs.filter(isSetupRun);
+
+    expect(runs.map((input) => input.cwd)).toEqual(["/workspace", "/workspace/a"]);
+    expect(runs[0]?.source).toContain(ENVIRONMENT_SETUP_FILE);
+    expect(runs[0]?.source).toContain("@environment");
+  });
+
+  it("counts as an install for the snapshot when it succeeded", async () => {
+    const container = withEnvironmentScript({ a: { code: 1 } });
+    const seen: boolean[] = [];
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ setupScript: "true\n" }),
+      afterInstall: async (changed) => {
+        seen.push(changed);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    expect(seen).toEqual([true]);
+  });
+
+  it("does not stop the command when it fails: the first command gets a note, later ones a pointer", async () => {
+    const container = withEnvironmentScript({
+      environment: { stderr: "apt-get: not found", code: 1 },
+    });
+
+    const { toolchains, warnings } = open(container, {
+      settings: async () => environment({ setupScript: "apt-get install x\n" }),
+    });
+
+    const handle = await toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "a" });
+    await handle.rpc.shell.exec({ source: "b" });
+
+    const [first, second] = commands(container.execs);
+
+    expect(container.execs.filter(isSetupRun).map((input) => input.cwd)).toEqual([
+      "/workspace",
+      "/workspace/a",
+    ]);
+    expect(unquoted(first?.source)).toContain(
+      "the Environment's Setup Script failed (exit status 1)",
+    );
+    expect(first?.source).toContain("apt-get: not found");
+    expect(first?.source).toContain(ENVIRONMENT_SETUP_FILE);
+    expect(first?.source).toMatch(/\na$/);
+    expect(unquoted(second?.source)).toContain(
+      "the Environment's Setup Script failed at this Container's start",
+    );
+    expect(second?.source).not.toContain("apt-get: not found");
+    expect(warnings.join("\n")).toContain("apt-get: not found");
+  });
+});
+
+describe("the Start Scripts", () => {
+  /** A Container whose repos `repos` have a Start Script, each answering from `scripts` (by directory). */
+  const withStartScripts = (repos: readonly string[], scripts: Record<string, Answer> = {}) =>
+    fakeContainer((input) => {
+      if (isStartList(input)) return { stdout: repos.map((dir) => `${dir}\n`) };
+
+      if (isStartRun(input)) return scripts[input.cwd ?? ""] ?? {};
+
+      return {};
+    });
+
+  const starts = (execs: readonly ExecInput[]) =>
+    execs.flatMap((input) => (isStartRun(input) ? [input.cwd] : []));
+
+  it("run after the Setup Scripts and the hook after the install, the Environment's first, before the command", async () => {
+    const container = withStartScripts(["/workspace/a", "/workspace/b"]);
+    const order: string[] = [];
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ startScript: "docker start db\n" }),
+      afterInstall: async () => {
+        order.push(`hook after ${container.execs.filter(isStartRun).length} Start Scripts`);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "pnpm dev" });
+
+    expect(order).toEqual(["hook after 0 Start Scripts"]);
+    expect(
+      container.execs.map((input) => (isOwn(input) ? input.cwd : input.source)).slice(2),
+    ).toEqual(["/workspace", "/workspace", "/workspace/a", "/workspace/b", "pnpm dev"]);
+    expect(container.execs.filter(isStartRun)[0]?.source).toContain(ENVIRONMENT_START_FILE);
+    expect(container.execs.filter(isStartRun)[0]?.source).toContain(btoa("docker start db\n"));
+    expect(container.execs.filter(isStartRun)[1]?.source).toContain(".agents/start.sh");
+  });
+
+  it("are bounded by five minutes, and do not count as an install", async () => {
+    const container = withStartScripts(["/workspace/a"]);
+    const seen: boolean[] = [];
+
+    const { toolchains } = open(container, {
+      afterInstall: async (changed) => {
+        seen.push(changed);
+      },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    const [script] = container.execs.filter(isStartRun);
+
+    expect(script?.source).toContain("timeout --kill-after=10 300 ");
+    expect(script?.timeoutMs).toBeGreaterThan(5 * 60_000);
+    expect(seen).toEqual([false]);
+  });
+
+  it("leave the Environment's out when it has none", async () => {
+    const container = withStartScripts(["/workspace/a"]);
+    const { toolchains } = open(container, { settings: async () => environment() });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    expect(starts(container.execs)).toEqual(["/workspace/a"]);
+  });
+
+  it("run at every Container start, and not after a mere reconnect", async () => {
+    const container = withStartScripts(["/workspace/a"]);
+    const { toolchains } = open(container);
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "a" });
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "b" });
+    container.restart();
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "c" });
+
+    expect(starts(container.execs)).toEqual(["/workspace/a", "/workspace/a"]);
+  });
+
+  it("do not stop the command when one fails: the first command gets a note, later ones a pointer", async () => {
+    const container = withStartScripts(["/workspace/a", "/workspace/b"], {
+      "/workspace/a": { stderr: "port 5432 in use (ghp_secret)", code: 1 },
+      "/workspace": { stderr: "docker: not running", code: 2 },
+    });
+
+    const { toolchains, warnings } = open(container, {
+      settings: async () => environment({ startScript: "docker start db\n" }),
+    });
+
+    const handle = await toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "a" });
+    await handle.rpc.shell.exec({ source: "b" });
+
+    const [first, second] = commands(container.execs);
+
+    expect(starts(container.execs)).toEqual(["/workspace", "/workspace/a", "/workspace/b"]);
+    expect(unquoted(first?.source)).toContain(
+      "the Environment's Start Script failed (exit status 2)",
+    );
+    expect(first?.source).toContain("docker: not running");
+    expect(first?.source).toContain(
+      "the Start Script /workspace/a/.agents/start.sh failed (exit status 1)",
+    );
+    expect(first?.source).toContain("port 5432 in use (***)");
+    expect(first?.source).not.toContain("/workspace/b/.agents");
+    expect(first?.source).toMatch(/\na$/);
+    expect(unquoted(second?.source)).toContain(
+      "the Environment's Start Script failed at this Container's start",
+    );
+    expect(second?.source).toContain("Start Script (.agents/start.sh) of /workspace/a failed");
+    expect(second?.source).not.toContain("port 5432");
+    expect(warnings.join("\n")).toContain("port 5432 in use (***)");
+  });
+
+  it("are reported along with the Setup Scripts that failed", async () => {
+    const container = fakeContainer((input) => {
+      if (isSetupList(input)) return { stdout: ["/workspace/a\n"] };
+
+      if (isStartList(input)) return { stdout: ["/workspace/a\n"] };
+
+      return isSetupRun(input) || isStartRun(input) ? { stderr: "boom", code: 1 } : {};
+    });
+
+    const handle = await open(container).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "a" });
+
+    const [command] = commands(container.execs);
+
+    expect(command?.source).toContain("Setup Script /workspace/a/.agents/setup.sh failed");
+    expect(command?.source).toContain("Start Script /workspace/a/.agents/start.sh failed");
+  });
+
+  it("say so when one ran past its time and was stopped", async () => {
+    const container = withStartScripts(["/workspace/a"], {
+      "/workspace/a": { stderr: `postgres starting\n${START_TIMED_OUT_MESSAGE}\n`, code: 124 },
+    });
+
+    await (await open(container).toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    const [command] = commands(container.execs);
+
+    expect(command?.source).toContain("ran past 5 minutes and was stopped");
+    expect(command?.source).toContain("detach");
+  });
+
+  it("are not run when the install failed", async () => {
+    const container = fakeContainer((input) => (isBootstrap(input) ? { code: 1 } : {}));
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ startScript: "docker start db\n" }),
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "a" });
+
+    expect(container.execs.filter((input) => isStartList(input) || isStartRun(input))).toEqual([]);
+  });
+
+  it("do not stop the command when they cannot be looked for", async () => {
+    const container = fakeContainer((input) =>
+      isStartList(input) ? { stderr: "no disk", code: 2 } : {},
+    );
+
+    await (await open(container).toolchains.connect(host)).rpc.shell.exec({ source: "a" });
+
+    expect(unquoted(commands(container.execs)[0]?.source)).toContain(
+      "could not tell which repos' Start Script",
+    );
     expect(commands(container.execs)[0]?.source).toMatch(/\na$/);
   });
 });

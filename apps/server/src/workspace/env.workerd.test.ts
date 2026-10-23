@@ -5,14 +5,15 @@ import {
   ContainerBackend,
   type IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
-import { DEFAULT_MACHINE_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
+import { secretReference } from "@cloudpid/extensions/secrets/core";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { discoverSkills } from "@cloudpid/extensions/skills-discovery";
 import { discoverPrompts } from "@cloudpid/extensions/prompt-templates";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
@@ -238,7 +239,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
     };
 
     const launch = new ContainerLaunch({
-      settings: async () => ({ ...DEFAULT_MACHINE_SETTINGS, instance: "standard-3" }),
+      settings: async () => ({ ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-3" }),
       ignore: () => undefined,
       snapshots: {
         restorable: async () => ({ id: "snap-1", image: undefined }),
@@ -247,6 +248,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
           forgotten++;
         },
         take: async () => "taken",
+        capture: async () => ({ outcome: "skipped", reason: "not used" }),
       },
       image: () => undefined,
       load: async () => record,
@@ -561,48 +563,9 @@ describe("deleting a Workspace", () => {
 
     expect(read.ok ? read.value : read.error.code).toBe("not_found");
     expect(await again.containerSettings()).toEqual({
-      settings: DEFAULT_MACHINE_SETTINGS,
+      settings: DEFAULT_CONTAINER_SETTINGS,
       overrides: {},
     });
-  });
-});
-
-describe("resetting a Workspace", () => {
-  it("wipes its files but keeps its settings", async () => {
-    const workspace = env.WORKSPACES.getByName("reset-me");
-
-    const executionEnv = new ComputerExecutionEnv({
-      workspace,
-      id: "computer:test",
-      cwd: "/workspace",
-    });
-
-    getOrThrow(await executionEnv.createDir("/workspace/repo", { recursive: true }, context));
-    getOrThrow(await executionEnv.writeFile("/workspace/repo/notes.md", "kept?", context));
-    expect(
-      await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 10 }),
-    ).toMatchObject({ ok: true });
-
-    // As the main Worker resets it: the clear, then the reset in a call of its own.
-    await workspaceObjectsRemote(env.WORKSPACES).clear("reset-me");
-
-    const again = env.WORKSPACES.getByName("reset-me");
-
-    const after = new ComputerExecutionEnv({
-      workspace: again,
-      id: "computer:test",
-      cwd: "/workspace",
-    });
-
-    const read = await after.readTextFile("/workspace/repo/notes.md", context);
-
-    expect(read.ok ? read.value : read.error.code).toBe("not_found");
-    expect(await again.containerSettings()).toEqual({
-      settings: { ...DEFAULT_MACHINE_SETTINGS, instance: "standard-3", idleMinutes: 10 },
-      overrides: { instance: "standard-3", idleMinutes: 10 },
-    });
-    // The bundled skills are mounted again in the fresh Workspace.
-    expect((await after.discoverSkills(context)).map((skill) => skill.name)).toContain("tdd");
   });
 });
 
@@ -641,5 +604,83 @@ describe("restarting a Workspace's Container", () => {
         state.storage.get("cloudpid:container-snapshot"),
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("a spare Workspace preparing itself", () => {
+  /** Wait for `done` to hold, as work the alarm started goes on after it. */
+  const until = async (done: () => Promise<boolean>) => {
+    for (let tries = 0; tries < 200 && !(await done()); tries++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  };
+
+  it("readies itself at its alarm, over its own files and Container", async () => {
+    const workspace = env.WORKSPACES.getByName("spare-prepares");
+
+    await workspace.prepareSpare({
+      repos: [{ name: "app", url: "https://github.com/acme/app.git" }],
+      branch: "cloudpid/spare",
+      base: null,
+      settings: { idleMinutes: 30 },
+    });
+
+    // The alarm is due at once; it may have fired already.
+    await runDurableObjectAlarm(workspace);
+
+    const preparation = () =>
+      runInDurableObject(workspace, (_instance, state) =>
+        state.storage.get("cloudpid:spare-preparation"),
+      );
+
+    await until(async () => (await preparation()) === undefined);
+
+    // The settings were handed over, and the clone found missing (its `.git/HEAD` read from the files) was asked of
+    // the Container, with its Setup and Start Scripts; this one has no Container, so the readying failed, and the
+    // request is forgotten, leaving the spare to the Session that takes it.
+    expect((await workspace.containerSettings()).overrides).toEqual({ idleMinutes: 30 });
+    expect((await workspace.liveStubs()).container).toBe(3);
+    expect(await preparation()).toBeUndefined();
+  });
+});
+
+describe("an exit report on the Workspace DO", () => {
+  const kept = {
+    name: "API_KEY",
+    value: "sk-live-0123456789abcdef",
+    scope: "environment" as const,
+    build: false,
+  };
+
+  it("has the Environment's Secrets taken out with the copy the DO keeps sealed, after an eviction too", async () => {
+    const workspace = env.WORKSPACES.getByName("exit-report-redaction");
+
+    await workspace.updateEnvironmentSecrets([kept]);
+
+    expect(await workspace.redactExitReport(`Error: bad key ${kept.value}`)).toBe(
+      `Error: bad key ${secretReference("API_KEY")}`,
+    );
+
+    await evictDurableObject(workspace);
+
+    const redacted = await workspace.redactExitReport(`Error: bad key ${kept.value}`);
+
+    expect(redacted).toBe(`Error: bad key ${secretReference("API_KEY")}`);
+  });
+
+  it("is not answered while the copy does not open: the report cannot be shown free of them", async () => {
+    const workspace = env.WORKSPACES.getByName("exit-report-unopened");
+
+    await workspace.updateEnvironmentSecrets([kept]);
+    await runInDurableObject(workspace, async (_instance, state) => {
+      // As a copy sealed under another key reads: a Secret whose value does not open.
+      await state.storage.put("cloudpid:environment-secrets", {
+        version: 1,
+        secrets: [{ name: "API_KEY", scope: "environment", build: false, sealed: null }],
+      });
+    });
+    await evictDurableObject(workspace);
+
+    expect(await workspace.redactExitReport(`Error: bad key ${kept.value}`)).toBeNull();
   });
 });

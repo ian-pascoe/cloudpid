@@ -1,12 +1,13 @@
 // @effect-diagnostics missingPipeableSignature:off
-// Repos on a Machine (`docs/spec.md` → Filesystem and tools): one directory per repo below `/workspace`, named by
-// the owner or taken from the clone URL. Both the web app (to check input as it is typed) and the server (before a
-// name reaches a path or a URL reaches `git`) use these, so the rules are in one place.
+// An Environment's Repos (`docs/spec.md` → Filesystem and tools, ADR-0016): each Workspace clones every one into a
+// directory of its own below `/workspace`, named by the owner or taken from the clone URL. Both the web app (to check
+// input as it is typed) and the server (before a name reaches a path or a URL reaches `git`) use these, so the rules are
+// in one place.
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-/** The Machine root: one directory per repo below it. */
+/** A Workspace's root: one directory per repo below it. */
 export const WORKSPACE_ROOT = "/workspace";
 
 /** The longest repo directory name. */
@@ -27,21 +28,17 @@ export const RepoName = Schema.String.check(
 export const isRepoName = (name: string): boolean =>
   REPO_NAME.test(name) && name.length <= MAX_REPO_NAME_LENGTH;
 
-/** The directory of repo `name` on a Machine: its main checkout. */
+/** The directory of repo `name` in a Workspace: its clone. */
 export const repoDirectory = (name: string): string => `${WORKSPACE_ROOT}/${name}`;
 
 /**
- * The hidden directory below the Machine's root that holds the Workspaces' own worktrees, one directory per repo
- * (`WORKTREES_DIRECTORY` in `@cloudpid/sandbox-image/toolchains`, which a test keeps equal). Being hidden, it is never
- * listed as a repo.
+ * The directory a Session works in when a conversation names no `cwd`: its Workspace's one repo, or the root when the
+ * Workspace has none or several.
  */
-export const WORKTREES_DIRECTORY = ".worktrees";
+export const workspaceDirectory = (repos: ReadonlyArray<string>): string =>
+  repos.length === 1 ? repoDirectory(repos[0] ?? "") : WORKSPACE_ROOT;
 
-/** The worktree of Workspace `id` of repo `repo` (ADR-0015). */
-export const worktreeDirectory = (repo: string, id: string): string =>
-  `${WORKSPACE_ROOT}/${WORKTREES_DIRECTORY}/${repo}/${id}`;
-
-/** A Workspace's id: eight lowercase hex digits, also the name of its worktree's directory. Never `new`. */
+/** A Workspace's id: eight lowercase hex digits. Never `new`. */
 export const WORKSPACE_ID = /^[0-9a-f]{8}$/;
 
 /** A Workspace's id, as a payload carries it: `WORKSPACE_ID`. */
@@ -50,7 +47,7 @@ export const WorkspaceId = Schema.String.check(Schema.isPattern(WORKSPACE_ID));
 /** Whether `id` is a Workspace's id (`WorkspaceId`). */
 export const isWorkspaceId = (id: string): boolean => WORKSPACE_ID.test(id);
 
-/** The longest branch a Workspace may be made on. */
+/** The longest branch a Workspace may be made on, or from. */
 export const MAX_BRANCH_LENGTH = 200;
 
 const BRANCH_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
@@ -79,8 +76,21 @@ export const branchProblem = (name: string): string | undefined => {
     : "Use letters, digits, dots, underscores and dashes, in parts split by single slashes";
 };
 
-/** A branch a new Workspace may be on, as a payload carries it: one `branchProblem` finds nothing wrong with. */
+/** A branch a new Workspace may be on or made from, as a payload carries it: one `branchProblem` finds nothing wrong with. */
 export const BranchName = Schema.String.check(Schema.makeFilter(branchProblem));
+
+/**
+ * The placeholder branch of an Environment's spare Workspace (ADR-0016), made ahead of the Session that takes it: its
+ * clones are on it until then, and the Workspace that takes it switches them to its own branch.
+ */
+export const SPARE_BRANCH = "cloudpid/spare";
+
+/** Why `name` cannot be the branch the owner names for a new Workspace: `branchProblem`'s, or it is `SPARE_BRANCH`. */
+export const ownBranchProblem = (name: string): string | undefined =>
+  branchProblem(name) ??
+  (name === SPARE_BRANCH
+    ? `${SPARE_BRANCH} is kept for spare workspaces: name another`
+    : undefined);
 
 /** The longest repo address a person may enter. */
 export const MAX_REPO_SOURCE_LENGTH = 300;
@@ -173,10 +183,13 @@ export const parseRepoSource = (input: string): Result.Result<RepoSource, string
   );
 };
 
-/** A Machine operation that failed, with a message for a person: a clone that did not finish, a repo that is not there. */
-export class MachineError extends Schema.TaggedError<
-  MachineError,
+/**
+ * An Environment or Workspace operation that failed, with a message for a person: a repo address that is not valid, a
+ * Workspace that is not there, a Container that could not be restarted.
+ */
+export class EnvironmentError extends Schema.TaggedError<
+  EnvironmentError,
   { readonly brand: unique symbol }
->()("MachineError", {
+>()("EnvironmentError", {
   message: Schema.String,
 }) {}

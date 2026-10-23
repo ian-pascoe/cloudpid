@@ -10,6 +10,7 @@
     "./web": "./src/web.ts",
     "./notify": "./src/notify.ts",
     "./secrets": "./src/secrets.ts",
+    "./secrets/core": "./src/secrets/core.ts",
     "./browser": "./src/browser.ts",
     "./browser/contract": "./src/browser/contract.ts",
     "./files": "./src/files.ts",

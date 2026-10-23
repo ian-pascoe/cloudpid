@@ -1,4 +1,4 @@
-// The Container's exec runs commands with `/bin/sh -c`, which is dash on Debian; `bash` promises bash. `inBash` is
+// The Container's exec runs commands with `/bin/sh -c`, which is dash on Ubuntu; `bash` promises bash. `inBash` is
 // what a command is wrapped in, checked here under dash itself.
 // @effect-diagnostics nodeBuiltinImport:off
 import { spawnSync } from "node:child_process";

@@ -30,7 +30,14 @@ export const newSessionId: Effect.Effect<string> = Clock.currentTimeMillis.pipe(
   }),
 );
 
-/** A new Workspace ID: eight random lowercase hex digits (`WorkspaceId`), also its worktree's directory name. */
-export const newWorkspaceId: Effect.Effect<string> = Effect.sync(() =>
-  hex(crypto.getRandomValues(new Uint8Array(4))),
-);
+/** Eight random lowercase hex digits (`WorkspaceId`), for the store's own draws (`RegistryStore.upkeepSpares`). */
+export const shortId = (): string => hex(crypto.getRandomValues(new Uint8Array(4)));
+
+/** A new Workspace or Environment ID: eight random lowercase hex digits (`WorkspaceId`). */
+export const newShortId: Effect.Effect<string> = Effect.sync(shortId);
+
+/** A new Workspace ID (`WorkspaceId`). */
+export const newWorkspaceId: Effect.Effect<string> = newShortId;
+
+/** A new Environment ID: eight hex digits, which is never `DEFAULT_ENVIRONMENT`. */
+export const newEnvironmentId: Effect.Effect<string> = newShortId;

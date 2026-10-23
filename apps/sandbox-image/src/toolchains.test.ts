@@ -1,7 +1,7 @@
 // The Container's Toolchain contract with the Workspace DO (docs/spec.md → Container and Toolchains, ADR-0004): which
 // paths stay container-local, what a command's environment carries, and what the bootstrap does on Container start.
 // The bootstrap runs for real, under bash, against a fake `mise` that records what it is asked.
-// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off globalDate:off
+// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off globalDate:off
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -9,27 +9,35 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { variableNameProblem } from "@cloudpid/config";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   BASE_MISE_LOCK,
   BASE_MISE_TOML,
   BOOTSTRAP_CHANGED,
   bootstrapScript,
+  ENVIRONMENT_SETUP_RECORD,
+  environmentSetupScript,
+  environmentStartScriptRun,
   pendingSetupScripts,
+  repoSetupScriptOf,
   ROOT_MISE_TOML,
   SETUP_SCRIPT,
   setupRecordName,
   setupScriptRun,
   setupScriptRunIfDue,
-  setupScriptTimedOut,
+  scriptTimedOut,
   setupRecord,
-  WORKTREES_DIRECTORY,
+  START_SCRIPT,
+  startScriptDirectories,
+  startScriptRun,
   PNPM_GLOBAL_CONFIG,
   PNPM_STORE_DIRECTORY_NAME,
   TOOLCHAIN_IGNORE,
@@ -88,7 +96,7 @@ describe("the ignore list", () => {
   });
 
   it("does not make a directory some repos commit local to the Container", () => {
-    // `.alchemy` can hold real deploy state and `.worktrees` uncommitted work.
+    // `.alchemy` can hold real deploy state.
     for (const name of [
       "dist",
       "build",
@@ -103,19 +111,10 @@ describe("the ignore list", () => {
     ]) {
       expect(TOOLCHAIN_IGNORE.filter((pattern) => pattern.split("/").includes(name))).toEqual([]);
     }
-
-    // Only what is ignored in a repo is ignored in its worktrees.
-    expect(
-      TOOLCHAIN_IGNORE.filter((pattern) => pattern.split("/").at(-1) === ".worktrees"),
-    ).toEqual([]);
   });
 
   it("does not make a source directory called target local to the Container", () => {
     expect(TOOLCHAIN_IGNORE).not.toContain("**/target");
-  });
-
-  it("keeps Cargo's target directory of a Workspace's worktree off the synced Machine, as a repo's", () => {
-    expect(TOOLCHAIN_IGNORE).toContain(`/${WORKTREES_DIRECTORY}/*/*/target`);
   });
 
   it("leaves mise to the Container's own disk: its data and temp files are on one filesystem, off the ignore boundary", () => {
@@ -212,6 +211,13 @@ describe("a command's environment", () => {
     // are in pnpm's global config.yaml, which the repo wins over.
     expect(JSON.stringify(toolchainEnv({ githubToken: "x" }))).not.toMatch(/pnpm/i);
   });
+
+  it("sets only names an Environment's variable may not have, so none overrides it", () => {
+    // @cloudpid/config cannot import this package, so its list of reserved names is a copy.
+    for (const name of Object.keys(toolchainEnv({ githubToken: "x" }))) {
+      expect(variableNameProblem(name), name).toContain("reserved");
+    }
+  });
 });
 
 /** A throwaway Workspace root and HOME, and a `mise` on PATH that logs its calls and the directory they ran in. */
@@ -242,8 +248,15 @@ const sandbox = (options: { readonly miseExit?: number; readonly installs?: stri
   // No image lockfile unless a test makes one there.
   const imageLock = join(base, "image.mise.lock");
 
-  const run = (env: Record<string, string> = {}, readOnly: readonly string[] = []) =>
-    spawnSync("bash", ["-c", bootstrapScript(root, readOnly, imageLock)], {
+  // Where the bootstrap records the root mise.toml it wrote: on the Container's disk, outside the Workspace.
+  const state = join(base, "toolchains-state");
+
+  const run = (
+    env: Record<string, string> = {},
+    readOnly: readonly string[] = [],
+    toolchains: string = "",
+  ) =>
+    spawnSync("bash", ["-c", bootstrapScript(root, readOnly, imageLock, { toolchains, state })], {
       encoding: "utf8",
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -254,7 +267,7 @@ const sandbox = (options: { readonly miseExit?: number; readonly installs?: stri
 
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 
-  return { base, bin, root, home, imageLock, run, calls };
+  return { base, bin, root, home, imageLock, state, run, calls };
 };
 
 const LOCK = "mise lock --global --platform linux-x64";
@@ -340,23 +353,6 @@ describe("the bootstrap", () => {
     expect(calls()).toContain(`${root}/app: mise install`);
   });
 
-  it("installs the Toolchains of each Workspace's worktree that declares its own", () => {
-    const { root, run, calls } = sandbox();
-
-    writeFileSync(join(root, "mise.toml"), "[tools]\n");
-    writeFileSync(join(root, "mise.lock"), "");
-    utimesSync(join(root, "mise.toml"), 1000, 1000);
-    mkdirSync(join(root, WORKTREES_DIRECTORY, "app", "1a2b3c4d"), { recursive: true });
-    writeFileSync(join(root, WORKTREES_DIRECTORY, "app", "1a2b3c4d", "mise.toml"), "[tools]\n");
-
-    run();
-
-    expect(calls()).toEqual([
-      `${root}: mise install`,
-      `${root}/${WORKTREES_DIRECTORY}/app/1a2b3c4d: mise install`,
-    ]);
-  });
-
   it("writes the base mise.toml, git, gh and the image's other Toolchains in it, where the Workspace has none", () => {
     const { root, run, calls } = sandbox();
 
@@ -411,6 +407,102 @@ describe("the bootstrap", () => {
     const { run } = sandbox({ miseExit: 3 });
 
     expect(run().status).toBe(3);
+  });
+});
+
+describe("the Environment's Toolchains", () => {
+  const TOML = '[tools]\nnode = "22.20.0"\n';
+  const read = (root: string, file: string) => readFileSync(join(root, file), "utf8");
+
+  it("are written as the root's mise.toml where the Workspace has none, and locked and installed", () => {
+    const { root, run, calls } = sandbox();
+
+    expect(run({}, [], TOML).status).toBe(0);
+    expect(read(root, "mise.toml")).toBe(TOML);
+    expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
+  });
+
+  it("replace the copy the bootstrap wrote last when they change, and the base file it wrote before", () => {
+    const { root, run } = sandbox();
+
+    run();
+    expect(read(root, "mise.toml")).toBe(BASE_MISE_TOML);
+
+    run({}, [], TOML);
+    expect(read(root, "mise.toml")).toBe(TOML);
+
+    const changed = '[tools]\nnode = "24.22.1"\n';
+
+    run({}, [], changed);
+    expect(read(root, "mise.toml")).toBe(changed);
+
+    // Emptied: the base Toolchains again.
+    run();
+    expect(read(root, "mise.toml")).toBe(BASE_MISE_TOML);
+  });
+
+  it("leave a mise.toml the Workspace changed alone", () => {
+    const { root, run } = sandbox();
+
+    run({}, [], TOML);
+
+    const own = `${TOML}python = "3.13"\n`;
+
+    writeFileSync(join(root, "mise.toml"), own);
+    run({}, [], '[tools]\nnode = "24.22.1"\n');
+
+    expect(read(root, "mise.toml")).toBe(own);
+  });
+
+  it("leave a Workspace's own mise.toml alone, though they would replace the base file", () => {
+    const { root, run } = sandbox();
+
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+    run({}, [], TOML);
+
+    expect(read(root, "mise.toml")).toBe('[tools]\nnode = "22"\n');
+  });
+
+  it("are not written where the root has a mise config of another name", () => {
+    const { root, run } = sandbox();
+
+    writeFileSync(join(root, ".tool-versions"), "node 22\n");
+    run({}, [], TOML);
+
+    expect(existsSync(join(root, "mise.toml"))).toBe(false);
+  });
+
+  it("come with the lockfile made for them on this disk, so a Workspace started from it (a Build's) locks nothing", () => {
+    const { root, run, calls, state } = sandbox();
+
+    run({}, [], TOML);
+    // What `mise lock` made, which the fake does not write.
+    writeFileSync(join(root, "mise.lock"), "# locked for the Environment\n");
+    run({}, [], TOML);
+    expect(read(state, "mise.lock")).toBe("# locked for the Environment\n");
+
+    // A new Workspace on the same disk: no files yet.
+    rmSync(join(root, "mise.toml"));
+    rmSync(join(root, "mise.lock"));
+    const before = calls().length;
+
+    run({}, [], TOML);
+
+    expect(read(root, "mise.toml")).toBe(TOML);
+    expect(read(root, "mise.lock")).toBe("# locked for the Environment\n");
+    expect(calls().slice(before)).toEqual([`${root}: mise install`]);
+  });
+
+  it("take the image's lockfile when they are the base file again", () => {
+    const { imageLock, root, run } = sandbox();
+
+    writeFileSync(imageLock, "# the image's lock\n");
+    run({}, [], TOML);
+    writeFileSync(join(root, "mise.lock"), "# locked for the Environment\n");
+    run();
+
+    expect(read(root, "mise.toml")).toBe(BASE_MISE_TOML);
+    expect(read(root, "mise.lock")).toBe("# the image's lock\n");
   });
 });
 
@@ -765,18 +857,33 @@ const setupSandbox = () => {
     return dir;
   };
 
-  const pending = () =>
-    spawnSync("bash", ["-c", pendingSetupScripts(root, state)], { encoding: "utf8" })
+  const environmentFile = join(base, "environment", "setup.sh");
+
+  const pending = (environment?: string) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        pendingSetupScripts(
+          root,
+          state,
+          environment === undefined ? undefined : { source: environment, file: environmentFile },
+        ),
+      ],
+      { encoding: "utf8" },
+    )
       .stdout.split("\n")
       .filter((line) => line !== "");
 
   const env = { PATH: process.env.PATH ?? "", CLOUDPID_MARK: "from the environment" };
 
+  const bash = (script: string) => spawnSync("bash", ["-c", script], { encoding: "utf8", env });
+
   const run = (dir: string, timeoutSeconds?: number) =>
-    spawnSync("bash", ["-c", setupScriptRun(dir, state, timeoutSeconds, root)], {
-      encoding: "utf8",
-      env,
-    });
+    bash(setupScriptRun(repoSetupScriptOf(dir, root), state, timeoutSeconds));
+
+  const runEnvironment = () =>
+    bash(setupScriptRun(environmentSetupScript(root, environmentFile), state));
 
   const runIfDue = (dir: string) =>
     spawnSync("bash", ["-c", setupScriptRunIfDue(dir, state, undefined, root)], {
@@ -784,13 +891,12 @@ const setupSandbox = () => {
       env,
     });
 
-  return { root, state, repo, pending, run, runIfDue };
+  return { base, root, state, repo, pending, run, runEnvironment, runIfDue, environmentFile, bash };
 };
 
 describe("a Setup Script's record", () => {
-  it("is named after the repo for its main checkout, and after the repo and the Workspace for a worktree", () => {
+  it("is named after the repo", () => {
     expect(setupRecordName("/workspace/app")).toBe("app");
-    expect(setupRecordName(`/workspace/${WORKTREES_DIRECTORY}/app/1a2b3c4d`)).toBe("app@1a2b3c4d");
     expect(setupRecordName("/tmp/root/app", "/tmp/root")).toBe("app");
   });
 });
@@ -864,31 +970,8 @@ describe("the Setup Scripts", () => {
     const result = run(dir, 1);
 
     expect(Date.now() - started).toBeLessThan(10_000);
-    expect(setupScriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
+    expect(scriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
     expect(pending()).toEqual([dir]);
-  });
-
-  it("are due for each Workspace's worktree that has one, after the repos", () => {
-    const { repo, pending } = setupSandbox();
-    const a = repo("a", "echo a\n");
-    const tree = repo(`${WORKTREES_DIRECTORY}/a/1a2b3c4d`, "echo a\n");
-
-    repo(`${WORKTREES_DIRECTORY}/a/5e6f7a8b`);
-
-    expect(pending()).toEqual([a, tree]);
-  });
-
-  it("are recorded per worktree, apart from the repo's main checkout and from other repos' worktrees", () => {
-    const { repo, pending, run, state } = setupSandbox();
-    const main = repo("a", "true\n");
-    const tree = repo(`${WORKTREES_DIRECTORY}/a/1a2b3c4d`, "true\n");
-    const other = repo(`${WORKTREES_DIRECTORY}/b/1a2b3c4d`, "true\n");
-
-    expect(run(tree).status).toBe(0);
-
-    expect(existsSync(setupRecord("a@1a2b3c4d", state))).toBe(true);
-    expect(existsSync(setupRecord("a", state))).toBe(false);
-    expect(pending()).toEqual([main, other]);
   });
 
   it("run when due only, and not at all where there is none", () => {
@@ -907,6 +990,183 @@ describe("the Setup Scripts", () => {
     const result = run(repo("a", "exit 124\n"), 60);
 
     expect(result.status).toBe(124);
-    expect(setupScriptTimedOut(result.status ?? undefined, result.stderr)).toBe(false);
+    expect(scriptTimedOut(result.status ?? undefined, result.stderr)).toBe(false);
+  });
+});
+
+/** A script with what bash quoting or a heredoc could trip on: quotes, `$`, backslashes, a heredoc, UTF-8. */
+const AWKWARD_SCRIPT = String.raw`printf '%s\n' "it's \$HOME" 'a "b"' \
+  "\\ back" €
+cat <<'EOF'
+CLOUDPID_EOF
+EOF
+`;
+
+/** What `AWKWARD_SCRIPT` prints. */
+const AWKWARD_OUTPUT = 'it\'s $HOME\na "b"\n\\ back\n€\nCLOUDPID_EOF\n';
+
+describe("the Environment's Setup Script", () => {
+  it("is due before the repos' when it has one, written to its file outside the Workspace as it is", () => {
+    const { repo, pending, environmentFile, bash } = setupSandbox();
+    const a = repo("a", "true\n");
+
+    expect(pending(AWKWARD_SCRIPT)).toEqual([environmentFile, a]);
+    expect(readFileSync(environmentFile, "utf8")).toBe(AWKWARD_SCRIPT);
+    expect(bash(`bash ${environmentFile}`).stdout).toBe(AWKWARD_OUTPUT);
+  });
+
+  it("is not due when the Environment has none, and its old file is removed", () => {
+    const { repo, pending, environmentFile } = setupSandbox();
+    const a = repo("a", "true\n");
+
+    pending("true\n");
+
+    expect(pending("")).toEqual([a]);
+    expect(existsSync(environmentFile)).toBe(false);
+  });
+
+  it("runs with bash in the Workspace root, with no input, and is recorded under a name no repo can have", () => {
+    const { root, state, pending, runEnvironment } = setupSandbox();
+
+    pending('printf "%s|%s" "$PWD" "$CLOUDPID_MARK"\nread -r line || echo " no input"\n');
+
+    const result = runEnvironment();
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${root}|from the environment no input\n`);
+    expect(ENVIRONMENT_SETUP_RECORD).toMatch(/^[.@-]/);
+    expect(readFileSync(setupRecord(ENVIRONMENT_SETUP_RECORD, state), "utf8").trim()).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+  });
+
+  it("is not due again once it succeeded, until it changes, and stays due after a failure", () => {
+    const { pending, runEnvironment, environmentFile } = setupSandbox();
+
+    pending("true\n");
+    expect(runEnvironment().status).toBe(0);
+    expect(pending("true\n")).toEqual([]);
+    expect(pending("exit 4\n")).toEqual([environmentFile]);
+    expect(runEnvironment().status).toBe(4);
+    expect(pending("exit 4\n")).toEqual([environmentFile]);
+  });
+
+  it("does not take a repo's record, nor a repo the Environment's", () => {
+    const { repo, pending, run, runEnvironment, environmentFile } = setupSandbox();
+    const a = repo("a", "true\n");
+
+    pending("true\n");
+    runEnvironment();
+
+    expect(pending("true\n")).toEqual([a]);
+
+    run(a);
+
+    expect(pending("true # changed\n")).toEqual([environmentFile]);
+  });
+});
+
+describe("the Start Scripts", () => {
+  /** A Workspace root whose repos may have a Start Script, and the Start Script commands run for real. */
+  const startSandbox = () => {
+    const sandbox = setupSandbox();
+
+    const repo = (name: string, script?: string) => {
+      const dir = sandbox.repo(name);
+
+      if (script !== undefined) writeFileSync(join(dir, START_SCRIPT), script);
+
+      return dir;
+    };
+
+    const listed = () =>
+      sandbox
+        .bash(startScriptDirectories(sandbox.root))
+        .stdout.split("\n")
+        .filter((line) => line !== "");
+
+    const start = (dir: string, timeoutSeconds?: number) =>
+      sandbox.bash(startScriptRun({ directory: dir, file: START_SCRIPT }, timeoutSeconds));
+
+    const environmentFile = join(sandbox.base, "environment", "start.sh");
+
+    const startEnvironment = (source: string) =>
+      sandbox.bash(environmentStartScriptRun(source, sandbox.root, environmentFile));
+
+    return { ...sandbox, repo, listed, start, startEnvironment, environmentFile };
+  };
+
+  it("are found in each repo that has one, and only those", () => {
+    const { repo, listed } = startSandbox();
+    const a = repo("a", "true\n");
+
+    repo("b");
+    const c = repo("c", "true\n");
+
+    expect(listed()).toEqual([a, c]);
+  });
+
+  it("run with bash in the repo's directory, with the environment they are given, and no input", () => {
+    const { repo, start } = startSandbox();
+
+    const dir = repo(
+      "a",
+      'printf "%s|%s|%s" "$PWD" "$CLOUDPID_MARK" "${BASH_VERSION:+bash}"\nread -r line || echo " no input"\n',
+    );
+
+    const result = start(dir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${dir}|from the environment|bash no input\n`);
+  });
+
+  it("run every time: nothing records them", () => {
+    const { repo, start, state } = startSandbox();
+    const dir = repo("a", "echo up\n");
+
+    expect(start(dir).stdout).toBe("up\n");
+    expect(start(dir).stdout).toBe("up\n");
+    expect(existsSync(state)).toBe(false);
+  });
+
+  it("exit with the script's status", () => {
+    const { repo, start } = startSandbox();
+
+    expect(start(repo("a", "exit 3\n")).status).toBe(3);
+  });
+
+  it("are stopped, with what they started, once past their time", () => {
+    const { repo, start } = startSandbox();
+    const started = Date.now();
+
+    const result = start(repo("a", "sleep 30 &\nwait\n"), 1);
+
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(scriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
+  });
+
+  it("let a service they detach outlive them", () => {
+    const { repo, start, root } = startSandbox();
+    const marker = join(root, "service-up");
+
+    const result = start(
+      repo("a", `setsid nohup bash -c 'sleep 1; touch ${marker}' >/dev/null 2>&1 &\n`),
+      60,
+    );
+
+    expect(result.status).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    spawnSync("sleep", ["2"]);
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("include the Environment's, written to its file as it is and run in the Workspace root", () => {
+    const { startEnvironment, environmentFile, root } = startSandbox();
+
+    const result = startEnvironment(`printf '%s\\n' "$PWD"\n${AWKWARD_SCRIPT}`);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${root}\n${AWKWARD_OUTPUT}`);
+    expect(readFileSync(environmentFile, "utf8")).toContain("CLOUDPID_EOF");
   });
 });

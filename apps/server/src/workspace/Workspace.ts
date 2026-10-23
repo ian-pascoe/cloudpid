@@ -3,7 +3,7 @@
 // object schedules itself (ADR-0004; `durable_object` scheduling). It is a plain class rather than an alchemy
 // Effect DO: computer reaches it through `__getWorkspaceStub()` with raw Workers RPC (its Worker Shell calls back into
 // it through `WorkspaceServiceProxy`), which alchemy's Effect bridge would wrap in its own envelopes.
-// @effect-diagnostics asyncFunction:off globalDate:off globalConsole:off
+// @effect-diagnostics asyncFunction:off globalDate:off globalConsole:off cryptoRandomUUID:off preferEffectArray:off
 import {
   noopObserver,
   Workspace as ComputerWorkspace,
@@ -19,8 +19,11 @@ import {
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import jq from "@cloudflare/computer/shell/jq";
 import { EXIT_REPORT_HOST } from "@cloudpid/sandbox-image/supervisor";
+import { type KeptSecret, type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
+import { redactText } from "./redact.ts";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
+  type ComputerWorkspaceStub,
   type EnvRequest,
   type EnvResponse,
   type HostOperation,
@@ -29,7 +32,9 @@ import {
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import { DurableObject } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
+import { type WorkspaceSecrets, workspaceSecretsStore } from "./environment-secrets.ts";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
@@ -38,12 +43,23 @@ import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
+  type PreparationHost,
+  prepareWorkspace,
+  preparationHost,
+  type WorkspaceSetup,
+} from "./prepare.ts";
+import {
+  workspaceBuildStore,
   type WorkspaceSettingsAnswer,
   workspaceSettingsStore,
   type WriteAnswer,
 } from "./settings.ts";
+
+import type { BuildRequest, BuildState, EnvironmentBuild } from "./build-record.ts";
+import { BuildRunner, type StoredBuilds } from "./build.ts";
 import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
-import { ContainerEarlyStart } from "./early-start.ts";
+import { runAlarmSteps } from "./alarm.ts";
+import { SparePreparation, type SpareRequest } from "./spare.ts";
 import {
   ContainerSnapshots,
   SNAPSHOT_TIMEOUT_MS,
@@ -62,6 +78,12 @@ export type WorkspaceEnv = {
    * `CLOUDPID_GITHUB_TOKEN`). Absent or empty, commands run without one.
    */
   readonly CLOUDPID_GITHUB_TOKEN?: string;
+  /**
+   * The master key the Environment's kept Secrets are sealed under in this object's storage (a deploy-time secret,
+   * `SECRETS_ENCRYPTION_KEY`, as the Session DOs and the Registry have). Absent, they are held in memory only, and a
+   * snapshot after an eviction is refused until a readying hands them again.
+   */
+  readonly SECRETS_ENCRYPTION_KEY?: string;
   /** The identity of the agent's commits where the Container has no other (`CLOUDPID_GIT_NAME`, `CLOUDPID_GIT_EMAIL`). */
   readonly CLOUDPID_GIT_NAME?: string;
   readonly CLOUDPID_GIT_EMAIL?: string;
@@ -87,6 +109,18 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
+/** Where a spare Workspace's preparation is kept until it is done (`SparePreparation`). */
+const SPARE_KEY = "cloudpid:spare-preparation";
+
+/** Kept once a Session used the Workspace, so it is never prepared, nor stopped, as a spare again (`SparePreparation`). */
+const SPARE_USED_KEY = "cloudpid:spare-used";
+
+/** Where a Build's object keeps its Builds (`BuildRunner`); only a Build's object has it. */
+const BUILDS_KEY = "cloudpid:builds";
+
+/** How long the command that starts a spare's Container, so its bootstrap runs, may take, in seconds. */
+const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
+
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
 
@@ -106,7 +140,13 @@ export class Workspace extends ContainerHost {
   readonly #idle: IdleStop;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
-  readonly #earlyStart: ContainerEarlyStart;
+  /** The Environment's Build this Workspace was handed, which its first launch starts from. */
+  readonly #environmentBuild: ReturnType<typeof workspaceBuildStore>;
+  /** The Builds this object makes, when it is an Environment's Build object (`buildObjectName`). */
+  readonly #builds: BuildRunner;
+  readonly #spare: SparePreparation;
+  /** The Environment's kept Secrets, as last handed over: sealed in storage, searched for before each snapshot. */
+  readonly #environmentSecrets: WorkspaceSecrets;
   readonly #sql: SqlStorage;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
@@ -115,12 +155,35 @@ export class Workspace extends ContainerHost {
     super(ctx, env);
 
     this.#settings = workspaceSettingsStore(ctx.storage);
+    this.#environmentBuild = workspaceBuildStore(ctx.storage);
     this.#sql = ctx.storage.sql;
+
+    let vault: Promise<KeptVault> | undefined;
+
+    const environmentSecrets = (this.#environmentSecrets = workspaceSecretsStore({
+      storage: ctx.storage,
+      // Derived for the Workspaces, once, and bound to this object's id with each Secret's name.
+      vault: () =>
+        (vault ??= Effect.runPromise(
+          openKeptVault(env.SECRETS_ENCRYPTION_KEY ?? "", "workspace"),
+        ).catch((cause: unknown) => {
+          vault = undefined;
+
+          throw cause;
+        })),
+      owner: ctx.id.toString(),
+    }));
+
+    /** `text` with the GitHub token and the kept Secrets this instance holds taken out. */
+    const redact = (text: string) =>
+      redactText(text, env.CLOUDPID_GITHUB_TOKEN, environmentSecrets.known());
 
     const snapshots = (this.#snapshots = new ContainerSnapshots({
       // The local Container has no real mount, and no snapshots.
       enabled: env.CONTAINER_FUSE !== "false",
       secret: env.CLOUDPID_GITHUB_TOKEN,
+      // The Environment's kept Secrets too: a Workspace that cannot show them takes no snapshot.
+      secrets: () => environmentSecrets.read(),
       timeoutMs: SNAPSHOT_TIMEOUT_MS,
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       running: () => ctx.container?.running === true,
@@ -129,10 +192,10 @@ export class Workspace extends ContainerHost {
 
         return ctx.container.snapshotContainer({ name });
       },
-      scan: (secret) => {
+      scan: (patterns) => {
         if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
 
-        return scanContainerDisk(ctx.container, secret, SCAN_TIMEOUT_MS);
+        return scanContainerDisk(ctx.container, patterns, SCAN_TIMEOUT_MS);
       },
       load: () => ctx.storage.get<SnapshotRecord>(SNAPSHOT_KEY),
       save: (record) => ctx.storage.put(SNAPSHOT_KEY, record),
@@ -156,6 +219,11 @@ export class Workspace extends ContainerHost {
           ? undefined
           : containerIgnore(TOOLCHAIN_IGNORE, settings.ignore),
       snapshots,
+      // With no snapshot of its own, a launch starts from the Environment's Build the Workspace was handed.
+      builds: {
+        current: () => this.#environmentBuild.current(),
+        failed: (id) => this.#environmentBuild.failed(id),
+      },
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       load: () => ctx.storage.get<LaunchRecord>(LAUNCH_KEY),
       save: (record) => ctx.storage.put(LAUNCH_KEY, record),
@@ -170,11 +238,14 @@ export class Workspace extends ContainerHost {
       now: () => Date.now(),
       load: () => ctx.storage.get<number>(LAST_USE_KEY),
       save: (at) => ctx.storage.put(LAST_USE_KEY, at),
-      setAlarm: (at) => ctx.storage.setAlarm(at),
+      // The one alarm is shared with the spare's preparation and a Build, which the idle stop does not put off.
+      setAlarm: async (at) =>
+        ctx.storage.setAlarm(await this.#builds.alarmAt(await this.#spare.alarmAt(at))),
       // The disk is snapshotted while the Container is idle, so the next launch restores the Toolchains. A command that
-      // arrives meanwhile keeps the Container (`IdleStop`).
+      // arrives meanwhile keeps the Container (`IdleStop`). A Build's object keeps no snapshot of its own: each Build
+      // starts from the image.
       snapshot: async () => {
-        await launch.snapshot("idle");
+        if (!(await this.#builds.isBuild())) await launch.snapshot("idle");
       },
       stop: async () => {
         if (ctx.container?.running === true) await ctx.container.destroy();
@@ -207,15 +278,29 @@ export class Workspace extends ContainerHost {
       ignore: () => launch.ignore(),
     });
 
-    // Before the first command of each Container start, the Toolchains are installed (the lockfile's) and the repos'
-    // Setup Scripts that are due run; every command gets the GitHub token and mise's settings, and the token is taken out
-    // of its output. The Workspace sees this as the Container's backend.
+    // Before the first command of each Container start, the Toolchains are installed (the lockfile's), the Environment's
+    // and the repos' Setup Scripts that are due run, then their Start Scripts; every command gets the Environment's
+    // variables, the GitHub token and mise's settings, and the token is taken out of its output. The Workspace sees this
+    // as the Container's backend.
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
+      // Taken out of output as the token is, each as its Secret Reference.
+      secrets: {
+        read: async () => {
+          const held = await environmentSecrets.read();
+
+          return held.ok ? held.secrets : environmentSecrets.known();
+        },
+        known: () => environmentSecrets.known(),
+      },
+      // The variables and the Environment's scripts of each Container start are the Workspace's settings at its bootstrap.
+      settings: async () => (await this.#settings.read()).settings,
       // Once the bootstrap has installed something (a Toolchain, a Setup Script's work) in a Container that started from
-      // the image, its disk is snapshotted.
-      afterInstall: (changed) => launch.afterInstall(changed),
+      // the image, its disk is snapshotted; not a Build's, whose snapshot is the Build.
+      afterInstall: async (changed) => {
+        if (!(await this.#builds.isBuild())) await launch.afterInstall(changed);
+      },
       // A bootstrap (its Setup Scripts can take a quarter of an hour) keeps the Container from its idle stop.
       activity: this.#idle,
       // Under `alchemy dev` the Container's `/workspace` is no real mount (`CONTAINER_FUSE=false`): it cannot be locked.
@@ -246,22 +331,54 @@ export class Workspace extends ContainerHost {
       ],
     });
 
-    // A message the owner sends starts the Container before its first command asks for it (`startContainerEarly`).
-    this.#earlyStart = new ContainerEarlyStart({
-      running: () => ctx.container?.running === true,
-      connect: async () => {
-        await this.#ready();
-        await this.#workspace.ready(CONTAINER_BACKEND_ID);
-
-        let pushed = 0;
-
-        for await (const block of this.#workspace.push(CONTAINER_BACKEND_ID))
-          pushed += block.entries;
-
-        return pushed;
+    // A spare Workspace readies itself over its own Container, on the alarm (`prepareSpare`).
+    this.#spare = new SparePreparation({
+      load: () => ctx.storage.get<SpareRequest>(SPARE_KEY),
+      save: (request) => ctx.storage.put(SPARE_KEY, request),
+      clear: async () => {
+        await ctx.storage.delete(SPARE_KEY);
       },
-      runBootstrap: () => toolchains.runBootstrap(),
+      used: () => ctx.storage.kv.get<boolean>(SPARE_USED_KEY) === true,
+      markUsed: () => ctx.storage.kv.put(SPARE_USED_KEY, true),
+      wake: async (at) => {
+        const set = await ctx.storage.getAlarm();
+
+        if (set === null || set > at) await ctx.storage.setAlarm(at);
+      },
+      prepare: (setup) => this.#prepareSpare(setup),
       idle: this.#idle,
+      now: () => Date.now(),
+      info: (message) => console.info(message),
+      warn: (message) => console.warn(message),
+    });
+
+    // An Environment's Build object makes its Builds over its own Container, on the alarm (`startBuild`).
+    this.#builds = new BuildRunner({
+      // The local Container has no real mount, and no snapshots.
+      enabled: env.CONTAINER_FUSE !== "false",
+      load: () => ctx.storage.get<StoredBuilds>(BUILDS_KEY),
+      save: (stored) => ctx.storage.put(BUILDS_KEY, stored),
+      wake: async (at) => {
+        const set = await ctx.storage.getAlarm();
+
+        if (set === null || set > at) await ctx.storage.setAlarm(at);
+      },
+      image: () => ctx.container?.images[WORKSPACE_CONTAINER],
+      handOver: async (overrides) => {
+        const written = await this.#settings.write(overrides);
+
+        if (!written.ok) throw new Error(`The Build refused the settings: ${written.message}`);
+      },
+      run: (script, timeoutSeconds, scriptEnv) =>
+        this.#ownHost(`computer:build:${ctx.id.toString()}`).run(script, timeoutSeconds, scriptEnv),
+      secrets: () => environmentSecrets.read(),
+      snapshot: () => launch.captureBuild(),
+      stop: async () => {
+        if (ctx.container?.running === true) await ctx.container.destroy();
+      },
+      idle: this.#idle,
+      redact,
+      newId: () => crypto.randomUUID(),
       now: () => Date.now(),
       info: (message) => console.info(message),
       warn: (message) => console.warn(message),
@@ -269,6 +386,54 @@ export class Workspace extends ContainerHost {
 
     this.#host = new WorkspaceEnvHost(this.#workspace);
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
+  }
+
+  /**
+   * Ready this Workspace with `setup` as a Session would (`prepareWorkspace`), over this object's own files and
+   * Container, then run a command on the Container so its bootstrap (Toolchains, the Environment's Setup Script) has run
+   * even for a Workspace of no Repos, whose readying starts no Container.
+   */
+  async #prepareSpare(setup: WorkspaceSetup): Promise<void> {
+    const host = this.#ownHost(`computer:spare:${this.ctx.id.toString()}`);
+
+    await prepareWorkspace(host, setup);
+
+    const booted = await host.run(":", SPARE_BOOTSTRAP_TIMEOUT_SECONDS);
+
+    if (booted.exitCode !== 0) throw new Error(`The Container did not start: ${booted.output}`);
+  }
+
+  /**
+   * The `PreparationHost` of this object over itself, as environment `id`: a spare's preparation and a Build reach it
+   * through a handle of their own, so their calls are not taken for a Session's (`SparePreparation.noteUse`).
+   */
+  #ownHost(id: string): PreparationHost {
+    const own: ComputerWorkspaceStub = {
+      fileOperation: (request) => this.#fileOperation(request),
+      __getWorkspaceStub: () => this.#getWorkspaceStub(),
+      skills: async () => [],
+      prompts: async () => [],
+    };
+
+    return preparationHost(
+      own,
+      id,
+      { read: () => this.#settings.read(), write: (overrides) => this.#settings.write(overrides) },
+      {
+        read: () => this.#environmentBuild.read(),
+        write: (build) => this.#environmentBuild.write(build),
+      },
+      {
+        write: (secrets) => this.#environmentSecrets.replace(secrets),
+        unavailable: (reason) => this.#environmentSecrets.markUnavailable(reason),
+        read: async () => {
+          const held = await this.#environmentSecrets.read();
+
+          return held.ok ? held.secrets : [];
+        },
+      },
+      (message) => console.warn(message),
+    );
   }
 
   /**
@@ -311,17 +476,94 @@ export class Workspace extends ContainerHost {
     );
   }
 
-  /** The Workspace's own settings in force (Container size, idle time and Container-only paths), for the UI: `getMachineSettings`. */
+  /**
+   * The Container settings the Workspace holds (size, idle time, Container-only paths, variables, and Setup and Start
+   * Scripts): its Environment's, as last handed over.
+   */
   containerSettings(): Promise<WorkspaceSettingsAnswer> {
+    this.#spare.noteUse();
+
     return this.#settings.read();
   }
 
   /**
-   * Replace the saved overrides of the Workspace's settings: `updateMachineSettings`. Overrides that do not resolve
+   * Replace the saved overrides of the Workspace's Container settings with its Environment's, which a Session hands over
+   * when it readies the Workspace (`prepare.ts`): this Worker cannot reach the Registry. Overrides that do not resolve
    * are refused and nothing is saved. A Container that runs keeps the settings it launched with.
    */
   updateContainerSettings(overrides: Schema.Json): Promise<WriteAnswer> {
+    this.#spare.noteUse();
+
     return this.#settings.write(overrides);
+  }
+
+  /** The Environment's Build the Workspace holds, as last handed over (null: none), which its first launch starts from. */
+  environmentBuild(): Promise<EnvironmentBuild | null> {
+    this.#spare.noteUse();
+
+    return this.#environmentBuild.read();
+  }
+
+  /**
+   * Keep `build` as the Environment's Build (null: none), which a Session hands over when it readies the Workspace
+   * (`prepare.ts`), with the settings: this Worker cannot reach the Registry.
+   */
+  updateEnvironmentBuild(build: EnvironmentBuild | null): Promise<void> {
+    this.#spare.noteUse();
+
+    return this.#environmentBuild.write(build);
+  }
+
+  /**
+   * `text`, a report of this object's Container (`ContainerExitReports`), with the GitHub token and the Environment's
+   * kept Secrets taken out; null when the copy of them does not open, so it cannot be shown free of them. Not a use of
+   * the Workspace: a spare's preparation goes on.
+   */
+  async redactExitReport(text: string): Promise<string | null> {
+    const held = await this.#environmentSecrets.read();
+
+    return held.ok ? redactText(text, this.env.CLOUDPID_GITHUB_TOKEN, held.secrets) : null;
+  }
+
+  /**
+   * Keep `secrets` as the Environment's kept Secrets (sealed), which a Session hands over when it readies the Workspace
+   * (`prepare.ts`), with the settings: they are searched for before each snapshot and taken out of output.
+   */
+  updateEnvironmentSecrets(secrets: ReadonlyArray<KeptSecret>): Promise<void> {
+    this.#spare.noteUse();
+
+    return this.#environmentSecrets.replace(secrets);
+  }
+
+  /**
+   * Keep a copy of the Environment's Secrets that cannot be shown, for `reason`: the Registry could not open them
+   * (`WorkspaceSetup.secretsUnavailable`), so the snapshots and Builds that need them are refused until a handover
+   * brings them.
+   */
+  environmentSecretsUnavailable(reason: string): Promise<void> {
+    this.#spare.noteUse();
+
+    return this.#environmentSecrets.markUnavailable(reason);
+  }
+
+  /**
+   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s): it is
+   * kept and begun at the alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
+   * Environment's, are kept sealed apart from the request: those for the Build reach its Setup Scripts, and every one is
+   * searched for before its snapshot.
+   */
+  async startBuild(
+    request: BuildRequest,
+    secrets: ReadonlyArray<KeptSecret> = [],
+  ): Promise<BuildState> {
+    await this.#environmentSecrets.replace(secrets);
+
+    return this.#builds.request(request);
+  }
+
+  /** This Build object's last good Build, the one in progress or the last failure, and the image a launch would run now. */
+  buildState(): Promise<BuildState> {
+    return this.#builds.state();
   }
 
   /**
@@ -337,19 +579,8 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Reset the Workspace to a fresh start (`LifecycleHost.clear`, for `resetMachine`): as `destroy`, but its own
-   * settings (Container size, idle time and Container-only paths) are put back after the wipe. The caller resets the instance with `reset`.
-   */
-  async clear(): Promise<void> {
-    const settings = await this.#settings.saved();
-
-    await this.destroy();
-    await this.#settings.restore(settings);
-  }
-
-  /**
    * Stop the Container and forget its snapshot (`LifecycleHost.restartContainer`), so the next command starts one from
-   * the image, installs the Toolchains again and snapshots it. The files are the Workspace's and stay; what only the
+   * the Environment's Build when there is a usable one, else from the image, bootstraps it and snapshots it. The files are the Workspace's and stay; what only the
    * Container's disk held is gone. Commands running in the Container end. The idle alarm finds no Container to stop.
    */
   async restartContainer(): Promise<void> {
@@ -360,7 +591,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Reset the object (`ctx.abort`) after `destroy` or `clear` has answered, so the next call to this slug opens an empty Workspace
+   * Reset the object (`ctx.abort`) after `destroy` has answered, so the next call to this name opens an empty Workspace
    * instead of an instance over the wiped storage. The call always fails with `WORKSPACE_DELETED_REASON`, as an abort
    * fails the call that makes it. A reset from a timer in `destroy` raced the reply and failed the deletion.
    */
@@ -369,21 +600,34 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * The early start (docs/spec.md → Backends), for a message the owner sent: restore or launch the Container, push the
-   * files and run the bootstrap, with no command, so the turn's first command does not wait for it. It answers at once
-   * and never fails. While the Container runs or is starting it starts nothing; either way the message is a use of the
-   * Container for the idle stop.
+   * Prepare this Workspace as its Environment's spare (docs/spec.md → Spare Workspace): `setup` is kept and the work
+   * starts at the alarm, so this answers at once (`SparePreparation`).
    */
-  startContainerEarly(): void {
-    // Not awaited: the start goes on after this call has answered. Nothing needs to hold the object for it
-    // (`ctx.waitUntil` has no effect in a Durable Object): one is evicted only after tens of seconds without a request,
-    // and once computer has connected, its connection to computerd keeps the object in memory, as for a command.
-    void this.#earlyStart.start();
+  async prepareSpare(setup: WorkspaceSetup): Promise<void> {
+    // The Secrets are kept sealed, never with the set-up the preparation stores.
+    const { secrets, secretsUnavailable, ...stored } = setup;
+
+    if (secrets !== undefined) await this.#environmentSecrets.replace(secrets);
+    else if (secretsUnavailable !== undefined) {
+      await this.#environmentSecrets.markUnavailable(secretsUnavailable);
+    }
+
+    return this.#spare.request(stored);
   }
 
-  /** The idle stop's alarm. */
-  alarm(): Promise<void> {
-    return this.#idle.alarm();
+  /**
+   * The alarm, shared: a spare's preparation or a Build that waits for it begins, then the idle stop checks on the
+   * Container. Each step runs whatever the ones before it came to (`runAlarmSteps`).
+   */
+  async alarm(): Promise<void> {
+    await runAlarmSteps(
+      [
+        ["spare", () => this.#spare.alarm()],
+        ["build", () => this.#builds.alarm()],
+        ["idle", () => this.#idle.alarm()],
+      ],
+      (message) => console.warn(message),
+    );
   }
 
   /** The Container's egress: computerd dials back here, and `WorkspaceProxy` forwards its WebSocket upgrade. */
@@ -443,6 +687,7 @@ export class Workspace extends ContainerHost {
    * bundle and parsed once per version, and only the repo's own are read.
    */
   async skills(cwd: string): Promise<ReadonlyArray<Skill>> {
+    this.#spare.noteUse();
     await this.#ready();
 
     return discoverWorkspaceSkills(this.#host.readEnv(cwd), BUNDLED_SKILLS);
@@ -453,20 +698,33 @@ export class Workspace extends ContainerHost {
    * up to the Workspace root, nearest first, walked next to the files as skills are.
    */
   async prompts(cwd: string): Promise<ReadonlyArray<PromptTemplate>> {
+    this.#spare.noteUse();
     await this.#ready();
 
     return discoverWorkspacePrompts(this.#host.readEnv(cwd));
   }
 
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */
-  async __getWorkspaceStub(): Promise<WorkspaceStub> {
+  __getWorkspaceStub(): Promise<WorkspaceStub> {
+    this.#spare.noteUse();
+
+    return this.#getWorkspaceStub();
+  }
+
+  async #getWorkspaceStub(): Promise<WorkspaceStub> {
     await this.#ready();
 
     return this.workspaceStub(this.#workspace);
   }
 
   /** One of `ComputerExecutionEnv`'s file operations, answered as plain data. */
-  async fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+  fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+    this.#spare.noteUse();
+
+    return this.#fileOperation(request);
+  }
+
+  async #fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
     // The bundled skills are copied into the files the first time the mounts are indexed, which `#ready()` does once.
     await this.#ready();
 

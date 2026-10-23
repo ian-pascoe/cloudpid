@@ -84,3 +84,14 @@ export const Dialog = ({
 export const DialogActions = ({ children }: { children: ReactNode }) => (
   <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">{children}</div>
 );
+
+/**
+ * Why a dialog's action failed, shown until the action starts again; nothing while there is no failure. A form or a
+ * section outside a dialog shows its own failure with it too.
+ */
+export const DialogProblem = ({ problem }: { problem: string | null }) =>
+  problem === null ? null : (
+    <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+      {problem}
+    </p>
+  );

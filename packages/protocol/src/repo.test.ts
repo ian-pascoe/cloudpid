@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   branchProblem,
   isWorkspaceId,
+  ownBranchProblem,
   parseRepoSource,
   REPO_NAME,
-  WORKTREES_DIRECTORY,
-  worktreeDirectory,
+  workspaceDirectory,
 } from "./repo.ts";
 
 const parsed = (input: string) => {
@@ -101,12 +101,11 @@ describe("REPO_NAME", () => {
   });
 });
 
-describe("worktreeDirectory", () => {
-  it("is the Workspace's own directory below the Machine's hidden worktrees directory", () => {
-    expect(worktreeDirectory("app", "1a2b3c4d")).toBe(
-      `/workspace/${WORKTREES_DIRECTORY}/app/1a2b3c4d`,
-    );
-    expect(WORKTREES_DIRECTORY.startsWith(".")).toBe(true);
+describe("workspaceDirectory", () => {
+  it("is the one repo's clone, or the root when there are none or several", () => {
+    expect(workspaceDirectory(["app"])).toBe("/workspace/app");
+    expect(workspaceDirectory([])).toBe("/workspace");
+    expect(workspaceDirectory(["app", "api"])).toBe("/workspace");
   });
 });
 
@@ -146,5 +145,17 @@ describe("branchProblem", () => {
     ["x".repeat(201), "too long"],
   ])("refuses %s (%s)", (name) => {
     expect(branchProblem(name)).toBeTypeOf("string");
+  });
+});
+
+describe("ownBranchProblem", () => {
+  it("refuses the spare Workspace's placeholder branch, a name git would take", () => {
+    expect(ownBranchProblem("cloudpid/spare")).toContain("spare");
+    expect(branchProblem("cloudpid/spare")).toBeUndefined();
+  });
+
+  it("takes what branchProblem takes, and refuses what it refuses", () => {
+    expect(ownBranchProblem("cloudpid/1a2b3c4d")).toBeUndefined();
+    expect(ownBranchProblem("a..b")).toBe(branchProblem("a..b"));
   });
 });

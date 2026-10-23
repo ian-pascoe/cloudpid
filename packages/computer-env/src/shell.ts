@@ -1,4 +1,4 @@
-// computerd runs a command with `/bin/sh -c`, which is dash on the Debian image, while `bash` promises bash: arrays,
+// computerd runs a command with `/bin/sh -c`, which is dash on the Ubuntu image, while `bash` promises bash: arrays,
 // `[[ ]]`, process substitution. A command for the Container is wrapped to run in bash instead.
 
 /** `script` as one argument of a POSIX shell: in single quotes, each quote itself closed, escaped, and reopened. */

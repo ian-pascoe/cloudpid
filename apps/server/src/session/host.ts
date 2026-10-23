@@ -239,17 +239,11 @@ export type SessionHostOptions<R = never> = {
    * request whose call was abandoned while the object was evicted.
    */
   readonly onIdle?: Effect.Effect<void, never, R>;
-  /**
-   * Runs, detached, after each message the owner sends (`submit`) is admitted, and never delays or fails it: the
-   * Session's Workspace starts its Container early (docs/spec.md → Backends: _Early start_). A subagent's turns and the prompts the Session
-   * makes itself (a subagent's report, a follow-up) do not run it.
-   */
-  readonly onSubmit?: Effect.Effect<void, never, R> | undefined;
   /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
   readonly env?: HarnessOptions["env"];
   /**
    * Builds a conversation's environment for the composer's lookups (its catalog and `@` menu), which only read files
-   * and must not wait for what `env` waits for, such as the Session's worktree being made. Defaults to `env`.
+   * and must not wait for what `env` waits for, such as the Session's Workspace being readied. Defaults to `env`.
    */
   readonly lookupEnv?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
@@ -534,11 +528,6 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const onIdle =
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
-
-  const onSubmit =
-    options.onSubmit === undefined
-      ? Effect.void
-      : Effect.provideContext(options.onSubmit, services).pipe(Effect.forkIn(scope));
 
   // Before anything resumes, so resumed tool calls find their tools.
   const installed = yield* options.extensions;
@@ -1688,11 +1677,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   }
 
   return {
-    submit: (prompt) =>
-      admit(prompt).pipe(
-        Effect.tap(() => onSubmit),
-        Effect.map((submission) => submission.id),
-      ),
+    submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,
     idle: inspect.pipe(

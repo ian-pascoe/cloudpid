@@ -55,12 +55,13 @@ import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle
 import { onIdle, wakeAt } from "./wake.ts";
 import {
   cachedPlacement,
-  earlyStartOnSubmit,
-  type PlacedWorktree,
+  type Placement,
   sessionWorkspace,
   type WorkspaceNamespace,
+  workspacePlacement,
 } from "./workspace.ts";
-import { machineWorktrees } from "../workspace/worktrees.ts";
+import { WORKSPACE_ROOT, workspaceObjectName } from "../workspace/binding.ts";
+import { workspacePreparation } from "../workspace/prepare.ts";
 import { ReportError, SessionRegistry } from "./status.ts";
 
 /**
@@ -77,13 +78,11 @@ const workersTracing = (): Promise<WorkersTracing | undefined> =>
 const NAME_KEY = "session-name";
 
 /**
- * The key the Session's placement (its Machine's slug, its repo and its worktree) is kept under, once the Registry has
- * told it. A Session that kept only a slug, under `WORKSPACE_KEY`, was bound before repos existed and works at the
- * Machine's root; one that kept no worktree was bound before Workspaces of their own, and works in the main checkout.
+ * The key the Session's placement (its Workspace and the directory it works in) is kept under, once the Registry has
+ * told it. Not the key Sessions bound to Machines kept theirs under (`session-placement`): those are wiped at the cutover
+ * to Environments (ADR-0016), and until then are not listed, so they never read one.
  */
-const PLACEMENT_KEY = "session-placement";
-
-const WORKSPACE_KEY = "session-workspace";
+const PLACEMENT_KEY = "workspace-placement";
 
 /** The model proxy's base URL and API key: deploy-time secrets, bound to the Worker by `Config.Redacted`. */
 export class ModelProxyConfig extends Context.Service<
@@ -206,25 +205,7 @@ export const SessionLive = Session.make(
 
         const placement = cachedPlacement({
           name,
-          get: () => {
-            // Placements stored before the rename of Workspaces to Machines hold the machine as `slug`.
-            const known = kv.get<{
-              readonly slug?: string;
-              readonly machine?: string;
-              readonly repo: string | null;
-              readonly worktree?: PlacedWorktree | null;
-            }>(PLACEMENT_KEY);
-
-            const stored = known?.machine ?? known?.slug;
-
-            if (known !== undefined && stored !== undefined) {
-              return { machine: stored, repo: known.repo, worktree: known.worktree ?? null };
-            }
-
-            const slug = kv.get<string>(WORKSPACE_KEY);
-
-            return slug === undefined ? undefined : { machine: slug, repo: null, worktree: null };
-          },
+          get: () => kv.get<Placement>(PLACEMENT_KEY),
           put: (known) => kv.put(PLACEMENT_KEY, known),
           lookup: (id) =>
             runtime.runPromise(
@@ -234,17 +215,13 @@ export const SessionLive = Session.make(
 
                 if (session === null) return null;
 
-                const worktree =
-                  session.workspace === null
-                    ? null
-                    : yield* registry.getWorkspace({ id: session.workspace });
+                const workspace = yield* registry.getWorkspace({ id: session.workspace });
 
-                return {
-                  machine: session.machine,
-                  repo: session.repo ?? null,
-                  // A Workspace removed meanwhile took the Session with it; until then it works in the main checkout.
-                  worktree: worktree === null ? null : { id: worktree.id, branch: worktree.branch },
-                };
+                // A Workspace removed meanwhile takes the Session with it; until then it works at the root.
+                return workspacePlacement(
+                  session.workspace,
+                  workspace?.directory ?? WORKSPACE_ROOT,
+                );
               }),
             ),
         });
@@ -253,7 +230,7 @@ export const SessionLive = Session.make(
         const workspaces = worker[WORKSPACE_BINDING] as WorkspaceNamespace;
 
         // A Setup Script that fails is reported in the Worker log; the Session's commands see its state.
-        const worktrees = machineWorktrees(workspaces, (message) =>
+        const prepare = workspacePreparation(workspaces, (message) =>
           // @effect-diagnostics-next-line globalConsole:off
           console.warn(message),
         );
@@ -261,7 +238,15 @@ export const SessionLive = Session.make(
         const workspace = sessionWorkspace({
           namespace: workspaces,
           placement,
-          prepare: (machine, worktree) => worktrees.on(machine).prepare(worktree),
+          // What the Workspace is made of is the Registry's; a Workspace it no longer lists is left as it is.
+          // @effect-diagnostics-next-line asyncFunction:off
+          prepare: async (id) => {
+            const setup = await runtime.runPromise(
+              registries.getByName(REGISTRY_NAME).getWorkspaceSetup({ id }),
+            );
+
+            if (setup !== null) await prepare(workspaceObjectName(id), setup);
+          },
         });
 
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.
@@ -302,6 +287,30 @@ export const SessionLive = Session.make(
           sockets: state.raw,
           // A request waits for the owner, who may not have the page open: push it.
           notify: notifyOwner,
+          // Its Environment's kept Secrets, opened by the Registry, held in memory and asked for again now and then. A
+          // Session the Registry does not list has none. Each set is handed to the Workspace before the Session uses
+          // it, so no value reaches the Container that the scan before a snapshot does not search for; a set the
+          // Workspace did not take is not used (the Session keeps the one it held, and asks again soon).
+          kept:
+            name === undefined
+              ? Effect.succeed([])
+              : registries
+                  .getByName(REGISTRY_NAME)
+                  .sessionSecrets({ session: name })
+                  .pipe(
+                    Effect.tap((kept) =>
+                      // @effect-diagnostics-next-line asyncFunction:off
+                      Effect.tryPromise(async () => {
+                        const { workspace: id } = await placement();
+
+                        if (id !== null) {
+                          await workspaces
+                            .getByName(workspaceObjectName(id))
+                            .updateEnvironmentSecrets(kept);
+                        }
+                      }),
+                    ),
+                  ),
         });
 
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed with their Live View link.
@@ -355,11 +364,8 @@ export const SessionLive = Session.make(
                 ),
                 reload: reloadSessionExtensions,
                 env: workspace.env,
-                // The composer's catalog and `@` menu do not wait for the Session's worktree to be made.
+                // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,
-                // A message the owner sends starts the Workspace's Container early, so the turn's first command does
-                // not wait for it.
-                onSubmit: earlyStartOnSubmit(workspace),
                 // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time, and when the
                 // browser falls idle past its keep-alive, so it is closed.
                 wakeAt: Effect.flatMap(

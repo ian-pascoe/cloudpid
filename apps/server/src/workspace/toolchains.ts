@@ -9,29 +9,48 @@
 // - Once the Toolchains are installed, the bootstrap runs each repo's Setup Script (`.agents/setup.sh`) that is due: one
 //   whose content has not succeeded on this Container's disk yet. Each is an exec of its own, bounded by 15 minutes. A
 //   failed or stopped one does not hold commands back: the first command that starts after it gets a note carrying the
-//   end of its output, later ones a pointer to it, and it is due again at the next Container start.
-// - Every command's environment carries mise's settings and the GitHub token (`toolchainEnv`), under what the caller
-//   passes, and the token is taken out of what a command prints.
+//   end of its output, later ones a pointer to it, and it is due again at the next Container start. The Environment's
+//   own Setup Script, from its Container settings, runs first, in `/workspace`. The Setup Scripts, and no other script
+//   or command, get the Environment's Secrets marked for the Build, as `$PI_SECRET_<NAME>`, from the Workspace's copy.
+// - Then, after the hook that snapshots the disk (so no service is writing to it meanwhile), the Start Scripts run: the
+//   Environment's, then each repo's `.agents/start.sh`, at every Container start, each bounded by 5 minutes and
+//   reported like a Setup Script.
+// - Every command's environment carries the Environment's variables, under mise's settings and the GitHub token
+//   (`toolchainEnv`), under what the caller passes, and the token and the Environment's kept Secrets are taken out of
+//   what a command prints (a Secret as its reference). The variables, the Environment's scripts and its Toolchains
+//   (the root `mise.toml` the bootstrap writes) are read once per Container start, at its bootstrap.
 //
 // The token is bound to the Workspaces Worker as a secret. It reaches the Container only in a process's environment:
 // no file holds it, and nothing here logs it.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalTimers:off preferEffectArray:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
+import type { ContainerSettings } from "@cloudpid/config";
+import { type KeptSecret, secretReference } from "@cloudpid/extensions/secrets/core";
 import { inBash, quote } from "@cloudpid/computer-env/shell";
 import {
   BOOTSTRAP_CHANGED,
   bootstrapScript,
   type CommandEnv,
+  ENVIRONMENT_SETUP_FILE,
+  ENVIRONMENT_START_FILE,
+  environmentSetupScript,
+  environmentStartScriptRun,
   pendingSetupScripts,
+  repoSetupScriptOf,
+  scriptTimedOut,
   SETUP_SCRIPT,
   SETUP_TIMEOUT_SECONDS,
   setupScriptRun,
-  setupScriptTimedOut,
+  START_SCRIPT,
+  START_TIMEOUT_SECONDS,
+  startScriptDirectories,
+  startScriptRun,
   toolchainEnv,
   WORKSPACE_ROOT,
 } from "@cloudpid/sandbox-image/toolchains";
+import { buildSecretEnvironment } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
-import { Redactor } from "./redact.ts";
+import { type Redaction, Redactor } from "./redact.ts";
 
 type Shell = BackendHandle["rpc"]["shell"];
 
@@ -48,7 +67,10 @@ const BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
  */
 const SETUP_EXEC_TIMEOUT_MS = (SETUP_TIMEOUT_SECONDS + 60) * 1000;
 
-/** How long finding the due Setup Scripts may take: a hash of a file in each repo. */
+/** How long computer lets a Start Script's exec run, on the same terms. */
+const START_EXEC_TIMEOUT_MS = (START_TIMEOUT_SECONDS + 60) * 1000;
+
+/** How long finding the due Setup Scripts, or the Start Scripts, may take: a hash of a file in each repo. */
 const SETUP_LIST_TIMEOUT_MS = 60_000;
 
 /** After a failed bootstrap, how long before the next command tries it again; each further failure doubles it. */
@@ -68,6 +90,24 @@ export type ToolchainOptions = {
   readonly backend: WorkspaceBackend;
   /** The GitHub token for git and gh; without one commands run without it. */
   readonly githubToken?: string | undefined;
+  /**
+   * The Workspace's Container settings as they are now, read at the start of each bootstrap: their variables reach the
+   * bootstrap, the scripts and every command of that Container start, their Setup and Start Scripts run in it, and
+   * their Toolchains are the root `mise.toml` it writes. Without it, or when it fails, there are none (the base
+   * Toolchains).
+   */
+  readonly settings?: (() => Promise<BootstrapSettings>) | undefined;
+  /**
+   * The Environment's kept Secrets the Workspace holds, taken out of what commands print as the token is: `read` at
+   * each command's start, `known` (what is in memory) for the reports of the bootstrap and its scripts. The Setup
+   * Scripts also get those marked for the Build (`buildSecretEnvironment`) from `read`.
+   */
+  readonly secrets?:
+    | {
+        readonly read: () => Promise<ReadonlyArray<KeptSecret>>;
+        readonly known: () => ReadonlyArray<KeptSecret>;
+      }
+    | undefined;
   /** The identity of commits the agent makes, where the Container has no other; unset parts take the bootstrap's own. */
   readonly git: { readonly name?: string | undefined; readonly email?: string | undefined };
   /**
@@ -95,20 +135,22 @@ export type ToolchainOptions = {
 
 export class ToolchainBackend implements WorkspaceBackend {
   readonly #options: ToolchainOptions;
-  readonly #env: CommandEnv;
+  /** What every command gets whatever the Environment: `toolchainEnv`'s. */
+  readonly #toolchainEnv: CommandEnv;
+  /** What the commands of the Container start bootstrapped last get: the Environment's variables under `#toolchainEnv`. */
+  #env: CommandEnv;
   /** The Container run the bootstrap last finished in: a new connection to the same Container needs none. */
   #bootstrapped: string | undefined;
-  /** The bootstrap of the connection made last, for `runBootstrap`. */
-  #latest: Bootstrap | undefined;
   /**
-   * The Setup Scripts that failed at that run's start, if any, and whether a command that started has had the full note:
+   * The Setup and Start Scripts that failed at that run's start, if any, and whether a command that started has had the full note:
    * until one has, the next one gets it; after, each gets a pointer to it.
    */
-  #setupFailed: { readonly report: SetupReport; seen: boolean } | undefined;
+  #scriptsFailed: { readonly report: ScriptReport; seen: boolean } | undefined;
 
   constructor(options: ToolchainOptions) {
     this.#options = options;
-    this.#env = toolchainEnv({ githubToken: options.githubToken });
+    this.#toolchainEnv = toolchainEnv({ githubToken: options.githubToken });
+    this.#env = this.#toolchainEnv;
   }
 
   get id() {
@@ -129,16 +171,6 @@ export class ToolchainBackend implements WorkspaceBackend {
     return { ...handle, rpc: this.#rpc(handle) };
   }
 
-  /**
-   * Run the bootstrap of the connection made last, if it has not run, without a command (the early start: docs/spec.md
-   * → Backends). A command that arrives meanwhile waits for this one. It never throws: a failure is reported, and starts
-   * no wait before the next attempt, so the first command bootstraps as it would have without the early start. Without
-   * a connection it does nothing.
-   */
-  async runBootstrap(): Promise<void> {
-    await this.#latest?.ensure({ backoff: false });
-  }
-
   /** The token, if there is one, as the strings to take out of output. */
   get #secret(): string | undefined {
     const { githubToken } = this.#options;
@@ -146,21 +178,41 @@ export class ToolchainBackend implements WorkspaceBackend {
     return githubToken === undefined || githubToken === "" ? undefined : githubToken;
   }
 
+  /** What to take out of output: the token (as `***`) and each kept Secret (as its reference). */
+  #redactions(secrets: ReadonlyArray<KeptSecret>): Redaction[] {
+    const token = this.#secret;
+
+    return [
+      ...(token === undefined ? [] : [{ value: token, mask: "***" }]),
+      ...secrets.map((kept) => ({ value: kept.value, mask: secretReference(kept.name) })),
+    ];
+  }
+
+  /** The kept Secrets the Workspace holds now; what is in memory when they cannot be read. Never throws. */
+  async #heldSecrets(): Promise<ReadonlyArray<KeptSecret>> {
+    const secrets = this.#options.secrets;
+
+    if (secrets === undefined) return [];
+
+    try {
+      return await secrets.read();
+    } catch {
+      return secrets.known();
+    }
+  }
+
   #rpc(handle: BackendHandle): BackendHandle["rpc"] {
     const shell = handle.rpc.shell;
-    const secret = this.#secret;
 
     const ready = new Bootstrap(
       () => this.#bootstrap(shell),
       this.#options.now,
       handle.runtimeId !== undefined && handle.runtimeId === this.#bootstrapped,
-      (setup) => {
+      (scripts) => {
         this.#bootstrapped = handle.runtimeId;
-        this.#setupFailed = setup === undefined ? undefined : { report: setup, seen: false };
+        this.#scriptsFailed = scripts === undefined ? undefined : { report: scripts, seen: false };
       },
     );
-
-    this.#latest = ready;
 
     /** Commands waiting for the bootstrap, and those among them killed meanwhile: computerd cannot kill what it has not started. */
     const waiting = new Set<string>();
@@ -180,17 +232,20 @@ export class ToolchainBackend implements WorkspaceBackend {
           if (killed.delete(id)) return stoppedBeforeStart(id);
         }
 
-        const note = bootstrapNote ?? this.#setupNote(handle.runtimeId);
+        const note = bootstrapNote ?? this.#scriptsNote(handle.runtimeId);
 
         const source =
           note === undefined ? input.source : `printf '%s\\n' ${quote(note)} >&2\n${input.source}`;
 
+        const redactions = this.#redactions(await this.#heldSecrets());
+
         return withRedactedOutput(
           await shell.exec({ ...input, source, env: { ...this.#env, ...input.env } }),
-          secret,
+          redactions,
         );
       },
-      getExec: async (input) => withRedactedOutput(await shell.getExec(input), secret),
+      getExec: async (input) =>
+        withRedactedOutput(await shell.getExec(input), this.#redactions(await this.#heldSecrets())),
       killExec: (input) => {
         if (waiting.has(input.id)) {
           killed.add(input.id);
@@ -212,11 +267,11 @@ export class ToolchainBackend implements WorkspaceBackend {
   }
 
   /**
-   * What a command that starts in the Container run `runtimeId` is told of the Setup Scripts that failed at its start: the
+   * What a command that starts in the Container run `runtimeId` is told of the Setup and Start Scripts that failed at its start: the
    * full note if no command that started has had it yet (one that waited may have been killed), else a pointer.
    */
-  #setupNote(runtimeId: string | undefined): string | undefined {
-    const failed = this.#setupFailed;
+  #scriptsNote(runtimeId: string | undefined): string | undefined {
+    const failed = this.#scriptsFailed;
 
     if (failed === undefined || runtimeId !== this.#bootstrapped) return undefined;
 
@@ -240,28 +295,38 @@ export class ToolchainBackend implements WorkspaceBackend {
     }
   }
 
-  /** `text` without the token. */
+  /** `text` without the token and the kept Secrets this instance knows. */
   #redact(text: string): string {
-    const secret = this.#secret;
+    return this.#redactions(this.#options.secrets?.known() ?? []).reduce(
+      (redacted, { value, mask }) => (value === "" ? redacted : redacted.replaceAll(value, mask)),
+      text,
+    );
+  }
 
-    return secret === undefined ? text : text.replaceAll(secret, "***");
+  /** The length of the longest secret taken out of output, for what may be cut through one. */
+  get #longest(): number {
+    return Math.max(
+      this.#secret?.length ?? 0,
+      ...(this.#options.secrets?.known() ?? []).map((kept) => kept.value.length),
+    );
   }
 
   /**
-   * How much of an exec's output to keep for its report: the reported length and a token's, so that a token cut by the
-   * start of what is kept can be dropped whole (`#tail`).
+   * How much of an exec's output to keep for its report: the reported length and the longest secret's, so that a secret
+   * cut by the start of what is kept can be dropped whole (`#tail`).
    */
   get #kept(): number {
-    return REPORTED_OUTPUT + (this.#secret?.length ?? 0);
+    return REPORTED_OUTPUT + this.#longest;
   }
 
   /**
-   * The end of an exec's output to report, kept with `#kept`: without the token, then, if the output was `cut`, without
-   * its first token's length of characters (where the rest of a token cut by the start may be), then cut to length.
+   * The end of an exec's output to report, kept with `#kept`: without the secrets, then, if the output was `cut`,
+   * without the longest secret's length of characters (where the rest of one cut by the start may be), then cut to
+   * length.
    */
   #tail({ output, cut }: Ran): string {
     const redacted = this.#redact(output);
-    const whole = cut ? redacted.slice(this.#secret?.length ?? 0) : redacted;
+    const whole = cut ? redacted.slice(this.#longest) : redacted;
 
     return whole.slice(-REPORTED_OUTPUT).trim();
   }
@@ -286,17 +351,40 @@ export class ToolchainBackend implements WorkspaceBackend {
     await activity?.begin().catch(log);
 
     try {
-      return await this.#installAndSetUp(shell);
+      const environment = await this.#environment();
+
+      this.#env = { ...environment.variables, ...this.#toolchainEnv };
+
+      return await this.#installAndSetUp(shell, environment);
     } finally {
       await activity?.end().catch(log);
     }
   }
 
   /**
-   * Install the Toolchains, then run the Setup Scripts that are due and the after-install hook, in that order, so a
-   * snapshot keeps what the scripts installed (and their time is not the snapshot's). It reports a failure itself.
+   * The Environment's variables, scripts and Toolchains as the Workspace holds them now; none when they cannot be read.
+   * Never throws.
    */
-  async #installAndSetUp(shell: Shell): Promise<Outcome> {
+  async #environment(): Promise<BootstrapSettings> {
+    const { settings, warn } = this.#options;
+
+    try {
+      return (await settings?.()) ?? NO_BOOTSTRAP_SETTINGS;
+    } catch (cause) {
+      warn(
+        `Container settings: could not read them, so this Container start has no variables, no Environment scripts and the base Toolchains: ${String(cause instanceof Error ? cause.message : cause)}`,
+      );
+
+      return NO_BOOTSTRAP_SETTINGS;
+    }
+  }
+
+  /**
+   * Install the Toolchains, then run the Setup Scripts that are due, the after-install hook and the Start Scripts, in
+   * that order, so a snapshot keeps what the Setup Scripts installed (and their time is not the snapshot's) and no
+   * service a Start Script starts is writing to the disk while it is taken. It reports a failure itself.
+   */
+  async #installAndSetUp(shell: Shell, environment: BootstrapSettings): Promise<Outcome> {
     const { git, warn } = this.#options;
     const identity: CommandEnv = {};
 
@@ -310,7 +398,11 @@ export class ToolchainBackend implements WorkspaceBackend {
       const ran = await runToEnd(
         shell,
         {
-          source: inBash(bootstrapScript(WORKSPACE_ROOT, this.#options.readOnlyDirectories)),
+          source: inBash(
+            bootstrapScript(WORKSPACE_ROOT, this.#options.readOnlyDirectories, undefined, {
+              toolchains: environment.toolchains,
+            }),
+          ),
           cwd: WORKSPACE_ROOT,
           timeoutMs: BOOTSTRAP_TIMEOUT_MS,
           env: { ...this.#env, ...identity },
@@ -319,11 +411,13 @@ export class ToolchainBackend implements WorkspaceBackend {
       );
 
       if (ran.code === 0) {
-        const setup = await this.#runSetupScripts(shell);
+        const setup = await this.#runSetupScripts(shell, environment.setupScript);
 
         await this.#installed(ran.changed || setup.succeeded);
 
-        return { ok: true, setup: setup.report };
+        const start = await this.#runStartScripts(shell, environment.startScript);
+
+        return { ok: true, scripts: combined([setup.report, start]) };
       }
 
       failure = this.#failure(ran);
@@ -337,16 +431,19 @@ export class ToolchainBackend implements WorkspaceBackend {
   }
 
   /**
-   * Run each due Setup Script, one after the other, with a command's environment; what to tell commands of those that
-   * did not succeed, if any, and whether any succeeded (which changed the disk). Never throws.
+   * Run each due Setup Script, one after the other, with a command's environment: the Environment's (`source`) first,
+   * then the repos'. What to tell commands of those that did not succeed, if any, and whether any succeeded (which
+   * changed the disk). Never throws.
    */
-  async #runSetupScripts(shell: Shell): Promise<SetupRun> {
+  async #runSetupScripts(shell: Shell, source: string): Promise<SetupScriptsRun> {
     const { warn } = this.#options;
     let due: string[];
 
     try {
       const listed = await runToEnd(shell, {
-        source: inBash(pendingSetupScripts(WORKSPACE_ROOT)),
+        source: inBash(
+          pendingSetupScripts(WORKSPACE_ROOT, undefined, { source, file: ENVIRONMENT_SETUP_FILE }),
+        ),
         cwd: WORKSPACE_ROOT,
         timeoutMs: SETUP_LIST_TIMEOUT_MS,
         env: this.#env,
@@ -354,7 +451,9 @@ export class ToolchainBackend implements WorkspaceBackend {
 
       if (listed.code !== 0) throw new Error(`${exitReason(listed.code)}: ${listed.output}`);
 
-      due = listed.output.split("\n").filter((line) => line.startsWith(`${WORKSPACE_ROOT}/`));
+      due = listed.output
+        .split("\n")
+        .filter((line) => line === ENVIRONMENT_SETUP_FILE || line.startsWith(`${WORKSPACE_ROOT}/`));
     } catch (cause) {
       const message = this.#redact(String(cause instanceof Error ? cause.message : cause));
 
@@ -369,11 +468,30 @@ export class ToolchainBackend implements WorkspaceBackend {
     }
 
     const notes: string[] = [];
+    const pointers: string[] = [];
     const failed: string[] = [];
     let succeeded = false;
 
-    for (const directory of due) {
-      const failure = await this.#runSetupScript(shell, directory);
+    // The Secrets marked for the Build, which a Workspace's Setup Scripts get as the Build's do; no other script does.
+    const env =
+      due.length === 0
+        ? this.#env
+        : { ...this.#env, ...buildSecretEnvironment(await this.#heldSecrets()) };
+
+    for (const line of due) {
+      const ofEnvironment = line === ENVIRONMENT_SETUP_FILE;
+      const script = ofEnvironment ? environmentSetupScript() : repoSetupScriptOf(line);
+
+      const failure = await this.#runScript(
+        shell,
+        {
+          source: setupScriptRun(script),
+          cwd: script.directory,
+          timeoutMs: SETUP_EXEC_TIMEOUT_MS,
+          env,
+        },
+        SETUP_TIMEOUT_SECONDS,
+      );
 
       if (failure === undefined) {
         succeeded = true;
@@ -381,42 +499,157 @@ export class ToolchainBackend implements WorkspaceBackend {
         continue;
       }
 
-      warn(`Setup Script of ${directory} failed (${failure.reason}): ${failure.output}`);
-      failed.push(directory);
+      if (ofEnvironment) {
+        warn(`The Environment's Setup Script failed (${failure.reason}): ${failure.output}`);
+        notes.push(
+          `cloudpid: the Environment's Setup Script failed (${failure.reason}), so dependencies may be missing: ${failure.output}\nIt runs again at the next Container start; run \`bash ${ENVIRONMENT_SETUP_FILE}\` in ${WORKSPACE_ROOT} to try it now.`,
+        );
+        pointers.push(
+          `cloudpid: the Environment's Setup Script failed at this Container's start, so dependencies may be missing. It runs again at the next Container start; run \`bash ${ENVIRONMENT_SETUP_FILE}\` in ${WORKSPACE_ROOT} to try it now.`,
+        );
+
+        continue;
+      }
+
+      warn(`Setup Script of ${line} failed (${failure.reason}): ${failure.output}`);
+      failed.push(line);
       notes.push(
-        `cloudpid: the Setup Script ${directory}/${SETUP_SCRIPT} failed (${failure.reason}), so the repo's dependencies may be missing: ${failure.output}\nIt runs again at the next Container start; run \`bash ${SETUP_SCRIPT}\` in ${directory} to try it now.`,
+        `cloudpid: the Setup Script ${line}/${SETUP_SCRIPT} failed (${failure.reason}), so the repo's dependencies may be missing: ${failure.output}\nIt runs again at the next Container start; run \`bash ${SETUP_SCRIPT}\` in ${line} to try it now.`,
       );
     }
 
-    if (failed.length === 0) return { report: undefined, succeeded };
+    if (failed.length > 0) {
+      pointers.push(
+        `cloudpid: the Setup Script (${SETUP_SCRIPT}) of ${failed.join(", ")} failed at this Container's start, so dependencies may be missing. It runs again at the next Container start; run \`bash ${SETUP_SCRIPT}\` in the repo to try it now.`,
+      );
+    }
 
-    const report = {
-      note: notes.join("\n"),
-      pointer: `cloudpid: the Setup Script (${SETUP_SCRIPT}) of ${failed.join(", ")} failed at this Container's start, so dependencies may be missing. It runs again at the next Container start; run \`bash ${SETUP_SCRIPT}\` in the repo to try it now.`,
-    };
+    if (notes.length === 0) return { report: undefined, succeeded };
 
-    return { report, succeeded };
+    return { report: { note: notes.join("\n"), pointer: pointers.join("\n") }, succeeded };
   }
 
-  /** Run the Setup Script of the repo in `directory`; why it failed, if it did. Never throws. */
-  async #runSetupScript(shell: Shell, directory: string): Promise<Failure | undefined> {
+  /**
+   * Run the Start Scripts, one after the other, with a command's environment: the Environment's (`source`), when it has
+   * one, then each repo's. What to tell commands of those that did not succeed, if any. Never throws.
+   */
+  async #runStartScripts(shell: Shell, source: string): Promise<ScriptReport | undefined> {
+    const { warn } = this.#options;
+    const notes: string[] = [];
+    const pointers: string[] = [];
+    const failed: string[] = [];
+
+    if (source !== "") {
+      const failure = await this.#runStartScript(
+        shell,
+        environmentStartScriptRun(source),
+        WORKSPACE_ROOT,
+      );
+
+      if (failure !== undefined) {
+        warn(`The Environment's Start Script failed (${failure.reason}): ${failure.output}`);
+        notes.push(
+          `cloudpid: the Environment's Start Script failed (${failure.reason}), so the services it starts may not be running: ${failure.output}\nIt runs again at the next Container start; run \`bash ${ENVIRONMENT_START_FILE}\` in ${WORKSPACE_ROOT} to try it now.`,
+        );
+        pointers.push(
+          `cloudpid: the Environment's Start Script failed at this Container's start, so services may not be running. It runs again at the next Container start; run \`bash ${ENVIRONMENT_START_FILE}\` in ${WORKSPACE_ROOT} to try it now.`,
+        );
+      }
+    }
+
+    let directories: string[] = [];
+
+    try {
+      const listed = await runToEnd(shell, {
+        source: inBash(startScriptDirectories(WORKSPACE_ROOT)),
+        cwd: WORKSPACE_ROOT,
+        timeoutMs: SETUP_LIST_TIMEOUT_MS,
+        env: this.#env,
+      });
+
+      if (listed.code !== 0) throw new Error(`${exitReason(listed.code)}: ${listed.output}`);
+
+      directories = listed.output
+        .split("\n")
+        .filter((line) => line.startsWith(`${WORKSPACE_ROOT}/`));
+    } catch (cause) {
+      const message = this.#redact(String(cause instanceof Error ? cause.message : cause));
+
+      warn(`Start Scripts: could not find them: ${message}`);
+      notes.push(
+        `cloudpid: could not tell which repos' Start Script (${START_SCRIPT}) to run (${message}), so their services may not be running. They are looked for again at the next Container start.`,
+      );
+      pointers.push(
+        `cloudpid: the repos' Start Scripts (${START_SCRIPT}) could not be run at this Container's start, so their services may not be running. They are looked for again at the next Container start.`,
+      );
+    }
+
+    for (const directory of directories) {
+      const failure = await this.#runStartScript(
+        shell,
+        startScriptRun({ directory, file: START_SCRIPT }),
+        directory,
+      );
+
+      if (failure === undefined) continue;
+
+      warn(`Start Script of ${directory} failed (${failure.reason}): ${failure.output}`);
+      failed.push(directory);
+      notes.push(
+        `cloudpid: the Start Script ${directory}/${START_SCRIPT} failed (${failure.reason}), so the services it starts may not be running: ${failure.output}\nIt runs again at the next Container start; run \`bash ${START_SCRIPT}\` in ${directory} to try it now.`,
+      );
+    }
+
+    if (failed.length > 0) {
+      pointers.push(
+        `cloudpid: the Start Script (${START_SCRIPT}) of ${failed.join(", ")} failed at this Container's start, so services may not be running. It runs again at the next Container start; run \`bash ${START_SCRIPT}\` in the repo to try it now.`,
+      );
+    }
+
+    return notes.length === 0
+      ? undefined
+      : { note: notes.join("\n"), pointer: pointers.join("\n") };
+  }
+
+  /** Run the Start Script run `source` in `directory`; why it failed, if it did. Never throws. */
+  #runStartScript(shell: Shell, source: string, directory: string): Promise<Failure | undefined> {
+    return this.#runScript(
+      shell,
+      { source, cwd: directory, timeoutMs: START_EXEC_TIMEOUT_MS },
+      START_TIMEOUT_SECONDS,
+      // The one way a Start Script that works runs past its time: a service it started holds the exec's output.
+      " (a service it starts must detach: `setsid nohup cmd >/tmp/cmd.log 2>&1 &`)",
+    );
+  }
+
+  /**
+   * Run the Setup or Start Script run `input` (a script of `@cloudpid/sandbox-image/toolchains`, bounded by
+   * `timeoutSeconds`) with a command's environment, or `input.env`; why it failed, if it did, with `timedOutHint` after
+   * the reason of one stopped for its time. Never throws.
+   */
+  async #runScript(
+    shell: Shell,
+    input: {
+      readonly source: string;
+      readonly cwd: string;
+      readonly timeoutMs: number;
+      readonly env?: CommandEnv | undefined;
+    },
+    timeoutSeconds: number,
+    timedOutHint: string = "",
+  ): Promise<Failure | undefined> {
     try {
       const ran = await runToEnd(
         shell,
-        {
-          source: inBash(setupScriptRun(directory)),
-          cwd: directory,
-          timeoutMs: SETUP_EXEC_TIMEOUT_MS,
-          env: this.#env,
-        },
+        { ...input, source: inBash(input.source), env: input.env ?? this.#env },
         this.#kept,
       );
 
       if (ran.code === 0) return undefined;
 
-      return setupScriptTimedOut(ran.code, ran.output)
+      return scriptTimedOut(ran.code, ran.output)
         ? {
-            reason: `it ran past ${SETUP_TIMEOUT_SECONDS / 60} minutes and was stopped`,
+            reason: `it ran past ${timeoutSeconds / 60} minutes and was stopped${timedOutHint}`,
             output: this.#tail(ran),
           }
         : this.#failure(ran);
@@ -426,22 +659,47 @@ export class ToolchainBackend implements WorkspaceBackend {
   }
 }
 
-/** Why a bootstrap or a Setup Script failed: in a few words, and what it printed (without the token). */
+/** What a bootstrap reads of the Environment's Container settings: its variables, scripts and Toolchains. */
+export type BootstrapSettings = Pick<
+  ContainerSettings,
+  "variables" | "setupScript" | "startScript" | "toolchains"
+>;
+
+const NO_BOOTSTRAP_SETTINGS: BootstrapSettings = {
+  variables: {},
+  setupScript: "",
+  startScript: "",
+  toolchains: "",
+};
+
+/** Why a bootstrap or a script failed: in a few words, and what it printed (without the token). */
 type Failure = { readonly reason: string; readonly output: string };
 
 /**
- * What to tell commands of the Setup Scripts that failed at a Container's start: the note with their output, for the
- * first command that starts after them, and a pointer to it for the later ones.
+ * What to tell commands of the Setup and Start Scripts that failed at a Container's start: the note with their output,
+ * for the first command that starts after them, and a pointer to it for the later ones.
  */
-type SetupReport = { readonly note: string; readonly pointer: string };
+type ScriptReport = { readonly note: string; readonly pointer: string };
+
+/** `reports` as one, a line of each; undefined when there are none. */
+const combined = (reports: ReadonlyArray<ScriptReport | undefined>): ScriptReport | undefined => {
+  const present = reports.filter((report) => report !== undefined);
+
+  return present.length === 0
+    ? undefined
+    : {
+        note: present.map((report) => report.note).join("\n"),
+        pointer: present.map((report) => report.pointer).join("\n"),
+      };
+};
 
 /** What a bootstrap's Setup Scripts came to: what to tell commands of those that failed, and whether any succeeded. */
-type SetupRun = { readonly report: SetupReport | undefined; readonly succeeded: boolean };
+type SetupScriptsRun = { readonly report: ScriptReport | undefined; readonly succeeded: boolean };
 
-/** What a bootstrap came to: why it failed, or, when it did not, what the Setup Scripts it ran have to report. */
+/** What a bootstrap came to: why it failed, or, when it did not, what the scripts it ran have to report. */
 type Outcome =
   | { readonly ok: false; readonly failure: Failure }
-  | { readonly ok: true; readonly setup: SetupReport | undefined };
+  | { readonly ok: true; readonly scripts: ScriptReport | undefined };
 
 /**
  * How an exec ended: its exit status, if it ended with one, and the end of its output, and whether that was `cut`; and
@@ -486,7 +744,7 @@ const runToEnd = async (
 class Bootstrap {
   readonly #run: () => Promise<Outcome>;
   readonly #now: () => number;
-  readonly #onDone: (setup: SetupReport | undefined) => void;
+  readonly #onDone: (scripts: ScriptReport | undefined) => void;
   #done: boolean;
   #inflight: Promise<string | undefined> | undefined;
   #failedAt: number | undefined;
@@ -497,7 +755,7 @@ class Bootstrap {
     run: () => Promise<Outcome>,
     now: () => number,
     done: boolean,
-    onDone: (setup: SetupReport | undefined) => void,
+    onDone: (scripts: ScriptReport | undefined) => void,
   ) {
     this.#run = run;
     this.#now = now;
@@ -507,10 +765,9 @@ class Bootstrap {
 
   /**
    * Resolves when a command may be sent: the bootstrap is done, or has failed (a command is not held for it). With
-   * the note the command starts with, if the bootstrap has failed. A failure of an attempt made with `backoff: false`
-   * (the early start's, which no command asked for) starts no wait: the next command tries again.
+   * the note the command starts with, if the bootstrap has failed.
    */
-  ensure({ backoff = true }: { readonly backoff?: boolean } = {}): Promise<string | undefined> {
+  ensure(): Promise<string | undefined> {
     if (this.#done) return Promise.resolve(undefined);
 
     if (this.#inflight !== undefined) return this.#inflight;
@@ -527,18 +784,16 @@ class Bootstrap {
           this.#done = true;
           this.#failedAt = undefined;
           this.#failures = 0;
-          this.#onDone(outcome.setup);
+          this.#onDone(outcome.scripts);
 
           return undefined;
         }
 
         const { failure } = outcome;
 
-        if (backoff) {
-          this.#failedAt = this.#now();
-          this.#failures++;
-          this.#reason = failure.reason;
-        }
+        this.#failedAt = this.#now();
+        this.#failures++;
+        this.#reason = failure.reason;
 
         return `cloudpid: the Toolchain bootstrap failed (${failure.reason}), so git, gh and other Toolchains may be missing: ${failure.output}\nRun \`mise install\` to see more. It is retried automatically.`;
       })
@@ -619,13 +874,13 @@ const stoppedBeforeStart = (id: string): Execution => ({
 });
 
 /**
- * `execution` with `secret` taken out of its output. What it holds back at the end of a stream (the start of the
- * secret, which turned out not to be one) comes out just before the exit. Without a secret it is `execution` itself.
+ * `execution` with `secrets` taken out of its output. What it holds back at the end of a stream (the start of a
+ * secret, which turned out not to be one) comes out just before the exit. Without secrets it is `execution` itself.
  */
-const withRedactedOutput = (execution: Execution, secret: string | undefined): Execution => {
-  if (secret === undefined) return execution;
+const withRedactedOutput = (execution: Execution, secrets: ReadonlyArray<Redaction>): Execution => {
+  if (secrets.length === 0) return execution;
 
-  const redactors = { stdout: new Redactor(secret), stderr: new Redactor(secret) };
+  const redactors = { stdout: new Redactor(secrets), stderr: new Redactor(secrets) };
   let last: { id: string; seq: number } | undefined;
 
   const release = (controller: TransformStreamDefaultController<ExecEvent>) => {

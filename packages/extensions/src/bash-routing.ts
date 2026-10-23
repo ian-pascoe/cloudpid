@@ -653,8 +653,6 @@ const gitNeeds = (args: readonly Word[]): string | undefined => {
 type Context = {
   readonly functions: ReadonlySet<string>;
   readonly depth: number;
-  /** Whether `git` may run on the Worker Shell at all: not in a linked worktree (`inLinkedWorktree`). */
-  readonly gitOnWorker: boolean;
 };
 
 /** The first of `words` (a command with its arguments) that the Worker Shell cannot run; undefined if none. */
@@ -673,9 +671,7 @@ const commandNeeds = (words: readonly Word[], context: Context): string | undefi
 
   switch (name) {
     case "git":
-      return context.gitOnWorker
-        ? gitNeeds(args)
-        : "git in a Workspace's worktree runs on the Container: the Worker Shell's git does not follow a linked worktree";
+      return gitNeeds(args);
 
     case "source":
     case ".":
@@ -847,36 +843,12 @@ const scriptNeeds = (source: string, context: Context): string | undefined => {
   return undefined;
 };
 
-/** How a command is routed besides what it runs. */
-export type RouteOptions = {
-  /** Whether the Worker Shell's git may run it: false in a Workspace's linked worktree (`inLinkedWorktree`). */
-  readonly gitOnWorker?: boolean;
-};
-
-/**
- * Where a Workspace's own worktree lives: `/workspace/.worktrees/<repo>/<id>` (`worktreeDirectory` in
- * `@cloudpid/protocol`).
- */
-const LINKED_WORKTREE = /(^|[\s/'"=])\.worktrees\//;
-
-/**
- * Whether a command run in `cwd` works in a Workspace's linked worktree, or names one. Its `.git` is a file that points
- * into the main checkout's `.git/worktrees`, with the objects and refs in the main checkout (`commondir`), which the
- * Worker Shell's git (isomorphic-git) does not follow, so git there runs on the Container (ADR-0015).
- */
-export const inLinkedWorktree = (cwd: string, command: string): boolean =>
-  LINKED_WORKTREE.test(`${cwd}/`) || LINKED_WORKTREE.test(command);
-
 /**
  * Where `command` runs: the Worker Shell when every command in it is one the Worker Shell runs, and the Container
  * otherwise, or when it is not understood.
  */
-export const routeCommand = (command: string, options: RouteOptions = {}): BashRoute => {
-  const needs = scriptNeeds(command, {
-    functions: new Set(),
-    depth: 0,
-    gitOnWorker: options.gitOnWorker ?? true,
-  });
+export const routeCommand = (command: string): BashRoute => {
+  const needs = scriptNeeds(command, { functions: new Set(), depth: 0 });
 
   return needs === undefined
     ? { backend: "worker", reason: "every command in it runs on the Worker Shell" }

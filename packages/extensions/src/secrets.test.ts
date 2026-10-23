@@ -206,6 +206,35 @@ describe("secrets", () => {
     expect(session.recorded).toEqual([]);
   });
 
+  it("uses the Secrets kept for the Environment like entered ones, and does not forget them", async () => {
+    const session = await openSecretsHarness(
+      [],
+      [{ name: "DATABASE_URL", value: VALUE, scope: "environment", build: false }],
+    );
+
+    await session.prompt(
+      "Go",
+      call("bash", { command: `echo url=$${env("DATABASE_URL")}` }),
+      call("secret_list", {}),
+    );
+
+    expect(session.execs.at(-1)?.env[env("DATABASE_URL")]).toBe(VALUE);
+    expect((await session.lastResult())?.text).toContain(
+      "DATABASE_URL: kept for this Environment.",
+    );
+
+    await session.prompt("Go", call("secret_forget", { names: ["DATABASE_URL"] }));
+
+    expect((await session.lastResult())?.text).toContain("which a Session cannot forget");
+
+    await session.prompt("Go", call("record", { text: ref("DATABASE_URL") }));
+
+    expect(session.recorded.at(-1)).toEqual({ text: VALUE });
+    expect(await session.transcript()).not.toContain(VALUE);
+    expect(JSON.stringify(session.requests)).not.toContain(VALUE);
+    expect(session.dump()).not.toContain(VALUE);
+  });
+
   it("forgets a Secret on request", async () => {
     const session = await openSecretsHarness();
 

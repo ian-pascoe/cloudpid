@@ -11,19 +11,20 @@ import { SessionMenu } from "./session-menu.tsx";
 import { currentSessionAtom, newSessionPlace } from "./sessions.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle } from "./sidebar.tsx";
-import { MachinesPage } from "./machines-page.tsx";
-import { machineNamesAtom } from "./machines-state.ts";
+import { DraftComposer } from "./draft-composer.tsx";
+import { EnvironmentsPage } from "./environments-page.tsx";
+import { environmentNamesAtom } from "./environments-state.ts";
 
 /** Session `sessionId`'s page: its chat, with what the list knows of it. */
 const SessionPage = ({ sessionId }: { sessionId: string }) => {
   const session = useAtomValue(currentSessionAtom);
-  const names = useAtomValue(machineNamesAtom);
+  const names = useAtomValue(environmentNamesAtom);
   const problem = useAtomValue(pageProblemAtom);
-  // The page shows the failure of an archive or unarchive, the menu's or the composer's.
+  // The page shows the failure of a new Session, an archive or an unarchive, the menu's or the composer's.
   const actions = useSessionActions(pageProblemAtom);
 
-  const machineName =
-    session === undefined ? undefined : (names[session.machine] ?? session.machine);
+  const environmentName =
+    session === undefined ? undefined : (names[session.environment] ?? session.environment);
 
   return (
     <SessionChat
@@ -48,18 +49,13 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
         session === undefined
           ? undefined
           : {
-              newSession: () =>
-                actions
-                  .create(newSessionPlace(session))
-                  .then((created) =>
-                    created === undefined ? "The session could not be created." : null,
-                  ),
+              newSession: () => actions.create(newSessionPlace(session)),
               archive: () => actions.archive(session.id),
             }
       }
       menu={
-        session === undefined || machineName === undefined ? undefined : (
-          <SessionMenu session={session} machineName={machineName} actions={actions} />
+        session === undefined || environmentName === undefined ? undefined : (
+          <SessionMenu session={session} environmentName={environmentName} actions={actions} />
         )
       }
     />
@@ -82,22 +78,17 @@ export const App = () => {
       <Sidebar
         activeId={page.kind === "session" ? page.sessionId : undefined}
         settingsActive={page.kind === "settings"}
-        machinesActive={page.kind === "machines"}
+        environmentsActive={page.kind === "environments"}
         className={cn(listOnly ? "flex" : "hidden md:flex")}
       />
       <main className={cn("min-w-0 flex-1 flex-col", listOnly ? "hidden md:flex" : "flex")}>
         {Match.value(page).pipe(
           Match.discriminatorsExhaustive("kind")({
             settings: () => <SettingsPage />,
-            machines: () => <MachinesPage />,
-            empty: () => (
-              <div className="m-auto max-w-sm px-6 text-center">
-                <h2 className="text-lg font-semibold">Pick a session, or start a new one</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  A session keeps its conversation and keeps working when this page is closed.
-                </p>
-              </div>
-            ),
+            environments: () => <EnvironmentsPage />,
+            draft: () => <DraftComposer />,
+            // On a wide screen the start page is the draft; a narrow one shows the list alone (`listOnly`).
+            empty: () => <DraftComposer />,
             session: ({ sessionId }) => <SessionPage key={sessionId} sessionId={sessionId} />,
           }),
         )}

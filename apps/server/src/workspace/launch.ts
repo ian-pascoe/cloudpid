@@ -1,4 +1,4 @@
-// How the Workspace DO launches its Container (docs/spec.md → Container and Toolchains → Size and idle, Snapshots).
+// How the Workspace DO launches its Container (docs/spec.md → Container and Toolchains → Container settings, Snapshots).
 // `@cloudflare/computer`'s `ContainerBackend` builds each launch's spec itself and has no hook for either a size that
 // changes or a snapshot, so this wraps the Container API it launches through (`wrap`):
 //
@@ -13,7 +13,12 @@
 //   because Containers outlive a deploy: a snapshot is labelled with that, never with the image a launch would run now;
 // - the Container-only paths (computer's `ignore`: the built-in ones, then the Workspace's own) are decided before
 //   computer builds the launch (`ignore`), kept for as long as that Container runs, and recorded from the launch itself,
-//   so a snapshot is restored only by a launch with the paths it was taken with.
+//   so a snapshot is restored only by a launch with the paths it was taken with;
+// - a Workspace with no snapshot of its own starts from its Environment's Build (docs/spec.md → Builds) when the Build
+//   is of the image a launch would run now, has the launch's Container-only paths and is within its lifetime. Such a
+//   launch has computerd's store reset (`RESET_STORE_VARIABLE` in its environment), and asks for it again whenever it
+//   reconnects to that Container, since computer relaunches a running Container whose environment differs. A Build
+//   that does not come up falls back to the image as a snapshot does, and this Workspace does not try it again.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import type {
   ContainerLaunchSpec,
@@ -21,11 +26,18 @@ import type {
 } from "@cloudflare/computer/backends/container";
 import {
   containerInstance,
-  DEFAULT_MACHINE_SETTINGS,
+  DEFAULT_CONTAINER_SETTINGS,
   type InstanceType,
-  type MachineSettings,
+  type ContainerSettings,
 } from "@cloudpid/config";
-import type { ContainerSnapshots, SnapshotOutcome, SnapshotReason } from "./snapshots.ts";
+import { type EnvironmentBuild, RESET_STORE_VARIABLE } from "./build-record.ts";
+import {
+  type ContainerSnapshots,
+  samePaths,
+  SNAPSHOT_MAX_AGE_MS,
+  type SnapshotOutcome,
+  type SnapshotReason,
+} from "./snapshots.ts";
 
 /** What the Container that is running (or was last launched) was launched with. */
 export type LaunchRecord = {
@@ -42,16 +54,28 @@ export type LaunchRecord = {
   readonly image: string | undefined;
   /** The Container-only paths it launched with; none where it had none. Absent from older records. */
   readonly ignore?: readonly string[] | undefined;
+  /** Whether it started from its Environment's Build, with computerd's store reset (`RESET_STORE_VARIABLE`). */
+  readonly resetStore?: boolean | undefined;
   /** Epoch milliseconds. */
   readonly launchedAt: number;
 };
 
 export type ContainerLaunchDeps = {
   /** The Workspace's settings now. */
-  readonly settings: () => Promise<MachineSettings>;
+  readonly settings: () => Promise<ContainerSettings>;
   /** The Container-only paths a launch with `settings` has: the built-in ones, then the Workspace's own. */
-  readonly ignore: (settings: MachineSettings) => readonly string[] | undefined;
-  readonly snapshots: Pick<ContainerSnapshots, "restorable" | "restored" | "forget" | "take">;
+  readonly ignore: (settings: ContainerSettings) => readonly string[] | undefined;
+  readonly snapshots: Pick<
+    ContainerSnapshots,
+    "restorable" | "restored" | "forget" | "take" | "capture"
+  >;
+  /** The Environment's Build the Workspace holds, which a launch with no snapshot of its own may start from. */
+  readonly builds?: {
+    /** The Build, unless this Workspace has given up on it (`failed`). */
+    readonly current: () => Promise<EnvironmentBuild | undefined>;
+    /** A Container started from the Build `id` did not come up: this Workspace does not try it again. */
+    readonly failed: (id: string) => Promise<void>;
+  };
   /** The reference of the image a Container launched now would run. */
   readonly image: () => string | undefined;
   readonly load: () => Promise<LaunchRecord | undefined>;
@@ -95,11 +119,17 @@ export const containerIgnore = (
   return all.filter((pattern, index) => all.lastIndexOf(pattern) === index);
 };
 
+/** `spec` with computerd's store reset at the Container's start (`RESET_STORE_VARIABLE`) when `reset`. */
+const resettingStore = (spec: ContainerLaunchSpec, reset: boolean): ContainerLaunchSpec =>
+  reset ? { ...spec, env: { ...spec.env, [RESET_STORE_VARIABLE]: "1" } } : spec;
+
 export class ContainerLaunch {
   readonly #deps: ContainerLaunchDeps;
   #record: LaunchRecord | undefined;
   /** The snapshot the launch in progress restores from, until the Container is known to be up. */
   #restoring: string | undefined;
+  /** Whether that snapshot is the Environment's Build's, not the Workspace's own. */
+  #restoringBuild = false;
 
   constructor(deps: ContainerLaunchDeps) {
     this.#deps = deps;
@@ -133,7 +163,7 @@ export class ContainerLaunch {
 
       return kept !== undefined && "ignore" in kept
         ? kept.ignore
-        : this.#deps.ignore(DEFAULT_MACHINE_SETTINGS);
+        : this.#deps.ignore(DEFAULT_CONTAINER_SETTINGS);
     }
 
     return this.#deps.ignore(await this.#deps.settings());
@@ -143,7 +173,7 @@ export class ContainerLaunch {
   async idleMs(): Promise<number> {
     const record = await this.#current();
 
-    return (record?.idleMinutes ?? DEFAULT_MACHINE_SETTINGS.idleMinutes) * MINUTE;
+    return (record?.idleMinutes ?? DEFAULT_CONTAINER_SETTINGS.idleMinutes) * MINUTE;
   }
 
   /**
@@ -185,6 +215,37 @@ export class ContainerLaunch {
       : this.#deps.snapshots.take(reason, record.image, record.ignore);
   }
 
+  /**
+   * Snapshot the running Container as an Environment's Build (`build.ts`), without keeping it as the Workspace's own:
+   * the handle, with the image and Container-only paths it was launched with, or why there is none.
+   */
+  async captureBuild(): Promise<
+    | {
+        readonly ok: true;
+        readonly snapshot: { readonly id: string; readonly size: number };
+        readonly image: string;
+        readonly ignore: readonly string[] | undefined;
+      }
+    | { readonly ok: false; readonly reason: string }
+  > {
+    const record = await this.#current();
+
+    if (record?.image === undefined) {
+      return { ok: false, reason: "the image the Container runs is not known" };
+    }
+
+    const captured = await this.#deps.snapshots.capture("build", record.image);
+
+    return captured.outcome === "taken"
+      ? {
+          ok: true,
+          snapshot: { id: captured.id, size: captured.size },
+          image: record.image,
+          ignore: record.ignore,
+        }
+      : { ok: false, reason: captured.reason };
+  }
+
   async #current(): Promise<LaunchRecord | undefined> {
     this.#record ??= await this.#deps.load();
 
@@ -194,6 +255,39 @@ export class ContainerLaunch {
   async #remember(record: LaunchRecord): Promise<void> {
     this.#record = record;
     await this.#deps.save(record);
+  }
+
+  /**
+   * The Environment's Build a launch with the Container-only paths `ignore` may start from: one of the image a launch
+   * would run now, taken with the same paths, and not near the end of its snapshot's lifetime.
+   */
+  async #usableBuild(ignore: readonly string[] | undefined): Promise<EnvironmentBuild | undefined> {
+    const build = await this.#deps.builds?.current();
+
+    if (build === undefined) {
+      this.#deps.info("Container launch: no Environment's Build held (or it failed here)");
+
+      return undefined;
+    }
+
+    const unusable =
+      build.image !== this.#deps.image()
+        ? `it is of image ${build.image}, a launch runs ${this.#deps.image() ?? "an unknown one"}`
+        : !samePaths(build.ignore ?? undefined, ignore)
+          ? "its Container-only paths differ from the launch's"
+          : this.#deps.now() - build.finishedAt > SNAPSHOT_MAX_AGE_MS
+            ? "it is older than a snapshot's lifetime"
+            : undefined;
+
+    if (unusable !== undefined) {
+      this.#deps.info(
+        `Container launch: the Environment's Build ${build.snapshot.id} is not used: ${unusable}`,
+      );
+
+      return undefined;
+    }
+
+    return build;
   }
 
   async #start(api: IWorkspaceContainerAPI, spec: ContainerLaunchSpec) {
@@ -208,33 +302,70 @@ export class ContainerLaunch {
     const ignore = ignoreOf(spec);
     let snapshot = running ? undefined : await this.#deps.snapshots.restorable(ignore);
 
-    this.#restoring = snapshot?.id;
+    // With no snapshot of its own, the Workspace starts from its Environment's Build.
+    let build = running || snapshot !== undefined ? undefined : await this.#usableBuild(ignore);
 
-    let launch: ContainerLaunchSpec = { ...spec, instance: size };
+    this.#restoring = snapshot?.id ?? build?.snapshot.id;
+    this.#restoringBuild = build !== undefined;
+
+    // A Container that started from a Build was launched with the store reset, which a reconnect asks for again.
+    let launch: ContainerLaunchSpec = resettingStore(
+      { ...spec, instance: size },
+      build !== undefined || kept?.resetStore === true,
+    );
 
     if (snapshot !== undefined) launch.containerSnapshot = { id: snapshot.id };
+
+    if (build !== undefined) launch.containerSnapshot = { id: build.snapshot.id };
 
     let info;
 
     try {
       info = await api.start(launch);
     } catch (cause) {
-      if (snapshot === undefined) throw cause;
+      if (snapshot === undefined && build === undefined) throw cause;
 
-      // The platform refused the snapshot outright (an expired or unknown handle): the image is the way forward.
-      this.#deps.warn(
-        `The Container could not be started from snapshot ${snapshot.id} (${cause instanceof Error ? cause.message : String(cause)}): starting it from the image and forgetting the snapshot`,
-      );
-      await this.#deps.snapshots.forget();
+      const why = cause instanceof Error ? cause.message : String(cause);
+
+      if (build !== undefined) {
+        // The platform refused the Build's snapshot (an expired or unknown handle, or one another object's Container may
+        // not start from): this Workspace starts from the image, and leaves that Build alone from now on.
+        this.#deps.warn(
+          `The Container could not be started from the Environment's Build ${build.snapshot.id} (${why}): starting it from the image`,
+        );
+        await this.#deps.builds?.failed(build.snapshot.id);
+      } else if (snapshot !== undefined) {
+        // The platform refused the snapshot outright (an expired or unknown handle): the image is the way forward.
+        this.#deps.warn(
+          `The Container could not be started from snapshot ${snapshot.id} (${why}): starting it from the image and forgetting the snapshot`,
+        );
+        await this.#deps.snapshots.forget();
+      }
+
       snapshot = undefined;
+      build = undefined;
       this.#restoring = undefined;
+      this.#restoringBuild = false;
       launch = { ...spec, instance: size };
       info = await api.start(launch);
     }
 
+    this.#deps.info(
+      info.outcome === "adopted"
+        ? `Container launch: the running Container was adopted${kept?.resetStore === true ? ", asking again for the store reset it started with" : ""}`
+        : `Container launch: ${info.outcome} from ${
+            snapshot !== undefined
+              ? `the Workspace's snapshot ${snapshot.id}`
+              : build !== undefined
+                ? `the Environment's Build ${build.snapshot.id}, with computerd's store reset`
+                : "the image"
+          }`,
+    );
+
     if (info.outcome === "adopted") {
       // Nothing launched. One adopted with no record (started before launches were recorded) gets one.
       this.#restoring = undefined;
+      this.#restoringBuild = false;
 
       if (kept === undefined) {
         await this.#remember({
@@ -254,10 +385,12 @@ export class ContainerLaunch {
     await this.#remember({
       instance,
       idleMinutes: settings.idleMinutes,
+      // A Container from the Build holds none of the Workspace's own work: it is snapshotted after its install too.
       needsSnapshot: snapshot === undefined,
-      restoredFrom: snapshot?.id,
-      image: snapshot === undefined ? this.#deps.image() : snapshot.image,
+      restoredFrom: snapshot?.id ?? build?.snapshot.id,
+      image: snapshot?.image ?? build?.image ?? this.#deps.image(),
       ignore,
+      resetStore: build !== undefined,
       launchedAt: this.#deps.now(),
     });
 
@@ -268,12 +401,21 @@ export class ContainerLaunch {
   }
 
   async #restart(api: IWorkspaceContainerAPI, spec: ContainerLaunchSpec) {
-    const record = await this.#current();
+    let record = await this.#current();
     const restoring = this.#restoring;
+    const restoringBuild = this.#restoringBuild;
 
     this.#restoring = undefined;
+    this.#restoringBuild = false;
 
-    if (restoring !== undefined) {
+    if (restoring !== undefined && restoringBuild) {
+      // A Container that does not come up from the Environment's Build, slow or dead, starts from the image, and this
+      // Workspace does not try that Build again: its own install snapshot replaces it.
+      this.#deps.warn(
+        `The Container did not answer after starting from the Environment's Build ${restoring}: starting it from the image`,
+      );
+      await this.#deps.builds?.failed(restoring);
+    } else if (restoring !== undefined) {
       // A Container that is merely slow to restore (a big snapshot on a cold host) keeps its snapshot; one that died, or
       // that the platform could not restore, does not.
       const exited = (await api.exitInfo().catch(() => null)) !== null;
@@ -285,15 +427,22 @@ export class ContainerLaunch {
       );
 
       if (exited) await this.#deps.snapshots.forget();
+    }
 
-      if (record !== undefined) {
-        await this.#remember({
-          ...record,
-          needsSnapshot: true,
-          restoredFrom: undefined,
-          image: this.#deps.image(),
-        });
-      }
+    if (record !== undefined && restoring !== undefined) {
+      record = {
+        ...record,
+        needsSnapshot: true,
+        restoredFrom: undefined,
+        image: this.#deps.image(),
+      };
+    }
+
+    // computer's restart launches from the image with its own environment: no store to reset.
+    if (record !== undefined && (restoring !== undefined || record.resetStore === true)) {
+      const { resetStore: _reset, ...rest } = record;
+
+      await this.#remember(rest);
     }
 
     // Without a record the Container is one found running that was launched before launches were recorded (as in
@@ -301,6 +450,8 @@ export class ContainerLaunch {
     const instance =
       record?.instance ??
       (this.#deps.running() ? UNRECORDED_INSTANCE : (await this.#deps.settings()).instance);
+
+    this.#deps.info("Container launch: restarted from the image (computer's restart)");
 
     return api.restart({ ...spec, instance: containerInstance(instance) });
   }

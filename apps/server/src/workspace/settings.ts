@@ -1,24 +1,24 @@
-// A Workspace's own settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Size and
-// idle). They live here, not in the Registry: the Workspace DO reads them when it launches its Container, and its
-// Worker (`Workspaces`) deploys before the main Worker that hosts the Registry, so it cannot reach the Registry. The
-// UI reads and writes them through `RegistryRpcs` (`getMachineSettings`/`updateMachineSettings`), which the main
-// Worker answers from this object.
+// A Workspace's Container settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Container
+// settings). They are its Environment's, which the Registry keeps: a Session hands them over when it readies the
+// Workspace (`prepare.ts`), since the Workspace DO reads them when it launches its Container, and its Worker
+// (`Workspaces`) deploys before the main Worker that hosts the Registry, so it cannot reach the Registry.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import {
-  resolveMachineSettings,
-  resolveMachineSettingsLeniently,
-  type MachineSettings,
-  machineOverridesFrom,
+  resolveContainerSettings,
+  resolveContainerSettingsLeniently,
+  type ContainerSettings,
+  containerOverridesFrom,
 } from "@cloudpid/config";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import type { EnvironmentBuild } from "./build-record.ts";
 
 /** Where the overrides are kept. */
 const SETTINGS_KEY = "cloudpid:workspace-settings";
 
 /** The settings in force and the overrides they come from, as plain data a Durable Object can answer over RPC. */
 export type WorkspaceSettingsAnswer = {
-  readonly settings: MachineSettings;
+  readonly settings: ContainerSettings;
   readonly overrides: Schema.Json;
   /** Why only some of the saved overrides applied, when a later release no longer accepts one. */
   readonly problem?: string;
@@ -37,7 +37,7 @@ export type SettingsStorage = {
 export const workspaceSettingsStore = (storage: SettingsStorage) => {
   const read = async (): Promise<WorkspaceSettingsAnswer> => {
     const overrides = (await storage.get<Schema.Json>(SETTINGS_KEY)) ?? {};
-    const { settings, dropped } = resolveMachineSettingsLeniently(overrides);
+    const { settings, dropped } = resolveContainerSettingsLeniently(overrides);
 
     return dropped.length === 0
       ? { settings, overrides }
@@ -45,45 +45,59 @@ export const workspaceSettingsStore = (storage: SettingsStorage) => {
   };
 
   const write = async (overrides: Schema.Json): Promise<WriteAnswer> => {
-    const resolved = resolveMachineSettings(overrides);
+    const resolved = resolveContainerSettings(overrides);
 
     if (Result.isFailure(resolved)) return { ok: false, message: resolved.failure.message };
 
     // Only what differs from the defaults is kept, so a setting left alone follows later changes of the default.
-    const kept = machineOverridesFrom(resolved.success);
+    const kept = containerOverridesFrom(resolved.success);
 
     await storage.put(SETTINGS_KEY, kept);
 
     return { ok: true, state: { settings: resolved.success, overrides: kept } };
   };
 
-  /** The overrides as stored, to put back once the rest of the storage is wiped (`Workspace.clear`). */
-  const saved = () => storage.get<Schema.Json>(SETTINGS_KEY);
+  return { read, write };
+};
 
-  /** Put back what `saved` answered; nothing saved stays nothing. */
-  const restore = async (overrides: Schema.Json | undefined): Promise<void> => {
-    if (overrides !== undefined) await storage.put(SETTINGS_KEY, overrides);
+/** Where the Environment's Build the Workspace was handed is kept, and the Builds it gave up on. */
+const BUILD_KEY = "cloudpid:environment-build";
+const FAILED_BUILDS_KEY = "cloudpid:failed-builds";
+
+/** How many Builds a Workspace remembers giving up on: the latest, as each replaces the one before. */
+const FAILED_BUILDS_KEPT = 10;
+
+/**
+ * The Workspace's copy of its Environment's Build (docs/spec.md → Builds), which its next launch with no snapshot of its
+ * own starts from (`ContainerLaunch`). A Session's readying and a spare's request hand it over with the settings
+ * (`prepare.ts`). A Build a Container did not come up from is remembered, and not offered again.
+ */
+export const workspaceBuildStore = (storage: SettingsStorage) => {
+  const failedBuilds = async () => (await storage.get<string[]>(FAILED_BUILDS_KEY)) ?? [];
+
+  return {
+    /** The Build last handed over, or null for none. */
+    read: async (): Promise<EnvironmentBuild | null> =>
+      (await storage.get<EnvironmentBuild | null>(BUILD_KEY)) ?? null,
+    /** Keep `build` (null: none) in place of the one handed over before. */
+    write: async (build: EnvironmentBuild | null): Promise<void> => {
+      await storage.put(BUILD_KEY, build);
+    },
+    /** The Build a launch may start from: the one handed over, unless a Container did not come up from it. */
+    current: async (): Promise<EnvironmentBuild | undefined> => {
+      const build = (await storage.get<EnvironmentBuild | null>(BUILD_KEY)) ?? undefined;
+
+      return build === undefined || (await failedBuilds()).includes(build.snapshot.id)
+        ? undefined
+        : build;
+    },
+    /** A Container started from the Build `id` did not come up: it is not offered again. */
+    failed: async (id: string): Promise<void> => {
+      const failed = await failedBuilds();
+
+      if (!failed.includes(id)) {
+        await storage.put(FAILED_BUILDS_KEY, [...failed, id].slice(-FAILED_BUILDS_KEPT));
+      }
+    },
   };
-
-  return { read, write, saved, restore };
 };
-
-/** The Workspaces' settings, as the main Worker reaches them: asked of each Workspace's Durable Object. */
-export type WorkspaceSettingsRemote = {
-  readonly read: (slug: string) => Promise<WorkspaceSettingsAnswer>;
-  readonly write: (slug: string, overrides: Schema.Json) => Promise<WriteAnswer>;
-};
-
-/** What the Workspace DO answers for the settings: `containerSettings` and `updateContainerSettings`. */
-type SettingsHost = {
-  containerSettings(): Promise<WorkspaceSettingsAnswer>;
-  updateContainerSettings(overrides: Schema.Json): Promise<WriteAnswer>;
-};
-
-/** The settings of the Workspace DOs `namespace` holds. */
-export const workspaceSettingsRemote = (namespace: {
-  getByName(slug: string): SettingsHost;
-}): WorkspaceSettingsRemote => ({
-  read: (slug) => namespace.getByName(slug).containerSettings(),
-  write: (slug, overrides) => namespace.getByName(slug).updateContainerSettings(overrides),
-});

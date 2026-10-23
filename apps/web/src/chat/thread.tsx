@@ -180,7 +180,7 @@ const Header = ({
 
 /** What the Session page does for the Slash commands about the Session as a whole; each resolves to null or why not. */
 export type SessionCommandActions = {
-  /** Start a Session in the same Machine and repo, and open it. */
+  /** Start a Session in the same Environment, in a new Workspace, and open it. */
   readonly newSession?: (() => Promise<string | null>) | undefined;
   /** Archive the Session. */
   readonly archive?: (() => Promise<string | null>) | undefined;
@@ -313,7 +313,7 @@ const sessionCommands = ({
   if (actions.newSession !== undefined) {
     commands.push({
       name: "new",
-      description: "Start a new session in this machine",
+      description: "Start a new session in this environment",
       argument: "none",
       run: actions.newSession,
     });

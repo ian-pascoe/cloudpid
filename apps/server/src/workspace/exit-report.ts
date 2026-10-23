@@ -6,7 +6,8 @@
 // with `exitReport`.
 //
 // Anything running in the Container can post one, so a report is treated as the Container's output, not as fact: it is
-// only ever logged, cut to size and with the GitHub token taken out.
+// only ever logged, cut to size, with the GitHub token taken out, and with the Environment's kept Secrets taken out by
+// the Workspace DO that holds them (`redact`); a report it cannot show free of them is logged without its lines.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
 import { EXIT_REPORT_BYTES, EXIT_REPORT_PATH } from "@cloudpid/sandbox-image/supervisor";
@@ -29,9 +30,21 @@ export type ExitReport = {
   readonly status: number | null;
   /** How long computerd ran, in seconds; null if unreadable. */
   readonly uptimeSeconds: number | null;
-  /** computerd's last lines, oldest first. */
+  /** computerd's last lines, oldest first; empty when they were withheld. */
   readonly output: string;
+  /** Why the lines were withheld, or null when they are logged. */
+  readonly withheld: string | null;
 };
+
+/**
+ * Takes the Environment's kept Secrets out of a report's lines: undefined when the Workspace DO cannot show them free of
+ * those (its copy does not open, or the DO cannot be reached).
+ */
+export type ExitReportRedaction = (output: string) => Promise<string | undefined>;
+
+/** Why a report's lines are withheld when they cannot be shown free of the Environment's Secrets. */
+export const WITHHELD_OUTPUT =
+  "the lines are withheld: the Workspace could not take its Environment's Secrets out of them";
 
 const header = (lines: readonly string[], name: string): number | null => {
   const value = lines.find((line) => line.startsWith(`${name}=`))?.slice(name.length + 1);
@@ -55,7 +68,22 @@ export const parseExitReport = (
     status: header(head, "status"),
     uptimeSeconds: header(head, "uptime"),
     output: split < 0 ? "" : clean.slice(split + 2).trimEnd(),
+    withheld: null,
   };
+};
+
+/** `report` with its lines passed through `redact`, or withheld when that cannot be done (it never throws). */
+export const redactExitReport = async (
+  report: ExitReport,
+  redact: ExitReportRedaction,
+): Promise<ExitReport> => {
+  if (report.output === "") return report;
+
+  const output = await redact(report.output).catch(() => undefined);
+
+  return output === undefined
+    ? { ...report, output: "", withheld: WITHHELD_OUTPUT }
+    : { ...report, output };
 };
 
 /** A body of at most `MAX_BODY_BYTES`: the rest of a longer one is not read. */
@@ -96,6 +124,8 @@ export const exitReport = async (
   options: {
     readonly workspace: string;
     readonly secret: string | undefined;
+    /** Takes the Environment's kept Secrets out of the lines (`ExitReportRedaction`). */
+    readonly redact: ExitReportRedaction;
     readonly log: (report: ExitReport) => void;
   },
 ): Promise<Response> => {
@@ -105,7 +135,9 @@ export const exitReport = async (
 
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
-  options.log(parseExitReport(await readCapped(request), options.workspace, options.secret));
+  const parsed = parseExitReport(await readCapped(request), options.workspace, options.secret);
+
+  options.log(await redactExitReport(parsed, options.redact));
 
   return new Response(null, { status: 204 });
 };

@@ -1,8 +1,9 @@
-// A Machine's own settings (`docs/spec.md` → Container and Toolchains → Size and idle): the Container's instance
-// size, how long it may sit unused before the Machine stops it, and the paths it keeps to itself on top of the
-// built-in ones. Like the global settings, every field has a
-// decoding default, so decoding the saved overrides gives the resolved settings and the schema's `Encoded` side is the
-// overrides' shape. They live in the Workspace DO, which reads them at each Container launch.
+// An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Container settings): the Container's
+// instance size, how long it may sit unused before its Workspace stops it, the paths it keeps to itself on top of the
+// built-in ones, the variables every command gets, the Environment's own Setup and Start Scripts, and its Toolchains (a
+// mise.toml). Like the global settings, every field has a decoding default, so decoding the saved overrides gives
+// the resolved settings and the schema's `Encoded` side is the overrides' shape. The Registry keeps them per
+// Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -12,8 +13,8 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
 /**
- * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in a Machine's
- * settings. Cloudflare's named instance types are stored under their own names; the others are custom sizes
+ * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in an
+ * Environment's settings. Cloudflare's named instance types are stored under their own names; the others are custom sizes
  * (`{ vcpu, memoryMib, diskMb }` in `ctx.container.start`), stored as `custom-<vCPU>` and mapped to their resources by
  * `containerInstance` at each launch. A stored name never changes meaning, so a new custom size gets a new name.
  * Smallest first.
@@ -82,7 +83,7 @@ const IdleMinutes = Schema.Int.check(
   Schema.isLessThanOrEqualTo(MAX_IDLE_MINUTES),
 );
 
-/** The most extra Container-only paths a Machine may have. */
+/** The most extra Container-only paths an Environment may have. */
 export const MAX_IGNORE_PATTERNS = 50;
 
 /** The longest extra Container-only path. */
@@ -129,7 +130,7 @@ export const ignorePatternProblem = (pattern: string): string | undefined => {
   }
 
   if (Arr.every(parts, (part) => part === "**" || part === "*")) {
-    return "would keep the whole Machine on the Container";
+    return "would keep the whole Workspace on the Container";
   }
 
   return undefined;
@@ -143,29 +144,160 @@ const IgnorePattern = Schema.String.check(
   }),
 );
 
-export const MachineSettings = Schema.Struct({
+/** The most variables an Environment may have. */
+export const MAX_VARIABLES = 50;
+
+/** The longest variable name. */
+const MAX_VARIABLE_NAME_LENGTH = 128;
+
+/** The longest variable value. */
+export const MAX_VARIABLE_VALUE_LENGTH = 4096;
+
+/**
+ * The names a variable may not have: what the Container sets for every command itself (`toolchainEnv` in
+ * `@cloudpid/sandbox-image/toolchains`, which this package cannot import: a test there checks each of its names is here,
+ * and what computerd starts a command with),
+ * which a variable would otherwise override, and `CLOUDPID_`'s prefix, which is cloudpid's own.
+ */
+const RESERVED_VARIABLES: ReadonlySet<string> = new Set([
+  "MISE_GLOBAL_CONFIG_FILE",
+  "MISE_TRUSTED_CONFIG_PATHS",
+  "MISE_YES",
+  "GIT_TERMINAL_PROMPT",
+  "TURBO_CACHE_DIR",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "PATH",
+  "HOME",
+  "PWD",
+  "SHELL",
+  "USER",
+]);
+
+const RESERVED_PREFIX = "CLOUDPID_";
+
+/** Why `name` cannot be a variable's, or undefined when it can: a name a shell can export, and not one the Container sets. */
+export const variableNameProblem = (name: string): string | undefined => {
+  if (name === "") return "is empty";
+
+  if (name.length > MAX_VARIABLE_NAME_LENGTH) {
+    return `is longer than ${MAX_VARIABLE_NAME_LENGTH} characters`;
+  }
+
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    return "must be letters, digits and _, and not start with a digit";
+  }
+
+  if (RESERVED_VARIABLES.has(name)) return "is reserved: the Container sets it itself";
+
+  if (name.startsWith(RESERVED_PREFIX))
+    return `is reserved: ${RESERVED_PREFIX} names are cloudpid's`;
+
+  return undefined;
+};
+
+/**
+ * Why the names of `variables` cannot all be variables', one problem per name. A check of the record, not a key
+ * schema: a key that fails the record's key schema is reported as an excess property, which would hide why.
+ */
+const variableNamesProblem = (variables: Readonly<Record<string, string>>): string | undefined => {
+  const problems = Arr.flatMap(Record.keys(variables), (name) => {
+    const problem = variableNameProblem(name);
+
+    return problem === undefined ? [] : [`${JSON.stringify(name)} ${problem}`];
+  });
+
+  return problems.length === 0 ? undefined : Arr.join(problems, "; ");
+};
+
+/** Whether `text` has a NUL, which neither an environment variable nor a bash script can hold. */
+const hasNul = (text: string): boolean => text.includes("\u0000");
+
+const VariableValue = Schema.String.check(
+  Schema.isMaxLength(MAX_VARIABLE_VALUE_LENGTH),
+  Schema.makeFilter((value: string) => (hasNul(value) ? "contains a NUL character" : undefined)),
+);
+
+/**
+ * The largest Setup or Start Script, in bytes of UTF-8. The bootstrap passes one to the Container base64-encoded in the
+ * text of a bash command, and Linux takes one argument of at most 128 KiB.
+ */
+export const MAX_SCRIPT_BYTES = 64 * 1024;
+
+const utf8 = new TextEncoder();
+
+/** Why `script` cannot be an Environment's Setup or Start Script, or undefined when it can. */
+export const scriptProblem = (script: string): string | undefined => {
+  if (hasNul(script)) return "contains a NUL character";
+
+  // A character is at most 3 bytes of UTF-8 (a pair of surrogates 4): only a long script needs encoding.
+  if (script.length > MAX_SCRIPT_BYTES / 3 && utf8.encode(script).length > MAX_SCRIPT_BYTES) {
+    return `is longer than ${MAX_SCRIPT_BYTES / 1024} KiB`;
+  }
+
+  return undefined;
+};
+
+const Script = Schema.String.check(Schema.makeFilter(scriptProblem));
+
+/**
+ * The largest Toolchains setting (a mise.toml), in bytes of UTF-8. The bootstrap passes it to the Container
+ * base64-encoded in its own text, beside the rest of the bootstrap.
+ */
+export const MAX_TOOLCHAINS_BYTES = 16 * 1024;
+
+/** Why `toml` cannot be an Environment's Toolchains (its mise.toml), or undefined when it can. Its TOML is mise's to read. */
+export const toolchainsProblem = (toml: string): string | undefined => {
+  if (hasNul(toml)) return "contains a NUL character";
+
+  if (toml.length > MAX_TOOLCHAINS_BYTES / 3 && utf8.encode(toml).length > MAX_TOOLCHAINS_BYTES) {
+    return `is longer than ${MAX_TOOLCHAINS_BYTES / 1024} KiB`;
+  }
+
+  return undefined;
+};
+
+const Toolchains = Schema.String.check(Schema.makeFilter(toolchainsProblem));
+
+export const ContainerSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-2"))),
   /** Minutes without a command on the Container before it is stopped (a disk snapshot is taken first). */
   idleMinutes: IdleMinutes.pipe(Schema.withDecodingDefaultKey(Effect.succeed(5))),
   /**
-   * Paths the Container keeps to itself, out of the Machine, after the built-in ones (`TOOLCHAIN_IGNORE`), as
+   * Paths the Container keeps to itself, out of the Workspace's Durable Object, after the built-in ones (`TOOLCHAIN_IGNORE`), as
    * computer's `ignore` patterns: the last one that matches a path wins, so `!` keeps a built-in one synced.
    */
   ignore: Schema.Array(IgnorePattern)
     .check(Schema.isMaxLength(MAX_IGNORE_PATTERNS))
     .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /**
+   * Environment variables every command on the Container gets, and its bootstrap and scripts, under the Container's own
+   * (`toolchainEnv`) and what a caller passes. Plain: the agent can read them.
+   */
+  variables: Schema.Record(Schema.String, VariableValue)
+    .check(Schema.isMaxProperties(MAX_VARIABLES), Schema.makeFilter(variableNamesProblem))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
+  /** The Environment's own Setup Script (bash), run in `/workspace` before the repos' when it is due. Empty: none. */
+  setupScript: Script.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  /** The Environment's Start Script (bash), run in `/workspace` at each Container start before the repos'. Empty: none. */
+  startScript: Script.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  /**
+   * The Environment's Toolchains: the text of the `mise.toml` the bootstrap writes as `/workspace/mise.toml` where the
+   * Workspace has none, or has the one it last wrote. Empty: the image's base Toolchains (`BASE_MISE_TOML`).
+   */
+  toolchains: Toolchains.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
 });
 
-export type MachineSettings = typeof MachineSettings.Type;
+export type ContainerSettings = typeof ContainerSettings.Type;
 
 /** What is stored: the settings that differ from the defaults. */
-export type MachineSettingsOverrides = typeof MachineSettings.Encoded;
+export type ContainerSettingsOverrides = typeof ContainerSettings.Encoded;
 
-export class MachineSettingsError extends Schema.TaggedError<
-  MachineSettingsError,
+export class ContainerSettingsError extends Schema.TaggedError<
+  ContainerSettingsError,
   { readonly brand: unique symbol }
->()("MachineSettingsError", {
+>()("ContainerSettingsError", {
   message: Schema.String,
 }) {}
 
@@ -184,17 +316,17 @@ const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
     return { keys, line: path === "" ? issue.message : `${path}: ${issue.message}` };
   });
 
-const decodeOverrides = Schema.decodeUnknownResult(MachineSettings, {
+const decodeOverrides = Schema.decodeUnknownResult(ContainerSettings, {
   onExcessProperty: "error",
   errors: "all",
 });
 
 /** The settings `overrides` give over the defaults, or why they are not valid settings, one problem per line. */
-export const resolveMachineSettings = (
+export const resolveContainerSettings = (
   overrides: Schema.Json,
-): Result.Result<MachineSettings, MachineSettingsError> =>
+): Result.Result<ContainerSettings, ContainerSettingsError> =>
   Result.mapError(decodeOverrides(overrides), (error) =>
-    MachineSettingsError.make({
+    ContainerSettingsError.make({
       message: Arr.join(
         Arr.map(problemsOf(error), (problem) => problem.line),
         "\n",
@@ -204,31 +336,41 @@ export const resolveMachineSettings = (
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
-export const DEFAULT_MACHINE_SETTINGS: MachineSettings = Schema.decodeSync(MachineSettings)({});
+export const DEFAULT_CONTAINER_SETTINGS: ContainerSettings = Schema.decodeSync(ContainerSettings)(
+  {},
+);
 
 /** The overrides that make the defaults into `settings`: only what differs. What a settings form saves. */
-export const machineOverridesFrom = (settings: MachineSettings): MachineSettingsOverrides => {
+export const containerOverridesFrom = (settings: ContainerSettings): ContainerSettingsOverrides => {
   const overrides: {
-    -readonly [K in keyof MachineSettingsOverrides]: MachineSettingsOverrides[K];
+    -readonly [K in keyof ContainerSettingsOverrides]: ContainerSettingsOverrides[K];
   } = {};
 
-  if (settings.instance !== DEFAULT_MACHINE_SETTINGS.instance) {
+  if (settings.instance !== DEFAULT_CONTAINER_SETTINGS.instance) {
     overrides.instance = settings.instance;
   }
 
-  if (settings.idleMinutes !== DEFAULT_MACHINE_SETTINGS.idleMinutes) {
+  if (settings.idleMinutes !== DEFAULT_CONTAINER_SETTINGS.idleMinutes) {
     overrides.idleMinutes = settings.idleMinutes;
   }
 
   if (settings.ignore.length > 0) overrides.ignore = settings.ignore;
 
+  if (!Record.isEmptyRecord(settings.variables)) overrides.variables = settings.variables;
+
+  if (settings.setupScript !== "") overrides.setupScript = settings.setupScript;
+
+  if (settings.startScript !== "") overrides.startScript = settings.startScript;
+
+  if (settings.toolchains !== "") overrides.toolchains = settings.toolchains;
+
   return overrides;
 };
 
 /** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
-export type LenientMachineSettings = {
-  readonly settings: MachineSettings;
-  /** One line per override dropped, as `resolveMachineSettings` words it. */
+export type LenientContainerSettings = {
+  readonly settings: ContainerSettings;
+  /** One line per override dropped, as `resolveContainerSettings` words it. */
   readonly dropped: ReadonlyArray<string>;
 };
 
@@ -238,12 +380,14 @@ const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
 /**
  * The settings `overrides` give once every override that does not resolve is dropped, so a value a later release stops
  * accepting (an instance type Cloudflare retires) costs only itself. Reading what was saved is lenient and writing is
- * strict (`resolveMachineSettings`), as for the global settings.
+ * strict (`resolveContainerSettings`), as for the global settings.
  */
-export const resolveMachineSettingsLeniently = (overrides: Schema.Json): LenientMachineSettings => {
+export const resolveContainerSettingsLeniently = (
+  overrides: Schema.Json,
+): LenientContainerSettings => {
   if (!isJsonObject(overrides)) {
     return {
-      settings: DEFAULT_MACHINE_SETTINGS,
+      settings: DEFAULT_CONTAINER_SETTINGS,
       dropped: Result.isSuccess(decodeOverrides(overrides)) ? [] : ["not an object"],
     };
   }
@@ -251,8 +395,8 @@ export const resolveMachineSettingsLeniently = (overrides: Schema.Json): Lenient
   let rest: Schema.JsonObject = overrides;
   const dropped: string[] = [];
 
-  // Dropping a key settles its problem; a round per key covers a document with several.
-  for (let round = 0; round < 4; round += 1) {
+  // Dropping a key settles its problem; a round per key, and one for what is left, covers a document with several.
+  for (let round = 0; round <= Record.size(overrides); round += 1) {
     const result = decodeOverrides(rest);
 
     if (Result.isSuccess(result)) return { settings: result.success, dropped };
@@ -268,5 +412,5 @@ export const resolveMachineSettingsLeniently = (overrides: Schema.Json): Lenient
     rest = Record.filter(rest, (_, key) => !bad.has(key));
   }
 
-  return { settings: DEFAULT_MACHINE_SETTINGS, dropped };
+  return { settings: DEFAULT_CONTAINER_SETTINGS, dropped };
 };

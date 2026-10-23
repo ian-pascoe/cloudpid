@@ -362,4 +362,46 @@ describe("IdleStop", () => {
     await fire(idle);
     expect(state.stops).toBe(1);
   });
+
+  describe("stopping now, as a spare Workspace does once it is prepared", () => {
+    it("snapshots and stops the Container though it was just used", async () => {
+      const { state, idle } = open();
+
+      await idle.begin();
+      await idle.end();
+      await idle.stop();
+
+      expect(state.snapshots).toBe(1);
+      expect(state.stops).toBe(1);
+    });
+
+    it("keeps the Container while a command runs", async () => {
+      const { state, idle } = open();
+
+      await idle.begin();
+      await idle.stop();
+
+      expect(state.snapshots).toBe(0);
+      expect(state.stops).toBe(0);
+    });
+
+    it("keeps the Container when a use arrives during the snapshot, leaving the alarm to it", async () => {
+      const { state, idle, fire } = open();
+
+      await idle.touch();
+      state.duringSnapshot = async () => {
+        state.now += 5_000;
+        await idle.touch();
+      };
+
+      await idle.stop();
+
+      expect(state.stops).toBe(0);
+
+      state.duringSnapshot = undefined;
+      state.now += 15 * MINUTE;
+      await fire(idle);
+      expect(state.stops).toBe(1);
+    });
+  });
 });
