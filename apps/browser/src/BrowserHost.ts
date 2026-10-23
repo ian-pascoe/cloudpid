@@ -10,9 +10,11 @@ import {
   BROWSER_KEEP_ALIVE_MS,
   type BrowserHostRpc,
   type BrowserRun,
+  type HandoffEnded,
   type HandoffStarted,
   type HandoffStartInput,
   type HandoffStatus,
+  type LiveViewLinks,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -109,12 +111,17 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     return { ...rest, output: output ?? content ?? [] };
   }
 
-  /**
-   * Hand conversation `input.conversationId`'s tab to the owner (`Cloudflare.handoff`) and mint the Live View link. The
-   * link is for the owner alone and goes only to the Session DO, which shows it to the owner's clients.
-   */
+  /** Hand conversation `input.conversationId`'s tab to the owner (`Cloudflare.handoff`), noting its viewport. */
   startHandoff(input: HandoffStartInput): Promise<HandoffStarted> {
     return this.#handoffs.start(input);
+  }
+
+  /**
+   * Mint 60-second Live View links to handoff `requestId`'s tab and the windows it opened. They are for the owner alone
+   * and go only to the Session DO, which answers the one client that asked; none is kept.
+   */
+  liveView(requestId: string): Promise<LiveViewLinks> {
+    return this.#handoffs.liveView(requestId);
   }
 
   /** Wait up to `maxMs` for the handoff `requestId` to end, and say where it stands. */
@@ -122,8 +129,11 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     return this.#handoffs.wait(requestId, maxMs);
   }
 
-  /** Finish handoff `requestId`, ending it in Browser Run if the owner has not, and forget it. */
-  endHandoff(requestId: string): Promise<void> {
+  /**
+   * Finish handoff `requestId`, ending it in Browser Run if the owner has not, give the agent its viewport back, and
+   * forget it; says the origins of the windows the tab left open.
+   */
+  endHandoff(requestId: string): Promise<HandoffEnded> {
     return this.#handoffs.end(requestId);
   }
 

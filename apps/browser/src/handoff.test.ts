@@ -3,6 +3,7 @@
 // event, and finds a handoff again after the host restarts (a second `HandoffHost` over the same records).
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
 import type { Schema } from "effect";
+import * as Predicate from "effect/Predicate";
 import type * as Types from "effect/Types";
 import { describe, expect, it } from "vitest";
 import {
@@ -64,17 +65,15 @@ const fakeTransport = (replies: Partial<Record<string, Reply>> = {}) => {
   const sent: Sent[] = [];
   let listener: (event: CdpEvent) => void = () => undefined;
   let closing: () => void = () => undefined;
-  const state = {
-    closed: false,
-    viewport: { width: 780, height: 493, deviceScaleFactor: 1 } as Viewport,
-    ignoreOverrides: 0,
-  };
+  const viewport: Viewport = { width: 780, height: 493, deviceScaleFactor: 1 };
+  const state = { closed: false, viewport, ignoreOverrides: 0 };
 
-  const defaults: Record<string, Reply> = {
+  const defaults = {
     "Target.attachToTarget": { sessionId: "cdp-1" },
     "Target.getTargets": { targetInfos: [page("tab-1", { attached: true })] },
     "Cloudflare.getLiveView": (params) => {
-      const targetId = typeof params?.["targetId"] === "string" ? params["targetId"] : "newest";
+      const asked = params?.["targetId"];
+      const targetId = Predicate.isString(asked) ? asked : "newest";
 
       return {
         webSocketDebuggerUrl: linkTo(targetId),
@@ -100,7 +99,7 @@ const fakeTransport = (replies: Partial<Record<string, Reply>> = {}) => {
       return {};
     },
     "Runtime.evaluate": () => ({ result: { type: "object", value: { ...state.viewport } } }),
-  };
+  } satisfies Record<string, Reply>;
 
   const transport: CdpTransport = {
     send: (method, params, sessionId) => {
@@ -114,9 +113,11 @@ const fakeTransport = (replies: Partial<Record<string, Reply>> = {}) => {
 
       if (state.closed) return Promise.reject(new Error("closed"));
 
-      const reply = replies[method] ?? defaults[method] ?? null;
+      // SAFETY: `method in defaults` says it is one of the defaults' keys.
+      const reply: Reply =
+        replies[method] ?? (method in defaults ? defaults[method as keyof typeof defaults] : null);
 
-      return Promise.resolve(typeof reply === "function" ? reply(params) : reply);
+      return Promise.resolve(Predicate.isFunction(reply) ? reply(params) : reply);
     },
     onEvent: (next) => {
       listener = next;
@@ -192,19 +193,19 @@ const COMPLETE = (params: Schema.Json): CdpEvent => ({
 });
 
 describe("a Browser Handoff in the browser host", () => {
-  it("attaches to the conversation's tab, mints a tab Live View link, and starts Browser Run's handoff", async () => {
+  it("attaches to the conversation's tab, notes its viewport, and starts Browser Run's handoff without minting a link", async () => {
     const cdp = fakeTransport();
-    const { host, asked, opened } = hostOver([cdp]);
+    const { host, asked, opened, store } = hostOver([cdp]);
 
-    expect(await host.start(REQUEST)).toEqual({ url: URL_OF_VIEW, startedAt: 1_000 });
+    expect(await host.start(REQUEST)).toEqual({ startedAt: 1_000 });
     expect(asked).toEqual([3]);
     expect(opened).toEqual(["browser-1"]);
 
     expect(cdp.sent).toEqual([
       { method: "Target.attachToTarget", params: { targetId: "tab-1", flatten: true } },
       {
-        method: "Cloudflare.getLiveView",
-        params: { mode: "tab", expiresInMs: 1_800_000 },
+        method: "Runtime.evaluate",
+        params: { expression: expect.stringContaining("innerWidth"), returnByValue: true },
         sessionId: "cdp-1",
       },
       {
@@ -213,6 +214,8 @@ describe("a Browser Handoff in the browser host", () => {
         sessionId: "cdp-1",
       },
     ]);
+    expect(cdp.methods()).not.toContain("Cloudflare.getLiveView");
+    expect(JSON.stringify([...store.list({ prefix: "" })])).not.toContain(TOKEN);
   });
 
   it("answers a second start under the same request with the same handoff", async () => {
@@ -221,8 +224,13 @@ describe("a Browser Handoff in the browser host", () => {
 
     await host.start(REQUEST);
 
-    expect(await host.start(REQUEST)).toEqual({ url: URL_OF_VIEW, startedAt: 1_000 });
+    expect(await host.start(REQUEST)).toEqual({ startedAt: 1_000 });
     expect(cdp.methods().filter((method) => method === "Cloudflare.handoff")).toHaveLength(1);
+
+    // Once the owner has finished, a start that comes again says the handoff is over.
+    cdp.emit(COMPLETE({ success: true }));
+
+    expect(await host.start(REQUEST)).toEqual({ startedAt: 1_000, over: true });
   });
 
   it("fails when the conversation has no tab, or the tab cannot be attached", async () => {
@@ -332,7 +340,13 @@ describe("a Browser Handoff in the browser host", () => {
 
     expect(await waiting).toEqual({ state: "complete", success: true });
     expect(opened).toEqual(["browser-1"]);
-    expect(second.methods()).toEqual(["Target.attachToTarget", "Cloudflare.getHandoffState"]);
+    expect(second.methods()).toEqual([
+      "Target.attachToTarget",
+      "Cloudflare.getHandoffState",
+      // The agent's viewport, given back.
+      "Emulation.setDeviceMetricsOverride",
+      "Runtime.evaluate",
+    ]);
   });
 
   it("says a handoff that ended while the host was away ended, and one whose browser is gone too", async () => {
@@ -405,7 +419,7 @@ describe("a Browser Handoff in the browser host", () => {
     await host.start(REQUEST);
     await host.end("7");
 
-    expect(cdp.sent.at(-1)).toEqual({
+    expect(cdp.sent).toContainEqual({
       method: "Cloudflare.handoffComplete",
       params: { success: false, reason: "The agent stopped waiting" },
       sessionId: "cdp-1",
@@ -438,24 +452,13 @@ describe("a Browser Handoff in the browser host", () => {
     await host.end("7");
 
     expect(opened).toEqual(["browser-1"]);
-    expect(restarted.sent.at(-1)).toEqual({
+    expect(restarted.sent).toContainEqual({
       method: "Cloudflare.handoffComplete",
       params: { success: false, reason: "The agent stopped waiting" },
       sessionId: "cdp-1",
     });
     expect(restarted.state.closed).toBe(true);
     expect(await host.wait("7", 10)).toEqual({ state: "unknown" });
-  });
-
-  it("forgets the Live View link once the handoff settles", async () => {
-    const store = records();
-    const cdp = fakeTransport();
-    const { host } = hostOver([cdp], store);
-
-    await host.start(REQUEST);
-    cdp.emit(COMPLETE({ success: true }));
-
-    expect(JSON.stringify([...store.list({ prefix: "" })])).not.toContain("SECRET-TOKEN");
   });
 
   it("joins a second start of the same request while the first is in flight, and opens one handoff", async () => {
@@ -479,7 +482,7 @@ describe("a Browser Handoff in the browser host", () => {
     await starting;
     await ending;
 
-    expect(cdp.sent.at(-1)?.method).toBe("Cloudflare.handoffComplete");
+    expect(cdp.methods()).toContain("Cloudflare.handoffComplete");
     expect(cdp.state.closed).toBe(true);
     expect(await host.wait("7", 10)).toEqual({ state: "unknown" });
     await expect(host.start(REQUEST)).rejects.toThrow(/already ended/);
@@ -509,5 +512,228 @@ describe("a Browser Handoff in the browser host", () => {
     clock.now += 3_600_000;
     expect(host.prune()).toBeUndefined();
     expect([...store.list({ prefix: "handoff-ended:" })]).toEqual([]);
+  });
+});
+
+/** Where a page is, as the agent's code would see it after a handoff. */
+const settledViewport = (cdp: ReturnType<typeof fakeTransport>) => cdp.state.viewport;
+
+/** The owner's phone, connected to the tab, sets its own size. */
+const PHONE: Viewport = { width: 390, height: 844, deviceScaleFactor: 3 };
+
+describe("Live View links", () => {
+  it("mints a 60-second link for the tab and for each window it opened, directly or through another, by target", async () => {
+    const cdp = fakeTransport({
+      "Target.getTargets": {
+        targetInfos: [
+          page("other-tab"),
+          page("tab-1", { attached: true }),
+          page("popup-1", { openerId: "tab-1", canAccessOpener: true, title: "Sign in" }),
+          page("popup-2", { openerId: "popup-1", title: "Approve" }),
+          page("stranger", { openerId: "other-tab" }),
+          { ...page("worker"), type: "service_worker", openerId: "tab-1" },
+        ],
+      },
+    });
+
+    const { host, store } = hostOver([cdp]);
+
+    await host.start(REQUEST);
+
+    const from = cdp.sent.length;
+
+    expect(await host.liveView("7")).toEqual({
+      tab: { targetId: "tab-1", link: linkTo("tab-1") },
+      windows: [
+        { targetId: "popup-1", openerId: "tab-1", title: "Sign in", link: linkTo("popup-1") },
+        { targetId: "popup-2", openerId: "popup-1", title: "Approve", link: linkTo("popup-2") },
+      ],
+    });
+
+    const minted = cdp.sent.slice(from).filter((sent) => sent.method === "Cloudflare.getLiveView");
+
+    // Each with its own target: without one, Browser Run picks the newest page, not the handed-over tab.
+    expect(minted.map((sent) => sent.params)).toEqual([
+      { mode: "tab", expiresInMs: 60_000, targetId: "tab-1" },
+      { mode: "tab", expiresInMs: 60_000, targetId: "popup-1" },
+      { mode: "tab", expiresInMs: 60_000, targetId: "popup-2" },
+    ]);
+    // The windows are read on the browser, not in the tab's session.
+    expect(cdp.sent.find((sent) => sent.method === "Target.getTargets")).toEqual({
+      method: "Target.getTargets",
+      params: {},
+    });
+    // A link is the client's: it is not kept.
+    expect(JSON.stringify([...store.list({ prefix: "" })])).not.toContain(TOKEN);
+  });
+
+  it("mints anew each time it is asked, on a new connection after the host restarted", async () => {
+    const store = records();
+
+    await hostOver([fakeTransport()], store).host.start(REQUEST);
+
+    const restarted = fakeTransport();
+    const { host, opened } = hostOver([restarted], store);
+
+    expect((await host.liveView("7")).tab).toEqual({ targetId: "tab-1", link: linkTo("tab-1") });
+    expect((await host.liveView("7")).windows).toEqual([]);
+    expect(opened).toEqual(["browser-1"]);
+    expect(
+      restarted.methods().filter((method) => method === "Cloudflare.getLiveView"),
+    ).toHaveLength(2);
+  });
+
+  it("refuses a handoff that is over, however it ended, and one it never had", async () => {
+    const done = fakeTransport();
+    const finished = hostOver([done]).host;
+
+    await finished.start(REQUEST);
+    done.emit(COMPLETE({ success: true }));
+    await expect(finished.liveView("7")).rejects.toThrow("the handoff is over");
+
+    const stopped = hostOver([fakeTransport()]).host;
+
+    await stopped.start(REQUEST);
+    await stopped.end("7");
+    await expect(stopped.liveView("7")).rejects.toThrow("the handoff is over");
+
+    const lost = fakeTransport({ "Cloudflare.getHandoffState": { active: false } });
+    const timedOut = hostOver([lost]).host;
+
+    await timedOut.start(REQUEST);
+    expect(await timedOut.wait("7", 10)).toEqual({ state: "ended" });
+    await expect(timedOut.liveView("7")).rejects.toThrow("the handoff is over");
+
+    await expect(hostOver([]).host.liveView("nope")).rejects.toThrow("the handoff is over");
+    expect(lost.methods()).not.toContain("Cloudflare.getLiveView");
+  });
+});
+
+describe("the agent's viewport after a handoff", () => {
+  /** A started handoff whose tab the owner's phone resized. */
+  const resizedByPhone = async (
+    agent: Viewport = { width: 780, height: 493, deviceScaleFactor: 1 },
+  ) => {
+    const cdp = fakeTransport();
+
+    cdp.state.viewport = { ...agent };
+
+    const over = hostOver([cdp]);
+
+    await over.host.start(REQUEST);
+    cdp.state.viewport = { ...PHONE };
+
+    return { ...over, cdp };
+  };
+
+  const RESTORE = {
+    method: "Emulation.setDeviceMetricsOverride",
+    params: { width: 1000, height: 700, deviceScaleFactor: 1, mobile: false },
+    sessionId: "cdp-1",
+  };
+
+  it("is set back to the size the tab had at the start when the owner presses Done", async () => {
+    const { host, cdp } = await resizedByPhone({ width: 1000, height: 700, deviceScaleFactor: 1 });
+
+    cdp.emit(COMPLETE({ handoffId: "handoff-1", success: true }));
+
+    expect(await host.wait("7", 10)).toEqual({ state: "complete", success: true });
+    expect(cdp.sent).toContainEqual(RESTORE);
+    expect(settledViewport(cdp)).toEqual({ width: 1000, height: 700, deviceScaleFactor: 1 });
+  });
+
+  it("is set back when the owner reports failure", async () => {
+    const { host, cdp } = await resizedByPhone();
+
+    cdp.emit(COMPLETE({ success: false, reason: "No code came" }));
+    await host.wait("7", 10);
+
+    expect(settledViewport(cdp)).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
+  });
+
+  it("is set back when Browser Run times the handoff out", async () => {
+    const { host, cdp } = await resizedByPhone();
+
+    cdp.emit(COMPLETE({ success: false, reason: "Handoff timed out" }));
+    await host.wait("7", 10);
+
+    expect(settledViewport(cdp)).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
+
+    const lost = await resizedByPhone();
+
+    lost.cdp.transport.send = (
+      (send) => (method, params, sessionId) =>
+        method === "Cloudflare.getHandoffState"
+          ? Promise.resolve({ active: false })
+          : send(method, params, sessionId)
+    )(lost.cdp.transport.send.bind(lost.cdp.transport));
+
+    expect(await lost.host.wait("7", 10)).toEqual({ state: "ended" });
+    expect(settledViewport(lost.cdp)).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
+  });
+
+  it("is set back when the agent stops waiting, before the connection closes", async () => {
+    const { host, cdp } = await resizedByPhone();
+
+    await host.end("7");
+
+    expect(settledViewport(cdp)).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
+    expect(cdp.state.closed).toBe(true);
+  });
+
+  it("is set again when the tab's width does not show the first try, and set once per handoff", async () => {
+    const { host, cdp } = await resizedByPhone();
+
+    cdp.state.ignoreOverrides = 1;
+    cdp.emit(COMPLETE({ success: true }));
+    await host.wait("7", 10);
+    await host.end("7");
+
+    expect(settledViewport(cdp)).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
+    expect(
+      cdp.methods().filter((method) => method === "Emulation.setDeviceMetricsOverride"),
+    ).toHaveLength(2);
+  });
+});
+
+describe("the windows a handoff leaves open", () => {
+  it("are told by origin only, never by URL", async () => {
+    const cdp = fakeTransport({
+      "Target.getTargets": {
+        targetInfos: [
+          page("tab-1", { attached: true }),
+          page("popup-1", {
+            openerId: "tab-1",
+            url: "https://accounts.example.com/oauth/callback?code=SECRET-CODE",
+          }),
+          page("popup-2", { openerId: "popup-1", url: "https://id.example.org:8443/approve" }),
+          page("blank", { openerId: "tab-1", url: "about:blank" }),
+          page("other-tab", { url: "https://elsewhere.example.net/" }),
+        ],
+      },
+    });
+
+    const { host } = hostOver([cdp]);
+
+    await host.start(REQUEST);
+    cdp.emit(COMPLETE({ success: true }));
+    await host.wait("7", 10);
+
+    const ended = await host.end("7");
+
+    expect(ended).toEqual({
+      // Breadth first: a window after the one that opened it.
+      windows: ["https://accounts.example.com", "about:blank", "https://id.example.org:8443"],
+    });
+    expect(JSON.stringify(ended)).not.toContain("SECRET-CODE");
+  });
+
+  it("are none when the tab opened none, or the handoff is not there", async () => {
+    const { host } = hostOver([fakeTransport()]);
+
+    await host.start(REQUEST);
+
+    expect(await host.end("7")).toEqual({ windows: [] });
+    expect(await host.end("nope")).toEqual({ windows: [] });
   });
 });
