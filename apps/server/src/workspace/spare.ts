@@ -5,7 +5,8 @@
 // the settings, the clones on `SPARE_BRANCH`, their Setup and Start Scripts, the bootstrap), holding the Container from
 // the idle stop meanwhile, then snapshots the Container and stops it as the idle stop does, unless a Session took the
 // spare meanwhile (anything but the preparation used the object: `noteUse`), whose Container is then left to the idle
-// stop as any Workspace's. A readying that fails is
+// stop as any Workspace's. That use is kept (`markUsed`), so a request that comes after it (the main Worker's upkeep
+// asking again) or an eviction does not prepare, nor stop, a Workspace a Session works in. A readying that fails is
 // logged and the spare is left as it is: the Session that takes it readies it as usual. An object evicted midway finds
 // the request at its next alarm (the idle stop's, armed by the hold) and starts again, a few times at most.
 // @effect-diagnostics asyncFunction:off
@@ -22,6 +23,10 @@ export type SparePreparationDeps = {
   readonly load: () => Promise<SpareRequest | undefined>;
   readonly save: (request: SpareRequest) => Promise<void>;
   readonly clear: () => Promise<void>;
+  /** Whether a use other than the preparation's was kept (`markUsed`). */
+  readonly used: () => boolean;
+  /** Keep that something other than the preparation used the object: a Session took it. */
+  readonly markUsed: () => void;
   /** Have the object's alarm fire by `at`, keeping one set for earlier. */
   readonly wake: (at: number) => Promise<void>;
   /** Ready the Workspace with `setup` on the object's own Container, its bootstrap included. */
@@ -39,16 +44,25 @@ const LOG_KEY = "workspace.spare";
 export class SparePreparation {
   readonly #deps: SparePreparationDeps;
   #inflight: Promise<void> | undefined;
-  /** Whether anything but the preparation used the object since the request: a Session took the spare. In memory. */
-  #taken = false;
+  /** Whether anything but the preparation used the object: a Session took the spare. Kept, never undone. */
+  #used: boolean;
 
   constructor(deps: SparePreparationDeps) {
     this.#deps = deps;
+    this.#used = deps.used();
   }
 
-  /** Keep `setup` to prepare the spare with, and wake the object for it. Answers before any of the work. */
+  /**
+   * Keep `setup` to prepare the spare with, and wake the object for it. Answers before any of the work. A Workspace a
+   * Session took is not prepared again.
+   */
   async request(setup: WorkspaceSetup): Promise<void> {
-    this.#taken = false;
+    if (this.#used) {
+      this.#deps.info(`${LOG_KEY}: asked to prepare a Workspace already in use; nothing done`);
+
+      return;
+    }
+
     await this.#deps.save({ setup, attempts: 0 });
     await this.#deps.wake(this.#deps.now());
   }
@@ -65,10 +79,13 @@ export class SparePreparation {
 
   /**
    * Something other than the preparation used the object (a Session's command, file operation, readying or early
-   * start): the spare is taken, so the preparation leaves its Container running when it ends.
+   * start): the spare is taken, so the preparation leaves its Container running when it ends, and none begins after.
    */
   noteUse(): void {
-    this.#taken = true;
+    if (this.#used) return;
+
+    this.#used = true;
+    this.#deps.markUsed();
   }
 
   /** The alarm: start the preparation a request waits for, unless one runs. Answers once it has begun. */
@@ -78,6 +95,13 @@ export class SparePreparation {
     const request = await this.#deps.load();
 
     if (request === undefined || this.#inflight !== undefined) return;
+
+    if (this.#used) {
+      await this.#deps.clear();
+      this.#deps.info(`${LOG_KEY}: taken before its preparation began; not prepared`);
+
+      return;
+    }
 
     if (request.attempts >= SPARE_ATTEMPTS) {
       await this.#deps.clear();
@@ -124,7 +148,7 @@ export class SparePreparation {
     try {
       await this.#deps.clear();
 
-      if (prepared && this.#taken) {
+      if (prepared && this.#used) {
         info(`${LOG_KEY}: taken while it was prepared; its Container is left to the idle stop`);
       } else if (prepared) {
         // Stopped as at an idle stop: snapshotted first, so the Session that takes it restores it.

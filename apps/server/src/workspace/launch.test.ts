@@ -481,6 +481,10 @@ describe("a launch from the Environment's Build", () => {
     });
     // The Workspace's own snapshot's lifetime is not the Build's.
     expect(state.restores).toBe(0);
+    // The log says what it started from.
+    expect(state.infos).toContainEqual(
+      expect.stringContaining("Build build-1, with computerd's store reset"),
+    );
   });
 
   it("prefers the Workspace's own snapshot, which has its files", async () => {
@@ -509,6 +513,8 @@ describe("a launch from the Environment's Build", () => {
       expect(state.starts[0]?.containerSnapshot).toBeUndefined();
       expect(state.starts[0]?.env).toEqual(specFor(BUILT_IN).env);
       expect(state.record?.resetStore).toBeFalsy();
+      expect(state.infos).toContainEqual(expect.stringContaining("build-1 is not used"));
+      expect(state.infos).toContainEqual(expect.stringContaining("from the image"));
     }
   });
 

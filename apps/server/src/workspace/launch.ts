@@ -264,12 +264,26 @@ export class ContainerLaunch {
   async #usableBuild(ignore: readonly string[] | undefined): Promise<EnvironmentBuild | undefined> {
     const build = await this.#deps.builds?.current();
 
-    if (
-      build === undefined ||
-      build.image !== this.#deps.image() ||
-      !samePaths(build.ignore ?? undefined, ignore) ||
-      this.#deps.now() - build.finishedAt > SNAPSHOT_MAX_AGE_MS
-    ) {
+    if (build === undefined) {
+      this.#deps.info("Container launch: no Environment's Build held (or it failed here)");
+
+      return undefined;
+    }
+
+    const unusable =
+      build.image !== this.#deps.image()
+        ? `it is of image ${build.image}, a launch runs ${this.#deps.image() ?? "an unknown one"}`
+        : !samePaths(build.ignore ?? undefined, ignore)
+          ? "its Container-only paths differ from the launch's"
+          : this.#deps.now() - build.finishedAt > SNAPSHOT_MAX_AGE_MS
+            ? "it is older than a snapshot's lifetime"
+            : undefined;
+
+    if (unusable !== undefined) {
+      this.#deps.info(
+        `Container launch: the Environment's Build ${build.snapshot.id} is not used: ${unusable}`,
+      );
+
       return undefined;
     }
 
@@ -335,6 +349,18 @@ export class ContainerLaunch {
       launch = { ...spec, instance: size };
       info = await api.start(launch);
     }
+
+    this.#deps.info(
+      info.outcome === "adopted"
+        ? `Container launch: the running Container was adopted${kept?.resetStore === true ? ", asking again for the store reset it started with" : ""}`
+        : `Container launch: ${info.outcome} from ${
+            snapshot !== undefined
+              ? `the Workspace's snapshot ${snapshot.id}`
+              : build !== undefined
+                ? `the Environment's Build ${build.snapshot.id}, with computerd's store reset`
+                : "the image"
+          }`,
+    );
 
     if (info.outcome === "adopted") {
       // Nothing launched. One adopted with no record (started before launches were recorded) gets one.
@@ -424,6 +450,8 @@ export class ContainerLaunch {
     const instance =
       record?.instance ??
       (this.#deps.running() ? UNRECORDED_INSTANCE : (await this.#deps.settings()).instance);
+
+    this.#deps.info("Container launch: restarted from the image (computer's restart)");
 
     return api.restart({ ...spec, instance: containerInstance(instance) });
   }

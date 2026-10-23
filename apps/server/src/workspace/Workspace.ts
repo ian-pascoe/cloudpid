@@ -113,6 +113,9 @@ const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 /** Where a spare Workspace's preparation is kept until it is done (`SparePreparation`). */
 const SPARE_KEY = "cloudpid:spare-preparation";
 
+/** Kept once a Session used the Workspace, so it is never prepared, nor stopped, as a spare again (`SparePreparation`). */
+const SPARE_USED_KEY = "cloudpid:spare-used";
+
 /** Where a Build's object keeps its Builds (`BuildRunner`); only a Build's object has it. */
 const BUILDS_KEY = "cloudpid:builds";
 
@@ -358,6 +361,8 @@ export class Workspace extends ContainerHost {
       clear: async () => {
         await ctx.storage.delete(SPARE_KEY);
       },
+      used: () => ctx.storage.kv.get<boolean>(SPARE_USED_KEY) === true,
+      markUsed: () => ctx.storage.kv.put(SPARE_USED_KEY, true),
       wake: async (at) => {
         const set = await ctx.storage.getAlarm();
 

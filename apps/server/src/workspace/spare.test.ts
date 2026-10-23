@@ -22,6 +22,9 @@ type FakeState = {
   /** `running` as it was when each readying began. */
   held: number[];
   stops: number;
+  /** The use the object keeps (`markUsed`), and how often it was written. */
+  used: boolean;
+  markedUsed: number;
   warnings: string[];
   infos: string[];
   /** Resolves the readying in flight, or fails it. */
@@ -38,6 +41,8 @@ const open = () => {
     running: 0,
     held: [],
     stops: 0,
+    used: false,
+    markedUsed: 0,
     warnings: [],
     infos: [],
     finish: undefined,
@@ -51,6 +56,11 @@ const open = () => {
       },
       clear: async () => {
         state.stored = undefined;
+      },
+      used: () => state.used,
+      markUsed: () => {
+        state.used = true;
+        state.markedUsed++;
       },
       wake: async (at) => {
         if (state.alarm === undefined || at < state.alarm) state.alarm = at;
@@ -136,16 +146,59 @@ describe("SparePreparation", () => {
     expect(state.infos).toContainEqual(expect.stringContaining("taken"));
   });
 
-  it("counts a use between the request and the alarm as taking it too", async () => {
+  it("prepares nothing when a use came between the request and the alarm, and forgets the request", async () => {
     const { state, spare, settle } = open();
 
     await spare.request(setup);
     spare.noteUse();
     await spare.alarm();
     await settle();
+
+    expect(state.prepared).toEqual([]);
+    expect(state.stops).toBe(0);
+    expect(state.stored).toBeUndefined();
+  });
+
+  it("keeps the use, once, and ignores a request that comes after it: no preparation and no stop", async () => {
+    const { state, spare, settle } = open();
+
+    await spare.request(setup);
+    await spare.alarm();
+    await settle();
+    spare.noteUse();
+    spare.noteUse();
     state.finish?.();
     await settle();
 
+    // The main Worker's upkeep asks again once the Session works in it.
+    await spare.request(setup);
+    await spare.alarm();
+    await settle();
+
+    expect(state.markedUsed).toBe(1);
+    expect(state.prepared).toHaveLength(1);
+    expect(state.stored).toBeUndefined();
+    expect(state.stops).toBe(0);
+  });
+
+  it("remembers the use in an object evicted midway, which neither prepares again nor stops the Container", async () => {
+    const { state, spare, make, settle } = open();
+
+    await spare.request(setup);
+    await spare.alarm();
+    await settle();
+    spare.noteUse();
+
+    // Evicted: a new instance over the same storage, its alarm firing later.
+    const after = make();
+
+    await after.alarm();
+    await settle();
+    await after.request(setup);
+    await settle();
+
+    expect(state.prepared).toHaveLength(1);
+    expect(state.stored).toBeUndefined();
     expect(state.stops).toBe(0);
   });
 
