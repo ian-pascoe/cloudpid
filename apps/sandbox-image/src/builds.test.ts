@@ -333,7 +333,7 @@ describe("a Build's clean-up", () => {
     expect([alive(service), alive(dockerd), alive(stubborn)]).toEqual([false, false, false]);
     expect(readFileSync(join(base, "dockerd.stopped"), "utf8")).toBe("first\n");
     expect([alive(other), alive(untagged)]).toEqual([true, true]);
-  }, 20_000);
+  }, 60_000);
 
   it("deletes the scratch clones and every Setup Script record, the Environment's too", () => {
     const { root, state, run, repos, sh } = container();

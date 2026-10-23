@@ -161,12 +161,13 @@ ours() {
 # left [name]: the pids of the Build's processes still running, but this script's own and its ancestors' (the exec that
 # runs it); of those named <name> only, when given.
 left() {
-  local dir pid
-  for dir in /proc/[0-9]*; do
-    pid=\${dir#/proc/}
+  local file pid
+  # One grep over every process's environment (NUL-separated, so -z), not one per process: a busy machine has hundreds.
+  for file in $(grep -lzxF -- "$tag" /proc/[0-9]*/environ 2>/dev/null); do
+    pid=\${file#/proc/}
+    pid=\${pid%/environ}
     [ "$pid" = 1 ] && continue
-    tr '\\0' '\\n' <"$dir/environ" 2>/dev/null | grep -qxF -- "$tag" || continue
-    [ -n "\${1:-}" ] && [ "$(cat "$dir/comm" 2>/dev/null)" != "$1" ] && continue
+    [ -n "\${1:-}" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" != "$1" ] && continue
     ours "$pid" && continue
     ancestor "$pid" && continue
     echo "$pid"
