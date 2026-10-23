@@ -30,6 +30,7 @@ import {
   type FileMatches,
   type HistoryPage,
   type SessionUsage,
+  type ContainerUsage,
   type TaskGraphSummary,
   type TodoTask,
   USER_ENTRY_KIND,
@@ -246,6 +247,11 @@ export type SessionHostOptions<R = never> = {
    * and must not wait for what `env` waits for, such as the Session's Workspace being readied. Defaults to `env`.
    */
   readonly lookupEnv?: HarnessOptions["env"];
+  /**
+   * What the Session's Workspace's Containers have cost, read with its usage (null: none ran, or the Session has no
+   * Workspace). A read that fails leaves it out of that message.
+   */
+  readonly containerUsage?: (() => Promise<ContainerUsage | null>) | undefined;
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
   /** How long a submitted message's expansion may take before it goes as typed. Defaults to `EXPAND_TIMEOUT`. */
@@ -1508,6 +1514,19 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
   );
 
+  /** What the Workspace's Containers have cost, or null when it is not known: its failure only leaves it out. */
+  const readContainerUsage = async (
+    warn: (message: string) => void,
+  ): Promise<ContainerUsage | null> => {
+    try {
+      return (await options.containerUsage?.()) ?? null;
+    } catch (error) {
+      warn(error instanceof Error ? error.message : String(error));
+
+      return null;
+    }
+  };
+
   /** The Session's usage and limit; one per change, the first being how it stands. */
   const usageUpdates = Stream.callback<SessionUsage, SessionError>((queue) =>
     Effect.flatMap(Effect.context<never>(), (services) =>
@@ -1538,10 +1557,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                   changed = false;
 
                   try {
-                    const totals = await sessionTotals(harness.harness, kv);
+                    const [totals, container] = await Promise.all([
+                      sessionTotals(harness.harness, kv),
+                      readContainerUsage((message) => {
+                        run(Effect.logWarning("Container usage read failed", message));
+                      }),
+                    ]);
 
                     if (!stopped) {
-                      Queue.offerUnsafe(queue, usageMessage(totals, settings.current().spendLimit));
+                      Queue.offerUnsafe(
+                        queue,
+                        usageMessage(totals, settings.current().spendLimit, container),
+                      );
                     }
                   } catch (error) {
                     // One failed read must not stop the watch: the next change reads again.

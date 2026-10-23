@@ -57,7 +57,10 @@ type Fake = {
 
 const DAY = 24 * 60 * 60_000;
 
-const open = (settings: Partial<ContainerSettings> = {}) => {
+const open = (
+  settings: Partial<ContainerSettings> = {},
+  labels?: Readonly<Record<string, string>>,
+) => {
   const state: Fake = {
     settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
     running: false,
@@ -162,6 +165,7 @@ const open = (settings: Partial<ContainerSettings> = {}) => {
       now: () => state.now,
       warn: (message) => state.warnings.push(message),
       info: (message) => state.infos.push(message),
+      labels,
     });
 
   const launch = make();
@@ -170,6 +174,24 @@ const open = (settings: Partial<ContainerSettings> = {}) => {
 };
 
 describe("a launch", () => {
+  it("carries the Workspace's labels, on a start and on computer's restart", async () => {
+    const { state, container } = open({}, { "cloudpid-workspace": "abc" });
+
+    await container.start({ ...SPEC, labels: { other: "1" } });
+    await container.restart(SPEC);
+
+    expect(state.starts[0]?.labels).toEqual({ other: "1", "cloudpid-workspace": "abc" });
+    expect(state.restarts[0]?.labels).toEqual({ "cloudpid-workspace": "abc" });
+  });
+
+  it("adds no labels when the Workspace has none", async () => {
+    const { state, container } = open();
+
+    await container.start(SPEC);
+
+    expect(state.starts[0]).not.toHaveProperty("labels");
+  });
+
   it("starts on the instance type of the Workspace's settings", async () => {
     const { state, container } = open({ instance: "standard-4" });
 
