@@ -4,7 +4,7 @@
 // Session's own storage. The limit is enforced at the model seam, as the secret scrubbing and the image limit are: a
 // request over the limit never reaches the proxy and ends as an error the Harness already knows how to end a run with.
 import { aroundRequests, failedStream, type ModelRequest } from "@cloudpid/telemetry";
-import type { ContainerUsage, SessionUsage } from "@cloudpid/protocol";
+import type { SessionUsage } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
@@ -93,16 +93,11 @@ export type Ledger = { readonly usage: (context: Context) => Promise<UsageState>
 export const sessionTotals = async (ledger: Ledger, kv: SettingsKv): Promise<Totals> =>
   plusTotals(totalsOf(await ledger.usage(BACKGROUND_CONTEXT)), titleTotals(kv));
 
-/** What a client is shown: the totals, the limit in force, and what the Workspace's Containers cost, when known. */
-export const usageMessage = (
-  totals: Totals,
-  limit: number | null,
-  container: ContainerUsage | null = null,
-): SessionUsage => {
-  const message: SessionUsage = { ...totals, limit };
-
-  return container === null ? message : { ...message, container };
-};
+/** What a client is shown: the totals and the limit in force. */
+export const usageMessage = (totals: Totals, limit: number | null): SessionUsage => ({
+  ...totals,
+  limit,
+});
 
 /** Whether `spent` has reached `limit`. */
 export const isOverLimit = (spent: number, limit: number): boolean => spent >= limit;

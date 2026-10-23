@@ -31,7 +31,6 @@ import {
 } from "@cloudpid/computer-env";
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
-import type { ContainerUsage } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -40,8 +39,6 @@ import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import { IdleStop } from "./idle.ts";
-import { containerAnalytics, WORKSPACE_LABEL } from "./container-analytics.ts";
-import { ContainerUsageLedger, type ContainerUsageRecord } from "./container-usage.ts";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
@@ -95,13 +92,6 @@ export type WorkspaceEnv = {
    * userspace shim refuses an ignore list and exits. Anything else applies `TOOLCHAIN_IGNORE` and the Workspace's own.
    */
   readonly CONTAINER_FUSE?: string;
-  /**
-   * An API token with Account Analytics Read (`CLOUDPID_ANALYTICS_TOKEN`) and the account it reads
-   * (`CLOUDFLARE_ACCOUNT_ID`), for Cloudflare's usage analytics of the Containers. Either absent or empty, the
-   * Containers' cost is estimated (`ContainerUsageLedger`).
-   */
-  readonly CLOUDPID_ANALYTICS_TOKEN?: string;
-  readonly CLOUDFLARE_ACCOUNT_ID?: string;
 };
 
 /** The loopback bindings of the Workspaces Worker's entry (`worker.ts`) that the Workspace DO hands the platform. */
@@ -118,9 +108,6 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 /** Where the Container's launch (its instance type, idle time, paths, snapshot) and its latest snapshot are kept. */
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
-
-/** Where what the Containers have cost is kept (`ContainerUsageLedger`). */
-const USAGE_KEY = "cloudpid:container-usage";
 
 /** Where a spare Workspace's preparation is kept until it is done (`SparePreparation`). */
 const SPARE_KEY = "cloudpid:spare-preparation";
@@ -151,7 +138,6 @@ export class Workspace extends ContainerHost {
   readonly #host: WorkspaceEnvHost;
   readonly #container: PerLaunchContainerBackend;
   readonly #idle: IdleStop;
-  readonly #usage: ContainerUsageLedger;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
   /** The Environment's Build this Workspace was handed, which its first launch starts from. */
@@ -245,49 +231,7 @@ export class Workspace extends ContainerHost {
       now: () => Date.now(),
       warn: (message) => console.warn(message),
       info: (message) => console.info(message),
-      // Cloudflare's usage analytics find the Workspace's Containers by this label.
-      labels: { [WORKSPACE_LABEL]: ctx.id.toString() },
     });
-
-    const analytics =
-      env.CLOUDPID_ANALYTICS_TOKEN !== undefined &&
-      env.CLOUDPID_ANALYTICS_TOKEN !== "" &&
-      env.CLOUDFLARE_ACCOUNT_ID !== undefined &&
-      env.CLOUDFLARE_ACCOUNT_ID !== ""
-        ? containerAnalytics({
-            token: env.CLOUDPID_ANALYTICS_TOKEN,
-            accountId: env.CLOUDFLARE_ACCOUNT_ID,
-          })
-        : undefined;
-
-    const usage = (this.#usage = new ContainerUsageLedger({
-      load: () => ctx.storage.kv.get<ContainerUsageRecord>(USAGE_KEY),
-      save: (record) => ctx.storage.kv.put(USAGE_KEY, record),
-      running: () => ctx.container?.running === true,
-      launch: async () => {
-        const record = await ctx.storage.get<LaunchRecord>(LAUNCH_KEY);
-
-        return record === undefined
-          ? undefined
-          : { instance: record.instance, launchedAt: record.launchedAt };
-      },
-      until: () => this.#idle.stopsBy(),
-      analytics:
-        analytics === undefined ? undefined : (windows) => analytics(ctx.id.toString(), windows),
-      now: () => Date.now(),
-      warn: (message) => console.warn(message),
-    }));
-
-    /** Note a use or a busy change of the Container in the ledger; a failure only makes the estimate rougher. */
-    const tally = (note: Promise<void>) =>
-      note.catch((cause: unknown) => console.warn("container usage: tracking failed", cause));
-
-    /** Stop the Container, and end its run in the ledger. */
-    const destroyContainer = async () => {
-      if (ctx.container?.running === true) await ctx.container.destroy();
-
-      await tally(usage.stopped());
-    };
 
     this.#idle = new IdleStop({
       idleMs: () => launch.idleMs(),
@@ -303,9 +247,9 @@ export class Workspace extends ContainerHost {
       snapshot: async () => {
         if (!(await this.#builds.isBuild())) await launch.snapshot("idle");
       },
-      stop: destroyContainer,
-      used: () => void tally(usage.seen()),
-      busy: (busy) => void tally(usage.busy(busy)),
+      stop: async () => {
+        if (ctx.container?.running === true) await ctx.container.destroy();
+      },
     });
 
     // The Container starts when a command first asks for it, not with the object.
@@ -429,7 +373,9 @@ export class Workspace extends ContainerHost {
         this.#ownHost(`computer:build:${ctx.id.toString()}`).run(script, timeoutSeconds, scriptEnv),
       secrets: () => environmentSecrets.read(),
       snapshot: () => launch.captureBuild(),
-      stop: destroyContainer,
+      stop: async () => {
+        if (ctx.container?.running === true) await ctx.container.destroy();
+      },
       idle: this.#idle,
       redact,
       newId: () => crypto.randomUUID(),
@@ -642,18 +588,6 @@ export class Workspace extends ContainerHost {
     await this.#snapshots.forget();
 
     if (this.ctx.container?.running === true) await this.ctx.container.destroy();
-
-    await this.#usage.stopped().catch((cause: unknown) => {
-      console.warn("container usage: tracking failed", cause);
-    });
-  }
-
-  /**
-   * What the Workspace's Containers have cost so far (`ContainerUsageLedger`), for a Session's header; null when none has
-   * run. Not a use of the Workspace: it starts nothing, and a spare's preparation goes on.
-   */
-  async containerUsage(): Promise<ContainerUsage | null> {
-    return (await this.#usage.read()) ?? null;
   }
 
   /**

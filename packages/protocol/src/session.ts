@@ -2,7 +2,7 @@
 // The shapes follow the socket protocol of Cloudflare's `agents` pi example (`examples/next/harnesses/pi`, MIT), in
 // Effect `Schema`: commands carry an optional `id` that a `result` or `error` answers, and every watched conversation
 // streams `events` batches whose first batch is a `snapshot`.
-import { InstanceType, ModelId, ThinkingLevel } from "@cloudpid/config";
+import { ModelId, ThinkingLevel } from "@cloudpid/config";
 import type {
   AgentEvent,
   ConversationId as PiConversationId,
@@ -360,60 +360,10 @@ export const TaskGraphMessage = Schema.Struct({
   ...TaskGraphSummary.fields,
 });
 
-/** What a Container of one size costs per second, in US dollars (`containerRates` of `@cloudpid/config`). */
-export const ContainerRates = Schema.Struct({
-  memory: Schema.Finite,
-  disk: Schema.Finite,
-  /** Per busy second: every vCPU at full use. */
-  cpu: Schema.Finite,
-});
-
-/**
- * What the Session's Workspace's Containers have cost (`docs/spec.md` → Operations → Usage), at Cloudflare's list prices:
- * Cloudflare's usage analytics up to `reportedThrough`, and after it (or throughout, where the deployment has no analytics
- * token) an estimate: memory and disk for every second a Container ran, CPU as every vCPU at full use while commands
- * ran on it. It is the Workspace's, so Sessions that share a Workspace each show all of it. The amounts are as of
- * `asOf`; while a Container runs, a client adds `rates` for the time since, up to `until`.
- */
-export const ContainerUsage = Schema.Struct({
-  /** The size of the Container that runs, else of the last one. */
-  instance: InstanceType,
-  /** Seconds the Workspace's Containers have run, every launch summed, as the Workspace counted them. */
-  runSeconds: Schema.Finite,
-  /** CPU seconds used: reported, then estimated. */
-  cpuSeconds: Schema.Finite,
-  /** Bytes sent out, as reported (none is estimated). */
-  egressBytes: Schema.Finite,
-  /** US dollars of memory, disk, CPU and egress. */
-  memory: Schema.Finite,
-  disk: Schema.Finite,
-  cpu: Schema.Finite,
-  egress: Schema.Finite,
-  /** Epoch milliseconds Cloudflare's analytics cover the usage to; null when they cover none of it. */
-  reportedThrough: Schema.NullOr(Schema.Finite),
-  /** Epoch milliseconds the figures were read at. */
-  asOf: Schema.Finite,
-  /** Whether a Container ran at `asOf`. */
-  running: Schema.Boolean,
-  /** Whether a command ran on it at `asOf`, so its CPU grows too. */
-  busy: Schema.Boolean,
-  /** The running Container's rates; zero when none runs. */
-  rates: ContainerRates,
-  /**
-   * The latest the running Container goes on without another use (its idle stop), epoch milliseconds; null while a
-   * command runs, or when it is not known.
-   */
-  until: Schema.NullOr(Schema.Finite),
-});
-
-export type ContainerUsage = typeof ContainerUsage.Type;
-
 /**
  * What the Session has spent on model requests (`docs/spec.md` → Telemetry), as pi-durable's `pi.usage` counts it:
  * every conversation of the Session, subagents' included, and the title call, which has no conversation. Token counts
- * are as the provider reported them; `cost` is in US dollars, as the model catalog prices the tokens. `container` is
- * what its Workspace's Containers have cost, absent when no Container has run or it could not be read; it is not part of
- * `cost`, and the spend limit holds `cost` only.
+ * are as the provider reported them; `cost` is in US dollars, as the model catalog prices the tokens.
  */
 export const SessionUsage = Schema.Struct({
   input: Schema.Finite,
@@ -424,7 +374,6 @@ export const SessionUsage = Schema.Struct({
   cost: Schema.Finite,
   /** The Session's spend limit in US dollars, or null when it has none. A Session at it stops before its next request. */
   limit: Schema.NullOr(Schema.Finite),
-  container: Schema.optionalKey(ContainerUsage),
 });
 
 export type SessionUsage = typeof SessionUsage.Type;
