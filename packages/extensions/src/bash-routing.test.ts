@@ -1,9 +1,20 @@
 // Which backend `bash` runs a command on when the model names none (docs/spec.md → Backends): the Worker Shell unless
 // the command needs something it does not have. The table is the heuristic's contract, one row per decision.
-// @effect-diagnostics preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { describe, expect, it } from "vitest";
-import { routeCommand } from "./bash-routing.ts";
+import {
+  type BashRoute,
+  probeAnswer,
+  probeScript,
+  resolveRoute,
+  routeCommand,
+  workerShellCannot,
+} from "./bash-routing.ts";
 import type { BashBackend } from "./coding-tools.ts";
+
+/** Where `command` runs on a Worker Shell that has `programs` besides the ones the router knows (none by default). */
+const route = (command: string, programs: readonly string[] = []): Promise<BashRoute> =>
+  resolveRoute(routeCommand(command), async () => new Set(programs));
 
 type Row = readonly [command: string, because: string];
 
@@ -45,6 +56,9 @@ const worker: readonly Row[] = [
   ["type cat", "type asks for a built-in"],
   ["tree -L 2", "tree"],
   ["date +%s", "date"],
+  ["cd /workspace/repo && cat src/a.ts", "cd into a repo, then read"],
+  ["cd repo && cat -n src/a.ts | sed -n '1,80p'", "cd, then a pipeline"],
+  ["cd repo && cat a.ts 2>&1 | head -100", "stderr into the pipe"],
 
   // Variables, assignments, substitutions, shell syntax.
   ["FOO=1", "an assignment"],
@@ -72,6 +86,10 @@ const worker: readonly Row[] = [
   ["cat <<-EOF\n\tnpm test\n\tEOF", "an indented heredoc"],
   ["cat <<< 'node x'", "a here-string is data"],
   ["cat a.txt \\\n  | wc -l", "a line continuation"],
+  ["case $x in a) cat f;; b|c) echo x;; esac", "a case of built-ins"],
+  ["case $x in (a) cat f ;& *) ls; esac", "( before a pattern, ;&, a last clause without ;;"],
+  ["case $x in\n  *.ts) echo ts ;;\n  *) cat f ;;\nesac\nls", "a case over lines, then a built-in"],
+  ["case $(cat v) in 1) echo one;; esac", "a built-in substitution in the case word"],
   ["echo hi\ncat a.txt", "newline lists"],
 
   // Wrappers around a built-in.
@@ -126,9 +144,10 @@ const container: readonly Row[] = [
   ["wget https://example.com/x", "wget"],
   ["yq .a config.yaml", "yq is not in the Worker Shell"],
   ["sqlite3 db.sqlite .tables", "sqlite3 is not in the Worker Shell"],
-  ["mktemp", "mktemp is not in the Worker Shell"],
+  ["mktemp", "mktemp is not in the Worker Shell (it says so when asked)"],
   ["ps aux", "ps"],
-  ["unknown-tool --flag", "anything unknown"],
+  ["unknown-tool --flag", "anything the Worker Shell does not have"],
+  ["realpath src | head", "a program the Worker Shell does not have, in a pipeline"],
 
   // Paths and the shell's own dynamic parts.
   ["./script.sh", "a relative path"],
@@ -143,7 +162,10 @@ const container: readonly Row[] = [
   ['eval "$cmd"', "eval of an unknown string"],
   ["$CMD --version", "a command named by a variable"],
   ['"$TOOL" run', "a quoted variable as the command"],
-  ["case $x in a) cat f;; esac", "case is left to bash"],
+  ["case $x in a) node f;; esac", "inside a case clause"],
+  ["case $(node -v) in v2*) echo old;; esac", "inside the case word"],
+  ["case x in", "a case that does not end"],
+  ["select x in a b; do echo $x; done", "select is left to bash"],
 
   // One command that needs it sends the whole call.
   ["cat package.json | node -e 'process.stdin.pipe(process.stdout)'", "the end of a pipeline"],
@@ -167,6 +189,8 @@ const container: readonly Row[] = [
   ["cat <<EOF\n$(node -v)\nEOF", "a substitution in an unquoted heredoc body"],
   ["[[ -f a ]] && node a", "after [[ ]]"],
   ["diff <(node a.js) b.txt", "process substitution is left to bash"],
+  ["diff <(sort a.txt) <(sort b.txt)", "computer's Worker Shell does not parse it"],
+  ["cat a.txt > >(wc -l)", "nor an output process substitution"],
   ["echo 'unterminated", "a command that does not parse"],
   ["echo $(node -v", "an unclosed substitution"],
 
@@ -256,16 +280,176 @@ const container: readonly Row[] = [
 ];
 
 describe("routeCommand", () => {
-  it.each(worker)("runs `%s` on the Worker Shell (%s)", (command) => {
-    const route = routeCommand(command);
-
-    expect(route.backend).toBe<BashBackend>("worker");
+  it.each(worker)("runs `%s` on the Worker Shell (%s)", async (command) => {
+    expect(routeCommand(command)).toMatchObject({ backend: "worker", unknown: [] });
+    expect((await route(command)).backend).toBe<BashBackend>("worker");
   });
 
-  it.each(container)("runs `%s` in the Container (%s)", (command) => {
-    const route = routeCommand(command);
+  it.each(container)("runs `%s` in the Container (%s)", async (command) => {
+    expect((await route(command)).backend).toBe<BashBackend>("container");
+  });
 
-    expect(route.backend).toBe<BashBackend>("container");
+  it.each([
+    ["realpath src", ["realpath"]],
+    ["cd repo && cat a.ts | less", ["less"]],
+    ["uname -a; cmp a b", ["uname", "cmp"]],
+    ["which xxd", ["xxd"]],
+    ["find . -exec file {} +", ["file"]],
+  ] as const)(
+    "asks the Worker Shell about the programs of `%s` it does not know",
+    async (command, unknown) => {
+      expect(routeCommand(command)).toMatchObject({ backend: "worker", unknown });
+      expect(await route(command, unknown)).toMatchObject({ backend: "worker", unknown: [] });
+
+      // One it does not have sends the command to the Container, and the reason names it.
+      const without = await route(command, unknown.slice(1));
+
+      expect(without.backend).toBe<BashBackend>("container");
+      expect(without.reason).toContain(unknown[0]);
+    },
+  );
+
+  it("asks nothing about programs it knows the Worker Shell lacks, or about names that are no program", () => {
+    expect(routeCommand("cat a | node")).toMatchObject({ backend: "container", unknown: [] });
+    expect(routeCommand("ls && 'a b'")).toMatchObject({ backend: "container", unknown: [] });
+  });
+
+  it("does not ask the Worker Shell when the command needs no unknown program", async () => {
+    let asked = false;
+
+    await resolveRoute(routeCommand("cat a.txt"), async () => {
+      asked = true;
+
+      return new Set();
+    });
+
+    expect(asked).toBe(false);
+  });
+
+  it("asks with a script that prints each program the Worker Shell has, then the end", () => {
+    expect(probeScript(["realpath", "x.y"])).toBe(
+      [
+        "command -v 'realpath' >/dev/null 2>&1 && echo 'realpath'",
+        "command -v 'x.y' >/dev/null 2>&1 && echo 'x.y'",
+        "echo '-- end of probe --'",
+      ].join("\n"),
+    );
+  });
+
+  it("trusts an answer only when it reached the end of the script", () => {
+    expect(probeAnswer(["realpath", "less"], "realpath\n-- end of probe --\n")).toEqual(
+      new Set(["realpath"]),
+    );
+    expect(probeAnswer(["realpath", "less"], "-- end of probe --\n")).toEqual(new Set());
+    expect(probeAnswer(["realpath", "less"], "realpath\n")).toBeUndefined();
+    expect(probeAnswer(["realpath"], "")).toBeUndefined();
+  });
+
+  it("leaves no unknown program in a route it sends to the Container", async () => {
+    expect(await route("realpath src")).toMatchObject({ backend: "container", unknown: [] });
+  });
+
+  it.each([
+    "cat a.txt",
+    "grep -rn x . | sort | uniq -c > /dev/null",
+    "cat a 2>&1 >&2 | head",
+    "cat a &>/dev/null",
+    "sed -n '1,20p' a.ts",
+    "sed 's/a/b/g' a.ts",
+    "sort -u a",
+    "uniq -c a",
+    "awk '{print $1}' a",
+    "tar tzf a.tgz",
+    "gzip -c a",
+    "find . -name '*.ts' -exec grep -l x {} +",
+    "git status && git log --oneline -5",
+    "cd src && ls",
+    "x=$(cat v); echo $x",
+  ])("finds that `%s` writes no file", (command) => {
+    expect(routeCommand(command).writes).toBeUndefined();
+  });
+
+  it.each([
+    "cat a > b",
+    "echo x >> log",
+    "cat a &> out",
+    "cat a >| b",
+    "cat <<EOF > notes.md\nx\nEOF",
+    "echo $(cat a > b)",
+    "rm -rf dist",
+    "mkdir -p a && touch a/b",
+    "cp a b",
+    "mv a b",
+    "ls | tee out",
+    "sed -i 's/a/b/' a.ts",
+    "sed -ni 's/a/b/p' a.ts",
+    "sed --in-place=.bak 's/a/b/' a.ts",
+    "sed -i.bak 's/a/b/' a.ts",
+    "sed -i'' 's/a/b/' a.ts",
+    "sed -Ei 's/a/b/' a.ts",
+    "sort -uo a a",
+    "sort -oa a",
+    "sort --output=a a",
+    "awk -f prog.awk a",
+    "sed -n '/x/w out' a",
+    "sort -o a a",
+    "uniq a b",
+    "awk '{print > \"out\"}' a",
+    "awk '{system(\"rm x\")}' a",
+    "find . -name '*.log' -delete",
+    "find . -exec rm {} \\;",
+    "ls | xargs rm",
+    "tar czf out.tgz src",
+    "gzip a",
+    "bash -c 'cat a > b'",
+    "realpath a",
+  ])("finds that `%s` may write a file", (command) => {
+    expect(routeCommand(command).writes).toBeDefined();
+  });
+
+  it.each([
+    ["bash: realpath: command not found\n", "bash: realpath: command not found"],
+    ["a\nls: unrecognized option '--color=auto'\n", "ls: unrecognized option '--color=auto'"],
+    ["wc: invalid option -- 'L'\n", "wc: invalid option -- 'L'"],
+    [
+      "bash: syntax error: Parse error at 1:7: Expected redirection target\n",
+      "bash: syntax error: Parse error at 1:7: Expected redirection target",
+    ],
+    [
+      "rg: PCRE2 is not supported. Use standard regex syntax\n",
+      "rg: PCRE2 is not supported. Use standard regex syntax",
+    ],
+    [
+      'git: this repository\'s packfiles are 20 MB, more than the Worker Shell can read (limit 16 MB). Rerun with backend: "container".\n',
+      'git: this repository\'s packfiles are 20 MB, more than the Worker Shell can read (limit 16 MB). Rerun with backend: "container".',
+    ],
+  ])("reads `%s` on stderr as the Worker Shell unable to run the command", (stderr, line) => {
+    expect(workerShellCannot({ stdout: "", stderr })).toBe(line);
+  });
+
+  it.each([
+    "bash: realpath: command not found\n",
+    "bash: syntax error: Parse error at 1:7: Expected redirection target\n",
+  ])("reads the shell's own `%s` on stdout too, where `2>&1` puts it", (stdout) => {
+    expect(workerShellCannot({ stdout, stderr: "" })).toBe(stdout.trim());
+  });
+
+  it.each([
+    "",
+    "src/a.ts:3: bash: x: command not found\n",
+    "grep: a.txt: No such file or directory\n",
+    "bash: set: x: invalid option name\n",
+    '  // the message says to rerun with backend: "container".\n',
+  ])("reads `%s` on stderr as an ordinary result", (stderr) => {
+    expect(workerShellCannot({ stdout: "", stderr })).toBeUndefined();
+  });
+
+  it.each([
+    "ls: unrecognized option '--color=auto'\n",
+    "Note: streaming is not supported here\n",
+    'git: this repository\'s packfiles are 20 MB, more than the Worker Shell can read (limit 16 MB). Rerun with backend: "container".\n',
+  ])("reads `%s` on stdout as what a file holds, not the Worker Shell's", (stdout) => {
+    expect(workerShellCannot({ stdout, stderr: "" })).toBeUndefined();
   });
 
   it("names the command that needs the Container", () => {
