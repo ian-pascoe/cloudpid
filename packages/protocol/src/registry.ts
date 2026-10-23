@@ -342,8 +342,9 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Delete an Environment for good: every Workspace made from it (each as `removeWorkspace`), then its record. The
-   * default Environment cannot be deleted. A failure partway leaves what is not yet deleted listed, to try again.
+   * Delete an Environment for good: every Workspace made from it (each as `removeWorkspace`), its spare Workspace, its
+   * Build object, then its record and the Secrets kept for it. The default Environment cannot be deleted. A failure
+   * partway leaves what is not yet deleted listed, to try again.
    */
   Rpc.make("deleteEnvironment", {
     payload: { environment: EnvironmentId },
@@ -368,7 +369,10 @@ export class RegistryRpcs extends RpcGroup.make(
     payload: { environment: EnvironmentId, repo: RepoName },
     error: EnvironmentError,
   }),
-  /** An Environment's Container settings (size, idle time, Container-only paths) in force, and their overrides. */
+  /**
+   * An Environment's Container settings in force (size, idle time, Container-only paths, variables, Setup and Start
+   * Scripts, Toolchains), and their overrides.
+   */
   Rpc.make("getEnvironmentSettings", {
     payload: { environment: EnvironmentId },
     success: ContainerSettingsState,
@@ -435,7 +439,7 @@ export class RegistryRpcs extends RpcGroup.make(
   /** Every Workspace, of every Environment, newest first. */
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
   /**
-   * Remove a Workspace (`docs/spec.md` → Workspace removal): every Session in it (archived ones too, each as
+   * Remove a Workspace (`GLOSSARY.md` → Workspace removal): every Session in it (archived ones too, each as
    * `deleteSession`), then its files and Container, uncommitted changes and unpushed commits included, then its record.
    * What it pushed stays on the remote. A failure partway leaves what is not yet deleted, to try again.
    */

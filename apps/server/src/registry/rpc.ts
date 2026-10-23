@@ -7,8 +7,8 @@ import {
   parseRepoSource,
   RegistryRpcs,
   SessionActionError,
+  ownBranchProblem,
   SessionNotFound,
-  SPARE_BRANCH,
 } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Arr from "effect/Array";
@@ -21,6 +21,7 @@ import * as RpcServer from "effect/rpc/RpcServer";
 import { buildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
+import { noEnvironment, reason, thenSaying } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import type { EnvironmentNaming, SessionRecord, SessionRefusal, WorkspaceRecord } from "./store.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -100,47 +101,71 @@ export const legacyCleanup = (
 
 /** The upkeep of the Environments' spare Workspaces (`spareUpkeep`). Neither ever fails: what goes wrong is logged. */
 export type Spares = {
-  /** Keep every Environment's spare current. Once a run finds nothing to do, this isolate does no more. */
+  /**
+   * Keep every Environment's spare current. Once a run finds nothing to do, this isolate does no more, until a run of
+   * `of` fails.
+   */
   readonly all: Effect.Effect<void>;
-  /** Keep `environment`'s spare current, as after a Session took it or its Repos changed. */
+  /** Keep `environment`'s spare current, as after a Session took it, its Repos changed or it has a new Build. */
   readonly of: (environment: string) => Effect.Effect<void>;
 };
 
+/** What a run of the spares' upkeep found: whether there was anything to do, and whether any of it failed. */
+type SpareRun = { readonly busy: boolean; readonly failed: boolean };
+
 /**
  * The upkeep of the Environments' spare Workspaces (ADR-0016): one Registry call says what to do (`upkeepSpares`), a
- * stale spare's object is wiped and then its record forgotten, and each spare registered is asked to prepare itself
- * (`prepareSpare`), which its object does on its own time: the answer comes at once. A spare removed leaves its
- * Environment without one, so the call is made once more to register the next. What fails is logged and left: a stale
- * spare is tried again at the next upkeep, and a spare not prepared is readied by the Session that takes it.
+ * stale spare's record is forgotten and then, if it was still a spare (not taken meanwhile), its object wiped, and
+ * each spare registered is asked to prepare itself (`prepareSpare`), which its object does on its own time: the answer
+ * comes at once. A spare removed leaves its Environment without one, so the call is made once more to register the
+ * next. A spare whose record went while it was asked (its Environment deleted, or it went stale) has its object wiped
+ * again, since the request made it anew. What fails is logged and left: a stale spare not forgotten is tried again at
+ * the next upkeep, one forgotten whose wipe failed is left to its idle stop, a spare not prepared is readied by the
+ * Session that takes it, and the runs behind the Session list look at every spare again.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const spareUpkeep = (
   registries: Cloudflare.DurableObject<Registry>,
   { workspaces }: Pick<RegistryRpcObjects, "workspaces">,
 ): Spares => {
-  /** Keep the spares of `environments` (all when undefined) current; whether there was anything to do. */
+  /** Keep the spares of `environments` (all when undefined) current. */
   const keep = (environments: ReadonlyArray<string> | undefined) =>
     Effect.gen(function* () {
       const registry = registries.getByName(REGISTRY_NAME);
       let busy = false;
+      let failed = false;
+
+      /** Log what went wrong, and note that this run failed. */
+      const warn = (message: string) => (cause: Cause.Cause<unknown>) =>
+        Effect.logWarning(message, cause).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              failed = true;
+            }),
+          ),
+        );
+
+      /** Wipe spare `id`'s object. */
+      const wipe = (id: string) =>
+        Effect.promise(() => workspaces.destroy(workspaceObjectName(id)));
 
       for (let round = 1; round <= 2; round++) {
         const work = yield* registry.upkeepSpares({ environments });
 
-        if (work.stale.length === 0 && work.made.length === 0) return busy;
+        if (work.stale.length === 0 && work.made.length === 0) break;
 
         busy = true;
 
         let removed = 0;
 
         for (const id of work.stale) {
-          yield* Effect.promise(() => workspaces.destroy(workspaceObjectName(id))).pipe(
-            Effect.andThen(registry.forgetSpare({ id })),
-            Effect.map(() => {
-              removed++;
-            }),
-            Effect.catchCause((cause) =>
-              Effect.logWarning(`Could not remove the stale spare workspace ${id}`, cause),
+          // The record first: one a Session took meanwhile is its Workspace now, and its object is left alone.
+          if (!(yield* registry.forgetSpare({ id }))) continue;
+
+          removed++;
+          yield* wipe(id).pipe(
+            Effect.catchCause(
+              warn(`Could not wipe the stale spare workspace ${id}, now forgotten`),
             ),
           );
         }
@@ -149,46 +174,62 @@ export const spareUpkeep = (
           yield* Effect.promise(() =>
             workspaces.prepareSpare(workspaceObjectName(setup.id), setup),
           ).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning(`Could not ask the spare workspace ${setup.id} to prepare`, cause),
+            Effect.catchCause(warn(`Could not ask the spare workspace ${setup.id} to prepare`)),
+          );
+
+          // A spare forgotten meanwhile (its Environment deleted, or gone stale) was made anew by the request.
+          const spare = yield* registry.getSpare({ environment: setup.environment });
+
+          if (spare === setup.id || (yield* registry.getWorkspace({ id: setup.id })) !== null) {
+            continue;
+          }
+
+          yield* wipe(setup.id).pipe(
+            Effect.catchCause(
+              warn(`Could not wipe the spare workspace ${setup.id}, forgotten while it was asked`),
             ),
           );
         }
 
-        if (removed === 0) return busy;
+        if (removed === 0) break;
       }
 
-      return busy;
+      return { busy, failed } satisfies SpareRun;
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("The upkeep of the spare workspaces failed", cause).pipe(Effect.as(true)),
+        Effect.logWarning("The upkeep of the spare workspaces failed", cause).pipe(
+          Effect.as<SpareRun>({ busy: true, failed: true }),
+        ),
       ),
     );
 
+  /** Whether a run behind the Session list found nothing to do since the last failure. */
   let settled = false;
 
   return {
     all: Effect.gen(function* () {
       if (settled) return;
 
-      if (!(yield* keep(undefined))) settled = true;
+      if (!(yield* keep(undefined)).busy) settled = true;
     }),
-    of: (environment) => Effect.asVoid(keep([environment])),
+    // A failure here is retried by the runs behind the Session list.
+    of: (environment) =>
+      keep([environment]).pipe(
+        Effect.map(({ failed }) => {
+          if (failed) settled = false;
+        }),
+      ),
   };
 };
+
+/** Why the default Environment is not deleted. */
+const DEFAULT_KEPT = "The default environment cannot be deleted";
 
 /** How many times a deletion sweeps the Sessions it takes before it gives up on ones that keep starting. */
 const SWEEP_ROUNDS = 3;
 
 /** What a sweep says when it stops: after what is kept when a Session cannot be deleted, and when Sessions keep starting. */
 type SweepWords = { readonly kept: string; readonly busy: string };
-
-/** What went wrong in `cause`, in a line. */
-const reason = (cause: Cause.Cause<unknown>): string => {
-  const error = Cause.squash(cause);
-
-  return error instanceof Error ? error.message : String(error);
-};
 
 /**
  * The main Worker's `RegistryRpcs` endpoint (`docs/spec.md` → Client and protocol): Effect RPC over HTTP with JSON
@@ -204,6 +245,10 @@ export const serveRegistryRpc = <R = never>(
     const registry = registries.getByName(REGISTRY_NAME);
 
     const failed = (message: string) => EnvironmentError.make({ message });
+
+    /** A failure partway through deleting an Environment, saying what is left. */
+    const environmentKept = (error: EnvironmentError) =>
+      failed(thenSaying(error.message, "The environment and its remaining workspaces are kept."));
 
     const notFound = (id: string) => SessionNotFound.make({ message: `No session "${id}"` });
 
@@ -239,11 +284,7 @@ export const serveRegistryRpc = <R = never>(
     const knownEnvironment = (id: string) =>
       registry
         .getEnvironment({ id })
-        .pipe(
-          Effect.filterOrFail(Predicate.isNotNull, () =>
-            failed(`Environment "${id}" does not exist`),
-          ),
-        );
+        .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(noEnvironment(id))));
 
     /** The Workspace registered under `id`, or an `EnvironmentError`. */
     const knownWorkspace = (id: string) =>
@@ -266,7 +307,7 @@ export const serveRegistryRpc = <R = never>(
         for (let round = 1; ; round++) {
           for (const session of Arr.filter(yield* registry.listSessions(), bound)) {
             yield* deleteSession(session).pipe(
-              Effect.mapError((error) => failed(`${error.message}. ${words.kept}`)),
+              Effect.mapError((error) => failed(thenSaying(error.message, words.kept))),
             );
           }
 
@@ -295,17 +336,18 @@ export const serveRegistryRpc = <R = never>(
         },
       );
 
-    /** Remove an Environment's spare Workspace, if it has one: its object, then its record. */
+    /** Remove an Environment's spare Workspace, if it has one: its record, then its object. */
     const removeSpare = (environment: string) =>
       Effect.gen(function* () {
         const spare = yield* registry.getSpare({ environment });
 
-        if (spare === null) return;
+        // The record first: a spare a Session took meanwhile is a Workspace of the Environment now, which the sweep
+        // removes as one, and a spare upkeep that asks it to prepare after the wipe finds it forgotten.
+        if (spare === null || !(yield* registry.forgetSpare({ id: spare }))) return;
 
         yield* inWorkspace("Could not delete the spare workspace", () =>
           workspaces.destroy(workspaceObjectName(spare)),
         );
-        yield* registry.forgetSpare({ id: spare });
       });
 
     /** Remove an Environment's Build object (`buildObjectName`): its Container, its Builds' records. */
@@ -322,7 +364,7 @@ export const serveRegistryRpc = <R = never>(
         case "taken":
           return failed(`Another environment is already named "${name}"`);
         case "missing":
-          return failed(`Environment "${id ?? name}" does not exist`);
+          return failed(noEnvironment(id ?? name));
       }
     };
 
@@ -349,7 +391,7 @@ export const serveRegistryRpc = <R = never>(
     const refused = (refusal: SessionRefusal, environment: string, branch: string | undefined) => {
       switch (refusal.refused) {
         case "no-environment":
-          return failed(`Environment "${environment}" does not exist`);
+          return failed(noEnvironment(environment));
         case "no-workspace":
           return failed("That workspace does not exist any more");
         case "branch-taken":
@@ -396,11 +438,9 @@ export const serveRegistryRpc = <R = never>(
               : created;
           }
 
-          if (branch === SPARE_BRANCH) {
-            return yield* failed(
-              `Branch ${SPARE_BRANCH} is kept for spare workspaces: name another`,
-            );
-          }
+          const problem = branch === undefined ? undefined : ownBranchProblem(branch);
+
+          if (problem !== undefined) return yield* failed(problem);
 
           const made = environment ?? DEFAULT_ENVIRONMENT;
 
@@ -448,9 +488,7 @@ export const serveRegistryRpc = <R = never>(
       deleteEnvironment: ({ environment }) =>
         Effect.gen(function* () {
           // A new Session always has an Environment to start in.
-          if (environment === DEFAULT_ENVIRONMENT) {
-            return yield* failed("The default environment cannot be deleted");
-          }
+          if (environment === DEFAULT_ENVIRONMENT) return yield* failed(DEFAULT_KEPT);
 
           yield* knownEnvironment(environment);
 
@@ -461,26 +499,26 @@ export const serveRegistryRpc = <R = never>(
             );
 
             for (const workspace of made) {
-              yield* removeWorkspace(workspace).pipe(
-                Effect.mapError((error) =>
-                  failed(`${error.message} The environment and its remaining workspaces are kept.`),
-                ),
+              yield* removeWorkspace(workspace).pipe(Effect.mapError(environmentKept));
+            }
+
+            yield* removeSpare(environment).pipe(Effect.mapError(environmentKept));
+            yield* removeBuild(environment).pipe(Effect.mapError(environmentKept));
+
+            // The record goes only once no Workspace is made from it.
+            const deleted = yield* registry.deleteEnvironment({ id: environment });
+
+            if (deleted === "refused") return yield* failed(DEFAULT_KEPT);
+
+            if (deleted === "deleted") {
+              // A Build upkeep that asked the Build object for a Build after its wipe made it anew; one that asks
+              // after this finds the Environment gone (`buildUpkeep`).
+              yield* removeBuild(environment).pipe(
+                Effect.catch((error) => Effect.logWarning(error.message)),
               );
             }
 
-            yield* removeSpare(environment).pipe(
-              Effect.mapError((error) =>
-                failed(`${error.message}. The environment and its remaining workspaces are kept.`),
-              ),
-            );
-            yield* removeBuild(environment).pipe(
-              Effect.mapError((error) =>
-                failed(`${error.message}. The environment and its remaining workspaces are kept.`),
-              ),
-            );
-
-            // The record goes only once no Workspace is made from it.
-            if ((yield* registry.deleteEnvironment({ id: environment })) !== "in-use") return;
+            if (deleted !== "in-use") return;
 
             if (round === SWEEP_ROUNDS) {
               return yield* failed(
@@ -509,7 +547,7 @@ export const serveRegistryRpc = <R = never>(
             case "taken":
               return yield* failed(`The environment already has a repo in ${repo}: name this one`);
             default:
-              return yield* failed(`Environment "${environment}" does not exist`);
+              return yield* failed(noEnvironment(environment));
           }
         }),
       removeRepo: ({ environment, repo }) =>
@@ -523,18 +561,14 @@ export const serveRegistryRpc = <R = never>(
               case "absent":
                 return failed(`The environment has no repo "${repo}"`);
               default:
-                return failed(`Environment "${environment}" does not exist`);
+                return failed(noEnvironment(environment));
             }
           }),
         ),
       getEnvironmentSettings: ({ environment }) =>
         registry
           .getEnvironmentSettings({ environment })
-          .pipe(
-            Effect.filterOrFail(Predicate.isNotNull, () =>
-              failed(`Environment "${environment}" does not exist`),
-            ),
-          ),
+          .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(noEnvironment(environment)))),
       updateEnvironmentSettings: ({ environment, overrides }) =>
         registry.updateEnvironmentSettings({ environment, overrides }).pipe(
           Effect.flatMap((update) => {
@@ -546,7 +580,7 @@ export const serveRegistryRpc = <R = never>(
               case "rejected":
                 return failed(update.message);
               case "missing":
-                return failed(`Environment "${environment}" does not exist`);
+                return failed(noEnvironment(environment));
             }
           }),
         ),
@@ -570,7 +604,7 @@ export const serveRegistryRpc = <R = never>(
               case "rejected":
                 return failed(written.message);
               case "missing":
-                return failed(`Environment "${environment ?? ""}" does not exist`);
+                return failed(noEnvironment(environment ?? ""));
               case "full":
                 return failed(
                   `At most ${MAX_ENVIRONMENT_SECRETS} Secrets are kept for ${scopeWords(environment)}: delete one first`,

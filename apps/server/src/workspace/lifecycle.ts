@@ -16,7 +16,10 @@ export type LifecycleHost = {
   destroy(): Promise<void>;
   /** Reset the object once `destroy` has answered; always fails with `WORKSPACE_DELETED_REASON`. */
   reset(): Promise<void>;
-  /** Stop the Container and forget the snapshot, so the next command starts one from the image. */
+  /**
+   * Stop the Container and forget the snapshot, so the next command starts one from the Environment's Build when there is
+   * a usable one, else from the image.
+   */
   restartContainer(): Promise<void>;
   /**
    * Prepare the object as its Environment's spare Workspace, on its own time: the call answers at once. The set-up's

@@ -19,6 +19,7 @@ import {
   draftTextAtom,
   draftWorkspaceAtom,
   pendingFirstMessagesAtom,
+  refusedFirstMessagesAtom,
   sendDraftAtom,
 } from "./draft-state.ts";
 import type { DraftInput } from "./draft.ts";
@@ -303,22 +304,117 @@ describe("the first message of a Session", () => {
       });
     });
 
-  it.effect("is sent as a follow-up once the Session's client is built, and cleared", () =>
+  /** The submits the client sent on `socket`. */
+  const submitsOn = (socket: FakeSocket) =>
+    socket.commands().filter((command) => command.type === "submit");
+
+  it.effect(
+    "is sent as a follow-up once the Session's client is built, and cleared once it takes it",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest } = setup({ s1: "Fix the build", s2: "Another" });
+
+        registry.mount(drainFirstMessageAtom("s1"));
+        yield* settle;
+        yield* live(latest());
+        yield* settle;
+
+        const submits = submitsOn(latest());
+
+        expect(submits).toHaveLength(1);
+        expect(submits[0]).toMatchObject({ input: "Fix the build", whenBusy: "followUp" });
+        // Until the Session answers, the message is still waiting.
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({
+          s1: "Fix the build",
+          s2: "Another",
+        });
+
+        yield* latest().say({
+          type: "result",
+          id: submits[0]?.id,
+          result: { submissionId: "sub-1" },
+        });
+        yield* settle;
+
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s2: "Another" });
+        expect(registry.get(refusedFirstMessagesAtom)).toEqual({});
+      }),
+  );
+
+  it.effect("stays waiting when the page is left before the Session greets", () =>
     Effect.gen(function* () {
-      const { registry, latest } = setup({ s1: "Fix the build", s2: "Another" });
+      const { registry, latest } = setup({ s1: "Fix the build" });
+
+      const unmount = registry.mount(drainFirstMessageAtom("s1"));
+
+      yield* settle;
+      unmount();
+      yield* settle;
+
+      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: "Fix the build" });
 
       registry.mount(drainFirstMessageAtom("s1"));
       yield* settle;
       yield* live(latest());
       yield* settle;
 
-      const submits = latest()
-        .commands()
-        .filter((command) => command.type === "submit");
+      expect(submitsOn(latest())).toHaveLength(1);
+    }),
+  );
 
-      expect(submits).toHaveLength(1);
-      expect(submits[0]).toMatchObject({ input: "Fix the build", whenBusy: "followUp" });
-      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s2: "Another" });
+  it.effect(
+    "is sent again under the same requestId when the page is left before the Session answered",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest } = setup({ s1: "Fix the build" });
+
+        const unmount = registry.mount(drainFirstMessageAtom("s1"));
+
+        yield* settle;
+        yield* live(latest());
+        yield* settle;
+
+        const first = submitsOn(latest())[0];
+
+        unmount();
+        yield* settle;
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: "Fix the build" });
+
+        registry.mount(drainFirstMessageAtom("s1"));
+        yield* settle;
+        yield* live(latest());
+        yield* settle;
+
+        const again = submitsOn(latest());
+
+        expect(again).toHaveLength(1);
+        expect(again[0]).toMatchObject({ input: "Fix the build", requestId: first?.requestId });
+      }),
+  );
+
+  it.effect("goes into the Session's composer with the reason when the Session refuses it", () =>
+    Effect.gen(function* () {
+      const { registry, latest } = setup({ s1: "Fix the build" });
+
+      registry.mount(refusedFirstMessagesAtom);
+      registry.mount(drainFirstMessageAtom("s1"));
+      yield* settle;
+      yield* live(latest());
+      yield* settle;
+
+      const submit = submitsOn(latest())[0];
+
+      yield* latest().say({
+        type: "error",
+        id: submit?.id,
+        message: "The spend limit is reached.",
+      });
+      yield* settle;
+
+      expect(registry.get(pendingFirstMessagesAtom)).toEqual({});
+      expect(registry.get(refusedFirstMessagesAtom)).toEqual({
+        s1: { text: "Fix the build", reason: "The spend limit is reached." },
+      });
     }),
   );
 
@@ -331,15 +427,16 @@ describe("the first message of a Session", () => {
       yield* settle;
       yield* live(latest());
       yield* settle;
+
+      const submit = submitsOn(latest())[0];
+
+      yield* latest().say({ type: "result", id: submit?.id, result: { submissionId: "sub-1" } });
+      yield* settle;
       unmount();
       registry.mount(drainFirstMessageAtom("s1"));
       yield* settle;
 
-      expect(
-        latest()
-          .commands()
-          .filter((command) => command.type === "submit"),
-      ).toHaveLength(1);
+      expect(submitsOn(latest())).toHaveLength(1);
     }),
   );
 

@@ -121,3 +121,60 @@ export const buildSecretsDigest = (
     ? Effect.succeed(null)
     : vault.digest(JSON.stringify({ version: 1, secrets: pairs }));
 };
+
+/**
+ * What a Workspace is told in its set-up when the Registry cannot open its Environment's Secrets (the master key is
+ * malformed): it is handed none, and refuses the snapshots and Builds that would need them. Never holds a value.
+ */
+export const SECRETS_UNAVAILABLE =
+  "secrets unavailable: the Registry cannot open the Environment's kept Secrets (SECRETS_ENCRYPTION_KEY is malformed)";
+
+/** The Secrets a Workspace's set-up carries: those its Environment uses, or why there are none (`SECRETS_UNAVAILABLE`). */
+export type SecretsHandover =
+  | { readonly secrets: ReadonlyArray<KeptSecret> }
+  | { readonly secretsUnavailable: string };
+
+/**
+ * The Secrets `environment` uses, opened (`openEnvironmentSecrets`), under the vault `vault` opens. An Environment none
+ * reaches never opens the vault, so it works whatever the master key; one some reach fails while the key is malformed.
+ */
+export const usedSecrets = (
+  table: SecretsTable,
+  vault: Effect.Effect<KeptVault, SecretVaultError>,
+  environment: string,
+): Effect.Effect<ReadonlyArray<KeptSecret>, SecretVaultError> =>
+  Effect.suspend(() =>
+    table.getEnvironmentSecrets(environment).length === 0
+      ? Effect.succeed([])
+      : Effect.flatMap(vault, (keys) => openEnvironmentSecrets(table, keys, environment)),
+  );
+
+/** `usedSecrets` for a Workspace's set-up: a vault that does not open is logged, and the set-up says so instead. */
+export const secretsHandover = (
+  table: SecretsTable,
+  vault: Effect.Effect<KeptVault, SecretVaultError>,
+  environment: string,
+): Effect.Effect<SecretsHandover> =>
+  usedSecrets(table, vault, environment).pipe(
+    Effect.map((secrets): SecretsHandover => ({ secrets })),
+    Effect.catch((error) =>
+      Effect.logWarning(
+        `Environment ${environment}'s Secrets are not handed to its Workspace: ${error.message}`,
+      ).pipe(Effect.as<SecretsHandover>({ secretsUnavailable: SECRETS_UNAVAILABLE })),
+    ),
+  );
+
+/**
+ * The keyed digest of the Secrets that reach `environment`'s Build (`buildSecretsDigest`), null when none does, which
+ * opens the vault only when some does.
+ */
+export const buildSecretsOf = (
+  table: SecretsTable,
+  vault: Effect.Effect<KeptVault, SecretVaultError>,
+  environment: string,
+): Effect.Effect<string | null, SecretVaultError> =>
+  Effect.flatMap(usedSecrets(table, vault, environment), (kept) =>
+    kept.some((secret) => secret.build)
+      ? Effect.flatMap(vault, (keys) => buildSecretsDigest(keys, kept))
+      : Effect.succeed(null),
+  );

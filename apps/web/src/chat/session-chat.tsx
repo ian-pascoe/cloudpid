@@ -58,7 +58,7 @@ type SessionPageProps = {
   archived?: Archived | undefined;
   /** The Session's "⋯" menu, in the header. */
   menu?: ReactNode;
-  /** Why an archive or unarchive asked on this page failed, or null. */
+  /** Why a new Session, an archive or an unarchive asked on this page failed, or null. */
   problem?: string | null | undefined;
   /** What the composer's Session-wide Slash commands do. */
   commandActions?: SessionCommandActions | undefined;

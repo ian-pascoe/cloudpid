@@ -1,5 +1,5 @@
 // The draft composer's state: what is typed and chosen, the last Environment chosen on this device, sending the draft,
-// and the first message waiting for its Session's socket.
+// and the first message waiting for its Session to take it.
 
 import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -54,8 +54,8 @@ export const draftEnvironmentAtom = Atom.writable(
 );
 
 /**
- * The first messages waiting for their Session's socket, by Session id. The draft puts one here once the Session is
- * registered; `drainFirstMessageAtom` sends it.
+ * The first messages waiting for their Session to take them, by Session id. The draft puts one here once the Session is
+ * registered; `drainFirstMessageAtom` sends it, and takes it out once the Session answered.
  */
 export const pendingFirstMessagesAtom = Atom.make<Readonly<Record<string, string>>>({}).pipe(
   Atom.keepAlive,
@@ -88,23 +88,60 @@ export const sendDraftAtom = appRuntime.fn((input: DraftInput, get) =>
   }).pipe(changing(["sessions", "workspaces"])),
 );
 
+/** The request ID Session `sessionId`'s first message is submitted under, the same on every client, so it is taken once. */
+const firstMessageRequestId = (sessionId: string): string => `first-message:${sessionId}`;
+
+/** A first message the Session refused, with why: its composer takes it back. */
+export interface RefusedFirstMessage {
+  readonly text: string;
+  readonly reason: string;
+}
+
+/**
+ * The first messages their Session refused, by Session id: the Session's composer puts the text back with the reason
+ * and takes it out of here.
+ */
+export const refusedFirstMessagesAtom = Atom.make<Readonly<Record<string, RefusedFirstMessage>>>(
+  {},
+).pipe(Atom.keepAlive);
+
 /**
  * Sends Session `sessionId`'s waiting first message, if there is one, once its client is built: as a follow-up, as a
- * message typed in its composer would be (`submitAtom`), and takes it out of `pendingFirstMessagesAtom` first so a
- * client built again does not send it twice. The client holds the submit until the Session greets. Mounted by the
- * Session's chat.
+ * message typed in its composer would be (`submitAtom`). It stays in `pendingFirstMessagesAtom` until the Session
+ * answers, so a page left before then sends it again when the Session is opened again, under the same request ID, which
+ * the Session takes once. Refused, it moves to `refusedFirstMessagesAtom` for the composer. The client holds the submit
+ * until the Session greets. Mounted by the Session's chat.
  */
 export const drainFirstMessageAtom = Atom.family((sessionId: string) =>
   appRuntime.atom((get) =>
     get.result(sessionClientAtom(sessionId)).pipe(
       Effect.flatMap((client) => {
-        const { [sessionId]: text, ...others } = get.once(pendingFirstMessagesAtom);
+        const text = get.once(pendingFirstMessagesAtom)[sessionId];
 
         if (text === undefined) return Effect.void;
 
-        get.set(pendingFirstMessagesAtom, others);
+        const answered = (reason: string | null) =>
+          Effect.sync(() => {
+            const { [sessionId]: _sent, ...others } = get.once(pendingFirstMessagesAtom);
 
-        return client.submit(text, "followUp");
+            get.set(pendingFirstMessagesAtom, others);
+
+            if (reason !== null) {
+              get.set(refusedFirstMessagesAtom, {
+                ...get.once(refusedFirstMessagesAtom),
+                [sessionId]: { text, reason },
+              });
+            }
+          });
+
+        return client
+          .submitAndAwait(text, "followUp", undefined, firstMessageRequestId(sessionId))
+          .pipe(
+            Effect.matchEffect({
+              onSuccess: () => answered(null),
+              onFailure: (error) => answered(error.message),
+            }),
+          );
       }),
     ),
   ),

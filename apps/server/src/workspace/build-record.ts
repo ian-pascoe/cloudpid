@@ -73,12 +73,26 @@ export type BuildState = {
 };
 
 /** What a Build's key covers, besides the image: the Container settings a Build depends on. */
-type BuildSettings = Pick<ContainerSettings, "variables" | "setupScript" | "ignore">;
+type BuildSettings = Pick<ContainerSettings, "variables" | "setupScript" | "ignore"> &
+  Partial<Pick<ContainerSettings, "toolchains">>;
+
+/** What a Build's key is the digest of, in this order: the JSON of it is hashed. */
+type KeyedBuild = {
+  readonly version: 1;
+  readonly image: string | null;
+  readonly repos: ReadonlyArray<readonly [string, string]>;
+  readonly variables: ReadonlyArray<readonly [string, string]>;
+  readonly setupScript: string;
+  readonly ignore: ReadonlyArray<string>;
+  toolchains?: string;
+  secrets?: string;
+};
 
 /**
  * The key of the Build `repos`, `settings`, `image` and `secrets` make: a digest of what a Build depends on, so a Build
  * of another key is not current. That is the Repos (names and addresses, in any order), the variables, the
- * Environment's Setup Script and the Container-only paths (a launch starts only from a Build with its own), the image,
+ * Environment's Setup Script, its Toolchains (with none, the key is what it was before Builds installed them), the
+ * Container-only paths (a launch starts only from a Build with its own), the image,
  * and the keyed digest of the Secrets that reach the Build (`secrets`, which the Registry makes: never a value; with
  * none, the key is what it was before Secrets reached Builds); not the size, the idle time or the Start Script, which
  * a Build does not use. A Repo's default branch moving is the daily look's to find (`BuildRequest.check`), not the key's.
@@ -97,7 +111,7 @@ export const buildKey = async ({
   const byFirst = (left: readonly [string, string], right: readonly [string, string]) =>
     left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0;
 
-  const keyed = {
+  const keyed: KeyedBuild = {
     version: 1,
     image: image ?? null,
     repos: repos.map((repo): readonly [string, string] => [repo.name, repo.url]).sort(byFirst),
@@ -106,8 +120,14 @@ export const buildKey = async ({
     ignore: settings.ignore,
   };
 
-  // The Secrets' digest only where Secrets reach the Build, so the keys of Builds without any stay what they were.
-  const canonical = JSON.stringify(secrets === null ? keyed : { ...keyed, secrets });
+  // The Toolchains and the Secrets' digest only where there are some, so the keys of Builds without stay what they were.
+  const toolchains = settings.toolchains ?? "";
+
+  if (toolchains !== "") keyed.toolchains = toolchains;
+
+  if (secrets !== null) keyed.secrets = secrets;
+
+  const canonical = JSON.stringify(keyed);
 
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
 

@@ -20,8 +20,8 @@ export const noticeAtom = Atom.writable(
 );
 
 /**
- * Why an archive or unarchive asked on the Session's page failed, shown there: the list may be hidden (a phone). It
- * belongs to the page it was asked on, so a change of page clears it.
+ * Why a new Session, an archive or an unarchive asked on the Session's page failed, shown there: the list may be hidden
+ * (a phone). It belongs to the page it was asked on, so a change of page clears it.
  */
 export const pageProblemAtom = Atom.writable(
   (get): string | null => {
@@ -35,8 +35,8 @@ export const pageProblemAtom = Atom.writable(
 );
 
 /**
- * Why an archive or unarchive from a Session's menu in the list failed, shown with the list's own error. It stays until
- * the next archive or unarchive from the list.
+ * Why a new Session, an archive or an unarchive from a Session's menu in the list failed, shown with the list's own
+ * error. It stays until the next one from the list.
  */
 export const listProblemAtom = Atom.make<string | null>(null);
 

@@ -81,6 +81,27 @@ describe("a Workspace's copy of its Environment's Secrets", () => {
     expect((await open(storage, null).read()).ok).toBe(false);
   });
 
+  it("says it cannot show its Secrets once told the Registry could not open them, until it is handed some", async () => {
+    const { storage } = memory();
+    const store = open(storage);
+
+    await store.replace([secret("API_KEY", VALUE)]);
+    await store.markUnavailable("the Registry could not open them");
+
+    expect(await store.read()).toEqual({ ok: false, reason: "the Registry could not open them" });
+    // Still taken out of output: the values may be on the Container.
+    expect(store.known()).toEqual([secret("API_KEY", VALUE)]);
+    // After an eviction too.
+    expect(await open(storage).read()).toEqual({
+      ok: false,
+      reason: "the Registry could not open them",
+    });
+
+    // The same set handed again replaces the mark.
+    await store.replace([secret("API_KEY", VALUE)]);
+    expect(await open(storage).read()).toEqual({ ok: true, secrets: [secret("API_KEY", VALUE)] });
+  });
+
   it("holds none again once handed none, and gives what it holds in memory without waiting", async () => {
     const { storage } = memory();
     const store = open(storage);

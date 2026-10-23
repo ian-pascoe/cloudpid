@@ -5,16 +5,33 @@
 // object and each Secret's name), because the work that needs them runs on alarms after an eviction or a deploy, when
 // nothing hands them again: the idle stop's snapshot, a spare's preparation, a Build. A copy that does not open (the
 // key changed, or the Worker has none) is a copy of Secrets it cannot show to be absent from the disk: the snapshots
-// and Builds that need it are refused until the next handover replaces it.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
-import type {
-  KeptScope,
-  KeptSecret,
-  KeptVault,
-  SealedValue,
+// and Builds that need it are refused until the next handover replaces it. So is a copy the Registry could not give
+// (`unavailable`: it could not open the Environment's Secrets), which holds only why.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+import {
+  type KeptScope,
+  type KeptSecret,
+  type KeptVault,
+  type SealedValue,
+  secretEnvName,
 } from "@cloudpid/extensions/secrets/core";
 import * as Effect from "effect/Effect";
 import type { SettingsStorage } from "./settings.ts";
+
+/**
+ * What Setup Scripts get of the Environment's Secrets, in their environment and nowhere else: those marked for the
+ * Build, each as `$PI_SECRET_<NAME>`, the variable a Session's commands get it as. A Build's Setup Scripts get them, and
+ * so do those of every Workspace of the Environment, which run them again in their own clones. Every Workspace started
+ * from the Build shares its Snapshot, so the others never reach a Setup Script.
+ */
+export const buildSecretEnvironment = (
+  secrets: ReadonlyArray<KeptSecret>,
+): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    secrets.flatMap((secret) =>
+      secret.build ? [[secretEnvName(secret.name), secret.value] as const] : [],
+    ),
+  );
 
 /** Where the sealed copy is kept. */
 const SECRETS_KEY = "cloudpid:environment-secrets";
@@ -27,7 +44,12 @@ type StoredSecret = {
   readonly sealed: SealedValue | null;
 };
 
-type StoredSecrets = { readonly version: 1; readonly secrets: ReadonlyArray<StoredSecret> };
+type StoredSecrets = {
+  readonly version: 1;
+  readonly secrets: ReadonlyArray<StoredSecret>;
+  /** Why the copy holds no Secrets the Workspace can show: the Registry could not open the Environment's. */
+  readonly unavailable?: string | undefined;
+};
 
 /** What the Workspace holds: its Environment's Secrets, or why it cannot show them (never with a value). */
 export type HeldSecrets =
@@ -59,6 +81,8 @@ const same = (left: ReadonlyArray<KeptSecret>, right: ReadonlyArray<KeptSecret>)
 export const workspaceSecretsStore = ({ storage, vault, owner }: WorkspaceSecretsOptions) => {
   /** What was handed or opened in this instance; undefined until then. */
   let held: ReadonlyArray<KeptSecret> | undefined;
+  /** Why the copy cannot be shown, when the last handover had no Secrets to give (`unavailable`). */
+  let unavailable: string | undefined;
 
   const keys = async (): Promise<KeptVault | undefined> => {
     try {
@@ -71,6 +95,12 @@ export const workspaceSecretsStore = ({ storage, vault, owner }: WorkspaceSecret
   /** Open the stored copy; why not, by name, when a Secret does not open. */
   const open = async (): Promise<HeldSecrets> => {
     const stored = await storage.get<StoredSecrets>(SECRETS_KEY);
+
+    if (stored?.unavailable !== undefined) {
+      unavailable = stored.unavailable;
+
+      return { ok: false, reason: unavailable };
+    }
 
     if (stored === undefined || stored.secrets.length === 0) return { ok: true, secrets: [] };
 
@@ -105,6 +135,8 @@ export const workspaceSecretsStore = ({ storage, vault, owner }: WorkspaceSecret
   return {
     /** What the Workspace holds now, opening its stored copy the first time. */
     read: async (): Promise<HeldSecrets> => {
+      if (unavailable !== undefined) return { ok: false, reason: unavailable };
+
       if (held !== undefined) return { ok: true, secrets: held };
 
       const opened = await open();
@@ -113,14 +145,17 @@ export const workspaceSecretsStore = ({ storage, vault, owner }: WorkspaceSecret
 
       return opened;
     },
-    /** What this instance was handed or opened, without waiting: for redaction, which must not wait on storage. */
+    /**
+     * What this instance was handed or opened, without waiting: for redaction, which must not wait on storage. After
+     * `unavailable`, what it held before, since those values may still be on the Container.
+     */
     known: (): ReadonlyArray<KeptSecret> => held ?? [],
     /**
      * Replace the copy with `secrets`, as last handed: sealed in storage, held in memory. Nothing is written when they
      * are what this instance holds. Without a key, the values are held in memory only, and the copy records names.
      */
     replace: async (secrets: ReadonlyArray<KeptSecret>): Promise<void> => {
-      if (held !== undefined && same(held, secrets)) return;
+      if (unavailable === undefined && held !== undefined && same(held, secrets)) return;
 
       const vaultOf = await keys();
       const sealed: StoredSecret[] = [];
@@ -139,6 +174,17 @@ export const workspaceSecretsStore = ({ storage, vault, owner }: WorkspaceSecret
 
       await storage.put(SECRETS_KEY, { version: 1, secrets: sealed });
       held = [...secrets];
+      unavailable = undefined;
+    },
+    /**
+     * Replace the copy with none the Workspace can show, for `reason` (never a value): the Registry could not open the
+     * Environment's Secrets, so the snapshots and Builds that need them are refused until a handover brings them.
+     */
+    markUnavailable: async (reason: string): Promise<void> => {
+      if (unavailable === reason) return;
+
+      await storage.put(SECRETS_KEY, { version: 1, secrets: [], unavailable: reason });
+      unavailable = reason;
     },
   };
 };

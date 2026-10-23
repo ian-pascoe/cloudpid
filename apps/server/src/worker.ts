@@ -144,7 +144,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const registries = yield* Registry;
     // The raw environment: the Workspace DO's own stub, as the Session DOs take it.
     const worker = yield* Cloudflare.WorkerEnvironment;
-    // What runs after an answer: the wipe of what is left from before Environments, and the spares' upkeep.
+    // What runs after an answer: the wipe of what is left from before Environments, and the upkeep of the spares and
+    // the Builds.
     const execution = yield* Cloudflare.WorkerExecutionContext;
 
     // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (above), a raw namespace; Attachments
@@ -175,7 +176,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const legacy = legacyCleanup(registries, { sessions: sessionObjects, workspaces });
     // Built once per isolate too: the upkeep of every spare stops once a run finds nothing to do, and so does the Builds'.
     const spares = spareUpkeep(registries, { workspaces });
-    const builds = buildUpkeep(registries, { workspaces });
+    // A new good Build makes its Environment's spare stale, so the Builds' upkeep looks at the spare then.
+    const builds = buildUpkeep(registries, { workspaces, spares });
 
     return {
       fetch: Effect.gen(function* () {

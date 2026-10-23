@@ -30,6 +30,7 @@ export type WorkspaceNamespace = {
       | "environmentBuild"
       | "updateEnvironmentBuild"
       | "updateEnvironmentSecrets"
+      | "environmentSecretsUnavailable"
     >;
 };
 
@@ -95,8 +96,12 @@ export const cachedPlacement =
 /** How long a Workspace readied counts as ready before it is readied again, in milliseconds. */
 export const WORKSPACE_CHECKED_FOR = 60_000;
 
-/** Ready Workspace `id`: its settings handed over and its Repos cloned (`prepareWorkspace`). */
-export type PrepareWorkspace = (id: string) => Promise<void>;
+/**
+ * Ready Workspace `id`: its settings, Build and Secrets handed over, then its Repos cloned (`prepareWorkspace`).
+ * `handedOver` is called once the hand-over is done, before the clones; a readying that resolves without calling it had
+ * nothing to hand over.
+ */
+export type PrepareWorkspace = (id: string, handedOver: () => void) => Promise<void>;
 
 /** What `readyPlacement` checks: where the Session works, and how its Workspace is readied. */
 export type ReadyPlacementOptions = {
@@ -106,38 +111,86 @@ export type ReadyPlacementOptions = {
   readonly now?: () => number;
 };
 
-/**
- * The Session's placement once its Workspace is ready: readied when the Session first works in it, and again at most
- * every `WORKSPACE_CHECKED_FOR`, so a Repo whose clone failed is tried again and changed settings reach the Workspace.
- * Callers meanwhile wait for the one readying in flight. One that fails fails the call and is tried again at the next.
- */
+/** The Session's placement once its Workspace is readied (`ready`), or once only its set-up is handed over (`handedOver`). */
+export type ReadyPlacement = {
+  /**
+   * The placement once the Workspace is ready: readied when the Session first works in it, and again at most every
+   * `WORKSPACE_CHECKED_FOR`, so a Repo whose clone failed is tried again and changed settings reach the Workspace.
+   * Callers meanwhile wait for the one readying in flight. One that fails fails the call and is tried again at the next.
+   */
+  readonly ready: () => Promise<Placement>;
+  /**
+   * The placement once a readying has handed the Workspace its settings, Build and Secrets, which needs no Container:
+   * at once when one of this Session's readyings has done so before, else once the readying in flight (begun here if
+   * there is none) has, without waiting for its clones. It fails when that readying fails before the hand-over.
+   */
+  readonly handedOver: () => Promise<Placement>;
+};
+
 export const readyPlacement = ({
   placement,
   prepare,
   now = Date.now,
-}: ReadyPlacementOptions): (() => Promise<Placement>) => {
+}: ReadyPlacementOptions): ReadyPlacement => {
   let checkedAt: number | undefined;
-  let checking: Promise<void> | undefined;
+  // Whether a readying of this Session has handed the Workspace its set-up: a later change waits for the next readying.
+  let handed = false;
+  let checking: { readonly done: Promise<void>; readonly handedOver: Promise<void> } | undefined;
 
-  return async () => {
-    const placed = await placement();
-    const { workspace } = placed;
+  const readying = (workspace: string) => {
+    if (checking !== undefined) return checking;
 
-    if (workspace === null) return placed;
+    const { promise: handedOver, resolve } = Promise.withResolvers<void>();
 
-    if (checkedAt !== undefined && now() - checkedAt < WORKSPACE_CHECKED_FOR) return placed;
+    const signal = () => {
+      handed = true;
+      resolve();
+    };
 
-    checking ??= prepare(workspace)
+    const done = prepare(workspace, () => {
+      signal();
+    })
       .then(() => {
+        signal();
         checkedAt = now();
       })
       .finally(() => {
         checking = undefined;
       });
 
-    await checking;
+    // A readying that fails before its hand-over fails the wait for it, which only the early start makes: the failure
+    // is `done`'s, which every other caller gets.
+    const waited = Promise.race([handedOver, done]);
 
-    return placed;
+    waited.catch(() => undefined);
+    checking = { done, handedOver: waited };
+
+    return checking;
+  };
+
+  return {
+    ready: async () => {
+      const placed = await placement();
+      const { workspace } = placed;
+
+      if (workspace === null) return placed;
+
+      if (checkedAt !== undefined && now() - checkedAt < WORKSPACE_CHECKED_FOR) return placed;
+
+      await readying(workspace).done;
+
+      return placed;
+    },
+    handedOver: async () => {
+      const placed = await placement();
+      const { workspace } = placed;
+
+      if (workspace === null || handed) return placed;
+
+      await readying(workspace).handedOver;
+
+      return placed;
+    },
   };
 };
 
@@ -162,14 +215,15 @@ export type SessionWorkspace = {
   /** The Workspace's file search, for `ls`, `find`, and `grep`. */
   readonly files: FileSearch;
   /**
-   * Ask the Workspace for the early start of its Container, for a message the owner sent (docs/spec.md → Backends). It
-   * answers once the Workspace has the request, not once the Container is up.
+   * Ask the Workspace for the early start of its Container, for a message the owner sent (docs/spec.md → Backends), once
+   * the readying has handed the Workspace its settings, Build and Secrets (`ReadyPlacement.handedOver`). It answers once
+   * the Workspace has the request, not once the Container is up. It fails when the hand-over does.
    */
   readonly startContainerEarly: () => Promise<void>;
 };
 
 export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorkspace => {
-  const ready = readyPlacement(options);
+  const { ready, handedOver } = readyPlacement(options);
 
   const search = async () => {
     const { ComputerFiles } = await computer();
@@ -208,11 +262,13 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
     },
     files,
     startContainerEarly: async () => {
-      const placed = await options.placement();
+      // A Container launched before the hand-over would start with the default settings, no variables or Environment
+      // scripts and no Build: the hand-over needs no Container, so it comes first.
+      const placed = await handedOver();
 
       await options.namespace.getByName(placed.object).startContainerEarly();
-      // The Workspace, if it is not ready yet, is readied meanwhile: the turn's first use waits for this same readying,
-      // and one that fails is tried again there, and reported to it.
+      // The rest of the readying (the clones) goes on meanwhile: the turn's first use waits for this same readying, and
+      // one that fails is tried again there, and reported to it.
       void ready().catch(() => undefined);
     },
   };

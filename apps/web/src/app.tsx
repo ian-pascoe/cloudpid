@@ -20,7 +20,7 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
   const session = useAtomValue(currentSessionAtom);
   const names = useAtomValue(environmentNamesAtom);
   const problem = useAtomValue(pageProblemAtom);
-  // The page shows the failure of an archive or unarchive, the menu's or the composer's.
+  // The page shows the failure of a new Session, an archive or an unarchive, the menu's or the composer's.
   const actions = useSessionActions(pageProblemAtom);
 
   const environmentName =
@@ -49,12 +49,7 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
         session === undefined
           ? undefined
           : {
-              newSession: () =>
-                actions
-                  .create(newSessionPlace(session))
-                  .then((created) =>
-                    created === undefined ? "The session could not be created." : null,
-                  ),
+              newSession: () => actions.create(newSessionPlace(session)),
               archive: () => actions.archive(session.id),
             }
       }

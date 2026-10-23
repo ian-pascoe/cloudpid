@@ -21,16 +21,18 @@ import * as Atom from "effect/reactivity/Atom";
 import { describe, expect, it } from "@effect/vitest";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
+import { pathAtom } from "./router.ts";
 import { sessionsAtom } from "./sessions.ts";
 import {
   addRepoAtom,
+  addRepoNameAtom,
   addRepoSourceAtom,
   createEnvironmentAtom,
   deleteSecretAtom,
   environmentSecretsAtom,
   environmentSecretsErrorAtom,
   saveSecretAtom,
-  secretBuildAtom,
+  setSecretBuildAtom,
   secretDialogAtom,
   secretDraftAtom,
   secretsInAtom,
@@ -50,6 +52,7 @@ import {
   removeWorkspaceTypedAtom,
   restartContainerAtom,
   saveEnvironmentAtom,
+  startSessionAtom,
   workspaceBranchesAtom,
   workspaceListAtom,
   workspacesAtom,
@@ -132,21 +135,24 @@ const holding = (environments: EnvironmentRecord[], sessions: SessionRecord[]) =
 
         return Effect.void;
       }),
-    addRepo: ({ environment: id, source }) =>
-      source === "bad"
-        ? refused("That is not a repo.")
-        : Effect.sync(() => {
-            const name = source.split("/").pop() ?? source;
-            const index = environments.findIndex((known) => known.id === id);
-            const known = environments[index]!;
+    addRepo: ({ environment: id, source, name: named }) => {
+      if (source === "bad") return refused("That is not a repo.");
 
+      const name = named ?? source.split("/").pop() ?? source;
+      const index = environments.findIndex((known) => known.id === id);
+      const known = environments[index]!;
+
+      return known.repos.some((repo) => repo.name === name)
+        ? refused(`The environment already has a repo in ${name}: name this one`)
+        : Effect.sync(() => {
             environments[index] = {
               ...known,
               repos: [...known.repos, { name, url: `https://github.com/${source}.git` }],
             };
 
             return name;
-          }),
+          });
+    },
     removeRepo: ({ environment: id, repo }) =>
       Effect.sync(() => {
         const index = environments.findIndex((known) => known.id === id);
@@ -239,37 +245,58 @@ describe("the Environment list", () => {
     }),
   );
 
-  it.effect("asks again for the Environment's own settings and the Workspaces after a delete", () =>
-    Effect.gen(function* () {
-      const asked = { settings: 0, workspaces: 0 };
+  it.effect(
+    "asks again for the Environment's own settings, the Workspaces, the Secrets and the Builds after a delete",
+    () =>
+      Effect.gen(function* () {
+        const asked = { settings: 0, workspaces: 0, secrets: 0, builds: 0 };
 
-      const registry = registryWith({
-        listEnvironments: () => Effect.succeed([environment("work")]),
-        listWorkspaces: () =>
-          Effect.sync(() => {
-            asked.workspaces += 1;
+        const registry = registryWith({
+          listEnvironments: () => Effect.succeed([environment("work")]),
+          listWorkspaces: () =>
+            Effect.sync(() => {
+              asked.workspaces += 1;
 
-            return [];
-          }),
-        getEnvironmentSettings: () =>
-          Effect.die(asked.settings++ < 0 ? "unreachable" : "The settings are not answering."),
-        deleteEnvironment: () => Effect.void,
-      });
+              return [];
+            }),
+          getEnvironmentSettings: () =>
+            Effect.die(asked.settings++ < 0 ? "unreachable" : "The settings are not answering."),
+          listEnvironmentSecrets: () =>
+            Effect.sync(() => {
+              asked.secrets += 1;
 
-      registry.mount(workspacesAtom);
-      registry.mount(environmentSettingsAtom("work"));
-      yield* settled(registry, workspacesAtom);
-      yield* settled(registry, environmentSettingsAtom("work"));
+              return [];
+            }),
+          listBuilds: () =>
+            Effect.sync(() => {
+              asked.builds += 1;
 
-      expect(asked).toEqual({ settings: 1, workspaces: 1 });
+              return [];
+            }),
+          deleteEnvironment: () => Effect.void,
+        });
 
-      registry.set(deleteEnvironmentAtom("work"), undefined);
-      yield* settled(registry, deleteEnvironmentAtom("work"));
-      yield* settled(registry, workspacesAtom);
-      yield* settled(registry, environmentSettingsAtom("work"));
+        registry.mount(workspacesAtom);
+        registry.mount(environmentSettingsAtom("work"));
+        registry.mount(environmentSecretsAtom);
+        registry.mount(buildsAtom);
+        yield* settled(registry, workspacesAtom);
+        yield* settled(registry, environmentSettingsAtom("work"));
+        yield* settled(registry, environmentSecretsAtom);
+        yield* settled(registry, buildsAtom);
 
-      expect(asked).toEqual({ settings: 2, workspaces: 2 });
-    }),
+        expect(asked).toEqual({ settings: 1, workspaces: 1, secrets: 1, builds: 1 });
+
+        registry.set(deleteEnvironmentAtom("work"), undefined);
+        yield* settled(registry, deleteEnvironmentAtom("work"));
+        yield* settled(registry, workspacesAtom);
+        yield* settled(registry, environmentSettingsAtom("work"));
+        yield* settled(registry, environmentSecretsAtom);
+        yield* settled(registry, buildsAtom);
+
+        expect(asked).toEqual({ settings: 2, workspaces: 2, secrets: 2, builds: 2 });
+        registry.dispose();
+      }),
   );
 });
 
@@ -312,7 +339,7 @@ describe("the Repos of an Environment", () => {
       registry.mount(addRepoSourceAtom("work"));
       yield* settled(registry, environmentsAtom);
       registry.set(addRepoSourceAtom("work"), "acme/web");
-      registry.set(addRepoAtom("work"), "acme/web");
+      registry.set(addRepoAtom("work"), { source: "acme/web", name: "" });
 
       expect(AsyncResult.getOrThrow(yield* settled(registry, addRepoAtom("work")))).toBe("web");
       expect(registry.get(addRepoSourceAtom("work"))).toBe("");
@@ -322,13 +349,48 @@ describe("the Repos of an Environment", () => {
     }),
   );
 
+  it.effect(
+    "adds a second repo of the same name under the directory the owner names, after saying to name it",
+    () =>
+      Effect.gen(function* () {
+        const registry = holding(
+          [environment("work", "work", [{ name: "web", url: "https://github.com/acme/web.git" }])],
+          [],
+        );
+
+        registry.mount(environmentsAtom);
+        registry.mount(addRepoSourceAtom("work"));
+        registry.mount(addRepoNameAtom("work"));
+        registry.set(addRepoSourceAtom("work"), "other/web");
+        registry.set(addRepoAtom("work"), { source: "other/web", name: "" });
+
+        expect(settledFailureOf(yield* settled(registry, addRepoAtom("work")))).toBe(
+          "The environment already has a repo in web: name this one",
+        );
+
+        registry.set(addRepoNameAtom("work"), " other-web ");
+        registry.set(addRepoAtom("work"), { source: "other/web", name: " other-web " });
+
+        expect(AsyncResult.getOrThrow(yield* settled(registry, addRepoAtom("work")))).toBe(
+          "other-web",
+        );
+        expect(registry.get(addRepoSourceAtom("work"))).toBe("");
+        expect(registry.get(addRepoNameAtom("work"))).toBe("");
+        expect(
+          AsyncResult.getOrThrow(yield* settled(registry, environmentsAtom))[0]?.repos.map(
+            (repo) => repo.name,
+          ),
+        ).toEqual(["web", "other-web"]);
+      }),
+  );
+
   it.effect("keeps what was typed when the Registry refuses it, and says why", () =>
     Effect.gen(function* () {
       const registry = holding([environment("work")], []);
 
       registry.mount(addRepoSourceAtom("work"));
       registry.set(addRepoSourceAtom("work"), "bad");
-      registry.set(addRepoAtom("work"), "bad");
+      registry.set(addRepoAtom("work"), { source: "bad", name: "" });
 
       expect(settledFailureOf(yield* settled(registry, addRepoAtom("work")))).toBe(
         "That is not a repo.",
@@ -342,7 +404,7 @@ describe("the Repos of an Environment", () => {
 
     registry.mount(addRepoAtom("work"));
     registry.mount(addRepoAtom("other"));
-    registry.set(addRepoAtom("work"), "acme/web");
+    registry.set(addRepoAtom("work"), { source: "acme/web", name: "" });
 
     expect(registry.get(addRepoAtom("work")).waiting).toBe(true);
     expect(registry.get(addRepoAtom("other")).waiting).toBe(false);
@@ -672,11 +734,12 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Work",
         instance: undefined,
-        idle: "",
+        idle: undefined,
         ignore: undefined,
         variables: undefined,
         setupScript: undefined,
         startScript: undefined,
+        toolchains: undefined,
       });
 
       yield* Deferred.succeed(gate, undefined);
@@ -690,28 +753,52 @@ describe("the Edit dialog's draft", () => {
         variables: "",
         setupScript: "",
         startScript: "",
+        toolchains: "",
       });
     }),
   );
 
-  it.effect("shows the saved variables as NAME=value lines, and the scripts as they are", () =>
-    Effect.gen(function* () {
-      const { registry } = paging(undefined, {
-        ...DEFAULT_CONTAINER_SETTINGS,
-        variables: { NODE_ENV: "test", QUERY: "a=b" },
-        setupScript: "pnpm install\n",
-        startScript: "docker start db\n",
-      });
+  it.effect(
+    "keeps the idle field empty once the owner clears it, when the settings are loaded again",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = paging();
 
-      yield* opened(registry);
-      yield* settled(registry, environmentSettingsAtom("work"));
+        yield* opened(registry);
+        yield* settled(registry, environmentSettingsAtom("work"));
+        registry.set(environmentDraftAtom("work"), {
+          ...registry.get(environmentDraftAtom("work")),
+          idle: "",
+        });
+        registry.refresh(environmentSettingsAtom("work"));
+        yield* settled(registry, environmentSettingsAtom("work"));
 
-      expect(registry.get(environmentDraftAtom("work"))).toMatchObject({
-        variables: "NODE_ENV=test\nQUERY=a=b",
-        setupScript: "pnpm install\n",
-        startScript: "docker start db\n",
-      });
-    }),
+        expect(registry.get(environmentDraftAtom("work")).idle).toBe("");
+      }),
+  );
+
+  it.effect(
+    "shows the saved variables as NAME=value lines, and the scripts and Toolchains as they are",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = paging(undefined, {
+          ...DEFAULT_CONTAINER_SETTINGS,
+          variables: { NODE_ENV: "test", QUERY: "a=b" },
+          setupScript: "pnpm install\n",
+          startScript: "docker start db\n",
+          toolchains: '[tools]\nnode = "22.20.0"\n',
+        });
+
+        yield* opened(registry);
+        yield* settled(registry, environmentSettingsAtom("work"));
+
+        expect(registry.get(environmentDraftAtom("work"))).toMatchObject({
+          variables: "NODE_ENV=test\nQUERY=a=b",
+          setupScript: "pnpm install\n",
+          startScript: "docker start db\n",
+          toolchains: '[tools]\nnode = "22.20.0"\n',
+        });
+      }),
   );
 
   it.effect("keeps what was typed when the settings answer after it", () =>
@@ -726,11 +813,12 @@ describe("the Edit dialog's draft", () => {
       registry.set(environmentDraftAtom("work"), {
         name: "Renamed",
         instance: other,
-        idle: "",
+        idle: undefined,
         ignore: "/data",
         variables: "A=1",
         setupScript: undefined,
         startScript: "typed\n",
+        toolchains: undefined,
       });
       yield* Deferred.succeed(gate, undefined);
       yield* settled(registry, environmentSettingsAtom("work"));
@@ -743,6 +831,7 @@ describe("the Edit dialog's draft", () => {
         variables: "A=1",
         setupScript: "",
         startScript: "typed\n",
+        toolchains: "",
       });
     }),
   );
@@ -761,6 +850,7 @@ describe("the Edit dialog's draft", () => {
         variables: "",
         setupScript: "",
         startScript: "",
+        toolchains: "",
       });
       registry.refresh(environmentSettingsAtom("work"));
       yield* settled(registry, environmentSettingsAtom("work"));
@@ -773,6 +863,7 @@ describe("the Edit dialog's draft", () => {
         variables: "",
         setupScript: "",
         startScript: "",
+        toolchains: "",
       });
     }),
   );
@@ -810,10 +901,55 @@ describe("the Workspaces", () => {
 
         return id === "deadbeef" ? refused("Could not stop it.") : Effect.void;
       },
+      createSession: ({ environment: on, workspace: id }) =>
+        id === "deadbeef"
+          ? refused("The workspace is being removed.")
+          : Effect.sync(() => {
+              const created = session("c", on ?? "default", id);
+
+              sessions.unshift(created);
+
+              return created;
+            }),
     });
 
     return { registry, removed, restarted };
   };
+
+  it.effect("starts a Session in one, opens it and lists it", () =>
+    Effect.gen(function* () {
+      const { registry } = holdingWorkspaces();
+
+      registry.mount(pathAtom);
+      registry.mount(sessionsAtom);
+      yield* settled(registry, sessionsAtom);
+      registry.set(startSessionAtom("work"), "0a1b2c3d");
+
+      const started = AsyncResult.getOrThrow(yield* settled(registry, startSessionAtom("work")));
+
+      expect(started).toMatchObject({ id: "c", environment: "work", workspace: "0a1b2c3d" });
+      expect(registry.get(pathAtom)).toBe("/sessions/c");
+      expect(
+        AsyncResult.getOrThrow(yield* settled(registry, sessionsAtom)).map((known) => known.id),
+      ).toEqual(["c", "a", "b"]);
+    }),
+  );
+
+  it.effect("says why a Session could not start, on its Environment's card only", () =>
+    Effect.gen(function* () {
+      const { registry } = holdingWorkspaces();
+
+      registry.mount(pathAtom);
+      registry.mount(startSessionAtom("other"));
+      registry.set(startSessionAtom("work"), "deadbeef");
+
+      expect(settledFailureOf(yield* settled(registry, startSessionAtom("work")))).toBe(
+        "The workspace is being removed.",
+      );
+      expect(AsyncResult.isInitial(registry.get(startSessionAtom("other")))).toBe(true);
+      expect(registry.get(pathAtom)).toBe("/");
+    }),
+  );
 
   it.effect("lists them, and names each by its branch", () =>
     Effect.gen(function* () {
@@ -1085,7 +1221,7 @@ describe("the kept Secrets", () => {
         registry.mount(secretsInAtom(EVERY_ENVIRONMENT));
         registry.mount(secretDraftAtom(EVERY_ENVIRONMENT));
         registry.set(secretDraftAtom(EVERY_ENVIRONMENT), draft);
-        registry.set(saveSecretAtom(EVERY_ENVIRONMENT), draft);
+        registry.set(saveSecretAtom(EVERY_ENVIRONMENT), undefined);
 
         expect(
           AsyncResult.getOrThrow(yield* settled(registry, saveSecretAtom(EVERY_ENVIRONMENT))),
@@ -1102,8 +1238,10 @@ describe("the kept Secrets", () => {
       const { registry, values } = keeping();
 
       registry.mount(secretsInAtom("work"));
+      registry.mount(secretDraftAtom("work"));
       yield* settled(registry, environmentSecretsAtom);
-      registry.set(saveSecretAtom("work"), { name: "NPM_KEY", value: "npm_new", build: false });
+      registry.set(secretDraftAtom("work"), { name: "NPM_KEY", value: "npm_new", build: false });
+      registry.set(saveSecretAtom("work"), undefined);
       yield* settled(registry, saveSecretAtom("work"));
 
       expect(values).toEqual([{ environment: "work", name: "NPM_KEY", value: "npm_new" }]);
@@ -1120,7 +1258,7 @@ describe("the kept Secrets", () => {
 
         registry.mount(secretDraftAtom("work"));
         registry.set(secretDraftAtom("work"), draft);
-        registry.set(saveSecretAtom("work"), draft);
+        registry.set(saveSecretAtom("work"), undefined);
 
         const problem = settledFailureOf(yield* settled(registry, saveSecretAtom("work")));
 
@@ -1134,8 +1272,8 @@ describe("the kept Secrets", () => {
       const { registry, records } = keeping();
 
       registry.mount(secretsInAtom("work"));
-      registry.set(secretBuildAtom("work"), { name: "NPM_KEY", build: false });
-      yield* settled(registry, secretBuildAtom("work"));
+      registry.set(setSecretBuildAtom("work"), { name: "NPM_KEY", build: false });
+      yield* settled(registry, setSecretBuildAtom("work"));
 
       expect(records[0]?.build).toBe(false);
     }),

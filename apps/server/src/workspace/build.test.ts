@@ -23,6 +23,7 @@ const request = (overrides: Partial<BuildRequest> = {}): BuildRequest => ({
     setupScript: "docker pull postgres",
     startScript: "docker compose up -d",
     idleMinutes: 30,
+    toolchains: '[tools]\nnode = "22.20.0"\n',
   },
   ...overrides,
 });
@@ -190,7 +191,7 @@ describe("a Build", () => {
     expect(await builds.alarmAt(fake.now + 60_000)).toBe(fake.now);
   });
 
-  it("hands over the settings without the scripts, clones, runs the environment's then each repo's Setup Script, reads the commits, cleans up, snapshots and stops", async () => {
+  it("hands over the settings without the scripts, the Toolchains its bootstrap installs included, clones, runs the environment's then each repo's Setup Script, reads the commits, cleans up, snapshots and stops", async () => {
     const { fake, builds, build } = open();
 
     fake.answers = GOOD_COMMITS;
@@ -198,7 +199,13 @@ describe("a Build", () => {
     fake.now += 5_000;
     await build();
 
-    expect(fake.handedOver).toEqual([{ variables: { NODE_ENV: "development" }, idleMinutes: 30 }]);
+    expect(fake.handedOver).toEqual([
+      {
+        variables: { NODE_ENV: "development" },
+        idleMinutes: 30,
+        toolchains: '[tools]\nnode = "22.20.0"\n',
+      },
+    ]);
     expect(fake.steps).toEqual([
       "clone",
       "environment-setup",
@@ -523,6 +530,21 @@ describe("a Build's key", () => {
 
     for (const other of others) expect(other).not.toBe(base);
     expect(new Set(others).size).toBe(others.length);
+  });
+
+  it("changes with the Toolchains, and is the one it was without any", async () => {
+    const base = await key();
+
+    expect(await key({ settings: { ...settings, toolchains: "" } })).toBe(base);
+
+    const withToolchains = await key({
+      settings: { ...settings, toolchains: '[tools]\nnode = "22"\n' },
+    });
+
+    expect(withToolchains).not.toBe(base);
+    expect(await key({ settings: { ...settings, toolchains: "[tools]\n" } })).not.toBe(
+      withToolchains,
+    );
   });
 
   it("changes with the digest of the Secrets a Build gets, and is the one it was without any", async () => {

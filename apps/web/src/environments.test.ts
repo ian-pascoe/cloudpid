@@ -5,6 +5,7 @@ import {
   INSTANCE_TYPES,
   MAX_IGNORE_PATTERNS,
   MAX_SCRIPT_BYTES,
+  MAX_TOOLCHAINS_BYTES,
   MAX_VARIABLES,
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
@@ -31,7 +32,9 @@ import {
   instanceLabel,
   optionalBranchProblem,
   parseVariables,
+  repoNameProblem,
   scriptFieldProblem,
+  toolchainsFieldProblem,
   sourceProblem,
   splitArchived,
   variablesText,
@@ -154,6 +157,21 @@ describe("sourceProblem", () => {
   });
 });
 
+describe("repoNameProblem", () => {
+  it("accepts nothing (the repo's own name) and a plain directory name, and says what is wrong with anything else", () => {
+    expect(repoNameProblem("")).toBeNull();
+    expect(repoNameProblem("  ")).toBeNull();
+    expect(repoNameProblem(" other-web ")).toBeNull();
+    expect(repoNameProblem("web.v2_old")).toBeNull();
+    expect(repoNameProblem(".hidden")).toBe(
+      "Use letters, digits, dots, underscores and dashes, starting with a letter or digit",
+    );
+    expect(repoNameProblem("a/b")).not.toBeNull();
+    expect(repoNameProblem("-rf")).not.toBeNull();
+    expect(repoNameProblem("a".repeat(101))).toBe("Use at most 100 characters");
+  });
+});
+
 describe("instanceLabel", () => {
   it("names the size and what it offers, and marks the default one", () => {
     expect(instanceLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
@@ -269,6 +287,16 @@ describe("scriptFieldProblem", () => {
     expect(scriptFieldProblem("a".repeat(MAX_SCRIPT_BYTES))).toBeNull();
     expect(scriptFieldProblem("a".repeat(MAX_SCRIPT_BYTES + 1))).toBe(
       "The script is longer than 64 KiB",
+    );
+  });
+});
+
+describe("toolchainsFieldProblem", () => {
+  it("takes a mise.toml up to 16 KiB, and refuses a longer one", () => {
+    expect(toolchainsFieldProblem('[tools]\nnode = "22.20.0"\n')).toBeNull();
+    expect(toolchainsFieldProblem("a".repeat(MAX_TOOLCHAINS_BYTES))).toBeNull();
+    expect(toolchainsFieldProblem("a".repeat(MAX_TOOLCHAINS_BYTES + 1))).toBe(
+      "The mise.toml is longer than 16 KiB",
     );
   });
 });

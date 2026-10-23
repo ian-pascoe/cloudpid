@@ -18,7 +18,7 @@
 //   environment), so this is for what a command wrote; a value encoded some other way is not found.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
-import { PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
+import { base64, PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
 import type { HeldSecrets } from "./environment-secrets.ts";
 
 /**
@@ -298,6 +298,9 @@ export const samePaths = (
     ? a === b
     : a.length === b.length && a.every((pattern, index) => pattern === b[index]);
 
+/** The variable the patterns reach grep in, and the prefix of those that carry the rest. */
+const SCAN_VARIABLE = "CLOUDPID_SCAN_SECRET";
+
 /**
  * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` and the variables named after it
  * (`CLOUDPID_SCAN_SECRET_1`, …: one per line, split so no variable is near the kernel's limit on one), anywhere on the Container's
@@ -314,9 +317,6 @@ export const samePaths = (
  * The patterns reach grep as a pattern file on its standard input, read from the environment, so they are in no command
  * line.
  */
-/** The variable the patterns reach grep in, and the prefix of those that carry the rest. */
-const SCAN_VARIABLE = "CLOUDPID_SCAN_SECRET";
-
 const SCAN_SCRIPT = [
   'if [ "$#" -eq 0 ]; then',
   "  for d in /*; do",
@@ -367,15 +367,6 @@ const excerpt = (text: string): string => {
   const start = Math.floor((points.length - SCANNED_EXCERPT_LENGTH) / 2);
 
   return points.slice(start, start + SCANNED_EXCERPT_LENGTH).join("");
-};
-
-/** Base64 of `text`'s UTF-8 bytes. */
-const base64 = (text: string): string => {
-  let binary = "";
-
-  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
-
-  return btoa(binary);
 };
 
 /**

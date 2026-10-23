@@ -4,17 +4,18 @@
 // the Repos, the Container settings a Build uses, the image) is neither the last good one nor under way, or once a day
 // to look at the Repos' default branches. What the Build object answers is recorded in the Registry, which hands the
 // last good Build to each new Workspace and shows where each stands (`listBuilds`).
-import { resolveContainerSettingsLeniently } from "@cloudpid/config";
+import { type ContainerSettings, resolveContainerSettingsLeniently } from "@cloudpid/config";
 import type { BuildView, EnvironmentRepo } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
-import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import { buildObjectName } from "../workspace/binding.ts";
 import { buildKey, type BuildState } from "../workspace/build-record.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
+import { noEnvironment, reason } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
+import type { Spares } from "./rpc.ts";
 import type { BuildRecord } from "./store.ts";
 
 /** What keeping one Environment's Build current needs of the Registry: what the Environment is, and what is recorded. */
@@ -42,7 +43,7 @@ export const BUILD_QUIET_MS = 60 * 60_000;
 
 /**
  * What to ask an Environment's Build object for, given what it answered (`state`) and the key of the Build wanted
- * (`key`, null when none is: no Repo and no Setup Script): a Build, the daily look at the default branches, or nothing.
+ * (`key`, null when none is: `buildWanted` says no): a Build, the daily look at the default branches, or nothing.
  * A forced one (the owner's Rebuild) is asked for unless a Build of the key is under way already.
  */
 export const buildDue = ({
@@ -76,6 +77,16 @@ export const buildDue = ({
   return due ? "check" : undefined;
 };
 
+/**
+ * Whether an Environment has a Build: one with no Repo, no Setup Script and no Toolchains has nothing a Build would
+ * hold beyond the image.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const buildWanted = (
+  repos: ReadonlyArray<EnvironmentRepo>,
+  settings: Pick<ContainerSettings, "setupScript" | "toolchains">,
+): boolean => repos.length > 0 || settings.setupScript !== "" || settings.toolchains !== "";
+
 /** Where an Environment's Build stands, for the owner, from what the Registry recorded. */
 export const buildView = ({ build, status }: BuildRecord): BuildView => {
   const lastGoodAt = build?.finishedAt ?? null;
@@ -100,14 +111,27 @@ export type Builds = {
   readonly rebuild: (environment: string) => Effect.Effect<void, string>;
 };
 
-/** Whether what the Registry recorded is what the Build object answered. */
-const recordedAs = (recorded: BuildRecord, state: BuildState): boolean =>
-  JSON.stringify(recorded) === JSON.stringify({ build: state.last, status: state.progress });
+const sameJson = Schema.toEquivalence(Schema.Json);
 
+/** Whether what the Registry recorded is what the Build object answered, whatever the order of their keys. */
+const recordedAs = (recorded: BuildRecord, state: BuildState): boolean =>
+  sameJson(recorded, { build: state.last, status: state.progress });
+
+/**
+ * The upkeep of the Environments' Builds. An Environment deleted while its Build object was asked for a Build has the
+ * object wiped again, since the request made it anew; an Environment whose last good Build changed has its spare
+ * Workspace looked at (`spares`), as the spare is made from that Build.
+ */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const buildUpkeep = (
   registries: Cloudflare.DurableObject<Registry>,
-  { workspaces }: { readonly workspaces: Pick<WorkspaceObjects, "buildState" | "startBuild"> },
+  {
+    workspaces,
+    spares,
+  }: {
+    readonly workspaces: Pick<WorkspaceObjects, "buildState" | "startBuild" | "destroy">;
+    readonly spares: Pick<Spares, "of">;
+  },
 ): Builds => {
   /** Keep one Environment's Build current; whether a Build was asked for or is under way. */
   const keep = (work: BuildWork, force: boolean) =>
@@ -116,8 +140,7 @@ export const buildUpkeep = (
       const name = buildObjectName(work.environment);
       let state = yield* Effect.promise(() => workspaces.buildState(name));
       const { settings } = resolveContainerSettingsLeniently(work.settings);
-      // An Environment with no Repo and no Setup Script has nothing a Build would hold beyond the image.
-      const wanted = work.repos.length > 0 || settings.setupScript !== "";
+      const wanted = buildWanted(work.repos, settings);
 
       const key = wanted
         ? yield* Effect.promise(() =>
@@ -139,6 +162,13 @@ export const buildUpkeep = (
             secrets,
           ),
         );
+
+        // The Environment deleted meanwhile (its Build object wiped) is not made anew by the request.
+        if ((yield* registry.getEnvironment({ id: work.environment })) === null) {
+          yield* Effect.promise(() => workspaces.destroy(name));
+
+          return false;
+        }
       }
 
       // What Workspaces start from: none while no Build is wanted.
@@ -150,6 +180,11 @@ export const buildUpkeep = (
           build: answered.last,
           status: answered.progress,
         });
+
+        // The spare is made from the last good Build: one made from another is stale now.
+        if (answered.last?.snapshot.id !== work.recorded.build?.snapshot.id) {
+          yield* spares.of(work.environment);
+        }
       }
 
       return (
@@ -205,27 +240,19 @@ export const buildUpkeep = (
         const registry = registries.getByName(REGISTRY_NAME);
         const [work] = yield* registry.buildWork({ environments: [environment] });
 
-        if (work === undefined)
-          return yield* Effect.fail(`Environment "${environment}" does not exist`);
+        if (work === undefined) return yield* Effect.fail(noEnvironment(environment));
 
-        if (
-          work.repos.length === 0 &&
-          resolveContainerSettingsLeniently(work.settings).settings.setupScript === ""
-        ) {
+        if (!buildWanted(work.repos, resolveContainerSettingsLeniently(work.settings).settings)) {
           return yield* Effect.fail(
-            "The environment has no repos and no Setup Script: there is nothing to build",
+            "The environment has no repos, no Setup Script and no Toolchains: there is nothing to build",
           );
         }
 
         quietUntil = 0;
         yield* keep(work, true).pipe(
-          Effect.catchCause((cause) => {
-            const error = Cause.squash(cause);
-
-            return Effect.fail(
-              `Could not ask for the Build: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }),
+          Effect.catchCause((cause) =>
+            Effect.fail(`Could not ask for the Build: ${reason(cause)}`),
+          ),
         );
       }),
   };

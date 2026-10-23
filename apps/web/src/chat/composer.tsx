@@ -628,6 +628,9 @@ export const Composer = (props: ComposerProps) => {
         text: () => aui.composer.getState().text,
         subscribe: (listener) => aui.subscribe(listener),
         input: () => input.current,
+        setText: (text) => {
+          aui.composer.setText(text);
+        },
       }}
     >
       <ComposerBox {...props} conversation={key} input={input} />

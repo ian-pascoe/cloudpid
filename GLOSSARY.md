@@ -16,6 +16,10 @@ _Avoid_: Hidden, closed, deleted (for an archived one)
 A Session deleted for good, with everything it held; the files it wrote in its Workspace stay, unless it was the Workspace's last Session and the Workspace is removed with it.
 _Avoid_: Archived (for a deleted one), removed
 
+**Session draft**:
+A new Session as the owner writes it before it exists: its first message, its Environment and its Workspace. Sending it registers the Session and opens it.
+_Avoid_: Draft alone (an Annotation not yet sent is a draft too), new chat
+
 **Conversation**:
 One transcript inside a Session: the root conversation or a subagent's.
 _Avoid_: Session (for a single transcript), thread
@@ -119,7 +123,7 @@ One working copy of an Environment that Sessions bind to: its own clones of the 
 _Avoid_: Machine, worktree, checkout, sandbox, environment (for the working copy)
 
 **Spare Workspace**:
-The one Workspace each Environment keeps made ahead (cloned, set up, its Container snapshotted and stopped) and bound to no Session, so the next new Session takes it instead of waiting for a Workspace to be made. Another is made once it is taken, or once the Environment's Repos change.
+The one Workspace each Environment keeps made ahead from its last good Build (cloned, set up, its Container snapshotted and stopped) and bound to no Session, so the next new Session takes it instead of waiting for a Workspace to be made. Another is made once it is taken, or once the Environment's Repos or its last good Build change.
 _Avoid_: Pool, warm Workspace, standby
 
 **Build**:
@@ -177,7 +181,7 @@ A program an Environment or Repo declares in its mise configuration, which the C
 _Avoid_: Dependency, package (for tools)
 
 **Setup Script**:
-A script that installs what an Environment's Workspaces need (typically their dependencies): the Environment's own, and each Repo's `.agents/setup.sh`. A Build runs them, and a Workspace runs one again when it changes on the Workspace's branch.
+A script that installs what an Environment's Workspaces need (typically their dependencies): the Environment's own, and each Repo's `.agents/setup.sh`. A Build runs them; a Workspace runs each once on its Container, a Workspace made from a Build too, and again when it changes on the Workspace's branch.
 _Avoid_: Install script, setup hook
 
 **Start Script**:

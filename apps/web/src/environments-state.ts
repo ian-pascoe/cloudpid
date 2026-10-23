@@ -1,6 +1,6 @@
 // The Environment list, what the owner does to an Environment in it (create, edit, delete, add and remove Repos, make
-// its Build again, keep Secrets for it) and to its Workspaces (remove, restart the Container), the Secrets kept for
-// every Environment, and the state of the Environments page's forms and dialogs.
+// its Build again, keep Secrets for it) and to its Workspaces (start a Session, remove, restart the Container), the
+// Secrets kept for every Environment, and the state of the Environments page's forms and dialogs.
 
 import {
   containerOverridesFrom,
@@ -24,7 +24,7 @@ import {
 } from "./environments.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
-import { visibleTickAtom } from "./sessions.ts";
+import { createSession, visibleTickAtom } from "./sessions.ts";
 
 /** Every Environment, newest first, with its Repos. */
 export const environmentsAtom = RegistryClient.query("listEnvironments", undefined, {
@@ -154,15 +154,23 @@ export const saveEnvironmentAtom = Atom.family((id: string) =>
 export const deleteTypedAtom = Atom.family((_id: string) => Atom.make(""));
 
 /**
- * Delete Environment `id` for good: its Workspaces and their Sessions, then the Environment. A delete that stopped
- * partway removed some Workspaces, so the lists ask again either way. Once it is deleted, its dialog closes.
+ * Delete Environment `id` for good: its Workspaces and their Sessions, then the Environment with its Secrets and its
+ * Build. A delete that stopped partway removed some Workspaces, so the lists ask again either way. Once it is deleted,
+ * its dialog closes.
  */
 export const deleteEnvironmentAtom = Atom.family((id: string) =>
   appRuntime.fn(
     (_: void, get) =>
       RegistryClient.use((registry) => registry("deleteEnvironment", { environment: id })).pipe(
         Effect.asVoid,
-        changing(["environments", "sessions", "workspaces", `environment-settings:${id}`]),
+        changing([
+          "environments",
+          "sessions",
+          "workspaces",
+          `environment-settings:${id}`,
+          "environment-secrets",
+          "builds",
+        ]),
         Effect.tap(() =>
           Effect.sync(() => {
             get.set(environmentDialogAtom(id), null);
@@ -176,23 +184,43 @@ export const deleteEnvironmentAtom = Atom.family((id: string) =>
 /** What is typed in the add-Repo form of Environment `id`: `owner/repo` or an https URL. */
 export const addRepoSourceAtom = Atom.family((_id: string) => Atom.make(""));
 
+/** What is typed in the add-Repo form of Environment `id` as the directory to clone into; empty for the repo's own name. */
+export const addRepoNameAtom = Atom.family((_id: string) => Atom.make(""));
+
+/** What the add-Repo form sends: the repo, and the directory as typed (empty for the repo's own name). */
+export interface RepoAdd {
+  readonly source: string;
+  readonly name: string;
+}
+
 /**
- * Add `source` (`owner/repo` or an https URL) to Environment `id`'s Repos and list the Environments again; the form
- * empties once it is added, and keeps what was typed when it was not. Nothing is cloned: a Workspace made later clones
- * it. It answers with the directory name the Repo got. Each Environment has its own, so one's add does not show on
- * another's form.
+ * Add `source` (`owner/repo` or an https URL) to Environment `id`'s Repos, in directory `name` when one is typed, and
+ * list the Environments again; the form empties once it is added, and keeps what was typed when it was not (a directory
+ * the Environment has already says to name this one). Nothing is cloned: a Workspace made later clones it. It answers
+ * with the directory name the Repo got. Each Environment has its own, so one's add does not show on another's form.
  */
 export const addRepoAtom = Atom.family((id: string) =>
   appRuntime.fn(
-    (source: string, get) =>
-      RegistryClient.use((registry) => registry("addRepo", { environment: id, source })).pipe(
+    ({ source, name }: RepoAdd, get) => {
+      const directory = name.trim();
+
+      return RegistryClient.use((registry) =>
+        registry(
+          "addRepo",
+          directory === ""
+            ? { environment: id, source }
+            : { environment: id, source, name: directory },
+        ),
+      ).pipe(
         changing(["environments"]),
         Effect.tap(() =>
           Effect.sync(() => {
             get.set(addRepoSourceAtom(id), "");
+            get.set(addRepoNameAtom(id), "");
           }),
         ),
-      ),
+      );
+    },
     { concurrent: true },
   ),
 );
@@ -207,6 +235,16 @@ export const removeRepoAtom = Atom.family((id: string) =>
       ),
     { concurrent: true },
   ),
+);
+
+/**
+ * Start a Session in a Workspace of Environment `id`, by the Workspace's id, and open it (`createSession`). Each
+ * Environment has its own, so a refusal shows, with the Registry's message, on the card it was asked on.
+ */
+export const startSessionAtom = Atom.family((id: string) =>
+  appRuntime.fn((workspace: string, get) => createSession({ environment: id, workspace }, get), {
+    concurrent: true,
+  }),
 );
 
 /** Every Workspace, of every Environment, newest first. */
@@ -267,7 +305,10 @@ export const restartContainerAtom = Atom.family((id: string) =>
   ),
 );
 
-/** The Container settings of Environment `id` in force (size, idle time, paths), which apply at each Workspace's next launch. */
+/**
+ * The Container settings of Environment `id` in force (`ContainerSettings`: the size, idle time and paths, and the
+ * variables and scripts each Container start gets), which apply at each Workspace's next Container start.
+ */
 export const environmentSettingsAtom = Atom.family((id: string) =>
   RegistryClient.query(
     "getEnvironmentSettings",
@@ -277,15 +318,15 @@ export const environmentSettingsAtom = Atom.family((id: string) =>
 );
 
 /**
- * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables and
- * scripts as typed.
+ * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables,
+ * scripts and Toolchains as typed.
  */
 export interface EnvironmentDraft {
   readonly name: string;
   /** Undefined until the Environment's settings have answered and nothing was picked. */
   readonly instance: InstanceType | undefined;
-  /** Empty until the Environment's settings have answered and nothing was typed. */
-  readonly idle: string;
+  /** Undefined until the Environment's settings have answered and nothing was typed. */
+  readonly idle: string | undefined;
   /** The extra Container-only paths, one per line; undefined until the settings have answered and nothing was typed. */
   readonly ignore: string | undefined;
   /** The variables, a `NAME=value` line each; undefined until the settings have answered and nothing was typed. */
@@ -294,6 +335,8 @@ export interface EnvironmentDraft {
   readonly setupScript: string | undefined;
   /** The Environment's Start Script; undefined until the settings have answered and nothing was typed. */
   readonly startScript: string | undefined;
+  /** The Environment's Toolchains (a mise.toml); undefined until the settings have answered and nothing was typed. */
+  readonly toolchains: string | undefined;
 }
 
 /** `draft`, with the settings it has not got yet taken from `saved`, the settings in force once they answer. */
@@ -306,11 +349,12 @@ const filledFrom = (
     : {
         ...draft,
         instance: draft.instance ?? saved.settings.instance,
-        idle: draft.idle === "" ? String(saved.settings.idleMinutes) : draft.idle,
+        idle: draft.idle ?? String(saved.settings.idleMinutes),
         ignore: draft.ignore ?? Arr.join(saved.settings.ignore, "\n"),
         variables: draft.variables ?? variablesText(saved.settings.variables),
         setupScript: draft.setupScript ?? saved.settings.setupScript,
         startScript: draft.startScript ?? saved.settings.startScript,
+        toolchains: draft.toolchains ?? saved.settings.toolchains,
       };
 
 /**
@@ -326,11 +370,12 @@ export const environmentDraftAtom = Atom.family((id: string) =>
         Option.getOrElse(get.self<EnvironmentDraft>(), () => ({
           name: get(environmentNamesAtom)[id] ?? "",
           instance: undefined,
-          idle: "",
+          idle: undefined,
           ignore: undefined,
           variables: undefined,
           setupScript: undefined,
           startScript: undefined,
+          toolchains: undefined,
         })),
         saved,
       );
@@ -369,17 +414,21 @@ export const secretDraftAtom = Atom.family((_key: string) =>
 );
 
 /**
- * Keep the form's Secret in section `key`, or replace the value of the one kept under its name (`secretWrite`). Once
- * it is kept, the form empties, so the value is held nowhere in the page; a refusal keeps what was typed and says why.
- * A Build that takes Secrets is made again, so the Builds are asked again too.
+ * Keep the form's Secret in section `key`, or replace the value of the one kept under its name (`secretWrite`). It
+ * reads the form as it starts rather than taking the draft as its argument, which the atom would keep: once the Secret
+ * is kept the form empties, so the value is held nowhere in the page; a refusal keeps what was typed and says why. A
+ * Build that takes Secrets is made again, so the Builds are asked again too.
  */
 export const saveSecretAtom = Atom.family((key: string) =>
   appRuntime.fn(
-    (draft: SecretDraft, get) =>
+    (_: void, get) =>
       RegistryClient.use((registry) =>
         registry("setEnvironmentSecret", {
           environment: secretScopeOf(key),
-          ...secretWrite(draft, get(secretsInAtom(key)) ?? []),
+          ...secretWrite(
+            get.registry.get(secretDraftAtom(key)),
+            get.registry.get(secretsInAtom(key)) ?? [],
+          ),
         }),
       ).pipe(
         changing(["environment-secrets", "builds"]),
@@ -394,7 +443,7 @@ export const saveSecretAtom = Atom.family((key: string) =>
 );
 
 /** Say whether Secret `name` of section `key` reaches the Build. */
-export const secretBuildAtom = Atom.family((key: string) =>
+export const setSecretBuildAtom = Atom.family((key: string) =>
   appRuntime.fn(
     ({ name, build }: { readonly name: string; readonly build: boolean }) =>
       RegistryClient.use((registry) =>

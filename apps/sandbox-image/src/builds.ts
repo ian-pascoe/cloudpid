@@ -133,6 +133,8 @@ export const buildCleanupScript = (
   run: string,
   root: string = BUILD_ROOT,
   state: string = SETUP_STATE_DIRECTORY,
+  /** How long the processes left other than the daemons get to stop once asked, in seconds. */
+  strayStopSeconds: number = STRAY_STOP_SECONDS,
 ): string => `set -u
 tag=${shellQuote(`${BUILD_RUN_VARIABLE}=${run}`)}
 self=$$
@@ -181,13 +183,15 @@ ancestor() { case "$ancestors" in *" $1 "*) return 0 ;; esac; return 1; }
 
 # stop <seconds> [name]: ask the processes left (named <name>, when given) to stop, and wait up to <seconds> for them.
 stop() {
-  local pids i
+  local pids deadline
   pids=$(left "\${2:-}")
   [ -z "$pids" ] && return 0
   kill -TERM $pids 2>/dev/null
-  for i in $(seq 1 $(($1 * 10))); do
-    [ -z "$(left "\${2:-}")" ] && return 0
+  # By the clock, not by rounds: a look through /proc takes a while on a busy Container.
+  deadline=$((SECONDS + $1))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     sleep 0.1
+    [ -z "$(left "\${2:-}")" ] && return 0
   done
   return 1
 }
@@ -195,7 +199,7 @@ stop() {
 status=0
 stop ${DAEMON_STOP_SECONDS} dockerd || echo "cloudpid: Docker's daemon did not stop in ${DAEMON_STOP_SECONDS} s" >&2
 stop ${DAEMON_STOP_SECONDS} containerd || echo "cloudpid: containerd did not stop in ${DAEMON_STOP_SECONDS} s" >&2
-if ! stop ${STRAY_STOP_SECONDS}; then
+if ! stop ${strayStopSeconds}; then
   pids=$(left)
   [ -n "$pids" ] && kill -KILL $pids 2>/dev/null
   sleep 0.5

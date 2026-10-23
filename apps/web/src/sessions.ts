@@ -74,21 +74,20 @@ export const workspaceLabel = (
   branches: Readonly<Record<string, string>> = {},
 ): string => (workspace === NEW_WORKSPACE ? "New workspace" : (branches[workspace] ?? workspace));
 
-/** Register a new Session, idle, and open it; the list asks again. */
-export const createSessionAtom = appRuntime.fn(
-  replying((where: SessionPlace, get: Atom.FnContext) =>
-    RegistryClient.use((registry) => registry("createSession", where)).pipe(
-      Effect.tap((created) =>
-        Effect.sync(() => {
-          get.set(pathAtom, sessionPath(created.id));
-        }),
-      ),
-      // A new Workspace is listed with it.
-      changing(["sessions", "workspaces"]),
+/** Register a new Session at `where`, idle, and open it; the lists ask again. A refusal fails with the Registry's message. */
+export const createSession = (where: SessionPlace, get: Atom.FnContext) =>
+  RegistryClient.use((registry) => registry("createSession", where)).pipe(
+    Effect.tap((created) =>
+      Effect.sync(() => {
+        get.set(pathAtom, sessionPath(created.id));
+      }),
     ),
-  ),
-  { concurrent: true },
-);
+    // A new Workspace is listed with it.
+    changing(["sessions", "workspaces"]),
+  );
+
+/** Register a new Session, idle, and open it (`createSession`), answering each call with its own outcome. */
+export const createSessionAtom = appRuntime.fn(replying(createSession), { concurrent: true });
 
 /** Name a Session: the title is the owner's from then on. */
 export const renameSessionAtom = appRuntime.fn(

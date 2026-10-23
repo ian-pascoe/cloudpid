@@ -1,11 +1,17 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over native arrays, not combinators.
 
+// The Environments page's and the Session list's pure parts: the list grouped by Environment, the checks of what the
+// owner types (names, Repos, branches, Container settings, Secrets) by the server's own rules, and the lines the page
+// shows of a Build and a Secret.
+
 import {
   type BuildView,
   branchProblem,
   type EnvironmentSecretRecord,
   MAX_ENVIRONMENT_NAME_LENGTH,
+  MAX_REPO_NAME_LENGTH,
   parseRepoSource,
+  REPO_NAME,
   secretNameProblem,
   secretValueProblem,
   type SessionRecord,
@@ -20,6 +26,7 @@ import {
   MAX_VARIABLE_VALUE_LENGTH,
   MAX_VARIABLES,
   scriptProblem,
+  toolchainsProblem,
   variableNameProblem,
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
@@ -118,6 +125,23 @@ export const sourceProblem = (text: string): string | null => {
   return Result.isFailure(parsed) ? parsed.failure : null;
 };
 
+/**
+ * Why `text` cannot be the directory a Repo is cloned into, or null when it can: empty for the repo's own name, else
+ * trimmed, the server's rules (`RepoName`): letters, digits, dots, underscores and dashes, starting with a letter or
+ * digit, at most 100 characters.
+ */
+export const repoNameProblem = (text: string): string | null => {
+  const name = text.trim();
+
+  if (name === "") return null;
+
+  if (name.length > MAX_REPO_NAME_LENGTH) return `Use at most ${MAX_REPO_NAME_LENGTH} characters`;
+
+  return REPO_NAME.test(name)
+    ? null
+    : "Use letters, digits, dots, underscores and dashes, starting with a letter or digit";
+};
+
 /** An instance type's line in the Edit dialog's size list: its name and what it offers, the default marked as such. */
 export const instanceLabel = (type: InstanceType): string =>
   `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_CONTAINER_SETTINGS.instance ? " (default)" : ""}`;
@@ -210,6 +234,13 @@ export const scriptFieldProblem = (text: string): string | null => {
   const problem = scriptProblem(text);
 
   return problem === undefined ? null : `The script ${problem}`;
+};
+
+/** Why `text` cannot be an Environment's Toolchains (a mise.toml), or null when it can: the server's rules (`toolchainsProblem`). */
+export const toolchainsFieldProblem = (text: string): string | null => {
+  const problem = toolchainsProblem(text);
+
+  return problem === undefined ? null : `The mise.toml ${problem}`;
 };
 
 /**

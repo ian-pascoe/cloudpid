@@ -2,7 +2,7 @@
 // bootstrap that runs before the first command of each Container start, and the environment every command gets. The
 // Container is a fake backend whose shell records what it is asked and answers from a script.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
-import { secretReference } from "@cloudpid/extensions/secrets/core";
+import { secretEnvName, secretReference } from "@cloudpid/extensions/secrets/core";
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import {
@@ -865,6 +865,43 @@ describe("the Setup Scripts", () => {
     expect(script?.timeoutMs).toBeGreaterThan(15 * 60_000);
   });
 
+  it("get the Secrets marked for the Build in their environment, which no other script or command gets", async () => {
+    const marked = {
+      name: "NPM_TOKEN",
+      value: "npm_0123456789abcdef",
+      scope: "environment" as const,
+      build: true,
+    };
+
+    const other = { ...marked, name: "API_KEY", value: "sk-live-0123456789", build: false };
+
+    const container = fakeContainer((input) => {
+      if (isSetupList(input)) return { stdout: ["/workspace/a\n"] };
+
+      if (isStartList(input)) return { stdout: ["/workspace/a\n"] };
+
+      return {};
+    });
+
+    const { toolchains } = open(container, {
+      secrets: { read: async () => [marked, other], known: () => [marked, other] },
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    const [script] = container.execs.filter(isSetupRun);
+
+    expect(script?.env).toMatchObject({
+      [secretEnvName(marked.name)]: marked.value,
+      MISE_YES: "1",
+    });
+    expect(script?.env).not.toHaveProperty(secretEnvName(other.name));
+
+    for (const input of container.execs.filter((input) => !isSetupRun(input))) {
+      expect(input.env ?? {}).not.toHaveProperty(secretEnvName(marked.name));
+    }
+  });
+
   it("are skipped when none is due: the command is sent as it is", async () => {
     const container = withScripts([]);
     const handle = await open(container).toolchains.connect(host);
@@ -1175,6 +1212,19 @@ describe("the Environment's variables", () => {
 
     for (const input of own)
       expect(input.env).toMatchObject({ API_URL: "http://x", MISE_YES: "1" });
+  });
+
+  it("come with the Environment's Toolchains, which the bootstrap writes as the root's mise.toml", async () => {
+    const toml = '[tools]\nnode = "22.20.0"\n';
+    const container = fakeContainer();
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ toolchains: toml }),
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    expect(bootstraps(container.execs)[0]?.source).toContain(btoa(toml));
   });
 
   it("are read once per Container start, so a change applies at the next one", async () => {

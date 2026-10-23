@@ -1,6 +1,7 @@
 // An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Container settings): the Container's
 // instance size, how long it may sit unused before its Workspace stops it, the paths it keeps to itself on top of the
-// built-in ones, the variables every command gets, and the Environment's own Setup and Start Scripts. Like the global settings, every field has a decoding default, so decoding the saved overrides gives
+// built-in ones, the variables every command gets, the Environment's own Setup and Start Scripts, and its Toolchains (a
+// mise.toml). Like the global settings, every field has a decoding default, so decoding the saved overrides gives
 // the resolved settings and the schema's `Encoded` side is the overrides' shape. The Registry keeps them per
 // Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
 import * as Arr from "effect/Array";
@@ -154,7 +155,8 @@ export const MAX_VARIABLE_VALUE_LENGTH = 4096;
 
 /**
  * The names a variable may not have: what the Container sets for every command itself (`toolchainEnv` in
- * `@cloudpid/sandbox-image/toolchains`, which this package cannot import, and what computerd starts a command with),
+ * `@cloudpid/sandbox-image/toolchains`, which this package cannot import: a test there checks each of its names is here,
+ * and what computerd starts a command with),
  * which a variable would otherwise override, and `CLOUDPID_`'s prefix, which is cloudpid's own.
  */
 const RESERVED_VARIABLES: ReadonlySet<string> = new Set([
@@ -238,6 +240,25 @@ export const scriptProblem = (script: string): string | undefined => {
 
 const Script = Schema.String.check(Schema.makeFilter(scriptProblem));
 
+/**
+ * The largest Toolchains setting (a mise.toml), in bytes of UTF-8. The bootstrap passes it to the Container
+ * base64-encoded in its own text, beside the rest of the bootstrap.
+ */
+export const MAX_TOOLCHAINS_BYTES = 16 * 1024;
+
+/** Why `toml` cannot be an Environment's Toolchains (its mise.toml), or undefined when it can. Its TOML is mise's to read. */
+export const toolchainsProblem = (toml: string): string | undefined => {
+  if (hasNul(toml)) return "contains a NUL character";
+
+  if (toml.length > MAX_TOOLCHAINS_BYTES / 3 && utf8.encode(toml).length > MAX_TOOLCHAINS_BYTES) {
+    return `is longer than ${MAX_TOOLCHAINS_BYTES / 1024} KiB`;
+  }
+
+  return undefined;
+};
+
+const Toolchains = Schema.String.check(Schema.makeFilter(toolchainsProblem));
+
 export const ContainerSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-2"))),
@@ -261,6 +282,11 @@ export const ContainerSettings = Schema.Struct({
   setupScript: Script.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
   /** The Environment's Start Script (bash), run in `/workspace` at each Container start before the repos'. Empty: none. */
   startScript: Script.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  /**
+   * The Environment's Toolchains: the text of the `mise.toml` the bootstrap writes as `/workspace/mise.toml` where the
+   * Workspace has none, or has the one it last wrote. Empty: the image's base Toolchains (`BASE_MISE_TOML`).
+   */
+  toolchains: Toolchains.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
 });
 
 export type ContainerSettings = typeof ContainerSettings.Type;
@@ -335,6 +361,8 @@ export const containerOverridesFrom = (settings: ContainerSettings): ContainerSe
   if (settings.setupScript !== "") overrides.setupScript = settings.setupScript;
 
   if (settings.startScript !== "") overrides.startScript = settings.startScript;
+
+  if (settings.toolchains !== "") overrides.toolchains = settings.toolchains;
 
   return overrides;
 };

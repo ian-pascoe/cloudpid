@@ -216,7 +216,7 @@ export const Sidebar = ({
   const [notice, setNotice] = useAtom(noticeAtom);
   const listError = useAtomValue(sessionsErrorAtom);
   const names = useAtomValue(environmentNamesAtom);
-  // An archive or unarchive from an item's menu that failed: shown with the list's own error.
+  // A new Session, an archive or an unarchive from an item's menu that failed: shown with the list's own error.
   const problem = useAtomValue(listProblemAtom);
   const actions = useSessionActions(listProblemAtom);
 

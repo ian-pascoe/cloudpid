@@ -29,6 +29,7 @@ import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import type { WorkspaceNamespace } from "../session/workspace.ts";
 import type { EnvironmentBuild } from "./build-record.ts";
+import { buildSecretEnvironment } from "./environment-secrets.ts";
 import type { WorkspaceSettingsAnswer, WriteAnswer } from "./settings.ts";
 
 /**
@@ -48,10 +49,22 @@ export type WorkspaceSetup = WorkspaceClones & {
    * and take out of output. Absent (a spare's stored set-up), it keeps those it holds. Never stored with the set-up.
    */
   readonly secrets?: ReadonlyArray<KeptSecret> | undefined;
+  /**
+   * Why the Registry could not open the Environment's Secrets (a fixed reason, never a value), in place of `secrets`:
+   * the Workspace then keeps a copy it cannot show, so its snapshots and Builds are refused until a handover brings
+   * them.
+   */
+  readonly secretsUnavailable?: string | undefined;
 };
 
 /** How long cloning a Workspace's Repos may take, in seconds: full clones of big repos, after a cold start. */
 export const CLONE_TIMEOUT_SECONDS = 15 * 60;
+
+/**
+ * How much longer than a Setup or Start Script's own limit a run of it may take: time for the script's stop
+ * (`timeout --kill-after`) and for the result to come back, with room for a lock another Session's run holds.
+ */
+export const SCRIPT_RUN_MARGIN_SECONDS = 120;
 
 /** How much of a script's output a failure reports, from its end, where the error is. */
 const REPORTED_OUTPUT = 2_000;
@@ -79,9 +92,18 @@ export type PreparationHost = {
     readonly read: () => Promise<EnvironmentBuild | null>;
     readonly write: (build: EnvironmentBuild | null) => Promise<void>;
   };
-  /** Hand the Workspace's Durable Object its Environment's Secrets, in place of those it holds. */
+  /**
+   * Hand the Workspace's Durable Object its Environment's Secrets, in place of those it holds, or why there are none
+   * it can show (`WorkspaceSetup.secretsUnavailable`).
+   */
   readonly secrets: {
     readonly write: (secrets: ReadonlyArray<KeptSecret>) => Promise<void>;
+    readonly unavailable: (reason: string) => Promise<void>;
+    /**
+     * The copy the Workspace's Durable Object holds, for a set-up that carries none (a spare's stored one): what its
+     * Setup Scripts get. Without it, such a set-up's get none.
+     */
+    readonly read?: (() => Promise<ReadonlyArray<KeptSecret>>) | undefined;
   };
   readonly warn: (message: string) => void;
 };
@@ -119,14 +141,19 @@ const sameBuild = (left: EnvironmentBuild | null, right: EnvironmentBuild | null
  * flagged (the Container is running already, so its bootstrap did not see the clone, or saw the spare's). Rejects with
  * git's output when a Repo could not be cloned or switched (the others still are); a settings write the Workspace
  * refuses, or a Setup or Start Script that fails, is only reported (`warn`): the Workspace is there to work in, and
- * the script runs again at the next Container start.
+ * the script runs again at the next Container start. `onHandedOver` is called once the Secrets, settings and Build are
+ * the Workspace's, before the clones: what needs no Container is done, so a Container may start (the early start).
  */
 export const prepareWorkspace = async (
   { readText, run, settings, build, secrets, warn }: PreparationHost,
   setup: WorkspaceSetup,
+  onHandedOver: () => void = () => undefined,
 ): Promise<void> => {
   // First, so the snapshot of any Container this readying starts is searched for them.
   if (setup.secrets !== undefined) await secrets.write(setup.secrets);
+  else if (setup.secretsUnavailable !== undefined) {
+    await secrets.unavailable(setup.secretsUnavailable);
+  }
 
   const held = await settings.read();
 
@@ -139,6 +166,8 @@ export const prepareWorkspace = async (
   if (setup.build !== undefined && !sameBuild(await build.read(), setup.build)) {
     await build.write(setup.build);
   }
+
+  onHandedOver();
 
   // A clone that is there has a `.git/HEAD`; the spare's own clones stay on its branch.
   const missing = Arr.filter(
@@ -166,10 +195,20 @@ export const prepareWorkspace = async (
     CLONE_TIMEOUT_SECONDS,
   );
 
+  // The Setup Scripts get the Secrets marked for the Build, as the bootstrap's do: the Workspace holds what was handed.
+  const setupEnv = buildSecretEnvironment(
+    setup.secrets ??
+      (setup.secretsUnavailable === undefined ? ((await secrets.read?.()) ?? []) : []),
+  );
+
   // Each clone that was made is set up, whatever became of the others: the next readying clones only what is missing.
   for (const repo of missing) {
     // Another Session's run of it is waited for: the lock is held for the script's time.
-    const ran = await run(repoSetupScript(repo.name), SETUP_TIMEOUT_SECONDS + 120);
+    const ran = await run(
+      repoSetupScript(repo.name),
+      SETUP_TIMEOUT_SECONDS + SCRIPT_RUN_MARGIN_SECONDS,
+      setupEnv,
+    );
 
     if (ran.exitCode !== 0) {
       warn(
@@ -177,7 +216,10 @@ export const prepareWorkspace = async (
       );
     }
 
-    const started = await run(repoStartScript(repo.name), START_TIMEOUT_SECONDS + 120);
+    const started = await run(
+      repoStartScript(repo.name),
+      START_TIMEOUT_SECONDS + SCRIPT_RUN_MARGIN_SECONDS,
+    );
 
     if (started.exitCode !== 0) {
       warn(
@@ -287,7 +329,7 @@ export const preparationHost = (
  */
 export const workspacePreparation =
   (namespace: WorkspaceNamespace, warn: (message: string) => void) =>
-  (objectName: string, setup: WorkspaceSetup): Promise<void> =>
+  (objectName: string, setup: WorkspaceSetup, onHandedOver?: () => void): Promise<void> =>
     prepareWorkspace(
       preparationHost(
         namespace.getByName(objectName),
@@ -303,8 +345,11 @@ export const workspacePreparation =
         },
         {
           write: (secrets) => namespace.getByName(objectName).updateEnvironmentSecrets(secrets),
+          unavailable: (reason) =>
+            namespace.getByName(objectName).environmentSecretsUnavailable(reason),
         },
         warn,
       ),
       setup,
+      onHandedOver,
     );

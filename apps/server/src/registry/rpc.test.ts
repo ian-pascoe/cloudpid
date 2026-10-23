@@ -175,8 +175,9 @@ const fakeRegistries = () => {
   const buildRequests = new Map<string, BuildRequest>();
   /** The Secrets each Build object was last handed with a request. */
   const buildSecrets = new Map<string, ReadonlyArray<KeptSecret>>();
-  /** The Secrets each spare's object was handed with its set-up. */
+  /** The Secrets each spare's object was handed with its set-up, and the Build. */
   const spareSecrets = new Map<string, ReadonlyArray<KeptSecret> | undefined>();
+  const spareBuilds = new Map<string, BuildRecord["build"]>();
   /** What the Registry recorded of each Environment's Build. */
   const buildRecords = new Map<string, BuildRecord>();
   const NO_BUILD: BuildRecord = { build: null, status: null };
@@ -195,6 +196,8 @@ const fakeRegistries = () => {
     },
     startBuild: async (name, request, secrets) => {
       calls.push(`startBuild:${name}${request.check === true ? ":check" : ""}`);
+      duringStartBuild?.();
+      duringStartBuild = undefined;
 
       if (workspaceFails !== undefined) throw new Error(workspaceFails);
 
@@ -223,14 +226,27 @@ const fakeRegistries = () => {
     },
     restartContainer: (name) => workspaceCall("restartContainer", name),
     prepareSpare: (name, setup) => {
-      spareSecrets.set(name, setup.secrets);
+      spareSecrets.set(name, "secrets" in setup ? setup.secrets : undefined);
+      spareBuilds.set(name, setup.build ?? null);
 
-      return workspaceCall("prepareSpare", name);
+      const result = workspaceCall("prepareSpare", name);
+
+      duringPrepare?.();
+      duringPrepare = undefined;
+
+      return result;
     },
   };
 
-  /** Each Environment's spare Workspace: its id, and the addresses of the Repos it was made with. */
-  const spares = new Map<string, { readonly id: string; readonly repos: string }>();
+  /** Each Environment's spare Workspace: its id, the addresses of the Repos and the Build it was made with. */
+  const spares = new Map<
+    string,
+    { readonly id: string; readonly repos: string; readonly build: string | null }
+  >();
+
+  /** The snapshot id of `environment`'s last good Build, as recorded; null for none. */
+  const goodBuildOf = (environment: string) =>
+    buildRecords.get(environment)?.build?.snapshot.id ?? null;
 
   const addresses = (repos: EnvironmentRecord["repos"]) =>
     Arr.join(
@@ -242,6 +258,10 @@ const fakeRegistries = () => {
 
   /** Runs once, when the next Registry `createSession` is called: what happens just before it is answered. */
   let beforeCreate: (() => void) | undefined;
+  /** Run once, as the next `forgetSpare`, `prepareSpare` or `startBuild` reaches its object: what happens meanwhile. */
+  let beforeForgetSpare: (() => void) | undefined;
+  let duringPrepare: (() => void) | undefined;
+  let duringStartBuild: (() => void) | undefined;
 
   /** The work the endpoint handed to `background`, not yet run. */
   const queued: Array<Effect.Effect<void>> = [];
@@ -374,6 +394,8 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         calls.push(`deleteEnvironment:${id}`);
 
+        if (id === DEFAULT_ENVIRONMENT) return "refused" as const;
+
         if (Arr.some(workspaces, (workspace) => workspace.environment === id) || spares.has(id)) {
           return "in-use" as const;
         }
@@ -501,16 +523,17 @@ const fakeRegistries = () => {
 
           const spare = spares.get(environment);
           const repos = addresses(found.value.repos);
+          const build = goodBuildOf(environment);
 
           if (spare !== undefined) {
-            if (spare.repos !== repos) stale.push(spare.id);
+            if (spare.repos !== repos || spare.build !== build) stale.push(spare.id);
 
             continue;
           }
 
           const id = `5a${String(++sparesMade).padStart(6, "0")}`;
 
-          spares.set(environment, { id, repos });
+          spares.set(environment, { id, repos, build });
           made.push({
             id,
             environment,
@@ -638,6 +661,8 @@ const fakeRegistries = () => {
     forgetSpare: ({ id }) =>
       Effect.sync(() => {
         calls.push(`forgetSpare:${id}`);
+        beforeForgetSpare?.();
+        beforeForgetSpare = undefined;
 
         for (const [environment, spare] of spares) {
           if (spare.id === id) return spares.delete(environment);
@@ -713,6 +738,8 @@ const fakeRegistries = () => {
     },
   } as never;
 
+  const upkeepOfSpares = spareUpkeep(registries, { workspaces: workspaceObjects });
+
   return {
     names,
     calls,
@@ -734,8 +761,20 @@ const fakeRegistries = () => {
     beforeCreate: (change: () => void) => {
       beforeCreate = change;
     },
-    /** Fail the Workspace objects' calls with `message`. */
-    failWorkspace: (message: string) => {
+    /** Run `change` as the next `forgetSpare` reaches the Registry, before it looks. */
+    beforeForgetSpare: (change: () => void) => {
+      beforeForgetSpare = change;
+    },
+    /** Run `change` once the next `prepareSpare` has reached the spare's object. */
+    duringPrepare: (change: () => void) => {
+      duringPrepare = change;
+    },
+    /** Run `change` once the next `startBuild` has reached the Build object. */
+    duringStartBuild: (change: () => void) => {
+      duringStartBuild = change;
+    },
+    /** Fail the Workspace objects' calls with `message`; undefined, not any more. */
+    failWorkspace: (message: string | undefined) => {
       workspaceFails = message;
     },
     /** The objects left from before Environments. */
@@ -759,9 +798,10 @@ const fakeRegistries = () => {
     /** Each Environment's spare Workspace. */
     spares,
     /** The upkeep of the spares, built once per fake as the main Worker builds it once per isolate. */
-    spareUpkeep: spareUpkeep(registries, { workspaces: workspaceObjects }),
+    spareUpkeep: upkeepOfSpares,
     /** The upkeep of the Builds, built once per fake too. */
-    buildUpkeep: buildUpkeep(registries, { workspaces: workspaceObjects }),
+    buildUpkeep: buildUpkeep(registries, { workspaces: workspaceObjects, spares: upkeepOfSpares }),
+    spareBuilds,
     buildObjects,
     buildRequests,
     buildRecords,
@@ -1288,7 +1328,7 @@ it("renames an Environment, and refuses a name another has or an Environment tha
   expect(missing.message).toBe('Environment "0000beef" does not exist');
 });
 
-it("deletes an Environment: every Workspace made from it, with its Sessions (archived too), then its record", async () => {
+it("deletes an Environment: every Workspace made from it, with its Sessions (archived too), its Build object, then its record", async () => {
   const fake = fakeRegistries();
   const id = await makeEnvironment(fake, "Cloudpid");
   const elsewhere = await call(fake, (registry) => registry.createSession({}));
@@ -1318,6 +1358,8 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
     `deleteWorkspace:${first.workspace}`,
     `destroyWorkspace:build:${id}`,
     `deleteEnvironment:${id}`,
+    // Again, for a Build asked for after the first wipe.
+    `destroyWorkspace:build:${id}`,
   ]);
   expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
   expect(Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.id)).toEqual([
@@ -1328,13 +1370,17 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
   ).toEqual([DEFAULT_ENVIRONMENT]);
 });
 
-it("deletes an Environment with no Workspaces: its Build object, then its record", async () => {
+it("deletes an Environment with no Workspaces: its Build object, then its record, then its Build object again", async () => {
   const fake = fakeRegistries();
   const id = await makeEnvironment(fake, "Empty");
 
   await call(fake, (registry) => registry.deleteEnvironment({ environment: id }));
 
-  expect(lifecycle(fake)).toEqual([`destroyWorkspace:build:${id}`, `deleteEnvironment:${id}`]);
+  expect(lifecycle(fake)).toEqual([
+    `destroyWorkspace:build:${id}`,
+    `deleteEnvironment:${id}`,
+    `destroyWorkspace:build:${id}`,
+  ]);
 });
 
 it("refuses to delete the default Environment, and touches nothing", async () => {
@@ -2017,7 +2063,7 @@ it("refuses the spare Workspaces' branch for a new Workspace, before it reaches 
   expect(fake.calls).not.toContain("createSession");
 });
 
-it("removes a stale spare once a Repo is added: its object, then its record, then makes the next", async () => {
+it("removes a stale spare once a Repo is added: its record, then its object, then makes the next", async () => {
   const fake = fakeRegistries();
   const environment = await makeEnvironment(fake, "Cloudpid");
 
@@ -2030,8 +2076,8 @@ it("removes a stale spare once a Repo is added: its object, then its record, the
   await fake.runBackground();
 
   expect(Arr.filter(lifecycle(fake), (name) => !name.startsWith("startBuild:"))).toEqual([
-    `destroyWorkspace:ws:${stale}`,
     `forgetSpare:${stale}`,
+    `destroyWorkspace:ws:${stale}`,
     `prepareSpare:ws:${fake.spares.get(environment)?.id}`,
   ]);
   expect(fake.spares.get(environment)?.repos).toContain("acme/app");
@@ -2051,7 +2097,7 @@ it("removes a stale spare once a Repo is removed", async () => {
   expect(Arr.filter(lifecycle(fake), (name) => name.startsWith("forgetSpare:"))).toHaveLength(1);
 });
 
-it("keeps a stale spare whose object could not be wiped, to try again, and answers anyway", async () => {
+it("leaves a stale spare a Session took meanwhile to the Session, wiping nothing", async () => {
   const fake = fakeRegistries();
   const environment = await makeEnvironment(fake, "Cloudpid");
 
@@ -2059,12 +2105,42 @@ it("keeps a stale spare whose object could not be wiped, to try again, and answe
 
   const stale = fake.spares.get(environment)?.id;
 
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  // The Repos changed back, and a Session took the spare, before the upkeep forgets it.
+  fake.beforeForgetSpare(() => {
+    fake.spares.delete(environment);
+  });
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`forgetSpare:${stale}`);
+  expect(fake.calls).not.toContain(`destroyWorkspace:ws:${stale}`);
+});
+
+it("answers a Repo change whose stale spare could not be wiped, and looks again behind the Session list", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  // A run behind the Session list that finds nothing to do settles the isolate.
+  for (let round = 0; round < 2; round++) {
+    await call(fake, (registry) => registry.listSessions());
+    await fake.runBackground();
+  }
+
+  const stale = fake.spares.get(environment)?.id;
+
   fake.failWorkspace("unreachable");
   await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
   await fake.runBackground();
 
-  expect(fake.calls).not.toContain(`forgetSpare:${stale}`);
-  expect(fake.spares.get(environment)?.id).toBe(stale);
+  expect(fake.calls).toContain(`destroyWorkspace:ws:${stale}`);
+
+  fake.failWorkspace(undefined);
+  fake.calls.length = 0;
+  await call(fake, (registry) => registry.listSessions());
+  await fake.runBackground();
+
+  expect(fake.calls).toContain("upkeepSpares:*");
 });
 
 it("keeps every Environment's spare behind the Session list, until a run finds nothing to do in the isolate", async () => {
@@ -2085,7 +2161,7 @@ it("keeps every Environment's spare behind the Session list, until a run finds n
   expect(Arr.filter(fake.calls, (name) => name === "upkeepSpares:*")).toHaveLength(2);
 });
 
-it("deletes an Environment's spare Workspace with it: its object, then its record, then the Environment's", async () => {
+it("deletes an Environment's spare Workspace with it: its record, then its object, then the Environment's", async () => {
   const fake = fakeRegistries();
   const id = await makeEnvironment(fake, "Cloudpid");
 
@@ -2097,10 +2173,11 @@ it("deletes an Environment's spare Workspace with it: its object, then its recor
   await call(fake, (registry) => registry.deleteEnvironment({ environment: id }));
 
   expect(lifecycle(fake)).toEqual([
-    `destroyWorkspace:ws:${spare}`,
     `forgetSpare:${spare}`,
+    `destroyWorkspace:ws:${spare}`,
     `destroyWorkspace:build:${id}`,
     `deleteEnvironment:${id}`,
+    `destroyWorkspace:build:${id}`,
   ]);
 });
 
@@ -2117,6 +2194,81 @@ it("keeps an Environment whose spare Workspace could not be wiped", async () => 
 
   expect(error.message).toContain("Could not delete the spare workspace");
   expect(fake.calls).not.toContain(`deleteEnvironment:${id}`);
+});
+
+it("wipes a spare again when its record was forgotten while it was asked to prepare, as when its Environment is deleted", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  // The Environment is deleted (its spare forgotten and wiped) just as the request reaches the spare's object.
+  fake.duringPrepare(() => {
+    fake.spares.delete(environment);
+  });
+  await fake.runBackground();
+
+  const asked = Arr.findFirst(fake.calls, (name) => name.startsWith("prepareSpare:"));
+  const spare = Option.getOrThrow(asked).slice("prepareSpare:".length);
+
+  expect(Arr.filter(lifecycle(fake), (name) => name.endsWith(spare))).toEqual([
+    `prepareSpare:${spare}`,
+    `destroyWorkspace:${spare}`,
+  ]);
+});
+
+it("leaves a spare a Session took while it was asked to prepare", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  fake.duringPrepare(() => {
+    const spare = fake.spares.get(environment);
+
+    fake.spares.delete(environment);
+    fake.workspaces.unshift({
+      id: spare?.id ?? "",
+      environment,
+      branch: `cloudpid/${spare?.id}`,
+      base: null,
+      repos: [],
+      directory: workspaceDirectory([]),
+      createdAt: 2,
+    });
+  });
+  await fake.runBackground();
+
+  expect(Arr.filter(lifecycle(fake), (name) => name.startsWith("destroyWorkspace:ws:"))).toEqual(
+    [],
+  );
+});
+
+it("says what is kept, as a sentence of its own, when what an Environment being deleted holds cannot be wiped", async () => {
+  const fake = fakeRegistries();
+  const id = await makeEnvironment(fake, "Cloudpid");
+  const first = await call(fake, (registry) => registry.createSession({ environment: id }));
+
+  await call(fake, (registry) => registry.deleteSession({ id: first.id }));
+  fake.failWorkspace("unreachable");
+
+  const files = await call(fake, (registry) =>
+    Effect.flip(registry.deleteEnvironment({ environment: id })),
+  );
+
+  expect(files.message).toBe(
+    "Could not delete the workspace's files: unreachable. The environment and its remaining workspaces are kept.",
+  );
+
+  fake.failWorkspace(undefined);
+
+  const session = await call(fake, (registry) => registry.createSession({ environment: id }));
+
+  fake.breakSession(session.id, "storage error");
+
+  const workspace = await call(fake, (registry) =>
+    Effect.flip(registry.deleteEnvironment({ environment: id })),
+  );
+
+  expect(workspace.message).toBe(
+    "Could not delete the session: storage error. The workspace and its remaining sessions are kept. The environment and its remaining workspaces are kept.",
+  );
 });
 
 /** The calls that reached an Environment's Build object or recorded its answer, in order. */
@@ -2166,6 +2318,25 @@ it("asks an Environment's Build object for a Build once it has a Repo, after the
   expect(Arr.findFirst(builds, (item) => item.environment === environment)).toEqual(
     Option.some({ environment, build: { status: "building", since: 50, lastGoodAt: null } }),
   );
+});
+
+it("asks for a Build of an Environment with Toolchains only, and Rebuilds it", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Tools");
+
+  await fake.runBackground();
+  await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment,
+      overrides: { toolchains: '[tools]\nnode = "22"\n' },
+    }),
+  );
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`startBuild:build:${environment}`);
+
+  await call(fake, (registry) => registry.rebuildEnvironment({ environment }));
 });
 
 it("asks for a Build again when the settings a Build uses change, and not for a new idle time", async () => {
@@ -2628,4 +2799,73 @@ it("hands a Build the Environment's Secrets, and builds again when a Secret for 
 
   expect(fake.calls).toContain(`startBuild:${name}`);
   expect(fake.buildRequests.get(name)?.key).not.toBe(second);
+});
+
+it("wipes the Build object again when its Environment was deleted while a Build was asked for", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  fake.duringStartBuild(() => {
+    fake.environments.splice(
+      fake.environments.findIndex((item) => item.id === environment),
+      1,
+    );
+  });
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(buildCalls(fake)).toEqual([
+    `buildState:build:${environment}`,
+    `startBuild:build:${environment}`,
+  ]);
+  expect(Arr.filter(lifecycle(fake), (name) => name.endsWith(`build:${environment}`))).toEqual([
+    `startBuild:build:${environment}`,
+    `destroyWorkspace:build:${environment}`,
+  ]);
+});
+
+it("makes the spare again from the Environment's new Build once it is recorded", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  await fake.runBackground();
+
+  const stale = fake.spares.get(environment)?.id;
+
+  const good = {
+    key: fake.buildRequests.get(`build:${environment}`)?.key ?? "",
+    snapshot: { id: "snap-1", size: 1 },
+    image: "img-1",
+    ignore: null,
+    commits: { app: "abc" },
+    finishedAt: Date.now(),
+  };
+
+  fake.buildObjects.set(`build:${environment}`, {
+    image: "img-1",
+    last: good,
+    progress: null,
+    attemptedAt: Date.now(),
+  });
+  fake.calls.length = 0;
+  await call(fake, (registry) => registry.listBuilds());
+  await fake.runBackground();
+
+  const next = fake.spares.get(environment)?.id;
+
+  expect(
+    Arr.filter(lifecycle(fake), (name) =>
+      /^(forgetSpare|destroyWorkspace:ws|prepareSpare)/.test(name),
+    ),
+  ).toEqual([`forgetSpare:${stale}`, `destroyWorkspace:ws:${stale}`, `prepareSpare:ws:${next}`]);
+  expect(fake.spareBuilds.get(`ws:${next}`)).toEqual(good);
+
+  // A spare made from the Build it has is current.
+  fake.calls.length = 0;
+  await call(fake, (registry) => registry.listBuilds());
+  await fake.runBackground();
+
+  expect(Arr.filter(fake.calls, (name) => name.startsWith("forgetSpare:"))).toEqual([]);
 });

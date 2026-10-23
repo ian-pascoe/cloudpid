@@ -241,12 +241,12 @@ export const SessionLive = Session.make(
           placement,
           // What the Workspace is made of is the Registry's; a Workspace it no longer lists is left as it is.
           // @effect-diagnostics-next-line asyncFunction:off
-          prepare: async (id) => {
+          prepare: async (id, handedOver) => {
             const setup = await runtime.runPromise(
               registries.getByName(REGISTRY_NAME).getWorkspaceSetup({ id }),
             );
 
-            if (setup !== null) await prepare(workspaceObjectName(id), setup);
+            if (setup !== null) await prepare(workspaceObjectName(id), setup, handedOver);
           },
         });
 

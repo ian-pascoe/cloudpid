@@ -5,7 +5,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, GitFork, Trash2 } from "lucide-react";
 import { Button } from "./components/ui/button.tsx";
-import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
+import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
@@ -58,11 +58,7 @@ const DeleteSessionDialog = ({
         </>
       }
     >
-      {problem !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {problem}
-        </p>
-      )}
+      <DialogProblem problem={problem} />
       <DialogActions>
         <Button variant="outline" disabled={deleting} onClick={close}>
           Cancel
@@ -141,8 +137,8 @@ const Actions = ({
 
 /**
  * A Session's "⋯" menu: start another Session in its Workspace, archive or unarchive it, or delete it after a
- * confirmation. A menu has no room for a failure, so
- * an archive or unarchive that failed is reported by `actions` to the surface the menu is on.
+ * confirmation. A menu has no room for a failure, so a new Session, an archive or an unarchive that failed is reported
+ * by `actions` to the surface the menu is on.
  */
 export const SessionMenu = (props: {
   session: SessionRecord;

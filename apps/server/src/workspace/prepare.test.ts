@@ -5,7 +5,7 @@ import type { Context } from "@earendil-works/chord";
 import { ExecutionError, err, ok, type Shell } from "@earendil-works/pi-durable/env";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
+import { type KeptSecret, secretEnvName } from "@cloudpid/extensions/secrets/core";
 import type { EnvironmentBuild } from "./build-record.ts";
 import {
   CLONE_TIMEOUT_SECONDS,
@@ -38,11 +38,20 @@ const host = (
   held: Schema.Json = {},
   heads: Readonly<Record<string, string>> = {},
 ) => {
-  const scripts: Array<{ script: string; timeoutSeconds: number }> = [];
+  const scripts: Array<{
+    script: string;
+    timeoutSeconds: number;
+    env?: Readonly<Record<string, string>> | undefined;
+  }> = [];
+
   const warnings: string[] = [];
   const written: Schema.Json[] = [];
   /** Each set of Secrets handed to the object, with how many scripts had run by then. */
   const secrets: Array<{ handed: ReadonlyArray<KeptSecret>; scriptsBefore: number }> = [];
+  /** Each reason the object was told it has no Secrets it can show. */
+  const unavailable: string[] = [];
+  /** The copy the object holds, which a set-up without Secrets reads. */
+  let heldSecrets: ReadonlyArray<KeptSecret> = [];
 
   /** The Build the object holds, and what was written in its place, with what had happened by then. */
   const builds: HeldBuilds = {
@@ -66,8 +75,8 @@ const host = (
               : null,
           );
         },
-        run: (script, timeoutSeconds) => {
-          scripts.push({ script, timeoutSeconds });
+        run: (script, timeoutSeconds, env) => {
+          scripts.push({ script, timeoutSeconds, env });
 
           return Promise.resolve(answers[next++] ?? { exitCode: 0, output: "" });
         },
@@ -106,9 +115,16 @@ const host = (
         secrets: {
           write: (handed) => {
             secrets.push({ handed, scriptsBefore: scripts.length });
+            heldSecrets = handed;
 
             return Promise.resolve();
           },
+          unavailable: (reason) => {
+            unavailable.push(reason);
+
+            return Promise.resolve();
+          },
+          read: () => Promise.resolve(heldSecrets),
         },
         warn: (message) => {
           warnings.push(message);
@@ -124,6 +140,10 @@ const host = (
     written,
     builds,
     secrets,
+    unavailable,
+    hold: (secrets: ReadonlyArray<KeptSecret>) => {
+      heldSecrets = secrets;
+    },
     scriptsBeforeBuild: () => scriptsBeforeBuild,
     refuseSettings: () => {
       refuse = true;
@@ -150,6 +170,52 @@ describe("readying a Workspace", () => {
     // A spare's stored set-up holds none: what the object holds stays.
     await prepare(setup);
     expect(secrets).toHaveLength(1);
+  });
+
+  it("tells the object it has no Secrets it can show when the Registry could not open them", async () => {
+    const { prepare, secrets, unavailable } = host([]);
+
+    await prepare({ ...setup, secretsUnavailable: "the Registry could not open them" });
+
+    expect(unavailable).toEqual(["the Registry could not open them"]);
+    expect(secrets).toEqual([]);
+  });
+
+  it("gives a new clone's Setup Script the Secrets marked for the Build, and its Start Script none", async () => {
+    const marked: KeptSecret = {
+      name: "NPM_TOKEN",
+      value: "npm_0123456789abcdef",
+      scope: "environment",
+      build: true,
+    };
+
+    const other: KeptSecret = { ...marked, name: "API_KEY", build: false };
+    const variable = secretEnvName(marked.name);
+
+    const { prepare, scripts } = host(["/workspace/app/.git"]);
+
+    await prepare({ ...setup, secrets: [marked, other] });
+
+    expect(scripts[1]?.script).toContain("/workspace/api/.agents/setup.sh");
+    expect(scripts[1]?.env).toEqual({ [variable]: marked.value });
+    expect(scripts[0]?.env ?? {}).not.toHaveProperty(variable);
+    expect(scripts[2]?.env ?? {}).not.toHaveProperty(variable);
+  });
+
+  it("gives a Setup Script the copy the object holds for a set-up that carries no Secrets (a spare's)", async () => {
+    const marked: KeptSecret = {
+      name: "NPM_TOKEN",
+      value: "npm_0123456789abcdef",
+      scope: "environment",
+      build: true,
+    };
+
+    const { prepare, scripts, hold } = host(["/workspace/app/.git"]);
+
+    hold([marked]);
+    await prepare(setup);
+
+    expect(scripts[1]?.env).toEqual({ [secretEnvName(marked.name)]: marked.value });
   });
 
   it("starts no Container when its files have every clone", async () => {

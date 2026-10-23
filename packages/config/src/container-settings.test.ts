@@ -10,16 +10,18 @@ import {
   INSTANCE_TYPES,
   MAX_IGNORE_PATTERNS,
   MAX_SCRIPT_BYTES,
+  MAX_TOOLCHAINS_BYTES,
   MAX_VARIABLES,
   resolveContainerSettings,
   resolveContainerSettingsLeniently,
   containerOverridesFrom,
   scriptProblem,
+  toolchainsProblem,
   type ContainerSettings,
   variableNameProblem,
 } from "./container-settings.ts";
 
-const NONE = { variables: {}, setupScript: "", startScript: "" };
+const NONE = { variables: {}, setupScript: "", startScript: "", toolchains: "" };
 
 const resolved = (overrides: Schema.Json): ContainerSettings => {
   const result = resolveContainerSettings(overrides);
@@ -46,6 +48,7 @@ describe("the defaults", () => {
       variables: {},
       setupScript: "",
       startScript: "",
+      toolchains: "",
     });
   });
 
@@ -223,6 +226,21 @@ describe("resolveContainerSettings", () => {
     expect(scriptProblem("€".repeat(MAX_SCRIPT_BYTES / 2))).toBe("is longer than 64 KiB");
   });
 
+  it(`takes Toolchains as a mise.toml of at most ${MAX_TOOLCHAINS_BYTES / 1024} KiB of UTF-8, with no NUL`, () => {
+    const toml = '[tools]\nnode = "22.20.0"\n';
+
+    expect(resolved({ toolchains: toml })).toEqual({
+      ...DEFAULT_CONTAINER_SETTINGS,
+      toolchains: toml,
+    });
+    expect(resolved({ toolchains: "a".repeat(MAX_TOOLCHAINS_BYTES) }).toolchains).toHaveLength(
+      MAX_TOOLCHAINS_BYTES,
+    );
+    expect(rejected({ toolchains: "a".repeat(MAX_TOOLCHAINS_BYTES + 1) })).toContain("toolchains");
+    expect(toolchainsProblem("€".repeat(MAX_TOOLCHAINS_BYTES / 2))).toBe("is longer than 16 KiB");
+    expect(rejected({ toolchains: "a\u0000b" })).toContain("toolchains");
+  });
+
   it("rejects a script with a NUL, which bash cannot read", () => {
     expect(rejected({ setupScript: "a\u0000b" })).toContain("setupScript");
   });
@@ -266,6 +284,9 @@ describe("containerOverridesFrom", () => {
     expect(
       containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, startScript: "make up\n" }),
     ).toEqual({ startScript: "make up\n" });
+    expect(
+      containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, toolchains: "[tools]\n" }),
+    ).toEqual({ toolchains: "[tools]\n" });
   });
 });
 

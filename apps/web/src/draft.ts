@@ -3,12 +3,10 @@
 // The draft composer's pure parts: what is typed and chosen, whether it can be sent, and what `createSession` is told.
 
 import * as Arr from "effect/Array";
+import type * as Types from "effect/Types";
 import { NEW_WORKSPACE, ownBranchProblem, type WorkspaceRecord } from "@cloudpid/protocol";
 import { optionalBranchProblem } from "./environments.ts";
 import type { SessionPlace } from "./sessions.ts";
-
-/** `T` with its properties writable, for a place built up field by field. */
-type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
 /** What the draft composer holds. */
 export interface DraftInput {
@@ -59,7 +57,7 @@ export const draftPlace = (input: DraftInput): SessionPlace => {
   const branch = input.branch.trim();
   const base = input.base.trim();
 
-  const place: Mutable<SessionPlace> = {
+  const place: Types.Mutable<SessionPlace> = {
     environment,
     workspace,
   };

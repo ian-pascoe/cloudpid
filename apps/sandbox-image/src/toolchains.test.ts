@@ -1,7 +1,7 @@
 // The Container's Toolchain contract with the Workspace DO (docs/spec.md → Container and Toolchains, ADR-0004): which
 // paths stay container-local, what a command's environment carries, and what the bootstrap does on Container start.
 // The bootstrap runs for real, under bash, against a fake `mise` that records what it is asked.
-// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off globalDate:off
+// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off globalDate:off
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -9,12 +9,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { variableNameProblem } from "@cloudpid/config";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   BASE_MISE_LOCK,
@@ -209,6 +211,13 @@ describe("a command's environment", () => {
     // are in pnpm's global config.yaml, which the repo wins over.
     expect(JSON.stringify(toolchainEnv({ githubToken: "x" }))).not.toMatch(/pnpm/i);
   });
+
+  it("sets only names an Environment's variable may not have, so none overrides it", () => {
+    // @cloudpid/config cannot import this package, so its list of reserved names is a copy.
+    for (const name of Object.keys(toolchainEnv({ githubToken: "x" }))) {
+      expect(variableNameProblem(name), name).toContain("reserved");
+    }
+  });
 });
 
 /** A throwaway Workspace root and HOME, and a `mise` on PATH that logs its calls and the directory they ran in. */
@@ -239,8 +248,15 @@ const sandbox = (options: { readonly miseExit?: number; readonly installs?: stri
   // No image lockfile unless a test makes one there.
   const imageLock = join(base, "image.mise.lock");
 
-  const run = (env: Record<string, string> = {}, readOnly: readonly string[] = []) =>
-    spawnSync("bash", ["-c", bootstrapScript(root, readOnly, imageLock)], {
+  // Where the bootstrap records the root mise.toml it wrote: on the Container's disk, outside the Workspace.
+  const state = join(base, "toolchains-state");
+
+  const run = (
+    env: Record<string, string> = {},
+    readOnly: readonly string[] = [],
+    toolchains: string = "",
+  ) =>
+    spawnSync("bash", ["-c", bootstrapScript(root, readOnly, imageLock, { toolchains, state })], {
       encoding: "utf8",
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -251,7 +267,7 @@ const sandbox = (options: { readonly miseExit?: number; readonly installs?: stri
 
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
 
-  return { base, bin, root, home, imageLock, run, calls };
+  return { base, bin, root, home, imageLock, state, run, calls };
 };
 
 const LOCK = "mise lock --global --platform linux-x64";
@@ -391,6 +407,102 @@ describe("the bootstrap", () => {
     const { run } = sandbox({ miseExit: 3 });
 
     expect(run().status).toBe(3);
+  });
+});
+
+describe("the Environment's Toolchains", () => {
+  const TOML = '[tools]\nnode = "22.20.0"\n';
+  const read = (root: string, file: string) => readFileSync(join(root, file), "utf8");
+
+  it("are written as the root's mise.toml where the Workspace has none, and locked and installed", () => {
+    const { root, run, calls } = sandbox();
+
+    expect(run({}, [], TOML).status).toBe(0);
+    expect(read(root, "mise.toml")).toBe(TOML);
+    expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
+  });
+
+  it("replace the copy the bootstrap wrote last when they change, and the base file it wrote before", () => {
+    const { root, run } = sandbox();
+
+    run();
+    expect(read(root, "mise.toml")).toBe(BASE_MISE_TOML);
+
+    run({}, [], TOML);
+    expect(read(root, "mise.toml")).toBe(TOML);
+
+    const changed = '[tools]\nnode = "24.22.1"\n';
+
+    run({}, [], changed);
+    expect(read(root, "mise.toml")).toBe(changed);
+
+    // Emptied: the base Toolchains again.
+    run();
+    expect(read(root, "mise.toml")).toBe(BASE_MISE_TOML);
+  });
+
+  it("leave a mise.toml the Workspace changed alone", () => {
+    const { root, run } = sandbox();
+
+    run({}, [], TOML);
+
+    const own = `${TOML}python = "3.13"\n`;
+
+    writeFileSync(join(root, "mise.toml"), own);
+    run({}, [], '[tools]\nnode = "24.22.1"\n');
+
+    expect(read(root, "mise.toml")).toBe(own);
+  });
+
+  it("leave a Workspace's own mise.toml alone, though they would replace the base file", () => {
+    const { root, run } = sandbox();
+
+    writeFileSync(join(root, "mise.toml"), '[tools]\nnode = "22"\n');
+    run({}, [], TOML);
+
+    expect(read(root, "mise.toml")).toBe('[tools]\nnode = "22"\n');
+  });
+
+  it("are not written where the root has a mise config of another name", () => {
+    const { root, run } = sandbox();
+
+    writeFileSync(join(root, ".tool-versions"), "node 22\n");
+    run({}, [], TOML);
+
+    expect(existsSync(join(root, "mise.toml"))).toBe(false);
+  });
+
+  it("come with the lockfile made for them on this disk, so a Workspace started from it (a Build's) locks nothing", () => {
+    const { root, run, calls, state } = sandbox();
+
+    run({}, [], TOML);
+    // What `mise lock` made, which the fake does not write.
+    writeFileSync(join(root, "mise.lock"), "# locked for the Environment\n");
+    run({}, [], TOML);
+    expect(read(state, "mise.lock")).toBe("# locked for the Environment\n");
+
+    // A new Workspace on the same disk: no files yet.
+    rmSync(join(root, "mise.toml"));
+    rmSync(join(root, "mise.lock"));
+    const before = calls().length;
+
+    run({}, [], TOML);
+
+    expect(read(root, "mise.toml")).toBe(TOML);
+    expect(read(root, "mise.lock")).toBe("# locked for the Environment\n");
+    expect(calls().slice(before)).toEqual([`${root}: mise install`]);
+  });
+
+  it("take the image's lockfile when they are the base file again", () => {
+    const { imageLock, root, run } = sandbox();
+
+    writeFileSync(imageLock, "# the image's lock\n");
+    run({}, [], TOML);
+    writeFileSync(join(root, "mise.lock"), "# locked for the Environment\n");
+    run();
+
+    expect(read(root, "mise.toml")).toBe(BASE_MISE_TOML);
+    expect(read(root, "mise.lock")).toBe("# the image's lock\n");
   });
 });
 

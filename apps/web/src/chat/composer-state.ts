@@ -1,6 +1,7 @@
 // What the composer asks of the page and the Session besides its text: whether the screen is wide, the clipboard for
 // `/copy`, and the Session's own Slash commands, whose file (`/export`) it hands the owner as a download; and one
-// composer's own state: where its caret is, which menu it shows, and the note under it.
+// composer's own state: where its caret is, which menu it shows, the note under it, and the draft's first message when
+// the Session refused it.
 
 import type { CommandOutcome } from "@cloudpid/protocol";
 import * as Clipboard from "@effect/platform-browser/Clipboard";
@@ -8,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import { replying } from "../calls.ts";
+import { refusedFirstMessagesAtom } from "../draft-state.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
 import { askCatalogAtom } from "./catalog.ts";
@@ -116,6 +118,8 @@ export interface ComposerSource {
   readonly subscribe: (listener: () => void) => () => void;
   /** The input, while it is rendered. */
   readonly input: () => { readonly value: string; readonly selectionStart: number } | null;
+  /** Put `text` in assistant-ui's composer. */
+  readonly setText: (text: string) => void;
 }
 
 /** One composer's state, as atoms. */
@@ -138,7 +142,9 @@ export interface ComposerState {
   readonly fileQuery: Atom.Atom<string | null>;
   /**
    * While mounted, the `@` menu's query goes to the conversation's file search, and a menu that lists the catalog asks
-   * for it as it opens (the catalog asks again only once it is stale).
+   * for it as it opens (the catalog asks again only once it is stale). The root's composer takes back its Session's
+   * first message when the Session refused it (`refusedFirstMessagesAtom`), before what was typed since, with why as
+   * the note, as a refused message with Attachments comes back.
    */
   readonly effects: Atom.Atom<void>;
 }
@@ -238,6 +244,28 @@ export const composerState = (source: ComposerSource): ComposerState => {
     get.subscribe(listsCatalog, (lists) => {
       if (lists) get.set(askCatalog, undefined);
     });
+
+    if (source.key.conversationId !== undefined) return;
+
+    const { sessionId } = source.key;
+
+    get.subscribe(
+      refusedFirstMessagesAtom,
+      (refused) => {
+        const { [sessionId]: message, ...others } = refused;
+
+        if (message === undefined) return;
+
+        const since = source.text();
+
+        Atom.batch(() => {
+          get.set(refusedFirstMessagesAtom, others);
+          source.setText(since.trim() === "" ? message.text : `${message.text}\n\n${since}`);
+          get.set(note, { tone: "error", text: message.reason });
+        });
+      },
+      { immediate: true },
+    );
   });
 
   return {

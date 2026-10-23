@@ -445,6 +445,13 @@ describe("the Registry store", () => {
     expect(await registry.deleteEnvironment("0000abcd")).toBe("missing");
   });
 
+  it("refuses to delete the default Environment, which a new Session always has to start in", async () => {
+    const registry = fresh();
+
+    expect(await registry.deleteEnvironment(DEFAULT_ENVIRONMENT)).toBe("refused");
+    expect(await registry.getEnvironment(DEFAULT_ENVIRONMENT)).toMatchObject({ name: "Default" });
+  });
+
   it("adds Repos to an Environment in order, refusing a directory name it has", async () => {
     const registry = fresh();
 
@@ -810,6 +817,7 @@ describe("the Registry store", () => {
             branch: SPARE_BRANCH,
             base: null,
             repos: [{ name: "app", url: "https://github.com/o/app.git" }],
+            build: null,
           },
         ],
       });
@@ -988,6 +996,100 @@ describe("the Registry store", () => {
           2_000,
         ),
       ).toMatchObject({ workspace: "5a5a5a5a" });
+    });
+
+    it("makes a spare from the Environment's last good Build, and reports it stale once there is another", async () => {
+      const registry = fresh();
+
+      const build = (id: string) => ({
+        key: "k1",
+        snapshot: { id, size: 1 },
+        image: "img-1",
+        ignore: null,
+        commits: {},
+        finishedAt: 5_000,
+      });
+
+      await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await registry.putBuild("0000abcd", { build: build("snap-1"), status: null });
+
+      const work = await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+
+      expect(Arr.map(work.made, (made) => made.build)).toEqual([build("snap-1")]);
+
+      // A Build under way leaves it current; a new good one makes it stale.
+      await registry.putBuild("0000abcd", {
+        build: build("snap-1"),
+        status: { status: "building", key: "k2", startedAt: 6_000 },
+      });
+      expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 2_000)).toEqual({
+        stale: [],
+        made: [],
+      });
+      await registry.putBuild("0000abcd", { build: build("snap-2"), status: null });
+      expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 3_000)).toEqual({
+        stale: ["5a5a5a5a"],
+        made: [],
+      });
+
+      // Still a spare a Session may take meanwhile: its Repos are the Environment's.
+      expect(
+        await registry.createSession(
+          { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d", "b", "0000abcd") },
+          4_000,
+        ),
+      ).toMatchObject({ workspace: "5a5a5a5a" });
+      expect(await registry.forgetSpare("5a5a5a5a")).toBe(false);
+    });
+
+    it("reports a spare stored before migration 15 stale once its Environment has a Build", async () => {
+      const registry = fresh();
+
+      await runInDurableObject(registry, (_instance, state) => {
+        const { storage } = state;
+        const { sql } = storage;
+
+        for (const { name } of sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
+          )
+          .toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+
+        migrate(storage, MIGRATIONS.slice(0, 14));
+        sql.exec(
+          "INSERT INTO environments (id, name, repos, settings, created_at) VALUES ('0000abcd', 'Old', '[]', '{}', 5)",
+        );
+        sql.exec(
+          "INSERT INTO workspaces (id, environment, branch, base, repos, created_at, spare) VALUES ('5a5a5a5a', '0000abcd', ?, NULL, '[]', 5, 1)",
+          SPARE_BRANCH,
+        );
+
+        const store = openRegistryStore(storage);
+
+        expect(store.upkeepSpares(["0000abcd"], () => "6b6b6b6b", 6)).toEqual({
+          stale: [],
+          made: [],
+        });
+
+        store.putBuild("0000abcd", {
+          build: {
+            key: "k1",
+            snapshot: { id: "snap-1", size: 1 },
+            image: "img-1",
+            ignore: null,
+            commits: {},
+            finishedAt: 7,
+          },
+          status: null,
+        });
+
+        expect(store.upkeepSpares(["0000abcd"], () => "6b6b6b6b", 8)).toEqual({
+          stale: ["5a5a5a5a"],
+          made: [],
+        });
+      });
     });
 
     it("keeps an Environment with a spare from being deleted until the spare is forgotten", async () => {

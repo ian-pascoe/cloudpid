@@ -138,6 +138,14 @@ uv = "0.13.5"
 export const BASE_MISE_LOCK = "/usr/local/share/cloudpid/mise.lock";
 
 /**
+ * Where the bootstrap records the root `mise.toml` it last wrote (`mise.toml.sha256`, its SHA-256) and the lockfile
+ * made for it (`mise.lock`): on the Container's disk, outside `/workspace`, so nothing syncs them and a snapshot (a
+ * Build's too) carries them. A root `mise.toml` that still has that hash is the bootstrap's copy, which a changed
+ * Environment replaces; any other is the Workspace's own.
+ */
+export const TOOLCHAINS_STATE_DIRECTORY = "/var/lib/cloudpid/toolchains";
+
+/**
  * The line the bootstrap ends its output with when it changed the Container's disk in a way worth a snapshot (it
  * installed a Toolchain), so the Workspace DO snapshots the disk before the first command. A bootstrap that only found
  * what the image or a restored snapshot has prints none, and its Container waits for the idle stop's snapshot. The
@@ -232,11 +240,15 @@ has_mise_config() {
  *
  * 0. makes each of `readOnlyDirectories` (absolute paths: the Workspace's read-only mounts) read-only here too, when the
  *    Container can mount,
- * 1. writes `BASE_MISE_TOML` if the Workspace root has no mise config of any kind mise reads, with the image's
- *    lockfile for it (`baseLock`, by default `BASE_MISE_LOCK`) next to it when the image has one,
+ * 1. writes the Environment's Toolchains (`environment.toolchains`, a mise.toml; `BASE_MISE_TOML` when empty) as the
+ *    root's `mise.toml` if the root has no mise config of any kind mise reads, or if its `mise.toml` is still the copy
+ *    the bootstrap wrote last (recorded in `environment.state`, by default `TOOLCHAINS_STATE_DIRECTORY`) or the base
+ *    file, and differs from it: an edit the Workspace made is kept. The lockfile goes with it: the image's for the
+ *    base file (`baseLock`, by default `BASE_MISE_LOCK`), when the image has one, or the one recorded for that same
+ *    copy,
  * 2. makes sure `mise.lock` is there and current for the root's `mise.toml`, which is mise's global config
  *    (`toolchainEnv`) and so is only locked by `mise lock --global`: when the lockfile is missing or older than the
- *    config, to the one platform the Container is,
+ *    config, to the one platform the Container is; the lockfile of the copy it wrote is recorded with it,
  * 3. runs `mise install` (which installs from `mise.lock` and does nothing for what is present) in the Workspace and
  *    in each repo directory that has a mise config, and exits with the first failure's status after trying all,
  * 4. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
@@ -251,7 +263,13 @@ export const bootstrapScript = (
   root: string = WORKSPACE_ROOT,
   readOnlyDirectories: readonly string[] = [],
   baseLock: string = BASE_MISE_LOCK,
-): string => `
+  environment: { readonly toolchains?: string; readonly state?: string } = {},
+): string => {
+  const { toolchains = "", state = TOOLCHAINS_STATE_DIRECTORY } = environment;
+  const recorded = `${state}/mise.toml.sha256`;
+  const recordedLock = `${state}/mise.lock`;
+
+  return `
 set -u
 root=${shellQuote(root)}
 cd "$root" || exit 1
@@ -270,10 +288,41 @@ done
 
 ${HAS_MISE_CONFIG}
 
+# The root's mise.toml: the Environment's Toolchains, or the base file, where the root has no mise config, or still
+# has the copy written last (or the base file, which the bootstrap wrote before it kept a record) and it differs from
+# the one wanted now. Any other mise.toml is the Workspace's own and stays.
+toolchains_hash() { sha256sum | cut -d' ' -f1; }
+wanted_toolchains=${shellQuote(base64(toolchains === "" ? BASE_MISE_TOML : toolchains))}
+wanted_hash=$(printf '%s' "$wanted_toolchains" | base64 -d | toolchains_hash)
+base_hash=$(printf '%s' ${shellQuote(base64(BASE_MISE_TOML))} | base64 -d | toolchains_hash)
+written_hash=$(cat ${shellQuote(recorded)} 2>/dev/null)
+write_toolchains=0
 if ! has_mise_config "$root"; then
-  cat > mise.toml <<'CLOUDPID_BASE_MISE_TOML'
-${BASE_MISE_TOML}CLOUDPID_BASE_MISE_TOML
-  [ -f ${shellQuote(baseLock)} ] && [ ! -e mise.lock ] && cp ${shellQuote(baseLock)} mise.lock
+  write_toolchains=1
+elif [ -f mise.toml ] && [ ! -L mise.toml ]; then
+  have_hash=$(toolchains_hash < mise.toml)
+  if [ "$have_hash" = "$wanted_hash" ]; then
+    # Already the wanted copy: recorded below, so a later change of the Environment's replaces it.
+    write_toolchains=2
+  elif [ "$have_hash" = "$written_hash" ] || [ "$have_hash" = "$base_hash" ]; then
+    write_toolchains=1
+  fi
+fi
+if [ "$write_toolchains" -eq 1 ]; then
+  printf '%s' "$wanted_toolchains" | base64 -d > mise.toml || write_toolchains=0
+fi
+if [ "$write_toolchains" -eq 1 ]; then
+  if [ "$wanted_hash" = "$base_hash" ] && [ -f ${shellQuote(baseLock)} ]; then
+    cp ${shellQuote(baseLock)} mise.lock
+  elif [ "$wanted_hash" = "$written_hash" ] && [ -f ${shellQuote(recordedLock)} ]; then
+    cp ${shellQuote(recordedLock)} mise.lock
+  fi
+fi
+if [ "$write_toolchains" -ne 0 ]; then
+  # Best effort: without the record, a later change of the Environment's leaves this copy alone.
+  mkdir -p ${shellQuote(state)} 2>/dev/null
+  [ "$wanted_hash" = "$written_hash" ] || rm -f ${shellQuote(recordedLock)} 2>/dev/null
+  printf '%s\n' "$wanted_hash" > ${shellQuote(recorded)} 2>/dev/null
 fi
 
 status=0
@@ -291,6 +340,12 @@ note_failure() {
 if [ -f mise.toml ] && { [ ! -e mise.lock ] || [ mise.toml -nt mise.lock ]; }; then
   mise lock --global --platform linux-x64
   note_failure $?
+fi
+
+# The lockfile of the copy written last, for a Container started from this disk (a Build's) that writes it again.
+if [ -f mise.toml ] && [ -f mise.lock ] && [ ! mise.toml -nt mise.lock ] \
+  && [ "$(toolchains_hash < mise.toml)" = "$(cat ${shellQuote(recorded)} 2>/dev/null)" ]; then
+  cp mise.lock ${shellQuote(recordedLock)} 2>/dev/null
 fi
 
 for dir in "$root" "$root"/*/; do
@@ -324,6 +379,7 @@ ${pnpmConfigSteps}
 
 exit "$status"
 `;
+};
 
 /** A repo's Setup Script, relative to the repo's directory: what prepares the repo on a Container (its dependencies). */
 export const SETUP_SCRIPT = ".agents/setup.sh";
@@ -423,7 +479,7 @@ export const scriptTimedOut = (code: number | undefined, output: string): boolea
 const sha256 = (file: string): string => `sha256sum < ${file} | cut -d' ' -f1`;
 
 /** `text`'s UTF-8 bytes in base64. */
-const base64 = (text: string): string => {
+export const base64 = (text: string): string => {
   let binary = "";
 
   for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);

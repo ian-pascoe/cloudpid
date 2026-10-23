@@ -2,14 +2,17 @@
 // opening what an Environment uses, its own over those kept for every Environment. The store is an in-memory stand-in
 // for the SQLite table (`store.workerd.test.ts` covers that one).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
-import { openKeptVault } from "@cloudpid/extensions/secrets/core";
+import { openKeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import { MAX_ENVIRONMENT_SECRET_BYTES } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import {
   buildSecretsDigest,
+  buildSecretsOf,
   keepSecret,
   openEnvironmentSecrets,
+  SECRETS_UNAVAILABLE,
+  secretsHandover,
   type SecretsTable,
 } from "./environment-secrets.ts";
 import type { StoredEnvironmentSecret } from "./store.ts";
@@ -177,5 +180,45 @@ describe("the digest of the Secrets a Build gets", () => {
       await run(buildSecretsDigest(keys, [secret("NPM_TOKEN2", "npm_0123456789abcdef", true)])),
     ).not.toBe(digest);
     expect(digest).not.toContain("npm_0123456789abcdef");
+  });
+});
+
+describe("the Secrets a Workspace or a Build is handed, under a master key that does not open", () => {
+  /** The vault a malformed `SECRETS_ENCRYPTION_KEY` gives: it fails each time it is asked for. */
+  const broken = openKeptVault("too-short", "registry");
+
+  it("hands an Environment no Secret reaches what it has, without the key", async () => {
+    const { store } = table();
+
+    expect(await run(secretsHandover(store, broken, "env-1"))).toEqual({ secrets: [] });
+    expect(await run(buildSecretsOf(store, broken, "env-1"))).toBeNull();
+  });
+
+  it("hands a Workspace none of an Environment's Secrets, saying they are unavailable, and fails its Build's", async () => {
+    const { store } = table();
+
+    await run(
+      keepSecret(
+        store,
+        await vault(),
+        { environment: null, name: "API_KEY", value: VALUE, build: true },
+        1,
+      ),
+    );
+
+    const handover = await run(secretsHandover(store, broken, "env-1"));
+
+    expect(handover).toEqual({ secretsUnavailable: SECRETS_UNAVAILABLE });
+    expect(SECRETS_UNAVAILABLE).toMatch(/^secrets unavailable/);
+    expect(await run(buildSecretsOf(store, broken, "env-1").pipe(Effect.flip))).toBeInstanceOf(
+      SecretVaultError,
+    );
+    // With the key, the same Secrets reach both.
+    expect(await run(secretsHandover(store, Effect.promise(vault), "env-1"))).toEqual({
+      secrets: [{ name: "API_KEY", value: VALUE, scope: "every", build: true }],
+    });
+    expect(await run(buildSecretsOf(store, Effect.promise(vault), "env-1"))).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
   });
 });

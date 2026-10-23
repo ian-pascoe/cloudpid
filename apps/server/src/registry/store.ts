@@ -98,6 +98,9 @@ export type SessionRefusal =
 /** What became of a record: deleted, not registered, or kept because something is still bound to it. */
 export type Deletion = "deleted" | "missing" | "in-use";
 
+/** What became of an Environment's record: as a `Deletion`, or `refused` for the default Environment, which stays. */
+export type EnvironmentDeletion = Deletion | "refused";
+
 /** How naming an Environment went. */
 export type EnvironmentNaming =
   | { readonly status: "named"; readonly environment: EnvironmentRecord }
@@ -107,13 +110,17 @@ export type EnvironmentNaming =
 /** How changing an Environment's Repos went. */
 export type RepoChange = "changed" | "missing" | "taken" | "absent";
 
+/** A spare registered now: its set-up, and the Environment's last good Build it is prepared with (null for none). */
+export type SpareSetup = WorkspaceSetup & { readonly build: EnvironmentBuild | null };
+
 /**
- * What keeps Environments' spare Workspaces current: the stale spares (whose Repos are no longer their Environment's) to
- * remove, by id, and the spares registered now, for their Durable Objects to prepare.
+ * What keeps Environments' spare Workspaces current: the stale spares (whose Repos are no longer their Environment's,
+ * or that were made with another Build than its last good one) to remove, by id, and the spares registered now, for
+ * their Durable Objects to prepare.
  */
 export type SpareUpkeep = {
   readonly stale: ReadonlyArray<string>;
-  readonly made: ReadonlyArray<WorkspaceSetup>;
+  readonly made: ReadonlyArray<SpareSetup>;
 };
 
 /**
@@ -178,8 +185,11 @@ export type RegistryStore = {
   readonly listEnvironments: () => EnvironmentRecord[];
   /** Give an Environment a new name, which no other may have in any case. */
   readonly renameEnvironment: (id: string, name: string) => EnvironmentNaming;
-  /** Forget an Environment, only while no Workspace is made from it. */
-  readonly deleteEnvironment: (id: string) => Deletion;
+  /**
+   * Forget an Environment and its Secrets, only while no Workspace is made from it. The default Environment is never
+   * forgotten, so a new Session always has one to start in.
+   */
+  readonly deleteEnvironment: (id: string) => EnvironmentDeletion;
   /** Add a Repo to an Environment; `taken` when it has one with that directory name. */
   readonly addRepo: (environment: string, repo: EnvironmentRepo) => RepoChange;
   /** Take a Repo out of an Environment; `absent` when it has none of that name. */
@@ -204,8 +214,9 @@ export type RegistryStore = {
   readonly deleteWorkspace: (id: string) => Deletion;
   /**
    * Keep a spare for each of `environments` that exists (every one when undefined), in one transaction: an Environment
-   * whose spare is stale has it listed, to remove, and one with none gets one registered, under an id from `newId` that
-   * no Workspace has, on `SPARE_BRANCH` with the Environment's Repos.
+   * whose spare is stale (other Repos, or another Build than its last good one) has it listed, to remove, and one with
+   * none gets one registered, under an id from `newId` that no Workspace has, on `SPARE_BRANCH` with the Environment's
+   * Repos and its last good Build, which the spare records.
    */
   readonly upkeepSpares: (
     environments: ReadonlyArray<string> | undefined,
@@ -299,6 +310,8 @@ type WorkspaceRow = {
   created_at: number;
   /** 1 while it is its Environment's spare, made ahead and not yet taken; 0 once it is a Session's. */
   spare: number;
+  /** The snapshot id of the Build it was made from as a spare; null for none, or a Workspace never spare. */
+  spare_build: string | null;
 };
 
 type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
@@ -425,14 +438,14 @@ export type RegistryStorage = {
   readonly transactionSync: <T>(closure: () => T) => T;
 };
 
-/** The default Machine before Environments (ADR-0016), which migration 3 listed. */
-const LEGACY_DEFAULT_MACHINE = "default";
+/** The default Machine before Environments (ADR-0016), which migration 3 listed, under the name it had then. */
+const DEFAULT_MACHINE = "default";
 
 /**
  * The schema, one step per version, applied in order: version N is in place once step N has run. Steps only add
- * (tables, nullable or defaulted columns, rows), but for step 11, the cutover to Environments, and a step is never edited once
- * released: add the next one. Each step and its version record run in one transaction, so a step that fails partway
- * leaves no trace and is retried whole.
+ * (tables, nullable or defaulted columns, rows), except step 11, the cutover to Environments, which drops. A step is
+ * never edited once released: add the next one. Each step and its version record run in one transaction, so a step
+ * that fails partway leaves no trace and is retried whole.
  */
 export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   // 1: the first deployed schema, whose stores recorded no version.
@@ -461,7 +474,7 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec(
       `INSERT OR IGNORE INTO workspaces (slug, created_at)
        VALUES (?, CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
-      LEGACY_DEFAULT_MACHINE,
+      DEFAULT_MACHINE,
     );
   },
   // 4: documents by name, which hold the settings overrides.
@@ -592,6 +605,12 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (scope, name)
     ) STRICT`);
+  },
+  // 15: the Build a spare Workspace is made from (its snapshot id), so a spare made before the Environment's last good
+  // Build is made again. Null for every Workspace stored before: a spare of an Environment that has a Build is made
+  // again once.
+  (sql) => {
+    sql.exec("ALTER TABLE workspaces ADD COLUMN spare_build TEXT");
   },
 ];
 
@@ -843,6 +862,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     },
 
     deleteEnvironment: (id) => {
+      if (id === DEFAULT_ENVIRONMENT) return "refused";
+
       if (getEnvironment(id) === null) return "missing";
 
       if (
@@ -957,23 +978,28 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     upkeepSpares: (environments, newId, now) =>
       storage.transactionSync((): SpareUpkeep => {
         const stale: string[] = [];
-        const made: WorkspaceSetup[] = [];
+        const made: SpareSetup[] = [];
 
         const kept = Arr.filter(
-          Arr.map(
-            sql
-              .exec<EnvironmentRow>("SELECT * FROM environments ORDER BY created_at DESC, id")
-              .toArray(),
-            toEnvironment,
-          ),
-          (environment) => environments === undefined || environments.includes(environment.id),
+          sql
+            .exec<EnvironmentRow>("SELECT * FROM environments ORDER BY created_at DESC, id")
+            .toArray(),
+          (row) => environments === undefined || environments.includes(row.id),
         );
 
-        for (const environment of kept) {
+        for (const row of kept) {
+          const environment = toEnvironment(row);
+          const { build } = toBuild(row);
+          const snapshot = build?.snapshot.id ?? null;
           const spare = getSpareRow(environment.id);
 
           if (spare !== undefined) {
-            if (!sameRepos(decodeRepos(spare.repos), environment.repos)) stale.push(spare.id);
+            if (
+              !sameRepos(decodeRepos(spare.repos), environment.repos) ||
+              spare.spare_build !== snapshot
+            ) {
+              stale.push(spare.id);
+            }
 
             continue;
           }
@@ -984,12 +1010,13 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           while (getWorkspaceRow(id) !== undefined) id = newId();
 
           sql.exec(
-            "INSERT INTO workspaces (id, environment, branch, base, repos, created_at, spare) VALUES (?, ?, ?, NULL, ?, ?, 1)",
+            "INSERT INTO workspaces (id, environment, branch, base, repos, created_at, spare, spare_build) VALUES (?, ?, ?, NULL, ?, ?, 1, ?)",
             id,
             environment.id,
             SPARE_BRANCH,
             JSON.stringify(environment.repos),
             now,
+            snapshot,
           );
           made.push({
             id,
@@ -997,6 +1024,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
             branch: SPARE_BRANCH,
             base: null,
             repos: environment.repos,
+            build,
           });
         }
 

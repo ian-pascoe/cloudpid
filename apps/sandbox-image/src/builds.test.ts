@@ -325,7 +325,8 @@ describe("a Build's clean-up", () => {
     // Give the shells a moment to set their traps.
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    const cleaned = sh(`${buildPrelude(run, root)}${buildCleanupScript(run, root, state)}`);
+    // The stubborn one gets one second, not five, to keep the test short.
+    const cleaned = sh(`${buildPrelude(run, root)}${buildCleanupScript(run, root, state, 1)}`);
 
     expect(cleaned.status, cleaned.stderr).toBe(0);
     await until(() => !alive(service) && !alive(dockerd) && !alive(stubborn));

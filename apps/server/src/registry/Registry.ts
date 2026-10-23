@@ -14,10 +14,12 @@ import type {
 } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
-  buildSecretsDigest,
+  buildSecretsOf,
   keepSecret,
-  openEnvironmentSecrets,
+  type SecretsHandover,
+  secretsHandover,
   type SecretWrite,
+  usedSecrets,
 } from "./environment-secrets.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
 import { type BuildWork, buildView } from "./builds.ts";
@@ -33,6 +35,7 @@ import {
 } from "./environment-settings.ts";
 import {
   type Deletion,
+  type EnvironmentDeletion,
   type EnvironmentNaming,
   type EnvironmentRecord,
   type LegacyObject,
@@ -62,13 +65,13 @@ export type WorkspaceChoice =
 /**
  * What a Workspace's Durable Object sets itself up with, with its Environment's Container settings overrides, last
  * good Build (null for none yet) and kept Secrets, opened (docs/spec.md → Secrets): the Workspace keeps them sealed,
- * to search a snapshot for and to take out of output.
+ * to search a snapshot for and to take out of output. When the Registry cannot open them, `secrets` is absent and
+ * `secretsUnavailable` says so (`SECRETS_UNAVAILABLE`), and the Workspace refuses the snapshots that would need them.
  */
 export type WorkspaceSetupWithSettings = WorkspaceSetup & {
   readonly settings: Schema.Json;
   readonly build: EnvironmentBuild | null;
-  readonly secrets: ReadonlyArray<KeptSecret>;
-};
+} & SecretsHandover;
 
 /** `SpareUpkeep`, each spare made with the Container settings it is prepared with. */
 export type SpareWork = {
@@ -137,8 +140,13 @@ export type RegistryMethods = {
     readonly id: string;
     readonly name: string;
   }) => Effect.Effect<EnvironmentNaming>;
-  /** Forget an Environment once its Workspaces are removed; kept while one is made from it. */
-  readonly deleteEnvironment: (input: { readonly id: string }) => Effect.Effect<Deletion>;
+  /**
+   * Forget an Environment and its Secrets once its Workspaces are removed; kept while one is made from it. The default
+   * Environment is refused.
+   */
+  readonly deleteEnvironment: (input: {
+    readonly id: string;
+  }) => Effect.Effect<EnvironmentDeletion>;
   /** Add a Repo to an Environment, for the Workspaces made from then on. */
   readonly addRepo: (input: {
     readonly environment: string;
@@ -174,7 +182,7 @@ export type RegistryMethods = {
   readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<Deletion>;
   /**
    * What keeps the spare Workspace of each of `environments` (every Environment when undefined) current, in one call:
-   * the stale spares to remove (their objects, then `forgetSpare`), and the spares registered now, each with what its
+   * the stale spares to remove (`forgetSpare`, then their objects), and the spares registered now, each with what its
    * object prepares itself with. Nothing to do is two empty lists.
    */
   readonly upkeepSpares: (input: {
@@ -234,7 +242,10 @@ export type RegistryMethods = {
   }) => Effect.Effect<ReadonlyArray<KeptSecret>>;
   /** The id of an Environment's spare Workspace, current or stale, or null. */
   readonly getSpare: (input: { readonly environment: string }) => Effect.Effect<string | null>;
-  /** Forget a spare's record once its object is wiped; one taken meanwhile is a Session's and is kept. */
+  /**
+   * Forget a spare's record, before its object is wiped; one taken meanwhile is a Session's and is kept. Says whether
+   * it was forgotten, so the object is wiped only then.
+   */
   readonly forgetSpare: (input: { readonly id: string }) => Effect.Effect<boolean>;
   /** Take up to `limit` objects left from before Environments to wipe, each for a few minutes (`LEGACY_LEASE_MS`). */
   readonly takeLegacy: (input: {
@@ -290,26 +301,39 @@ export const RegistryLive = Registry.make(
         const notify = pushNotifier({ store, vapid: push.vapid });
 
         // The kept Secrets' key, derived once, on first use: a malformed master key fails the calls that need it, not
-        // the object.
+        // the object. An Environment no Secret reaches never needs it.
         const vault = yield* Effect.cached(
-          openKeptVault(Redacted.value(secrets.encryptionKey), "registry").pipe(Effect.orDie),
+          openKeptVault(Redacted.value(secrets.encryptionKey), "registry"),
         );
 
-        /** The Secrets `environment` uses, opened. */
+        /** The Secrets `environment` uses, opened, for the Session DOs and the Builds: a vault that fails says why. */
         const opened = (environment: string) =>
-          Effect.flatMap(vault, (keys) => openEnvironmentSecrets(store, keys, environment));
+          usedSecrets(store, vault, environment).pipe(
+            Effect.mapError(
+              (error) => new Error(`The kept Secrets cannot be opened: ${error.message}`),
+            ),
+            Effect.orDie,
+          );
 
-        /** A Workspace's set-up with its Environment's Container settings overrides, last good Build and Secrets. */
-        const withSettings = (setup: WorkspaceSetup): Effect.Effect<WorkspaceSetupWithSettings> =>
-          Effect.map(opened(setup.environment), (kept) => {
+        /**
+         * A Workspace's set-up with its Environment's Container settings overrides, last good Build (`build`, the one
+         * a spare was registered with, else the Environment's now) and Secrets, or why it gets none.
+         */
+        const withSettings = (
+          setup: WorkspaceSetup & { readonly build?: EnvironmentBuild | null },
+        ): Effect.Effect<WorkspaceSetupWithSettings> =>
+          Effect.map(secretsHandover(store, vault, setup.environment), (handover) => {
             // Only the overrides that still resolve reach the Workspace, which checks them again.
             const overrides = store.getEnvironmentSettings(setup.environment) ?? {};
 
             return {
               ...setup,
               settings: readEnvironmentSettings(overrides).overrides,
-              build: store.getBuild(setup.environment)?.build ?? null,
-              secrets: kept,
+              build:
+                setup.build === undefined
+                  ? (store.getBuild(setup.environment)?.build ?? null)
+                  : setup.build,
+              ...handover,
             };
           });
 
@@ -411,8 +435,6 @@ export const RegistryLive = Registry.make(
             }),
           buildWork: ({ environments }) =>
             Effect.gen(function* () {
-              const keys = yield* vault;
-
               const wanted = Arr.filterMap(store.listEnvironments(), (environment) => {
                 const recorded = store.getBuild(environment.id);
 
@@ -422,11 +444,9 @@ export const RegistryLive = Registry.make(
                   : Result.succeed({ environment, recorded });
               });
 
-              return yield* Effect.forEach(wanted, ({ environment, recorded }) =>
-                Effect.gen(function* () {
-                  const kept = yield* openEnvironmentSecrets(store, keys, environment.id);
-
-                  return {
+              const work = yield* Effect.forEach(wanted, ({ environment, recorded }) =>
+                buildSecretsOf(store, vault, environment.id).pipe(
+                  Effect.map((digest): BuildWork => ({
                     environment: environment.id,
                     repos: environment.repos,
                     settings: readEnvironmentSettings(
@@ -434,10 +454,18 @@ export const RegistryLive = Registry.make(
                     ).overrides,
                     recorded,
                     // The values a Build gets, as a keyed digest only: the key is stored and shown in the clear.
-                    secrets: yield* buildSecretsDigest(keys, kept).pipe(Effect.orDie),
-                  } satisfies BuildWork;
-                }),
+                    secrets: digest,
+                  })),
+                  // A Build made without the Secrets it needs would not be the Environment's: it waits for the key.
+                  Effect.catch((error) =>
+                    Effect.logWarning(
+                      `Environment ${environment.id}'s Build is left as it is: its Secrets cannot be opened: ${error.message}`,
+                    ).pipe(Effect.as(undefined)),
+                  ),
+                ),
               );
+
+              return Arr.filter(work, (item) => item !== undefined);
             }),
           recordBuild: ({ environment, build, status }) =>
             Effect.sync(() => {
@@ -455,9 +483,14 @@ export const RegistryLive = Registry.make(
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
 
-              return yield* keepSecret(store, yield* vault, input, now).pipe(
+              return yield* Effect.flatMap(vault, (keys) =>
+                keepSecret(store, keys, input, now),
+              ).pipe(
                 Effect.catch((error) =>
-                  Effect.succeed<SecretWrite>({ status: "rejected", message: error.message }),
+                  Effect.succeed<SecretWrite>({
+                    status: "rejected",
+                    message: `The Secret cannot be kept: ${error.message}`,
+                  }),
                 ),
               );
             }),

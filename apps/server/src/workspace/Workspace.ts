@@ -58,6 +58,7 @@ import {
 import type { BuildRequest, BuildState, EnvironmentBuild } from "./build-record.ts";
 import { BuildRunner, type StoredBuilds } from "./build.ts";
 import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
+import { runAlarmSteps } from "./alarm.ts";
 import { ContainerEarlyStart } from "./early-start.ts";
 import { SparePreparation, type SpareRequest } from "./spare.ts";
 import {
@@ -440,7 +441,15 @@ export class Workspace extends ContainerHost {
         read: () => this.#environmentBuild.read(),
         write: (build) => this.#environmentBuild.write(build),
       },
-      { write: (secrets) => this.#environmentSecrets.replace(secrets) },
+      {
+        write: (secrets) => this.#environmentSecrets.replace(secrets),
+        unavailable: (reason) => this.#environmentSecrets.markUnavailable(reason),
+        read: async () => {
+          const held = await this.#environmentSecrets.read();
+
+          return held.ok ? held.secrets : [];
+        },
+      },
       (message) => console.warn(message),
     );
   }
@@ -545,6 +554,17 @@ export class Workspace extends ContainerHost {
   }
 
   /**
+   * Keep a copy of the Environment's Secrets that cannot be shown, for `reason`: the Registry could not open them
+   * (`WorkspaceSetup.secretsUnavailable`), so the snapshots and Builds that need them are refused until a handover
+   * brings them.
+   */
+  environmentSecretsUnavailable(reason: string): Promise<void> {
+    this.#spare.noteUse();
+
+    return this.#environmentSecrets.markUnavailable(reason);
+  }
+
+  /**
    * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s): it is
    * kept and begun at the alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
    * Environment's, are kept sealed apart from the request: those for the Build reach its Setup Scripts, and every one is
@@ -578,7 +598,7 @@ export class Workspace extends ContainerHost {
 
   /**
    * Stop the Container and forget its snapshot (`LifecycleHost.restartContainer`), so the next command starts one from
-   * the image, installs the Toolchains again and snapshots it. The files are the Workspace's and stay; what only the
+   * the Environment's Build when there is a usable one, else from the image, bootstraps it and snapshots it. The files are the Workspace's and stay; what only the
    * Container's disk held is gone. Commands running in the Container end. The idle alarm finds no Container to stop.
    */
   async restartContainer(): Promise<void> {
@@ -617,21 +637,29 @@ export class Workspace extends ContainerHost {
    */
   async prepareSpare(setup: WorkspaceSetup): Promise<void> {
     // The Secrets are kept sealed, never with the set-up the preparation stores.
-    const { secrets, ...stored } = setup;
+    const { secrets, secretsUnavailable, ...stored } = setup;
 
     if (secrets !== undefined) await this.#environmentSecrets.replace(secrets);
+    else if (secretsUnavailable !== undefined) {
+      await this.#environmentSecrets.markUnavailable(secretsUnavailable);
+    }
 
     return this.#spare.request(stored);
   }
 
   /**
    * The alarm, shared: a spare's preparation or a Build that waits for it begins, then the idle stop checks on the
-   * Container.
+   * Container. Each step runs whatever the ones before it came to (`runAlarmSteps`).
    */
   async alarm(): Promise<void> {
-    await this.#spare.alarm();
-    await this.#builds.alarm();
-    await this.#idle.alarm();
+    await runAlarmSteps(
+      [
+        ["spare", () => this.#spare.alarm()],
+        ["build", () => this.#builds.alarm()],
+        ["idle", () => this.#idle.alarm()],
+      ],
+      (message) => console.warn(message),
+    );
   }
 
   /** The Container's egress: computerd dials back here, and `WorkspaceProxy` forwards its WebSocket upgrade. */

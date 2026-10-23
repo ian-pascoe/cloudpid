@@ -33,12 +33,11 @@ import {
   SETUP_TIMEOUT_SECONDS,
   setupScriptRunIfDue,
 } from "@cloudpid/sandbox-image/toolchains";
-import { type KeptSecret, secretEnvName } from "@cloudpid/extensions/secrets/core";
 import type * as Schema from "effect/Schema";
 import type { BuildRequest, BuildState, EnvironmentBuild } from "./build-record.ts";
-import type { HeldSecrets } from "./environment-secrets.ts";
+import { buildSecretEnvironment, type HeldSecrets } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
-import { CLONE_TIMEOUT_SECONDS, type ScriptRun } from "./prepare.ts";
+import { CLONE_TIMEOUT_SECONDS, SCRIPT_RUN_MARGIN_SECONDS, type ScriptRun } from "./prepare.ts";
 
 /** What the object keeps: its Builds, and the request a Build waits to begin or runs for, until it ends. */
 export type StoredBuilds = Omit<BuildState, "image"> & {
@@ -111,20 +110,6 @@ const NOTHING: StoredBuilds = { last: null, progress: null, attemptedAt: null, p
  */
 export const buildContainerSettings = (settings: ContainerSettings): Schema.Json =>
   containerOverridesFrom({ ...settings, setupScript: "", startScript: "" });
-
-/**
- * What a Build's Setup Scripts get of the Environment's Secrets, in their environment and nowhere else: those marked
- * for the Build, each as `$PI_SECRET_<NAME>`, the variable a Session's commands get it as. Every Workspace started
- * from the Build shares its Snapshot, so the others never reach it.
- */
-export const buildSecretEnvironment = (
-  secrets: ReadonlyArray<KeptSecret>,
-): Readonly<Record<string, string>> =>
-  Object.fromEntries(
-    secrets.flatMap((secret) =>
-      secret.build ? [[secretEnvName(secret.name), secret.value] as const] : [],
-    ),
-  );
 
 export class BuildRunner {
   readonly #deps: BuildRunnerDeps;
@@ -321,7 +306,7 @@ export class BuildRunner {
           await this.#step(
             "The environment's Setup Script failed",
             `${prelude}${environmentSetupScriptRun(settings.setupScript, BUILD_ROOT)}`,
-            SETUP_TIMEOUT_SECONDS + 120,
+            SETUP_TIMEOUT_SECONDS + SCRIPT_RUN_MARGIN_SECONDS,
             secretEnv,
           );
         }
@@ -330,7 +315,7 @@ export class BuildRunner {
           await this.#step(
             `The Setup Script ${repo.name}/${SETUP_SCRIPT} failed`,
             `${prelude}${setupScriptRunIfDue(`${BUILD_ROOT}/${repo.name}`, SETUP_STATE_DIRECTORY, SETUP_TIMEOUT_SECONDS, BUILD_ROOT)}`,
-            SETUP_TIMEOUT_SECONDS + 120,
+            SETUP_TIMEOUT_SECONDS + SCRIPT_RUN_MARGIN_SECONDS,
             secretEnv,
           );
         }

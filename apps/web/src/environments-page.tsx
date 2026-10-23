@@ -4,7 +4,9 @@ import { INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
 import {
   DEFAULT_ENVIRONMENT,
   MAX_ENVIRONMENT_NAME_LENGTH,
+  MAX_REPO_NAME_LENGTH,
   MAX_SECRET_NAME_LENGTH,
+  parseRepoSource,
   type EnvironmentRecord,
   type EnvironmentSecretRecord,
   type SessionRecord,
@@ -34,17 +36,17 @@ import {
 } from "@effect/atom-react";
 import type { FormEvent } from "react";
 import { Button } from "./components/ui/button.tsx";
-import { Dialog, DialogActions } from "./components/ui/dialog.tsx";
+import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
-import { callOf } from "./calls.ts";
 import { navigate } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
 import { failureOf, settledFailureOf } from "./registry.ts";
-import { createSessionAtom, sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
+import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import {
   addRepoAtom,
+  addRepoNameAtom,
   addRepoSourceAtom,
   createEnvironmentAtom,
   deleteEnvironmentAtom,
@@ -54,7 +56,7 @@ import {
   environmentSecretsAtom,
   environmentSecretsErrorAtom,
   saveSecretAtom,
-  secretBuildAtom,
+  setSecretBuildAtom,
   secretDialogAtom,
   secretDraftAtom,
   secretsInAtom,
@@ -70,6 +72,7 @@ import {
   removeWorkspaceTypedAtom,
   restartContainerAtom,
   saveEnvironmentAtom,
+  startSessionAtom,
   workspaceListAtom,
   type EnvironmentDialog,
 } from "./environments-state.ts";
@@ -87,7 +90,9 @@ import {
   ignoreProblem,
   instanceLabel,
   parseVariables,
+  repoNameProblem,
   scriptFieldProblem,
+  toolchainsFieldProblem,
   sourceProblem,
   variablesText,
 } from "./environments.ts";
@@ -133,20 +138,29 @@ const NewEnvironmentForm = ({ names }: { names: readonly string[] }) => {
   );
 };
 
-/** The form that adds a Repo to an Environment: it records the Repo, and a Workspace made later clones it. */
+/**
+ * The form that adds a Repo to an Environment: it records the Repo, and a Workspace made later clones it, into the
+ * directory typed or else the repo's own name. Why the add was refused (a directory the Environment has already, to
+ * name another) shows under it.
+ */
 const AddRepoForm = ({ id }: { id: string }) => {
   const [source, setSource] = useAtom(addRepoSourceAtom(id));
+  const [name, setName] = useAtom(addRepoNameAtom(id));
   const [added, add] = useAtom(addRepoAtom(id));
   const adding = added.waiting;
   const problem = source.trim() === "" ? null : sourceProblem(source);
+  const nameProblem = repoNameProblem(name);
+  const ownName = Result.getOrUndefined(parseRepoSource(source))?.name;
   const inputId = `add-repo-${id}`;
+  const nameId = `add-repo-name-${id}`;
+  const ready = source.trim() !== "" && problem === null && nameProblem === null;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
 
-    if (source.trim() === "" || problem !== null || adding) return;
+    if (!ready || adding) return;
 
-    add(source);
+    add({ source, name });
   };
 
   return (
@@ -154,7 +168,7 @@ const AddRepoForm = ({ id }: { id: string }) => {
       <label htmlFor={inputId} className="text-sm font-medium">
         Add a repo
       </label>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Input
           id={inputId}
           value={source}
@@ -167,20 +181,41 @@ const AddRepoForm = ({ id }: { id: string }) => {
           spellCheck={false}
           disabled={adding}
           aria-invalid={problem !== null}
-          className="flex-1 font-mono"
+          className="min-w-48 flex-1 font-mono"
         />
-        <Button
-          type="submit"
-          variant="outline"
-          disabled={adding || source.trim() === "" || problem !== null}
-        >
+        <label htmlFor={nameId} className="sr-only">
+          Directory (optional)
+        </label>
+        <Input
+          id={nameId}
+          value={name}
+          maxLength={MAX_REPO_NAME_LENGTH}
+          onChange={(event) => {
+            setName(event.target.value);
+          }}
+          placeholder={ownName ?? "directory"}
+          title="The directory below /workspace it is cloned into; empty for the repo's own name"
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
+          data-1p-ignore
+          disabled={adding}
+          aria-invalid={nameProblem !== null}
+          className="w-36 font-mono"
+        />
+        <Button type="submit" variant="outline" disabled={adding || !ready}>
           <GitBranch />
           {adding ? "Adding…" : "Add"}
         </Button>
       </div>
       {problem !== null && <p className="text-xs text-destructive">{problem}</p>}
+      {nameProblem !== null && <p className="text-xs text-destructive">Directory: {nameProblem}</p>}
+      <DialogProblem problem={settledFailureOf(added)} />
       <p className="text-xs text-muted-foreground">
-        Nothing is cloned now. Workspaces made after this clone it.
+        Nothing is cloned now. Workspaces made after this clone it into /workspace/
+        {name.trim() === "" ? (ownName ?? "<repo>") : name.trim()}; name the directory to add two
+        repos of the same name.
       </p>
     </form>
   );
@@ -208,7 +243,7 @@ const SecretForm = ({ sectionKey }: { sectionKey: string }) => {
 
     if (!secretDraftReady(draft) || busy) return;
 
-    save(draft);
+    save();
   };
 
   return (
@@ -282,11 +317,7 @@ const SecretForm = ({ sectionKey }: { sectionKey: string }) => {
           {busy ? "Saving…" : replacing ? "Replace" : "Add"}
         </Button>
       </div>
-      {error !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {error}
-        </p>
-      )}
+      <DialogProblem problem={error} />
     </form>
   );
 };
@@ -345,7 +376,7 @@ const SecretRow = ({
   onReplace: () => void;
   onDelete: () => void;
 }) => {
-  const [switched, setBuild] = useAtom(secretBuildAtom(sectionKey));
+  const [switched, setBuild] = useAtom(setSecretBuildAtom(sectionKey));
   const buildId = `secret-${sectionKey}-${record.name}-build`;
 
   return (
@@ -409,7 +440,7 @@ const SecretsSection = ({
   const [deleting, setDeleting] = useAtom(secretDialogAtom(sectionKey));
   const deleted = useAtomValue(deleteSecretAtom(sectionKey));
   const forgetDelete = useAtomSet(deleteSecretAtom(sectionKey));
-  const switched = useAtomValue(secretBuildAtom(sectionKey));
+  const switched = useAtomValue(setSecretBuildAtom(sectionKey));
 
   const inherited =
     sectionKey === EVERY_ENVIRONMENT || all === null ? [] : inheritedSecrets(all, sectionKey);
@@ -447,16 +478,8 @@ const SecretsSection = ({
           <span className="font-mono">{inherited.map((record) => record.name).join(", ")}</span>
         </p>
       )}
-      {loadError !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {loadError}
-        </p>
-      )}
-      {switchError !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {switchError}
-        </p>
-      )}
+      <DialogProblem problem={loadError} />
+      <DialogProblem problem={switchError} />
       <SecretForm sectionKey={sectionKey} />
       <Dialog
         open={deleting !== null}
@@ -522,14 +545,18 @@ const CodeField = ({
   </div>
 );
 
-/** The variables and scripts of the Edit dialog, as typed, and what each change sets. */
+/** The Toolchains, variables and scripts of the Edit dialog, as typed, and what each change sets. */
 type StartupDraft = {
+  readonly toolchains: string;
   readonly variables: string;
   readonly setupScript: string;
   readonly startScript: string;
 };
 
-/** The Edit dialog's fields for what every Container start gets: variables, and the Environment's Setup and Start Scripts. */
+/**
+ * The Edit dialog's fields for what every Container start gets: the Environment's Toolchains (a mise.toml), variables,
+ * and its Setup and Start Scripts.
+ */
 const StartupFields = ({
   id,
   draft,
@@ -543,8 +570,20 @@ const StartupFields = ({
 }) => (
   <fieldset className="flex min-w-0 flex-col gap-3">
     <legend className="mb-2 text-xs font-medium text-muted-foreground">
-      Variables and scripts
+      Toolchains, variables and scripts
     </legend>
+    <CodeField
+      id={`toolchains-${id}`}
+      label="Toolchains (mise.toml)"
+      rows={5}
+      value={draft.toolchains}
+      placeholder={'[tools]\nnode = "24.22.1"\npnpm = "12.15.0"\npython = "3.14.9"'}
+      problem={toolchainsFieldProblem(draft.toolchains)}
+      hint="Written as /workspace/mise.toml where a Workspace has none, or still has the copy written last; a Workspace's own edits to the file stay. Empty: the image's base Toolchains (git, gh, Node, pnpm, Python, uv). A Build installs them."
+      onChange={(toolchains) => {
+        onChange({ toolchains });
+      }}
+    />
     <CodeField
       id={`variables-${id}`}
       label="Variables (NAME=value, one per line)"
@@ -552,7 +591,7 @@ const StartupFields = ({
       value={draft.variables}
       placeholder={"NODE_ENV=development\nDATABASE_URL=postgres://localhost/app"}
       problem={variablesProblem}
-      hint="Every command, Setup Script and Start Script gets them. They are plain: the agent can read them, so keep secrets out until Environments get Secrets."
+      hint="Every command, Setup Script and Start Script gets them. They are plain: the agent can read them, so keep a secret value in the Secrets section of the Environment's card instead."
       onChange={(variables) => {
         onChange({ variables });
       }}
@@ -684,8 +723,8 @@ const ContainerFields = ({
 );
 
 /**
- * Edit an Environment: its name, and its Container's size, idle time, extra paths, variables and scripts. Its id never
- * changes.
+ * Edit an Environment: its name, and its Container's size, idle time, extra paths, Toolchains, variables and scripts.
+ * Its id never changes.
  */
 const EditEnvironmentDialog = ({
   environment,
@@ -701,7 +740,7 @@ const EditEnvironmentDialog = ({
   const [draft, setDraft] = useAtom(environmentDraftAtom(id));
   const [edited, save] = useAtom(saveEnvironmentAtom(id));
   const setDialog = useAtomSet(environmentDialogAtom(id));
-  const { name, instance, idle, ignore, variables, setupScript, startScript } = draft;
+  const { name, instance, idle, ignore, variables, setupScript, startScript, toolchains } = draft;
 
   const saved = loaded.pipe(
     AsyncResult.value,
@@ -714,7 +753,7 @@ const EditEnvironmentDialog = ({
   const loadError = settledFailureOf(loaded);
   const saveError = settledFailureOf(edited);
   const nameProblem = environmentNameProblem(name, otherNames);
-  const idleProblem = saved === undefined ? null : idleMinutesProblem(idle);
+  const idleProblem = saved === undefined ? null : idleMinutesProblem(idle ?? "");
   const pathsProblem = ignore === undefined ? null : ignoreProblem(ignore);
   const renamed = name.trim() !== environment.name;
   const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
@@ -723,7 +762,9 @@ const EditEnvironmentDialog = ({
   const typedVariables = Result.getOrElse(parsedVariables, () => ({}));
 
   const scriptsProblem =
-    scriptFieldProblem(setupScript ?? "") ?? scriptFieldProblem(startScript ?? "");
+    scriptFieldProblem(setupScript ?? "") ??
+    scriptFieldProblem(startScript ?? "") ??
+    toolchainsFieldProblem(toolchains ?? "");
 
   const settingsChanged =
     saved !== undefined &&
@@ -733,7 +774,8 @@ const EditEnvironmentDialog = ({
       patterns.join("\n") !== saved.ignore.join("\n") ||
       variablesText(typedVariables) !== variablesText(saved.variables) ||
       (setupScript ?? saved.setupScript) !== saved.setupScript ||
-      (startScript ?? saved.startScript) !== saved.startScript);
+      (startScript ?? saved.startScript) !== saved.startScript ||
+      (toolchains ?? saved.toolchains) !== saved.toolchains);
 
   const invalid =
     nameProblem !== null ||
@@ -758,6 +800,7 @@ const EditEnvironmentDialog = ({
               variables: typedVariables,
               setupScript: setupScript ?? saved.setupScript,
               startScript: startScript ?? saved.startScript,
+              toolchains: toolchains ?? saved.toolchains,
             }
           : undefined,
     });
@@ -789,7 +832,7 @@ const EditEnvironmentDialog = ({
           <ContainerFields
             id={id}
             instance={instance}
-            idle={idle}
+            idle={idle ?? ""}
             idleProblem={idleProblem}
             paths={ignore ?? ""}
             pathsProblem={pathsProblem}
@@ -806,6 +849,7 @@ const EditEnvironmentDialog = ({
           <StartupFields
             id={id}
             draft={{
+              toolchains: toolchains ?? "",
               variables: variables ?? "",
               setupScript: setupScript ?? "",
               startScript: startScript ?? "",
@@ -820,19 +864,13 @@ const EditEnvironmentDialog = ({
         <p className="text-sm text-muted-foreground">Loading the Container's settings…</p>
       ) : (
         <div className="flex items-center gap-3">
-          <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-            {loadError}
-          </p>
+          <DialogProblem problem={loadError} />
           <Button type="button" variant="outline" size="sm" onClick={retry}>
             Try again
           </Button>
         </div>
       )}
-      {problem !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {problem}
-        </p>
-      )}
+      <DialogProblem problem={problem} />
       <DialogActions>
         <Button
           type="button"
@@ -898,14 +936,6 @@ const ConfirmField = ({
   </div>
 );
 
-/** The failure of a dialog's action, shown until the action starts again. */
-const DialogProblem = ({ problem }: { problem: string | null }) =>
-  problem === null ? null : (
-    <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-      {problem}
-    </p>
-  );
-
 /** Confirm deleting an Environment by typing its name, after saying everything that goes with it. */
 const DeleteEnvironmentDialog = ({
   environment,
@@ -946,7 +976,7 @@ const DeleteEnvironmentDialog = ({
             ? "It has no sessions."
             : `${count}, with their conversations and history. Running ones stop first.`}
         </li>
-        <li>Its repos and Container settings.</li>
+        <li>Its repos, Container settings, secrets and build.</li>
       </ul>
       <ConfirmField
         id={`confirm-${id}`}
@@ -980,7 +1010,6 @@ const DeleteEnvironmentDialog = ({
   );
 };
 
-/** Confirm restarting a Workspace's Container, after saying what it keeps and what it loses. */
 /** Environment `id`'s Build: where it stands, and a button to make it again now. */
 const BuildStatus = ({ id }: { id: string }) => {
   const build = useAtomValue(environmentBuildAtom(id));
@@ -1009,15 +1038,12 @@ const BuildStatus = ({ id }: { id: string }) => {
           Rebuild
         </Button>
       </div>
-      {error !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {error}
-        </p>
-      )}
+      <DialogProblem problem={error} />
     </div>
   );
 };
 
+/** Confirm restarting a Workspace's Container, after saying what it keeps and what it loses. */
 const RestartContainerDialog = ({ id, workspace }: { id: string; workspace: WorkspaceRecord }) => {
   const [restarted, run] = useAtom(restartContainerAtom(id));
   const setDialog = useAtomSet(environmentDialogAtom(id));
@@ -1037,8 +1063,9 @@ const RestartContainerDialog = ({ id, workspace }: { id: string; workspace: Work
         <li>Its files and sessions stay.</li>
         <li>Commands running in the Container stop.</li>
         <li>
-          The next command starts a new Container from the image and installs the Toolchains again,
-          which takes a while.
+          The next command starts a new Container from the environment's build when one is usable,
+          else from the image, which installs the Toolchains again. The Setup Scripts run again.
+          This can take a while.
         </li>
         <li>
           What only the Container held is gone: dependency directories such as node_modules, build
@@ -1215,23 +1242,21 @@ const EnvironmentCard = ({
   environment,
   otherNames,
   sessions,
-  starting,
-  onStart,
 }: {
   environment: EnvironmentRecord;
   /** The names of the other Environments, which this one cannot take. */
   otherNames: readonly string[];
   /** Every Session made in the Environment, archived ones included. */
   sessions: readonly SessionRecord[];
-  starting: boolean;
-  onStart: (workspace: string) => void;
 }) => {
   const { id } = environment;
+  // Starting a Session holds the card's buttons until it is registered and opened; a refusal shows until the next one.
+  const [started, start] = useAtom(startSessionAtom(id));
+  const starting = started.waiting;
   const workspaceList = useAtomValue(workspaceListAtom);
   const workspaces = (workspaceList ?? []).filter((workspace) => workspace.environment === id);
   const removeRepo = useAtomSet(removeRepoAtom(id));
   const removedRepo = useAtomValue(removeRepoAtom(id));
-  const added = useAtomValue(addRepoAtom(id));
   // The Container's settings are asked for with the card, so the Edit dialog has them when it opens.
   useAtomMount(environmentSettingsAtom(id));
   const [dialog, setDialog] = useAtom(environmentDialogAtom(id));
@@ -1256,8 +1281,8 @@ const EnvironmentCard = ({
     ? (workspaces.find((workspace) => workspace.id === dialog.removeWorkspace) ?? null)
     : null;
 
-  // An add's or a removal's failure shows until the next one starts.
-  const reposError = settledFailureOf(added) ?? settledFailureOf(removedRepo);
+  // A removal's failure shows until the next one starts; an add's shows in its form.
+  const reposError = settledFailureOf(removedRepo);
 
   const open = (next: EnvironmentDialog) => {
     // A failure of an earlier save, delete, restart or removal shows no more once a dialog is opened again.
@@ -1333,11 +1358,7 @@ const EnvironmentCard = ({
         )}
       </div>
       <AddRepoForm id={id} />
-      {reposError !== null && (
-        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {reposError}
-        </p>
-      )}
+      <DialogProblem problem={reposError} />
       <SecretsSection sectionKey={id} title="Secrets" empty="None kept for this environment." />
       <BuildStatus id={id} />
       <div className="flex flex-col gap-2">
@@ -1355,7 +1376,7 @@ const EnvironmentCard = ({
                 sessions={sessions.filter((session) => session.workspace === workspace.id)}
                 starting={starting}
                 onStart={() => {
-                  onStart(workspace.id);
+                  start(workspace.id);
                 }}
                 onRestart={() => {
                   open({ restart: workspace.id });
@@ -1367,6 +1388,7 @@ const EnvironmentCard = ({
             ))}
           </ul>
         )}
+        <DialogProblem problem={settledFailureOf(started)} />
       </div>
       {shown.length > 0 && (
         <div className="flex flex-col gap-1">
@@ -1435,9 +1457,6 @@ export const EnvironmentsPage = () => {
   const environments = useAtomValue(environmentListAtom);
   const listError = useAtomValue(environmentsErrorAtom);
   const createdEnvironment = useAtomValue(createEnvironmentAtom);
-  const createSession = useAtomSet(createSessionAtom);
-  // Starting a Session holds every button until the new Session is registered and opened.
-  const starting = useAtomValue(createSessionAtom).waiting;
   const error = failureOf(createdEnvironment) ?? listError;
 
   return (
@@ -1478,11 +1497,7 @@ export const EnvironmentsPage = () => {
             empty="None kept for every environment."
           />
         </section>
-        {(error ?? sessionsError) !== null && (
-          <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-            {error ?? sessionsError}
-          </p>
-        )}
+        <DialogProblem problem={error ?? sessionsError} />
         {environments === null ? (
           error === null && <p className="text-sm text-muted-foreground">Loading…</p>
         ) : (
@@ -1497,10 +1512,6 @@ export const EnvironmentsPage = () => {
                 sessions={(sessions ?? []).filter(
                   (session) => session.environment === environment.id,
                 )}
-                starting={starting}
-                onStart={(workspace) => {
-                  createSession(callOf({ environment: environment.id, workspace }));
-                }}
               />
             ))}
           </div>

@@ -6,7 +6,11 @@ import {
   openKeptVault,
   type SealedValue,
 } from "@cloudpid/extensions/secrets/core";
-import type { EnvironmentSecretRecord, PushSubscription } from "@cloudpid/protocol";
+import type {
+  EnvironmentRepo,
+  EnvironmentSecretRecord,
+  PushSubscription,
+} from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -16,6 +20,7 @@ import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
 import {
   type BuildRecord,
   type Deletion,
+  type EnvironmentDeletion,
   type EnvironmentNaming,
   type EnvironmentRecord,
   type LegacyObject,
@@ -32,7 +37,6 @@ import {
   type WorkspaceRecord,
   type WorkspaceSetup,
 } from "./store.ts";
-import type { EnvironmentRepo } from "@cloudpid/protocol";
 
 export class TestRegistry extends DurableObject {
   readonly #store: RegistryStore;
@@ -109,7 +113,7 @@ export class TestRegistry extends DurableObject {
     return this.#store.renameEnvironment(id, name);
   }
 
-  deleteEnvironment(id: string): Deletion {
+  deleteEnvironment(id: string): EnvironmentDeletion {
     return this.#store.deleteEnvironment(id);
   }
 
