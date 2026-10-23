@@ -3,7 +3,11 @@
 // Effect `Schema`: commands carry an optional `id` that a `result` or `error` answers, and every watched conversation
 // streams `events` batches whose first batch is a `snapshot`.
 import { ModelId, ThinkingLevel } from "@cloudpid/config";
-import type { AgentEvent, ConversationId as PiConversationId } from "@earendil-works/pi-durable";
+import type {
+  AgentEvent,
+  ConversationId as PiConversationId,
+  EntryRecord,
+} from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -201,6 +205,18 @@ export const RunCommand = Schema.Struct({
   args: Schema.String,
 });
 
+/**
+ * Ask for the History of the root conversation, or of the subagent conversation `conversationId` names, before entry
+ * `before`: what its snapshot no longer holds once a Rollover or a compaction started a new Context Window. Answered with
+ * a `HistoryPage`.
+ */
+export const HistoryRequest = Schema.Struct({
+  type: Schema.Literal("history"),
+  id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
+  before: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   Submit,
@@ -208,6 +224,7 @@ export const ClientMessage = Schema.Union([
   CatalogRequest,
   FilesRequest,
   RunCommand,
+  HistoryRequest,
   Watch,
   Unwatch,
   Configure,
@@ -511,11 +528,43 @@ export const CommandOutcome = Schema.Struct({
 
 export type CommandOutcome = typeof CommandOutcome.Type;
 
-/** A command's answer. */
+/** One of pi's transcript entries, passed through unchanged; only its `id` is checked. */
+export const EntryRecordSchema = Schema.declare(
+  (input): input is EntryRecord =>
+    Predicate.isObject(input) &&
+    Predicate.hasProperty(input, "id") &&
+    Predicate.isNumber(input.id) &&
+    Predicate.hasProperty(input, "kind") &&
+    Predicate.isString(input.kind),
+  { identifier: "EntryRecord" },
+);
+
+/**
+ * The answer to `history`: the conversation's entries just before the ones asked for, oldest first, at most
+ * `MAX_HISTORY_ENTRIES` and about `MAX_HISTORY_BYTES` of them (always one, however large), without the entries a
+ * transcript does not show (system prompts, bookkeeping). `before` is what to ask for next, or null when nothing is left.
+ */
+export const HistoryPage = Schema.Struct({
+  entries: Schema.Array(EntryRecordSchema),
+  before: Schema.NullOr(Schema.Int),
+});
+
+export type HistoryPage = typeof HistoryPage.Type;
+
+/** The most entries a `history` page reads. */
+export const MAX_HISTORY_ENTRIES = 200;
+
+/**
+ * About the most a `history` page holds, in UTF-16 code units of its entries' JSON: well under the 32 MiB a socket message
+ * may be, and small enough for the Session to build beside its other work.
+ */
+export const MAX_HISTORY_BYTES = 4 * 1024 * 1024;
+
+/** A command's answer: JSON, or a `HistoryPage`, whose pi entries are JSON that TypeScript cannot tell is. */
 export const Result = Schema.Struct({
   type: Schema.Literal("result"),
   id: Schema.String,
-  result: Schema.Json,
+  result: Schema.Union([Schema.Json, HistoryPage]),
 });
 
 /**
