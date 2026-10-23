@@ -1,5 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- assertions over what the fakes recorded, in native arrays.
 
+import { MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -83,11 +84,7 @@ describe("a composer's Attachments", () => {
 
       yield* add(file("notes.txt"), file("notes.txt"), file("plan.md"));
 
-      expect(summary()).toEqual([
-        "notes.txt uploading",
-        "notes-2.txt uploading",
-        "plan.md uploading",
-      ]);
+      expect(summary()).toEqual(["notes.txt uploading", "notes-2.txt queued", "plan.md queued"]);
       expect(uploads.started.map((upload) => upload.name)).toEqual(["notes.txt"]);
 
       yield* uploads.started[0]!.progress(0.5);
@@ -108,6 +105,21 @@ describe("a composer's Attachments", () => {
 
       expect(summary()).toEqual(["notes.txt uploaded", "notes-2.txt failed", "plan.md uploaded"]);
       expect(state().items[1]?.error).toBe("The upload failed (500).");
+    }),
+  );
+
+  it.effect("fail one too big for the Workspace at once, without uploading it", () =>
+    Effect.gen(function* () {
+      const { uploads, add, state, summary } = yield* setup;
+      const big = file("big.bin");
+
+      Object.defineProperty(big, "size", { value: MAX_ATTACHMENT_BYTES + 1 });
+
+      yield* add(big, file("a.txt"));
+
+      expect(summary()).toEqual(["big.bin failed", "a.txt uploading"]);
+      expect(state().items[0]?.error).toBe("An attachment is at most 25 MB.");
+      expect(uploads.started.map((upload) => upload.name)).toEqual(["a.txt"]);
     }),
   );
 

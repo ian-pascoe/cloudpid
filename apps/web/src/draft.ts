@@ -39,9 +39,12 @@ export const draftBranchProblem = (input: DraftInput): string | null =>
 export const draftBaseProblem = (input: DraftInput): string | null =>
   input.workspace === NEW_WORKSPACE ? optionalBranchProblem(input.base) : null;
 
-/** Whether the draft can be sent: it has a message, and neither branch field is wrong. */
-export const draftSendable = (input: DraftInput): boolean =>
-  input.text.trim() !== "" &&
+/**
+ * Whether the draft can be sent: it has a message (text, or Attachments when `attached`), and neither branch field is
+ * wrong.
+ */
+export const draftSendable = (input: DraftInput, attached = false): boolean =>
+  (input.text.trim() !== "" || attached) &&
   draftBranchProblem(input) === null &&
   draftBaseProblem(input) === null;
 

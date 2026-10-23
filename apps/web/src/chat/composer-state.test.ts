@@ -18,6 +18,7 @@ import {
   wideAtom,
 } from "./composer-state.ts";
 import { refusedFirstMessagesAtom } from "../draft-state.ts";
+import { attachmentsAtom } from "./attachments-state.ts";
 import { conversationKey } from "./conversation.ts";
 import { FILE_SEARCH_DEBOUNCE_MS, fileSearchAtom } from "./file-search.ts";
 
@@ -421,6 +422,30 @@ describe("one composer's state", () => {
       expect(composer.text()).toBe("Fix the build");
       expect(registry.get(state.note)?.text).toBe("The spend limit is reached.");
       expect(registry.get(refusedFirstMessagesAtom)).toEqual({});
+    }),
+  );
+
+  it.effect("attaches the files of a refused first message again", () =>
+    Effect.gen(function* () {
+      const { registry } = chatRegistry();
+      const composer = composerOf();
+      const { state } = composer;
+      const attachments = attachmentsAtom(conversationKey("s1", undefined));
+
+      registry.mount(state.text);
+      registry.mount(state.effects);
+      registry.mount(attachments);
+      registry.set(refusedFirstMessagesAtom, {
+        s1: {
+          text: "Look",
+          reason: "Not every attachment uploaded.",
+          files: [new File(["x"], "notes.txt", { type: "text/plain" })],
+        },
+      });
+      yield* settle;
+
+      expect(composer.text()).toBe("Look");
+      expect(registry.get(attachments).items.map((item) => item.name)).toEqual(["notes.txt"]);
     }),
   );
 
