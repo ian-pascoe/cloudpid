@@ -24,9 +24,9 @@ import {
   addTotals,
   limitingModels,
   NO_TOTALS,
-  recordTitleUsage,
+  recordUnledgeredUsage,
   spendMessage,
-  titleTotals,
+  unledgeredTotals,
   totalsOf,
   usageMessage,
 } from "./spend.ts";
@@ -108,7 +108,7 @@ describe("totalsOf", () => {
   });
 });
 
-describe("the title calls' usage", () => {
+describe("the usage of the Session's own model calls", () => {
   it("is kept in storage and adds up", () => {
     const store = new Map<string, unknown>();
 
@@ -118,12 +118,12 @@ describe("the title calls' usage", () => {
       put: <T>(key: string, value: T) => void store.set(key, value),
     };
 
-    expect(titleTotals(kv)).toEqual(NO_TOTALS);
+    expect(unledgeredTotals(kv)).toEqual(NO_TOTALS);
 
-    recordTitleUsage(kv, { input: 10, output: 2, totalTokens: 12, cost: { total: 0.01 } });
-    recordTitleUsage(kv, { input: 5, output: 1, totalTokens: 6, cost: { total: 0.02 } });
+    recordUnledgeredUsage(kv, { input: 10, output: 2, totalTokens: 12, cost: { total: 0.01 } });
+    recordUnledgeredUsage(kv, { input: 5, output: 1, totalTokens: 6, cost: { total: 0.02 } });
 
-    expect(titleTotals(kv)).toEqual({
+    expect(unledgeredTotals(kv)).toEqual({
       input: 15,
       output: 3,
       cacheRead: 0,

@@ -6,15 +6,17 @@
 // the agent as of the point.
 import type { ContextState } from "@cloudpid/extensions/context";
 import type { TodoState } from "@cloudpid/extensions/todo";
+import type { TreePoint } from "@cloudpid/protocol";
 import type {
   AgentState,
   ContextEdit,
+  ConversationId,
   EntryDraft,
   EntryId,
   EntryRecord,
-  ModelRef,
 } from "@earendil-works/pi-durable";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import * as Effect from "effect/Effect";
+import type { AgentPick } from "./pick.ts";
 
 /** About the most one page of copied entries holds, in UTF-16 code units of their JSON: well under an RPC's 32 MiB. */
 export const MAX_COPY_PAGE_SIZE = 8 * 1024 * 1024;
@@ -22,10 +24,23 @@ export const MAX_COPY_PAGE_SIZE = 8 * 1024 * 1024;
 /** The most entries one page reads. */
 export const EXPORT_PAGE_ENTRIES = 200;
 
+/**
+ * What must be at rest while a Fork or Clone takes its source: nothing (a Fork in the same Workspace, which may be made
+ * while a Run goes on), the active branch (a Clone, which takes the branch as it stands), or the whole Session, every
+ * branch and subagent, whose files a new Workspace carries.
+ */
+export type ForkQuiet = "none" | "branch" | "session";
+
+/** What a Fork or Clone asks its source for: the point (none: the branch as it is now, a Clone), and what must be at rest. */
+export type ForkSourceRequest = {
+  readonly point?: TreePoint;
+  readonly quiet: ForkQuiet;
+};
+
 /** What a Fork or Clone carries besides the entries, as its source answers it. */
 export type ForkPlan = {
   /** The source's Session branch whose path is copied. */
-  readonly conversationId: number;
+  readonly conversationId: ConversationId;
   /** The last entry copied; null when there is none (a Fork before the Session's first message). */
   readonly through: number | null;
   /** The owner's message the new composer starts with: the one a Fork was made before. */
@@ -33,11 +48,18 @@ export type ForkPlan = {
   /** The branch's agent as of the point: its model, thinking level, loaded tools and the rest of `pi.agent`. */
   readonly agent: AgentState;
   /** The model and thinking level the source picked itself, which the new Session keeps picked. */
-  readonly pick: { readonly model?: ModelRef; readonly thinkingLevel?: ModelThinkingLevel };
+  readonly pick: AgentPick;
   /** The branch's Notes and last Handoff, as they are now. */
   readonly context: ContextState | null;
   /** The branch's Todo List, as it is now. */
   readonly todo: TodoState | null;
+};
+
+/** A page of the entries a Fork copies: those of `conversationId`'s path after `after` (none: from the start) through `through`. */
+export type ExportRequest = {
+  readonly conversationId: ConversationId;
+  readonly through: number;
+  readonly after: number | null;
 };
 
 /** One page of the entries a Fork copies, oldest first, and the entry the next page starts after (null: the last). */
@@ -70,6 +92,48 @@ export const exportPage = (entries: ReadonlyArray<EntryRecord>, more: boolean): 
     next: last === undefined || (!more && kept.length === entries.length) ? null : last.id,
   };
 };
+
+/** The source Session's side of filling a Fork or Clone. */
+export type FillSource<E, R> = {
+  readonly exportEntries: (request: ExportRequest) => Effect.Effect<ExportPage, E, R>;
+};
+
+/** The new Session's side of filling it. */
+export type FillTarget<E, R> = {
+  readonly importStart: Effect.Effect<void, E, R>;
+  readonly importEntries: (entries: ReadonlyArray<EntryRecord>) => Effect.Effect<void, E, R>;
+  readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, E, R>;
+};
+
+/** Fill new Session `target` with what `plan` of Session `source` carries: its entries, a page at a time, then the rest. */
+export const fillSession = <E, R>(
+  source: FillSource<E, R>,
+  target: FillTarget<E, R>,
+  plan: ForkPlan,
+): Effect.Effect<void, E, R> =>
+  Effect.gen(function* () {
+    yield* target.importStart;
+
+    const through = plan.through;
+
+    // A Fork before the Session's first message copies no entry.
+    if (through !== null) {
+      let after: number | null = null;
+
+      do {
+        const page: ExportPage = yield* source.exportEntries({
+          conversationId: plan.conversationId,
+          through,
+          after,
+        });
+
+        yield* target.importEntries(page.entries);
+        after = page.next;
+      } while (after !== null);
+    }
+
+    yield* target.importFinish(plan);
+  });
 
 /** An `EntryDraft` while `copiedDraft` fills it in. */
 type DraftBeingMade = { -readonly [K in keyof EntryDraft]: EntryDraft[K] };
@@ -107,6 +171,9 @@ export const copiedDraft = (entry: EntryRecord, ids: ReadonlyMap<number, number>
 
   return draft;
 };
+
+/** The agent of a conversation that never had one written: pi-durable's defaults throughout. */
+export const NO_AGENT: AgentState = {};
 
 /** The fields of `pi.agent` a copy takes from its source: every one, as the source stored them (tool names). */
 const AGENT_FIELDS = [

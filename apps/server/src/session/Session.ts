@@ -40,15 +40,9 @@ import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from ".
 import type { PushEvent } from "../push/notification.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { IMAGES_BINDING } from "./images.ts";
-import {
-  type ExportRequest,
-  type ForkSourceRequest,
-  NOTIFY_TIMEOUT,
-  SessionError,
-  SessionHost,
-  sessionHostLayer,
-} from "./host.ts";
-import type { ExportPage, ForkPlan } from "./fork.ts";
+import { NOTIFY_TIMEOUT, SessionHost, sessionHostLayer } from "./host.ts";
+import { SessionError } from "./errors.ts";
+import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import {
   reloadSessionExtensions,
@@ -139,6 +133,8 @@ export type SessionMethods = {
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents a Fork or Clone carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
+  /** Take messages again once a Fork or Clone in a new Workspace carried this Session's files. */
+  readonly releaseFork: () => Effect.Effect<void>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -468,6 +464,7 @@ export const SessionLive = Session.make(
               "session.fork.finish",
               host.importFinish(plan).pipe(Effect.andThen(sockets.greetAgain)),
             ),
+          releaseFork: () => invoked("session.fork.release", host.releaseFork),
           destroy: () =>
             invoked(
               "session.destroy",

@@ -25,6 +25,7 @@ import {
   ServerMessageJson,
   type ClientMessage,
   type BranchSummaryRequest,
+  type TreePoint,
   type ConversationId,
   type ServerMessage,
   type SessionView,
@@ -222,13 +223,12 @@ export interface SessionClient {
   /** The Session tree (GLOSSARY.md → Session tree), as it is now. Fails as `catalog` does. */
   readonly tree: Effect.Effect<SessionTree, SessionCommandError>;
   /**
-   * Move the active branch just `before` an owner's message or just after (`at`) entry `entryId`, with a summary of the
-   * branch left when `summary` asks: where it went, and the owner's message to put back in the composer. The Session's
-   * `active_branch` moves the root view first. Fails with why the Session refused it.
+   * Move the active branch to `point` (just `before` an owner's message, or just after an entry: `at`), with a summary
+   * of the Session branch left when `summary` asks: where it went, and the owner's message to put back in the composer.
+   * The Session's `active_branch` moves the root view first. Fails with why the Session refused it.
    */
   readonly navigate: (
-    entryId: number,
-    position: "before" | "at",
+    point: TreePoint,
     summary?: BranchSummaryRequest,
   ) => Effect.Effect<Navigated, SessionCommandError>;
   /** Make Session branch `conversationId` the active branch as it stands (the chevrons). Fails as `navigate` does. */
@@ -1256,7 +1256,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         }),
       ),
     tree: request((id) => ({ type: "tree", id }), decodeSessionTree),
-    navigate: (entryId, position, summary) =>
+    navigate: ({ entryId, position }, summary) =>
       request(
         (id) => {
           const message: Types.Mutable<Extract<ClientMessage, { type: "navigate" }>> = {

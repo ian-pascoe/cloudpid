@@ -30,7 +30,7 @@ _Avoid_: Conversation tree, History (that is one path's past)
 
 **Session branch**:
 One path of a Session tree, from the Session's start to one of its leaves. The **active branch** is the one the Session's next message continues; the others are kept as they were.
-_Avoid_: Branch (alone: a Workspace's branch is git's), thread, alternative
+_Avoid_: Branch (alone, as a noun: a Workspace's branch is git's), thread, alternative. The bar's **Branch** button is a verb, the action of moving the active branch there.
 
 **Fork**:
 A new Session started from a point of another Session's active branch (before one of the owner's messages, or after an answer), carrying the branch up to that point; the source Session is left as it was. `/fork` makes one.

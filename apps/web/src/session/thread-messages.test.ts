@@ -1,7 +1,7 @@
 import { EMPTY_VIEW, type SessionView, type TranscriptMessage } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
-import { shownSkills, toThreadMessages } from "./thread-messages.ts";
+import { answerOf, entriesOf, shownSkills, toThreadMessages } from "./thread-messages.ts";
 
 const user = (id: string, text: string): TranscriptMessage => ({
   id,
@@ -180,6 +180,25 @@ describe("the thread messages of a view", () => {
         { type: "text", text: "You rolled a 4" },
       ],
     });
+  });
+
+  it("keeps the entries a turn holds, where a Session branch may start in it, and the answer it ends with", () => {
+    const messages = toThreadMessages(
+      view({
+        messages: [
+          user("1", "roll"),
+          assistant("2", [{ type: "tool-call", id: "c1", name: "roll_dice", arguments: {} }], {
+            stopReason: "toolUse",
+          }),
+          { ...result("c1", "4"), id: "3" },
+          assistant("4", [{ type: "text", text: "You rolled a 4" }]),
+        ],
+      }),
+    );
+
+    expect(entriesOf(messages[1]?.metadata?.custom)).toEqual([2, 3, 4]);
+    expect(answerOf(messages[1]?.metadata?.custom)).toBe(4);
+    expect(entriesOf(undefined)).toEqual([]);
   });
 
   it("marks a failed tool call", () => {

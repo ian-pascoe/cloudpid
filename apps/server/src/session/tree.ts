@@ -4,13 +4,15 @@
 // entry, and the Session keeps which one is the active branch. Entry IDs are Session-wide and only grow, and a fork
 // sees its parent's entries up to the entry it was made at, so the branches' own entries, each linked to the one before
 // it (a branch's first to the entry it was forked at), make up pi's tree of entries.
-import { isRootConversation, SubagentsDoc } from "@cloudpid/extensions/subagents";
+import { isSessionBranch, SubagentsDoc } from "@cloudpid/extensions/subagents";
 import {
   type ConversationId,
   type SessionTree,
   type TreeBranch,
   type TreeNode,
   type TreeNodeRole,
+  type TreePoint,
+  pathFromRoot,
   projectEntry,
   USER_ENTRY_KIND,
   userEntryData,
@@ -23,7 +25,7 @@ import {
   type ConversationId as PiConversationId,
   type Tx,
 } from "@earendil-works/pi-durable";
-import * as Predicate from "effect/Predicate";
+import { contentText, textsOf } from "./text.ts";
 
 /** The Session's branches as it keeps them: the active one, and when each was last the active one. */
 export type SessionTreeState = {
@@ -81,11 +83,11 @@ export const activateBranch = async (
 
   const subagents = await tx.doc(SubagentsDoc);
 
-  if (conversationId === ROOT_CONVERSATION_ID) delete subagents.root;
-  else subagents.root = conversationId;
+  if (conversationId === ROOT_CONVERSATION_ID) delete subagents.activeBranch;
+  else subagents.activeBranch = conversationId;
 
-  if (!isRootConversation(subagents, conversationId)) {
-    subagents.roots = [...(subagents.roots ?? []), conversationId];
+  if (!isSessionBranch(subagents, conversationId)) {
+    subagents.branches = [...(subagents.branches ?? []), conversationId];
   }
 };
 
@@ -120,9 +122,7 @@ export const ownerMessageText = (entry: EntryRecord): string => {
 
   if (message?.role !== "user") return "";
 
-  return Predicate.isString(message.content)
-    ? message.content
-    : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+  return contentText(message.content);
 };
 
 /** What the tree shows of `entry`, or nothing for one the transcript does not show. */
@@ -135,7 +135,7 @@ export const nodeOf = (
     return undefined;
   }
 
-  const texts = message.parts.flatMap((part) => (part.type === "text" ? [part.text] : []));
+  const texts = textsOf(message.parts);
   const calls = message.parts.flatMap((part) => (part.type === "tool-call" ? [part.name] : []));
 
   switch (message.role) {
@@ -161,10 +161,7 @@ export const nodeOf = (
       const result = message.parts[0];
       const name = result?.type === "tool-result" ? result.name : "tool";
 
-      const output =
-        result?.type === "tool-result"
-          ? result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(" ")
-          : "";
+      const output = result?.type === "tool-result" ? textsOf(result.content).join(" ") : "";
 
       return {
         role: "tool",
@@ -279,15 +276,14 @@ export type NavigationPlan =
 export type NavigationRefusal = { readonly refused: string };
 
 /**
- * Where navigating to `entryId` goes: just `before` it (an owner's message) or just after it (`at`). An existing
+ * Where navigating to `point` goes: just `before` its entry (an owner's message) or just after it (`at`). An existing
  * branch's tip is made active rather than forked again, preferring the one active last; an empty branch already made
  * at the point is taken again.
  */
 export const planNavigation = (
   branches: ReadonlyArray<BranchEntries>,
   state: SessionTreeState,
-  entryId: number,
-  position: "before" | "at",
+  { entryId, position }: TreePoint,
 ): NavigationPlan | NavigationRefusal => {
   const owner = branches.find((branch) => branch.entries.some((entry) => entry.id === entryId));
   const entry = owner?.entries.find((each) => each.id === entryId);
@@ -297,7 +293,7 @@ export const planNavigation = (
   }
 
   if (position === "before" && !isOwnerMessage(entry)) {
-    return { refused: "Only an owner's message can be branched from before it." };
+    return { refused: "Only an owner's message has a point just before it to move to." };
   }
 
   const point = position === "at" ? entryId : (entryParents(branches).get(entryId) ?? null);
@@ -339,13 +335,8 @@ export const abandonedEntries = (
 
   for (const branch of branches) for (const entry of branch.entries) byId.set(entry.id, entry);
 
-  const pathTo = (id: number | null): number[] => {
-    const path: number[] = [];
-
-    for (let at = id; at !== null; at = parents.get(at) ?? null) path.push(at);
-
-    return path.reverse();
-  };
+  const pathTo = (id: number | null): ReadonlyArray<number> =>
+    pathFromRoot(id, (at) => parents.get(at));
 
   const left = branches.find((branch) => branch.id === from);
 

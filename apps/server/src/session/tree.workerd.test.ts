@@ -105,6 +105,22 @@ describe("a Session's tree", () => {
     });
   });
 
+  it("addresses the active branch by its ID, and no branch left behind", async () => {
+    await runInDurableObject(fresh(), async (instance: TestSession) => {
+      const before = await twoExchanges(instance);
+      const root = before.active;
+
+      await instance.navigate({ entryId: node(before, "assistant", "one").id, position: "at" });
+
+      const branch = await instance.activeBranch();
+
+      expect(await instance.command("export", "", branch)).toHaveProperty("outcome");
+      expect(await instance.command("export", "", root)).toMatchObject({
+        failure: expect.stringContaining("not the active one"),
+      });
+    });
+  });
+
   it("places a summary of the branch left at the start of the branch entered", async () => {
     await runInDurableObject(fresh(), async (instance: TestSession) => {
       const before = await twoExchanges(instance);
@@ -159,9 +175,8 @@ describe("copying a Session for a Fork or Clone", () => {
 
       // The new Session is reached through a stub of its own, as the main Worker reaches it.
       const plan = await instance.forkInto(target, {
-        entryId: node(before, "user", "second").id,
-        position: "before",
-        idle: false,
+        point: { entryId: node(before, "user", "second").id, position: "before" },
+        quiet: "none",
       });
 
       expect(plan.text).toBe("second");
@@ -200,9 +215,8 @@ describe("copying a Session for a Fork or Clone", () => {
       const tree = await instance.tree();
 
       const plan = await instance.forkInto("fork-with-a-pick", {
-        entryId: node(tree, "assistant", "one").id,
-        position: "at",
-        idle: false,
+        point: { entryId: node(tree, "assistant", "one").id, position: "at" },
+        quiet: "none",
       });
 
       expect(plan.pick.model).toMatchObject({ provider: "anthropic", modelId: "claude-haiku-5-5" });
@@ -218,10 +232,75 @@ describe("copying a Session for a Fork or Clone", () => {
       await instance.submit({ requestId: "turn-3", text: "third" });
       await instance.hanging.promise;
 
-      await expect(instance.forkInto("clone-refused", { idle: true })).rejects.toThrow(
+      await expect(instance.forkInto("clone-refused", { quiet: "branch" })).rejects.toThrow(
         /Run is in progress/u,
       );
       await instance.abortRoot();
+    });
+  });
+
+  it("refuses a Fork in a new workspace while a Run is in progress, and makes one in the Workspace", async () => {
+    await runInDurableObject(fresh(), async (instance: TestSession) => {
+      const before = await twoExchanges(instance);
+
+      instance.script(["hang"]);
+      await instance.submit({ requestId: "turn-3", text: "third" });
+      await instance.hanging.promise;
+
+      const point = { entryId: node(before, "assistant", "one").id, position: "at" } as const;
+
+      await expect(
+        instance.forkInto("fork-in-new-workspace-refused", { point, quiet: "session" }),
+      ).rejects.toThrow(/cannot be forked in a new workspace while a Run is in progress/u);
+
+      // A Fork that stays in the Workspace carries no files, so the Run may go on.
+      const plan = await instance.forkInto("fork-while-running", { point, quiet: "none" });
+
+      expect(plan.through).toBe(point.entryId);
+      await instance.abortRoot();
+    });
+  });
+
+  it("takes no message while its files are carried, until the Fork releases it", async () => {
+    await runInDurableObject(fresh(), async (instance: TestSession) => {
+      const before = await twoExchanges(instance);
+      const point = { entryId: node(before, "assistant", "two").id, position: "at" } as const;
+
+      await instance.forkInto("fork-carrying-files", { point, quiet: "session" });
+
+      await expect(instance.submit({ requestId: "turn-3", text: "third" })).rejects.toThrow(
+        /files are being carried/u,
+      );
+
+      await instance.releaseFork();
+      instance.script(["three"]);
+      await instance.prompt({ requestId: "turn-3", text: "third" });
+    });
+  });
+
+  it("refuses to fork a Session that is itself still being filled", async () => {
+    await runInDurableObject(fresh(), async (instance: TestSession) => {
+      await twoExchanges(instance);
+      await instance.importStart();
+
+      await expect(
+        instance.forkInto("fork-of-a-fork-being-filled", { quiet: "none" }),
+      ).rejects.toThrow(/still being made/u);
+    });
+  });
+
+  it("carries pi-durable's default agent for a Fork before the first message", async () => {
+    await runInDurableObject(fresh(), async (instance: TestSession) => {
+      const before = await twoExchanges(instance);
+
+      const plan = await instance.forkInto("fork-before-everything", {
+        point: { entryId: node(before, "user", "first").id, position: "before" },
+        quiet: "none",
+      });
+
+      expect(plan.through).toBeNull();
+      expect(plan.agent).toEqual({});
+      expect(plan.text).toBe("first");
     });
   });
 });

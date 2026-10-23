@@ -53,6 +53,7 @@ import {
   conversationOf,
   EMPTY_STATE,
   openWaiter,
+  reportConversationOf,
   type SubagentsState,
   SubagentsDoc,
   subtreeOf,
@@ -630,7 +631,11 @@ const Message = defineEffectTool({
         const doc = await tx.doc(SubagentsDoc);
         const waiter = openWaiter(doc, target, caller);
 
-        const conversationId = conversationOf(doc, target);
+        // A message to the root agent goes where the caller's reports go: the Session branch it was started from.
+        const conversationId =
+          target === ROOT_AGENT
+            ? (reportConversationOf(doc, caller) ?? conversationOf(doc, target))
+            : conversationOf(doc, target);
 
         if (conversationId === undefined) return refuse(`Agent ${target} was deleted`);
 

@@ -7,8 +7,8 @@ import type { Message, Models, Usage, UserMessage } from "@earendil-works/pi-ai"
 import type { EntryRecord, ModelRef } from "@earendil-works/pi-durable";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { contentText, textsOf } from "./text.ts";
 
 /** pi's framing of a branch summary in the context. */
 export const BRANCH_SUMMARY_PREFIX =
@@ -68,23 +68,18 @@ const truncate = (text: string, limit: number): string =>
     ? text
     : `${text.slice(0, limit)}\n\n[... ${text.length - limit} more characters truncated]`;
 
-const textOf = (content: UserMessage["content"]): string =>
-  Predicate.isString(content)
-    ? content
-    : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-
 /** One message as the summarizer reads it, or nothing for one it does not need (system prompts). */
 const serialize = (message: Message): string[] => {
   switch (message.role) {
     case "user": {
-      const text = textOf(message.content);
+      const text = contentText(message.content);
 
       return text === "" ? [] : [`[User]: ${text}`];
     }
 
     case "assistant": {
       const parts: string[] = [];
-      const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
+      const text = textsOf(message.content);
 
       const calls = message.content.flatMap((part) =>
         part.type === "toolCall"
@@ -104,7 +99,7 @@ const serialize = (message: Message): string[] => {
     }
 
     case "toolResult": {
-      const text = textOf(message.content);
+      const text = contentText(message.content);
 
       return text === "" ? [] : [`[Tool result]: ${truncate(text, TOOL_RESULT_MAX_CHARS)}`];
     }
@@ -219,10 +214,7 @@ export const summarizeBranch = (
       });
     }
 
-    const summary = reply.content
-      .flatMap((part) => (part.type === "text" ? [part.text] : []))
-      .join("\n")
-      .trim();
+    const summary = textsOf(reply.content).join("\n").trim();
 
     return summary === ""
       ? yield* BranchSummaryError.make({ message: "The model gave no summary" })

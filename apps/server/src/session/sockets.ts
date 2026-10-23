@@ -39,7 +39,8 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { SessionError, SessionHost } from "./host.ts";
+import { SessionError } from "./errors.ts";
+import { SessionHost } from "./host.ts";
 
 /**
  * The parts of a Durable Object's `ctx` the sockets use. Narrow on purpose, as `SessionStorage` is, so the module and

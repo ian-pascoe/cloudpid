@@ -7,6 +7,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
+import { TreePoint } from "./session.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -24,6 +25,9 @@ export const SessionTitle = Schema.Trim.check(
   Schema.isNonEmpty(),
   Schema.isMaxLength(MAX_TITLE_LENGTH),
 );
+
+/** What a Session with no title is called where one is shown, and what a Fork or Clone of it is named after. */
+export const UNTITLED_SESSION = "Untitled session";
 
 /** Who gave a Session its title: the owner by naming it, or the `small` role's model after the first answer. */
 export const TitleSource = Schema.Literals(["generated", "owner"]);
@@ -46,6 +50,14 @@ export const DEFAULT_ENVIRONMENT = "default";
 export const ForkKind = Schema.Literals(["fork", "clone"]);
 
 export type ForkKind = typeof ForkKind.Type;
+
+/** The title of a `kind` of the Session titled `title` (none: untitled): its own with " (fork)" or " (clone)", cut to fit. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain function of two values.
+export const forkTitle = (title: string | null, kind: ForkKind): string => {
+  const suffix = ` (${kind})`;
+
+  return `${(title ?? UNTITLED_SESSION).slice(0, MAX_TITLE_LENGTH - suffix.length).trimEnd()}${suffix}`;
+};
 
 /** The Session a Fork or Clone was made from, which may have been deleted since. */
 export const SessionOrigin = Schema.Struct({ session: Schema.String, kind: ForkKind });
@@ -319,17 +331,18 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * Make a Fork or Clone of Session `source` (GLOSSARY.md → Fork, Clone): a new Session carrying its active branch up to
-   * just `before` the owner's message `entryId`, or through entry `entryId` (`at`), or, without `entryId`, as it is now
-   * (a Clone). It starts in the source's Workspace, or in a new Workspace of its Environment that carries the source's
-   * files as they are now, uncommitted Changes included, on `branch` (default `cloudpid/<id>`). Its title is the
-   * source's with " (fork)" or " (clone)". A Clone, or a Fork in a new Workspace, is refused while the source's Run is in
-   * progress. Answered once the new Session holds what it carries; when anything fails, nothing is made.
+   * `point` (just `before` an owner's message, or through an entry: `at`), or, without one, as it is now (a Clone). It
+   * starts in the source's Workspace, or in a new Workspace of its Environment that carries the source's files as they
+   * are now, uncommitted Changes included, on `branch` (default `cloudpid/<id>`). Its title is `forkTitle`'s. A Clone is
+   * refused while the active branch is busy, and a Fork or Clone in a new Workspace while anything of the source runs
+   * (any branch, any subagent); the source then takes no message until the files are carried. Refused too while the
+   * source is itself still being filled. Answered once the new Session holds what it carries; when anything fails,
+   * nothing is made.
    */
   Rpc.make("forkSession", {
     payload: {
       source: Schema.String,
-      entryId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
-      position: Schema.optionalKey(Schema.Literals(["before", "at"])),
+      point: Schema.optionalKey(TreePoint),
       workspace: Schema.optionalKey(Schema.Literals([SAME_WORKSPACE, NEW_WORKSPACE])),
       branch: Schema.optionalKey(BranchName),
     },

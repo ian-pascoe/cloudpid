@@ -1,6 +1,6 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- a list's relative times are read against the wall clock as it renders, and its rows are JSX lists over native arrays.
 
-import type { SessionRecord } from "@cloudpid/protocol";
+import { type SessionRecord, UNTITLED_SESSION } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import {
   ChevronRight,
@@ -42,7 +42,7 @@ import {
   sidebarWidthForKey,
 } from "./sidebar-state.ts";
 
-export const sessionTitle = (session: SessionRecord): string => session.title ?? "Untitled session";
+export const sessionTitle = (session: SessionRecord): string => session.title ?? UNTITLED_SESSION;
 
 /** Where a Session works, as its list item says: its Workspace's branch, once the Workspaces are listed. */
 const SessionPlaceNote = ({ session }: { session: SessionRecord }) => {

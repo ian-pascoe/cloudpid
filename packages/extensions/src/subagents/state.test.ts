@@ -8,7 +8,7 @@ import {
   agentOf,
   conversationOf,
   EMPTY_STATE,
-  isRootConversation,
+  isSessionBranch,
   reportConversationOf,
   type SubagentsState,
 } from "./state.ts";
@@ -32,8 +32,8 @@ const child = (id: string, parent: string, runs: number, origin?: number): Agent
 /** Branch 5 active, branch 9 left; agent-1 started from 9, agent-2 from before branches, agent-3 below agent-1. */
 const STATE: SubagentsState = {
   ...EMPTY_STATE,
-  root: conversation(5),
-  roots: [conversation(5), conversation(9)],
+  activeBranch: conversation(5),
+  branches: [conversation(5), conversation(9)],
   agents: {
     "agent-1": child("agent-1", "root", 20, 9),
     "agent-2": child("agent-2", "root", 21),
@@ -44,9 +44,9 @@ const STATE: SubagentsState = {
 
 describe("the root agent's conversations", () => {
   it("are the root conversation and every Session branch", () => {
-    expect(isRootConversation(STATE, ROOT_CONVERSATION_ID)).toBe(true);
-    expect(isRootConversation(STATE, conversation(9))).toBe(true);
-    expect(isRootConversation(STATE, conversation(20))).toBe(false);
+    expect(isSessionBranch(STATE, ROOT_CONVERSATION_ID)).toBe(true);
+    expect(isSessionBranch(STATE, conversation(9))).toBe(true);
+    expect(isSessionBranch(STATE, conversation(20))).toBe(false);
     expect(agentOf(STATE, conversation(9))).toBe("root");
     expect(agentOf(STATE, conversation(20))).toBe("agent-1");
   });

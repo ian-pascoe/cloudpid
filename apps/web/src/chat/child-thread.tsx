@@ -21,7 +21,7 @@ import { type ThreadState } from "../session/state.ts";
 import { Composer } from "./composer.tsx";
 import { conversationKey, useShownSessionId } from "./conversation.ts";
 import { EarlierHistory } from "./earlier-history.tsx";
-import { TreeBarScope } from "./session-tree.tsx";
+import { TreeBarScope } from "./tree-actions.ts";
 import { textOf } from "./queue-adapter.ts";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { TodoList } from "./todo-list.tsx";

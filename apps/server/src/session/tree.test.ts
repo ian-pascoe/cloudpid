@@ -157,7 +157,7 @@ describe("the Session tree a client shows", () => {
 
 describe("planning where /tree goes", () => {
   it("forks the branch that holds the point, just before an owner's message", () => {
-    expect(planNavigation([ROOT, FORKED], state(1), 3, "before")).toEqual({
+    expect(planNavigation([ROOT, FORKED], state(1), { entryId: 3, position: "before" })).toEqual({
       kind: "fork",
       from: 1,
       at: 2,
@@ -165,7 +165,7 @@ describe("planning where /tree goes", () => {
   });
 
   it("makes a branch active when the point is its tip, the one active last of several", () => {
-    expect(planNavigation([ROOT, FORKED], state(1), 7, "at")).toEqual({
+    expect(planNavigation([ROOT, FORKED], state(1), { entryId: 7, position: "at" })).toEqual({
       kind: "switch",
       conversationId: 5,
     });
@@ -176,30 +176,46 @@ describe("planning where /tree goes", () => {
       entries: [],
     };
 
-    expect(planNavigation([ROOT, FORKED, again], state(1, { 1: 30, 9: 10 }), 4, "at")).toEqual({
+    expect(
+      planNavigation([ROOT, FORKED, again], state(1, { 1: 30, 9: 10 }), {
+        entryId: 4,
+        position: "at",
+      }),
+    ).toEqual({
       kind: "switch",
       conversationId: 1,
     });
-    expect(planNavigation([ROOT, FORKED, again], state(1, { 1: 10, 9: 30 }), 4, "at")).toEqual({
+    expect(
+      planNavigation([ROOT, FORKED, again], state(1, { 1: 10, 9: 30 }), {
+        entryId: 4,
+        position: "at",
+      }),
+    ).toEqual({
       kind: "switch",
       conversationId: 9,
     });
   });
 
   it("starts a branch of no entries before the Session's first message, or takes one made before", () => {
-    expect(planNavigation([ROOT], state(1), 1, "before")).toEqual({ kind: "fresh" });
+    expect(planNavigation([ROOT], state(1), { entryId: 1, position: "before" })).toEqual({
+      kind: "fresh",
+    });
 
     const fresh: BranchEntries = { id: conversation(8), entries: [] };
 
-    expect(planNavigation([ROOT, fresh], state(1), 1, "before")).toEqual({
+    expect(planNavigation([ROOT, fresh], state(1), { entryId: 1, position: "before" })).toEqual({
       kind: "switch",
       conversationId: 8,
     });
   });
 
   it("refuses a point before anything but an owner's message, and one not in the tree", () => {
-    expect(planNavigation([ROOT], state(1), 2, "before")).toHaveProperty("refused");
-    expect(planNavigation([ROOT], state(1), 42, "at")).toHaveProperty("refused");
+    expect(planNavigation([ROOT], state(1), { entryId: 2, position: "before" })).toHaveProperty(
+      "refused",
+    );
+    expect(planNavigation([ROOT], state(1), { entryId: 42, position: "at" })).toHaveProperty(
+      "refused",
+    );
   });
 });
 
@@ -240,18 +256,18 @@ describe("making a branch active", () => {
       1: { createdAt: 0, lastActiveAt: 100 },
       5: { createdAt: 100, lastActiveAt: 100 },
     });
-    expect(subagents.root).toBe(5);
-    expect(subagents.roots).toEqual([5]);
+    expect(subagents.activeBranch).toBe(5);
+    expect(subagents.branches).toEqual([5]);
 
     await activateBranch(tx, conversation(1), 200);
 
     expect(tree.branches[5]?.lastActiveAt).toBe(200);
-    expect(subagents.root).toBeUndefined();
-    expect(subagents.roots).toEqual([5]);
+    expect(subagents.activeBranch).toBeUndefined();
+    expect(subagents.branches).toEqual([5]);
 
     // A branch made before is not listed again.
     await activateBranch(tx, conversation(5), 300);
 
-    expect(subagents.roots).toEqual([5]);
+    expect(subagents.branches).toEqual([5]);
   });
 });

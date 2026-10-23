@@ -17,7 +17,7 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react";
-import { SessionTreePane } from "./chat/session-tree.tsx";
+import { SessionTreePane } from "./chat/tree-pane.tsx";
 import { TasksPane } from "./chat/tasks-pane.tsx";
 import { cn } from "./lib/utils.ts";
 import { paneKeyOf, tabForKey, type PaneProps, type PaneTypeId } from "./panes.ts";

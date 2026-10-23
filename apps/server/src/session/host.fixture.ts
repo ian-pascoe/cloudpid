@@ -74,14 +74,13 @@ import {
 } from "./settings.ts";
 import {
   type Answer,
-  type ForkSourceRequest,
-  type NavigateRequest,
   SessionHost,
   sessionHostLayer,
   type SessionHostService,
   type SlashCommand,
 } from "./host.ts";
-import type { ExportPage, ForkPlan } from "./fork.ts";
+import type { NavigateRequest } from "./branches.ts";
+import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import type { PushEvent } from "../push/notification.ts";
@@ -561,29 +560,23 @@ export class TestSession extends DurableObject {
     const plan = await this.#runtime.runPromise(this.#host.forkSource(request));
     const target = this.env.SESSIONS.getByName(name);
 
-    await target.importStart();
-
-    let after: number | null = null;
-
-    while (plan.through !== null) {
-      const page: ExportPage = await this.#runtime.runPromise(
-        this.#host.exportEntries({
-          conversationId: plan.conversationId,
-          through: plan.through,
-          after,
-        }),
-      );
-
-      await target.importEntries(page.entries);
-
-      if (page.next === null) break;
-
-      after = page.next;
-    }
-
-    await target.importFinish(plan);
+    await this.#runtime.runPromise(
+      fillSession(
+        { exportEntries: this.#host.exportEntries },
+        {
+          importStart: Effect.promise(() => target.importStart()),
+          importEntries: (entries) => Effect.promise(() => target.importEntries(entries)),
+          importFinish: (finished) => Effect.promise(() => target.importFinish(finished)),
+        },
+        plan,
+      ),
+    );
 
     return plan;
+  }
+
+  releaseFork(): Promise<void> {
+    return this.#runtime.runPromise(this.#host.releaseFork);
   }
 
   importStart(): Promise<void> {

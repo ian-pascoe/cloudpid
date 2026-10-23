@@ -241,6 +241,42 @@ export const BranchSummaryRequest = Schema.Struct({
 
 export type BranchSummaryRequest = typeof BranchSummaryRequest.Type;
 
+/** Where a point of the Session tree is next to its entry: just `before` an owner's message, or just after it (`at`). */
+export const TreePosition = Schema.Literals(["before", "at"]);
+
+export type TreePosition = typeof TreePosition.Type;
+
+/** A point of the Session tree: just before or just after one of its entries. */
+export const TreePoint = Schema.Struct({
+  entryId: Schema.Int.check(Schema.isGreaterThan(0)),
+  position: TreePosition,
+});
+
+export type TreePoint = typeof TreePoint.Type;
+
+/**
+ * The entries from the Session tree's first to `leaf`, first first, following `parentOf`: null for an entry with no
+ * parent, `undefined` for an ID the tree does not hold, which ends the path without it.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain function of a leaf and its tree.
+export const pathFromRoot = (
+  leaf: number | null,
+  parentOf: (id: number) => number | null | undefined,
+): ReadonlyArray<number> => {
+  const path: number[] = [];
+
+  for (let at = leaf; at !== null;) {
+    const parent = parentOf(at);
+
+    if (parent === undefined) break;
+
+    path.push(at);
+    at = parent;
+  }
+
+  return path.reverse();
+};
+
 /**
  * Move the active branch to a point of the Session tree (`/tree`): just `before` an owner's message, whose text the
  * client puts back in the composer, or just after (`at`) an entry such as an answer. The point's Session branch is made
@@ -250,8 +286,7 @@ export type BranchSummaryRequest = typeof BranchSummaryRequest.Type;
 export const Navigate = Schema.Struct({
   type: Schema.Literal("navigate"),
   id: CommandId,
-  entryId: Schema.Int.check(Schema.isGreaterThan(0)),
-  position: Schema.Literals(["before", "at"]),
+  ...TreePoint.fields,
   summary: Schema.optionalKey(BranchSummaryRequest),
 });
 
@@ -286,8 +321,10 @@ export const ClientMessage = Schema.Union([
 export type ClientMessage = typeof ClientMessage.Type;
 
 /**
- * Sent once on connect: the Session's active branch (GLOSSARY.md → Session branch), to `watch` and to submit to without
- * a `conversationId`; `copying` while the Session is still being filled from the one it is a Fork or Clone of.
+ * Sent once on connect: the Session's active branch (GLOSSARY.md → Session branch) as `root`, to `watch` and to submit
+ * to without a `conversationId`; `copying` while the Session is still being filled from the one it is a Fork or Clone
+ * of. `root` keeps the name it had before Session branches, when the root conversation was the only one, so a client
+ * still open across the deploy reads it as it did.
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),

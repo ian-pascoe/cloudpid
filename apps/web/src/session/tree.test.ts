@@ -130,12 +130,13 @@ describe("the Session tree's paths", () => {
     expect(ownerMessages(tree).map((each) => each.id)).toEqual([1, 8]);
   });
 
-  it("finds the active branch's latest answer, past a notice after it", () => {
+  it("finds the answer the active branch ends with, past a notice after it, and none otherwise", () => {
     expect(latestAnswer(tree)).toBe(9);
     expect(
       latestAnswer({ ...tree, nodes: [...tree.nodes, node(10, 9, 7, "notice")], leaf: 10 }),
     ).toBe(9);
-    expect(latestAnswer({ ...tree, leaf: 8 })).toBe(4);
+    expect(latestAnswer({ ...tree, leaf: 8 })).toBeUndefined();
+    expect(latestAnswer({ ...tree, leaf: 3 })).toBeUndefined();
   });
 });
 

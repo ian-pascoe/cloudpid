@@ -5,7 +5,9 @@ import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
+  forkTitle,
   MAX_ENVIRONMENT_SECRETS,
+  MAX_TITLE_LENGTH,
   secretNameProblem,
   secretValueProblem,
   RegistryRpcs,
@@ -28,7 +30,7 @@ import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { expect, it } from "vitest";
-import type { EntryRecord } from "@earendil-works/pi-durable";
+import { type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { isRegistryRpc } from "../routes.ts";
 import type { ForkPlan } from "../session/fork.ts";
 import { buildKey, type BuildRequest, type BuildState } from "../workspace/build-record.ts";
@@ -163,21 +165,21 @@ const fakeRegistries = () => {
   const sessionObjects: SessionObjects = {
     stop: (id) => sessionCall("stop", id),
     destroy: (id) => sessionCall("destroy", id),
-    forkSource: (id, request) =>
-      sessionCall("forkSource", id).pipe(
+    forkSource: (id, { point, quiet }) =>
+      sessionCall(`forkSource(${quiet})`, id).pipe(
         Effect.andThen(
-          request.idle && runningSessions.has(id)
+          quiet !== "none" && runningSessions.has(id)
             ? Effect.die(new Error("The session's Run is in progress"))
             : Effect.succeed<ForkPlan>({
-                conversationId: 1,
+                conversationId: ROOT_CONVERSATION_ID,
                 // A Session of 3 entries, its owner's messages 1 and 3.
                 through:
-                  request.entryId === undefined
+                  point === undefined
                     ? 3
-                    : request.position === "before"
-                      ? request.entryId - 1
-                      : request.entryId,
-                text: request.position === "before" ? `message ${request.entryId}` : null,
+                    : point.position === "before"
+                      ? point.entryId - 1
+                      : point.entryId,
+                text: point?.position === "before" ? `message ${point.entryId}` : null,
                 agent: {},
                 pick: {},
                 context: null,
@@ -208,6 +210,7 @@ const fakeRegistries = () => {
       sessionCall("importFinish", id).pipe(
         Effect.tap(() => Effect.sync(() => finished.set(id, plan))),
       ),
+    releaseFork: (id) => sessionCall("releaseFork", id),
   };
 
   /** Runs the next times a Workspace's object is wiped: what happens meanwhile. */
@@ -2957,7 +2960,7 @@ it("forks a Session before an owner's message into its Workspace, copying its br
   const { fake, source } = await withSource();
 
   const forked = await call(fake, (registry) =>
-    registry.forkSession({ source: source.id, entryId: 3, position: "before" }),
+    registry.forkSession({ source: source.id, point: { entryId: 3, position: "before" } }),
   );
 
   expect(forked.text).toBe("message 3");
@@ -2995,7 +2998,7 @@ it("clones a Session as it is, and refuses while its Run is in progress, registe
 
   // A Fork in the same Workspace is made all the same.
   await call(fake, (registry) =>
-    registry.forkSession({ source: source.id, entryId: 1, position: "at" }),
+    registry.forkSession({ source: source.id, point: { entryId: 1, position: "at" } }),
   );
 
   expect(fake.sessions).toHaveLength(3);
@@ -3007,8 +3010,7 @@ it("forks a Session in a new Workspace on the branch named, carrying the source'
   const forked = await call(fake, (registry) =>
     registry.forkSession({
       source: source.id,
-      entryId: 2,
-      position: "at",
+      point: { entryId: 2, position: "at" },
       workspace: "new",
       branch: "feature/fork",
     }),
@@ -3021,10 +3023,35 @@ it("forks a Session in a new Workspace on the branch named, carrying the source'
     branch: "feature/fork",
   });
   expect(fake.calls).toContain(`carry:ws:${source.workspace}:feature/fork:cloudpid`);
-  // The files go once the Session is copied.
+  // The files go once the Session is filled, with the source at rest until they are carried.
+  expect(fake.calls).toContain(`forkSource(session):${source.id}`);
   expect(fake.calls.indexOf(`importFinish:${forked.session.id}`)).toBeLessThan(
     fake.calls.indexOf(`carry:ws:${source.workspace}:feature/fork:cloudpid`),
   );
+  expect(fake.calls.indexOf(`carry:ws:${source.workspace}:feature/fork:cloudpid`)).toBeLessThan(
+    fake.calls.indexOf(`releaseFork:${source.id}`),
+  );
+});
+
+it("asks only the active branch to rest for a Clone, and nothing for a Fork in the Workspace", async () => {
+  const { fake, source } = await withSource();
+
+  await call(fake, (registry) => registry.forkSession({ source: source.id }));
+  await call(fake, (registry) =>
+    registry.forkSession({ source: source.id, point: { entryId: 1, position: "at" } }),
+  );
+
+  expect(Arr.filter(fake.calls, (name) => name.startsWith("forkSource"))).toEqual([
+    `forkSource(branch):${source.id}`,
+    `forkSource(none):${source.id}`,
+  ]);
+  expect(fake.calls).not.toContain(`releaseFork:${source.id}`);
+});
+
+it("names a Fork of an untitled Session after the untitled name, and cuts a long title to fit", () => {
+  expect(forkTitle(null, "fork")).toBe("Untitled session (fork)");
+  expect(forkTitle("x".repeat(MAX_TITLE_LENGTH), "clone")).toHaveLength(MAX_TITLE_LENGTH);
+  expect(forkTitle("x".repeat(MAX_TITLE_LENGTH), "clone").endsWith(" (clone)")).toBe(true);
 });
 
 it("leaves nothing of a Fork whose files could not be carried", async () => {
@@ -3039,6 +3066,8 @@ it("leaves nothing of a Fork whose files could not be carried", async () => {
   expect(refused).toBeInstanceOf(EnvironmentError);
   expect(refused.message).toContain("the remote has branch cloudpid/00000002 already");
   expect(fake.sessions).toEqual([source]);
+  // The source takes messages again.
+  expect(fake.calls).toContain(`releaseFork:${source.id}`);
   expect(Arr.map(fake.workspaces, (workspace) => workspace.id)).toEqual([source.workspace]);
 });
 

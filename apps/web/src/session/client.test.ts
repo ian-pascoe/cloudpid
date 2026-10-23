@@ -1647,7 +1647,11 @@ describe("a Session's tree", () => {
       latest().sent.length = 0;
 
       const tree = yield* asking(client.tree);
-      const went = yield* asking(client.navigate(4, "before", { instructions: "tests" }));
+
+      const went = yield* asking(
+        client.navigate({ entryId: 4, position: "before" }, { instructions: "tests" }),
+      );
+
       const switched = yield* asking(client.switchBranch(9));
       const [asked, navigate, switching] = latest().commands();
 

@@ -3,7 +3,7 @@
 // background work before it goes on a socket.
 import {
   type AgentRecord,
-  isRootConversation,
+  isSessionBranch,
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
 import {
@@ -60,7 +60,7 @@ export const summarizeTaskGraph = (graph: TaskGraph, state: SubagentsState): Tas
     // SAFETY: a task's conversation is a pi-durable conversation ID.
     const id = conversationId as PiConversationId;
 
-    return state.conversations[String(id)] ?? (isRootConversation(state, id) ? ROOT : "unknown");
+    return state.conversations[String(id)] ?? (isSessionBranch(state, id) ? ROOT : "unknown");
   };
 
   const agents = Arr.map(inTreeOrder(Record.values(state.agents), ROOT), (agent): GraphAgent => ({

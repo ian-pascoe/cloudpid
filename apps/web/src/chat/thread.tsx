@@ -6,12 +6,10 @@ import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
-import { MAX_TITLE_LENGTH, type SessionView, type TreeNode } from "@cloudpid/protocol";
+import { type ForkKind, MAX_TITLE_LENGTH, type SessionView } from "@cloudpid/protocol";
 import { panesAtom } from "../panes-state.ts";
 import { TREE_PANE } from "../panes.ts";
-import { ownerMessages } from "../session/tree.ts";
-import { useFork, useTree } from "./session-tree.tsx";
-import { forkPickerAtom, type TreePoint } from "./tree-state.ts";
+import { forkChooserAtom } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
@@ -202,26 +200,17 @@ const NO_ACTIONS: SessionCommandActions = {};
 
 const NOT_LIVE = "The session is not connected; try again once it is.";
 
-/** What the Session tree's Slash commands reach: the owner's messages of the active branch, and what they do. */
+/** What the Session tree's Slash commands reach. */
 type TreeCommands = {
-  /** The owner's messages on the active branch's path, oldest first; null until the tree comes. */
-  readonly messages: readonly TreeNode[] | null;
   /** Whether the Session is archived: no `/tree` then. */
   readonly archived: boolean;
   readonly openTree: () => void;
-  readonly fork: (point: TreePoint | undefined, newWorkspace: boolean) => void;
-  /** Open the picker of the owner's messages, for `/fork` without one. */
-  readonly pickFork: (newWorkspace: boolean) => void;
+  /** Ask what to make and where: which of the owner's messages a Fork starts before, and which Workspace. */
+  readonly choose: (kind: ForkKind) => void;
 };
 
 /** The Session tree's Slash commands: `/tree`, `/fork` from one of the owner's messages, and `/clone`. */
-const treeCommands = ({
-  messages,
-  archived,
-  openTree,
-  fork,
-  pickFork,
-}: TreeCommands): ComposerCommand[] => {
+const treeCommands = ({ archived, openTree, choose }: TreeCommands): ComposerCommand[] => {
   const commands: ComposerCommand[] = [];
 
   if (!archived) {
@@ -240,48 +229,22 @@ const treeCommands = ({
   commands.push(
     {
       name: "fork",
-      description: "Start a new session from before one of your messages",
-      argumentHint: "[message] [new]",
-      argument: "optional",
-      choices: Arr.map(messages ?? [], (node, index) => ({
-        value: String(index + 1),
-        description: node.text,
-      })),
-      run: (args) => {
-        const [which = "", where = ""] = args.split(/\s+/u);
-
-        // Without a message, the owner picks one.
-        if (which === "" || (which === "new" && where === "")) {
-          pickFork(which === "new");
-
-          return null;
-        }
-
-        const node = messages?.[Number(which) - 1];
-
-        if (messages === null) return "The session tree has not loaded yet; try again.";
-
-        if (node === undefined || !/^\d+$/u.test(which)) {
-          return `Pick one of your ${messages.length} messages by its number.`;
-        }
-
-        if (where !== "" && where !== "new") return "Add new to fork in a new workspace.";
-
-        fork({ entryId: node.id, position: "before" }, where === "new");
+      description:
+        "Start a new session from before one of your messages, here or in a new workspace",
+      argument: "none",
+      run: () => {
+        choose("fork");
 
         return null;
       },
     },
     {
       name: "clone",
-      description: "Start a new session with this conversation as it is",
-      argumentHint: "[new]",
-      argument: "optional",
-      choices: [{ value: "new", description: "In a new workspace" }],
-      run: (args) => {
-        if (args !== "" && args !== "new") return "Add new to clone in a new workspace.";
-
-        fork(undefined, args === "new");
+      description:
+        "Start a new session with this conversation as it is, here or in a new workspace",
+      argument: "none",
+      run: () => {
+        choose("clone");
 
         return null;
       },
@@ -472,10 +435,8 @@ export const Thread = ({
   // A file dropped anywhere on the thread attaches to its composer.
   const dropZone = useRef<HTMLDivElement>(null);
 
-  const tree = useTree(sessionId);
-  const setForkPicker = useAtomSet(forkPickerAtom);
+  const setForkChooser = useAtomSet(forkChooserAtom);
   const actOnPanes = useAtomSet(panesAtom);
-  const fork = useFork();
 
   const commands = [
     ...sessionCommands({
@@ -487,14 +448,12 @@ export const Thread = ({
       onConfigure,
     }),
     ...treeCommands({
-      messages: tree === null ? null : ownerMessages(tree),
       archived: archived !== undefined,
       openTree: () => {
         actOnPanes({ type: "open", key: TREE_PANE });
       },
-      fork,
-      pickFork: (newWorkspace) => {
-        setForkPicker({ newWorkspace });
+      choose: (kind) => {
+        setForkChooser({ sessionId, kind });
       },
     }),
   ];

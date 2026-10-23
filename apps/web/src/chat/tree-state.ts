@@ -2,7 +2,13 @@
 // asked again whenever it may have changed; moving the active branch, with the summary prompt the settings may skip;
 // and making a Fork or Clone, which then opens with the owner's message in its composer.
 
-import { NEW_WORKSPACE, SAME_WORKSPACE, type BranchSummaryRequest } from "@cloudpid/protocol";
+import {
+  type BranchSummaryRequest,
+  type ForkKind,
+  NEW_WORKSPACE,
+  SAME_WORKSPACE,
+  type TreePoint,
+} from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Atom from "effect/reactivity/Atom";
 import { replying } from "../calls.ts";
@@ -54,14 +60,9 @@ export const skipSummaryPromptAtom = Atom.map(
   (state) => state?.settings.branchSummary.skipPrompt ?? false,
 );
 
-/** A point of the Session tree: just before an owner's message, or just after an entry. */
-export interface TreePoint {
-  readonly entryId: number;
-  readonly position: "before" | "at";
-}
-
-/** Where to move the active branch, with what summary of the branch left. */
-export interface TreeMove extends TreePoint {
+/** Where to move the active branch, with what summary of the Session branch left. */
+export interface TreeMove {
+  readonly point: TreePoint;
   readonly summary?: BranchSummaryRequest | undefined;
 }
 
@@ -71,9 +72,9 @@ export interface TreeMove extends TreePoint {
  */
 export const navigateAtom = Atom.family((sessionId: string) =>
   appRuntime.fn(
-    replying(({ entryId, position, summary }: TreeMove, get: Atom.FnContext) =>
+    replying(({ point, summary }: TreeMove, get: Atom.FnContext) =>
       get.result(sessionClientAtom(sessionId)).pipe(
-        Effect.flatMap((client) => client.navigate(entryId, position, summary)),
+        Effect.flatMap((client) => client.navigate(point, summary)),
         Effect.tap((navigated) =>
           Effect.sync(() => {
             prefill(get, sessionId, navigated.text);
@@ -108,8 +109,7 @@ export interface ForkRequest {
 /** What `forkSession` is sent: a key is left out rather than undefined. */
 interface ForkSessionPayload {
   source: string;
-  entryId?: number;
-  position?: TreePoint["position"];
+  point?: TreePoint;
   workspace: typeof SAME_WORKSPACE | typeof NEW_WORKSPACE;
   branch?: string;
 }
@@ -127,10 +127,7 @@ export const forkSessionAtom = appRuntime.fn(
 
     const named = branch?.trim() ?? "";
 
-    if (point !== undefined) {
-      request.entryId = point.entryId;
-      request.position = point.position;
-    }
+    if (point !== undefined) request.point = point;
 
     if (newWorkspace && named !== "") request.branch = named;
 
@@ -147,9 +144,10 @@ export const forkSessionAtom = appRuntime.fn(
   { concurrent: true },
 );
 
-/** A move waiting for the owner to say whether to carry a summary of the branch left. */
-export interface PendingMove extends TreePoint {
+/** A move waiting for the owner to say whether to carry a summary of the Session branch left. */
+export interface PendingMove {
   readonly sessionId: string;
+  readonly point: TreePoint;
 }
 
 /** The move the summary dialog asks about, or null. */
@@ -158,8 +156,19 @@ export const pendingMoveAtom = Atom.make<PendingMove | null>(null);
 /** A Fork or Clone in a new Workspace waiting for the owner to name its branch, or null. */
 export const pendingForkAtom = Atom.make<Omit<ForkRequest, "newWorkspace" | "branch"> | null>(null);
 
-/** `/fork` without a message: the picker of the owner's messages is open, for a Fork here or in a new Workspace. */
-export const forkPickerAtom = Atom.make<{ readonly newWorkspace: boolean } | null>(null);
+/**
+ * `/fork` or `/clone` asking what to make, or null: a Fork asks which of the owner's messages to start before, and both
+ * ask where, in this Workspace or a new one, as the bar's buttons do.
+ */
+export const forkChooserAtom = Atom.make<{
+  readonly sessionId: string;
+  readonly kind: ForkKind;
+} | null>(null);
 
-/** Whether a Fork or Clone is being made: the Registry answers once the new Session is filled, so one at a time. */
-export const forkingAtom = Atom.make(false);
+/**
+ * Whether a Fork or Clone of Session `sessionId` is being made: the Registry answers once the new Session is filled, so
+ * a Session makes one at a time.
+ */
+export const forkingAtom = Atom.family((_sessionId: string) =>
+  Atom.make(false).pipe(Atom.keepAlive),
+);

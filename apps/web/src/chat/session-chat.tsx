@@ -22,7 +22,9 @@ import type { ConnectionStatus } from "../session/state.ts";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
-import { TreeBarScope, TreeDialogs, TreePaneToggle, useCopyNotice } from "./session-tree.tsx";
+import { TreeBarScope, useForkNotice } from "./tree-actions.ts";
+import { TreeDialogs } from "./tree-dialogs.tsx";
+import { TreePaneToggle } from "./tree-pane.tsx";
 import { TasksPaneToggle } from "./tasks-pane.tsx";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
@@ -82,7 +84,7 @@ const LiveSession = ({
   rename: Rename | undefined;
 } & SessionPageProps) => {
   const status = useAtomValue(sessionStatusAtom(sessionId));
-  const copyNotice = useCopyNotice(sessionId);
+  const forkNotice = useForkNotice(sessionId);
   const view = useAtomValue(sessionViewAtom(sessionId));
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
@@ -133,7 +135,7 @@ const LiveSession = ({
                 notice={
                   CONNECTION_NOTICE[status] ??
                   (problem === null || problem === undefined ? (
-                    copyNotice
+                    forkNotice
                   ) : (
                     <span role="alert" className="whitespace-pre-wrap text-destructive">
                       {problem}

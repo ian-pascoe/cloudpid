@@ -3,7 +3,19 @@
 // The Session tree as the web app reads it (GLOSSARY.md → Session tree): the nodes the Session sends, as rows of the
 // Session tree Pane under a filter, the siblings the chevrons step through, and the branch a sibling lands on.
 
-import type { SessionTree, TreeNode } from "@cloudpid/protocol";
+import { pathFromRoot, type SessionTree, type TreeNode, type TreePoint } from "@cloudpid/protocol";
+
+/** Whether `node` is a message the owner wrote. */
+export const isOwnerNode = (node: TreeNode): boolean => node.role === "user";
+
+/** Whether `node` is an answer that ends its Run. */
+export const isFinalAnswer = (node: TreeNode): boolean => node.role === "assistant" && node.final;
+
+/** The point of the Session tree a Fork from `node` carries up to: just before an owner's message, else through it. */
+export const pointOf = (node: TreeNode): TreePoint => ({
+  entryId: node.id,
+  position: isOwnerNode(node) ? "before" : "at",
+});
 
 /** What the Session tree Pane shows: the owner's messages and the answers that end a Run, everything but tool results, the owner's messages, or all. */
 export type TreeFilter = "default" | "no-tools" | "user-only" | "all";
@@ -19,11 +31,11 @@ export const TREE_FILTERS: ReadonlyArray<{ readonly value: TreeFilter; readonly 
 export const shows = (filter: TreeFilter, node: TreeNode): boolean => {
   switch (filter) {
     case "default":
-      return node.role === "user" || (node.role === "assistant" && node.final);
+      return isOwnerNode(node) || isFinalAnswer(node);
     case "no-tools":
       return node.role !== "tool";
     case "user-only":
-      return node.role === "user";
+      return isOwnerNode(node);
     case "all":
       return true;
   }
@@ -41,17 +53,10 @@ const byId = (tree: SessionTree): Map<number, TreeNode> =>
   new Map(tree.nodes.map((node) => [node.id, node]));
 
 /** The IDs of the nodes on the path to `leaf`, the root's first. */
-export const pathTo = (tree: SessionTree, leaf: number | null): number[] => {
+export const pathTo = (tree: SessionTree, leaf: number | null): ReadonlyArray<number> => {
   const nodes = byId(tree);
-  const path: number[] = [];
 
-  for (let at = leaf; at !== null; at = nodes.get(at)?.parent ?? null) {
-    if (!nodes.has(at)) break;
-
-    path.push(at);
-  }
-
-  return path.reverse();
+  return pathFromRoot(leaf, (id) => nodes.get(id)?.parent);
 };
 
 /**
@@ -134,15 +139,18 @@ export const branchThrough = (tree: SessionTree, id: number): number | undefined
 export const entryIdOf = (messageId: string): number | undefined =>
   /^\d+$/u.test(messageId) ? Number(messageId) : undefined;
 
-/** The last answer that ends a Run on the active branch's path: the one whose bar offers Clone rather than Fork. */
+/**
+ * The answer the active branch ends with, past any notices after it: the one whose bar offers Clone rather than Fork.
+ * Undefined when the branch ends otherwise, as with an owner's message still waiting for its answer.
+ */
 export const latestAnswer = (tree: SessionTree): number | undefined => {
   const nodes = byId(tree);
 
-  return pathTo(tree, tree.leaf).findLast((id) => {
-    const node = nodes.get(id);
+  const last = pathTo(tree, tree.leaf)
+    .map((id) => nodes.get(id))
+    .findLast((node) => node !== undefined && node.role !== "notice");
 
-    return node?.role === "assistant" && node.final;
-  });
+  return last !== undefined && isFinalAnswer(last) ? last.id : undefined;
 };
 
 /** The owner's messages on the active branch's path, oldest first: what `/fork` picks from. */
@@ -152,6 +160,6 @@ export const ownerMessages = (tree: SessionTree): TreeNode[] => {
   return pathTo(tree, tree.leaf).flatMap((id) => {
     const node = nodes.get(id);
 
-    return node?.role === "user" ? [node] : [];
+    return node !== undefined && isOwnerNode(node) ? [node] : [];
   });
 };
