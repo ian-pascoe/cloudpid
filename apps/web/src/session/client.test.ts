@@ -463,7 +463,8 @@ describe("a Session connection", () => {
       Effect.gen(function* () {
         const { latest, state } = yield* setup();
 
-        expect(state().browserHandoffRequests).toEqual([]);
+        // Null until the socket lists them: none listed yet is not none waiting.
+        expect(state().browserHandoffRequests).toBeNull();
 
         yield* watching(latest());
         yield* latest().say({ type: "browser_handoff_requests", requests: [request] });
@@ -484,7 +485,7 @@ describe("a Session connection", () => {
           yield* latest().say({ type: "browser_handoff_requests", requests: [request] });
           yield* latest().drop();
 
-          expect(state().browserHandoffRequests).toEqual([]);
+          expect(state().browserHandoffRequests).toBeNull();
         }),
     );
   });

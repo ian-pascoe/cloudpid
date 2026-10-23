@@ -659,7 +659,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     }
 
     // The next socket says again which Secret requests and Browser Handoffs wait.
-    current = { ...current, secretRequests: [], browserHandoffRequests: [] };
+    current = { ...current, secretRequests: [], browserHandoffRequests: null };
 
     if (stopped) return;
 
