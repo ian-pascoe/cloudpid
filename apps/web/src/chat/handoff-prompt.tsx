@@ -1,6 +1,4 @@
-// @effect-diagnostics globalDate:off -- a handoff's deadline is shown in the browser's own time of day format.
-
-import type { BrowserHandoffRequest } from "@cloudpid/protocol";
+import { liveViewPaneKey, type BrowserHandoffRequest } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Exit from "effect/Exit";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -9,16 +7,12 @@ import * as Atom from "effect/reactivity/Atom";
 import { ExternalLink, Hand, MonitorPlay } from "lucide-react";
 import { Button } from "../components/ui/button.tsx";
 import { mintLiveViewAtom } from "../live-view/atoms.ts";
+import { timeOfDay } from "../lib/time.ts";
 import { hostedLiveViewUrl } from "../live-view/hosted.ts";
 import { panesAtom } from "../panes-state.ts";
-import { liveViewPane } from "../panes.ts";
 import { agentLabel } from "../session/agents.ts";
 import { browserHandoffRequestsAtom, taskGraphAtom } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
-
-/** The time of day a handoff times out, as the owner reads it. */
-const until = (deadline: number): string =>
-  new Date(deadline).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
 /** Why the last "Open in Cloudflare" of one card failed, or null. */
 const HostedFailure = ScopedAtom.make(() => Atom.make<string | null>(null));
@@ -76,7 +70,7 @@ const BrowserHandoffPrompt = ({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
           Press Done in the Live View when you are finished. Stop the run to cancel. This waits
-          until {until(request.deadline)}.
+          until {timeOfDay(request.deadline)}.
         </p>
         <div className="flex items-center gap-3">
           <button
@@ -90,7 +84,7 @@ const BrowserHandoffPrompt = ({
           <Button
             size="sm"
             onClick={() => {
-              act({ type: "open", key: liveViewPane(request.id) });
+              act({ type: "open", key: liveViewPaneKey(request.id) });
             }}
           >
             <MonitorPlay aria-hidden />

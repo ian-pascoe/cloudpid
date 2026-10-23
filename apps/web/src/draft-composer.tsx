@@ -27,10 +27,8 @@ import {
   environmentNamesAtom,
   workspaceListAtom,
 } from "./environments-state.ts";
+import { isTouchScreen } from "./lib/device.ts";
 import { settledFailureOf } from "./registry.ts";
-
-/** Whether the screen has no mouse or trackpad: there Return starts a new line and the Send button sends. */
-const touchOnly = (): boolean => window.matchMedia("(pointer: coarse)").matches;
 
 /**
  * The draft of a new Session, in the style of a chat app's start page: choose the Environment in the headline, write
@@ -68,7 +66,8 @@ export const DraftComposer = () => {
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
 
-    if (touchOnly()) return;
+    // On a touch screen Return starts a new line and the Send button sends.
+    if (isTouchScreen()) return;
 
     event.preventDefault();
     submit();
@@ -103,7 +102,7 @@ export const DraftComposer = () => {
           rows={4}
           value={text}
           placeholder="Describe the task…"
-          autoFocus={!touchOnly()}
+          autoFocus={!isTouchScreen()}
           onChange={(event) => {
             setText(event.target.value);
           }}

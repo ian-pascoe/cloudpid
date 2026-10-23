@@ -5,7 +5,8 @@
 //
 // A **Pane type** is a registration in `PANE_TYPES`: its `id` (what a key starts with in the URL), whether it `multiple`
 // may be open more than once, and its tab `label`. A Pane is open under a **key**: the type's `id` alone for a type
-// that may be open once (`tasks`), else `<id>:<argument>` (`live-view:<requestId>`, `terminal:<tab>`), the argument
+// that may be open once (`tasks`), else `<id>:<argument>` (`live-view:<requestId>`, from `@cloudpid/protocol`'s
+// `liveViewPaneKey`, which a push's link opens too; `terminal:<tab>`), the argument
 // telling the Panes of one type apart. The component a type shows is in `pane-area.tsx`, so these rules stay testable
 // without React; a type with no component there fails to typecheck.
 
@@ -18,14 +19,11 @@ export interface PaneLabel {
   readonly agent?: string;
 }
 
-/** What a tab's label may look up beyond its argument: the Session's state, as the Pane area reads it. */
-export interface PaneLabelContext {
-  /** The agent whose Browser Handoff `requestId` is, as the owner reads it, when it is not the root agent's. */
-  readonly agentOfHandoff: (requestId: string) => string | undefined;
-}
-
-/** A context that knows nothing: every handoff reads as the root agent's. */
-export const NO_LABEL_CONTEXT: PaneLabelContext = { agentOfHandoff: () => undefined };
+/**
+ * What a tab's label may look up beyond its argument, in the Session's state as the Pane area reads it: the agent whose
+ * Browser Handoff `requestId` is, as the owner reads it, when it is not the root agent's.
+ */
+export type AgentOfHandoff = (requestId: string) => string | undefined;
 
 /** One kind of Pane. */
 export interface PaneType {
@@ -34,12 +32,12 @@ export interface PaneType {
   /** Whether it may be open more than once, each under its own argument (`id:argument`). */
   readonly multiple: boolean;
   /** The tab's label, for a Pane opened with `argument` (undefined for a type that may be open once). */
-  readonly label: (argument: string | undefined, context: PaneLabelContext) => PaneLabel;
+  readonly label: (argument: string | undefined, agentOfHandoff: AgentOfHandoff) => PaneLabel;
 }
 
 /** A Live View's tab: named for the agent whose handoff it is, unless that is the root agent. */
-const liveViewLabel = (argument: string | undefined, context: PaneLabelContext): PaneLabel => {
-  const agent = argument === undefined ? undefined : context.agentOfHandoff(argument);
+const liveViewLabel = (argument: string | undefined, agentOfHandoff: AgentOfHandoff): PaneLabel => {
+  const agent = argument === undefined ? undefined : agentOfHandoff(argument);
 
   return agent === undefined ? { name: "Live View" } : { name: "Live View", agent };
 };
@@ -58,12 +56,6 @@ export type PaneTypeId = (typeof PANE_TYPES)[number]["id"];
 
 /** The key of the Tasks Pane. */
 export const TASKS_PANE = "tasks";
-
-/**
- * The key of the Live View of Browser Handoff `requestId` (a `BrowserHandoffRequest`'s `id`). A push for the handoff
- * opens the Session page with it (`?pane=live-view:<requestId>`).
- */
-export const liveViewPane = (requestId: string): string => `live-view:${requestId}`;
 
 /** What a Pane's component gets. */
 export interface PaneProps {

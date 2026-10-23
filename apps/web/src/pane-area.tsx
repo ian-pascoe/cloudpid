@@ -21,15 +21,14 @@ import { useShownSessionId } from "./chat/conversation.ts";
 import { TasksPane } from "./chat/tasks-pane.tsx";
 import { cn } from "./lib/utils.ts";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
+import { handoffAgentsAtom } from "./live-view/atoms.ts";
 import {
   paneKeyOf,
   tabForKey,
-  type PaneLabelContext,
+  type AgentOfHandoff,
   type PaneProps,
   type PaneTypeId,
 } from "./panes.ts";
-import { agentLabel } from "./session/agents.ts";
-import { browserHandoffRequestsAtom, taskGraphAtom } from "./session/atoms.ts";
 import {
   DEFAULT_PANE_WIDTH,
   MAX_PANE_WIDTH,
@@ -100,24 +99,16 @@ const ResizeHandle = ({
 };
 
 /** What the tabs' labels look up in the Session shown: whose Browser Handoff a Live View is for. */
-const useLabelContext = (): PaneLabelContext => {
-  const sessionId = useShownSessionId();
-  const requests = useAtomValue(browserHandoffRequestsAtom(sessionId));
-  const graph = useAtomValue(taskGraphAtom(sessionId));
+const useAgentOfHandoff = (): AgentOfHandoff => {
+  const agents = useAtomValue(handoffAgentsAtom(useShownSessionId()));
 
-  return {
-    agentOfHandoff: (requestId) => {
-      const request = requests.find((each) => each.id === requestId);
-
-      return request === undefined ? undefined : agentLabel(graph, request.conversationId);
-    },
-  };
+  return (requestId) => agents.get(requestId);
 };
 
 /** The Pane area of the Session shown: nothing while no Pane is open. */
 export const PaneArea = () => {
   const [{ open, shown }, act] = useAtom(panesAtom);
-  const labels = useLabelContext();
+  const agentOfHandoff = useAgentOfHandoff();
   const [width] = useAtom(paneWidthAtom);
   const base = useId();
   const area = useRef<HTMLElement>(null);
@@ -163,7 +154,7 @@ export const PaneArea = () => {
         >
           {open.map((key) => {
             const pane = paneKeyOf(key);
-            const label = pane?.type.label(pane.argument, labels) ?? { name: key };
+            const label = pane?.type.label(pane.argument, agentOfHandoff) ?? { name: key };
             const selected = key === shown;
 
             return (
