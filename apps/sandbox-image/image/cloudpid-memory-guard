@@ -1,0 +1,69 @@
+#!/bin/bash
+# The Container's memory guard (docs/spec.md → Container and Toolchains → Memory guard), which the supervisor runs
+# beside computerd. It runs earlyoom, which stops the largest process when the Container is nearly out of memory, and
+# passes earlyoom's lines through to its stdout.
+#
+# For each process earlyoom announces it is stopping, it leaves a note for the commands that run meanwhile: a file
+# named by the time in microseconds, which `command.bash` prints on stderr when each of those commands ends. earlyoom
+# announces a stop before it sends the signal (`sending SIGTERM to process <pid> uid <uid> "<name>": badness <n>,
+# VmRSS <n> MiB`), so the note is there before the process dies and the command it belonged to can end. earlyoom's
+# own hook (`-N`) runs only once the process has exited, which is too late: by then that command has often ended. A
+# process sent SIGTERM and then SIGKILL gets one note. Each note is written beside its name and renamed into place,
+# so a command never reads half of one. The supervisor removes the notes of an earlier start (a snapshot keeps them)
+# before it starts this script and computerd.
+#
+# The limits are those of `@cloudpid/sandbox-image/memory-guard`, which a test keeps equal. CLOUDPID_EARLYOOM and
+# CLOUDPID_MEMORY_NOTES exist for the tests; the image sets neither.
+set -u
+export TZ=UTC
+
+earlyoom=${CLOUDPID_EARLYOOM:-/usr/bin/earlyoom}
+notes=${CLOUDPID_MEMORY_NOTES:-/run/cloudpid-memory-guard}
+# SIGTERM below the lower of 15% of the memory and 1 GiB available, SIGKILL below the lower of 8% and 512 MiB.
+memory_percent=15,8
+memory_kib=1048576,524288
+# Process names (at most 15 characters, as the kernel keeps them) earlyoom never stops: computerd, the supervisor and
+# this script.
+avoid='^(computerd|cloudpid-superv|cloudpid-memory)$'
+
+mkdir -p -- "$notes"
+
+if [ ! -x "$earlyoom" ]; then
+  echo "cloudpid-memory-guard: no memory guard ($earlyoom is missing)" >&2
+  exit 0
+fi
+
+# Ahead of the commands, so the notes keep up when the CPU is busy too (as root; where it is refused, as it is).
+renice -n -20 -p $$ >/dev/null 2>&1
+
+exec 4< <(exec "$earlyoom" -m "$memory_percent" -M "$memory_kib" -r 0 -p --avoid "$avoid" 2>&1)
+guard=$!
+
+trap 'kill "$guard" 2>/dev/null; exit 0' TERM INT
+trap 'kill "$guard" 2>/dev/null' EXIT
+
+stopping='^sending SIG[A-Z]+ to process ([0-9]+) uid [0-9]+ "(.*)": badness -?[0-9]+, VmRSS ([0-9]+) MiB'
+declare -A noted=()
+
+while IFS= read -r line <&4; do
+  printf '%s\n' "$line"
+
+  if [[ $line =~ $stopping ]]; then
+    pid=${BASH_REMATCH[1]}
+    what="\`${BASH_REMATCH[2]}\` (pid $pid, ${BASH_REMATCH[3]} MiB)"
+  elif [[ $line == "sending SIG"* ]]; then
+    # Another earlyoom's wording: still a stop, of a process it does not name in a way this reads.
+    pid=unknown
+    what="a process"
+  else
+    continue
+  fi
+
+  [ -n "${noted[$pid]-}" ] && continue
+  [ "$pid" = unknown ] || noted[$pid]=1
+
+  name=${EPOCHREALTIME/[.,]/}
+  printf -v when '%(%H:%M:%S)T' -1
+  printf 'cloudpid: the Container was nearly out of memory, so its memory guard stopped %s at %s UTC to keep the Container answering. Run less at once (fewer parallel tasks or test workers, such as turbo'\''s --concurrency or vitest'\''s --maxWorkers), or give the Environment a larger Container size.\n' \
+    "$what" "$when" >"$notes/.$name" && mv -f -- "$notes/.$name" "$notes/$name"
+done

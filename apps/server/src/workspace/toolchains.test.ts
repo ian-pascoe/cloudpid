@@ -5,6 +5,7 @@
 import { secretEnvName, secretReference } from "@cloudpid/extensions/secrets/core";
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { COMMAND_BASH_ENV } from "@cloudpid/sandbox-image/memory-guard";
 import {
   BOOTSTRAP_CHANGED,
   ENVIRONMENT_SETUP_FILE,
@@ -505,7 +506,7 @@ describe("the bootstrap", () => {
 });
 
 describe("a command's environment", () => {
-  it("has the token, mise's trust settings, no git prompts, and Turborepo's cache on the Container's disk", async () => {
+  it("has the token, mise's trust settings, no git prompts, Turborepo's cache on the Container's disk and the memory guard's notes", async () => {
     const container = fakeContainer();
     const handle = await open(container).toolchains.connect(host);
 
@@ -519,6 +520,7 @@ describe("a command's environment", () => {
       MISE_YES: "1",
       GIT_TERMINAL_PROMPT: "0",
       TURBO_CACHE_DIR: "/root/.cache/turbo",
+      BASH_ENV: COMMAND_BASH_ENV,
     });
   });
 
