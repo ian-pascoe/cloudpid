@@ -155,8 +155,8 @@ const HandoffParameters = Schema.Struct({
 
 /**
  * `browser_handoff`: give the user live control of the calling conversation's tab and wait for them to finish. The user
- * opens a Live View from the UI or the push, which mints its own links; the model never sees one. The wait is durable: a call cut off by an
- * eviction reruns and waits for the same handoff, so it is `safe` to replay.
+ * opens a Live View from the UI or the push, which mints its own links; the model never sees one. The wait is durable: a
+ * call cut off by an eviction reruns and waits for the same handoff, so it is `safe` to replay.
  */
 export const browserHandoffTool = defineEffectTool({
   name: "browser_handoff",
