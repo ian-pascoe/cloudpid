@@ -9,6 +9,7 @@ import { env } from "cloudflare:workers";
 import {
   type ClientMessage,
   type BrowserHandoffRequest,
+  LIVE_VIEW_HANDOFF_OVER,
   ServerMessageJson,
   type ServerMessage,
 } from "@cloudpid/protocol";
@@ -182,7 +183,7 @@ describe("Browser Handoffs over the Session socket", () => {
     expect(await owner.next(answerTo("lv-x"))).toEqual({
       type: "error",
       id: "lv-x",
-      message: "the handoff is over",
+      message: LIVE_VIEW_HANDOFF_OVER,
     });
 
     const seen = other.received.length;
@@ -210,7 +211,7 @@ describe("Browser Handoffs over the Session socket", () => {
     expect(await owner.next(answerTo("lv-2"))).toEqual({
       type: "error",
       id: "lv-2",
-      message: "the handoff is over",
+      message: LIVE_VIEW_HANDOFF_OVER,
     });
 
     // A link reached the one answer to the asking client, and nothing else: no other message to any client, no push,

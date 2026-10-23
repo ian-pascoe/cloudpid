@@ -15,6 +15,7 @@ import {
   type HandoffStartInput,
   type HandoffStatus,
   imageLimitedModels,
+  LIVE_VIEW_HANDOFF_OVER,
   type LiveViewLinks,
   makeBrowserSession,
 } from "@cloudpid/extensions/browser";
@@ -154,7 +155,7 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
 
           return LIVE_VIEW_LINKS;
         })
-      : Effect.fail(BrowserError.make({ message: "liveView: Error: the handoff is over" })),
+      : Effect.fail(BrowserError.make({ message: `liveView: Error: ${LIVE_VIEW_HANDOFF_OVER}` })),
   waitHandoff: (requestId, maxMs) =>
     Effect.promise(
       () =>
@@ -186,7 +187,7 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
       kv.put("handoff-ended", [...(kv.get<string[]>("handoff-ended") ?? []), requestId]);
       kv.delete(`handoff-status:${requestId}`);
 
-      return { windows: kv.get<string[]>("handoff-windows") ?? [] };
+      return { windowOrigins: kv.get<string[]>("handoff-windows") ?? [] };
     }),
 });
 

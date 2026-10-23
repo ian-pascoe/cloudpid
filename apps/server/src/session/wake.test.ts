@@ -31,7 +31,7 @@ const setup = (nextExpiry?: number) => {
     startHandoff: () => Effect.die("no handoff"),
     liveView: () => Effect.die("no handoff"),
     waitHandoff: () => Effect.die("no handoff"),
-    endHandoff: () => Effect.succeed({ windows: [] }),
+    endHandoff: () => Effect.succeed({ windowOrigins: [] }),
     close: Effect.sync(() => {
       state.closes += 1;
 

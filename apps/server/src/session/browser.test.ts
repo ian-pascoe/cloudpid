@@ -85,7 +85,7 @@ describe("the Session's browser host", () => {
           endHandoff: (requestId) => {
             calls.push({ name, end: requestId });
 
-            return Promise.resolve({ windows: ["https://accounts.example.com"] });
+            return Promise.resolve({ windowOrigins: ["https://accounts.example.com"] });
           },
         }),
       },
@@ -104,7 +104,7 @@ describe("the Session's browser host", () => {
       success: true,
     });
     expect(await Effect.runPromise(host.endHandoff("7"))).toEqual({
-      windows: ["https://accounts.example.com"],
+      windowOrigins: ["https://accounts.example.com"],
     });
     expect(calls).toEqual([
       { name: "session-1", start: input },
@@ -124,7 +124,7 @@ describe("the Session's browser host", () => {
           startHandoff: () => Promise.reject(new Error("This conversation has no open tab")),
           liveView: () => Promise.reject(new Error("the handoff is over")),
           waitHandoff: () => Promise.resolve({ state: "waiting" }),
-          endHandoff: () => Promise.resolve({ windows: [] }),
+          endHandoff: () => Promise.resolve({ windowOrigins: [] }),
         }),
       },
       "session-1",
