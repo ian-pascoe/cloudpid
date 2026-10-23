@@ -18,6 +18,7 @@
     "./skills-discovery": "./src/skills-discovery.ts",
     "./prompt-templates": "./src/prompt-templates.ts",
     "./coding-tools": "./src/coding-tools.ts",
+    "./container": "./src/container.ts",
     "./images": "./src/images.ts",
     "./bash-routing": "./src/bash-routing.ts",
     "./tool-search": "./src/tool-search.ts"

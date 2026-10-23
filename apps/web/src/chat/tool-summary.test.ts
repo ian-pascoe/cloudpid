@@ -43,6 +43,12 @@ describe("toolSummary", () => {
     expect(toolSummary("browser_handoff", { instructions: "Log in\nthen press Done" })).toBe(
       "Log in",
     );
+    expect(toolSummary("restart_container", { reason: "echo hung\nfor minutes" })).toBe(
+      "echo hung",
+    );
+    expect(toolSummary("restart_container", { reason: "echo hung", fresh: true })).toBe(
+      "echo hung (fresh)",
+    );
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");

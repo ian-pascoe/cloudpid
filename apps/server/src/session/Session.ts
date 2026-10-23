@@ -7,6 +7,7 @@ import {
   browserSessionLayer,
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
+import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
@@ -361,6 +362,7 @@ export const SessionLive = Session.make(
                   ]),
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
+                  Effect.provideService(WorkspaceContainer, workspace.container),
                   Effect.provideService(Images, images),
                   // For extensions that need the owner (a Live View link, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
