@@ -390,42 +390,52 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
   return { state, add, remove, hold } satisfies Attachments;
 });
 
+/** The atom of a composer's Attachments (`makeAttachments`), which the atoms below read and write through. */
+type AttachmentsProgram = Atom.Atom<AsyncResult.AsyncResult<Attachments, never>>;
+
+/** The Attachments of `program` as a composer shows them: none until the program is built. */
+const stateOf = (program: AttachmentsProgram): Atom.Atom<AttachmentsState> =>
+  Atom.map(
+    appRuntime.subscriptionRef((get) =>
+      get.result(program).pipe(Effect.map((attachments) => attachments.state)),
+    ),
+    (result) => AsyncResult.getOrElse(result, () => EMPTY),
+  );
+
+/** Attach files to `program`'s message. */
+const addTo = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (files: readonly File[], get) =>
+      get.result(program).pipe(Effect.flatMap((attachments) => attachments.add(files))),
+    { concurrent: true },
+  );
+
+/** Take an Attachment off `program`'s message, by its ID. */
+const removeFrom = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (id: string, get) =>
+      get.result(program).pipe(Effect.flatMap((attachments) => attachments.remove(id))),
+    { concurrent: true },
+  );
+
 /** The conversation's Attachments, while a composer of it reads them. */
 const attachmentsProgramAtom = Atom.family((key: ConversationKey) =>
   appRuntime.atom(makeAttachments(Effect.succeed(key.sessionId))),
 );
 
-const attachmentsRefAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.subscriptionRef((get) =>
-    get.result(attachmentsProgramAtom(key)).pipe(Effect.map((attachments) => attachments.state)),
-  ),
-);
-
 /** The conversation's Attachments as its composer shows them. */
 export const attachmentsAtom = Atom.family((key: ConversationKey) =>
-  Atom.map(attachmentsRefAtom(key), (result) => AsyncResult.getOrElse(result, () => EMPTY)),
+  stateOf(attachmentsProgramAtom(key)),
 );
 
 /** Attach `files` to the conversation's message: each uploads in turn. */
 export const addAttachmentsAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.fn(
-    (files: readonly File[], get) =>
-      get
-        .result(attachmentsProgramAtom(key))
-        .pipe(Effect.flatMap((attachments) => attachments.add(files))),
-    { concurrent: true },
-  ),
+  addTo(attachmentsProgramAtom(key)),
 );
 
 /** Take an Attachment off the conversation's message, by its ID. */
 export const removeAttachmentAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.fn(
-    (id: string, get) =>
-      get
-        .result(attachmentsProgramAtom(key))
-        .pipe(Effect.flatMap((attachments) => attachments.remove(id))),
-    { concurrent: true },
-  ),
+  removeFrom(attachmentsProgramAtom(key)),
 );
 
 /** Why a message with Attachments was not sent: they were not ready, or the Session refused it. */
@@ -519,29 +529,11 @@ export const draftAttachmentsProgramAtom = appRuntime
   )
   .pipe(Atom.keepAlive);
 
-const draftAttachmentsRefAtom = appRuntime.subscriptionRef((get) =>
-  get.result(draftAttachmentsProgramAtom).pipe(Effect.map((attachments) => attachments.state)),
-);
-
 /** The draft's Attachments, as its tiles show them. */
-export const draftAttachmentsAtom = Atom.map(draftAttachmentsRefAtom, (result) =>
-  AsyncResult.getOrElse(result, () => EMPTY),
-);
+export const draftAttachmentsAtom = stateOf(draftAttachmentsProgramAtom);
 
 /** Attach `files` to the draft. */
-export const addDraftAttachmentsAtom = appRuntime.fn(
-  (files: readonly File[], get) =>
-    get
-      .result(draftAttachmentsProgramAtom)
-      .pipe(Effect.flatMap((attachments) => attachments.add(files))),
-  { concurrent: true },
-);
+export const addDraftAttachmentsAtom = addTo(draftAttachmentsProgramAtom);
 
 /** Take an Attachment off the draft, by its ID. */
-export const removeDraftAttachmentAtom = appRuntime.fn(
-  (id: string, get) =>
-    get
-      .result(draftAttachmentsProgramAtom)
-      .pipe(Effect.flatMap((attachments) => attachments.remove(id))),
-  { concurrent: true },
-);
+export const removeDraftAttachmentAtom = removeFrom(draftAttachmentsProgramAtom);

@@ -12,10 +12,9 @@ import {
   FolderPlus,
   GitBranch,
   Loader2,
-  Paperclip,
   Settings2,
 } from "lucide-react";
-import { type ClipboardEvent, type KeyboardEvent, type SubmitEvent, useId, useRef } from "react";
+import { type KeyboardEvent, type SubmitEvent, useId, useRef } from "react";
 import { AttachmentTiles } from "./chat/attachment-tiles.tsx";
 import {
   addDraftAttachmentsAtom,
@@ -23,6 +22,7 @@ import {
   draftWaitingFor,
   removeDraftAttachmentAtom,
 } from "./chat/attachments-state.ts";
+import { AttachButton, attachPasted, composerBox, sendButton } from "./chat/composer-parts.tsx";
 import { useFileDrop } from "./chat/file-drop.ts";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "./components/ui/menu.tsx";
@@ -331,7 +331,6 @@ export const DraftComposer = () => {
   const sent = useAtomValue(sendDraftAtom);
   const send = useAtomSet(sendDraftAtom);
   const page = useRef<HTMLDivElement>(null);
-  const picker = useRef<HTMLInputElement>(null);
   const noteId = useId();
 
   const workspaces = (allWorkspaces ?? []).filter((known) => known.environment === environment);
@@ -339,14 +338,12 @@ export const DraftComposer = () => {
   const input: DraftInput = { text, environment, workspace, branch, base };
   const sending = sent.waiting;
 
-  // A file dropped while the draft is sent would miss its message.
-  useFileDrop(
-    page,
-    (files) => {
-      if (!sending) addAttachments(files);
-    },
-    setDragging,
-  );
+  // A file attached while the draft is sent would miss its message.
+  const attach = (files: File[]) => {
+    if (!sending) addAttachments(files);
+  };
+
+  useFileDrop(page, attach, setDragging);
 
   const branchProblem = draftBranchProblem(input);
   const baseProblem = draftBaseProblem(input);
@@ -372,17 +369,6 @@ export const DraftComposer = () => {
 
     event.preventDefault();
     submit();
-  };
-
-  /** Pasted files attach; the clipboard's text, when it has any too, is pasted as well. */
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData.files);
-
-    if (files.length === 0 || sending) return;
-
-    if (!event.clipboardData.types.includes("text/plain")) event.preventDefault();
-
-    addAttachments(files);
   };
 
   // What the strip's branch fields hold back, else what the Attachments wait for, beside Send.
@@ -426,12 +412,7 @@ export const DraftComposer = () => {
           </h1>
         </div>
         <form onSubmit={submit} className="relative flex flex-col">
-          <div
-            className={cn(
-              "relative z-10 flex flex-col rounded-lg border bg-background transition-colors focus-within:border-ring",
-              dragging && "border-ring bg-muted",
-            )}
-          >
+          <div className={cn(composerBox(dragging), "relative z-10 flex flex-col")}>
             <AttachmentTiles
               items={attachments.items}
               fits={attachments.fits}
@@ -450,33 +431,13 @@ export const DraftComposer = () => {
                 setText(event.target.value);
               }}
               onKeyDown={onKeyDown}
-              onPaste={onPaste}
+              onPaste={(event) => {
+                attachPasted(event, attach);
+              }}
               className="field-sizing-content max-h-80 min-h-24 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-base outline-none placeholder:text-muted-foreground"
             />
             <div className="flex items-center gap-1 px-2 pb-2">
-              <input
-                ref={picker}
-                type="file"
-                multiple
-                hidden
-                tabIndex={-1}
-                onChange={(event) => {
-                  addAttachments(Array.from(event.target.files ?? []));
-                  event.target.value = "";
-                }}
-              />
-              <button
-                type="button"
-                aria-label="Attach files"
-                title="Attach files"
-                disabled={sending}
-                onClick={() => {
-                  picker.current?.click();
-                }}
-                className="touch-target inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4"
-              >
-                <Paperclip aria-hidden />
-              </button>
+              <AttachButton onAttach={attach} disabled={sending} />
               <span className="flex-1" />
               <button
                 type="submit"
@@ -484,7 +445,7 @@ export const DraftComposer = () => {
                 aria-label={sending ? "Sending" : "Send"}
                 aria-describedby={status === null ? undefined : noteId}
                 title={status ?? "Send (Enter)"}
-                className="touch-target inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4"
+                className={sendButton}
               >
                 {sending ? (
                   <Loader2 className="motion-safe:animate-spin" aria-hidden />
