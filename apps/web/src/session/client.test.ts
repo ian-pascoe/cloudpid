@@ -456,25 +456,22 @@ describe("a Session connection", () => {
       id: "12",
       conversationId: 1,
       instructions: "Log in, then press Done",
-      url: "https://live.browser.run/ui/view?mode=tab",
       deadline: 1_800_000,
     };
 
-    it.effect(
-      "shows the handoffs the Session says are waiting, with their links, until it says none are",
-      () =>
-        Effect.gen(function* () {
-          const { latest, state } = yield* setup();
+    it.effect("shows the handoffs the Session says are waiting until it says none are", () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
 
-          expect(state().browserHandoffRequests).toEqual([]);
+        expect(state().browserHandoffRequests).toEqual([]);
 
-          yield* watching(latest());
-          yield* latest().say({ type: "browser_handoff_requests", requests: [request] });
-          expect(state().browserHandoffRequests).toEqual([request]);
+        yield* watching(latest());
+        yield* latest().say({ type: "browser_handoff_requests", requests: [request] });
+        expect(state().browserHandoffRequests).toEqual([request]);
 
-          yield* latest().say({ type: "browser_handoff_requests", requests: [] });
-          expect(state().browserHandoffRequests).toEqual([]);
-        }),
+        yield* latest().say({ type: "browser_handoff_requests", requests: [] });
+        expect(state().browserHandoffRequests).toEqual([]);
+      }),
     );
 
     it.effect(
@@ -1484,6 +1481,44 @@ describe("the catalog and Slash commands", () => {
       expect(yield* Fiber.join(root)).toEqual({ paths: ["src/", "src/app.ts"] });
       expect(yield* failureOf(child)).toBe("The session's answer could not be read.");
     }),
+  );
+
+  it.effect(
+    "mints Live View links for a Browser Handoff, and says why when the handoff is over",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const LINKS = {
+          tab: { targetId: "T1", link: "wss://live.example/T1?jwt=a" },
+          windows: [
+            {
+              targetId: "W1",
+              openerId: "T1",
+              title: "Sign in",
+              link: "wss://live.example/W1?jwt=b",
+            },
+          ],
+        };
+
+        const minted = yield* asking(client.liveView("call-1"));
+        const over = yield* asking(client.liveView("call-2"));
+
+        const [first, second] = latest()
+          .commands()
+          .filter((command) => command.type === "live_view");
+
+        expect(first).toEqual({ type: "live_view", id: first?.id, requestId: "call-1" });
+        expect(second).toEqual({ type: "live_view", id: second?.id, requestId: "call-2" });
+
+        yield* latest().say({ type: "result", id: first?.id, result: LINKS });
+        yield* latest().say({ type: "error", id: second?.id, message: "the handoff is over" });
+
+        expect(yield* Fiber.join(minted)).toEqual(LINKS);
+        expect(yield* failureOf(over)).toBe("the handoff is over");
+      }),
   );
 
   it.effect(

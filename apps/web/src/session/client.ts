@@ -17,6 +17,7 @@ import {
   FileMatches,
   HEARTBEAT,
   HistoryPage,
+  LiveViewLinks,
   reduceEvents,
   withEarlier,
   SESSION_DELETED_CLOSE_CODE,
@@ -216,6 +217,12 @@ export interface SessionClient {
     before: number,
     conversationId?: number,
   ) => Effect.Effect<void, SessionCommandError>;
+  /**
+   * Fresh Live View links to the tab of the Browser Handoff `requestId` names and to each window it opened, for this
+   * client alone: a link may start a connection for 60 s. Fails as `catalog` does, and with the Session's "the handoff
+   * is over" once it has ended.
+   */
+  readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, SessionCommandError>;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -254,7 +261,7 @@ interface PendingSubmit {
 /** What a `result` carries. */
 type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
 
-/** A request whose answer an Effect waits for: `catalog`, `files` and `command`. */
+/** A request whose answer an Effect waits for: `catalog`, `files`, `command`, `history` and `live_view`. */
 interface PendingRequest {
   readonly answer: Deferred.Deferred<ResultValue, SessionCommandError>;
   /** Whether it changes the Session, so one whose answer was lost may have run all the same. */
@@ -282,6 +289,8 @@ const decodeFileMatches = Schema.decodeUnknownOption(FileMatches);
 const decodeOutcome = Schema.decodeUnknownOption(CommandOutcome);
 
 const decodeHistoryPage = Schema.decodeUnknownOption(HistoryPage);
+
+const decodeLiveViewLinks = Schema.decodeUnknownOption(LiveViewLinks);
 
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
@@ -1210,6 +1219,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           update({}, conversationId);
         }),
       ),
+    liveView: (requestId) =>
+      request((id) => ({ type: "live_view", id, requestId }), decodeLiveViewLinks),
   };
 
   return client;

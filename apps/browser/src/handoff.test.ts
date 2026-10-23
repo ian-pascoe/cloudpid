@@ -14,7 +14,15 @@ import {
   type HandoffRecords,
 } from "./handoff.ts";
 
-const URL_OF_VIEW = "https://live.browser.run/ui/view?mode=tab&wss=x?jwt=SECRET-TOKEN";
+/** The credential part of every Live View link the fake mints, to look for where it must not be. */
+const TOKEN = "SECRET-TOKEN";
+
+/** The link the fake Browser Run mints for page `targetId`. */
+const linkTo = (targetId: string) =>
+  `wss://live.browser.run/api/devtools/browser/browser-1/page/${targetId}?jwt=${TOKEN}`;
+
+/** The tab's viewport as a page reads it. */
+type Viewport = { width: number; height: number; deviceScaleFactor: number };
 
 const records = (): HandoffRecords => {
   const map = new Map<string, unknown>();
@@ -32,12 +40,67 @@ const records = (): HandoffRecords => {
 
 type Sent = { readonly method: string; readonly params?: CdpParams; readonly sessionId?: string };
 
-/** A scripted connection: it records what it is sent, answers from `replies`, and lets a test emit events. */
-const fakeTransport = (replies: Partial<Record<string, Schema.Json>> = {}) => {
+/** A reply: as it is, or made from the command's params. */
+type Reply = Schema.Json | ((params: CdpParams | undefined) => Schema.Json);
+
+/** A page target as `Target.getTargets` lists it. */
+const page = (targetId: string, rest: { [key: string]: Schema.Json } = {}) => ({
+  targetId,
+  type: "page",
+  title: `Title of ${targetId}`,
+  url: `https://example.com/${targetId}`,
+  attached: false,
+  canAccessOpener: false,
+  browserContextId: "context-1",
+  ...rest,
+});
+
+/**
+ * A scripted connection: it records what it is sent, answers from `replies`, and lets a test emit events. It keeps the
+ * tab's viewport as Browser Run does, one for every connection: `Emulation.setDeviceMetricsOverride` sets it (unless
+ * `ignoreOverrides` says to drop that many first) and `Runtime.evaluate` reads it.
+ */
+const fakeTransport = (replies: Partial<Record<string, Reply>> = {}) => {
   const sent: Sent[] = [];
   let listener: (event: CdpEvent) => void = () => undefined;
   let closing: () => void = () => undefined;
-  const state = { closed: false };
+  const state = {
+    closed: false,
+    viewport: { width: 780, height: 493, deviceScaleFactor: 1 } as Viewport,
+    ignoreOverrides: 0,
+  };
+
+  const defaults: Record<string, Reply> = {
+    "Target.attachToTarget": { sessionId: "cdp-1" },
+    "Target.getTargets": { targetInfos: [page("tab-1", { attached: true })] },
+    "Cloudflare.getLiveView": (params) => {
+      const targetId = typeof params?.["targetId"] === "string" ? params["targetId"] : "newest";
+
+      return {
+        webSocketDebuggerUrl: linkTo(targetId),
+        devtoolsFrontendUrl: `https://live.browser.run/ui/view?mode=tab&wss=${linkTo(targetId).slice(6)}`,
+        id: targetId,
+        options: { mode: "tab" },
+      };
+    },
+    "Cloudflare.handoff": { targetId: "tab-1", handoffId: "handoff-1" },
+    "Cloudflare.getHandoffState": { active: true, handoffId: "handoff-1" },
+    "Cloudflare.handoffComplete": {},
+    "Emulation.setDeviceMetricsOverride": (params) => {
+      if (state.ignoreOverrides > 0) {
+        state.ignoreOverrides -= 1;
+      } else {
+        state.viewport = {
+          width: Number(params?.["width"]),
+          height: Number(params?.["height"]),
+          deviceScaleFactor: Number(params?.["deviceScaleFactor"]),
+        };
+      }
+
+      return {};
+    },
+    "Runtime.evaluate": () => ({ result: { type: "object", value: { ...state.viewport } } }),
+  };
 
   const transport: CdpTransport = {
     send: (method, params, sessionId) => {
@@ -51,18 +114,9 @@ const fakeTransport = (replies: Partial<Record<string, Schema.Json>> = {}) => {
 
       if (state.closed) return Promise.reject(new Error("closed"));
 
-      const defaults = {
-        "Target.attachToTarget": { sessionId: "cdp-1" },
-        "Cloudflare.getLiveView": { devtoolsFrontendUrl: URL_OF_VIEW },
-        "Cloudflare.handoff": { targetId: "tab-1", handoffId: "handoff-1" },
-        "Cloudflare.getHandoffState": { active: true, handoffId: "handoff-1" },
-        "Cloudflare.handoffComplete": {},
-      } satisfies Record<string, Schema.Json>;
+      const reply = replies[method] ?? defaults[method] ?? null;
 
-      // SAFETY: `method in defaults` says it is one of the defaults' keys.
-      return Promise.resolve(
-        replies[method] ?? (method in defaults ? defaults[method as keyof typeof defaults] : null),
-      );
+      return Promise.resolve(typeof reply === "function" ? reply(params) : reply);
     },
     onEvent: (next) => {
       listener = next;
