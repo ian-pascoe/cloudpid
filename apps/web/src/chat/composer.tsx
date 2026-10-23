@@ -33,7 +33,7 @@ import {
 } from "./attachments-state.ts";
 import { catalogAtom } from "./catalog.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
-import { CompletionMenu, rowId } from "./completion-menu.tsx";
+import { CompletionMenu } from "./completion-menu.tsx";
 import {
   AttachButton,
   attachPasted,
@@ -42,10 +42,11 @@ import {
   sendButton,
   toolbarButton,
 } from "./composer-parts.tsx";
-import { type Edited, replaceTrigger } from "./completion.ts";
+import type { Edited } from "./completion.ts";
 import {
   type ComposerSource,
   composerState,
+  conversationLookups,
   copyAtom,
   type Note,
   sessionCommandAtom,
@@ -54,8 +55,8 @@ import {
 import { type ConversationKey, conversationKey, useShownSessionId } from "./conversation.ts";
 import { fileDragAtom, useFileDropZone } from "./file-drop.ts";
 import { fileResults, fileSearchAtom } from "./file-search.ts";
-import { completionFor, menuKey } from "./menu.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
+import { useCompletion } from "./use-completion.ts";
 
 const Lane = ({
   label,
@@ -128,7 +129,6 @@ const ComposerBox = ({
   // On a touch screen, focusing the input opens the keyboard over the transcript.
   const autoFocus = !compact && window.matchMedia("(pointer: fine)").matches;
   const wide = useAtomValue(wideAtom);
-  const menuId = useId();
 
   const aui = useAui();
   const running = useAuiState((state) => state.thread.isRunning);
@@ -136,11 +136,8 @@ const ComposerBox = ({
 
   const state = useAtomValue(ComposerScope.use());
   const text = useAtomValue(state.text);
-  const trigger = useAtomValue(state.trigger);
   const setCaret = useAtomSet(state.caret);
   const setFocused = useAtomSet(state.focused);
-  const [dismissed, setDismissed] = useAtom(state.dismissed);
-  const [highlighted, setHighlighted] = useAtom(state.highlighted);
   const [note, setNote] = useAtom(state.note);
   const [busy, setBusy] = useAtom(state.busy);
   const fileQuery = useAtomValue(state.fileQuery);
@@ -243,28 +240,6 @@ const ComposerBox = ({
   const fileSearch = useAtomValue(fileSearchAtom(key));
   const files = fileResults(fileSearch, fileQuery);
 
-  const completion =
-    trigger === null || trigger.start === dismissed
-      ? null
-      : completionFor(trigger, allCommands, catalog ?? undefined, files);
-
-  const open =
-    trigger !== null &&
-    completion !== null &&
-    (completion.entries.length > 0 || completion.notice !== undefined);
-
-  const entries = completion?.entries ?? [];
-
-  // The highlighted row's index; the first row when it is gone.
-  const active = Math.max(
-    0,
-    entries.findIndex((entry) => entry.id === highlighted),
-  );
-
-  const highlight = (index: number) => {
-    setHighlighted(entries[index]?.id ?? null);
-  };
-
   const edit = (next: Edited) => {
     Atom.batch(() => {
       aui.composer.setText(next.text);
@@ -295,18 +270,16 @@ const ComposerBox = ({
     else setNote({ tone: "error", text: failure });
   };
 
-  const pick = (index: number) => {
-    const entry = completion?.entries[index];
-
-    if (entry === undefined || trigger === null) return;
-
-    if (entry.pick.kind === "run") void run(entry.pick.command, entry.pick.args);
-    else {
-      edit(
-        replaceTrigger(text, trigger, entry.pick.text, { space: entry.pick.continues !== true }),
-      );
-    }
-  };
+  const completion = useCompletion({
+    state,
+    commands: allCommands,
+    catalog: catalog ?? undefined,
+    files,
+    edit,
+    run: (command, args) => {
+      void run(command, args);
+    },
+  });
 
   /**
    * Send what is typed, or run it when it is one of the composer's commands; true when the composer took care of it, so
@@ -375,21 +348,7 @@ const ComposerBox = ({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return;
-
-    if (open) {
-      const count = entries.length;
-      const action = menuKey(event, count);
-
-      if (action !== null) event.preventDefault();
-
-      if (action === "close") setDismissed(trigger.start);
-      else if (action === "next" || action === "previous") {
-        highlight((active + (action === "next" ? 1 : count - 1)) % count);
-      } else if (action === "pick") pick(active);
-
-      if (action !== null) return;
-    }
+    if (event.nativeEvent.isComposing || completion.onKeyDown(event)) return;
 
     if (event.key === "Enter" && event.altKey) {
       event.preventDefault();
@@ -427,15 +386,15 @@ const ComposerBox = ({
       <Lane label="Steering" hint="joins the run after its tool calls" entries={steerLane} />
       <Lane label="Next up" hint="starts after this run" entries={followUpLane} />
       <div className="relative">
-        {open && (
+        {completion.menu !== null && (
           <CompletionMenu
-            id={menuId}
-            label={completion.label}
-            sections={completion.sections}
-            notice={completion.notice}
-            highlighted={active}
-            onHighlight={highlight}
-            onPick={pick}
+            id={completion.id}
+            label={completion.menu.label}
+            sections={completion.menu.sections}
+            notice={completion.menu.notice}
+            highlighted={completion.active}
+            onHighlight={completion.highlight}
+            onPick={completion.pick}
           />
         )}
         <div className={composerBox(dragging)}>
@@ -458,10 +417,7 @@ const ComposerBox = ({
             }}
             placeholder={placeholder}
             aria-label="Message"
-            aria-autocomplete="list"
-            aria-controls={open && entries.length > 0 ? menuId : undefined}
-            aria-expanded={open && entries.length > 0}
-            aria-activedescendant={open && entries.length > 0 ? rowId(menuId, active) : undefined}
+            {...completion.inputProps}
             onKeyDown={onKeyDown}
             // No onChange: it runs before assistant-ui stores the new text, and an update there would render the input with
             // the text before the edit, which puts the caret at its end. The composer's state hears the edit once the
@@ -590,6 +546,7 @@ export const Composer = (props: ComposerProps) => {
       key={`${key.sessionId}/${key.conversationId}`}
       value={{
         key,
+        lookups: conversationLookups(key),
         text: () => aui.composer.getState().text,
         subscribe: (listener) => aui.subscribe(listener),
         input: () => input.current,

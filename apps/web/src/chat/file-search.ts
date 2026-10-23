@@ -1,7 +1,8 @@
 // The composer's `@` menu (`files`), per conversation: what follows the `@` is sent to the Session once the owner
 // pauses for `FILE_SEARCH_DEBOUNCE_MS`, and the last answer is kept while the next one is asked for, so the menu
 // narrows it as the owner types (`filesMenu` in `menu.ts`). An answer serves while the menu stays open and for
-// `FILE_ANSWER_TTL_MS`, as the catalog does (`catalog.ts`): opening the menu again, or a later query, asks afresh.
+// `FILE_ANSWER_TTL_MS`, as the catalog does (`catalog.ts`): opening the menu again, or a later query, asks afresh. The
+// draft composer's `@` menu searches the same way, asking the Registry (`draft-lookups.ts`).
 
 // @effect-diagnostics missingPipeableSignature:off -- `fileResults` is a plain view function, not a combinator.
 
@@ -13,9 +14,9 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type { RegistryClient } from "../registry.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
-import type { SessionCommandError } from "../session/client.ts";
 import type { ConversationKey } from "./conversation.ts";
 import type { FileResults } from "./menu.ts";
 
@@ -53,8 +54,8 @@ export interface FileSearch {
  * now, and it asks `files` when it should, keeping the latest answer to arrive. An answer overtaken by a newer
  * request's is dropped; closing the menu clears a failure, and the next opening asks again.
  */
-export const makeFileSearch = Effect.fnUntraced(function* (
-  files: (query: string) => Effect.Effect<FileMatches, SessionCommandError>,
+export const makeFileSearch = Effect.fnUntraced(function* <E>(
+  files: (query: string) => Effect.Effect<FileMatches, E>,
 ) {
   const state = yield* SubscriptionRef.make(EMPTY);
   const timer = yield* FiberHandle.make();
@@ -173,35 +174,54 @@ export const fileResults = (state: FileSearchState, query: string | null): FileR
   };
 };
 
-/** The conversation's file search, over the Session's client: its requests stop when nothing reads its state. */
-const searchProgramAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.atom((get) =>
-    get
-      .result(sessionClientAtom(key.sessionId))
-      .pipe(
-        Effect.flatMap((client) =>
-          makeFileSearch((query) => client.files(query, key.conversationId)),
-        ),
+/** `@` menu searches kept per key: what each was answered, and how to say what it shows. */
+export interface FileSearchLookup<K, E> {
+  /** What was answered to the `@` menu of `key`; read with `fileResults` and what is typed now. */
+  readonly fileSearchAtom: (key: K) => Atom.Atom<FileSearchState>;
+  /**
+   * Say what the `@` menu of `key` shows now: the query after the `@`, or null while it is closed. Fails when the
+   * search could not be made (`E`).
+   */
+  readonly searchFilesAtom: (key: K) => Atom.AtomResultFn<string | null, void, E>;
+}
+
+/**
+ * `@` menu searches per key, each asking with the `files` that `searcher` makes for it. A key's requests stop when
+ * nothing reads its state.
+ */
+export const fileSearchLookup = <K, E, F>(
+  searcher: (
+    key: K,
+    get: Atom.AtomContext,
+  ) => Effect.Effect<(query: string) => Effect.Effect<FileMatches, F>, E, RegistryClient>,
+): FileSearchLookup<K, E> => {
+  const searchProgramAtom = Atom.family((key: K) =>
+    appRuntime.atom((get) => searcher(key, get).pipe(Effect.flatMap(makeFileSearch))),
+  );
+
+  const searchStateAtom = Atom.family((key: K) =>
+    appRuntime.subscriptionRef((get) =>
+      get.result(searchProgramAtom(key)).pipe(Effect.map((search) => search.state)),
+    ),
+  );
+
+  return {
+    fileSearchAtom: Atom.family((key: K) =>
+      Atom.map(searchStateAtom(key), (result) => AsyncResult.getOrElse(result, () => EMPTY)),
+    ),
+    searchFilesAtom: Atom.family((key: K) =>
+      appRuntime.fn(
+        (query: string | null, get) =>
+          get.result(searchProgramAtom(key)).pipe(Effect.flatMap((search) => search.set(query))),
+        { concurrent: true },
       ),
-  ),
-);
+    ),
+  };
+};
 
-const searchStateAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.subscriptionRef((get) =>
-    get.result(searchProgramAtom(key)).pipe(Effect.map((search) => search.state)),
-  ),
-);
-
-/** What the Session answered to the conversation's `@` menu; read with `fileResults` and what is typed now. */
-export const fileSearchAtom = Atom.family((key: ConversationKey) =>
-  Atom.map(searchStateAtom(key), (result) => AsyncResult.getOrElse(result, () => EMPTY)),
-);
-
-/** Say what the conversation's `@` menu shows now: the query after the `@`, or null while it is closed. */
-export const searchFilesAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.fn(
-    (query: string | null, get) =>
-      get.result(searchProgramAtom(key)).pipe(Effect.flatMap((search) => search.set(query))),
-    { concurrent: true },
-  ),
+/** The conversations' `@` menus, searched over their Session's client. */
+export const { fileSearchAtom, searchFilesAtom } = fileSearchLookup((key: ConversationKey, get) =>
+  get
+    .result(sessionClientAtom(key.sessionId))
+    .pipe(Effect.map((client) => (query: string) => client.files(query, key.conversationId))),
 );

@@ -12,6 +12,7 @@ import { settle } from "../session/client.testing.ts";
 import { chatRegistry, live, sent } from "./chat.testing.ts";
 import {
   composerState,
+  conversationLookups,
   copyAtom,
   DOWNLOAD_LINK_MS,
   sessionCommandAtom,
@@ -209,6 +210,7 @@ const composerOf = (key = conversationKey("s1", undefined)) => {
 
   const state = composerState({
     key,
+    lookups: conversationLookups(key),
     text: () => text,
     subscribe: (listener) => {
       listeners.add(listener);

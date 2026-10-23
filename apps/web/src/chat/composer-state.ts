@@ -110,17 +110,36 @@ export const sessionCommandAtom = Atom.family((key: ConversationKey) =>
 /** A line under the composer: why a command failed, or what one did. */
 export type Note = { readonly tone: "error" | "info"; readonly text: string };
 
-/** What one composer's state is built from: assistant-ui's text, the input that shows it, and the conversation. */
+/** Where a composer's menus get what they list: the `@` menu's file search, and the catalog. */
+export interface ComposerLookups {
+  /** Say what the `@` menu shows now (`searchFilesAtom`): its query, or null while it is closed. */
+  readonly searchFiles: Atom.Writable<unknown, string | null>;
+  /** Ask for the catalog, unless it is fresh (`askCatalogAtom`). */
+  readonly askCatalog: Atom.Writable<unknown, void>;
+}
+
+/** The lookups of a conversation's composer: its Session's answers about the conversation's directory. */
+export const conversationLookups = (key: ConversationKey): ComposerLookups => ({
+  searchFiles: searchFilesAtom(key),
+  askCatalog: askCatalogAtom(key),
+});
+
+/**
+ * What one composer's state is built from: the text its store holds (assistant-ui's, or the draft's), the input that
+ * shows it, the conversation, and where its menus look.
+ */
 export interface ComposerSource {
-  /** The conversation the composer writes to. */
-  readonly key: ConversationKey;
-  /** The text assistant-ui holds. */
+  /** The conversation the composer writes to; none for the draft's, whose Session is not made yet. */
+  readonly key?: ConversationKey | undefined;
+  /** Where its menus' catalog and files come from: the conversation's (`conversationLookups`), or the draft's. */
+  readonly lookups: ComposerLookups;
+  /** The text the store holds. */
   readonly text: () => string;
-  /** Hear every change of assistant-ui's state; returns how to stop. */
+  /** Hear every change of the store; returns how to stop. */
   readonly subscribe: (listener: () => void) => () => void;
   /** The input, while it is rendered. */
   readonly input: () => { readonly value: string; readonly selectionStart: number } | null;
-  /** Put `text` in assistant-ui's composer. */
+  /** Put `text` in the store. */
   readonly setText: (text: string) => void;
 }
 
@@ -143,8 +162,8 @@ export interface ComposerState {
   /** What the `@` menu searches for, or null while it is closed. */
   readonly fileQuery: Atom.Atom<string | null>;
   /**
-   * While mounted, the `@` menu's query goes to the conversation's file search, and a menu that lists the catalog asks
-   * for it as it opens (the catalog asks again only once it is stale). The root's composer takes back its Session's
+   * While mounted, the `@` menu's query goes to the composer's file search, and a menu that lists the catalog asks for
+   * it as it opens (the catalog asks again only once it is stale). The root's composer takes back its Session's
    * first message when the Session refused it (`refusedFirstMessagesAtom`), before what was typed since, with why as
    * the note, as a refused message with Attachments comes back; and the owner's message the active branch moved to
    * before, or a Fork was made before (`composerPrefillAtom`).
@@ -234,8 +253,7 @@ export const composerState = (source: ComposerSource): ComposerState => {
   );
 
   const effects = Atom.readable((get) => {
-    const search = searchFilesAtom(source.key);
-    const askCatalog = askCatalogAtom(source.key);
+    const { searchFiles: search, askCatalog } = source.lookups;
 
     get.mount(search);
     get.mount(askCatalog);
@@ -248,12 +266,14 @@ export const composerState = (source: ComposerSource): ComposerState => {
       if (lists) get.set(askCatalog, undefined);
     });
 
-    if (source.key.conversationId !== undefined) return;
+    const { key } = source;
 
-    const { sessionId } = source.key;
+    if (key === undefined || key.conversationId !== undefined) return;
+
+    const { sessionId } = key;
 
     // Where a refused first message's files go back to.
-    get.mount(addAttachmentsAtom(source.key));
+    get.mount(addAttachmentsAtom(key));
 
     get.subscribe(
       refusedFirstMessagesAtom,
@@ -270,7 +290,7 @@ export const composerState = (source: ComposerSource): ComposerState => {
           get.set(note, { tone: "error", text: message.reason });
 
           if (message.files !== undefined && message.files.length > 0) {
-            get.set(addAttachmentsAtom(source.key), message.files);
+            get.set(addAttachmentsAtom(key), message.files);
           }
         });
       },

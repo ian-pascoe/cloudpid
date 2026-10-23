@@ -1,7 +1,14 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- the Workspaces' ages are read against the wall clock as the menu renders, and JSX lists of options are native arrays.
 
 import { NEW_WORKSPACE, type EnvironmentRecord, type WorkspaceRecord } from "@cloudpid/protocol";
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import {
+  RegistryContext,
+  useAtom,
+  useAtomMount,
+  useAtomSet,
+  useAtomValue,
+} from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import {
   AlertCircle,
@@ -14,7 +21,14 @@ import {
   Loader2,
   Settings2,
 } from "lucide-react";
-import { type KeyboardEvent, type SubmitEvent, useId, useRef } from "react";
+import {
+  type KeyboardEvent,
+  type RefObject,
+  type SubmitEvent,
+  useContext,
+  useId,
+  useRef,
+} from "react";
 import { AttachmentTiles } from "./chat/attachment-tiles.tsx";
 import {
   addDraftAttachmentsAtom,
@@ -22,8 +36,13 @@ import {
   draftWaitingFor,
   removeDraftAttachmentAtom,
 } from "./chat/attachments-state.ts";
+import type { Edited } from "./chat/completion.ts";
+import { CompletionMenu } from "./chat/completion-menu.tsx";
 import { AttachButton, attachPasted, composerBox, sendButton } from "./chat/composer-parts.tsx";
+import { type ComposerSource, composerState } from "./chat/composer-state.ts";
 import { useFileDrop } from "./chat/file-drop.ts";
+import { fileResults } from "./chat/file-search.ts";
+import { useCompletion } from "./chat/use-completion.ts";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "./components/ui/menu.tsx";
 import { Popover } from "./components/ui/popover.tsx";
@@ -43,6 +62,12 @@ import {
   type DraftInput,
 } from "./draft.ts";
 import {
+  draftCatalogAtom,
+  draftFileSearchAtom,
+  draftLookups,
+  draftPlaceAtom,
+} from "./draft-lookups.ts";
+import {
   environmentListAtom,
   environmentNamesAtom,
   workspaceListAtom,
@@ -55,6 +80,11 @@ import { ENVIRONMENTS_PATH, navigate } from "./router.ts";
 
 /** Whether files are being dragged over the draft. */
 const draftDragAtom = Atom.make(false);
+
+/** The draft's composer state (`composerState`) over `draftTextAtom`, kept while the draft is shown. */
+const DraftComposerScope = ScopedAtom.make((source: ComposerSource) =>
+  Atom.make(composerState(source)),
+);
 
 /** A quiet control in the strip under the box: an icon and a value, which opens a menu or a small form. */
 const chip =
@@ -312,8 +342,35 @@ const BranchPicker = ({
  * works in and, for a new one, its branch. Files attach with the Attach button, a paste or a drop anywhere on the page;
  * they upload once Send has made the Session. Sending registers the Session and opens it; the message is sent once its
  * page is up (`drainFirstMessageAtom`).
+ *
+ * The box completes as the Session's composer does, but from the directory the Session would work in, asked of the
+ * Registry (`draft-lookups.ts`): `/` opens a menu of the Prompt templates and Skills (`/skill:name`), `$` one of the
+ * Skills, and `@` one of the files and folders. A draft has no Session to run commands on, so it offers none: what is
+ * picked is text, which the Session expands when it takes the first message.
  */
 export const DraftComposer = () => {
+  const registry = useContext(RegistryContext);
+  const box = useRef<HTMLTextAreaElement>(null);
+
+  return (
+    <DraftComposerScope.Provider
+      value={{
+        lookups: draftLookups,
+        text: () => registry.get(draftTextAtom),
+        subscribe: (listener) => registry.subscribe(draftTextAtom, listener),
+        input: () => box.current,
+        setText: (text) => {
+          registry.set(draftTextAtom, text);
+        },
+      }}
+    >
+      <DraftPage box={box} />
+    </DraftComposerScope.Provider>
+  );
+};
+
+/** The draft's page; `box` is its message box. */
+const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
   const [text, setText] = useAtom(draftTextAtom);
   const [environment, setEnvironment] = useAtom(draftEnvironmentAtom);
   const [picked, setWorkspace] = useAtom(draftWorkspaceAtom);
@@ -330,6 +387,41 @@ export const DraftComposer = () => {
   const send = useAtomSet(sendDraftAtom);
   const page = useRef<HTMLDivElement>(null);
   const noteId = useId();
+
+  const state = useAtomValue(DraftComposerScope.use());
+  const setCaret = useAtomSet(state.caret);
+  const setFocused = useAtomSet(state.focused);
+  const fileQuery = useAtomValue(state.fileQuery);
+  const place = useAtomValue(draftPlaceAtom);
+  const catalog = useAtomValue(draftCatalogAtom(place));
+  const files = fileResults(useAtomValue(draftFileSearchAtom(place)), fileQuery);
+
+  useAtomMount(state.effects);
+
+  const edit = (next: Edited) => {
+    Atom.batch(() => {
+      setText(next.text);
+      setCaret(next.caret);
+    });
+
+    requestAnimationFrame(() => {
+      box.current?.focus();
+      box.current?.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
+  // Templates and Skills only: the draft has no Session to run a command on.
+  const completion = useCompletion({
+    state,
+    commands: [],
+    catalog: catalog ?? undefined,
+    files,
+    edit,
+  });
+
+  const trackCaret = (element: HTMLTextAreaElement) => {
+    setCaret(element.selectionStart);
+  };
 
   const workspaces = (allWorkspaces ?? []).filter((known) => known.environment === environment);
   const workspace = effectiveWorkspace(picked, workspaces);
@@ -361,6 +453,8 @@ export const DraftComposer = () => {
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (completion.onKeyDown(event)) return;
+
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
 
     // On a touch screen Return starts a new line and the Send button sends.
@@ -411,6 +505,17 @@ export const DraftComposer = () => {
           </h1>
         </div>
         <form onSubmit={submit} className="relative flex flex-col">
+          {completion.menu !== null && (
+            <CompletionMenu
+              id={completion.id}
+              label={completion.menu.label}
+              sections={completion.menu.sections}
+              notice={completion.menu.notice}
+              highlighted={completion.active}
+              onHighlight={completion.highlight}
+              onPick={completion.pick}
+            />
+          )}
           <div className={cn(composerBox(dragging), "relative z-10 flex flex-col")}>
             <AttachmentTiles
               items={attachments.items}
@@ -420,7 +525,9 @@ export const DraftComposer = () => {
               }}
             />
             <textarea
+              ref={box}
               aria-label="Message"
+              {...completion.inputProps}
               rows={3}
               value={text}
               placeholder="Describe a task, ask a question, or paste a screenshot…"
@@ -430,6 +537,16 @@ export const DraftComposer = () => {
                 setText(event.target.value);
               }}
               onKeyDown={onKeyDown}
+              onSelect={(event) => {
+                trackCaret(event.currentTarget);
+              }}
+              onFocus={(event) => {
+                setFocused(true);
+                trackCaret(event.currentTarget);
+              }}
+              onBlur={() => {
+                setFocused(false);
+              }}
               onPaste={(event) => {
                 attachPasted(event, attach);
               }}

@@ -18,6 +18,20 @@ const entryOf = (entry: { readonly name: string; readonly description: string })
   description: entry.description,
 });
 
+/** What a catalog offers from a directory that has `skills` and `templates`, nearest first. */
+export const catalogEntries = (
+  skills: ReadonlyArray<Pick<Skill, "name" | "description">>,
+  templates: ReadonlyArray<Pick<PromptTemplate, "name" | "description" | "argumentHint">>,
+): Pick<Catalog, "templates" | "skills"> => ({
+  templates: templates.map((template): CatalogEntry =>
+    template.argumentHint === undefined
+      ? entryOf(template)
+      : { ...entryOf(template), argumentHint: template.argumentHint },
+  ),
+  // Every Skill, those the model is not offered too: they exist for the owner to name.
+  skills: skills.map(entryOf),
+});
+
 /**
  * The catalog of a conversation whose directory has `skills` and `templates`, nearest first, and whose agent can
  * (`rollover`) or cannot roll over: `/rollover` is offered only where it can.
@@ -28,13 +42,7 @@ export const catalogOf = (
   rollover: boolean,
 ): Catalog => ({
   commands: sessionCommandsFor(rollover),
-  templates: templates.map((template): CatalogEntry =>
-    template.argumentHint === undefined
-      ? entryOf(template)
-      : { ...entryOf(template), argumentHint: template.argumentHint },
-  ),
-  // Every Skill, those the model is not offered too: they exist for the owner to name.
-  skills: skills.map(entryOf),
+  ...catalogEntries(skills, templates),
 });
 
 /**

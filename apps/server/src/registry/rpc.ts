@@ -11,6 +11,7 @@ import {
   ownBranchProblem,
   SessionNotFound,
   forkTitle,
+  workspaceDirectory,
 } from "@cloudpid/protocol";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type * as Cloudflare from "alchemy/Cloudflare";
@@ -29,6 +30,7 @@ import {
   type ForkQuiet,
   type ForkSourceRequest,
 } from "../session/fork.ts";
+import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
 import { buildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
@@ -75,6 +77,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly spares: Spares;
   /** Keeps each Environment's Build current (`buildUpkeep`), after the answer, and makes one again when asked. */
   readonly builds: Builds;
+  /** The draft composer's catalog and `@` menu, looked up in a Workspace's object. */
+  readonly lookups: WorkspaceLookups;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
@@ -262,7 +266,7 @@ type SweepWords = { readonly kept: string; readonly busy: string };
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const serveRegistryRpc = <R = never>(
   registries: Cloudflare.DurableObject<Registry>,
-  { workspaces, sessions, legacy, spares, builds, background }: RegistryRpcObjects<R>,
+  { workspaces, sessions, legacy, spares, builds, lookups, background }: RegistryRpcObjects<R>,
 ) =>
   Effect.gen(function* () {
     const registry = registries.getByName(REGISTRY_NAME);
@@ -507,6 +511,41 @@ export const serveRegistryRpc = <R = never>(
         ),
       );
     };
+
+    /**
+     * Where the draft composer looks for a Session made with `environment` and `workspace`: that Workspace's directory,
+     * or for a new one the Environment's spare's, which a new Session takes (with the same Repos). Null when a new
+     * Workspace has no spare to look in: no object is woken for a Workspace nobody made.
+     */
+    const draftPlace = (environment: string, workspace: string) =>
+      Effect.gen(function* () {
+        const known = yield* knownEnvironment(environment);
+
+        if (workspace === NEW_WORKSPACE) {
+          const spare = yield* registry.getSpare({ environment });
+
+          // Where a new Workspace of the Environment's Repos works, as the spare does.
+          return spare === null
+            ? null
+            : ({
+                object: workspaceObjectName(spare),
+                directory: workspaceDirectory(Arr.map(known.repos, (repo) => repo.name)),
+              } satisfies LookupPlace);
+        }
+
+        const record = yield* knownWorkspace(workspace);
+
+        if (record.environment !== environment) {
+          return yield* failed(
+            `Workspace "${workspace}" is in environment "${record.environment}"`,
+          );
+        }
+
+        return {
+          object: workspaceObjectName(record.id),
+          directory: record.directory,
+        } satisfies LookupPlace;
+      });
 
     /** Why the Registry did not create a Session, for the owner. */
     const refused = (refusal: SessionRefusal, environment: string, branch: string | undefined) => {
@@ -791,6 +830,20 @@ export const serveRegistryRpc = <R = never>(
             ),
           ),
       listWorkspaces: () => registry.listWorkspaces(),
+      draftCatalog: ({ environment, workspace }) =>
+        draftPlace(environment, workspace).pipe(
+          Effect.flatMap((place) =>
+            place === null
+              ? Effect.succeed({ commands: [], templates: [], skills: [] })
+              : lookups.catalog(place),
+          ),
+        ),
+      draftFiles: ({ environment, workspace, query }) =>
+        draftPlace(environment, workspace).pipe(
+          Effect.flatMap((place) =>
+            place === null ? Effect.succeed({ paths: [] }) : lookups.files(place, query),
+          ),
+        ),
       removeWorkspace: ({ id }) => knownWorkspace(id).pipe(Effect.flatMap(removeWorkspace)),
       restartContainer: ({ workspace }) =>
         knownWorkspace(workspace).pipe(

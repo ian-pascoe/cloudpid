@@ -34,6 +34,7 @@ import { type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durab
 import { isRegistryRpc } from "../routes.ts";
 import type { ForkPlan } from "../session/fork.ts";
 import { buildKey, type BuildRequest, type BuildState } from "../workspace/build-record.ts";
+import type { WorkspaceLookups } from "../session/lookups.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import type { RegistryMethods } from "./Registry.ts";
@@ -326,6 +327,29 @@ const fakeRegistries = () => {
 
   /** The work the endpoint handed to `background`, not yet run. */
   const queued: Array<Effect.Effect<void>> = [];
+
+  /** What the draft composer's lookups were asked: each with the object and directory it looked in. */
+  const lookupsAsked: string[] = [];
+
+  /** The draft composer's lookups, answering a Skill and a path made of the query. */
+  const lookups: WorkspaceLookups = {
+    catalog: (place) =>
+      Effect.sync(() => {
+        lookupsAsked.push(`catalog:${place.object}:${place.directory}`);
+
+        return {
+          commands: [],
+          templates: [],
+          skills: [{ name: "tdd", description: "Test first" }],
+        };
+      }),
+    files: (place, query) =>
+      Effect.sync(() => {
+        lookupsAsked.push(`files:${place.object}:${place.directory}:${query}`);
+
+        return { paths: [`${query}.ts`] };
+      }),
+  };
 
   const registry = {
     createSession: ({ title, workspace, origin }) =>
@@ -862,6 +886,8 @@ const fakeRegistries = () => {
     runBackground: async () => {
       for (const effect of queued.splice(0)) await Effect.runPromise(effect);
     },
+    lookups,
+    lookupsAsked,
     registries,
     /** The Registry's methods, as the Session DO calls them. */
     registry,
@@ -901,6 +927,7 @@ const worker =
       legacy: fake.legacy,
       spares: fake.spareUpkeep,
       builds: fake.buildUpkeep,
+      lookups: fake.lookups,
       background: fake.background,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
@@ -1647,6 +1674,92 @@ it("restarts a Workspace's Container by its object's name, keeping its Sessions"
 
   expect(lifecycle(fake)).toEqual([`restartContainer:ws:${session.workspace}`]);
   expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
+});
+
+it("looks up the draft's catalog and files in the Workspace it names, in its directory", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "ian-pascoe/cloudpid" }));
+
+  const session = await call(fake, (registry) => registry.createSession({ environment }));
+  const workspace = session.workspace;
+
+  const catalog = await call(fake, (registry) => registry.draftCatalog({ environment, workspace }));
+
+  const files = await call(fake, (registry) =>
+    registry.draftFiles({ environment, workspace, query: "src/app" }),
+  );
+
+  expect(catalog).toEqual({
+    commands: [],
+    templates: [],
+    skills: [{ name: "tdd", description: "Test first" }],
+  });
+  expect(files).toEqual({ paths: ["src/app.ts"] });
+  expect(fake.lookupsAsked).toEqual([
+    `catalog:ws:${workspace}:/workspace/cloudpid`,
+    `files:ws:${workspace}:/workspace/cloudpid:src/app`,
+  ]);
+});
+
+it("looks up a new Workspace's draft in the Environment's spare, where its Repos are", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "ian-pascoe/cloudpid" }));
+  await call(fake, (registry) => registry.addRepo({ environment, source: "o/lib" }));
+  fake.spares.set(environment, { id: "5a000009", repos: "", build: null });
+
+  await call(fake, (registry) => registry.draftCatalog({ environment, workspace: "new" }));
+  await call(fake, (registry) => registry.draftFiles({ environment, workspace: "new", query: "" }));
+
+  expect(fake.lookupsAsked).toEqual([
+    "catalog:ws:5a000009:/workspace",
+    "files:ws:5a000009:/workspace:",
+  ]);
+});
+
+it("answers a new Workspace's draft with nothing while its Environment has no spare, waking no object", async () => {
+  const fake = fakeRegistries();
+
+  const catalog = await call(fake, (registry) =>
+    registry.draftCatalog({ environment: DEFAULT_ENVIRONMENT, workspace: "new" }),
+  );
+
+  const files = await call(fake, (registry) =>
+    registry.draftFiles({ environment: DEFAULT_ENVIRONMENT, workspace: "new", query: "a" }),
+  );
+
+  expect(catalog).toEqual({ commands: [], templates: [], skills: [] });
+  expect(files).toEqual({ paths: [] });
+  expect(fake.lookupsAsked).toEqual([]);
+});
+
+it("refuses a draft lookup in an unknown Environment or Workspace, or one of another Environment", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  const unknown = await call(fake, (registry) =>
+    Effect.flip(registry.draftCatalog({ environment: "0000beef", workspace: "new" })),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.draftFiles({ environment, workspace: "deadbeef", query: "" })),
+  );
+
+  const elsewhere = await call(fake, (registry) =>
+    Effect.flip(registry.draftCatalog({ environment, workspace: session.workspace })),
+  );
+
+  expect(unknown.message).toBe('Environment "0000beef" does not exist');
+  expect(missing.message).toBe('No workspace "deadbeef"');
+  expect(elsewhere).toBeInstanceOf(EnvironmentError);
+  expect(elsewhere.message).toBe(
+    `Workspace "${session.workspace}" is in environment "${DEFAULT_ENVIRONMENT}"`,
+  );
+  expect(fake.lookupsAsked).toEqual([]);
 });
 
 it("fails a Container restart the Workspace could not do with its message", async () => {
