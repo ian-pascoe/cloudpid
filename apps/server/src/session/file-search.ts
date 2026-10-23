@@ -10,7 +10,8 @@ import {
   UPLOADS_ROOT,
   WORKSPACE_ROOT,
 } from "@cloudpid/protocol";
-import type { FileListEntry } from "@earendil-works/pi-durable/env";
+import type { Context as ChordContext } from "@earendil-works/chord";
+import type { ExecutionEnv, FileListEntry } from "@earendil-works/pi-durable/env";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -279,3 +280,46 @@ export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Laye
       } satisfies FileListingsService;
     }),
   );
+
+/**
+ * The paths `env` offers the `@` menu from its directory, held in `listings` per file namespace and directory: one
+ * bounded walk (`EXCLUDED_NAMES`, `MAX_LISTED_ENTRIES`, `LISTING_WALK_TIMEOUT_MS`), cut off with a warning past its
+ * bounds. An environment that cannot list files offers none.
+ */
+export const listedPaths = (
+  listings: FileListingsService,
+  env: ExecutionEnv,
+  context: ChordContext,
+): Effect.Effect<FileIndex, FileListingError> => {
+  const list = env.listFiles?.bind(env);
+
+  if (list === undefined) return Effect.succeed<FileIndex>([]);
+
+  const options = {
+    exclude: EXCLUDED_NAMES,
+    maxEntries: MAX_LISTED_ENTRIES,
+    timeoutMs: LISTING_WALK_TIMEOUT_MS,
+  };
+
+  const listed = Effect.tryPromise({
+    try: () => list(".", options, context),
+    catch: (cause) => FileListingError.make({ message: String(cause) }),
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.ok
+        ? Effect.succeed(result.value)
+        : Effect.fail(FileListingError.make({ message: result.error.message })),
+    ),
+    Effect.tap(({ entries, truncated }) =>
+      truncated
+        ? Effect.logWarning("The @ menu's listing of a directory was cut off at its bounds", {
+            directory: env.cwd,
+            entries: entries.length,
+          })
+        : Effect.void,
+    ),
+    Effect.map(({ entries }) => fileIndex(fileCandidates(entries, env.cwd))),
+  );
+
+  return listings.get(`${env.id}:${env.cwd}`, listed);
+};

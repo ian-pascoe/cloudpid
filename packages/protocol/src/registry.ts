@@ -7,7 +7,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
-import { TreePoint } from "./session.ts";
+import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -493,6 +493,34 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /** Every Workspace, of every Environment, newest first. */
   Rpc.make("listWorkspaces", { success: Schema.Array(WorkspaceRecord) }),
+  /**
+   * The draft composer's catalog, before there is a Session to ask (`docs/spec.md` → Session list → New session): the
+   * Prompt templates and Skills of the directory a Session made with `environment` and `workspace` would work in, as a
+   * Session's `catalog` answers them, and no commands. A new Workspace is looked up in the Environment's spare
+   * Workspace, the one a new Session takes; with no spare, the catalog is empty. Fails with an `EnvironmentError`
+   * when the Environment or the Workspace is not listed, or the Workspace could not be asked.
+   */
+  Rpc.make("draftCatalog", {
+    payload: {
+      environment: EnvironmentId,
+      workspace: Schema.Union([Schema.Literal(NEW_WORKSPACE), WorkspaceId]),
+    },
+    success: Catalog,
+    error: EnvironmentError,
+  }),
+  /**
+   * The draft composer's `@` menu: the files and folders of the same directory as `draftCatalog`'s that best match
+   * `query`, as a Session's `files` answers them; none for a new Workspace of an Environment with no spare.
+   */
+  Rpc.make("draftFiles", {
+    payload: {
+      environment: EnvironmentId,
+      workspace: Schema.Union([Schema.Literal(NEW_WORKSPACE), WorkspaceId]),
+      query: Schema.String.check(Schema.isMaxLength(MAX_FILE_QUERY_LENGTH)),
+    },
+    success: FileMatches,
+    error: EnvironmentError,
+  }),
   /**
    * Remove a Workspace (`GLOSSARY.md` → Workspace removal): every Session in it (archived ones too, each as
    * `deleteSession`), then its files and Container, uncommitted changes and unpushed commits included, then its record.

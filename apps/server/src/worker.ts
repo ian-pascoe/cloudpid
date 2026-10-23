@@ -6,10 +6,12 @@ import { CODEMODE_SANDBOX_BINDING, CodemodeSandboxes } from "@cloudpid/codemode-
 import * as Alchemy from "alchemy";
 import * as Command from "alchemy/Command";
 import * as Cloudflare from "alchemy/Cloudflare";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
@@ -25,7 +27,9 @@ import {
 import { PushConfigLive } from "./push/config.ts";
 import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { serveAttachment } from "./serve-attachment.ts";
+import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
+import { workspaceLookups } from "./session/lookups.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
@@ -185,6 +189,15 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // A new good Build makes its Environment's spare stale, so the Builds' upkeep looks at the spare then.
     const builds = buildUpkeep(registries, { workspaces, spares });
 
+    // The draft composer's lookups. The listings of its `@` menu are held per isolate, as a Session holds its own, in a
+    // scope that is never closed: it lives as long as the isolate.
+    const listings = yield* Layer.buildWithScope(fileListingsLayer(), yield* Scope.make()).pipe(
+      Effect.map(Context.get(FileListings)),
+    );
+
+    // SAFETY: the same binding, the raw namespace whose stubs `ComputerExecutionEnv` needs.
+    const lookups = workspaceLookups(worker[WORKSPACE_BINDING] as WorkspaceNamespace, listings);
+
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -205,6 +218,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
             legacy,
             spares,
             builds,
+            lookups,
             background: (effect) => execution.waitUntil(effect),
           });
 

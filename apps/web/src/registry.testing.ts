@@ -43,6 +43,8 @@ const UNEXPECTED: Handlers = {
   listBuilds: unexpected("listBuilds"),
   rebuildEnvironment: unexpected("rebuildEnvironment"),
   listWorkspaces: unexpected("listWorkspaces"),
+  draftCatalog: unexpected("draftCatalog"),
+  draftFiles: unexpected("draftFiles"),
   removeWorkspace: unexpected("removeWorkspace"),
   restartContainer: unexpected("restartContainer"),
   getSettings: unexpected("getSettings"),
