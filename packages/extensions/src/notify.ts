@@ -1,13 +1,14 @@
 // Telling the owner (`docs/spec.md` → Client and protocol → Notifications): what a Session can push to the owner's
 // devices, and the service an extension yields to do it. The Session DO provides the service; extensions that need the
-// owner (the secrets request, a Browser Handoff's Live View) depend only on this module.
+// owner (the secrets request, a Browser Handoff) depend only on this module.
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 /**
  * Anything the owner should hear, in the Session's name: the caller words it. `url` is where tapping it goes: a path of
- * the app, or an absolute `https:` URL such as a Browser Handoff's Live View. A URL longer than
- * `MAX_NOTICE_URL_LENGTH` or with characters a URL does not have is ignored, and the Session's page opens instead.
+ * the app, a query of the Session's page (`?pane=live-view:7`, a Browser Handoff's Live View Pane), or an absolute
+ * `https:` URL. A URL longer than `MAX_NOTICE_URL_LENGTH` or with characters a URL does not have is ignored, and the
+ * Session's page opens instead.
  */
 export type PushNotice = {
   readonly kind: "notice";

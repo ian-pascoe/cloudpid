@@ -117,9 +117,19 @@ export const browserTool = (description: string) =>
       ),
   });
 
-/** What `browser_handoff` tells the model of how a handoff ended. It never holds the Live View link. */
+/**
+ * What `browser_handoff` tells the model of how a handoff ended, and of the windows the tab left open, by origin only:
+ * a window's URL may carry an OAuth code. It never holds a Live View link.
+ */
 export const describeOutcome = (outcome: BrowserHandoffOutcome): string => {
-  const look = "The page may have changed: look at it with `browser` before you continue.";
+  const count = outcome.windows.length;
+
+  const windows =
+    count === 0
+      ? ""
+      : ` The tab opened ${count === 1 ? "a window that is" : `${count} windows that are`} still open (pop-ups or new tabs): ${Arr.join(outcome.windows, ", ")}.`;
+
+  const look = `The page may have changed: look at it with \`browser\` before you continue.${windows}`;
 
   switch (outcome.status) {
     case "completed":
@@ -145,7 +155,7 @@ const HandoffParameters = Schema.Struct({
 
 /**
  * `browser_handoff`: give the user live control of the calling conversation's tab and wait for them to finish. The user
- * gets the Live View link in the UI and by push; the model never does. The wait is durable: a call cut off by an
+ * opens a Live View from the UI or the push, which mints its own links; the model never sees one. The wait is durable: a call cut off by an
  * eviction reruns and waits for the same handoff, so it is `safe` to replay.
  */
 export const browserHandoffTool = defineEffectTool({
@@ -153,7 +163,7 @@ export const browserHandoffTool = defineEffectTool({
   description: Arr.join(
     [
       `Hand the browser to the user for a step you cannot do, such as signing in, a CAPTCHA, or multi-factor authentication, and wait until they are done (at most ${HANDOFF_TIMEOUT_MS / 60_000} minutes).`,
-      "The user gets a private Live View link for your current tab, in their app and as a push notification, and sees your instructions there; you never see the link. Open the page you need done with `browser` first.",
+      "The user is told in their app and by a push notification, and takes over your current tab in a private Live View, where they see your instructions. Open the page you need done with `browser` first.",
       "Never ask the user to type a password or code to you in the chat. Say what to do in `instructions` and where to press Done. Afterwards take a look at the page: the result says only how the handoff ended.",
     ],
     "\n\n",

@@ -9,15 +9,32 @@ import {
   type HandoffStarted,
   type HandoffStartInput,
   type HandoffStatus,
+  type LiveViewLinks,
 } from "./host.ts";
 
-/** The Live View link the fake host mints: recognisable, so a test can look for it where it must not be. */
-export const LIVE_VIEW_URL =
-  "https://live.browser.run/ui/view?mode=tab&wss=live.browser.run/api/devtools/browser/s/page/t?jwt=SECRET-LIVE-VIEW-TOKEN";
+/** The credential in every Live View link the fake host mints, to look for where it must not be. */
+export const LIVE_VIEW_TOKEN = "SECRET-LIVE-VIEW-TOKEN";
 
-/** Browser Handoffs a fake host was asked to start, wait on, and end. */
+/** The Live View links the fake host mints: recognisable, so a test can look for them where they must not be. */
+export const LIVE_VIEW_LINKS: LiveViewLinks = {
+  tab: {
+    targetId: "tab-1",
+    link: `wss://live.browser.run/api/devtools/browser/s/page/tab-1?jwt=${LIVE_VIEW_TOKEN}`,
+  },
+  windows: [
+    {
+      targetId: "popup-1",
+      openerId: "tab-1",
+      title: "Sign in",
+      link: `wss://live.browser.run/api/devtools/browser/s/page/popup-1?jwt=${LIVE_VIEW_TOKEN}`,
+    },
+  ],
+};
+
+/** Browser Handoffs a fake host was asked to start, mint links for, wait on, and end. */
 export type HandoffCalls = {
   readonly started: HandoffStartInput[];
+  readonly liveViews: string[];
   readonly waits: Array<{ readonly requestId: string; readonly maxMs: number }>;
   readonly ended: string[];
 };
@@ -30,9 +47,11 @@ export const fakeHandoffHost = (
     readonly run?: (code: string) => Effect.Effect<BrowserRun, BrowserError>;
     readonly start?: (input: HandoffStartInput) => Effect.Effect<HandoffStarted, BrowserError>;
     readonly now?: () => number;
+    /** The origins of the windows the tab leaves open, which ending a handoff says. */
+    readonly windows?: ReadonlyArray<string>;
   } = {},
 ) => {
-  const calls: HandoffCalls = { started: [], waits: [], ended: [] };
+  const calls: HandoffCalls = { started: [], liveViews: [], waits: [], ended: [] };
   let round = 0;
   const now = options.now ?? Date.now;
 
@@ -48,7 +67,13 @@ export const fakeHandoffHost = (
       Effect.suspend(() => {
         calls.started.push(input);
 
-        return options.start?.(input) ?? Effect.succeed({ url: LIVE_VIEW_URL, startedAt: now() });
+        return options.start?.(input) ?? Effect.succeed({ startedAt: now() });
+      }),
+    liveView: (requestId) =>
+      Effect.sync(() => {
+        calls.liveViews.push(requestId);
+
+        return LIVE_VIEW_LINKS;
       }),
     waitHandoff: (requestId, maxMs) =>
       Effect.suspend((): Effect.Effect<HandoffStatus, BrowserError> => {
@@ -68,6 +93,8 @@ export const fakeHandoffHost = (
     endHandoff: (requestId) =>
       Effect.sync(() => {
         calls.ended.push(requestId);
+
+        return { windows: options.windows ?? [] };
       }),
   };
 
