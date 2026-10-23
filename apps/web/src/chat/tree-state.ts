@@ -158,5 +158,8 @@ export const pendingMoveAtom = Atom.make<PendingMove | null>(null);
 /** A Fork or Clone in a new Workspace waiting for the owner to name its branch, or null. */
 export const pendingForkAtom = Atom.make<Omit<ForkRequest, "newWorkspace" | "branch"> | null>(null);
 
+/** `/fork` without a message: the picker of the owner's messages is open, for a Fork here or in a new Workspace. */
+export const forkPickerAtom = Atom.make<{ readonly newWorkspace: boolean } | null>(null);
+
 /** Whether a Fork or Clone is being made: the Registry answers once the new Session is filled, so one at a time. */
 export const forkingAtom = Atom.make(false);

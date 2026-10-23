@@ -22,7 +22,7 @@ import type { ConnectionStatus } from "../session/state.ts";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
-import { TreeBarScope, TreeDialogs, TreePaneToggle, useCopying } from "./session-tree.tsx";
+import { TreeBarScope, TreeDialogs, TreePaneToggle, useCopyNotice } from "./session-tree.tsx";
 import { TasksPaneToggle } from "./tasks-pane.tsx";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
@@ -82,7 +82,7 @@ const LiveSession = ({
   rename: Rename | undefined;
 } & SessionPageProps) => {
   const status = useAtomValue(sessionStatusAtom(sessionId));
-  const copying = useCopying(sessionId);
+  const copyNotice = useCopyNotice(sessionId);
   const view = useAtomValue(sessionViewAtom(sessionId));
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
@@ -133,9 +133,7 @@ const LiveSession = ({
                 notice={
                   CONNECTION_NOTICE[status] ??
                   (problem === null || problem === undefined ? (
-                    copying ? (
-                      "Copying the conversation it was made from… It takes messages once it is done."
-                    ) : undefined
+                    copyNotice
                   ) : (
                     <span role="alert" className="whitespace-pre-wrap text-destructive">
                       {problem}

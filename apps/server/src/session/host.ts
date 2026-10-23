@@ -529,6 +529,19 @@ type Pick = { readonly model?: ModelRef; readonly thinkingLevel?: ModelThinkingL
 
 const PICK_KEY = "agent-pick";
 
+/**
+ * What a Fork keeps picked: the fields its source picks, each as the branch ran with it at the point (`agent`), so a
+ * pick changed since is the one in force then. The fields the source leaves to the default follow it in the Fork too.
+ */
+const pickAsOf = (pick: Pick, agent: AgentState): Pick => {
+  const model = pick.model === undefined ? undefined : (agent.model ?? pick.model);
+
+  const thinkingLevel =
+    pick.thinkingLevel === undefined ? undefined : (agent.thinkingLevel ?? pick.thinkingLevel);
+
+  return withChange({}, { model: model ?? null, thinkingLevel: thinkingLevel ?? null });
+};
+
 /** `pick` with `change` applied: a field left out stays, `null` clears it. */
 const withChange = (pick: Pick, change: AgentChange): Pick => {
   const next: Types.Mutable<Pick> = {};
@@ -2121,7 +2134,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         through,
         text,
         agent: structuredClone(agent ?? NO_AGENT),
-        pick: picked(),
+        pick: pickAsOf(picked(), agent ?? NO_AGENT),
         context: notes === undefined ? null : structuredClone(notes),
         todo: todo === undefined ? null : structuredClone(todo),
       } satisfies ForkPlan;

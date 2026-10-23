@@ -36,6 +36,7 @@ import {
   branchThrough,
   entryIdOf,
   latestAnswer,
+  ownerMessages,
   siblingsOf,
   TREE_FILTERS,
   type TreeFilter,
@@ -44,6 +45,7 @@ import {
 import { useShownSessionId } from "./conversation.ts";
 import {
   forkingAtom,
+  forkPickerAtom,
   forkSessionAtom,
   navigateAtom,
   pendingForkAtom,
@@ -68,9 +70,12 @@ const ARCHIVED = "Unarchive the session to move to another branch.";
 export const useTree = (sessionId: string): SessionTree | null =>
   useAtomValue(sessionTreeAtom(sessionId), (result) => AsyncResult.getOrElse(result, () => null));
 
-/** Whether the active branch is busy: a Run in progress, so it cannot be left. */
+/**
+ * Whether the active branch is busy, so it cannot be left: a Run in progress, or messages waiting to be placed. The
+ * Session also refuses while a compaction runs, which a client does not see; it says why then.
+ */
 const useBusy = (sessionId: string): boolean =>
-  useAtomValue(sessionViewAtom(sessionId), (view) => view.running);
+  useAtomValue(sessionViewAtom(sessionId), (view) => view.running || view.inbox.length > 0);
 
 /** Show `failure` on the page, or clear what it shows. */
 const useShowFailure = () => useAtomSet(pageProblemAtom);
@@ -596,6 +601,7 @@ const ForkFields = ({ close }: { close: () => void }) => {
   const pending = useAtomValue(pendingForkAtom);
   const [{ branch, running, failure }, setForm] = useAtom(ForkForm.use());
   const fork = useCall(forkSessionAtom);
+  const setForking = useAtomSet(forkingAtom);
 
   if (pending === null) return null;
 
@@ -610,9 +616,11 @@ const ForkFields = ({ close }: { close: () => void }) => {
         if (problem !== undefined || running) return;
 
         setForm({ branch, running: true, failure: null });
+        setForking(true);
         void fork({ ...pending, newWorkspace: true, branch }).then((exit) => {
           const why = exitFailure(exit);
 
+          setForking(false);
           setForm({ branch, running: false, failure: why });
 
           if (why === null) close();
@@ -676,14 +684,76 @@ const ForkDialog = () => {
   );
 };
 
+/** `/fork` without a message: the active branch's owner's messages, newest first, each forking from before it. */
+const ForkPickerDialog = () => {
+  const [picking, setPicking] = useAtom(forkPickerAtom);
+  const tree = useTree(useShownSessionId());
+  const fork = useFork();
+
+  const close = () => {
+    setPicking(null);
+  };
+
+  const messages = tree === null ? [] : ownerMessages(tree).toReversed();
+
+  return (
+    <Dialog
+      open={picking !== null}
+      onClose={close}
+      title={picking?.newWorkspace === true ? "Fork in a new workspace" : "Fork"}
+      description="Pick the message to start the new session from: it goes back in the new session's composer."
+    >
+      {messages.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {tree === null ? "Loading…" : "There is no message of yours to fork from yet."}
+        </p>
+      ) : (
+        <ul aria-label="Your messages" className="flex max-h-80 flex-col overflow-y-auto">
+          {messages.map((node) => (
+            <li key={node.id}>
+              <button
+                type="button"
+                onClick={() => {
+                  close();
+                  fork({ entryId: node.id, position: "before" }, picking?.newWorkspace === true);
+                }}
+                className="w-full truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+              >
+                {node.text === "" ? "…" : node.text}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Dialog>
+  );
+};
+
 /** The dialogs of the Session tree: mounted once on the Session's page. */
 export const TreeDialogs = (): ReactNode => (
   <>
     <SummaryDialog />
     <ForkDialog />
+    <ForkPickerDialog />
   </>
 );
 
 /** Whether the Session is still being copied from the one it is a Fork or Clone of. */
 export const useCopying = (sessionId: string): boolean =>
   useAtomValue(sessionStateAtom(sessionId), (state) => state.copying);
+
+/**
+ * What the Session's page says of a copy under way: this Session being filled from the one it was made from, or a Fork
+ * or Clone of it being made, which the Registry answers once the copy is done.
+ */
+export const useCopyNotice = (sessionId: string): string | undefined => {
+  const copying = useCopying(sessionId);
+  const forking = useAtomValue(forkingAtom);
+
+  if (copying)
+    return "Copying the conversation it was made from… It takes messages once it is done.";
+
+  if (forking) return "Copying this conversation into the new session…";
+
+  return undefined;
+};

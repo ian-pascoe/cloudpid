@@ -189,6 +189,27 @@ describe("copying a Session for a Fork or Clone", () => {
     });
   });
 
+  it("keeps picked the model the branch ran with at the point, and leaves the default unpicked", async () => {
+    await runInDurableObject(fresh(), async (instance: TestSession) => {
+      instance.script(["one", "two"]);
+      await instance.configure({ model: { provider: "anthropic", modelId: "claude-haiku-5-5" } });
+      await instance.prompt({ requestId: "turn-1", text: "first" });
+      await instance.configure({ model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } });
+      await instance.prompt({ requestId: "turn-2", text: "second" });
+
+      const tree = await instance.tree();
+
+      const plan = await instance.forkInto("fork-with-a-pick", {
+        entryId: node(tree, "assistant", "one").id,
+        position: "at",
+        idle: false,
+      });
+
+      expect(plan.pick.model).toMatchObject({ provider: "anthropic", modelId: "claude-haiku-5-5" });
+      expect(plan.pick.thinkingLevel).toBeUndefined();
+    });
+  });
+
   it("refuses a Clone while the Run is in progress", async () => {
     await runInDurableObject(fresh(), async (instance: TestSession) => {
       await twoExchanges(instance);

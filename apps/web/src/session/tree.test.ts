@@ -58,9 +58,10 @@ const tree: SessionTree = {
 };
 
 describe("the Session tree's filters", () => {
-  it("shows the owner's messages, notices and final answers by default", () => {
+  it("shows the owner's messages and final answers by default", () => {
     expect(shows("default", node(1, null, 1, "user"))).toBe(true);
-    expect(shows("default", node(1, null, 1, "notice"))).toBe(true);
+    expect(shows("default", node(1, null, 1, "notice"))).toBe(false);
+    expect(shows("no-tools", node(1, null, 1, "notice"))).toBe(true);
     expect(shows("default", node(1, null, 1, "assistant", true))).toBe(true);
     expect(shows("default", node(1, null, 1, "assistant"))).toBe(false);
     expect(shows("default", node(1, null, 1, "tool"))).toBe(false);

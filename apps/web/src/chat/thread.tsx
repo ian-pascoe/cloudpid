@@ -11,7 +11,7 @@ import { panesAtom } from "../panes-state.ts";
 import { TREE_PANE } from "../panes.ts";
 import { ownerMessages } from "../session/tree.ts";
 import { useFork, useTree } from "./session-tree.tsx";
-import type { TreePoint } from "./tree-state.ts";
+import { forkPickerAtom, type TreePoint } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
@@ -210,10 +210,18 @@ type TreeCommands = {
   readonly archived: boolean;
   readonly openTree: () => void;
   readonly fork: (point: TreePoint | undefined, newWorkspace: boolean) => void;
+  /** Open the picker of the owner's messages, for `/fork` without one. */
+  readonly pickFork: (newWorkspace: boolean) => void;
 };
 
 /** The Session tree's Slash commands: `/tree`, `/fork` from one of the owner's messages, and `/clone`. */
-const treeCommands = ({ messages, archived, openTree, fork }: TreeCommands): ComposerCommand[] => {
+const treeCommands = ({
+  messages,
+  archived,
+  openTree,
+  fork,
+  pickFork,
+}: TreeCommands): ComposerCommand[] => {
   const commands: ComposerCommand[] = [];
 
   if (!archived) {
@@ -233,14 +241,22 @@ const treeCommands = ({ messages, archived, openTree, fork }: TreeCommands): Com
     {
       name: "fork",
       description: "Start a new session from before one of your messages",
-      argumentHint: "<message> [new]",
-      argument: "required",
+      argumentHint: "[message] [new]",
+      argument: "optional",
       choices: Arr.map(messages ?? [], (node, index) => ({
         value: String(index + 1),
         description: node.text,
       })),
       run: (args) => {
         const [which = "", where = ""] = args.split(/\s+/u);
+
+        // Without a message, the owner picks one.
+        if (which === "" || (which === "new" && where === "")) {
+          pickFork(which === "new");
+
+          return null;
+        }
+
         const node = messages?.[Number(which) - 1];
 
         if (messages === null) return "The session tree has not loaded yet; try again.";
@@ -457,6 +473,7 @@ export const Thread = ({
   const dropZone = useRef<HTMLDivElement>(null);
 
   const tree = useTree(sessionId);
+  const setForkPicker = useAtomSet(forkPickerAtom);
   const actOnPanes = useAtomSet(panesAtom);
   const fork = useFork();
 
@@ -476,6 +493,9 @@ export const Thread = ({
         actOnPanes({ type: "open", key: TREE_PANE });
       },
       fork,
+      pickFork: (newWorkspace) => {
+        setForkPicker({ newWorkspace });
+      },
     }),
   ];
 

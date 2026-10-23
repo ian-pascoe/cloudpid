@@ -19,9 +19,7 @@ export const TREE_FILTERS: ReadonlyArray<{ readonly value: TreeFilter; readonly 
 export const shows = (filter: TreeFilter, node: TreeNode): boolean => {
   switch (filter) {
     case "default":
-      return (
-        node.role === "user" || node.role === "notice" || (node.role === "assistant" && node.final)
-      );
+      return node.role === "user" || (node.role === "assistant" && node.final);
     case "no-tools":
       return node.role !== "tool";
     case "user-only":
