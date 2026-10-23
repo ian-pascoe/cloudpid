@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 
-import { DEFAULT_MACHINE_SETTINGS, INSTANCE_TYPES, MAX_IGNORE_PATTERNS } from "@cloudpid/config";
+import { DEFAULT_CONTAINER_SETTINGS, INSTANCE_TYPES, MAX_IGNORE_PATTERNS } from "@cloudpid/config";
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
@@ -139,7 +139,7 @@ describe("instanceLabel", () => {
 
   it("marks exactly one of the offered sizes", () => {
     expect(INSTANCE_TYPES.filter((type) => instanceLabel(type).endsWith("(default)"))).toEqual([
-      DEFAULT_MACHINE_SETTINGS.instance,
+      DEFAULT_CONTAINER_SETTINGS.instance,
     ]);
   });
 });

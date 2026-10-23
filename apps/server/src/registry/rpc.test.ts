@@ -1,9 +1,9 @@
 // @effect-diagnostics asyncFunction:off
 import {
   DEFAULT_SETTINGS,
-  DEFAULT_MACHINE_SETTINGS,
+  DEFAULT_CONTAINER_SETTINGS,
   SettingsError,
-  type MachineSettings,
+  type ContainerSettings,
 } from "@cloudpid/config";
 import {
   RegistryRpcs,
@@ -37,7 +37,7 @@ import type { SessionRecord, MachineRecord, WorkspaceRecord } from "./store.ts";
 
 /** The overrides the fake saved, as the fields of the settings they replace. */
 // SAFETY: the tests only save overrides of the settings' own shape.
-const asSettings = (overrides: Schema.Json) => overrides as Partial<MachineSettings>;
+const asSettings = (overrides: Schema.Json) => overrides as Partial<ContainerSettings>;
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
@@ -377,7 +377,7 @@ const fakeRegistries = () => {
       const overrides = saved.get(slug) ?? {};
 
       return Promise.resolve({
-        settings: { ...DEFAULT_MACHINE_SETTINGS, ...asSettings(overrides) },
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, ...asSettings(overrides) },
         overrides,
       });
     },
@@ -391,7 +391,7 @@ const fakeRegistries = () => {
 
       return Promise.resolve({
         ok: true,
-        state: { settings: { ...DEFAULT_MACHINE_SETTINGS, ...asSettings(overrides) }, overrides },
+        state: { settings: { ...DEFAULT_CONTAINER_SETTINGS, ...asSettings(overrides) }, overrides },
       });
     },
   };
@@ -767,7 +767,7 @@ it("reads a Machine's own settings from its object, not the Registry", async () 
     fake,
   );
 
-  expect(state.settings).toEqual(DEFAULT_MACHINE_SETTINGS);
+  expect(state.settings).toEqual(DEFAULT_CONTAINER_SETTINGS);
   expect(fake.calls).toEqual(["createMachine", "readWorkspaceSettings"]);
 });
 

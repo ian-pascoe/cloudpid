@@ -21,9 +21,9 @@ import type {
 } from "@cloudflare/computer/backends/container";
 import {
   containerInstance,
-  DEFAULT_MACHINE_SETTINGS,
+  DEFAULT_CONTAINER_SETTINGS,
   type InstanceType,
-  type MachineSettings,
+  type ContainerSettings,
 } from "@cloudpid/config";
 import type { ContainerSnapshots, SnapshotOutcome, SnapshotReason } from "./snapshots.ts";
 
@@ -48,9 +48,9 @@ export type LaunchRecord = {
 
 export type ContainerLaunchDeps = {
   /** The Workspace's settings now. */
-  readonly settings: () => Promise<MachineSettings>;
+  readonly settings: () => Promise<ContainerSettings>;
   /** The Container-only paths a launch with `settings` has: the built-in ones, then the Workspace's own. */
-  readonly ignore: (settings: MachineSettings) => readonly string[] | undefined;
+  readonly ignore: (settings: ContainerSettings) => readonly string[] | undefined;
   readonly snapshots: Pick<ContainerSnapshots, "restorable" | "restored" | "forget" | "take">;
   /** The reference of the image a Container launched now would run. */
   readonly image: () => string | undefined;
@@ -133,7 +133,7 @@ export class ContainerLaunch {
 
       return kept !== undefined && "ignore" in kept
         ? kept.ignore
-        : this.#deps.ignore(DEFAULT_MACHINE_SETTINGS);
+        : this.#deps.ignore(DEFAULT_CONTAINER_SETTINGS);
     }
 
     return this.#deps.ignore(await this.#deps.settings());
@@ -143,7 +143,7 @@ export class ContainerLaunch {
   async idleMs(): Promise<number> {
     const record = await this.#current();
 
-    return (record?.idleMinutes ?? DEFAULT_MACHINE_SETTINGS.idleMinutes) * MINUTE;
+    return (record?.idleMinutes ?? DEFAULT_CONTAINER_SETTINGS.idleMinutes) * MINUTE;
   }
 
   /**

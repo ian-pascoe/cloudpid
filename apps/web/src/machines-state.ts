@@ -1,7 +1,11 @@
 // The Machine list, what the owner does to a Machine in it (create, edit, delete, clone a repo), and the state of the
 // Machines page's forms and dialogs.
 
-import { machineOverridesFrom, type InstanceType, type MachineSettings } from "@cloudpid/config";
+import {
+  containerOverridesFrom,
+  type InstanceType,
+  type ContainerSettings,
+} from "@cloudpid/config";
 import type { MachineSettingsState } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -67,7 +71,7 @@ export const machineDialogAtom = Atom.family((_slug: string) =>
 /** What changes in Machine `slug` when its Edit dialog is saved: a new name, new Container settings, or both. */
 export interface MachineEdit {
   readonly name: string | undefined;
-  readonly settings: MachineSettings | undefined;
+  readonly settings: ContainerSettings | undefined;
 }
 
 /**
@@ -92,7 +96,7 @@ export const saveMachineAtom = Atom.family((slug: string) =>
           : yield* RegistryClient.use((registry) =>
               registry("updateMachineSettings", {
                 machine: slug,
-                overrides: machineOverridesFrom(settings),
+                overrides: containerOverridesFrom(settings),
               }),
             );
       }).pipe(

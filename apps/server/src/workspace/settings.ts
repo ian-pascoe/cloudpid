@@ -5,10 +5,10 @@
 // Worker answers from this object.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import {
-  resolveMachineSettings,
-  resolveMachineSettingsLeniently,
-  type MachineSettings,
-  machineOverridesFrom,
+  resolveContainerSettings,
+  resolveContainerSettingsLeniently,
+  type ContainerSettings,
+  containerOverridesFrom,
 } from "@cloudpid/config";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
@@ -18,7 +18,7 @@ const SETTINGS_KEY = "cloudpid:workspace-settings";
 
 /** The settings in force and the overrides they come from, as plain data a Durable Object can answer over RPC. */
 export type WorkspaceSettingsAnswer = {
-  readonly settings: MachineSettings;
+  readonly settings: ContainerSettings;
   readonly overrides: Schema.Json;
   /** Why only some of the saved overrides applied, when a later release no longer accepts one. */
   readonly problem?: string;
@@ -37,7 +37,7 @@ export type SettingsStorage = {
 export const workspaceSettingsStore = (storage: SettingsStorage) => {
   const read = async (): Promise<WorkspaceSettingsAnswer> => {
     const overrides = (await storage.get<Schema.Json>(SETTINGS_KEY)) ?? {};
-    const { settings, dropped } = resolveMachineSettingsLeniently(overrides);
+    const { settings, dropped } = resolveContainerSettingsLeniently(overrides);
 
     return dropped.length === 0
       ? { settings, overrides }
@@ -45,12 +45,12 @@ export const workspaceSettingsStore = (storage: SettingsStorage) => {
   };
 
   const write = async (overrides: Schema.Json): Promise<WriteAnswer> => {
-    const resolved = resolveMachineSettings(overrides);
+    const resolved = resolveContainerSettings(overrides);
 
     if (Result.isFailure(resolved)) return { ok: false, message: resolved.failure.message };
 
     // Only what differs from the defaults is kept, so a setting left alone follows later changes of the default.
-    const kept = machineOverridesFrom(resolved.success);
+    const kept = containerOverridesFrom(resolved.success);
 
     await storage.put(SETTINGS_KEY, kept);
 

@@ -1,10 +1,10 @@
 // @effect-diagnostics preferEffectArray:off newSchemaClass:off -- in-memory fakes of the Registry over native arrays.
 
 import {
-  DEFAULT_MACHINE_SETTINGS,
+  DEFAULT_CONTAINER_SETTINGS,
   INSTANCE_TYPES,
-  machineOverridesFrom,
-  type MachineSettings,
+  containerOverridesFrom,
+  type ContainerSettings,
 } from "@cloudpid/config";
 import {
   MachineError,
@@ -315,14 +315,14 @@ describe("the repos of a Machine", () => {
   });
 });
 
-const stateOf = (settings: MachineSettings): MachineSettingsState => ({
+const stateOf = (settings: ContainerSettings): MachineSettingsState => ({
   settings,
-  overrides: machineOverridesFrom(settings),
+  overrides: containerOverridesFrom(settings),
 });
 
 /** A Registry holding the settings of Machine `work`; the first `failures` loads fail, and an idle time of 9999 is refused. */
 const configured = (failures = 0) => {
-  let held = DEFAULT_MACHINE_SETTINGS;
+  let held = DEFAULT_CONTAINER_SETTINGS;
   let left = failures;
   const saved: unknown[] = [];
 
@@ -356,7 +356,7 @@ describe("the settings of a Machine", () => {
 
       expect(
         AsyncResult.getOrThrow(yield* settled(registry, machineSettingsAtom("work"))).settings,
-      ).toEqual(DEFAULT_MACHINE_SETTINGS);
+      ).toEqual(DEFAULT_CONTAINER_SETTINGS);
     }),
   );
 
@@ -376,7 +376,7 @@ describe("the settings of a Machine", () => {
       expect(settledFailureOf(registry.get(machineSettingsAtom("work")))).toBeNull();
       expect(
         AsyncResult.getOrThrow(yield* settled(registry, machineSettingsAtom("work"))).settings,
-      ).toEqual(DEFAULT_MACHINE_SETTINGS);
+      ).toEqual(DEFAULT_CONTAINER_SETTINGS);
     }),
   );
 
@@ -427,7 +427,7 @@ const paging = (settingsGate?: Deferred.Deferred<void>) => {
   const repos: string[] = [];
   const saved: unknown[] = [];
   const renamed: string[] = [];
-  let held = DEFAULT_MACHINE_SETTINGS;
+  let held = DEFAULT_CONTAINER_SETTINGS;
 
   const registry = registryWith({
     listMachines: () => Effect.sync(() => [...machines]),
@@ -693,8 +693,8 @@ describe("the Edit dialog's draft", () => {
 
       expect(registry.get(machineDraftAtom("work"))).toEqual({
         name: "Work",
-        instance: DEFAULT_MACHINE_SETTINGS.instance,
-        idle: String(DEFAULT_MACHINE_SETTINGS.idleMinutes),
+        instance: DEFAULT_CONTAINER_SETTINGS.instance,
+        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "",
       });
     }),
@@ -707,7 +707,7 @@ describe("the Edit dialog's draft", () => {
 
       yield* opened(registry);
 
-      const other = INSTANCE_TYPES.find((type) => type !== DEFAULT_MACHINE_SETTINGS.instance)!;
+      const other = INSTANCE_TYPES.find((type) => type !== DEFAULT_CONTAINER_SETTINGS.instance)!;
 
       registry.set(machineDraftAtom("work"), {
         name: "Renamed",
@@ -721,7 +721,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(machineDraftAtom("work"))).toEqual({
         name: "Renamed",
         instance: other,
-        idle: String(DEFAULT_MACHINE_SETTINGS.idleMinutes),
+        idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "/data",
       });
     }),

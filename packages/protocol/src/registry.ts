@@ -1,6 +1,6 @@
 // The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions and Machines. They
 // hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import { Settings, SettingsError, MachineSettings } from "@cloudpid/config";
+import { Settings, SettingsError, ContainerSettings } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -140,7 +140,7 @@ export type SettingsState = typeof SettingsState.Type;
  * they come from. They apply at the Machine's next Container launch.
  */
 export const MachineSettingsState = Schema.Struct({
-  settings: MachineSettings,
+  settings: ContainerSettings,
   overrides: Schema.Json,
   /** Why the saved overrides were only partly used, when some no longer resolve: the rest still apply. */
   problem: Schema.optionalKey(Schema.String),

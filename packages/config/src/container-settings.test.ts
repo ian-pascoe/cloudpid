@@ -3,19 +3,19 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   containerInstance,
-  DEFAULT_MACHINE_SETTINGS,
+  DEFAULT_CONTAINER_SETTINGS,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
   INSTANCE_TYPES,
   MAX_IGNORE_PATTERNS,
-  resolveMachineSettings,
-  resolveMachineSettingsLeniently,
-  machineOverridesFrom,
-  type MachineSettings,
-} from "./machine-settings.ts";
+  resolveContainerSettings,
+  resolveContainerSettingsLeniently,
+  containerOverridesFrom,
+  type ContainerSettings,
+} from "./container-settings.ts";
 
-const resolved = (overrides: Schema.Json): MachineSettings => {
-  const result = resolveMachineSettings(overrides);
+const resolved = (overrides: Schema.Json): ContainerSettings => {
+  const result = resolveContainerSettings(overrides);
 
   if (Result.isFailure(result)) throw new Error(result.failure.message);
 
@@ -23,7 +23,7 @@ const resolved = (overrides: Schema.Json): MachineSettings => {
 };
 
 const rejected = (overrides: Schema.Json): string => {
-  const result = resolveMachineSettings(overrides);
+  const result = resolveContainerSettings(overrides);
 
   if (Result.isSuccess(result)) throw new Error("Expected the overrides to be rejected");
 
@@ -32,7 +32,7 @@ const rejected = (overrides: Schema.Json): string => {
 
 describe("the defaults", () => {
   it("are the 2 vCPU / 6 GiB custom size and a 5-minute idle stop, as the spec says", () => {
-    expect(DEFAULT_MACHINE_SETTINGS).toEqual({
+    expect(DEFAULT_CONTAINER_SETTINGS).toEqual({
       instance: "custom-2",
       idleMinutes: 5,
       ignore: [],
@@ -40,7 +40,7 @@ describe("the defaults", () => {
   });
 
   it("are what no overrides resolve to", () => {
-    expect(resolved({})).toEqual(DEFAULT_MACHINE_SETTINGS);
+    expect(resolved({})).toEqual(DEFAULT_CONTAINER_SETTINGS);
   });
 });
 
@@ -61,7 +61,7 @@ describe("containerInstance", () => {
   });
 });
 
-describe("resolveMachineSettings", () => {
+describe("resolveContainerSettings", () => {
   it("gives each override over the default, and leaves the rest", () => {
     expect(resolved({ instance: "basic" })).toEqual({
       instance: "basic",
@@ -143,28 +143,32 @@ describe("resolveMachineSettings", () => {
   });
 });
 
-describe("machineOverridesFrom", () => {
+describe("containerOverridesFrom", () => {
   it("keeps only what differs from the defaults, so a setting left alone follows later defaults", () => {
-    expect(machineOverridesFrom(DEFAULT_MACHINE_SETTINGS)).toEqual({});
-    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, instance: "standard-4" })).toEqual({
+    expect(containerOverridesFrom(DEFAULT_CONTAINER_SETTINGS)).toEqual({});
+    expect(
+      containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-4" }),
+    ).toEqual({
       instance: "standard-4",
     });
     // standard-2 was the default: a Machine that picks it now keeps it as an override.
-    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, instance: "standard-2" })).toEqual({
+    expect(
+      containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-2" }),
+    ).toEqual({
       instance: "standard-2",
     });
-    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, idleMinutes: 15 })).toEqual({
+    expect(containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, idleMinutes: 15 })).toEqual({
       idleMinutes: 15,
     });
-    expect(machineOverridesFrom({ ...DEFAULT_MACHINE_SETTINGS, ignore: ["/data"] })).toEqual({
+    expect(containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, ignore: ["/data"] })).toEqual({
       ignore: ["/data"],
     });
   });
 });
 
-describe("resolveMachineSettingsLeniently", () => {
+describe("resolveContainerSettingsLeniently", () => {
   it("drops a stale override and keeps the rest", () => {
-    const { settings, dropped } = resolveMachineSettingsLeniently({
+    const { settings, dropped } = resolveContainerSettingsLeniently({
       instance: "retired-9",
       idleMinutes: 30,
     });
@@ -175,6 +179,8 @@ describe("resolveMachineSettingsLeniently", () => {
   });
 
   it("gives the defaults for overrides that are not an object", () => {
-    expect(resolveMachineSettingsLeniently("nonsense").settings).toEqual(DEFAULT_MACHINE_SETTINGS);
+    expect(resolveContainerSettingsLeniently("nonsense").settings).toEqual(
+      DEFAULT_CONTAINER_SETTINGS,
+    );
   });
 });

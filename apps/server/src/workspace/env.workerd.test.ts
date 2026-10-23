@@ -5,7 +5,7 @@ import {
   ContainerBackend,
   type IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
-import { DEFAULT_MACHINE_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { discoverSkills } from "@cloudpid/extensions/skills-discovery";
@@ -238,7 +238,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
     };
 
     const launch = new ContainerLaunch({
-      settings: async () => ({ ...DEFAULT_MACHINE_SETTINGS, instance: "standard-3" }),
+      settings: async () => ({ ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-3" }),
       ignore: () => undefined,
       snapshots: {
         restorable: async () => ({ id: "snap-1", image: undefined }),
@@ -561,7 +561,7 @@ describe("deleting a Workspace", () => {
 
     expect(read.ok ? read.value : read.error.code).toBe("not_found");
     expect(await again.containerSettings()).toEqual({
-      settings: DEFAULT_MACHINE_SETTINGS,
+      settings: DEFAULT_CONTAINER_SETTINGS,
       overrides: {},
     });
   });
@@ -598,7 +598,7 @@ describe("resetting a Workspace", () => {
 
     expect(read.ok ? read.value : read.error.code).toBe("not_found");
     expect(await again.containerSettings()).toEqual({
-      settings: { ...DEFAULT_MACHINE_SETTINGS, instance: "standard-3", idleMinutes: 10 },
+      settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-3", idleMinutes: 10 },
       overrides: { instance: "standard-3", idleMinutes: 10 },
     });
     // The bundled skills are mounted again in the fresh Workspace.

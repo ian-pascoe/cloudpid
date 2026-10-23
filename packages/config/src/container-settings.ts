@@ -143,7 +143,7 @@ const IgnorePattern = Schema.String.check(
   }),
 );
 
-export const MachineSettings = Schema.Struct({
+export const ContainerSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-2"))),
   /** Minutes without a command on the Container before it is stopped (a disk snapshot is taken first). */
@@ -157,15 +157,15 @@ export const MachineSettings = Schema.Struct({
     .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 
-export type MachineSettings = typeof MachineSettings.Type;
+export type ContainerSettings = typeof ContainerSettings.Type;
 
 /** What is stored: the settings that differ from the defaults. */
-export type MachineSettingsOverrides = typeof MachineSettings.Encoded;
+export type ContainerSettingsOverrides = typeof ContainerSettings.Encoded;
 
-export class MachineSettingsError extends Schema.TaggedError<
-  MachineSettingsError,
+export class ContainerSettingsError extends Schema.TaggedError<
+  ContainerSettingsError,
   { readonly brand: unique symbol }
->()("MachineSettingsError", {
+>()("ContainerSettingsError", {
   message: Schema.String,
 }) {}
 
@@ -184,17 +184,17 @@ const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
     return { keys, line: path === "" ? issue.message : `${path}: ${issue.message}` };
   });
 
-const decodeOverrides = Schema.decodeUnknownResult(MachineSettings, {
+const decodeOverrides = Schema.decodeUnknownResult(ContainerSettings, {
   onExcessProperty: "error",
   errors: "all",
 });
 
 /** The settings `overrides` give over the defaults, or why they are not valid settings, one problem per line. */
-export const resolveMachineSettings = (
+export const resolveContainerSettings = (
   overrides: Schema.Json,
-): Result.Result<MachineSettings, MachineSettingsError> =>
+): Result.Result<ContainerSettings, ContainerSettingsError> =>
   Result.mapError(decodeOverrides(overrides), (error) =>
-    MachineSettingsError.make({
+    ContainerSettingsError.make({
       message: Arr.join(
         Arr.map(problemsOf(error), (problem) => problem.line),
         "\n",
@@ -204,19 +204,21 @@ export const resolveMachineSettings = (
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
-export const DEFAULT_MACHINE_SETTINGS: MachineSettings = Schema.decodeSync(MachineSettings)({});
+export const DEFAULT_CONTAINER_SETTINGS: ContainerSettings = Schema.decodeSync(ContainerSettings)(
+  {},
+);
 
 /** The overrides that make the defaults into `settings`: only what differs. What a settings form saves. */
-export const machineOverridesFrom = (settings: MachineSettings): MachineSettingsOverrides => {
+export const containerOverridesFrom = (settings: ContainerSettings): ContainerSettingsOverrides => {
   const overrides: {
-    -readonly [K in keyof MachineSettingsOverrides]: MachineSettingsOverrides[K];
+    -readonly [K in keyof ContainerSettingsOverrides]: ContainerSettingsOverrides[K];
   } = {};
 
-  if (settings.instance !== DEFAULT_MACHINE_SETTINGS.instance) {
+  if (settings.instance !== DEFAULT_CONTAINER_SETTINGS.instance) {
     overrides.instance = settings.instance;
   }
 
-  if (settings.idleMinutes !== DEFAULT_MACHINE_SETTINGS.idleMinutes) {
+  if (settings.idleMinutes !== DEFAULT_CONTAINER_SETTINGS.idleMinutes) {
     overrides.idleMinutes = settings.idleMinutes;
   }
 
@@ -226,9 +228,9 @@ export const machineOverridesFrom = (settings: MachineSettings): MachineSettings
 };
 
 /** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
-export type LenientMachineSettings = {
-  readonly settings: MachineSettings;
-  /** One line per override dropped, as `resolveMachineSettings` words it. */
+export type LenientContainerSettings = {
+  readonly settings: ContainerSettings;
+  /** One line per override dropped, as `resolveContainerSettings` words it. */
   readonly dropped: ReadonlyArray<string>;
 };
 
@@ -238,12 +240,14 @@ const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
 /**
  * The settings `overrides` give once every override that does not resolve is dropped, so a value a later release stops
  * accepting (an instance type Cloudflare retires) costs only itself. Reading what was saved is lenient and writing is
- * strict (`resolveMachineSettings`), as for the global settings.
+ * strict (`resolveContainerSettings`), as for the global settings.
  */
-export const resolveMachineSettingsLeniently = (overrides: Schema.Json): LenientMachineSettings => {
+export const resolveContainerSettingsLeniently = (
+  overrides: Schema.Json,
+): LenientContainerSettings => {
   if (!isJsonObject(overrides)) {
     return {
-      settings: DEFAULT_MACHINE_SETTINGS,
+      settings: DEFAULT_CONTAINER_SETTINGS,
       dropped: Result.isSuccess(decodeOverrides(overrides)) ? [] : ["not an object"],
     };
   }
@@ -268,5 +272,5 @@ export const resolveMachineSettingsLeniently = (overrides: Schema.Json): Lenient
     rest = Record.filter(rest, (_, key) => !bad.has(key));
   }
 
-  return { settings: DEFAULT_MACHINE_SETTINGS, dropped };
+  return { settings: DEFAULT_CONTAINER_SETTINGS, dropped };
 };

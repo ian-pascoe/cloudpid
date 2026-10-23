@@ -7,7 +7,7 @@ import {
   MachineSlug,
 } from "@cloudpid/protocol";
 import {
-  DEFAULT_MACHINE_SETTINGS,
+  DEFAULT_CONTAINER_SETTINGS,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
   type InstanceType,
@@ -104,7 +104,7 @@ export const sourceProblem = (text: string): string | null => {
 
 /** An instance type's line in the Edit dialog's size list: its name and what it offers, the default marked as such. */
 export const instanceLabel = (type: InstanceType): string =>
-  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_MACHINE_SETTINGS.instance ? " (default)" : ""}`;
+  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_CONTAINER_SETTINGS.instance ? " (default)" : ""}`;
 
 /** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
 export const idleMinutesProblem = (text: string): string | null => {
