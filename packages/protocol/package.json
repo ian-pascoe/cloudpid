@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./live-view": "./src/live-view.ts",
     "./repo": "./src/repo.ts"
   },
   "scripts": {

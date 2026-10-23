@@ -5,6 +5,7 @@
 // a conversation names another `cwd`, once the Workspace is readied: its Repos cloned on its branch (`prepare.ts`).
 // @effect-diagnostics asyncFunction:off globalDate:off missingPipeableSignature:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
+import type { ContainerControl } from "@cloudpid/extensions/container";
 import type { FileSearch } from "@cloudpid/extensions/files";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
 import { WORKSPACE_ROOT, workspaceObjectName } from "../workspace/binding.ts";
@@ -30,6 +31,7 @@ export type WorkspaceNamespace = {
       | "updateEnvironmentSecrets"
       | "environmentSecretsUnavailable"
       | "containerUsage"
+      | "stopContainer"
     >;
 };
 
@@ -165,6 +167,11 @@ export type SessionWorkspace = {
   readonly lookupEnv: NonNullable<HarnessOptions["env"]>;
   /** The Workspace's file search, for `ls`, `find`, and `grep`. */
   readonly files: FileSearch;
+  /**
+   * The Workspace's Container, for `restart_container`. It does not ready the Workspace first: readying may need the
+   * Container, which is what a restart is for when it no longer answers.
+   */
+  readonly container: ContainerControl;
 };
 
 export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorkspace => {
@@ -193,6 +200,14 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
     });
   };
 
+  const container: ContainerControl = {
+    restart: async ({ fresh }) => {
+      const placed = await options.placement();
+
+      return options.namespace.getByName(placed.object).stopContainer({ forgetSnapshot: fresh });
+    },
+  };
+
   return {
     env: async (target) => {
       const placed = await ready();
@@ -206,5 +221,6 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
       return envIn(placed, target.cwd ?? placed.directory);
     },
     files,
+    container,
   };
 };

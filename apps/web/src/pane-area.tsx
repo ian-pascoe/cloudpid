@@ -4,7 +4,7 @@
 // right column on `md` and up, its width kept on the device; a full-screen sheet on a phone. Every Pane type lives here:
 // none picks its own edge.
 
-import { useAtom } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import { X } from "lucide-react";
@@ -17,10 +17,19 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react";
+import { useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
 import { TasksPane } from "./chat/tasks-pane.tsx";
 import { cn } from "./lib/utils.ts";
-import { paneKeyOf, tabForKey, type PaneProps, type PaneTypeId } from "./panes.ts";
+import { LiveViewPane } from "./live-view/live-view-pane.tsx";
+import { handoffAgentsAtom } from "./live-view/atoms.ts";
+import {
+  paneKeyOf,
+  tabForKey,
+  type AgentOfHandoff,
+  type PaneProps,
+  type PaneTypeId,
+} from "./panes.ts";
 import {
   DEFAULT_PANE_WIDTH,
   MAX_PANE_WIDTH,
@@ -31,7 +40,11 @@ import {
 } from "./panes-state.ts";
 
 /** The component each Pane type shows. A type in `PANE_TYPES` with none is a type error. */
-const PANE_COMPONENTS = { tasks: TasksPane, tree: SessionTreePane } satisfies {
+const PANE_COMPONENTS = {
+  tasks: TasksPane,
+  tree: SessionTreePane,
+  "live-view": LiveViewPane,
+} satisfies {
   readonly [Id in PaneTypeId]: ComponentType<PaneProps>;
 };
 
@@ -90,9 +103,17 @@ const ResizeHandle = ({
   );
 };
 
+/** What the tabs' labels look up in the Session shown: whose Browser Handoff a Live View is for. */
+const useAgentOfHandoff = (): AgentOfHandoff => {
+  const agents = useAtomValue(handoffAgentsAtom(useShownSessionId()));
+
+  return (requestId) => agents.get(requestId);
+};
+
 /** The Pane area of the Session shown: nothing while no Pane is open. */
 export const PaneArea = () => {
   const [{ open, shown }, act] = useAtom(panesAtom);
+  const agentOfHandoff = useAgentOfHandoff();
   const [width] = useAtom(paneWidthAtom);
   const base = useId();
   const area = useRef<HTMLElement>(null);
@@ -138,7 +159,7 @@ export const PaneArea = () => {
         >
           {open.map((key) => {
             const pane = paneKeyOf(key);
-            const label = pane?.type.label(pane.argument) ?? { name: key };
+            const label = pane?.type.label(pane.argument, agentOfHandoff) ?? { name: key };
             const selected = key === shown;
 
             return (

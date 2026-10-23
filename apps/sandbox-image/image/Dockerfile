@@ -1,6 +1,6 @@
 # The Workspace Container's image (docs/spec.md → Container and Toolchains, ADR-0004): Ubuntu 24.04 LTS with fuse3, the
-# everyday command-line tools, a C toolchain, Docker, computerd under its supervisor, and mise with its installs of the
-# base mise.toml's Toolchains. Every program a project uses is a mise Toolchain; the image's installs are only found by mise for a
+# everyday command-line tools, a C toolchain, Docker, computerd under its supervisor with a memory guard, and mise with
+# its installs of the base mise.toml's Toolchains. Every program a project uses is a mise Toolchain; the image's installs are only found by mise for a
 # Workspace that asks for those versions. The image is glibc-based because computerd is a glibc Node SEA, and
 # linux/amd64 because that is what Cloudflare Containers run.
 
@@ -30,7 +30,8 @@ RUN apt-get update \
 FROM --platform=linux/amd64 ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 # The everyday tools agents and scripts expect (#169; some from exe.dev's exeuntu list), build-essential and the
-# headers native npm and pip packages build against, and Docker for Start Scripts' services. Versioned Toolchains
+# headers native npm and pip packages build against, Docker for Start Scripts' services, and earlyoom, the memory guard
+# the supervisor runs. Versioned Toolchains
 # (Node, Python, pnpm, git, gh) are mise's, never apt's: mise's shims come first on PATH anyway, so a git an apt
 # package pulled in would not shadow mise's. fd's binary is fdfind here; it gets its own name too.
 RUN apt-get update \
@@ -42,6 +43,7 @@ RUN apt-get update \
       rsync socat net-tools iputils-ping bubblewrap locales time \
       build-essential pkg-config libssl-dev zlib1g-dev libffi-dev \
       docker.io docker-compose-v2 docker-buildx \
+      earlyoom \
  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
  && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen \
  && rm -rf /var/lib/apt/lists/*
@@ -68,6 +70,12 @@ RUN cd /usr/local/share/cloudpid \
  && rm -rf /root/.cache /root/.local /tmp/*
 
 COPY --chmod=755 supervise /usr/local/bin/cloudpid-supervise
+
+# The memory guard, which the supervisor runs: earlyoom (an apt package above), and a note for the commands that run
+# when it stops a process, which the file every command's bash reads first (BASH_ENV) prints when the command ends
+# (docs/spec.md → Container and Toolchains → Memory guard).
+COPY --chmod=755 cloudpid-memory-guard /usr/local/bin/cloudpid-memory-guard
+COPY command.bash /usr/local/share/cloudpid/command.bash
 
 # computerd mounts its file system at MOUNT_POINT, so commands see the Workspace's files at /workspace. FUSE_MOUNT=auto
 # mounts through /dev/fuse where the platform exposes it (Cloudflare Containers) and falls back to a userspace shim

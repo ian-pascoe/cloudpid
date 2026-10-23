@@ -643,14 +643,31 @@ export class Workspace extends ContainerHost {
    * Container's disk held is gone. Commands running in the Container end. The idle alarm finds no Container to stop.
    */
   async restartContainer(): Promise<void> {
-    // Forgotten first, so a launch that slips in before the stop does not restore it.
-    await this.#snapshots.forget();
+    await this.stopContainer({ forgetSnapshot: true });
+  }
 
-    if (this.ctx.container?.running === true) await this.ctx.container.destroy();
+  /**
+   * Stop the Container if it runs, at once and without a snapshot of its own (the agent's `restart_container`, which
+   * works when computerd no longer answers: the platform stops the Container). The next command starts a Container
+   * from the snapshot the Workspace holds, as after an idle stop, with what its disk held when that was taken; with
+   * `forgetSnapshot` it is forgotten first, as the owner's restart does (`restartContainer`). Commands running in the
+   * Container end. Answers whether a Container was running.
+   */
+  async stopContainer(options: {
+    readonly forgetSnapshot: boolean;
+  }): Promise<{ readonly wasRunning: boolean }> {
+    // Forgotten first, so a launch that slips in before the stop does not restore it.
+    if (options.forgetSnapshot) await this.#snapshots.forget();
+
+    const wasRunning = this.ctx.container?.running === true;
+
+    if (wasRunning) await this.ctx.container?.destroy();
 
     await this.#usage.stopped().catch((cause: unknown) => {
       console.warn("container usage: tracking failed", cause);
     });
+
+    return { wasRunning };
   }
 
   /**

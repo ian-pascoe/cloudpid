@@ -5,6 +5,7 @@ import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/c
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
 import { BrowserHost, BrowserSession, type BrowserHandoffs } from "@cloudpid/extensions/browser";
+import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import type { Secrets } from "@cloudpid/extensions/secrets";
@@ -68,6 +69,7 @@ export class TestWorkspaceSession extends TestSession {
   > {
     return sessionExtensions.pipe(
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
+      Effect.provideService(WorkspaceContainer, this.#workspace().container),
       Effect.provideService(Images, this.env.IMAGES),
       Effect.provideService(CodemodeSandbox, this.sandbox()),
       // No browser: the tests script the model, and none drives one.
@@ -76,8 +78,9 @@ export class TestWorkspaceSession extends TestSession {
         run: () => Effect.succeed({ output: [] }),
         close: Effect.succeed(false),
         startHandoff: () => Effect.die("No browser"),
+        liveView: () => Effect.die("No browser"),
         waitHandoff: () => Effect.die("No browser"),
-        endHandoff: () => Effect.void,
+        endHandoff: () => Effect.succeed({ windowOrigins: [] }),
       }),
       Effect.provideService(BrowserSession, {
         touch: Effect.void,

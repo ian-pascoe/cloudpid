@@ -471,6 +471,9 @@ importers:
       '@cloudpid/effect-durable':
         specifier: workspace:*
         version: link:../effect-durable
+      '@cloudpid/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@earendil-works/chord':
         specifier: ^1.3.0
         version: 1.3.0

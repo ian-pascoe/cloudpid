@@ -1,5 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- Pane keys in native arrays, as the code under test keeps them.
 
+import { liveViewPaneKey } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   applyPaneAction,
@@ -58,8 +59,26 @@ describe("a Pane key", () => {
   });
 
   it("knows the Tasks Pane by default", () => {
-    expect(paneKeyOf("tasks")?.type.label(undefined)).toEqual({ name: "Tasks" });
+    expect(paneKeyOf("tasks")?.type.label(undefined, () => undefined)).toEqual({
+      name: "Tasks",
+    });
     expect(paneKeyOf("terminal:1")).toBeUndefined();
+  });
+
+  it("knows a Live View per Browser Handoff, named for a subagent's handoff by the agent", () => {
+    const pane = paneKeyOf(liveViewPaneKey("call-7"));
+
+    const agentOfHandoff = (requestId: string) =>
+      requestId === "call-7" ? "a2 (scout)" : undefined;
+
+    expect(pane?.argument).toBe("call-7");
+    expect(pane?.type.label(pane.argument, agentOfHandoff)).toEqual({
+      name: "Live View",
+      agent: "a2 (scout)",
+    });
+    // The root agent's handoff, or one the page does not know (yet): no agent.
+    expect(pane?.type.label("call-1", agentOfHandoff)).toEqual({ name: "Live View" });
+    expect(paneKeyOf("live-view")).toBeUndefined();
   });
 });
 

@@ -5,7 +5,14 @@
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { BrowserRun, HandoffStarted, HandoffStartInput, HandoffStatus } from "./contract.ts";
+import type {
+  BrowserRun,
+  HandoffEnded,
+  HandoffStarted,
+  HandoffStartInput,
+  HandoffStatus,
+  LiveViewLinks,
+} from "./contract.ts";
 
 export {
   BROWSER_IDLE_MS,
@@ -13,9 +20,14 @@ export {
   type BrowserOutputPart,
   type BrowserRun,
   HANDOFF_TIMEOUT_MS,
+  type HandoffEnded,
   type HandoffStarted,
   type HandoffStartInput,
   type HandoffStatus,
+  LIVE_VIEW_HANDOFF_OVER,
+  type LiveViewLinks,
+  type LiveViewTarget,
+  type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
 } from "./contract.ts";
 
@@ -39,18 +51,25 @@ export type BrowserHostService = {
   /** Close the Session's browser; says whether there was one. The next `run` starts a new browser. */
   readonly close: Effect.Effect<boolean, BrowserError>;
   /**
-   * Hand conversation `conversationId`'s tab to the owner (Browser Run's `Cloudflare.handoff`) and mint the Live View
-   * link. Starting a handoff again under the same `requestId` finds the one already started. Fails when the
-   * conversation has no tab to hand over.
+   * Hand conversation `conversationId`'s tab to the owner (Browser Run's `Cloudflare.handoff`). Starting a handoff again
+   * under the same `requestId` finds the one already started. Fails when the conversation has no tab to hand over.
    */
   readonly startHandoff: (input: HandoffStartInput) => Effect.Effect<HandoffStarted, BrowserError>;
+  /**
+   * Fresh 60-second Live View links to handoff `requestId`'s tab and the windows it opened, for the one client that
+   * asked. Fails (its message holds `LIVE_VIEW_HANDOFF_OVER`) once the handoff has ended.
+   */
+  readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, BrowserError>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   readonly waitHandoff: (
     requestId: string,
     maxMs: number,
   ) => Effect.Effect<HandoffStatus, BrowserError>;
-  /** Finish handoff `requestId`: end it in Browser Run if the owner has not, and forget it. */
-  readonly endHandoff: (requestId: string) => Effect.Effect<void, BrowserError>;
+  /**
+   * Finish handoff `requestId`: end it in Browser Run if the owner has not, give the agent its viewport back, and forget
+   * it. Says the origins of the windows the tab left open.
+   */
+  readonly endHandoff: (requestId: string) => Effect.Effect<HandoffEnded, BrowserError>;
 };
 
 export class BrowserHost extends Context.Service<BrowserHost, BrowserHostService>()(

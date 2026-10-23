@@ -6,6 +6,7 @@ import {
   type BrowserHandoffs,
 } from "@cloudpid/extensions/browser";
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
+import { ContainerTools, WorkspaceContainer } from "@cloudpid/extensions/container";
 import { ContextManagement } from "@cloudpid/extensions/context";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
@@ -24,7 +25,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * The extensions every Session's conversations run with: pi-durable's `read` (whose images the Session's `Images`
  * binding holds to the conversation's bound), `write`, and `edit`, and a `bash` that can run on the Worker Shell or the
  * Container, and `ls`, `find`, and `grep`, which work on the Session's Workspace (`./workspace.ts`) through the environment the Harness
- * builds for each call and the `WorkspaceFiles` they need; `web_search` and `web_fetch`; `codemode`, whose scripts call
+ * builds for each call and the `WorkspaceFiles` they need; `restart_container`, which stops the Workspace's Container through
+ * `WorkspaceContainer` when it no longer answers; `web_search` and `web_fetch`; `codemode`, whose scripts call
  * the tools above and run in the `CodemodeSandbox` (`./codemode.ts`); the subagent tools, which read their roles,
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
  * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; the `todo` tool,
@@ -34,7 +36,7 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
  * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
- * browser's Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
+ * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
  * `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
@@ -44,6 +46,7 @@ export const sessionExtensions: Effect.Effect<
   readonly Extension[],
   never,
   | WorkspaceFiles
+  | WorkspaceContainer
   | Images
   | WebConfig
   | CodemodeSandbox
@@ -64,6 +67,7 @@ export const sessionExtensions: Effect.Effect<
   Todo,
   Browser,
   Skills,
+  ContainerTools,
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),
 ]).pipe(

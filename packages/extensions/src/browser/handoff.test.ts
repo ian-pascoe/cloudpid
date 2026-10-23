@@ -1,13 +1,13 @@
 // A Browser Handoff's request (`./handoff.ts`): shown to the owner and pushed, waited on until the owner finishes or it
 // times out, withdrawn when its call ends, and found again after an eviction (a second store over the same storage).
-// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off
+// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off preferSchemaOverJson:off
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
 import { type BrowserHandoffRequest, makeBrowserHandoffs } from "./handoff.ts";
-import { fakeHandoffHost, LIVE_VIEW_URL } from "./host.fixture.ts";
+import { fakeHandoffHost, LIVE_VIEW_LINKS, LIVE_VIEW_TOKEN } from "./host.fixture.ts";
 import { BrowserError, type BrowserHostService, type HandoffStatus } from "./host.ts";
 import type { PushNotice } from "../notify.ts";
 
@@ -70,7 +70,7 @@ const test = (name: string, body: () => Effect.Effect<void, unknown>) =>
   it(name, () => Effect.runPromise(body().pipe(Effect.provide(TestClock.layer()))));
 
 describe("a Browser Handoff", () => {
-  test("shows the owner the link and the instructions, pushes it, and resumes when the owner finishes", () =>
+  test("shows the owner the instructions without a link, pushes the way to its Live View, and resumes when the owner finishes", () =>
     Effect.gen(function* () {
       const { host, calls } = hostWaiting(
         { state: "waiting" },
@@ -83,7 +83,7 @@ describe("a Browser Handoff", () => {
 
       yield* TestClock.adjust(POLL_MS);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "completed" });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "completed", windowOrigins: [] });
       expect(calls.started).toEqual([
         {
           requestId: "7",
@@ -93,7 +93,7 @@ describe("a Browser Handoff", () => {
         },
       ]);
 
-      const request = { ...ASK, url: LIVE_VIEW_URL, deadline: TIMEOUT_MS };
+      const request = { ...ASK, deadline: TIMEOUT_MS };
 
       // Shown while it waited, withdrawn once it ended, and its handoff ended in the host.
       expect(announced).toEqual([[request], []]);
@@ -102,7 +102,8 @@ describe("a Browser Handoff", () => {
         {
           kind: "notice",
           body: "Needs you in the browser: Log in, then press Done",
-          url: LIVE_VIEW_URL,
+          // The Session's page, with the handoff's Live View Pane open.
+          url: "?pane=live-view:7",
         },
       ]);
       // The browser counts as used while the owner works in it.
@@ -110,19 +111,66 @@ describe("a Browser Handoff", () => {
       expect(yield* handoffs.pending).toEqual([]);
     }));
 
-  test("says that the owner could not do it, with their reason and never the link", () =>
+  test("says that the owner could not do it, with their reason", () =>
     Effect.gen(function* () {
       const { host } = hostWaiting({
         state: "complete",
         success: false,
-        reason: `captcha is broken at ${LIVE_VIEW_URL}`,
+        reason: " captcha is broken ",
       });
 
       const { handoffs } = sessionOver(host);
 
       expect(yield* handoffs.request(ASK)).toEqual({
         status: "failed",
-        reason: "captcha is broken at [Live View link]",
+        reason: "captcha is broken",
+        windowOrigins: [],
+      });
+    }));
+
+  test("says it does not know which windows are open when the host could not end the handoff", () =>
+    Effect.gen(function* () {
+      const { host } = hostWaiting({ state: "complete", success: true });
+
+      const { handoffs } = sessionOver({
+        ...host,
+        endHandoff: () => Effect.fail(BrowserError.make({ message: "endHandoff: overloaded" })),
+      });
+
+      expect(yield* handoffs.request(ASK)).toEqual({ status: "completed" });
+
+      const quiet = hostWaiting({ state: "complete", success: true });
+
+      // An older host, or one whose cleanup ran out of time: it says nothing of the windows.
+      const unsure = sessionOver({ ...quiet.host, endHandoff: () => Effect.succeed({}) });
+
+      expect(yield* unsure.handoffs.request(ASK)).toEqual({ status: "completed" });
+    }));
+
+  test("says which windows the tab left open, by origin, however it ended", () =>
+    Effect.gen(function* () {
+      const { host } = fakeHandoffHost([{ state: "complete", success: true }], {
+        now: () => 0,
+        windowOrigins: ["https://accounts.example.com"],
+      });
+
+      expect(yield* sessionOver(host).handoffs.request(ASK)).toEqual({
+        status: "completed",
+        windowOrigins: ["https://accounts.example.com"],
+      });
+
+      const waiting = fakeHandoffHost([{ state: "waiting" }], {
+        now: () => 0,
+        windowOrigins: ["https://accounts.example.com", "https://id.example.org"],
+      });
+
+      const asking = yield* Effect.forkChild(sessionOver(waiting.host).handoffs.request(ASK));
+
+      yield* TestClock.adjust(TIMEOUT_MS + 20_000);
+
+      expect(yield* Fiber.join(asking)).toEqual({
+        status: "timeout",
+        windowOrigins: ["https://accounts.example.com", "https://id.example.org"],
       });
     }));
 
@@ -135,7 +183,7 @@ describe("a Browser Handoff", () => {
 
       yield* TestClock.adjust(TIMEOUT_MS + 20_000);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout" });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout", windowOrigins: [] });
       expect(announced.at(-1)).toEqual([]);
       expect(calls.ended).toEqual(["7"]);
     }));
@@ -154,14 +202,14 @@ describe("a Browser Handoff", () => {
       // Round by round: each round's sleep starts when the last one ends.
       for (let round = 0; round < 60; round++) yield* TestClock.adjust(POLL_MS);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout" });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "timeout", windowOrigins: [] });
     }));
 
   test("says that the handoff ended unexplained when Browser Run lost it", () =>
     Effect.gen(function* () {
       const { handoffs } = sessionOver(hostWaiting({ state: "ended" }).host);
 
-      expect(yield* handoffs.request(ASK)).toEqual({ status: "ended" });
+      expect(yield* handoffs.request(ASK)).toEqual({ status: "ended", windowOrigins: [] });
     }));
 
   test("withdraws the request and ends the handoff when its call is aborted", () =>
@@ -199,15 +247,13 @@ describe("a Browser Handoff", () => {
 
       const after = sessionOver(host, storage);
 
-      expect(yield* after.handoffs.pending).toEqual([
-        { ...ASK, url: LIVE_VIEW_URL, deadline: TIMEOUT_MS },
-      ]);
+      expect(yield* after.handoffs.pending).toEqual([{ ...ASK, deadline: TIMEOUT_MS }]);
 
       const asking = yield* Effect.forkChild(after.handoffs.request(ASK));
 
       yield* TestClock.adjust(POLL_MS);
 
-      expect(yield* Fiber.join(asking)).toEqual({ status: "completed" });
+      expect(yield* Fiber.join(asking)).toEqual({ status: "completed", windowOrigins: [] });
       expect(calls.started).toHaveLength(1);
       // The rerun does not push again: the owner was already told.
       expect(after.notices).toEqual([]);
@@ -221,7 +267,7 @@ describe("a Browser Handoff", () => {
       const recovering = yield* Effect.forkChild(flaky.handoffs.request(ASK));
 
       yield* TestClock.adjust(10_000);
-      expect(yield* Fiber.join(recovering)).toEqual({ status: "completed" });
+      expect(yield* Fiber.join(recovering)).toEqual({ status: "completed", windowOrigins: [] });
 
       const gone = sessionOver(hostWaiting(down).host);
       const failing = yield* Effect.forkChild(gone.handoffs.request(ASK).pipe(Effect.flip));
@@ -253,7 +299,6 @@ describe("a Browser Handoff", () => {
       const stray: BrowserHandoffRequest = {
         ...ASK,
         id: "99",
-        url: LIVE_VIEW_URL,
         deadline: TIMEOUT_MS,
       };
 
@@ -281,7 +326,6 @@ describe("a Browser Handoff", () => {
       const stray: BrowserHandoffRequest = {
         ...ASK,
         id: "99",
-        url: LIVE_VIEW_URL,
         deadline: TIMEOUT_MS,
       };
 
@@ -303,13 +347,66 @@ describe("a Browser Handoff", () => {
     Effect.gen(function* () {
       const { host } = fakeHandoffHost([{ state: "complete", success: true }], {
         now: () => 0,
-        start: () => Effect.succeed({ url: "", startedAt: 0 }),
+        start: () => Effect.succeed({ startedAt: 0, over: true }),
       });
 
       const { handoffs, announced, notices } = sessionOver(host);
 
-      expect(yield* handoffs.request(ASK)).toEqual({ status: "completed" });
+      expect(yield* handoffs.request(ASK)).toEqual({ status: "completed", windowOrigins: [] });
       expect(announced).toEqual([]);
       expect(notices).toEqual([]);
+    }));
+});
+
+describe("Live View links for a Browser Handoff", () => {
+  test("are minted by the host for a handoff that waits, and kept nowhere", () =>
+    Effect.gen(function* () {
+      const { host, calls } = hostWaiting({ state: "waiting" });
+      const { handoffs, storage, announced, notices } = sessionOver(host);
+
+      const asking = yield* Effect.forkChild(handoffs.request(ASK));
+
+      yield* TestClock.adjust(1);
+
+      expect(yield* handoffs.liveView("7")).toEqual(LIVE_VIEW_LINKS);
+      expect(calls.liveViews).toEqual(["7"]);
+
+      // Not stored, announced, or pushed.
+      expect(JSON.stringify([storage.get("browser-handoffs"), announced, notices])).not.toContain(
+        LIVE_VIEW_TOKEN,
+      );
+
+      yield* Fiber.interrupt(asking);
+    }));
+
+  test("are refused once the handoff is over, or for one that never was, without asking the host", () =>
+    Effect.gen(function* () {
+      const { host, calls } = hostWaiting({ state: "complete", success: true });
+      const { handoffs } = sessionOver(host);
+
+      yield* handoffs.request(ASK);
+
+      expect((yield* Effect.flip(handoffs.liveView("7"))).message).toBe("the handoff is over");
+      expect((yield* Effect.flip(handoffs.liveView("nope"))).message).toBe("the handoff is over");
+      expect(calls.liveViews).toEqual([]);
+    }));
+
+  test("are refused in the host's words when the host says the handoff is over", () =>
+    Effect.gen(function* () {
+      const { host } = hostWaiting({ state: "waiting" });
+
+      const { handoffs } = sessionOver({
+        ...host,
+        liveView: () =>
+          Effect.fail(BrowserError.make({ message: "liveView: Error: the handoff is over" })),
+      });
+
+      const asking = yield* Effect.forkChild(handoffs.request(ASK));
+
+      yield* TestClock.adjust(1);
+
+      expect((yield* Effect.flip(handoffs.liveView("7"))).message).toBe("the handoff is over");
+
+      yield* Fiber.interrupt(asking);
     }));
 });

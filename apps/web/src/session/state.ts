@@ -99,8 +99,11 @@ export interface SessionState {
   readonly secretRequests: readonly SecretRequest[];
   /** How long an entered Secret is held, as the Session says. */
   readonly secretLifetimeMinutes: number;
-  /** Browser Handoffs waiting for the owner, each with the Live View link to open; never shown in the chat. */
-  readonly browserHandoffRequests: readonly BrowserHandoffRequest[];
+  /**
+   * Browser Handoffs waiting for the owner; a Live View Pane mints its own links for one (`liveView`). Null until this
+   * socket has listed them: a Pane closes for a handoff missing from a list it was sent, not from one not sent yet.
+   */
+  readonly browserHandoffRequests: readonly BrowserHandoffRequest[] | null;
   /** The subagent threads being watched, by conversation ID. */
   readonly threads: Readonly<Record<string, ThreadState>>;
   /** The Session's subagents and background work, as of the last summary; null until it sends one. */
@@ -130,7 +133,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   failure: null,
   secretRequests: [],
   secretLifetimeMinutes: 15,
-  browserHandoffRequests: [],
+  browserHandoffRequests: null,
   threads: {},
   taskGraph: null,
   usage: null,

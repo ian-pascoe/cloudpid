@@ -19,6 +19,7 @@ import {
   HistoryPage,
   Navigated,
   SessionTree,
+  LiveViewLinks,
   reduceEvents,
   withEarlier,
   SESSION_DELETED_CLOSE_CODE,
@@ -233,6 +234,12 @@ export interface SessionClient {
   ) => Effect.Effect<Navigated, SessionCommandError>;
   /** Make Session branch `conversationId` the active branch as it stands (the chevrons). Fails as `navigate` does. */
   readonly switchBranch: (conversationId: number) => Effect.Effect<void, SessionCommandError>;
+  /**
+   * Fresh Live View links to the tab of the Browser Handoff `requestId` names and to each window it opened, for this
+   * client alone: a link may start a connection for 60 s. Fails as `catalog` does, and with the Session's "the handoff
+   * is over" once it has ended.
+   */
+  readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, SessionCommandError>;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -271,7 +278,7 @@ interface PendingSubmit {
 /** What a `result` carries. */
 type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
 
-/** A request whose answer an Effect waits for: `catalog`, `files` and `command`. */
+/** A request whose answer an Effect waits for: `catalog`, `files`, `command`, `history` and `live_view`. */
 interface PendingRequest {
   readonly answer: Deferred.Deferred<ResultValue, SessionCommandError>;
   /** Whether it changes the Session, so one whose answer was lost may have run all the same. */
@@ -303,6 +310,8 @@ const decodeHistoryPage = Schema.decodeUnknownOption(HistoryPage);
 const decodeSessionTree = Schema.decodeUnknownOption(SessionTree);
 
 const decodeNavigated = Schema.decodeUnknownOption(Navigated);
+
+const decodeLiveViewLinks = Schema.decodeUnknownOption(LiveViewLinks);
 
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
@@ -674,7 +683,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     }
 
     // The next socket says again which Secret requests and Browser Handoffs wait.
-    current = { ...current, secretRequests: [], browserHandoffRequests: [] };
+    current = { ...current, secretRequests: [], browserHandoffRequests: null };
 
     if (stopped) return;
 
@@ -1279,6 +1288,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         () => Option.some(undefined),
         true,
       ),
+    liveView: (requestId) =>
+      request((id) => ({ type: "live_view", id, requestId }), decodeLiveViewLinks),
   };
 
   return client;

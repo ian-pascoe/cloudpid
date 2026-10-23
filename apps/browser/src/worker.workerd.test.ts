@@ -51,6 +51,17 @@ describe("the browser Worker", () => {
     expect(String(failure)).toMatch(/no open tab/);
   });
 
+  it("mints no Live View link for a handoff it does not have, and says so over RPC", async () => {
+    const failure = await env.BROWSER_HOST.getByName("no-handoff")
+      .liveView("1")
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+
+    expect(String(failure)).toContain("the handoff is over");
+  });
+
   it("answers an HTTP request with 404", async () => {
     const response = await SELF.fetch("https://browser.example/");
 

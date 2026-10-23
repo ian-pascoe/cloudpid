@@ -12,6 +12,7 @@ import {
   type Navigated,
   type SessionTree,
   HEARTBEAT,
+  type LiveViewLinks,
   type ClientMessage,
   type ServerMessage,
   ServerMessageJson,
@@ -23,7 +24,11 @@ import {
   Secrets,
   type SecretsError,
 } from "@cloudpid/extensions/secrets";
-import { type BrowserHandoffRequest, BrowserHandoffs } from "@cloudpid/extensions/browser";
+import {
+  type BrowserError,
+  type BrowserHandoffRequest,
+  BrowserHandoffs,
+} from "@cloudpid/extensions/browser";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -122,7 +127,10 @@ export const secretRequests = (asks: ReadonlyArray<SecretAsk>): ServerMessage =>
   })),
 });
 
-/** The `browser_handoff_requests` message for `requests`: the Live View links go to the owner's clients, and nowhere else. */
+/**
+ * The `browser_handoff_requests` message for `requests`, which every client is sent. It holds no Live View link: those
+ * answer `live_view`, to the one client that asked.
+ */
 export const browserHandoffRequests = (
   requests: ReadonlyArray<BrowserHandoffRequest>,
 ): ServerMessage => ({
@@ -374,8 +382,9 @@ export const sessionSocketsLayer = (
         | HistoryPage
         | SessionTree
         | Navigated
+        | LiveViewLinks
         | null,
-        SessionError | SecretsError
+        SessionError | SecretsError | BrowserError
       > => {
         switch (message.type) {
           case "tree":
@@ -411,6 +420,10 @@ export const sessionSocketsLayer = (
 
             return host.files(search);
           }
+
+          // Answered to this socket alone, as every command is: the links are never stored or sent to other clients.
+          case "live_view":
+            return handoffs.liveView(message.requestId);
 
           case "command": {
             const { type: _type, id: _id, ...command } = message;
@@ -538,10 +551,9 @@ export const sessionSocketsLayer = (
 
         if (asks.length > 0) yield* send(server, secretRequests(asks));
 
-        // So are Browser Handoffs, which wait for the owner for up to 30 minutes.
-        const pending = yield* handoffs.pending;
-
-        if (pending.length > 0) yield* send(server, browserHandoffRequests(pending));
+        // So are Browser Handoffs, which wait for the owner for up to 30 minutes. Sent when none waits too, so a client
+        // can tell "none waits" (a Live View Pane whose handoff is gone closes) from "not heard yet".
+        yield* send(server, browserHandoffRequests(yield* handoffs.pending));
 
         return client;
       });
