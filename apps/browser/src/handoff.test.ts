@@ -41,8 +41,13 @@ const records = (): HandoffRecords => {
 
 type Sent = { readonly method: string; readonly params?: CdpParams; readonly sessionId?: string };
 
-/** A reply: as it is, or made from the command's params. */
-type Reply = Schema.Json | ((params: CdpParams | undefined) => Schema.Json);
+/** A reply: as it is, or made from the command's params and the session it was sent in. */
+type Reply =
+  | Schema.Json
+  | ((params: CdpParams | undefined, sessionId: string | undefined) => Schema.Json);
+
+/** A window's size when nothing has set one: a pop-up's, in the spike. */
+const WINDOW_SIZE: Viewport = { width: 400, height: 565, deviceScaleFactor: 1 };
 
 /** A page target as `Target.getTargets` lists it. */
 const page = (targetId: string, rest: { [key: string]: Schema.Json } = {}) => ({
@@ -57,19 +62,37 @@ const page = (targetId: string, rest: { [key: string]: Schema.Json } = {}) => ({
 });
 
 /**
- * A scripted connection: it records what it is sent, answers from `replies`, and lets a test emit events. It keeps the
- * tab's viewport as Browser Run does, one for every connection: `Emulation.setDeviceMetricsOverride` sets it (unless
- * `ignoreOverrides` says to drop that many first) and `Runtime.evaluate` reads it.
+ * A scripted connection: it records what it is sent, answers from `replies`, and lets a test emit events. It keeps each
+ * page's viewport as Browser Run does, one for every connection: the tab's (`viewport`, session `cdp-1`) and each
+ * window's (`windows`, by session `cdp-<targetId>`, `WINDOW_SIZE` unless set). `Emulation.setDeviceMetricsOverride` sets
+ * it (unless `ignoreOverrides` says to drop that many first), `Emulation.clearDeviceMetricsOverride` puts the page's own
+ * size back (unless `ignoreClears` says to drop that many), and `Runtime.evaluate` reads it.
  */
 const fakeTransport = (replies: Partial<Record<string, Reply>> = {}) => {
   const sent: Sent[] = [];
   let listener: (event: CdpEvent) => void = () => undefined;
   let closing: () => void = () => undefined;
   const viewport: Viewport = { width: 780, height: 493, deviceScaleFactor: 1 };
-  const state = { closed: false, viewport, ignoreOverrides: 0 };
+
+  const state = {
+    closed: false,
+    viewport,
+    windows: new Map<string, Viewport>(),
+    ignoreOverrides: 0,
+    ignoreClears: 0,
+  };
+
+  const isTab = (sessionId: string | undefined) => sessionId === undefined || sessionId === "cdp-1";
 
   const defaults = {
-    "Target.attachToTarget": { sessionId: "cdp-1" },
+    "Target.attachToTarget": (params) => {
+      const targetId = params?.["targetId"];
+
+      return {
+        sessionId:
+          targetId === "tab-1" || !Predicate.isString(targetId) ? "cdp-1" : `cdp-${targetId}`,
+      };
+    },
     "Target.getTargets": { targetInfos: [page("tab-1", { attached: true })] },
     "Cloudflare.getLiveView": (params) => {
       const asked = params?.["targetId"];
@@ -85,20 +108,46 @@ const fakeTransport = (replies: Partial<Record<string, Reply>> = {}) => {
     "Cloudflare.handoff": { targetId: "tab-1", handoffId: "handoff-1" },
     "Cloudflare.getHandoffState": { active: true, handoffId: "handoff-1" },
     "Cloudflare.handoffComplete": {},
-    "Emulation.setDeviceMetricsOverride": (params) => {
+    "Emulation.setDeviceMetricsOverride": (params, sessionId) => {
       if (state.ignoreOverrides > 0) {
         state.ignoreOverrides -= 1;
-      } else {
-        state.viewport = {
-          width: Number(params?.["width"]),
-          height: Number(params?.["height"]),
-          deviceScaleFactor: Number(params?.["deviceScaleFactor"]),
-        };
+
+        return {};
       }
+
+      const size = {
+        width: Number(params?.["width"]),
+        height: Number(params?.["height"]),
+        deviceScaleFactor: Number(params?.["deviceScaleFactor"]),
+      };
+
+      if (isTab(sessionId)) state.viewport = size;
+      else state.windows.set(sessionId ?? "", size);
 
       return {};
     },
-    "Runtime.evaluate": () => ({ result: { type: "object", value: { ...state.viewport } } }),
+    "Emulation.clearDeviceMetricsOverride": (_params, sessionId) => {
+      if (state.ignoreClears > 0) {
+        state.ignoreClears -= 1;
+
+        return {};
+      }
+
+      if (isTab(sessionId)) state.viewport = { width: 780, height: 493, deviceScaleFactor: 1 };
+      else state.windows.delete(sessionId ?? "");
+
+      return {};
+    },
+    "Runtime.evaluate": (_params, sessionId) => ({
+      result: {
+        type: "object",
+        value: {
+          ...(isTab(sessionId)
+            ? state.viewport
+            : (state.windows.get(sessionId ?? "") ?? WINDOW_SIZE)),
+        },
+      },
+    }),
   } satisfies Record<string, Reply>;
 
   const transport: CdpTransport = {
@@ -117,7 +166,7 @@ const fakeTransport = (replies: Partial<Record<string, Reply>> = {}) => {
       const reply: Reply =
         replies[method] ?? (method in defaults ? defaults[method as keyof typeof defaults] : null);
 
-      return Promise.resolve(Predicate.isFunction(reply) ? reply(params) : reply);
+      return Promise.resolve(Predicate.isFunction(reply) ? reply(params, sessionId) : reply);
     },
     onEvent: (next) => {
       listener = next;
@@ -343,9 +392,10 @@ describe("a Browser Handoff in the browser host", () => {
     expect(second.methods()).toEqual([
       "Target.attachToTarget",
       "Cloudflare.getHandoffState",
-      // The agent's viewport, given back.
+      // The agent's viewport, given back, and the tab's windows looked for.
       "Emulation.setDeviceMetricsOverride",
       "Runtime.evaluate",
+      "Target.getTargets",
     ]);
   });
 
@@ -696,6 +746,83 @@ describe("the agent's viewport after a handoff", () => {
   });
 });
 
+describe("the windows' viewports after a handoff", () => {
+  const POPUPS = {
+    "Target.getTargets": {
+      targetInfos: [
+        page("tab-1", { attached: true }),
+        page("popup-1", { openerId: "tab-1" }),
+        page("popup-2", { openerId: "popup-1" }),
+        page("other-tab"),
+      ],
+    },
+  };
+
+  /** A handoff whose windows the owner's Live View was given links to, then resized to the phone. */
+  const resizedWindows = async () => {
+    const cdp = fakeTransport(POPUPS);
+    const over = hostOver([cdp]);
+
+    await over.host.start(REQUEST);
+    await over.host.liveView("7");
+    cdp.state.windows.set("cdp-popup-1", { ...PHONE });
+    cdp.state.windows.set("cdp-popup-2", { ...PHONE });
+
+    return { ...over, cdp };
+  };
+
+  it("are cleared at the end of the handoff, in each window's own session, and the tab's given back too", async () => {
+    const { host, cdp } = await resizedWindows();
+
+    cdp.emit(COMPLETE({ success: true }));
+    await host.wait("7", 10);
+
+    expect(cdp.state.windows.get("cdp-popup-1") ?? WINDOW_SIZE).toEqual(WINDOW_SIZE);
+    expect(cdp.state.windows.get("cdp-popup-2") ?? WINDOW_SIZE).toEqual(WINDOW_SIZE);
+    expect(cdp.sent).toContainEqual({
+      method: "Emulation.clearDeviceMetricsOverride",
+      params: {},
+      sessionId: "cdp-popup-2",
+    });
+    expect(cdp.state.viewport).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
+    // A page with no opener is not the handoff's: left alone.
+    expect(cdp.sent.some((sent) => sent.sessionId === "cdp-other-tab")).toBe(false);
+  });
+
+  it("are set to the size each window had when first listed, when a clear does not take", async () => {
+    const { host, cdp } = await resizedWindows();
+
+    cdp.state.ignoreClears = 2;
+    await host.end("7");
+
+    expect(cdp.state.windows.get("cdp-popup-1")).toEqual(WINDOW_SIZE);
+    expect(cdp.state.windows.get("cdp-popup-2")).toEqual(WINDOW_SIZE);
+    expect(cdp.sent).toContainEqual({
+      method: "Emulation.setDeviceMetricsOverride",
+      params: { ...WINDOW_SIZE, mobile: false },
+      sessionId: "cdp-popup-1",
+    });
+  });
+
+  it("are given back on a new connection after the host restarted, from the sizes it kept", async () => {
+    const store = records();
+    const first = fakeTransport(POPUPS);
+    const before = hostOver([first], store);
+
+    await before.host.start(REQUEST);
+    await before.host.liveView("7");
+
+    const restarted = fakeTransport(POPUPS);
+
+    restarted.state.windows.set("cdp-popup-1", { ...PHONE });
+    restarted.state.ignoreClears = 2;
+
+    await hostOver([restarted], store).host.end("7");
+
+    expect(restarted.state.windows.get("cdp-popup-1")).toEqual(WINDOW_SIZE);
+  });
+});
+
 describe("the windows a handoff leaves open", () => {
   it("are told by origin only, never by URL", async () => {
     const cdp = fakeTransport({
@@ -723,17 +850,32 @@ describe("the windows a handoff leaves open", () => {
 
     expect(ended).toEqual({
       // Breadth first: a window after the one that opened it.
-      windows: ["https://accounts.example.com", "about:blank", "https://id.example.org:8443"],
+      windowOrigins: ["https://accounts.example.com", "about:blank", "https://id.example.org:8443"],
     });
     expect(JSON.stringify(ended)).not.toContain("SECRET-CODE");
   });
 
-  it("are none when the tab opened none, or the handoff is not there", async () => {
+  it("are none when the tab opened none, and unknown for a handoff that is not there", async () => {
     const { host } = hostOver([fakeTransport()]);
 
     await host.start(REQUEST);
 
-    expect(await host.end("7")).toEqual({ windows: [] });
-    expect(await host.end("nope")).toEqual({ windows: [] });
+    expect(await host.end("7")).toEqual({ windowOrigins: [] });
+    expect(await host.end("nope")).toEqual({});
+  });
+
+  it("are unknown, not none, when they could not be read before the cleanup gave up", async () => {
+    const cdp = fakeTransport({
+      "Target.getTargets": () => {
+        throw new Error("Browser Run is not answering");
+      },
+    });
+
+    const { host } = hostOver([cdp]);
+
+    await host.start(REQUEST);
+
+    expect(await host.end("7")).toEqual({});
+    expect(cdp.state.closed).toBe(true);
   });
 });

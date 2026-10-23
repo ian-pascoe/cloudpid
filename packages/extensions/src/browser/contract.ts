@@ -1,5 +1,7 @@
 // What the Session and its browser host (`apps/browser`) agree on, in plain data a Durable Object RPC carries and
-// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension.
+// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and of
+// `@cloudpid/protocol` only types and its import-free `live-view` module.
+import type { LiveViewLinks } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 
 /**
@@ -41,31 +43,22 @@ export type HandoffStarted = {
 };
 
 /**
- * A page of the handed-over browser and a Live View link to it (`webSocketDebuggerUrl` of `Cloudflare.getLiveView`, a
- * Browser Run `wss` URL that speaks CDP). A bearer credential for the owner alone: it opens every page of the browser
- * session and connects any number of times until it expires, 60 s after it was minted (an open connection outlives
- * that). It goes to the client that asked and nowhere else. The shape of `@cloudpid/protocol`'s `LiveViewLinks`.
+ * `live_view`'s answer (`@cloudpid/protocol`'s `LiveViewLinks`): fresh Live View links to the handed-over tab and to each
+ * window it opened that is still open. Each `link` is the `webSocketDebuggerUrl` of a `Cloudflare.getLiveView`, a Browser
+ * Run `wss` URL that speaks CDP: a bearer credential for the owner alone, which opens every page of the browser session
+ * and connects any number of times until it expires, 60 s after it was minted (an open connection outlives that). It
+ * goes to the client that asked and nowhere else.
  */
-export type LiveViewTarget = { readonly targetId: string; readonly link: string };
+export type { LiveViewLinks, LiveViewTarget, LiveViewWindow } from "@cloudpid/protocol";
 
-/** A window the handed-over tab opened (a pop-up or new tab), directly or through another such window. */
-export type LiveViewWindow = LiveViewTarget & {
-  /** The page that opened it: the handed-over tab or another window. */
-  readonly openerId: string;
-  readonly title: string;
-};
+/** What `liveView` fails with once the handoff has ended (or was never started), exactly. */
+export { LIVE_VIEW_HANDOFF_OVER } from "@cloudpid/protocol/live-view";
 
-/** Fresh Live View links to the handed-over tab and to each window it opened that is still open. */
-export type LiveViewLinks = {
-  readonly tab: LiveViewTarget;
-  readonly windows: ReadonlyArray<LiveViewWindow>;
-};
-
-/** What `liveView` fails with once the handoff has ended (or was never started). */
-export const HANDOFF_OVER = "the handoff is over";
-
-/** How a Browser Handoff was left: the windows the tab opened that are still open, by origin only (never a URL). */
-export type HandoffEnded = { readonly windows: ReadonlyArray<string> };
+/**
+ * How a Browser Handoff was left: the origins (never the URLs) of the windows the tab opened that are still open, or no
+ * `windowOrigins` when the host could not tell.
+ */
+export type HandoffEnded = { readonly windowOrigins?: ReadonlyArray<string> };
 
 /** Where a Browser Handoff stands. */
 export type HandoffStatus =
@@ -107,14 +100,14 @@ export type BrowserHostRpc = {
   startHandoff(input: HandoffStartInput): Promise<HandoffStarted>;
   /**
    * Mint fresh Live View links (60 s) to handoff `requestId`'s tab and the windows it opened, for the owner's client
-   * that asked. Fails with `HANDOFF_OVER` once the handoff has ended.
+   * that asked. Fails with `LIVE_VIEW_HANDOFF_OVER` once the handoff has ended.
    */
   liveView(requestId: string): Promise<LiveViewLinks>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus>;
   /**
    * Finish handoff `requestId`: if the owner has not, end it in Browser Run; give the agent its viewport back; then
-   * forget it. Says which of the tab's windows are still open, by origin.
+   * forget it. Says the origins of the tab's windows that are still open.
    */
   endHandoff(requestId: string): Promise<HandoffEnded>;
 };

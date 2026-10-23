@@ -11,20 +11,21 @@
 // minimum, and go back to the Session for the client that asked: nothing here keeps or logs one. Each names its page
 // (`targetId`): without one, Browser Run picks the newest page of the browser, not the handed-over tab.
 //
-// The owner's Live View sets the tab's size (`Emulation.setDeviceMetricsOverride`, one override shared by every
-// connection), and closing that connection does not undo it. So whenever a handoff ends, however it ended, the host sets
-// the size the tab had at the start explicitly and checks it took (a clear from another connection was unreliable in
-// the spike, #152).
+// The owner's Live View sets the size of the page it shows (`Emulation.setDeviceMetricsOverride`, one override shared by
+// every connection), and closing that connection does not undo it. So whenever a handoff ends, however it ended, the
+// host sets the size the tab had at the start explicitly and checks it took (a clear from another connection was
+// unreliable in the spike, #152), and clears the override of every window the tab opened that is still open, setting
+// the size the window had when the host first listed it if the clear did not take.
 //
 // A record that outlives its handoff's deadline (the Session never came back to end it) is pruned, by the object's alarm
 // if nothing else does (`prune`). A request that was ended leaves a short-lived tombstone, so a start that arrives late
 // does not open a handoff nobody will end.
 import {
-  HANDOFF_OVER,
   type HandoffEnded,
   type HandoffStarted,
   type HandoffStartInput,
   type HandoffStatus,
+  LIVE_VIEW_HANDOFF_OVER,
   type LiveViewLinks,
   type LiveViewWindow,
 } from "@cloudpid/extensions/browser/contract";
@@ -132,7 +133,12 @@ type Record = {
   readonly startedAt: number;
   /** The tab's size before the handoff, which the agent gets back when it ends. Absent in records from before it was kept. */
   readonly viewport?: Viewport | undefined;
-  /** The viewport was given back. */
+  /**
+   * The size of each window the tab opened, by target, as it was when `liveView` first listed it: before the owner's
+   * Live View had a link to it, so before it could resize it.
+   */
+  readonly windowViewports?: { readonly [targetId: string]: Viewport } | undefined;
+  /** The viewports were given back. */
   readonly restored?: boolean | undefined;
   /** When the handoff times out, epoch milliseconds: the record is of no use past it. */
   readonly deadline: number;
@@ -145,6 +151,8 @@ type Live = {
   readonly transport: CdpTransport;
   /** The CDP session attached to the tab, which the handoff's commands and events go through. */
   readonly cdpSessionId: string;
+  /** The CDP sessions attached to the tab's windows on this connection, by target. */
+  readonly windowSessions: Map<string, string>;
   closed: boolean;
 };
 
@@ -189,14 +197,37 @@ const ask = async <A>(
     onExcessProperty: "ignore",
   });
 
-/** The tab's size as its page reads it. */
-const readViewport = (live: Live): Promise<Viewport> =>
+/** The size of the page `live.cdpSessionId` is attached to, as the page reads it. */
+const readViewport = (live: {
+  readonly transport: CdpTransport;
+  readonly cdpSessionId: string;
+}): Promise<Viewport> =>
   ask(
     live,
     "Runtime.evaluate",
     { expression: VIEWPORT_EXPRESSION, returnByValue: true },
     Evaluated,
   ).then((evaluated) => evaluated.result.value);
+
+const sameSize = (a: Viewport, b: Viewport) => a.width === b.width && a.height === b.height;
+
+/** A CDP session on `live`'s connection attached to window `targetId`, attached once per connection. */
+const windowSession = async (live: Live, targetId: string): Promise<string> => {
+  const known = live.windowSessions.get(targetId);
+
+  if (known !== undefined) return known;
+
+  const { sessionId } = await ask(
+    { transport: live.transport, cdpSessionId: undefined },
+    "Target.attachToTarget",
+    { targetId, flatten: true },
+    Attached,
+  );
+
+  live.windowSessions.set(targetId, sessionId);
+
+  return sessionId;
+};
 
 /**
  * The pages tab `tabId` opened, directly or through a page it opened, from Browser Run's targets on the browser: pop-ups
@@ -256,7 +287,7 @@ export class HandoffHost {
   readonly #starting = new Map<string, Promise<HandoffStarted>>();
   /** Wakes the rounds waiting on a handoff when it ends. */
   readonly #ended = new Map<string, Set<() => void>>();
-  /** Giving a handoff's tab its viewport back, in flight or done in this instance. */
+  /** Giving a handoff's tab and windows their viewports back, in flight or done in this instance. */
   readonly #restoring = new Map<string, Promise<void>>();
 
   constructor(options: {
@@ -292,16 +323,18 @@ export class HandoffHost {
     this.#save({ ...record, outcome });
 
     // The rounds waiting on it wait for the viewport too, so the agent's next step finds its own size.
-    void this.#restored(requestId);
+    void this.#restoreViewports(requestId);
 
     for (const wake of this.#ended.get(requestId) ?? []) wake();
   }
 
   /**
-   * Give handoff `requestId`'s tab the size it had before the handoff, once: set it explicitly, then check the page's
-   * width, and set it again if it did not take. Never fails; a failure is logged, and the next call tries again.
+   * Undo the owner's Live View's sizes, once per handoff: give handoff `requestId`'s tab the size it had before the
+   * handoff (set explicitly, then checked, and set again if it did not take), then clear the override of each window it
+   * opened that is still open. Never fails; a failure with the tab is logged and the next call tries again, one with a
+   * window (it may close meanwhile) is logged.
    */
-  #restored(requestId: string): Promise<void> {
+  #restoreViewports(requestId: string): Promise<void> {
     const inFlight = this.#restoring.get(requestId);
 
     if (inFlight !== undefined) return inFlight;
@@ -315,25 +348,19 @@ export class HandoffHost {
     const restoring = (async () => {
       const live = await this.#connection(record);
 
-      for (let attempt = 1; attempt <= RESTORE_TRIES; attempt++) {
-        await live.transport.send(
-          "Emulation.setDeviceMetricsOverride",
-          { ...viewport, mobile: false },
-          live.cdpSessionId,
+      await this.#setViewport(live, live.cdpSessionId, viewport);
+
+      for (const { targetId } of await windowsOf(live, record.targetId)) {
+        await this.#restoreWindow(live, targetId, record.windowViewports?.[targetId]).catch(
+          (error: Error) => {
+            console.warn(`Giving a handoff's window its viewport back failed: ${String(error)}`);
+          },
         );
-
-        const now = await readViewport(live);
-
-        if (now.width === viewport.width && now.height === viewport.height) {
-          const current = this.#record(requestId);
-
-          if (current !== undefined) this.#save({ ...current, restored: true });
-
-          return;
-        }
       }
 
-      throw new Error(`the tab kept another size than ${viewport.width}×${viewport.height}`);
+      const current = this.#record(requestId);
+
+      if (current !== undefined) this.#save({ ...current, restored: true });
     })().catch((error: Error) => {
       this.#restoring.delete(requestId);
       console.warn(`Giving the agent its viewport back failed: ${String(error)}`);
@@ -342,6 +369,39 @@ export class HandoffHost {
     this.#restoring.set(requestId, restoring);
 
     return restoring;
+  }
+
+  /** Set the page of `cdpSessionId` to `viewport` and check it took, setting it again if it did not; fails if it never does. */
+  async #setViewport(live: Live, cdpSessionId: string, viewport: Viewport): Promise<void> {
+    for (let attempt = 1; attempt <= RESTORE_TRIES; attempt++) {
+      await live.transport.send(
+        "Emulation.setDeviceMetricsOverride",
+        { ...viewport, mobile: false },
+        cdpSessionId,
+      );
+
+      if (sameSize(await readViewport({ transport: live.transport, cdpSessionId }), viewport)) {
+        return;
+      }
+    }
+
+    throw new Error(`the page kept another size than ${viewport.width}×${viewport.height}`);
+  }
+
+  /**
+   * Clear the override the owner's Live View left on window `targetId`, which never had one of the agent's. When its size
+   * before is known (`noted`), check the clear took, and set that size explicitly if it did not.
+   */
+  async #restoreWindow(live: Live, targetId: string, noted: Viewport | undefined): Promise<void> {
+    const cdpSessionId = await windowSession(live, targetId);
+
+    await live.transport.send("Emulation.clearDeviceMetricsOverride", {}, cdpSessionId);
+
+    if (noted === undefined) return;
+
+    if (sameSize(await readViewport({ transport: live.transport, cdpSessionId }), noted)) return;
+
+    await this.#setViewport(live, cdpSessionId, noted);
   }
 
   /** Attach to `targetId` over a new connection and listen for the end of handoff `requestId`. */
@@ -357,7 +417,12 @@ export class HandoffHost {
         { onExcessProperty: "ignore" },
       );
 
-      const live: Live = { transport, cdpSessionId: attached.sessionId, closed: false };
+      const live: Live = {
+        transport,
+        cdpSessionId: attached.sessionId,
+        windowSessions: new Map(),
+        closed: false,
+      };
 
       transport.onEvent((event) => {
         if (event.method !== "Cloudflare.handoffComplete") return;
@@ -519,14 +584,17 @@ export class HandoffHost {
 
   /**
    * Fresh Live View links to handoff `requestId`'s tab and to every window it opened that is still open, for the owner's
-   * Live View: each good for 60 s and named by its target. Fails with `HANDOFF_OVER` once the handoff has ended.
+   * Live View: each good for 60 s and named by its target. Fails with `LIVE_VIEW_HANDOFF_OVER` once the handoff has
+   * ended. A window listed for the first time has its size noted first, to give back when the handoff ends.
    */
   async liveView(requestId: string): Promise<LiveViewLinks> {
     this.prune();
 
     const record = this.#record(requestId);
 
-    if (record === undefined || record.outcome !== undefined) throw new Error(HANDOFF_OVER);
+    if (record === undefined || record.outcome !== undefined) {
+      throw new Error(LIVE_VIEW_HANDOFF_OVER);
+    }
 
     const live = await this.#connection(record);
 
@@ -546,6 +614,8 @@ export class HandoffHost {
       windowsOf(live, record.targetId),
     ]);
 
+    await this.#noteWindowSizes(requestId, live, found);
+
     const windows = await Promise.all(
       found.map(async ({ targetId, openerId, title }): Promise<LiveViewWindow> => ({
         targetId,
@@ -556,6 +626,37 @@ export class HandoffHost {
     );
 
     return { tab: { targetId: record.targetId, link: tab }, windows };
+  }
+
+  /** Note the size of each of `windows` the record has none for yet; a window that cannot be read is left out. */
+  async #noteWindowSizes(
+    requestId: string,
+    live: Live,
+    windows: ReadonlyArray<{ readonly targetId: string }>,
+  ): Promise<void> {
+    const known = this.#record(requestId)?.windowViewports ?? {};
+    const noted: { [targetId: string]: Viewport } = {};
+    let any = false;
+
+    for (const { targetId } of windows) {
+      if (known[targetId] !== undefined) continue;
+
+      try {
+        noted[targetId] = await readViewport({
+          transport: live.transport,
+          cdpSessionId: await windowSession(live, targetId),
+        });
+        any = true;
+      } catch (error) {
+        console.warn(`A handoff window's size could not be read: ${String(error)}`);
+      }
+    }
+
+    const current = this.#record(requestId);
+
+    if (current !== undefined && any) {
+      this.#save({ ...current, windowViewports: { ...current.windowViewports, ...noted } });
+    }
   }
 
   /**
@@ -609,7 +710,9 @@ export class HandoffHost {
   async wait(requestId: string, maxMs: number): Promise<HandoffStatus> {
     const status = await this.#round(requestId, maxMs);
 
-    if (status.state === "complete" || status.state === "ended") await this.#restored(requestId);
+    if (status.state === "complete" || status.state === "ended") {
+      await this.#restoreViewports(requestId);
+    }
 
     return status;
   }
@@ -695,9 +798,10 @@ export class HandoffHost {
 
   /**
    * Finish handoff `requestId`: when the owner has not, end it in Browser Run, so the Live View stops asking, over a new
-   * connection if this instance has none (the host restarted since); give the agent its viewport back; say which of the
-   * tab's windows are still open; then forget it and drop its connection. A start of the request that comes later is
-   * refused.
+   * connection if this instance has none (the host restarted since); note the origins of the tab's windows that are
+   * still open; give the agent its viewport back and undo the Live View's on the windows; then forget it and drop its
+   * connection. A start of the request that comes later is refused. The origins are left out when they could not be read
+   * in the time a cleanup gets, so that the Session says it does not know rather than that there are none.
    */
   async end(requestId: string): Promise<HandoffEnded> {
     // The tombstone first, so that no start slips in while the one in flight is awaited.
@@ -709,7 +813,7 @@ export class HandoffHost {
     await this.#starting.get(requestId)?.catch(() => undefined);
 
     const record = this.#record(requestId);
-    let windows: ReadonlyArray<string> = [];
+    let windowOrigins: ReadonlyArray<string> | undefined;
 
     if (record !== undefined) {
       await Promise.race([
@@ -732,8 +836,12 @@ export class HandoffHost {
                 .catch(() => undefined);
             }
 
-            await this.#restored(requestId);
-            windows = (await windowsOf(live, record.targetId)).map(({ url }) => originOf(url));
+            // Before the viewports, which take a few commands per window: the origins are what the model is told.
+            windowOrigins = (await windowsOf(live, record.targetId)).map(({ url }) =>
+              originOf(url),
+            );
+
+            await this.#restoreViewports(requestId);
           })
           .catch((error: Error) => {
             console.warn(`Cleaning up a Browser Handoff failed: ${String(error)}`);
@@ -744,6 +852,6 @@ export class HandoffHost {
 
     this.#forget(requestId);
 
-    return { windows };
+    return windowOrigins === undefined ? {} : { windowOrigins };
   }
 }
