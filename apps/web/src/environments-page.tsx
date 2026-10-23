@@ -38,12 +38,14 @@ import {
   createEnvironmentAtom,
   deleteEnvironmentAtom,
   deleteTypedAtom,
+  environmentBuildAtom,
   environmentDialogAtom,
   environmentDraftAtom,
   environmentListAtom,
   environmentSettingsAtom,
   environmentsErrorAtom,
   newEnvironmentNameAtom,
+  rebuildEnvironmentAtom,
   removeRepoAtom,
   removeWorkspaceAtom,
   removeWorkspaceTypedAtom,
@@ -53,6 +55,7 @@ import {
   type EnvironmentDialog,
 } from "./environments-state.ts";
 import {
+  buildLine,
   deleteConfirmed,
   environmentNameProblem,
   idleMinutesProblem,
@@ -668,6 +671,43 @@ const DeleteEnvironmentDialog = ({
 };
 
 /** Confirm restarting a Workspace's Container, after saying what it keeps and what it loses. */
+/** Environment `id`'s Build: where it stands, and a button to make it again now. */
+const BuildStatus = ({ id }: { id: string }) => {
+  const build = useAtomValue(environmentBuildAtom(id));
+  const [rebuilt, rebuild] = useAtom(rebuildEnvironmentAtom(id));
+  const error = settledFailureOf(rebuilt);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">Build</h3>
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-xs break-words whitespace-pre-wrap text-muted-foreground">
+          {/* A Build's times are read against the wall clock as the card renders. */}
+          {/* @effect-diagnostics-next-line globalDate:off */}
+          {build === null ? "Loading…" : buildLine(build, Date.now())}
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={rebuilt.waiting || build?.status === "building"}
+          onClick={() => {
+            rebuild();
+          }}
+        >
+          <RotateCw aria-hidden />
+          Rebuild
+        </Button>
+      </div>
+      {error !== null && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+};
+
 const RestartContainerDialog = ({ id, workspace }: { id: string; workspace: WorkspaceRecord }) => {
   const [restarted, run] = useAtom(restartContainerAtom(id));
   const setDialog = useAtomSet(environmentDialogAtom(id));
@@ -988,6 +1028,7 @@ const EnvironmentCard = ({
           {reposError}
         </p>
       )}
+      <BuildStatus id={id} />
       <div className="flex flex-col gap-2">
         <h3 className="text-xs font-medium text-muted-foreground">Workspaces</h3>
         {workspaces.length === 0 ? (

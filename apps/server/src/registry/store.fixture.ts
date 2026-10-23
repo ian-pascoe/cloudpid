@@ -7,6 +7,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
 import {
+  type BuildRecord,
   type Deletion,
   type EnvironmentNaming,
   type EnvironmentRecord,
@@ -73,6 +74,18 @@ export class TestRegistry extends DurableObject {
 
   createEnvironment(id: string, name: string, now: number): EnvironmentNaming {
     return this.#store.createEnvironment(id, name, now);
+  }
+
+  getBuild(environment: string): BuildRecord | null {
+    return this.#store.getBuild(environment);
+  }
+
+  putBuild(environment: string, record: BuildRecord): boolean {
+    return this.#store.putBuild(environment, record);
+  }
+
+  listBuilds(): Array<BuildRecord & { readonly environment: string }> {
+    return this.#store.listBuilds();
   }
 
   getEnvironment(id: string): EnvironmentRecord | null {

@@ -27,12 +27,21 @@ import type { Shell } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import type { WorkspaceNamespace } from "../session/workspace.ts";
+import type { EnvironmentBuild } from "./build-record.ts";
 import type { WorkspaceSettingsAnswer, WriteAnswer } from "./settings.ts";
 
-/** What a Workspace is readied with: its clones' Repos, branch and base, and its Environment's Container settings. */
+/**
+ * What a Workspace is readied with: its clones' Repos, branch and base, its Environment's Container settings, and its
+ * Environment's Build.
+ */
 export type WorkspaceSetup = WorkspaceClones & {
   /** The Environment's Container settings overrides, which the Workspace applies at its next launch. */
   readonly settings: Schema.Json;
+  /**
+   * The Environment's last good Build, which the Workspace's next launch with no snapshot of its own starts from; null
+   * for none yet. Absent, the Workspace keeps the one it holds.
+   */
+  readonly build?: EnvironmentBuild | null | undefined;
 };
 
 /** How long cloning a Workspace's Repos may take, in seconds: full clones of big repos, after a cold start. */
@@ -54,6 +63,11 @@ export type PreparationHost = {
   readonly settings: {
     readonly read: () => Promise<WorkspaceSettingsAnswer>;
     readonly write: (overrides: Schema.Json) => Promise<WriteAnswer>;
+  };
+  /** The Environment's Build the Workspace's Durable Object holds, and a write of another (null: none). */
+  readonly build: {
+    readonly read: () => Promise<EnvironmentBuild | null>;
+    readonly write: (build: EnvironmentBuild | null) => Promise<void>;
   };
   readonly warn: (message: string) => void;
 };
@@ -78,9 +92,14 @@ const sameOverrides = (left: Schema.Json, right: Schema.Json): boolean =>
 /** What a clone's `.git/HEAD` holds while it is on the spare Workspace's placeholder branch. */
 const SPARE_HEAD = `ref: refs/heads/${SPARE_BRANCH}`;
 
+/** Whether two Builds (or none) are the same one. */
+const sameBuild = (left: EnvironmentBuild | null, right: EnvironmentBuild | null): boolean =>
+  left?.snapshot.id === right?.snapshot.id && left?.key === right?.key;
+
 /**
- * Ready the Workspace `host` reaches with `setup`: its Durable Object gets the Environment's Container settings when
- * they differ from what it holds, and each Repo its files lack is cloned on the Container, and each clone whose
+ * Ready the Workspace `host` reaches with `setup`: its Durable Object gets the Environment's Container settings and Build
+ * when they differ from what it holds (before any Container starts, so its first launch can start from the Build), and
+ * each Repo its files lack is cloned on the Container, and each clone whose
  * `.git/HEAD` is on `SPARE_BRANCH` (the Workspace was a spare) switched to the Workspace's branch; then each of those
  * has its Setup Script run if it is due (a switch that moved the commit makes it due), and its Start Script if it is
  * flagged (the Container is running already, so its bootstrap did not see the clone, or saw the spare's). Rejects with
@@ -89,7 +108,7 @@ const SPARE_HEAD = `ref: refs/heads/${SPARE_BRANCH}`;
  * the script runs again at the next Container start.
  */
 export const prepareWorkspace = async (
-  { readText, run, settings, warn }: PreparationHost,
+  { readText, run, settings, build, warn }: PreparationHost,
   setup: WorkspaceSetup,
 ): Promise<void> => {
   const held = await settings.read();
@@ -98,6 +117,10 @@ export const prepareWorkspace = async (
     const written = await settings.write(setup.settings);
 
     if (!written.ok) warn(`The Workspace refused its Environment's settings: ${written.message}`);
+  }
+
+  if (setup.build !== undefined && !sameBuild(await build.read(), setup.build)) {
+    await build.write(setup.build);
   }
 
   // A clone that is there has a `.git/HEAD`; the spare's own clones stay on its branch.
@@ -202,6 +225,7 @@ export const preparationHost = (
   workspace: ComputerWorkspaceStub,
   id: string,
   settings: PreparationHost["settings"],
+  build: PreparationHost["build"],
   warn: (message: string) => void,
 ): PreparationHost => {
   const env = async () => {
@@ -230,6 +254,7 @@ export const preparationHost = (
       }
     },
     settings,
+    build,
     warn,
   };
 };
@@ -249,6 +274,10 @@ export const workspacePreparation =
         {
           read: () => namespace.getByName(objectName).containerSettings(),
           write: (overrides) => namespace.getByName(objectName).updateContainerSettings(overrides),
+        },
+        {
+          read: () => namespace.getByName(objectName).environmentBuild(),
+          write: (build) => namespace.getByName(objectName).updateEnvironmentBuild(build),
         },
         warn,
       ),

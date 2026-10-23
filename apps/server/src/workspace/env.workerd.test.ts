@@ -247,6 +247,7 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
           forgotten++;
         },
         take: async () => "taken",
+        capture: async () => ({ outcome: "skipped", reason: "not used" }),
       },
       image: () => undefined,
       load: async () => record,

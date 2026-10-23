@@ -14,6 +14,7 @@ import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
+import { buildUpkeep } from "./registry/builds.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import {
   legacyCleanup,
@@ -172,8 +173,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
 
     // Built once per isolate, so a cleanup that found nothing left is not asked again.
     const legacy = legacyCleanup(registries, { sessions: sessionObjects, workspaces });
-    // Built once per isolate too: the upkeep of every spare stops once a run finds nothing to do.
+    // Built once per isolate too: the upkeep of every spare stops once a run finds nothing to do, and so does the Builds'.
     const spares = spareUpkeep(registries, { workspaces });
+    const builds = buildUpkeep(registries, { workspaces });
 
     return {
       fetch: Effect.gen(function* () {
@@ -194,6 +196,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
             sessions: sessionObjects,
             legacy,
             spares,
+            builds,
             background: (effect) => execution.waitUntil(effect),
           });
 

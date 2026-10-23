@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
+import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
 
 // The Registry's tables over the Registry DO's SQLite storage (`docs/spec.md` → Durable Objects). Synchronous, as
 // SQLite in a Durable Object is, and given the time by its caller so tests control it.
@@ -112,6 +113,15 @@ export type SpareUpkeep = {
   readonly made: ReadonlyArray<WorkspaceSetup>;
 };
 
+/**
+ * What the Registry knows of an Environment's Build (docs/spec.md → Builds), as the Build's object last answered: its
+ * last good Build, which new Workspaces start from, and the one in progress or the last failure.
+ */
+export type BuildRecord = {
+  readonly build: EnvironmentBuild | null;
+  readonly status: BuildProgress | null;
+};
+
 /** Something left from before Environments (ADR-0016) whose Durable Object is still to be wiped. */
 export type LegacyObject = { readonly kind: "session" | "machine"; readonly id: string };
 
@@ -166,6 +176,12 @@ export type RegistryStore = {
   readonly getEnvironmentSettings: (environment: string) => Schema.Json | null;
   /** Save an Environment's Container settings overrides; says whether it is registered. */
   readonly putEnvironmentSettings: (environment: string, overrides: Schema.Json) => boolean;
+  /** What the Registry knows of an Environment's Build, or null when the Environment is not registered. */
+  readonly getBuild: (environment: string) => BuildRecord | null;
+  /** Keep what an Environment's Build object answered; says whether the Environment is registered. */
+  readonly putBuild: (environment: string, record: BuildRecord) => boolean;
+  /** Every Environment's Build, by Environment id, newest Environment first. */
+  readonly listBuilds: () => Array<BuildRecord & { readonly environment: string }>;
   /** The Workspace registered under `id`, or null; a spare is not one until it is taken. */
   readonly getWorkspace: (id: string) => WorkspaceRecord | null;
   /** What Workspace `id` sets itself up with, or null when it is not registered. */
@@ -229,6 +245,10 @@ type EnvironmentRow = {
   /** JSON: the Container settings overrides. */
   settings: string;
   created_at: number;
+  /** JSON: the last good Build (`EnvironmentBuild`), or null for none yet. */
+  build: string | null;
+  /** JSON: the Build in progress or the last that failed (`BuildProgress`), or null. */
+  build_status: string | null;
 };
 
 type WorkspaceRow = {
@@ -273,6 +293,19 @@ const decodeRepos = Schema.decodeUnknownSync(
 );
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
+
+/** A JSON column the store wrote itself, as `A`; null when it is null or not JSON. */
+const jsonColumn = <A>(text: string | null): A | null => {
+  if (text === null) return null;
+
+  // SAFETY: only the store writes these columns, from values of type `A`.
+  return Option.getOrNull(decodeJson(text)) as A | null;
+};
+
+const toBuild = (row: Pick<EnvironmentRow, "build" | "build_status">): BuildRecord => ({
+  build: jsonColumn<EnvironmentBuild>(row.build),
+  status: jsonColumn<BuildProgress>(row.build_status),
+});
 
 const toSession = (row: SessionRow): SessionRecord => ({
   id: row.id,
@@ -481,6 +514,12 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   // stored before is a Session's.
   (sql) => {
     sql.exec("ALTER TABLE workspaces ADD COLUMN spare INTEGER NOT NULL DEFAULT 0");
+  },
+  // 13: each Environment's Build (ADR-0016), as its Build object last answered: the last good one, and the one in
+  // progress or the last failure. Every Environment stored before has none yet.
+  (sql) => {
+    sql.exec("ALTER TABLE environments ADD COLUMN build TEXT");
+    sql.exec("ALTER TABLE environments ADD COLUMN build_status TEXT");
   },
 ];
 
@@ -789,6 +828,35 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         JSON.stringify(overrides),
         environment,
       ).rowsWritten > 0,
+
+    getBuild: (environment) => {
+      const [row] = sql
+        .exec<Pick<EnvironmentRow, "build" | "build_status">>(
+          "SELECT build, build_status FROM environments WHERE id = ?",
+          environment,
+        )
+        .toArray();
+
+      return row === undefined ? null : toBuild(row);
+    },
+
+    putBuild: (environment, { build, status }) =>
+      sql.exec(
+        "UPDATE environments SET build = ?, build_status = ? WHERE id = ?",
+        build === null ? null : JSON.stringify(build),
+        status === null ? null : JSON.stringify(status),
+        environment,
+      ).rowsWritten > 0,
+
+    listBuilds: () =>
+      Arr.map(
+        sql
+          .exec<Pick<EnvironmentRow, "id" | "build" | "build_status">>(
+            "SELECT id, build, build_status FROM environments ORDER BY created_at DESC, id",
+          )
+          .toArray(),
+        (row) => ({ environment: row.id, ...toBuild(row) }),
+      ),
 
     getWorkspace: (id) => {
       const row = getWorkspaceRow(id);

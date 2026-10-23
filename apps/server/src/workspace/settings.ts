@@ -11,6 +11,7 @@ import {
 } from "@cloudpid/config";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import type { EnvironmentBuild } from "./build-record.ts";
 
 /** Where the overrides are kept. */
 const SETTINGS_KEY = "cloudpid:workspace-settings";
@@ -57,4 +58,46 @@ export const workspaceSettingsStore = (storage: SettingsStorage) => {
   };
 
   return { read, write };
+};
+
+/** Where the Environment's Build the Workspace was handed is kept, and the Builds it gave up on. */
+const BUILD_KEY = "cloudpid:environment-build";
+const FAILED_BUILDS_KEY = "cloudpid:failed-builds";
+
+/** How many Builds a Workspace remembers giving up on: the latest, as each replaces the one before. */
+const FAILED_BUILDS_KEPT = 10;
+
+/**
+ * The Workspace's copy of its Environment's Build (docs/spec.md → Builds), which its next launch with no snapshot of its
+ * own starts from (`ContainerLaunch`). A Session's readying and a spare's request hand it over with the settings
+ * (`prepare.ts`). A Build a Container did not come up from is remembered, and not offered again.
+ */
+export const workspaceBuildStore = (storage: SettingsStorage) => {
+  const failedBuilds = async () => (await storage.get<string[]>(FAILED_BUILDS_KEY)) ?? [];
+
+  return {
+    /** The Build last handed over, or null for none. */
+    read: async (): Promise<EnvironmentBuild | null> =>
+      (await storage.get<EnvironmentBuild | null>(BUILD_KEY)) ?? null,
+    /** Keep `build` (null: none) in place of the one handed over before. */
+    write: async (build: EnvironmentBuild | null): Promise<void> => {
+      await storage.put(BUILD_KEY, build);
+    },
+    /** The Build a launch may start from: the one handed over, unless a Container did not come up from it. */
+    current: async (): Promise<EnvironmentBuild | undefined> => {
+      const build = (await storage.get<EnvironmentBuild | null>(BUILD_KEY)) ?? undefined;
+
+      return build === undefined || (await failedBuilds()).includes(build.snapshot.id)
+        ? undefined
+        : build;
+    },
+    /** A Container started from the Build `id` did not come up: it is not offered again. */
+    failed: async (id: string): Promise<void> => {
+      const failed = await failedBuilds();
+
+      if (!failed.includes(id)) {
+        await storage.put(FAILED_BUILDS_KEY, [...failed, id].slice(-FAILED_BUILDS_KEPT));
+      }
+    },
+  };
 };

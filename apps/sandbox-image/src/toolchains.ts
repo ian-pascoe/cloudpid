@@ -524,6 +524,21 @@ export const setupScriptRun = (
   );
 
 /**
+ * The bash script that writes the Environment's Setup Script `source` to `file`, then runs it in `root`
+ * (`setupScriptRun`, which records it under `ENVIRONMENT_SETUP_RECORD` when it succeeds), whether or not it is due: for
+ * a Build, which runs it in its scratch root (`@cloudpid/sandbox-image/builds`). The bootstrap writes it and runs it
+ * only when due (`pendingSetupScripts`).
+ */
+export const environmentSetupScriptRun = (
+  source: string,
+  root: string = WORKSPACE_ROOT,
+  file: string = ENVIRONMENT_SETUP_FILE,
+  state: string = SETUP_STATE_DIRECTORY,
+  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
+): string =>
+  `${writeScript(source, file)}\n${setupScriptRun(environmentSetupScript(root, file), state, timeoutSeconds)}`;
+
+/**
  * `setupScriptRun` of the repo in `directory`, only when its Setup Script is due: there is one, and it is not the one
  * that last succeeded there. It exits 0 without running anything otherwise. For a repo cloned after the Container
  * started, which the bootstrap did not see.

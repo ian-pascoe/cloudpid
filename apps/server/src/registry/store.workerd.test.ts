@@ -724,6 +724,77 @@ describe("the Registry store", () => {
     ]);
   });
 
+  describe("Builds", () => {
+    const good = {
+      key: "k1",
+      snapshot: { id: "snap-1", size: 2e9 },
+      image: "img-1",
+      ignore: ["**/node_modules"],
+      commits: { app: "abc", empty: null },
+      finishedAt: 5_000,
+    };
+
+    it("has none for an Environment until its Build object's answer is kept, and keeps the last one", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+
+      expect(await registry.getBuild("0000abcd")).toEqual({ build: null, status: null });
+
+      const building = { status: "building" as const, key: "k1", startedAt: 4_000 };
+
+      expect(await registry.putBuild("0000abcd", { build: null, status: building })).toBe(true);
+      expect(await registry.getBuild("0000abcd")).toEqual({ build: null, status: building });
+
+      expect(await registry.putBuild("0000abcd", { build: good, status: null })).toBe(true);
+      expect(await registry.getBuild("0000abcd")).toEqual({ build: good, status: null });
+
+      const failed = { status: "failed" as const, key: "k2", reason: "exit 1", at: 6_000 };
+
+      await registry.putBuild("0000abcd", { build: good, status: failed });
+
+      // Newest first: the default Environment was made by the migration, at the real time.
+      expect(await registry.listBuilds()).toEqual([
+        { environment: DEFAULT_ENVIRONMENT, build: null, status: null },
+        { environment: "0000abcd", build: good, status: failed },
+      ]);
+    });
+
+    it("keeps nothing for an Environment that is not registered", async () => {
+      const registry = fresh();
+
+      expect(await registry.putBuild("0000abcd", { build: good, status: null })).toBe(false);
+      expect(await registry.getBuild("0000abcd")).toBeNull();
+    });
+
+    it("gives every Environment stored before migration 13 no Build yet", async () => {
+      const registry = fresh();
+
+      await runInDurableObject(registry, (_instance, state) => {
+        const { storage } = state;
+        const { sql } = storage;
+
+        for (const { name } of sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
+          )
+          .toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+
+        migrate(storage, MIGRATIONS.slice(0, 12));
+        sql.exec(
+          "INSERT INTO environments (id, name, repos, settings, created_at) VALUES ('0000abcd', 'Old', '[]', '{}', 5)",
+        );
+
+        const store = openRegistryStore(storage);
+
+        expect(store.getBuild("0000abcd")).toEqual({ build: null, status: null });
+        expect(store.getEnvironment("0000abcd")).toMatchObject({ name: "Old" });
+      });
+    });
+  });
+
   describe("spare Workspaces", () => {
     it("makes one spare per Environment on the placeholder branch, with its Repos, and lists it nowhere", async () => {
       const registry = fresh();

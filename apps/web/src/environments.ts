@@ -1,6 +1,7 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over native arrays, not combinators.
 
 import {
+  type BuildView,
   branchProblem,
   MAX_ENVIRONMENT_NAME_LENGTH,
   parseRepoSource,
@@ -20,6 +21,7 @@ import {
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
+import { relativeTime } from "./format.ts";
 
 /** An Environment's Sessions, newest first. */
 export type EnvironmentGroup = {
@@ -205,4 +207,26 @@ export const scriptFieldProblem = (text: string): string | null => {
   const problem = scriptProblem(text);
 
   return problem === undefined ? null : `The script ${problem}`;
+};
+
+/**
+ * The line an Environment's card shows of its Build (docs/spec.md → Builds), as of `now`: whether new Workspaces start
+ * from one, and when it was made; one under way or failed says what new Workspaces start from meanwhile.
+ */
+export const buildLine = (build: BuildView, now: number): string => {
+  const meanwhile = (lastGoodAt: number | null) =>
+    lastGoodAt === null
+      ? "new workspaces start from the image"
+      : `new workspaces start from the build of ${relativeTime(lastGoodAt, now)}`;
+
+  switch (build.status) {
+    case "none":
+      return "No build: new workspaces start from the image";
+    case "ready":
+      return `Built ${relativeTime(build.at, now)}`;
+    case "building":
+      return `Building since ${relativeTime(build.since, now)}; ${meanwhile(build.lastGoodAt)}`;
+    case "failed":
+      return `Build failed ${relativeTime(build.at, now)}: ${build.reason}. Meanwhile ${meanwhile(build.lastGoodAt)}`;
+  }
 };

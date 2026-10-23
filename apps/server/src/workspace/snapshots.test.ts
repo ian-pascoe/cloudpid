@@ -99,6 +99,42 @@ const open = (
   return { state, snapshots };
 };
 
+describe("ContainerSnapshots.capture", () => {
+  it("snapshots the running Container for a Build without keeping it as the Workspace's own", async () => {
+    const { state, snapshots } = open();
+
+    expect(await snapshots.capture("build", IMAGE)).toEqual({
+      outcome: "taken",
+      id: "snap-1",
+      size: 1234,
+      tookMs: 0,
+    });
+    expect(state.taken).toEqual(["workspace-build"]);
+    expect(state.stored).toBeUndefined();
+  });
+
+  it("says why it took none: the token on the disk (naming the file, never the value), or the platform's refusal", async () => {
+    const { state, snapshots } = open();
+
+    state.leaks = ["/root/.netrc"];
+
+    const leaked = await snapshots.capture("build", IMAGE);
+
+    expect(leaked).toMatchObject({ outcome: "skipped" });
+    expect(JSON.stringify(leaked)).toContain("/root/.netrc");
+    expect(JSON.stringify(leaked)).not.toContain(SECRET);
+
+    state.leaks = [];
+    state.snapshotFails = true;
+
+    expect(await snapshots.capture("build", IMAGE)).toEqual({
+      outcome: "failed",
+      reason: "the platform refused",
+    });
+    expect(state.taken).toHaveLength(0);
+  });
+});
+
 describe("ContainerSnapshots.take", () => {
   it("snapshots the running Container and keeps the handle with the image it came from", async () => {
     const { state, snapshots } = open();

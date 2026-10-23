@@ -12,6 +12,7 @@ import * as Result from "effect/Result";
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  buildLine,
   deleteConfirmed,
   environmentNameProblem,
   groupByEnvironment,
@@ -259,6 +260,46 @@ describe("scriptFieldProblem", () => {
     expect(scriptFieldProblem("a".repeat(MAX_SCRIPT_BYTES))).toBeNull();
     expect(scriptFieldProblem("a".repeat(MAX_SCRIPT_BYTES + 1))).toBe(
       "The script is longer than 64 KiB",
+    );
+  });
+});
+
+describe("buildLine", () => {
+  const NOW = 1_000_000_000_000;
+  const HOUR = 3_600_000;
+
+  it("says new Workspaces start from the image while there is no Build", () => {
+    expect(buildLine({ status: "none" }, NOW)).toBe(
+      "No build: new workspaces start from the image",
+    );
+  });
+
+  it("says when the Build they start from was made", () => {
+    expect(buildLine({ status: "ready", at: NOW - 2 * HOUR }, NOW)).toBe("Built 2 hours ago");
+  });
+
+  it("says what new Workspaces start from while a Build is under way", () => {
+    expect(buildLine({ status: "building", since: NOW - 5 * 60_000, lastGoodAt: null }, NOW)).toBe(
+      "Building since 5 minutes ago; new workspaces start from the image",
+    );
+    expect(buildLine({ status: "building", since: NOW, lastGoodAt: NOW - 48 * HOUR }, NOW)).toBe(
+      "Building since just now; new workspaces start from the build of 2 days ago",
+    );
+  });
+
+  it("says why a Build failed, and what new Workspaces start from meanwhile", () => {
+    expect(
+      buildLine(
+        {
+          status: "failed",
+          reason: "exit 1: npm ERR!",
+          at: NOW - HOUR,
+          lastGoodAt: NOW - 24 * HOUR,
+        },
+        NOW,
+      ),
+    ).toBe(
+      "Build failed 1 hour ago: exit 1: npm ERR!. Meanwhile new workspaces start from the build of yesterday",
     );
   });
 });

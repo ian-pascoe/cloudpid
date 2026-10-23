@@ -24,7 +24,11 @@ export type WorkspaceNamespace = {
   ): ComputerWorkspaceStub &
     Pick<
       DurableObjectStub<Workspace>,
-      "startContainerEarly" | "containerSettings" | "updateContainerSettings"
+      | "startContainerEarly"
+      | "containerSettings"
+      | "updateContainerSettings"
+      | "environmentBuild"
+      | "updateEnvironmentBuild"
     >;
 };
 

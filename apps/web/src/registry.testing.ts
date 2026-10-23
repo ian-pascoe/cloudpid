@@ -35,6 +35,8 @@ const UNEXPECTED: Handlers = {
   removeRepo: unexpected("removeRepo"),
   getEnvironmentSettings: unexpected("getEnvironmentSettings"),
   updateEnvironmentSettings: unexpected("updateEnvironmentSettings"),
+  listBuilds: unexpected("listBuilds"),
+  rebuildEnvironment: unexpected("rebuildEnvironment"),
   listWorkspaces: unexpected("listWorkspaces"),
   removeWorkspace: unexpected("removeWorkspace"),
   restartContainer: unexpected("restartContainer"),

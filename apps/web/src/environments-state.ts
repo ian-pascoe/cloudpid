@@ -1,12 +1,13 @@
-// The Environment list, what the owner does to an Environment in it (create, edit, delete, add and remove Repos) and to
-// its Workspaces (remove, restart the Container), and the state of the Environments page's forms and dialogs.
+// The Environment list, what the owner does to an Environment in it (create, edit, delete, add and remove Repos, make
+// its Build again) and to its Workspaces (remove, restart the Container), and the state of the Environments page's forms
+// and dialogs.
 
 import {
   containerOverridesFrom,
   type InstanceType,
   type ContainerSettings,
 } from "@cloudpid/config";
-import type { ContainerSettingsState } from "@cloudpid/protocol";
+import type { BuildView, ContainerSettingsState } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -16,6 +17,7 @@ import * as Record from "effect/Record";
 import { variablesText } from "./environments.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
+import { visibleTickAtom } from "./sessions.ts";
 
 /** Every Environment, newest first, with its Repos. */
 export const environmentsAtom = RegistryClient.query("listEnvironments", undefined, {
@@ -33,6 +35,37 @@ export const environmentsErrorAtom = Atom.map(environmentsAtom, failureOf);
 /** Each Environment's name, by id. */
 export const environmentNamesAtom = Atom.map(environmentListAtom, (environments) =>
   Record.fromEntries(Arr.map(environments ?? [], (known) => [known.id, known.name] as const)),
+);
+
+/**
+ * Where each Environment's Build stands, asked again every few seconds while the page is visible: a Build takes
+ * minutes, and the page shows it end.
+ */
+export const buildsAtom = RegistryClient.query("listBuilds", undefined, {
+  reactivityKeys: ["builds"],
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
+
+/** Where Environment `id`'s Build stands as of the last answer; null until the first, or for an Environment not listed. */
+export const environmentBuildAtom = Atom.family((id: string) =>
+  Atom.map(buildsAtom, (result): BuildView | null =>
+    result.pipe(
+      AsyncResult.value,
+      Option.flatMap((builds) => Arr.findFirst(builds, (known) => known.environment === id)),
+      Option.map((known) => known.build),
+      Option.getOrNull,
+    ),
+  ),
+);
+
+/** Make Environment `id`'s Build again now, from its Repos' default branches; the build line shows it under way. */
+export const rebuildEnvironmentAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    () =>
+      RegistryClient.use((registry) => registry("rebuildEnvironment", { environment: id })).pipe(
+        changing(["builds"]),
+      ),
+    { concurrent: true },
+  ),
 );
 
 /** What is typed in the new-Environment form. The page has one. */

@@ -5,6 +5,7 @@ import type { Context } from "@earendil-works/chord";
 import { ExecutionError, err, ok, type Shell } from "@earendil-works/pi-durable/env";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import type { EnvironmentBuild } from "./build-record.ts";
 import {
   CLONE_TIMEOUT_SECONDS,
   prepareWorkspace,
@@ -23,6 +24,9 @@ const setup: WorkspaceSetup = {
   settings: {},
 };
 
+/** The Build a fake object holds, and each one written in its place. */
+type HeldBuilds = { held: EnvironmentBuild | null; written: Array<EnvironmentBuild | null> };
+
 /**
  * A Workspace whose files hold the clones `present` (their `.git`), each on its branch in `heads` or else on the
  * Workspace's, whose Container answers each script in turn from `answers`, and whose object holds the settings `held`.
@@ -36,6 +40,14 @@ const host = (
   const scripts: Array<{ script: string; timeoutSeconds: number }> = [];
   const warnings: string[] = [];
   const written: Schema.Json[] = [];
+
+  /** The Build the object holds, and what was written in its place, with what had happened by then. */
+  const builds: HeldBuilds = {
+    held: null,
+    written: [],
+  };
+
+  let scriptsBeforeBuild: number | undefined;
   let refuse = false;
   let next = 0;
 
@@ -78,6 +90,16 @@ const host = (
             );
           },
         },
+        build: {
+          read: () => Promise.resolve(builds.held),
+          write: (build) => {
+            builds.written.push(build);
+            builds.held = build;
+            scriptsBeforeBuild ??= scripts.length;
+
+            return Promise.resolve();
+          },
+        },
         warn: (message) => {
           warnings.push(message);
         },
@@ -90,6 +112,8 @@ const host = (
     scripts,
     warnings,
     written,
+    builds,
+    scriptsBeforeBuild: () => scriptsBeforeBuild,
     refuseSettings: () => {
       refuse = true;
     },
@@ -209,6 +233,36 @@ describe("readying a Workspace", () => {
     await changed.prepare({ ...setup, settings: { idleMinutes: 60 } });
 
     expect(changed.written).toEqual([{ idleMinutes: 60 }]);
+  });
+
+  it("hands the Environment's Build to the Workspace before any Container starts, when it is not the one it holds", async () => {
+    const build: EnvironmentBuild = {
+      key: "k1",
+      snapshot: { id: "build-1", size: 1 },
+      image: "img",
+      ignore: null,
+      commits: {},
+      finishedAt: 1,
+    };
+
+    const fresh = host([]);
+
+    await fresh.prepare({ ...setup, build });
+
+    expect(fresh.builds.written).toEqual([build]);
+    // Before the clones, whose script starts the Container: its first launch can start from the Build.
+    expect(fresh.scriptsBeforeBuild()).toBe(0);
+
+    await fresh.prepare({ ...setup, build });
+    expect(fresh.builds.written).toEqual([build]);
+
+    // A newer Build replaces it; a set-up that says nothing of Builds leaves it.
+    const newer = { ...build, key: "k2", snapshot: { id: "build-2", size: 1 } };
+
+    await fresh.prepare({ ...setup, build: newer });
+    await fresh.prepare(setup);
+
+    expect(fresh.builds.written).toEqual([build, newer]);
   });
 
   it("only reports settings the Workspace refuses", async () => {

@@ -17,8 +17,9 @@ import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
-import { workspaceObjectName } from "../workspace/binding.ts";
+import { buildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
+import type { Builds } from "./builds.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import type { EnvironmentNaming, SessionRecord, SessionRefusal, WorkspaceRecord } from "./store.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -47,6 +48,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly legacy: Effect.Effect<void>;
   /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
   readonly spares: Spares;
+  /** Keeps each Environment's Build current (`buildUpkeep`), after the answer, and makes one again when asked. */
+  readonly builds: Builds;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
@@ -194,7 +197,7 @@ const reason = (cause: Cause.Cause<unknown>): string => {
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const serveRegistryRpc = <R = never>(
   registries: Cloudflare.DurableObject<Registry>,
-  { workspaces, sessions, legacy, spares, background }: RegistryRpcObjects<R>,
+  { workspaces, sessions, legacy, spares, builds, background }: RegistryRpcObjects<R>,
 ) =>
   Effect.gen(function* () {
     const registry = registries.getByName(REGISTRY_NAME);
@@ -304,6 +307,12 @@ export const serveRegistryRpc = <R = never>(
         yield* registry.forgetSpare({ id: spare });
       });
 
+    /** Remove an Environment's Build object (`buildObjectName`): its Container, its Builds' records. */
+    const removeBuild = (environment: string) =>
+      inWorkspace("Could not delete the environment's Build", () =>
+        workspaces.destroy(buildObjectName(environment)),
+      );
+
     /** The Environment a naming gave, or why there is none. */
     const named = (naming: EnvironmentNaming, name: string, id?: string) => {
       switch (naming.status) {
@@ -333,10 +342,11 @@ export const serveRegistryRpc = <R = never>(
     const handlers = RegistryRpcs.toLayer({
       listSessions: () =>
         registry.listSessions().pipe(
-          // What is left from before Environments is wiped behind the Session list the web app polls, and the spares
-          // are made where there are none (a fresh deploy, an upkeep that failed).
+          // What is left from before Environments is wiped behind the Session list the web app polls, the spares are
+          // made where there are none (a fresh deploy, an upkeep that failed), and the Builds are kept current.
           Effect.tap(() => background(legacy)),
           Effect.tap(() => background(spares.all)),
+          Effect.tap(() => background(builds.all)),
         ),
       createSession: ({ title, environment, workspace, branch, base }) =>
         Effect.gen(function* () {
@@ -383,6 +393,7 @@ export const serveRegistryRpc = <R = never>(
 
           // The Session took the Environment's spare or made a Workspace: either way, the next one is made ahead.
           yield* background(spares.of(made));
+          yield* background(builds.of(made));
 
           return created;
         }),
@@ -408,6 +419,7 @@ export const serveRegistryRpc = <R = never>(
         registry.createEnvironment({ name }).pipe(
           Effect.flatMap((naming) => named(naming, name)),
           Effect.tap((environment) => background(spares.of(environment.id))),
+          Effect.tap((environment) => background(builds.of(environment.id))),
         ),
       renameEnvironment: ({ environment, name }) =>
         registry
@@ -441,6 +453,11 @@ export const serveRegistryRpc = <R = never>(
                 failed(`${error.message}. The environment and its remaining workspaces are kept.`),
               ),
             );
+            yield* removeBuild(environment).pipe(
+              Effect.mapError((error) =>
+                failed(`${error.message}. The environment and its remaining workspaces are kept.`),
+              ),
+            );
 
             // The record goes only once no Workspace is made from it.
             if ((yield* registry.deleteEnvironment({ id: environment })) !== "in-use") return;
@@ -464,8 +481,9 @@ export const serveRegistryRpc = <R = never>(
 
           switch (added) {
             case "changed":
-              // The spare holds the Repos it was made with: one made before is stale now.
+              // The spare holds the Repos it was made with: one made before is stale now, and so is the Build.
               yield* background(spares.of(environment));
+              yield* background(builds.of(environment));
 
               return repo;
             case "taken":
@@ -479,7 +497,9 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((removed) => {
             switch (removed) {
               case "changed":
-                return background(spares.of(environment));
+                return background(spares.of(environment)).pipe(
+                  Effect.andThen(background(builds.of(environment))),
+                );
               case "absent":
                 return failed(`The environment has no repo "${repo}"`);
               default:
@@ -500,7 +520,8 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((update) => {
             switch (update.status) {
               case "saved":
-                return Effect.succeed(update.state);
+                // The variables, the Setup Script and the Container-only paths are what a Build is made with.
+                return background(builds.of(environment)).pipe(Effect.as(update.state));
               // Overrides that do not resolve say why, one problem per line, and nothing was saved.
               case "rejected":
                 return failed(update.message);
@@ -508,6 +529,15 @@ export const serveRegistryRpc = <R = never>(
                 return failed(`Environment "${environment}" does not exist`);
             }
           }),
+        ),
+      listBuilds: () =>
+        registry.listBuilds().pipe(
+          // The Environments page asks again while a Build is under way, which records it once it ends.
+          Effect.tap(() => background(builds.all)),
+        ),
+      rebuildEnvironment: ({ environment }) =>
+        knownEnvironment(environment).pipe(
+          Effect.andThen(builds.rebuild(environment).pipe(Effect.mapError(failed))),
         ),
       listWorkspaces: () => registry.listWorkspaces(),
       removeWorkspace: ({ id }) => knownWorkspace(id).pipe(Effect.flatMap(removeWorkspace)),

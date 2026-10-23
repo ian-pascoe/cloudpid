@@ -4,7 +4,9 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import type { PushState, PushSubscription } from "@cloudpid/protocol";
+import type { EnvironmentBuildState, PushState, PushSubscription } from "@cloudpid/protocol";
+import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
+import { type BuildWork, buildView } from "./builds.ts";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
@@ -43,8 +45,14 @@ export type WorkspaceChoice =
       readonly base?: string | undefined;
     };
 
-/** What a Workspace's Durable Object sets itself up with, with its Environment's Container settings overrides. */
-export type WorkspaceSetupWithSettings = WorkspaceSetup & { readonly settings: Schema.Json };
+/**
+ * What a Workspace's Durable Object sets itself up with, with its Environment's Container settings overrides and last
+ * good Build (null for none yet).
+ */
+export type WorkspaceSetupWithSettings = WorkspaceSetup & {
+  readonly settings: Schema.Json;
+  readonly build: EnvironmentBuild | null;
+};
 
 /** `SpareUpkeep`, each spare made with the Container settings it is prepared with. */
 export type SpareWork = {
@@ -156,6 +164,21 @@ export type RegistryMethods = {
   readonly upkeepSpares: (input: {
     readonly environments?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SpareWork>;
+  /**
+   * What keeping the Builds of `environments` (every Environment when undefined) current needs: each Environment's
+   * Repos and Container settings overrides, and what is recorded of its Build.
+   */
+  readonly buildWork: (input: {
+    readonly environments?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<ReadonlyArray<BuildWork>>;
+  /** Record what an Environment's Build object answered: its last good Build, and the one in progress or the last failure. */
+  readonly recordBuild: (input: {
+    readonly environment: string;
+    readonly build: EnvironmentBuild | null;
+    readonly status: BuildProgress | null;
+  }) => Effect.Effect<void>;
+  /** Where each Environment's Build stands, for the owner. */
+  readonly listBuilds: () => Effect.Effect<ReadonlyArray<EnvironmentBuildState>>;
   /** The id of an Environment's spare Workspace, current or stale, or null. */
   readonly getSpare: (input: { readonly environment: string }) => Effect.Effect<string | null>;
   /** Forget a spare's record once its object is wiped; one taken meanwhile is a Session's and is kept. */
@@ -209,12 +232,16 @@ export const RegistryLive = Registry.make(
         const store = openRegistryStore(state.raw.storage);
         const notify = pushNotifier({ store, vapid: push.vapid });
 
-        /** A Workspace's set-up with its Environment's Container settings overrides. */
+        /** A Workspace's set-up with its Environment's Container settings overrides and last good Build. */
         const withSettings = (setup: WorkspaceSetup): WorkspaceSetupWithSettings => {
           // Only the overrides that still resolve reach the Workspace, which checks them again.
           const overrides = store.getEnvironmentSettings(setup.environment) ?? {};
 
-          return { ...setup, settings: readEnvironmentSettings(overrides).overrides };
+          return {
+            ...setup,
+            settings: readEnvironmentSettings(overrides).overrides,
+            build: store.getBuild(setup.environment)?.build ?? null,
+          };
         };
 
         return {
@@ -313,6 +340,35 @@ export const RegistryLive = Registry.make(
 
                 return { stale, made: Arr.map(made, withSettings) };
               }),
+            ),
+          buildWork: ({ environments }) =>
+            Effect.sync(() =>
+              Arr.filterMap(store.listEnvironments(), (environment) => {
+                const recorded = store.getBuild(environment.id);
+
+                return (environments !== undefined && !environments.includes(environment.id)) ||
+                  recorded === null
+                  ? Result.failVoid
+                  : Result.succeed({
+                      environment: environment.id,
+                      repos: environment.repos,
+                      settings: readEnvironmentSettings(
+                        store.getEnvironmentSettings(environment.id) ?? {},
+                      ).overrides,
+                      recorded,
+                    });
+              }),
+            ),
+          recordBuild: ({ environment, build, status }) =>
+            Effect.sync(() => {
+              store.putBuild(environment, { build, status });
+            }),
+          listBuilds: () =>
+            Effect.sync(() =>
+              Arr.map(store.listBuilds(), (record) => ({
+                environment: record.environment,
+                build: buildView(record),
+              })),
             ),
           getSpare: ({ environment }) => Effect.sync(() => store.getSpare(environment)),
           forgetSpare: ({ id }) => Effect.sync(() => store.forgetSpare(id)),

@@ -137,6 +137,37 @@ export const EnvironmentRecord = Schema.Struct({
 
 export type EnvironmentRecord = typeof EnvironmentRecord.Type;
 
+/**
+ * Where an Environment's Build stands (`docs/spec.md` → Builds): none made yet, one being made (with when the last good
+ * one is from, which Workspaces start from meanwhile), the last good one (when it finished), or the last attempt failed
+ * (why, when, and when the last good one is from, which stays in use).
+ */
+export const BuildView = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("none") }),
+  Schema.Struct({
+    status: Schema.Literal("building"),
+    since: Schema.Finite,
+    lastGoodAt: Schema.NullOr(Schema.Finite),
+  }),
+  Schema.Struct({ status: Schema.Literal("ready"), at: Schema.Finite }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    reason: Schema.String,
+    at: Schema.Finite,
+    lastGoodAt: Schema.NullOr(Schema.Finite),
+  }),
+]);
+
+export type BuildView = typeof BuildView.Type;
+
+/** An Environment's Build, by the Environment's id. */
+export const EnvironmentBuildState = Schema.Struct({
+  environment: Schema.String,
+  build: BuildView,
+});
+
+export type EnvironmentBuildState = typeof EnvironmentBuildState.Type;
+
 /** The settings in force, and the overrides saved over the defaults (`docs/spec.md` → Settings). */
 export const SettingsState = Schema.Struct({
   settings: Settings,
@@ -348,6 +379,16 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("updateEnvironmentSettings", {
     payload: { environment: EnvironmentId, overrides: Schema.Json },
     success: ContainerSettingsState,
+    error: EnvironmentError,
+  }),
+  /** Where each Environment's Build stands (`docs/spec.md` → Builds). */
+  Rpc.make("listBuilds", { success: Schema.Array(EnvironmentBuildState) }),
+  /**
+   * Make the Environment's Build again now, whatever the last one was made from; one already being made is left to
+   * finish. Fails with an `EnvironmentError` when the Environment does not exist or its Build could not be asked for.
+   */
+  Rpc.make("rebuildEnvironment", {
+    payload: { environment: EnvironmentId },
     error: EnvironmentError,
   }),
   /** Every Workspace, of every Environment, newest first. */

@@ -27,12 +27,15 @@ import {
   createEnvironmentAtom,
   deleteEnvironmentAtom,
   deleteTypedAtom,
+  buildsAtom,
+  environmentBuildAtom,
   environmentDialogAtom,
   environmentDraftAtom,
   environmentNamesAtom,
   environmentSettingsAtom,
   environmentsAtom,
   newEnvironmentNameAtom,
+  rebuildEnvironmentAtom,
   removeRepoAtom,
   removeWorkspaceAtom,
   removeWorkspaceTypedAtom,
@@ -898,4 +901,82 @@ describe("the Workspaces", () => {
     expect(registry.get(removeWorkspaceTypedAtom("deadbeef"))).toBe("");
     registry.dispose();
   });
+});
+
+describe("an Environment's Build", () => {
+  it.effect("shows where each Environment's Build stands, and none for one not listed", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        listBuilds: () =>
+          Effect.succeed([
+            { environment: "work", build: { status: "ready" as const, at: 5 } },
+            { environment: "home", build: { status: "none" as const } },
+          ]),
+      });
+
+      registry.mount(environmentBuildAtom("work"));
+      yield* settled(registry, buildsAtom);
+
+      expect(registry.get(environmentBuildAtom("work"))).toEqual({ status: "ready", at: 5 });
+      expect(registry.get(environmentBuildAtom("gone"))).toBeNull();
+      registry.dispose();
+    }),
+  );
+
+  it.effect(
+    "asks for a Build again and lists the Builds again, so the line shows it under way",
+    () =>
+      Effect.gen(function* () {
+        const rebuilt: string[] = [];
+        let building = false;
+
+        const registry = registryWith({
+          listBuilds: () =>
+            Effect.sync(() => [
+              {
+                environment: "work",
+                build: building
+                  ? { status: "building" as const, since: 7, lastGoodAt: 5 }
+                  : { status: "ready" as const, at: 5 },
+              },
+            ]),
+          rebuildEnvironment: ({ environment }) =>
+            Effect.sync(() => {
+              rebuilt.push(environment);
+              building = true;
+            }),
+        });
+
+        registry.mount(environmentBuildAtom("work"));
+        yield* settled(registry, buildsAtom);
+        registry.mount(rebuildEnvironmentAtom("work"));
+        registry.set(rebuildEnvironmentAtom("work"), undefined);
+        yield* settled(registry, rebuildEnvironmentAtom("work"));
+        yield* settled(registry, buildsAtom);
+
+        expect(rebuilt).toEqual(["work"]);
+        expect(registry.get(environmentBuildAtom("work"))).toEqual({
+          status: "building",
+          since: 7,
+          lastGoodAt: 5,
+        });
+        registry.dispose();
+      }),
+  );
+
+  it.effect("says why a Rebuild was refused", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        rebuildEnvironment: () => refused("There is nothing to build."),
+      });
+
+      registry.mount(rebuildEnvironmentAtom("work"));
+      registry.set(rebuildEnvironmentAtom("work"), undefined);
+
+      expect(settledFailureOf(yield* settled(registry, rebuildEnvironmentAtom("work")))).toBe(
+        "There is nothing to build.",
+      );
+      registry.dispose();
+    }),
+  );
 });

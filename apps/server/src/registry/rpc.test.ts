@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off globalDate:off
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
 import {
   DEFAULT_ENVIRONMENT,
@@ -24,11 +24,14 @@ import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { expect, it } from "vitest";
 import { isRegistryRpc } from "../routes.ts";
+import { buildKey, type BuildRequest, type BuildState } from "../workspace/build-record.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
+import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type {
+  BuildRecord,
   EnvironmentNaming,
   EnvironmentRecord,
   LegacyObject,
@@ -133,8 +136,44 @@ const fakeRegistries = () => {
       : Promise.reject(new Error(workspaceFails));
   };
 
+  /** What each Environment's Build object holds, by object name (`build:<id>`), and what each was last asked for. */
+  const buildObjects = new Map<string, BuildState>();
+  const buildRequests = new Map<string, BuildRequest>();
+  /** What the Registry recorded of each Environment's Build. */
+  const buildRecords = new Map<string, BuildRecord>();
+  const NO_BUILD: BuildRecord = { build: null, status: null };
+
+  const buildStateOf = (name: string): BuildState =>
+    buildObjects.get(name) ?? { image: "img-1", last: null, progress: null, attemptedAt: null };
+
   /** The objects behind the Workspaces, by object name. */
   const workspaceObjects: WorkspaceObjects = {
+    buildState: async (name) => {
+      calls.push(`buildState:${name}`);
+
+      if (workspaceFails !== undefined) throw new Error(workspaceFails);
+
+      return buildStateOf(name);
+    },
+    startBuild: async (name, request) => {
+      calls.push(`startBuild:${name}${request.check === true ? ":check" : ""}`);
+
+      if (workspaceFails !== undefined) throw new Error(workspaceFails);
+
+      const state: BuildState = {
+        ...buildStateOf(name),
+        progress: {
+          status: request.check === true ? "checking" : "building",
+          key: request.key,
+          startedAt: 50,
+        },
+      };
+
+      buildObjects.set(name, state);
+      buildRequests.set(name, request);
+
+      return state;
+    },
     destroy: (name) => {
       const result = workspaceCall("destroyWorkspace", name);
 
@@ -392,6 +431,7 @@ const fakeRegistries = () => {
           base,
           repos: [],
           settings: overridesOf.get(environment) ?? {},
+          build: buildRecords.get(environment)?.build ?? null,
         };
       }),
     listWorkspaces: () => Effect.sync(() => [...workspaces]),
@@ -400,7 +440,9 @@ const fakeRegistries = () => {
         calls.push(`upkeepSpares:${named === undefined ? "*" : Arr.join(named, ",")}`);
 
         const stale: string[] = [];
-        const made: Array<WorkspaceSetup & { settings: Schema.Json }> = [];
+
+        const made: Array<WorkspaceSetup & { settings: Schema.Json; build: BuildRecord["build"] }> =
+          [];
 
         for (const environment of named ?? Arr.map(environments, (item) => item.id)) {
           const found = Arr.findFirst(environments, (item) => item.id === environment);
@@ -426,11 +468,38 @@ const fakeRegistries = () => {
             base: null,
             repos: found.value.repos,
             settings: overridesOf.get(environment) ?? {},
+            build: buildRecords.get(environment)?.build ?? null,
           });
         }
 
         return { stale, made };
       }),
+    buildWork: ({ environments: named }) =>
+      Effect.sync(() => {
+        calls.push(`buildWork:${named === undefined ? "*" : Arr.join(named, ",")}`);
+
+        return Arr.map(
+          Arr.filter(environments, (item) => named === undefined || named.includes(item.id)),
+          (item) => ({
+            environment: item.id,
+            repos: item.repos,
+            settings: overridesOf.get(item.id) ?? {},
+            recorded: buildRecords.get(item.id) ?? NO_BUILD,
+          }),
+        );
+      }),
+    recordBuild: ({ environment, build, status }) =>
+      Effect.sync(() => {
+        calls.push(`recordBuild:${environment}`);
+        buildRecords.set(environment, { build, status });
+      }),
+    listBuilds: () =>
+      Effect.sync(() =>
+        Arr.map(environments, (item) => ({
+          environment: item.id,
+          build: buildView(buildRecords.get(item.id) ?? NO_BUILD),
+        })),
+      ),
     getSpare: ({ environment }) => Effect.sync(() => spares.get(environment)?.id ?? null),
     forgetSpare: ({ id }) =>
       Effect.sync(() => {
@@ -551,10 +620,18 @@ const fakeRegistries = () => {
       for (const effect of queued.splice(0)) await Effect.runPromise(effect);
     },
     registries,
+    /** The Registry's methods, as the Session DO calls them. */
+    registry,
     /** Each Environment's spare Workspace. */
     spares,
     /** The upkeep of the spares, built once per fake as the main Worker builds it once per isolate. */
     spareUpkeep: spareUpkeep(registries, { workspaces: workspaceObjects }),
+    /** The upkeep of the Builds, built once per fake too. */
+    buildUpkeep: buildUpkeep(registries, { workspaces: workspaceObjects }),
+    buildObjects,
+    buildRequests,
+    buildRecords,
+    overridesOf,
   };
 };
 
@@ -576,6 +653,7 @@ const worker =
       sessions: fake.sessionObjects,
       legacy: fake.legacy,
       spares: fake.spareUpkeep,
+      builds: fake.buildUpkeep,
       background: fake.background,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
@@ -815,7 +893,7 @@ const call = <A, E>(
 /** The calls that reached a Session's or a Workspace's object, or forgot or archived a record, in order. */
 const lifecycle = (fake: ReturnType<typeof fakeRegistries>) =>
   Arr.filter(fake.calls, (name) =>
-    /^(stop|destroy|destroyWorkspace|restartContainer|prepareSpare|deleteSession|deleteWorkspace|deleteEnvironment|forgetSpare):|^(archive|unarchive)Session$/.test(
+    /^(stop|destroy|destroyWorkspace|restartContainer|prepareSpare|startBuild|deleteSession|deleteWorkspace|deleteEnvironment|forgetSpare):|^(archive|unarchive)Session$/.test(
       name,
     ),
   );
@@ -1101,6 +1179,7 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
     `deleteSession:${first.id}`,
     `destroyWorkspace:ws:${first.workspace}`,
     `deleteWorkspace:${first.workspace}`,
+    `destroyWorkspace:build:${id}`,
     `deleteEnvironment:${id}`,
   ]);
   expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
@@ -1112,13 +1191,13 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
   ).toEqual([DEFAULT_ENVIRONMENT]);
 });
 
-it("deletes an Environment with no Workspaces without waking an object", async () => {
+it("deletes an Environment with no Workspaces: its Build object, then its record", async () => {
   const fake = fakeRegistries();
   const id = await makeEnvironment(fake, "Empty");
 
   await call(fake, (registry) => registry.deleteEnvironment({ environment: id }));
 
-  expect(lifecycle(fake)).toEqual([`deleteEnvironment:${id}`]);
+  expect(lifecycle(fake)).toEqual([`destroyWorkspace:build:${id}`, `deleteEnvironment:${id}`]);
 });
 
 it("refuses to delete the default Environment, and touches nothing", async () => {
@@ -1813,7 +1892,7 @@ it("removes a stale spare once a Repo is added: its object, then its record, the
   await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
   await fake.runBackground();
 
-  expect(lifecycle(fake)).toEqual([
+  expect(Arr.filter(lifecycle(fake), (name) => !name.startsWith("startBuild:"))).toEqual([
     `destroyWorkspace:ws:${stale}`,
     `forgetSpare:${stale}`,
     `prepareSpare:ws:${fake.spares.get(environment)?.id}`,
@@ -1883,6 +1962,7 @@ it("deletes an Environment's spare Workspace with it: its object, then its recor
   expect(lifecycle(fake)).toEqual([
     `destroyWorkspace:ws:${spare}`,
     `forgetSpare:${spare}`,
+    `destroyWorkspace:build:${id}`,
     `deleteEnvironment:${id}`,
   ]);
 });
@@ -1900,4 +1980,337 @@ it("keeps an Environment whose spare Workspace could not be wiped", async () => 
 
   expect(error.message).toContain("Could not delete the spare workspace");
   expect(fake.calls).not.toContain(`deleteEnvironment:${id}`);
+});
+
+/** The calls that reached an Environment's Build object or recorded its answer, in order. */
+const buildCalls = (fake: ReturnType<typeof fakeRegistries>) =>
+  Arr.filter(fake.calls, (name) => /^(buildState|startBuild|recordBuild):/.test(name));
+
+/** The key of the Build of `environment`'s Repos and saved settings, on the fake's image. */
+const keyOf = (fake: ReturnType<typeof fakeRegistries>, environment: string) => {
+  const found = Arr.findFirst(fake.environments, (item) => item.id === environment);
+
+  return buildKey({
+    repos: Option.getOrThrow(found).repos,
+    // SAFETY: the tests only save overrides of the settings' own shape.
+    settings: { ...DEFAULT_CONTAINER_SETTINGS, ...(fake.overridesOf.get(environment) as object) },
+    image: "img-1",
+  });
+};
+
+const DAY = BUILD_LOOK_INTERVAL_MS;
+
+it("asks an Environment's Build object for a Build once it has a Repo, after the answer, and records what it answers", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await fake.runBackground();
+  // No Repo, no Setup Script: nothing to build.
+  expect(fake.calls).not.toContain(`startBuild:build:${environment}`);
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(buildCalls(fake)).toEqual([
+    `buildState:build:${environment}`,
+    `startBuild:build:${environment}`,
+    `recordBuild:${environment}`,
+  ]);
+  expect(fake.buildRequests.get(`build:${environment}`)).toEqual({
+    key: await keyOf(fake, environment),
+    repos: [{ name: "app", url: "https://github.com/acme/app.git" }],
+    settings: {},
+    check: false,
+  });
+
+  const builds = await call(fake, (registry) => registry.listBuilds());
+
+  expect(Arr.findFirst(builds, (item) => item.environment === environment)).toEqual(
+    Option.some({ environment, build: { status: "building", since: 50, lastGoodAt: null } }),
+  );
+});
+
+it("asks for a Build again when the settings a Build uses change, and not for a new idle time", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  const good = {
+    key: "",
+    snapshot: { id: "snap-1", size: 1 },
+    image: "img-1",
+    ignore: null,
+    commits: {},
+    finishedAt: 10,
+  };
+
+  await fake.runBackground();
+  fake.overridesOf.set(environment, { setupScript: "docker pull postgres" });
+  good.key = await keyOf(fake, environment);
+  fake.buildObjects.set(`build:${environment}`, {
+    image: "img-1",
+    last: good,
+    progress: null,
+    attemptedAt: Date.now(),
+  });
+  fake.buildRecords.set(environment, { build: good, status: null });
+
+  await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment,
+      overrides: { setupScript: "docker pull postgres", idleMinutes: 30 },
+    }),
+  );
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(buildCalls(fake)).toEqual([`buildState:build:${environment}`]);
+
+  await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment,
+      overrides: { setupScript: "docker pull redis", idleMinutes: 30 },
+    }),
+  );
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(buildCalls(fake)).toEqual([
+    `buildState:build:${environment}`,
+    `startBuild:build:${environment}`,
+    `recordBuild:${environment}`,
+  ]);
+  // The last good one is still what Workspaces start from meanwhile.
+  expect(fake.buildRecords.get(environment)?.build).toEqual(good);
+});
+
+it("asks for a Build when a deploy changed the image", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+
+  const good = {
+    key: await keyOf(fake, environment),
+    snapshot: { id: "snap-1", size: 1 },
+    image: "img-1",
+    ignore: null,
+    commits: { app: "abc" },
+    finishedAt: 10,
+  };
+
+  fake.buildObjects.set(`build:${environment}`, {
+    image: "img-2",
+    last: good,
+    progress: null,
+    attemptedAt: Date.now(),
+  });
+  fake.buildRecords.set(environment, { build: good, status: null });
+  fake.calls.length = 0;
+  await call(fake, (registry) => registry.listSessions());
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`startBuild:build:${environment}`);
+});
+
+it("records a Build that finished, and asks for nothing more while it is current", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  await fake.runBackground();
+
+  const request = fake.buildRequests.get(`build:${environment}`);
+
+  const good = {
+    key: request?.key ?? "",
+    snapshot: { id: "snap-1", size: 1 },
+    image: "img-1",
+    ignore: null,
+    commits: { app: "abc" },
+    finishedAt: Date.now(),
+  };
+
+  fake.buildObjects.set(`build:${environment}`, {
+    image: "img-1",
+    last: good,
+    progress: null,
+    attemptedAt: Date.now(),
+  });
+  fake.calls.length = 0;
+  await call(fake, (registry) => registry.listBuilds());
+  await fake.runBackground();
+
+  expect(Arr.filter(buildCalls(fake), (name) => name.endsWith(environment))).toEqual([
+    `buildState:build:${environment}`,
+    `recordBuild:${environment}`,
+  ]);
+  expect(fake.buildRecords.get(environment)).toEqual({ build: good, status: null });
+
+  // A Workspace made now starts from it.
+  const created = await call(fake, (registry) => registry.createSession({ environment }));
+
+  const setup = await Effect.runPromise(fake.registry.getWorkspaceSetup({ id: created.workspace }));
+
+  expect(setup?.build).toEqual(good);
+});
+
+it("leaves a Build of the wanted key that is under way, and tries a failed one again only a day later", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+
+  const key = await keyOf(fake, environment);
+  const name = `build:${environment}`;
+
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: null,
+    progress: { status: "building", key, startedAt: 1 },
+    attemptedAt: null,
+  });
+  fake.calls.length = 0;
+  await fake.runBackground();
+  expect(fake.calls).not.toContain(`startBuild:${name}`);
+
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: null,
+    progress: { status: "failed", key, reason: "exit 1", at: 1 },
+    attemptedAt: Date.now() - DAY / 2,
+  });
+
+  // A new idle time asks the upkeep to look again.
+  const look = () =>
+    call(fake, (registry) =>
+      registry.updateEnvironmentSettings({ environment, overrides: { idleMinutes: 30 } }),
+    ).then(() => fake.runBackground());
+
+  await look();
+  expect(fake.calls).not.toContain(`startBuild:${name}`);
+
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: null,
+    progress: { status: "failed", key, reason: "exit 1", at: 1 },
+    attemptedAt: Date.now() - DAY - 1,
+  });
+  await look();
+  expect(fake.calls).toContain(`startBuild:${name}`);
+});
+
+it("asks for the daily look at the default branches once a day", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+
+  const name = `build:${environment}`;
+
+  const good = {
+    key: await keyOf(fake, environment),
+    snapshot: { id: "snap-1", size: 1 },
+    image: "img-1",
+    ignore: null,
+    commits: { app: "abc" },
+    finishedAt: 10,
+  };
+
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: good,
+    progress: null,
+    attemptedAt: Date.now() - DAY - 1,
+  });
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`startBuild:${name}:check`);
+  // The look shows the last good Build still: it is not a Build until a branch moved.
+  expect(buildView(fake.buildRecords.get(environment) ?? { build: null, status: null })).toEqual({
+    status: "ready",
+    at: 10,
+  });
+});
+
+it("keeps the Builds behind the Session list until a run finds nothing to do or under way in the isolate", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.listSessions());
+  await fake.runBackground();
+  // The default Environment has nothing to build.
+  expect(Arr.filter(fake.calls, (name) => name === "buildWork:*")).toHaveLength(1);
+
+  for (let round = 0; round < 2; round++) {
+    await call(fake, (registry) => registry.listSessions());
+    await fake.runBackground();
+  }
+
+  expect(Arr.filter(fake.calls, (name) => name === "buildWork:*")).toHaveLength(1);
+});
+
+it("makes an Environment's Build again when the owner asks, though it is current", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+
+  const name = `build:${environment}`;
+
+  const good = {
+    key: await keyOf(fake, environment),
+    snapshot: { id: "snap-1", size: 1 },
+    image: "img-1",
+    ignore: null,
+    commits: { app: "abc" },
+    finishedAt: 10,
+  };
+
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: good,
+    progress: null,
+    attemptedAt: Date.now(),
+  });
+  fake.calls.length = 0;
+  await call(fake, (registry) => registry.rebuildEnvironment({ environment }));
+
+  expect(buildCalls(fake)).toEqual([
+    `buildState:${name}`,
+    `startBuild:${name}`,
+    `recordBuild:${environment}`,
+  ]);
+  expect(buildView(fake.buildRecords.get(environment) ?? { build: null, status: null })).toEqual({
+    status: "building",
+    since: 50,
+    lastGoodAt: 10,
+  });
+});
+
+it("refuses a Rebuild of an Environment that does not exist, or has nothing to build, or whose Build object cannot be reached", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.rebuildEnvironment({ environment: "0000beef" })),
+  );
+
+  expect(missing.message).toBe('Environment "0000beef" does not exist');
+
+  const empty = await call(fake, (registry) =>
+    Effect.flip(registry.rebuildEnvironment({ environment })),
+  );
+
+  expect(empty.message).toContain("nothing to build");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  fake.failWorkspace("unreachable");
+
+  const unreachable = await call(fake, (registry) =>
+    Effect.flip(registry.rebuildEnvironment({ environment })),
+  );
+
+  expect(unreachable).toBeInstanceOf(EnvironmentError);
+  expect(unreachable.message).toContain("unreachable");
 });

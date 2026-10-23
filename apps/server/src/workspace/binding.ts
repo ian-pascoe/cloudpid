@@ -24,3 +24,9 @@ export const WORKSPACE_CONTAINER = "WorkspaceContainer";
  * it apart from the slugs the Machines' objects were named by before Environments, which are wiped at the cutover.
  */
 export const workspaceObjectName = (id: string): string => `ws:${id}`;
+
+/**
+ * The name of the Durable Object that makes Environment `id`'s Builds (docs/spec.md → Builds): a Workspace DO of its
+ * own, whose name no Workspace's can be (`ws:` and the eight hex digits of a `WorkspaceId`).
+ */
+export const buildObjectName = (environment: string): string => `build:${environment}`;

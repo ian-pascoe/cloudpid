@@ -28,10 +28,10 @@ import { PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
 export const SNAPSHOT_TIMEOUT_MS = 2 * 60_000;
 
 /** A snapshot lives 30 days from its creation or latest restore; one older than this is not trusted to still be there. */
-const MAX_AGE_MS = 29 * 24 * 60 * 60_000;
+export const SNAPSHOT_MAX_AGE_MS = 29 * 24 * 60 * 60_000;
 
-/** Why a snapshot was taken. */
-export type SnapshotReason = "install" | "idle";
+/** Why a snapshot was taken: after an install, on idle stop, or as an Environment's Build (`build.ts`). */
+export type SnapshotReason = "install" | "idle" | "build";
 
 /** What the Workspace DO keeps of a snapshot: the platform's handle, and what it needs to decide to restore it. */
 export type SnapshotRecord = {
@@ -77,6 +77,16 @@ export type ContainerSnapshotDeps = {
 
 /** `taken`, `skipped` (nothing to snapshot, or one that would hold the token), or `failed` (it could not be taken). */
 export type SnapshotOutcome = "taken" | "skipped" | "failed";
+
+/** A snapshot taken (the platform's handle, its size in bytes, and how long it took), or why it was not. */
+export type SnapshotCapture =
+  | {
+      readonly outcome: "taken";
+      readonly id: string;
+      readonly size: number;
+      readonly tookMs: number;
+    }
+  | { readonly outcome: "skipped" | "failed"; readonly reason: string };
 
 export class ContainerSnapshots {
   readonly #deps: ContainerSnapshotDeps;
@@ -124,7 +134,7 @@ export class ContainerSnapshots {
     if (
       record.image !== this.#deps.image() ||
       !samePaths(record.ignore, ignore) ||
-      this.#deps.now() - record.refreshedAt > MAX_AGE_MS
+      this.#deps.now() - record.refreshedAt > SNAPSHOT_MAX_AGE_MS
     ) {
       await this.#deps.clear();
 
@@ -146,21 +156,23 @@ export class ContainerSnapshots {
     return this.#deps.clear();
   }
 
-  async #take(
-    reason: SnapshotReason,
-    image: string | undefined,
-    ignore: readonly string[] | undefined,
-  ): Promise<SnapshotOutcome> {
+  /**
+   * Snapshot the running Container, which runs `image`, after the scan for the token, without keeping it: what an
+   * Environment's Build keeps itself. Never rejects: what stopped it is the answer's `reason` (never with the token).
+   */
+  async capture(reason: SnapshotReason, image: string | undefined): Promise<SnapshotCapture> {
     const deps = this.#deps;
 
-    if (!deps.enabled || !deps.running()) return "skipped";
+    if (!deps.enabled) return { outcome: "skipped", reason: "snapshots are off here" };
+
+    if (!deps.running()) return { outcome: "skipped", reason: "no Container is running" };
 
     if (image !== deps.image()) {
-      deps.warn(
-        `Container snapshot (${reason}) skipped: the Container runs an older image than the deployed one, or its image is not known`,
-      );
-
-      return "skipped";
+      return {
+        outcome: "skipped",
+        reason:
+          "the Container runs an older image than the deployed one, or its image is not known",
+      };
     }
 
     const started = deps.now();
@@ -171,35 +183,58 @@ export class ContainerSnapshots {
           const leaks = await deps.scan(deps.secret);
 
           if (leaks.length > 0) {
-            deps.warn(
-              `Container snapshot skipped: the GitHub token is in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}`,
-            );
-
-            return undefined;
+            return {
+              leaked: true,
+              reason: `the GitHub token is in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}`,
+            } as const;
           }
         }
 
-        return deps.snapshot(`workspace-${reason}`);
+        return { leaked: false, snapshot: await deps.snapshot(`workspace-${reason}`) } as const;
       });
 
-      if (taken === undefined) return "skipped";
+      if (taken.leaked) return { outcome: "skipped", reason: taken.reason };
 
+      const { id, size } = taken.snapshot;
+
+      return { outcome: "taken", id, size, tookMs: deps.now() - started };
+    } catch (cause) {
+      return { outcome: "failed", reason: cause instanceof Error ? cause.message : String(cause) };
+    }
+  }
+
+  async #take(
+    reason: SnapshotReason,
+    image: string | undefined,
+    ignore: readonly string[] | undefined,
+  ): Promise<SnapshotOutcome> {
+    const deps = this.#deps;
+    const captured = await this.capture(reason, image);
+
+    if (captured.outcome !== "taken") {
+      // Nothing to snapshot (off here, or no Container) is not worth a warning.
+      if (deps.enabled && deps.running()) {
+        deps.warn(
+          captured.outcome === "failed"
+            ? `Container snapshot (${reason}) failed: ${captured.reason}`
+            : `Container snapshot (${reason}) skipped: ${captured.reason}`,
+        );
+      }
+
+      return captured.outcome;
+    }
+
+    try {
       await deps.save({
-        id: taken.id,
-        size: taken.size,
+        id: captured.id,
+        size: captured.size,
         takenAt: deps.now(),
         refreshedAt: deps.now(),
-        tookMs: deps.now() - started,
+        tookMs: captured.tookMs,
         image,
         ignore,
         reason,
       });
-
-      deps.info(
-        `Container snapshot (${reason}) taken: ${Math.round(taken.size / 1e6)} MB in ${deps.now() - started} ms`,
-      );
-
-      return "taken";
     } catch (cause) {
       deps.warn(
         `Container snapshot (${reason}) failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -207,6 +242,12 @@ export class ContainerSnapshots {
 
       return "failed";
     }
+
+    deps.info(
+      `Container snapshot (${reason}) taken: ${Math.round(captured.size / 1e6)} MB in ${captured.tookMs} ms`,
+    );
+
+    return "taken";
   }
 
   /** `work`, unless it takes longer than the time allowed. */

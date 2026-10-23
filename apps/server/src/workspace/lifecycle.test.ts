@@ -23,6 +23,16 @@ const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): Lifecycl
   prepareSpare: async (setup) => {
     calls.push(`prepareSpare:${setup.branch}`);
   },
+  startBuild: async (request) => {
+    calls.push(`startBuild:${request.key}`);
+
+    return { image: "img", last: null, progress: null, attemptedAt: null };
+  },
+  buildState: async () => {
+    calls.push("buildState");
+
+    return { image: "img", last: null, progress: null, attemptedAt: null };
+  },
   ...overrides,
 });
 
@@ -77,6 +87,17 @@ describe("workspaceObjectsRemote", () => {
     await remote.restartContainer("cloudpid");
 
     expect(calls).toEqual(["restartContainer"]);
+  });
+
+  it("asks an Environment's Build object for a Build, and for its Builds", async () => {
+    const calls: string[] = [];
+    const { asked, remote } = namespace(host(calls));
+
+    await remote.startBuild("build:5a5a5a5a", { key: "k", repos: [], settings: {} });
+    await remote.buildState("build:5a5a5a5a");
+
+    expect(asked).toEqual(["build:5a5a5a5a", "build:5a5a5a5a"]);
+    expect(calls).toEqual(["startBuild:k", "buildState"]);
   });
 
   it("asks the object to prepare itself as a spare, with what it is told", async () => {

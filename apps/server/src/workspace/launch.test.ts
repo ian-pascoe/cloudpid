@@ -6,6 +6,7 @@
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
 import { DEFAULT_CONTAINER_SETTINGS, type ContainerSettings } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
+import type { EnvironmentBuild } from "./build-record.ts";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 
 type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
@@ -48,7 +49,13 @@ type Fake = {
   warnings: string[];
   infos: string[];
   now: number;
+  /** The Environment's Build the Workspace was handed, if any. */
+  build: EnvironmentBuild | undefined;
+  /** The Build snapshots this Workspace will not try again. */
+  failedBuilds: string[];
 };
+
+const DAY = 24 * 60 * 60_000;
 
 const open = (settings: Partial<ContainerSettings> = {}) => {
   const state: Fake = {
@@ -72,6 +79,8 @@ const open = (settings: Partial<ContainerSettings> = {}) => {
     warnings: [],
     infos: [],
     now: 9_000,
+    build: undefined,
+    failedBuilds: [],
   };
 
   const api: IWorkspaceContainerAPI = {
@@ -126,6 +135,23 @@ const open = (settings: Partial<ContainerSettings> = {}) => {
           state.takeIgnores.push(ignore);
 
           return state.takeOutcome;
+        },
+        capture: async (reason, image) => {
+          state.takes.push(reason);
+          state.takeImages.push(image);
+
+          return state.takeOutcome === "taken"
+            ? { outcome: "taken", id: "build-snap", size: 5, tookMs: 1 }
+            : { outcome: state.takeOutcome, reason: "the platform refused" };
+        },
+      },
+      builds: {
+        current: async () =>
+          state.build !== undefined && !state.failedBuilds.includes(state.build.snapshot.id)
+            ? state.build
+            : undefined,
+        failed: async (id) => {
+          state.failedBuilds.push(id);
         },
       },
       load: async () => state.record,
@@ -423,6 +449,143 @@ describe("a restart after the Container did not come up", () => {
   });
 });
 
+/** An Environment's Build taken on image `img-1` with the fake's built-in paths and none of the Environment's own. */
+const build = (overrides: Partial<EnvironmentBuild> = {}): EnvironmentBuild => ({
+  key: "k1",
+  snapshot: { id: "build-1", size: 1e9 },
+  image: "img-1",
+  ignore: BUILT_IN,
+  commits: { app: "abc" },
+  finishedAt: 9_000,
+  ...overrides,
+});
+
+describe("a launch from the Environment's Build", () => {
+  it("starts a Workspace with no snapshot of its own from its Environment's Build, with computerd's store reset", async () => {
+    const { state, container } = open();
+
+    state.build = build();
+    await container.start(specFor(BUILT_IN));
+
+    expect(state.starts[0]?.containerSnapshot).toEqual({ id: "build-1" });
+    expect(state.starts[0]?.env).toEqual({
+      ...specFor(BUILT_IN).env,
+      CLOUDPID_RESET_STORE: "1",
+    });
+    // Its own install snapshot is still taken, labelled with the Build's image.
+    expect(state.record).toMatchObject({
+      needsSnapshot: true,
+      restoredFrom: "build-1",
+      image: "img-1",
+      resetStore: true,
+    });
+    // The Workspace's own snapshot's lifetime is not the Build's.
+    expect(state.restores).toBe(0);
+  });
+
+  it("prefers the Workspace's own snapshot, which has its files", async () => {
+    const { state, container } = open();
+
+    state.build = build();
+    state.restorable = { id: "own", image: "img-1" };
+    await container.start(specFor(BUILT_IN));
+
+    expect(state.starts[0]?.containerSnapshot).toEqual({ id: "own" });
+    expect(state.starts[0]?.env).toEqual(specFor(BUILT_IN).env);
+  });
+
+  it("starts from the image when the Build is of another image, other paths, or near the end of its lifetime", async () => {
+    for (const stale of [
+      build({ image: "img-0" }),
+      build({ ignore: [...BUILT_IN, "/data"] }),
+      build({ ignore: null }),
+      build({ finishedAt: 9_000 - 29.5 * DAY }),
+    ]) {
+      const { state, container } = open();
+
+      state.build = stale;
+      await container.start(specFor(BUILT_IN));
+
+      expect(state.starts[0]?.containerSnapshot).toBeUndefined();
+      expect(state.starts[0]?.env).toEqual(specFor(BUILT_IN).env);
+      expect(state.record?.resetStore).toBeFalsy();
+    }
+  });
+
+  it("asks for the store reset again when it reconnects to the Container that started from the Build, so it is adopted", async () => {
+    const { state, api, container, make } = open();
+
+    state.build = build();
+    await container.start(specFor(BUILT_IN));
+    state.running = true;
+    state.outcome = "adopted";
+    await container.start(specFor(BUILT_IN));
+    await make().wrap(api).start(specFor(BUILT_IN));
+
+    expect(state.starts.map((spec) => spec.env?.["CLOUDPID_RESET_STORE"])).toEqual(["1", "1", "1"]);
+    expect(state.starts[1]?.containerSnapshot).toBeUndefined();
+  });
+
+  it("falls back to the image when the platform refuses the Build, and does not try that Build again", async () => {
+    const { state, container } = open();
+
+    state.build = build();
+    state.rejectSnapshotStart = true;
+    await container.start(specFor(BUILT_IN));
+
+    expect(state.starts).toHaveLength(2);
+    expect(state.starts[1]?.containerSnapshot).toBeUndefined();
+    expect(state.starts[1]?.env).toEqual(specFor(BUILT_IN).env);
+    expect(state.failedBuilds).toEqual(["build-1"]);
+    expect(state.forgotten).toBe(0);
+    expect(state.record).toMatchObject({ needsSnapshot: true, image: "img-1" });
+    expect(state.record?.resetStore).toBeFalsy();
+    expect(state.warnings.join("\n")).toContain("build-1");
+
+    state.running = false;
+    state.rejectSnapshotStart = false;
+    await container.start(specFor(BUILT_IN));
+
+    expect(state.starts[2]?.containerSnapshot).toBeUndefined();
+  });
+
+  it("falls back to the image when the Container started from the Build does not come up, and does not try that Build again", async () => {
+    const { state, container } = open();
+
+    state.build = build();
+    await container.start(specFor(BUILT_IN));
+    await container.restart(specFor(BUILT_IN));
+
+    expect(state.restarts[0]?.containerSnapshot).toBeUndefined();
+    expect(state.restarts[0]?.env).toEqual(specFor(BUILT_IN).env);
+    expect(state.failedBuilds).toEqual(["build-1"]);
+    expect(state.forgotten).toBe(0);
+    expect(state.record).toMatchObject({ needsSnapshot: true, image: "img-1" });
+    expect(state.record?.restoredFrom).toBeUndefined();
+    expect(state.record?.resetStore).toBeFalsy();
+  });
+});
+
+describe("a Build's snapshot", () => {
+  it("is labelled with the image and Container-only paths the Container launched with, and not kept as the Workspace's", async () => {
+    const { state, container, launch } = open();
+
+    await container.start(specFor(BUILT_IN));
+
+    expect(await launch.captureBuild()).toEqual({
+      ok: true,
+      snapshot: { id: "build-snap", size: 5 },
+      image: "img-1",
+      ignore: BUILT_IN,
+    });
+    expect(state.takes).toEqual(["build"]);
+
+    state.takeOutcome = "failed";
+
+    expect(await launch.captureBuild()).toEqual({ ok: false, reason: "the platform refused" });
+  });
+});
+
 describe("a start the platform rejects for the snapshot", () => {
   it("is retried once from the image, and the snapshot is forgotten", async () => {
     const { state, container } = open({ instance: "standard-3" });
@@ -458,6 +621,7 @@ describe("a start the platform rejects for the snapshot", () => {
           restored: async () => undefined,
           forget: async () => undefined,
           take: async () => "taken",
+          capture: async () => ({ outcome: "skipped", reason: "not used" }),
         },
         load: async () => undefined,
         save: async () => undefined,
