@@ -22,6 +22,7 @@ import type { ConnectionStatus } from "../session/state.ts";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
+import { TreeBarScope, TreeDialogs, TreePaneToggle, useCopying } from "./session-tree.tsx";
 import { TasksPaneToggle } from "./tasks-pane.tsx";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
@@ -62,6 +63,8 @@ type SessionPageProps = {
   problem?: string | null | undefined;
   /** What the composer's Session-wide Slash commands do. */
   commandActions?: SessionCommandActions | undefined;
+  /** Under the title: the Session this one is a Fork or Clone of. */
+  origin?: ReactNode;
 };
 
 const LiveSession = ({
@@ -72,12 +75,14 @@ const LiveSession = ({
   menu,
   problem,
   commandActions,
+  origin,
 }: {
   sessionId: string;
   title: string | undefined;
   rename: Rename | undefined;
 } & SessionPageProps) => {
   const status = useAtomValue(sessionStatusAtom(sessionId));
+  const copying = useCopying(sessionId);
   const view = useAtomValue(sessionViewAtom(sessionId));
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
@@ -119,37 +124,46 @@ const LiveSession = ({
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <AssistantRuntimeProvider runtime={runtime}>
-            <Thread
-              title={title}
-              rename={rename}
-              archived={archived}
-              notice={
-                CONNECTION_NOTICE[status] ??
-                (problem === null || problem === undefined ? undefined : (
-                  <span role="alert" className="whitespace-pre-wrap text-destructive">
-                    {problem}
-                  </span>
-                ))
-              }
-              commandActions={commandActions}
-              onStopAll={
-                stoppable
-                  ? () => {
-                      abort({ subagents: true });
-                    }
-                  : undefined
-              }
-              actions={
-                <>
-                  <UsageBadge />
-                  <TasksPaneToggle />
-                  {menu}
-                </>
-              }
-            />
+            <TreeBarScope.Provider value={{ archived: archived !== undefined }}>
+              <Thread
+                title={title}
+                subtitle={origin}
+                rename={rename}
+                archived={archived}
+                notice={
+                  CONNECTION_NOTICE[status] ??
+                  (problem === null || problem === undefined ? (
+                    copying ? (
+                      "Copying the conversation it was made from… It takes messages once it is done."
+                    ) : undefined
+                  ) : (
+                    <span role="alert" className="whitespace-pre-wrap text-destructive">
+                      {problem}
+                    </span>
+                  ))
+                }
+                commandActions={commandActions}
+                onStopAll={
+                  stoppable
+                    ? () => {
+                        abort({ subagents: true });
+                      }
+                    : undefined
+                }
+                actions={
+                  <>
+                    <UsageBadge />
+                    <TreePaneToggle />
+                    <TasksPaneToggle />
+                    {menu}
+                  </>
+                }
+              />
+            </TreeBarScope.Provider>
           </AssistantRuntimeProvider>
         </div>
         <PaneArea />
+        <TreeDialogs />
       </div>
     </ShownSession.Provider>
   );

@@ -42,6 +42,16 @@ export const SecretScope = Schema.NullOr(EnvironmentId);
  */
 export const DEFAULT_ENVIRONMENT = "default";
 
+/** How a Session was made from another (GLOSSARY.md → Fork, Clone). */
+export const ForkKind = Schema.Literals(["fork", "clone"]);
+
+export type ForkKind = typeof ForkKind.Type;
+
+/** The Session a Fork or Clone was made from, which may have been deleted since. */
+export const SessionOrigin = Schema.Struct({ session: Schema.String, kind: ForkKind });
+
+export type SessionOrigin = typeof SessionOrigin.Type;
+
 /** A Session as the Registry lists it. Times are epoch milliseconds. */
 export const SessionRecord = Schema.Struct({
   /** The Session DO's name: a UUIDv7. Its socket is at `sessionSocketPath(id)`. */
@@ -63,6 +73,8 @@ export const SessionRecord = Schema.Struct({
   updatedAt: Schema.Finite,
   /** When the owner archived the Session (out of the Session list, read-only until unarchived), or null. */
   archivedAt: Schema.NullOr(Schema.Finite),
+  /** The Session it is a Fork or Clone of; absent for a Session started afresh. */
+  origin: Schema.optionalKey(SessionOrigin),
 });
 
 export type SessionRecord = typeof SessionRecord.Type;
@@ -108,6 +120,17 @@ export type WorkspaceRecord = typeof WorkspaceRecord.Type;
 
 /** What `createSession` is told to make the Session a new Workspace. */
 export const NEW_WORKSPACE = "new";
+
+/** What `forkSession` is told to start the Fork or Clone in its source's Workspace. */
+export const SAME_WORKSPACE = "same";
+
+/** A Fork or Clone made (`forkSession`), with the owner's message to put back in its composer, if any. */
+export const ForkedSession = Schema.Struct({
+  session: SessionRecord,
+  text: Schema.NullOr(Schema.String),
+});
+
+export type ForkedSession = typeof ForkedSession.Type;
 
 /** The longest Environment name. */
 export const MAX_ENVIRONMENT_NAME_LENGTH = 80;
@@ -293,6 +316,25 @@ export class RegistryRpcs extends RpcGroup.make(
     },
     success: SessionRecord,
     error: EnvironmentError,
+  }),
+  /**
+   * Make a Fork or Clone of Session `source` (GLOSSARY.md → Fork, Clone): a new Session carrying its active branch up to
+   * just `before` the owner's message `entryId`, or through entry `entryId` (`at`), or, without `entryId`, as it is now
+   * (a Clone). It starts in the source's Workspace, or in a new Workspace of its Environment that carries the source's
+   * files as they are now, uncommitted Changes included, on `branch` (default `cloudpid/<id>`). Its title is the
+   * source's with " (fork)" or " (clone)". A Clone, or a Fork in a new Workspace, is refused while the source's Run is in
+   * progress. Answered once the new Session holds what it carries; when anything fails, nothing is made.
+   */
+  Rpc.make("forkSession", {
+    payload: {
+      source: Schema.String,
+      entryId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+      position: Schema.optionalKey(Schema.Literals(["before", "at"])),
+      workspace: Schema.optionalKey(Schema.Literals([SAME_WORKSPACE, NEW_WORKSPACE])),
+      branch: Schema.optionalKey(BranchName),
+    },
+    success: ForkedSession,
+    error: Schema.Union([SessionNotFound, SessionActionError, EnvironmentError]),
   }),
   /**
    * Name a Session. The title is the owner's from then on: the title task never replaces it. Fails with a

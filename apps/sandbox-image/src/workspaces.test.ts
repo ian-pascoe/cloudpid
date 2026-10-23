@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SETUP_SCRIPT, setupRecord, START_SCRIPT } from "@cloudpid/sandbox-image/toolchains";
 import {
+  carryRef,
+  carryWorkspaceScript,
   prepareWorkspaceScript,
   repoSetupScript,
   repoStartScript,
@@ -539,5 +541,123 @@ describe("taking a spare Workspace's clones", () => {
     // Whichever ran first, the second found the clones there: on the Workspace's branch, or on the spare's to switch.
     expect(git("branch --show-current", join(root, "app"))).toBe("cloudpid/1a2b3c4d");
     expect(git("branch --show-current", join(root, "api"))).toBe("cloudpid/1a2b3c4d");
+  });
+});
+
+describe("carrying a Workspace to a Fork's new one", () => {
+  const FORK = "cloudpid/f0f0f0f0";
+
+  /**
+   * A source Workspace whose clones are made, with a commit not pushed and uncommitted work in `app`, and the root of the
+   * Fork's new Workspace.
+   */
+  const forked = () => {
+    const workspace = container();
+    const { base, root, app, api, git, sh, prepare } = workspace;
+
+    const made = prepare();
+
+    if (made.status !== 0) throw new Error(made.stderr);
+
+    const source = join(root, "app");
+
+    writeFileSync(join(source, "local.txt"), "committed, not pushed\n");
+    git("add local.txt", source);
+    git("commit -q -m local", source);
+    writeFileSync(join(source, "README.md"), "changed\n");
+    writeFileSync(join(source, "staged.txt"), "staged\n");
+    git("add staged.txt", source);
+    writeFileSync(join(source, "new.txt"), "untracked\n");
+    writeFileSync(join(source, ".gitignore"), "ignored.txt\n");
+    writeFileSync(join(source, "ignored.txt"), "ignored\n");
+
+    const fork = join(base, "fork");
+
+    mkdirSync(fork);
+
+    const carry = () => sh(carryWorkspaceScript(["app", "api"], FORK, root));
+
+    const ready = (clones: Partial<WorkspaceClones> = {}) =>
+      sh(
+        prepareWorkspaceScript(
+          {
+            repos: [
+              { name: "app", url: app.origin },
+              { name: "api", url: api.origin },
+            ],
+            branch: FORK,
+            base: null,
+            ...clones,
+          },
+          fork,
+          "file",
+        ),
+        fork,
+      );
+
+    return { ...workspace, source, fork, carry, ready };
+  };
+
+  it("brings each Repo's HEAD and its uncommitted changes, uncommitted still, and cleans up after", () => {
+    const { app, fork, source, git, carry, ready } = forked();
+    const status = git("status --porcelain", source);
+
+    const carried = carry();
+
+    expect(carried.status, carried.stderr).toBe(0);
+    // The source's clone is left as it was.
+    expect(git("status --porcelain", source)).toBe(status);
+
+    const made = ready();
+
+    expect(made.status, made.stderr).toBe(0);
+
+    const dir = join(fork, "app");
+
+    expect(git("branch --show-current", dir)).toBe(FORK);
+    expect(git("rev-parse HEAD", dir)).toBe(git("rev-parse HEAD", source));
+    expect(readFileSync(join(dir, "local.txt"), "utf8")).toBe("committed, not pushed\n");
+    expect(readFileSync(join(dir, "README.md"), "utf8")).toBe("changed\n");
+    expect(readFileSync(join(dir, "staged.txt"), "utf8")).toBe("staged\n");
+    expect(readFileSync(join(dir, "new.txt"), "utf8")).toBe("untracked\n");
+    expect(existsSync(join(dir, "ignored.txt"))).toBe(false);
+    expect(git("status --porcelain", dir)).not.toBe("");
+    expect(git(`ls-remote ${app.origin} ${carryRef(FORK)}`, dir)).toBe("");
+    // The Repo with nothing uncommitted is on the branch too.
+    expect(git("status --porcelain", join(fork, "api"))).toBe("");
+    expect(git("branch --show-current", join(fork, "api"))).toBe(FORK);
+  });
+
+  it("applies the changes to a spare's clones it switches", () => {
+    const { fork, carry, ready } = forked();
+
+    expect(ready({ branch: "cloudpid/spare" }).status).toBe(0);
+    expect(carry().status).toBe(0);
+
+    const taken = ready({ spare: "cloudpid/spare" });
+
+    expect(taken.status, taken.stderr).toBe(0);
+    expect(readFileSync(join(fork, "app", "new.txt"), "utf8")).toBe("untracked\n");
+  });
+
+  it("pushes nothing when a remote has the branch already", () => {
+    const { app, api, git, carry } = forked();
+
+    git(`push -q origin main:refs/heads/${FORK}`, api.work);
+
+    const carried = carry();
+
+    expect(carried.status).toBe(1);
+    expect(carried.stderr).toContain(`already has a branch ${FORK}`);
+    expect(git(`ls-remote ${app.origin} refs/heads/${FORK} ${carryRef(FORK)}`, app.work)).toBe("");
+  });
+
+  it("carries nothing for a Repo not cloned there", () => {
+    const { root, api, git, sh } = forked();
+
+    sh(`rm -rf ${join(root, "api")}`);
+
+    expect(sh(carryWorkspaceScript(["app", "api"], FORK, root)).status).toBe(0);
+    expect(git(`ls-remote ${api.origin} refs/heads/${FORK}`, api.work)).toBe("");
   });
 });

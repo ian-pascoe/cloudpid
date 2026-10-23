@@ -21,6 +21,8 @@ interface Turn {
   readonly createdAt: Date | undefined;
   readonly content: ContentPart[];
   status: Status;
+  /** Its last committed assistant message's ID (its pi entry's): where the Session tree's bar under it points. */
+  answer?: string;
 }
 
 /** The turn before any user message (a Session can start with a queued run, or have its first message compacted). */
@@ -243,6 +245,8 @@ const buildTurn = (
 
     turn.content.push(...assistantParts(message));
     turn.status = status;
+
+    if (status.type !== "running") turn.answer = message.id;
   };
 
   for (const message of group) {
@@ -257,13 +261,26 @@ const buildTurn = (
   return turn;
 };
 
-const toAssistant = (turn: Turn): ThreadMessageLike => ({
-  role: "assistant",
-  id: turn.id,
-  createdAt: turn.createdAt,
-  content: turn.content,
-  status: turn.status,
-});
+const toAssistant = (turn: Turn): ThreadMessageLike => {
+  const message: ThreadMessageLike = {
+    role: "assistant",
+    id: turn.id,
+    createdAt: turn.createdAt,
+    content: turn.content,
+    status: turn.status,
+  };
+
+  return turn.answer === undefined
+    ? message
+    : { ...message, metadata: { custom: { answer: turn.answer } } };
+};
+
+/** The entry ID of the answer an assistant message's turn ended with, from its metadata; undefined while it runs. */
+export const answerOf = (custom: MessageCustom | undefined): number | undefined => {
+  const answer = custom?.["answer"];
+
+  return Predicate.isString(answer) && /^\d+$/u.test(answer) ? Number(answer) : undefined;
+};
 
 /** The last turn: its tool calls without a result are running, and may have streamed output. */
 const withRunning = (turn: Turn, view: SessionView): Turn => {

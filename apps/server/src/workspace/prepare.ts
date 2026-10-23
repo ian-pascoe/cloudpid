@@ -109,7 +109,7 @@ export type PreparationHost = {
 };
 
 /** Why a script that did not exit 0 failed, in a line with the end of its output. */
-const failure = (what: string, ran: ScriptRun): Error => {
+export const failure = (what: string, ran: ScriptRun): Error => {
   const tail = ran.output.trim().slice(-REPORTED_OUTPUT);
   const status = ran.exitCode === null ? "it did not finish" : `exit ${ran.exitCode}`;
 

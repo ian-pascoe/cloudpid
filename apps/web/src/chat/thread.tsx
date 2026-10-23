@@ -6,7 +6,13 @@ import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
-import { MAX_TITLE_LENGTH, type SessionView } from "@cloudpid/protocol";
+import { MAX_TITLE_LENGTH, type SessionView, type TreeNode } from "@cloudpid/protocol";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
+import { panesAtom } from "../panes-state.ts";
+import { TREE_PANE } from "../panes.ts";
+import { ownerMessages } from "../session/tree.ts";
+import { useFork } from "./session-tree.tsx";
+import { sessionTreeAtom, type TreePoint } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
@@ -151,10 +157,12 @@ const EditableTitle = ({ title, rename }: { title: string | undefined; rename: R
 
 const Header = ({
   title,
+  subtitle,
   rename,
   actions,
 }: {
   title: string | undefined;
+  subtitle: ReactNode;
   rename: Rename | undefined;
   actions: ReactNode;
 }) => (
@@ -169,11 +177,16 @@ const Header = ({
     >
       <ArrowLeft className="size-4" />
     </button>
-    {rename === undefined ? (
-      <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title ?? "Session"}</h2>
-    ) : (
-      <EditableTitle title={title} rename={rename} />
-    )}
+    <div className="flex min-w-0 flex-1 flex-col">
+      {rename === undefined ? (
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title ?? "Session"}</h2>
+      ) : (
+        <EditableTitle title={title} rename={rename} />
+      )}
+      {subtitle !== undefined && subtitle !== null && (
+        <p className="min-w-0 truncate text-xs text-muted-foreground">{subtitle}</p>
+      )}
+    </div>
     <div className="flex shrink-0 items-center gap-2">{actions}</div>
   </header>
 );
@@ -189,6 +202,79 @@ export type SessionCommandActions = {
 const NO_ACTIONS: SessionCommandActions = {};
 
 const NOT_LIVE = "The session is not connected; try again once it is.";
+
+/** What the Session tree's Slash commands reach: the owner's messages of the active branch, and what they do. */
+type TreeCommands = {
+  /** The owner's messages on the active branch's path, oldest first; null until the tree comes. */
+  readonly messages: readonly TreeNode[] | null;
+  /** Whether the Session is archived: no `/tree` then. */
+  readonly archived: boolean;
+  readonly openTree: () => void;
+  readonly fork: (point: TreePoint | undefined, newWorkspace: boolean) => void;
+};
+
+/** The Session tree's Slash commands: `/tree`, `/fork` from one of the owner's messages, and `/clone`. */
+const treeCommands = ({ messages, archived, openTree, fork }: TreeCommands): ComposerCommand[] => {
+  const commands: ComposerCommand[] = [];
+
+  if (!archived) {
+    commands.push({
+      name: "tree",
+      description: "Show the session tree, to go back to an earlier point",
+      argument: "none",
+      run: () => {
+        openTree();
+
+        return null;
+      },
+    });
+  }
+
+  commands.push(
+    {
+      name: "fork",
+      description: "Start a new session from before one of your messages",
+      argumentHint: "<message> [new]",
+      argument: "required",
+      choices: Arr.map(messages ?? [], (node, index) => ({
+        value: String(index + 1),
+        description: node.text,
+      })),
+      run: (args) => {
+        const [which = "", where = ""] = args.split(/\s+/u);
+        const node = messages?.[Number(which) - 1];
+
+        if (messages === null) return "The session tree has not loaded yet; try again.";
+
+        if (node === undefined || !/^\d+$/u.test(which)) {
+          return `Pick one of your ${messages.length} messages by its number.`;
+        }
+
+        if (where !== "" && where !== "new") return "Add new to fork in a new workspace.";
+
+        fork({ entryId: node.id, position: "before" }, where === "new");
+
+        return null;
+      },
+    },
+    {
+      name: "clone",
+      description: "Start a new session with this conversation as it is",
+      argumentHint: "[new]",
+      argument: "optional",
+      choices: [{ value: "new", description: "In a new workspace" }],
+      run: (args) => {
+        if (args !== "" && args !== "new") return "Add new to clone in a new workspace.";
+
+        fork(undefined, args === "new");
+
+        return null;
+      },
+    },
+  );
+
+  return commands;
+};
 
 /**
  * The Slash commands about the Session as a whole: its model and thinking level (set with an argument, or the picker
@@ -334,6 +420,7 @@ const sessionCommands = ({
 /** The chat of the Session shown: its transcript with live progress, a notice when disconnected, and the composer. */
 export const Thread = ({
   title,
+  subtitle,
   rename,
   archived,
   notice,
@@ -342,6 +429,8 @@ export const Thread = ({
   commandActions = NO_ACTIONS,
 }: {
   title: string | undefined;
+  /** A line under the title: the Session this one is a Fork or Clone of. */
+  subtitle?: ReactNode;
   /** Lets the owner rename the Session from its header. */
   rename?: Rename | undefined;
   /** Set while the Session is archived: no composer, a banner to unarchive it instead. */
@@ -368,14 +457,31 @@ export const Thread = ({
   // A file dropped anywhere on the thread attaches to its composer.
   const dropZone = useRef<HTMLDivElement>(null);
 
-  const commands = sessionCommands({
-    live,
-    view,
-    picker,
-    rename,
-    actions: commandActions,
-    onConfigure,
-  });
+  const tree = useAtomValue(sessionTreeAtom(sessionId), (result) =>
+    AsyncResult.getOrElse(result, () => null),
+  );
+
+  const actOnPanes = useAtomSet(panesAtom);
+  const fork = useFork();
+
+  const commands = [
+    ...sessionCommands({
+      live,
+      view,
+      picker,
+      rename,
+      actions: commandActions,
+      onConfigure,
+    }),
+    ...treeCommands({
+      messages: tree === null ? null : ownerMessages(tree),
+      archived: archived !== undefined,
+      openTree: () => {
+        actOnPanes({ type: "open", key: TREE_PANE });
+      },
+      fork,
+    }),
+  ];
 
   // assistant-ui shows its own placeholder while the answer to the last user message has not started.
   const working =
@@ -386,7 +492,7 @@ export const Thread = ({
 
   return (
     <ThreadPrimitive.Root ref={dropZone} className="flex min-h-0 flex-1 flex-col">
-      <Header title={title} rename={rename} actions={actions} />
+      <Header title={title} subtitle={subtitle} rename={rename} actions={actions} />
       {notice !== null && notice !== undefined && (
         <p
           role="status"

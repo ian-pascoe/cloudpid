@@ -24,6 +24,22 @@ _Avoid_: Draft alone (an Annotation not yet sent is a draft too), new chat
 One transcript inside a Session: the root conversation or a subagent's.
 _Avoid_: Session (for a single transcript), thread
 
+**Session tree**:
+The tree a Session's root conversation grows when the owner goes back to an earlier point of it and carries on from there; `/tree` shows it and moves between its Session branches.
+_Avoid_: Conversation tree, History (that is one path's past)
+
+**Session branch**:
+One path of a Session tree, from the Session's start to one of its leaves. The **active branch** is the one the Session's next message continues; the others are kept as they were.
+_Avoid_: Branch (alone: a Workspace's branch is git's), thread, alternative
+
+**Fork**:
+A new Session started from a point of another Session's active branch (before one of the owner's messages, or after an answer), carrying the branch up to that point; the source Session is left as it was. `/fork` makes one.
+_Avoid_: Session branch (that stays in its Session), copy, duplicate
+
+**Clone**:
+A Fork taken at the latest point of the source's active branch, so both Sessions go on from where it is now; `/clone` makes one.
+_Avoid_: Copy, duplicate
+
 **Subagent**:
 A child agent whose conversation is owned by its parent within the same Session.
 _Avoid_: Child session, worker, sub-session

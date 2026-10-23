@@ -1,7 +1,7 @@
 // The end and the fresh starts of a Workspace's life (`docs/spec.md` → Workspaces from the UI): the main Worker wipes
 // its Durable Object when the owner removes it, after its Sessions are deleted, stops its Container and forgets the
 // saved disk when the owner restarts the Container, and asks the object of a spare Workspace it registered to prepare
-// itself, and asks an Environment's Build object for a Build.
+// itself, asks an Environment's Build object for a Build, and has a Workspace carry its clones to a Fork's new one.
 
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import type { BuildRequest, BuildState } from "./build-record.ts";
@@ -33,6 +33,11 @@ export type LifecycleHost = {
   startBuild(request: BuildRequest, secrets: ReadonlyArray<KeptSecret>): Promise<BuildState>;
   /** The Build object's Builds, and the image a launch would run now. */
   buildState(): Promise<BuildState>;
+  /**
+   * Push the object's clones of `repos` to their remotes as `branch`, uncommitted Changes included, for a Fork or Clone
+   * in a new Workspace on `branch` to start from. Rejects with why when any could not be; nothing is left pushed then.
+   */
+  carry(branch: string, repos: ReadonlyArray<string>): Promise<void>;
 };
 
 /** The Workspaces' own objects, by object name (`workspaceObjectName`), as the main Worker reaches them. */
@@ -51,6 +56,8 @@ export type WorkspaceObjects = {
   ) => Promise<BuildState>;
   /** Build object `name`'s Builds (`LifecycleHost.buildState`). */
   readonly buildState: (name: string) => Promise<BuildState>;
+  /** Carry object `name`'s clones of `repos` to a new Workspace on `branch` (`LifecycleHost.carry`). */
+  readonly carry: (name: string, branch: string, repos: ReadonlyArray<string>) => Promise<void>;
 };
 
 /** `WorkspaceObjects` over the Workspace DO namespace the main Worker binds. */
@@ -72,5 +79,6 @@ export const workspaceObjectsRemote = (namespace: {
     prepareSpare: (name, setup) => namespace.getByName(name).prepareSpare(setup),
     startBuild: (name, request, secrets) => namespace.getByName(name).startBuild(request, secrets),
     buildState: (name) => namespace.getByName(name).buildState(),
+    carry: (name, branch, repos) => namespace.getByName(name).carry(branch, repos),
   };
 };

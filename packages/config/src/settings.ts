@@ -122,6 +122,15 @@ const SpendLimit = Schema.Struct({
   ),
 });
 
+/**
+ * Leaving a Session branch for another point of the Session tree (`GLOSSARY.md` → Session tree), as local pi's
+ * `branchSummary`: with `skipPrompt`, the web app does not ask whether to summarize the branch left, and carries no
+ * summary.
+ */
+const BranchSummary = Schema.Struct({
+  skipPrompt: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+});
+
 /** The role hints are those of `~/.pi/agent/settings.json`. */
 const Roles = Schema.Struct({
   small: role(
@@ -154,6 +163,7 @@ export const Settings = Schema.Struct({
   compaction: Compaction.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   tools: Tools.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   spendLimit: SpendLimit.pipe(Schema.withDecodingDefaultKey(allDefaults)),
+  branchSummary: BranchSummary.pipe(Schema.withDecodingDefaultKey(allDefaults)),
   extensions: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Json)).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed({})),
   ),

@@ -3,7 +3,9 @@ import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentRepo,
   type EnvironmentSecretRecord,
+  ForkKind,
   MAX_ENVIRONMENT_SECRETS,
+  type SessionOrigin,
   type PushSubscription,
   SPARE_BRANCH,
   TitleSource,
@@ -39,6 +41,8 @@ export type SessionRecord = {
   readonly updatedAt: number;
   /** When the owner archived the Session, or null while it is not archived. */
   readonly archivedAt: number | null;
+  /** The Session it is a Fork or Clone of; absent for one started afresh. */
+  readonly origin?: SessionOrigin;
 };
 
 /** An Environment as the Registry lists it (ADR-0016). */
@@ -155,6 +159,8 @@ export type RegistryStore = {
       readonly id: string;
       readonly title: string | null;
       readonly workspace: StoredWorkspaceChoice;
+      /** The Session it is a Fork or Clone of, or null. */
+      readonly origin?: SessionOrigin | null;
     },
     now: number,
   ) => SessionRecord | SessionRefusal;
@@ -284,6 +290,9 @@ type SessionRow = {
   created_at: number;
   updated_at: number;
   archived_at: number | null;
+  /** The Session it is a Fork or Clone of, and which; both null for one started afresh. */
+  origin: string | null;
+  origin_kind: string | null;
 };
 
 type EnvironmentRow = {
@@ -379,17 +388,25 @@ const toBuild = (row: Pick<EnvironmentRow, "build" | "build_status">): BuildReco
   status: jsonColumn<BuildProgress>(row.build_status),
 });
 
-const toSession = (row: SessionRow): SessionRecord => ({
-  id: row.id,
-  title: row.title,
-  titleSource: checkedTitleSource(row.title_source),
-  environment: row.environment,
-  workspace: row.workspace,
-  status: checkedStatus(row.status),
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-  archivedAt: row.archived_at,
-});
+const isForkKind = Schema.is(ForkKind);
+
+const toSession = (row: SessionRow): SessionRecord => {
+  const record: SessionRecord = {
+    id: row.id,
+    title: row.title,
+    titleSource: checkedTitleSource(row.title_source),
+    environment: row.environment,
+    workspace: row.workspace,
+    status: checkedStatus(row.status),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    archivedAt: row.archived_at,
+  };
+
+  return row.origin === null || row.origin === undefined || !isForkKind(row.origin_kind)
+    ? record
+    : { ...record, origin: { session: row.origin, kind: row.origin_kind } };
+};
 
 const toEnvironment = (row: EnvironmentRow): EnvironmentRecord => ({
   id: row.id,
@@ -612,6 +629,12 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE workspaces ADD COLUMN spare_build TEXT");
   },
+  // 16: the Session a Fork or Clone was made from, and which it is (GLOSSARY.md → Fork, Clone). Null for every Session
+  // stored before, all started afresh.
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN origin TEXT");
+    sql.exec("ALTER TABLE sessions ADD COLUMN origin_kind TEXT");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -756,8 +779,10 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           }
         }
 
+        const origin = input.origin ?? null;
+
         sql.exec(
-          "INSERT INTO sessions (id, title, title_source, environment, workspace, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)",
+          "INSERT INTO sessions (id, title, title_source, environment, workspace, status, created_at, updated_at, origin, origin_kind) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?)",
           input.id,
           input.title,
           input.title === null ? null : "owner",
@@ -765,9 +790,11 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           workspace,
           now,
           now,
+          origin?.session ?? null,
+          origin?.kind ?? null,
         );
 
-        return {
+        const record: SessionRecord = {
           id: input.id,
           title: input.title,
           titleSource: input.title === null ? null : "owner",
@@ -778,6 +805,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           updatedAt: now,
           archivedAt: null,
         };
+
+        return origin === null ? record : { ...record, origin };
       }),
 
     getSession,

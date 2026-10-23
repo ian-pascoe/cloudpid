@@ -217,8 +217,56 @@ export const HistoryRequest = Schema.Struct({
   before: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 
+/**
+ * Ask for the Session tree (GLOSSARY.md → Session tree): every Session branch's owner's messages, answers, tool results
+ * and notices, with the active branch. Answered with a `SessionTree`.
+ */
+export const TreeRequest = Schema.Struct({
+  type: Schema.Literal("tree"),
+  id: CommandId,
+});
+
+/** The longest custom focus a branch summary takes, as a Rollover's. */
+export const MAX_BRANCH_SUMMARY_FOCUS = 2_000;
+
+/**
+ * What to carry from the branch being left: nothing (absent), or a summary of it, with the owner's extra focus. The
+ * summary is a model call on the Session's Usage, placed at the start of the branch entered.
+ */
+export const BranchSummaryRequest = Schema.Struct({
+  instructions: Schema.String.check(Schema.isMaxLength(MAX_BRANCH_SUMMARY_FOCUS)).pipe(
+    Schema.optionalKey,
+  ),
+});
+
+export type BranchSummaryRequest = typeof BranchSummaryRequest.Type;
+
+/**
+ * Move the active branch to a point of the Session tree (`/tree`): just `before` an owner's message, whose text the
+ * client puts back in the composer, or just after (`at`) an entry such as an answer. The point's Session branch is made
+ * when needed (an existing branch's tip is only made active), and `summary` asks for a summary of the branch left.
+ * Refused while the active branch's Run, compaction or Rollover is under way. Answered with a `Navigated`.
+ */
+export const Navigate = Schema.Struct({
+  type: Schema.Literal("navigate"),
+  id: CommandId,
+  entryId: Schema.Int.check(Schema.isGreaterThan(0)),
+  position: Schema.Literals(["before", "at"]),
+  summary: Schema.optionalKey(BranchSummaryRequest),
+});
+
+/** Make Session branch `conversationId` the active branch as it stands, with no summary (the chevrons). Answered with `null`. */
+export const SwitchBranch = Schema.Struct({
+  type: Schema.Literal("switch_branch"),
+  id: CommandId,
+  conversationId: ConversationId,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
+  TreeRequest,
+  Navigate,
+  SwitchBranch,
   Submit,
   Abort,
   CatalogRequest,
@@ -237,8 +285,75 @@ export const ClientMessage = Schema.Union([
 
 export type ClientMessage = typeof ClientMessage.Type;
 
-/** Sent once on connect: the Session's root conversation, to `watch` and to submit to. */
-export const Hello = Schema.Struct({ type: Schema.Literal("hello"), root: ConversationId });
+/**
+ * Sent once on connect: the Session's active branch (GLOSSARY.md → Session branch), to `watch` and to submit to without
+ * a `conversationId`; `copying` while the Session is still being filled from the one it is a Fork or Clone of.
+ */
+export const Hello = Schema.Struct({
+  type: Schema.Literal("hello"),
+  root: ConversationId,
+  copying: Schema.optionalKey(Schema.Boolean),
+});
+
+/**
+ * The active branch changed, or a Session branch was made: sent to every client, which watches `conversationId` in
+ * place of the one it watched, and asks for the tree again when it shows it.
+ */
+export const ActiveBranch = Schema.Struct({
+  type: Schema.Literal("active_branch"),
+  conversationId: ConversationId,
+});
+
+/** What a node of the Session tree is: an owner's message, another input (a subagent's report, a Rollover request), an answer, a tool result, or a notice (a summary, a Handoff). */
+export const TreeNodeRole = Schema.Literals(["user", "input", "assistant", "tool", "notice"]);
+
+export type TreeNodeRole = typeof TreeNodeRole.Type;
+
+/** One entry of the Session tree a client shows, with the nearest such entry before it as its parent. */
+export const TreeNode = Schema.Struct({
+  /** Its pi entry ID, as the transcript's message IDs are. */
+  id: Schema.Int,
+  parent: Schema.NullOr(Schema.Int),
+  /** The Session branch whose own entry it is. */
+  conversationId: ConversationId,
+  role: TreeNodeRole,
+  /** The start of its text, on one line; a notice's title. */
+  text: Schema.String,
+  /** An answer that ends its Run (no tool calls). */
+  final: Schema.Boolean,
+  timestamp: Schema.Finite,
+});
+
+export type TreeNode = typeof TreeNode.Type;
+
+/** A Session branch, and when it was last the active branch. */
+export const TreeBranch = Schema.Struct({
+  conversationId: ConversationId,
+  lastActiveAt: Schema.Finite,
+});
+
+export type TreeBranch = typeof TreeBranch.Type;
+
+/**
+ * The answer to `tree`: its nodes, parents before children and siblings oldest first; the active branch, and its last
+ * node (`leaf`: null when it has none, as before the Session's first message).
+ */
+export const SessionTree = Schema.Struct({
+  nodes: Schema.Array(TreeNode),
+  active: ConversationId,
+  leaf: Schema.NullOr(Schema.Int),
+  branches: Schema.Array(TreeBranch),
+});
+
+export type SessionTree = typeof SessionTree.Type;
+
+/** The answer to `navigate`: the active branch now, and the owner's message to put back in the composer, if any. */
+export const Navigated = Schema.Struct({
+  conversationId: ConversationId,
+  text: Schema.NullOr(Schema.String),
+});
+
+export type Navigated = typeof Navigated.Type;
 
 /**
  * Which of the root conversation's model and thinking level the Session picked itself with `configure`: the rest
@@ -633,6 +748,7 @@ export const ErrorMessage = Schema.Struct({
 /** Server → client. */
 export const ServerMessage = Schema.Union([
   Hello,
+  ActiveBranch,
   Picked,
   Events,
   Result,

@@ -28,9 +28,13 @@ export interface PaneType {
   readonly label: (argument: string | undefined) => PaneLabel;
 }
 
-/** The Pane types: the Tasks Pane, one per Session. The Live View (#154) and the Terminal (#139) join it here. */
+/**
+ * The Pane types: the Tasks Pane and the Session tree Pane, one each per Session. The Live View (#154) and the Terminal
+ * (#139) join them here.
+ */
 export const PANE_TYPES = [
   { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
+  { id: "tree", multiple: false, label: () => ({ name: "Tree" }) },
 ] as const satisfies readonly PaneType[];
 
 /** The ID of a type in `PANE_TYPES`. */
@@ -38,6 +42,9 @@ export type PaneTypeId = (typeof PANE_TYPES)[number]["id"];
 
 /** The key of the Tasks Pane. */
 export const TASKS_PANE = "tasks";
+
+/** The key of the Session tree Pane. */
+export const TREE_PANE = "tree";
 
 /** What a Pane's component gets. */
 export interface PaneProps {

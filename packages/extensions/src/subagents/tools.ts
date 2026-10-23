@@ -9,12 +9,12 @@ import { withAbortSignal } from "@earendil-works/chord/context";
 import {
   type Agent,
   configure,
+  type ConversationId,
   defineDoc,
   InboxDoc,
   type JsonObject,
   LiveDoc,
   type ModelRef,
-  ROOT_CONVERSATION_ID,
   type TaskDocToken,
   type TaskId,
   type ToolExecutionApi,
@@ -50,6 +50,7 @@ import {
   type AgentRecord,
   answerText,
   childrenOf,
+  conversationOf,
   EMPTY_STATE,
   openWaiter,
   type SubagentsState,
@@ -469,7 +470,7 @@ const Spawn = defineEffectTool({
         instructions: instructions(id, caller, spawns),
       });
 
-      doc.agents[id] = {
+      const record: AgentRecord = {
         id,
         parent: caller,
         depth,
@@ -490,6 +491,10 @@ const Spawn = defineEffectTool({
         nextTurn: 1,
         turns: [],
       };
+
+      // A child of the root reports to the Session branch it was started from.
+      doc.agents[id] = caller === ROOT_AGENT ? { ...record, origin: api.conversationId } : record;
+
       doc.conversations[String(child.id)] = id;
 
       const turnId = await startTurn(
@@ -625,8 +630,7 @@ const Message = defineEffectTool({
         const doc = await tx.doc(SubagentsDoc);
         const waiter = openWaiter(doc, target, caller);
 
-        const conversationId =
-          target === ROOT_AGENT ? ROOT_CONVERSATION_ID : doc.agents[target]?.conversationId;
+        const conversationId = conversationOf(doc, target);
 
         if (conversationId === undefined) return refuse(`Agent ${target} was deleted`);
 
@@ -670,7 +674,11 @@ const Message = defineEffectTool({
     // The root has no reporter: the message is submitted to it directly, once, by its request ID.
     if (result.agent_id === ROOT_AGENT && result.disposition !== "delivered-via-wait") {
       yield* durable("submit", async (context) => {
-        const root = await api.conversation(ROOT_CONVERSATION_ID, context);
+        const root = await api.conversation(
+          // SAFETY: the conversation the commit above found for the root agent, a pi-durable conversation ID.
+          result.conversation_id as ConversationId,
+          context,
+        );
 
         await root?.submit(
           {

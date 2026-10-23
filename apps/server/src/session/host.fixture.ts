@@ -25,6 +25,8 @@ import type {
   ConversationId,
   FileMatches,
   HistoryPage,
+  Navigated,
+  SessionTree,
 } from "@cloudpid/protocol";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
@@ -38,6 +40,7 @@ import {
 import {
   type AgentChange,
   defineExtension,
+  type EntryRecord,
   type Extension,
   type HarnessOptions,
   ROOT_CONVERSATION_ID,
@@ -71,11 +74,14 @@ import {
 } from "./settings.ts";
 import {
   type Answer,
+  type ForkSourceRequest,
+  type NavigateRequest,
   SessionHost,
   sessionHostLayer,
   type SessionHostService,
   type SlashCommand,
 } from "./host.ts";
+import type { ExportPage, ForkPlan } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import type { PushEvent } from "../push/notification.ts";
@@ -86,6 +92,7 @@ declare global {
     /** The bindings `vitest.config.ts` gives the test Worker. */
     interface Env {
       readonly REGISTRIES: DurableObjectNamespace<TestRegistry>;
+      readonly SESSIONS: DurableObjectNamespace<TestSession>;
     }
   }
 }
@@ -518,6 +525,81 @@ export class TestSession extends DurableObject {
   /** A page of the root conversation's History before entry `before`, as a client's `history` gets it. */
   history(before: number): Promise<HistoryPage> {
     return this.#runtime.runPromise(this.#host.history({ before }));
+  }
+
+  /** The Session tree, as a client's `tree` gets it. */
+  tree(): Promise<SessionTree> {
+    return this.#runtime.runPromise(this.#host.tree);
+  }
+
+  /** The active branch's conversation. */
+  activeBranch(): Promise<ConversationId> {
+    return this.#runtime.runPromise(this.#host.activeBranch);
+  }
+
+  /** Navigate the Session tree as a client's `navigate` does: where it went, or why it could not. */
+  navigate(
+    request: NavigateRequest,
+  ): Promise<{ readonly navigated: Navigated } | { readonly failure: string }> {
+    return this.#runtime.runPromise(
+      this.#host.navigate(request).pipe(
+        Effect.map((navigated) => ({ navigated })),
+        Effect.catch((error) => Effect.succeed({ failure: error.message })),
+      ),
+    );
+  }
+
+  /** Make `conversationId` the active branch, as the chevrons do. */
+  switchBranch(conversationId: ConversationId): Promise<void> {
+    return this.#runtime.runPromise(this.#host.switchBranch(conversationId));
+  }
+
+  /**
+   * Copy this Session as a Fork or Clone into the `TestSession` named `name`, through its stub, as the main Worker does.
+   */
+  async forkInto(name: string, request: ForkSourceRequest): Promise<ForkPlan> {
+    const plan = await this.#runtime.runPromise(this.#host.forkSource(request));
+    const target = this.env.SESSIONS.getByName(name);
+
+    await target.importStart();
+
+    let after: number | null = null;
+
+    while (plan.through !== null) {
+      const page: ExportPage = await this.#runtime.runPromise(
+        this.#host.exportEntries({
+          conversationId: plan.conversationId,
+          through: plan.through,
+          after,
+        }),
+      );
+
+      await target.importEntries(page.entries);
+
+      if (page.next === null) break;
+
+      after = page.next;
+    }
+
+    await target.importFinish(plan);
+
+    return plan;
+  }
+
+  importStart(): Promise<void> {
+    return this.#runtime.runPromise(this.#host.importStart);
+  }
+
+  importEntries(entries: ReadonlyArray<EntryRecord>): Promise<void> {
+    return this.#runtime.runPromise(this.#host.importEntries(entries));
+  }
+
+  importFinish(plan: ForkPlan): Promise<void> {
+    return this.#runtime.runPromise(this.#host.importFinish(plan));
+  }
+
+  copying(): Promise<boolean> {
+    return this.#runtime.runPromise(this.#host.copying);
   }
 
   /** Run the Session's Slash command `name`: what it did, or why it could not. */

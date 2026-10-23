@@ -30,6 +30,7 @@ import {
   answerText,
   conversationOf,
   EMPTY_STATE,
+  reportConversationOf,
   type SubagentsState,
   SubagentsDoc,
   type TurnStatus,
@@ -76,7 +77,19 @@ type ReporterState =
   | { phase: "deliver" }
   /** Hold `report` until the parent is idle; `round` counts the times it was found busy again. */
   | { phase: "report"; parent: string; report: string | null; round: number }
-  | { phase: "post"; report: string };
+  /** `conversation`: the Session branch the report goes to; the root conversation for one checkpointed without it. */
+  | { phase: "post"; report: string; conversation?: ConversationId };
+
+/**
+ * The conversation agent `agentId`'s report goes to: its parent's, or the Session branch a child of the root was started
+ * from. A deleted agent's falls back to its parent's.
+ */
+const reportTarget = (
+  state: SubagentsState,
+  agentId: string,
+  parent: string,
+): ConversationId | undefined =>
+  reportConversationOf(state, agentId) ?? conversationOf(state, parent);
 
 /** The model-visible header of a message from another agent, as pi-minimal-subagents frames it. */
 export const envelope = (
@@ -272,8 +285,9 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
         return;
       }
 
-      const owner = conversationOf(
+      const owner = reportTarget(
         (await runtime.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE,
+        agentId,
         parent,
       );
 
@@ -289,7 +303,7 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
         // Claimed by a wait meanwhile, or deleted.
         if (turn?.delivery !== "pending") return completed(null);
 
-        const conversation = conversationOf(doc, parent);
+        const conversation = reportTarget(doc, agentId, parent);
 
         if (conversation === undefined) {
           turn.delivery = "none";
@@ -307,7 +321,7 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
         turn.delivery = "auto";
 
         if (parent === ROOT_AGENT) {
-          return { status: "running", checkpoint: { phase: "post", report } };
+          return { status: "running", checkpoint: { phase: "post", report, conversation } };
         }
 
         await startTurn(
@@ -322,9 +336,9 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
     },
     // The root has no reporter of its own: the report is submitted to it, once, by its request ID.
     post: async (reporter, runtime, context) => {
-      const { report } = reporter.state.checkpoint;
+      const { report, conversation = ROOT_CONVERSATION_ID } = reporter.state.checkpoint;
       const { agentId, turnId } = reporter.input;
-      const root = await runtime.conversation(ROOT_CONVERSATION_ID, context);
+      const root = await runtime.conversation(conversation, context);
 
       await root?.submit(
         {

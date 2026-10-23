@@ -313,6 +313,22 @@ const SettingsForm = ({
           </p>
         )}
       </Section>
+      <Section title="Session tree">
+        <p className="text-sm text-muted-foreground">
+          Going to another point of a session's tree (<code>/tree</code>, Branch) asks whether to
+          carry a summary of the branch left, which is a model request on the session's usage.
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={draft.branchSummary.skipPrompt}
+            onChange={(event) => {
+              setDraft({ ...draft, branchSummary: { skipPrompt: event.target.checked } });
+            }}
+          />
+          Do not ask: leave a branch without a summary
+        </label>
+      </Section>
       {error !== null && (
         <p role="alert" className="mb-4 text-sm whitespace-pre-wrap text-destructive">
           {error}

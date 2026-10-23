@@ -17,6 +17,7 @@ import { askCatalogAtom } from "./catalog.ts";
 import { detectTrigger, type Trigger } from "./completion.ts";
 import type { ConversationKey } from "./conversation.ts";
 import { searchFilesAtom } from "./file-search.ts";
+import { composerPrefillAtom } from "./tree-state.ts";
 
 const WIDE_QUERY = "(min-width: 640px)";
 
@@ -145,7 +146,8 @@ export interface ComposerState {
    * While mounted, the `@` menu's query goes to the conversation's file search, and a menu that lists the catalog asks
    * for it as it opens (the catalog asks again only once it is stale). The root's composer takes back its Session's
    * first message when the Session refused it (`refusedFirstMessagesAtom`), before what was typed since, with why as
-   * the note, as a refused message with Attachments comes back.
+   * the note, as a refused message with Attachments comes back; and the owner's message a Branch or a Fork was made
+   * before (`composerPrefillAtom`).
    */
   readonly effects: Atom.Atom<void>;
 }
@@ -270,6 +272,24 @@ export const composerState = (source: ComposerSource): ComposerState => {
           if (message.files !== undefined && message.files.length > 0) {
             get.set(addAttachmentsAtom(source.key), message.files);
           }
+        });
+      },
+      { immediate: true },
+    );
+
+    // The owner's message a Branch or a Fork was made before, ahead of what was typed.
+    get.subscribe(
+      composerPrefillAtom,
+      (prefills) => {
+        const { [sessionId]: text, ...others } = prefills;
+
+        if (text === undefined) return;
+
+        const since = source.text();
+
+        Atom.batch(() => {
+          get.set(composerPrefillAtom, others);
+          source.setText(since.trim() === "" ? text : `${text}\n\n${since}`);
         });
       },
       { immediate: true },

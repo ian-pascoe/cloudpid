@@ -17,6 +17,7 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react";
+import { SessionTreePane } from "./chat/session-tree.tsx";
 import { TasksPane } from "./chat/tasks-pane.tsx";
 import { cn } from "./lib/utils.ts";
 import { paneKeyOf, tabForKey, type PaneProps, type PaneTypeId } from "./panes.ts";
@@ -30,7 +31,7 @@ import {
 } from "./panes-state.ts";
 
 /** The component each Pane type shows. A type in `PANE_TYPES` with none is a type error. */
-const PANE_COMPONENTS = { tasks: TasksPane } satisfies {
+const PANE_COMPONENTS = { tasks: TasksPane, tree: SessionTreePane } satisfies {
   readonly [Id in PaneTypeId]: ComponentType<PaneProps>;
 };
 

@@ -1,19 +1,51 @@
+import type { SessionRecord } from "@cloudpid/protocol";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
+import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
+import * as Option from "effect/Option";
 import { pageProblemAtom } from "./app-state.ts";
 import { revealShownAtom } from "./collapsed-groups.ts";
 import { SessionChat } from "./chat/session-chat.tsx";
 import { cn } from "./lib/utils.ts";
 import { pushSyncAtom } from "./push-state.ts";
-import { pageAtom } from "./router.ts";
+import { navigate, pageAtom, sessionPath } from "./router.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { SessionMenu } from "./session-menu.tsx";
-import { currentSessionAtom, newSessionPlace } from "./sessions.ts";
+import { currentSessionAtom, newSessionPlace, sessionListAtom } from "./sessions.ts";
 import { SettingsPage } from "./settings-page.tsx";
 import { Sidebar, sessionTitle } from "./sidebar.tsx";
 import { DraftComposer } from "./draft-composer.tsx";
 import { EnvironmentsPage } from "./environments-page.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
+
+/**
+ * The line under a Fork's or a Clone's title: "Forked from" or "Cloned from" the Session it was made from, a link to it
+ * while it is there.
+ */
+const Origin = ({ origin }: { origin: NonNullable<SessionRecord["origin"]> }) => {
+  const source = useAtomValue(sessionListAtom, (list) =>
+    Option.getOrUndefined(Arr.findFirst(list ?? [], (known) => known.id === origin.session)),
+  );
+
+  const made = origin.kind === "fork" ? "Forked from" : "Cloned from";
+
+  return source === undefined ? (
+    <>{made} a deleted session</>
+  ) : (
+    <>
+      {made}{" "}
+      <button
+        type="button"
+        onClick={() => {
+          navigate(sessionPath(source.id));
+        }}
+        className="underline underline-offset-2 hover:text-foreground"
+      >
+        {sessionTitle(source)}
+      </button>
+    </>
+  );
+};
 
 /** Session `sessionId`'s page: its chat, with what the list knows of it. */
 const SessionPage = ({ sessionId }: { sessionId: string }) => {
@@ -44,6 +76,7 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
           : { unarchive: () => actions.unarchive(session.id) }
       }
       problem={problem}
+      origin={session?.origin === undefined ? undefined : <Origin origin={session.origin} />}
       // The composer's `/new` and `/archive`, for the Session shown.
       commandActions={
         session === undefined

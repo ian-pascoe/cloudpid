@@ -46,11 +46,13 @@ import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
+  failure,
   type PreparationHost,
   prepareWorkspace,
   preparationHost,
   type WorkspaceSetup,
 } from "./prepare.ts";
+import { carryWorkspaceScript } from "@cloudpid/sandbox-image/workspaces";
 import {
   workspaceBuildStore,
   type WorkspaceSettingsAnswer,
@@ -133,6 +135,9 @@ const BUILDS_KEY = "cloudpid:builds";
 
 /** How long the command that starts a spare's Container, so its bootstrap runs, may take, in seconds. */
 const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
+
+/** How long carrying the clones to a Fork's new Workspace may take, in seconds: a Container start, then pushes. */
+const CARRY_TIMEOUT_SECONDS = 15 * 60;
 
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
@@ -663,6 +668,24 @@ export class Workspace extends ContainerHost {
    */
   reset(): void {
     this.ctx.abort(WORKSPACE_DELETED_REASON);
+  }
+
+  /**
+   * Carry this Workspace's clones of `repos` to a new Workspace on `branch`, for a Fork or Clone made there
+   * (`LifecycleHost.carry`): its Container pushes each one's HEAD as `branch`, with its uncommitted Changes beside it
+   * (`carryWorkspaceScript`). Rejects with git's output when any could not be, with what was pushed taken back.
+   */
+  async carry(branch: string, repos: ReadonlyArray<string>): Promise<void> {
+    this.#spare.noteUse();
+
+    const ran = await this.#ownHost(`computer:carry:${this.ctx.id.toString()}`).run(
+      carryWorkspaceScript(repos, branch),
+      CARRY_TIMEOUT_SECONDS,
+    );
+
+    if (ran.exitCode !== 0) {
+      throw failure(`The workspace's repos could not be carried to branch ${branch}`, ran);
+    }
   }
 
   /**

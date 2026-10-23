@@ -348,6 +348,39 @@ describe("the Registry store", () => {
     expect(await registry.getWorkspace("1a2b3c4d")).not.toBeNull();
   });
 
+  it("records the Session a Fork or Clone was made from, and keeps it once that one is deleted", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d") },
+      1_000,
+    );
+
+    const forked = await registry.createSession(
+      {
+        id: "s-2",
+        title: "Fix (fork)",
+        workspace: existing("1a2b3c4d"),
+        origin: { session: "s-1", kind: "fork" },
+      },
+      2_000,
+    );
+
+    expect(forked).toMatchObject({ id: "s-2", origin: { session: "s-1", kind: "fork" } });
+    expect(await registry.getSession("s-2")).toEqual(forked);
+
+    await registry.deleteSession("s-1");
+
+    expect(await registry.listSessions()).toEqual([forked]);
+    // A Session started afresh has none.
+    expect(
+      await registry.createSession(
+        { id: "s-3", title: null, workspace: existing("1a2b3c4d") },
+        3_000,
+      ),
+    ).not.toHaveProperty("origin");
+  });
+
   it("lists the default Environment before anything is created", async () => {
     expect(await fresh().listEnvironments()).toEqual([
       expect.objectContaining({ id: DEFAULT_ENVIRONMENT, name: "Default", repos: [] }),
