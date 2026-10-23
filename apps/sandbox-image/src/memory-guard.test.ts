@@ -238,6 +238,24 @@ describe("the guard", () => {
     ]);
   });
 
+  it("leaves no note for the limits earlyoom prints as it starts", async () => {
+    const notes = notesDirectory();
+
+    // earlyoom 1.7's banner, as it prints it on a Container.
+    const earlyoom = fakeEarlyoom([
+      "sending SIGTERM when mem <= 15.00% and swap <= 10.00%,",
+      "        SIGKILL when mem <=  8.00% and swap <=  5.00%",
+      "done",
+    ]);
+
+    const guard = startGuard(earlyoom.path, notes);
+
+    await until(() => guard.output.stdout.includes("done"));
+
+    expect(guard.output.stdout).toContain("sending SIGTERM when mem <= 15.00%");
+    expect(notesIn(notes)).toEqual([]);
+  });
+
   it("still leaves a note when earlyoom words a stop another way", async () => {
     const notes = notesDirectory();
     const earlyoom = fakeEarlyoom(['sending SIGKILL to "node" (pid 7)', "done"]);
