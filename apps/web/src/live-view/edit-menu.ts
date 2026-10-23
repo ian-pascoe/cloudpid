@@ -4,12 +4,11 @@
 // show its own edit menu for. This one, iOS-style, shows after a double tap on text or in a field (the tab gets a mouse
 // double-click, which selects the word), after a long-press selection, and after a long press in a field: Copy when the
 // tab has a selection, Cut with a selection in a field, Paste and Select All in a field. It goes above the selection
-// (below when there is no room) and hides at the next touch, scroll or typing. Not for iframes of another origin or
-// images.
+// (below when there is no room) and hides at the next touch, scroll or typing. Not from iframes (of any origin) or
+// images: the menu's scripts stop at an iframe, though the keyboard's field map reaches into same-origin ones.
 //
 // The tab's side is a few `Runtime.evaluate` scripts: the probe finds the field or contenteditable under a point (kept
-// in the tab as the target of Paste and Select All) and the selection with its rect, through open shadow roots and
-// same-origin iframes.
+// in the tab as the target of Paste and Select All) and the selection with its rect, through open shadow roots.
 
 import * as Schema from "effect/Schema";
 
@@ -104,18 +103,37 @@ export const placeMenu = (
 /** Where the probe keeps the field Paste and Select All act on. */
 const EDIT_TARGET = `window[Symbol.for("cloudpid.liveView.editTarget")]`;
 
-/** The deepest focused element, through open shadow roots and same-origin iframes, and its frame's offset. */
+/** The deepest focused element through open shadow roots, stopping at an iframe (the edit menu's). */
 const ACTIVE = `
-  let active = document.activeElement, adx = 0, ady = 0, adoc = document;
+  let active = document.activeElement;
+  for (let depth = 0; active && depth < 10; depth++) {
+    const inner = active.shadowRoot && active.shadowRoot.activeElement;
+    if (!inner || inner === active) break;
+    active = inner;
+  }`;
+
+/** The deepest focused element through open shadow roots and same-origin iframes, and its document (desktop copy). */
+const ACTIVE_IN_FRAMES = `
+  let active = document.activeElement, adoc = document;
   for (let depth = 0; active && depth < 10; depth++) {
     let inner = null;
     try {
       if (active.shadowRoot && active.shadowRoot.activeElement) inner = active.shadowRoot.activeElement;
-      else if (active.tagName === "IFRAME" && active.contentDocument) { const r = active.getBoundingClientRect(); adx += r.left + active.clientLeft; ady += r.top + active.clientTop; adoc = active.contentDocument; inner = adoc.activeElement; }
+      else if (active.tagName === "IFRAME" && active.contentDocument) { adoc = active.contentDocument; inner = adoc.activeElement; }
     } catch {}
     if (!inner || inner === active) break;
     active = inner;
   }`;
+
+/** The element under a point through open shadow roots; null on an iframe, which the edit menu does not reach into. */
+const ELEMENT_AT = `
+  let el = document.elementFromPoint(x, y);
+  for (let depth = 0; el && depth < 10; depth++) {
+    const inner = el.shadowRoot && el.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  if (el && el.tagName === "IFRAME") el = null;`;
 
 /** The probe, as a function of a point in the tab's viewport: call it with `(x, y)`. */
 export const menuProbeScript = (x: number, y: number): string => `((x, y) => {
@@ -129,35 +147,23 @@ export const menuProbeScript = (x: number, y: number): string => `((x, y) => {
     if (el.isContentEditable) { let root = el; while (root.parentElement && root.parentElement.isContentEditable) root = root.parentElement; return root; }
     return null;
   };
-  let doc = document, dx = 0, dy = 0, el = document.elementFromPoint(x, y);
-  for (let depth = 0; el && depth < 10; depth++) {
-    if (el.shadowRoot) { const inner = el.shadowRoot.elementFromPoint(x - dx, y - dy); if (inner && inner !== el) { el = inner; continue; } }
-    if (el.tagName === "IFRAME") {
-      let inner = null;
-      try { const d = el.contentDocument; if (d) { const r = el.getBoundingClientRect(); dx += r.left + el.clientLeft; dy += r.top + el.clientTop; doc = d; inner = d.elementFromPoint(x - dx, y - dy); } } catch {}
-      if (inner) { el = inner; continue; }
-    }
-    break;
-  }
+  ${ELEMENT_AT}
   ${ACTIVE}
-  const frames = [{ doc, dx, dy }, { doc: adoc, dx: adx, dy: ady }, { doc: document, dx: 0, dy: 0 }];
-  const box = (r, ox, oy) => ({ x: Math.round(r.left + ox), y: Math.round(r.top + oy), w: Math.round(r.width), h: Math.round(r.height) });
+  const box = (r) => ({ x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
   let target = editRoot(el), text = "", rect = null;
   if (isField(active) && typeof active.selectionStart === "number" && active.selectionStart !== active.selectionEnd) {
     text = active.value.slice(active.selectionStart, active.selectionEnd);
-    rect = box(active.getBoundingClientRect(), adx, ady);
+    rect = box(active.getBoundingClientRect());
     target = active;
   } else {
-    for (const f of frames) {
-      const s = f.doc.getSelection && f.doc.getSelection();
-      if (!s || s.isCollapsed || s.rangeCount === 0 || !String(s).trim()) continue;
+    const s = document.getSelection();
+    if (s && !s.isCollapsed && s.rangeCount > 0 && String(s).trim()) {
       text = String(s);
-      rect = box(s.getRangeAt(0).getBoundingClientRect(), f.dx, f.dy);
+      rect = box(s.getRangeAt(0).getBoundingClientRect());
       const anchor = s.anchorNode && (s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement);
       const root = editRoot(anchor);
       if (root) target = root;
       else if (target && !target.contains(anchor)) target = null;
-      break;
     }
   }
   ${EDIT_TARGET} = target;
@@ -188,24 +194,22 @@ export const EDIT_SELECT_ALL_SCRIPT = `(() => {
 
 /** Whether a double tap at a point should select a word: text or a field under it, not a control. Call with `(x, y)`. */
 export const wordAtScript = (x: number, y: number): string => `((x, y) => {
-  let el = document.elementFromPoint(x, y), doc = document, dx = 0, dy = 0;
-  for (let depth = 0; el && depth < 10; depth++) {
-    if (el.shadowRoot) { const inner = el.shadowRoot.elementFromPoint(x - dx, y - dy); if (inner && inner !== el) { el = inner; continue; } }
-    if (el.tagName === "IFRAME") { let inner = null; try { const d = el.contentDocument; const r = el.getBoundingClientRect(); dx += r.left + el.clientLeft; dy += r.top + el.clientTop; doc = d; inner = d.elementFromPoint(x - dx, y - dy); } catch {} if (inner) { el = inner; continue; } }
-    break;
-  }
+  ${ELEMENT_AT}
   if (!el) return false;
   const TEXT = new Set(["text", "email", "number", "tel", "url", "search", "password"]);
   if ((el.tagName === "INPUT" && TEXT.has(el.type)) || el.tagName === "TEXTAREA" || el.isContentEditable) return true;
   if (el.closest("a, button, select, input, label, summary, [role=button], [onclick]")) return false;
-  const range = doc.caretRangeFromPoint && doc.caretRangeFromPoint(x - dx, y - dy);
+  const range = document.caretRangeFromPoint && document.caretRangeFromPoint(x, y);
   const node = range && range.startContainer;
   return !!node && node.nodeType === 3 && !!node.textContent.trim();
 })(${JSON.stringify(x)}, ${JSON.stringify(y)})`;
 
-/** The tab's selected text (a focused field's, or the document's), for Cmd/Ctrl+C on a desktop. */
+/**
+ * The tab's selected text (a focused field's, or the document's), for Cmd/Ctrl+C on a desktop: the keys of the page,
+ * not the edit menu, so it reads into a same-origin iframe that has the focus.
+ */
 export const SELECTION_SCRIPT = `(() => {
-  ${ACTIVE}
+  ${ACTIVE_IN_FRAMES}
   if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && typeof active.selectionStart === "number") return active.value.slice(active.selectionStart, active.selectionEnd);
   return String(adoc.getSelection ? adoc.getSelection() : "") || String(getSelection());
 })()`;
