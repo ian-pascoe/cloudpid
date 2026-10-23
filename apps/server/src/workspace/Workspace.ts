@@ -59,7 +59,6 @@ import type { BuildRequest, BuildState, EnvironmentBuild } from "./build-record.
 import { BuildRunner, type StoredBuilds } from "./build.ts";
 import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
 import { runAlarmSteps } from "./alarm.ts";
-import { ContainerEarlyStart } from "./early-start.ts";
 import { SparePreparation, type SpareRequest } from "./spare.ts";
 import {
   ContainerSnapshots,
@@ -145,7 +144,6 @@ export class Workspace extends ContainerHost {
   readonly #environmentBuild: ReturnType<typeof workspaceBuildStore>;
   /** The Builds this object makes, when it is an Environment's Build object (`buildObjectName`). */
   readonly #builds: BuildRunner;
-  readonly #earlyStart: ContainerEarlyStart;
   readonly #spare: SparePreparation;
   /** The Environment's kept Secrets, as last handed over: sealed in storage, searched for before each snapshot. */
   readonly #environmentSecrets: WorkspaceSecrets;
@@ -331,27 +329,6 @@ export class Workspace extends ContainerHost {
         }),
         toolchains,
       ],
-    });
-
-    // A message the owner sends starts the Container before its first command asks for it (`startContainerEarly`).
-    this.#earlyStart = new ContainerEarlyStart({
-      running: () => ctx.container?.running === true,
-      connect: async () => {
-        await this.#ready();
-        await this.#workspace.ready(CONTAINER_BACKEND_ID);
-
-        let pushed = 0;
-
-        for await (const block of this.#workspace.push(CONTAINER_BACKEND_ID))
-          pushed += block.entries;
-
-        return pushed;
-      },
-      runBootstrap: () => toolchains.runBootstrap(),
-      idle: this.#idle,
-      now: () => Date.now(),
-      info: (message) => console.info(message),
-      warn: (message) => console.warn(message),
     });
 
     // A spare Workspace readies itself over its own Container, on the alarm (`prepareSpare`).
@@ -620,20 +597,6 @@ export class Workspace extends ContainerHost {
    */
   reset(): void {
     this.ctx.abort(WORKSPACE_DELETED_REASON);
-  }
-
-  /**
-   * The early start (docs/spec.md → Backends), for a message the owner sent: restore or launch the Container, push the
-   * files and run the bootstrap, with no command, so the turn's first command does not wait for it. It answers at once
-   * and never fails. While the Container runs or is starting it starts nothing; either way the message is a use of the
-   * Container for the idle stop.
-   */
-  startContainerEarly(): void {
-    this.#spare.noteUse();
-    // Not awaited: the start goes on after this call has answered. Nothing needs to hold the object for it
-    // (`ctx.waitUntil` has no effect in a Durable Object): one is evicted only after tens of seconds without a request,
-    // and once computer has connected, its connection to computerd keeps the object in memory, as for a command.
-    void this.#earlyStart.start();
   }
 
   /**

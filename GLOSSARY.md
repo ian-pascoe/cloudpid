@@ -160,10 +160,6 @@ _Avoid_: Console, shell (alone), PTY
 A panel beside a conversation that shows something live the owner can look at or work in: the Session's tasks (the Tasks Pane), a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
-**Early start**:
-Starting a Workspace's Container (restoring its Snapshot or its Environment's Build, then its Start Scripts) when the owner sends a message, before any command asks for it, so the turn's first command does not wait; it does nothing while the Container runs or is starting.
-_Avoid_: Warm-up, prewarm, preload
-
 **Offered tool**:
 A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, and `secret_ask` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.
 _Avoid_: Enabled tool, active tool

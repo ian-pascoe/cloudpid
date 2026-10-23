@@ -55,7 +55,6 @@ import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle
 import { onIdle, wakeAt } from "./wake.ts";
 import {
   cachedPlacement,
-  earlyStartOnSubmit,
   type Placement,
   sessionWorkspace,
   type WorkspaceNamespace,
@@ -241,12 +240,12 @@ export const SessionLive = Session.make(
           placement,
           // What the Workspace is made of is the Registry's; a Workspace it no longer lists is left as it is.
           // @effect-diagnostics-next-line asyncFunction:off
-          prepare: async (id, handedOver) => {
+          prepare: async (id) => {
             const setup = await runtime.runPromise(
               registries.getByName(REGISTRY_NAME).getWorkspaceSetup({ id }),
             );
 
-            if (setup !== null) await prepare(workspaceObjectName(id), setup, handedOver);
+            if (setup !== null) await prepare(workspaceObjectName(id), setup);
           },
         });
 
@@ -367,9 +366,6 @@ export const SessionLive = Session.make(
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,
-                // A message the owner sends starts the Workspace's Container early, so the turn's first command does
-                // not wait for it.
-                onSubmit: earlyStartOnSubmit(workspace),
                 // An idle Session still wakes when a Secret expires, so its ciphertext is deleted on time, and when the
                 // browser falls idle past its keep-alive, so it is closed.
                 wakeAt: Effect.flatMap(

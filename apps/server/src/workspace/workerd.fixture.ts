@@ -147,20 +147,8 @@ export class TestWorkspace extends Workspace {
     execs: 0,
   };
 
-  /** Early starts asked for since the object started. */
-  #earlyStarts = 0;
-
   liveStubs(): LiveStubs {
     return { ...this.#counter };
-  }
-
-  earlyStarts(): number {
-    return this.#earlyStarts;
-  }
-
-  override startContainerEarly(): void {
-    this.#earlyStarts++;
-    super.startContainerEarly();
   }
 
   protected override workspaceStub(workspace: ComputerWorkspace): WorkspaceStub {

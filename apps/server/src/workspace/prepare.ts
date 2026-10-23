@@ -141,13 +141,11 @@ const sameBuild = (left: EnvironmentBuild | null, right: EnvironmentBuild | null
  * flagged (the Container is running already, so its bootstrap did not see the clone, or saw the spare's). Rejects with
  * git's output when a Repo could not be cloned or switched (the others still are); a settings write the Workspace
  * refuses, or a Setup or Start Script that fails, is only reported (`warn`): the Workspace is there to work in, and
- * the script runs again at the next Container start. `onHandedOver` is called once the Secrets, settings and Build are
- * the Workspace's, before the clones: what needs no Container is done, so a Container may start (the early start).
+ * the script runs again at the next Container start.
  */
 export const prepareWorkspace = async (
   { readText, run, settings, build, secrets, warn }: PreparationHost,
   setup: WorkspaceSetup,
-  onHandedOver: () => void = () => undefined,
 ): Promise<void> => {
   // First, so the snapshot of any Container this readying starts is searched for them.
   if (setup.secrets !== undefined) await secrets.write(setup.secrets);
@@ -166,8 +164,6 @@ export const prepareWorkspace = async (
   if (setup.build !== undefined && !sameBuild(await build.read(), setup.build)) {
     await build.write(setup.build);
   }
-
-  onHandedOver();
 
   // A clone that is there has a `.git/HEAD`; the spare's own clones stay on its branch.
   const missing = Arr.filter(
@@ -329,7 +325,7 @@ export const preparationHost = (
  */
 export const workspacePreparation =
   (namespace: WorkspaceNamespace, warn: (message: string) => void) =>
-  (objectName: string, setup: WorkspaceSetup, onHandedOver?: () => void): Promise<void> =>
+  (objectName: string, setup: WorkspaceSetup): Promise<void> =>
     prepareWorkspace(
       preparationHost(
         namespace.getByName(objectName),
@@ -351,5 +347,4 @@ export const workspacePreparation =
         warn,
       ),
       setup,
-      onHandedOver,
     );

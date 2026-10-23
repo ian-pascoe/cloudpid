@@ -50,9 +50,6 @@ import { SessionRegistry } from "./status.ts";
 /** Set once the child may answer; until then its requests hang until they are interrupted. */
 const RELEASED = "released";
 
-/** How many early starts of the Container the host asked the Workspace for. */
-const EARLY_STARTS = "early-starts";
-
 const text = (content: Message["content"]): string =>
   Predicate.isString(content)
     ? content
@@ -110,8 +107,6 @@ export class TestSubagentSession extends DurableObject {
           extensions: Effect.map(subagents, (extension) => [extension]),
           env: fakeWorkspaceEnv(ctx.storage.kv),
           expandTimeout: "1 second",
-          // Counts the early starts the owner's messages ask the Workspace for.
-          onSubmit: Effect.sync(() => ctx.storage.kv.put(EARLY_STARTS, this.earlyStarts() + 1)),
         }).pipe(
           Layer.provide(
             Layer.mergeAll(
@@ -243,11 +238,6 @@ export class TestSubagentSession extends DurableObject {
         }),
       ),
     );
-  }
-
-  /** How many early starts of the Container messages asked for (`onSubmit`). */
-  earlyStarts(): number {
-    return this.ctx.storage.kv.get<number>(EARLY_STARTS) ?? 0;
   }
 
   /** Let the child answer, from its next request on. */

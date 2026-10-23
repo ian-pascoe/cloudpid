@@ -141,8 +141,6 @@ export class ToolchainBackend implements WorkspaceBackend {
   #env: CommandEnv;
   /** The Container run the bootstrap last finished in: a new connection to the same Container needs none. */
   #bootstrapped: string | undefined;
-  /** The bootstrap of the connection made last, for `runBootstrap`. */
-  #latest: Bootstrap | undefined;
   /**
    * The Setup and Start Scripts that failed at that run's start, if any, and whether a command that started has had the full note:
    * until one has, the next one gets it; after, each gets a pointer to it.
@@ -171,16 +169,6 @@ export class ToolchainBackend implements WorkspaceBackend {
     const handle = await this.#options.backend.connect(host);
 
     return { ...handle, rpc: this.#rpc(handle) };
-  }
-
-  /**
-   * Run the bootstrap of the connection made last, if it has not run, without a command (the early start: docs/spec.md
-   * → Backends). A command that arrives meanwhile waits for this one. It never throws: a failure is reported, and starts
-   * no wait before the next attempt, so the first command bootstraps as it would have without the early start. Without
-   * a connection it does nothing.
-   */
-  async runBootstrap(): Promise<void> {
-    await this.#latest?.ensure({ backoff: false });
   }
 
   /** The token, if there is one, as the strings to take out of output. */
@@ -225,8 +213,6 @@ export class ToolchainBackend implements WorkspaceBackend {
         this.#scriptsFailed = scripts === undefined ? undefined : { report: scripts, seen: false };
       },
     );
-
-    this.#latest = ready;
 
     /** Commands waiting for the bootstrap, and those among them killed meanwhile: computerd cannot kill what it has not started. */
     const waiting = new Set<string>();
@@ -779,10 +765,9 @@ class Bootstrap {
 
   /**
    * Resolves when a command may be sent: the bootstrap is done, or has failed (a command is not held for it). With
-   * the note the command starts with, if the bootstrap has failed. A failure of an attempt made with `backoff: false`
-   * (the early start's, which no command asked for) starts no wait: the next command tries again.
+   * the note the command starts with, if the bootstrap has failed.
    */
-  ensure({ backoff = true }: { readonly backoff?: boolean } = {}): Promise<string | undefined> {
+  ensure(): Promise<string | undefined> {
     if (this.#done) return Promise.resolve(undefined);
 
     if (this.#inflight !== undefined) return this.#inflight;
@@ -806,11 +791,9 @@ class Bootstrap {
 
         const { failure } = outcome;
 
-        if (backoff) {
-          this.#failedAt = this.#now();
-          this.#failures++;
-          this.#reason = failure.reason;
-        }
+        this.#failedAt = this.#now();
+        this.#failures++;
+        this.#reason = failure.reason;
 
         return `cloudpid: the Toolchain bootstrap failed (${failure.reason}), so git, gh and other Toolchains may be missing: ${failure.output}\nRun \`mise install\` to see more. It is retried automatically.`;
       })
