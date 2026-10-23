@@ -137,6 +137,8 @@ export interface LiveView {
   readonly returned: Effect.Effect<void>;
   /** Try again after the Live View was lost. */
   readonly retry: Effect.Effect<void>;
+  /** Ask the Session whether the handoff still waits (its request left the Session's list): ends when it does not. */
+  readonly verify: Effect.Effect<void>;
   /**
    * Done (`success`) or Failed with an optional `reason`: the viewport is cleared, then `Cloudflare.handoffComplete` is
    * sent on the tab's connection, as the hosted page does. The Live View ends.
@@ -572,6 +574,7 @@ export const make = Effect.fnUntraced(function* (
       }
     }),
     retry: Effect.suspend(() => (current.status === "lost" ? reconnect : Effect.void)),
+    verify: Effect.suspend(() => (isOver() ? Effect.void : Effect.ignore(links))),
     finish: (success, reason) =>
       Effect.gen(function* () {
         if (tab === null) {

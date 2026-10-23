@@ -304,6 +304,22 @@ describe("a Live View's connection", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("asks the Session whether the handoff still waits, and ends when it does not", () =>
+    Effect.gen(function* () {
+      const { view, handoffOver, state, mints } = yield* setup();
+
+      yield* view.verify;
+
+      expect(mints()).toBe(2);
+      expect(state().status).toBe("live");
+
+      handoffOver();
+      yield* view.verify;
+
+      expect(state().status).toBe("ended");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps its connection on return when it answers the ping", () =>
     Effect.gen(function* () {
       const { view, pages, mints } = yield* setup();
