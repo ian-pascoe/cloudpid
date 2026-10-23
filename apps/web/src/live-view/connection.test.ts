@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off preferSchemaOverJson:off strictEffectProvide:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Live View.
 
-import type { LiveViewLinks } from "@cloudpid/protocol";
+import { LIVE_VIEW_HANDOFF_OVER, type LiveViewLinks } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -11,7 +11,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import { settle, type Value } from "../session/client.testing.ts";
 import { keyPress } from "./cdp.ts";
-import { HANDOFF_OVER, make, RETURN_PING_MS, type Frame } from "./connection.ts";
+import { GONE_GRACE_MS, make, RETURN_PING_MS, type Frame } from "./connection.ts";
 import { deviceMetrics } from "./viewport.ts";
 
 type Listener = (event: Socket.WebSocketEvent) => void;
@@ -147,7 +147,7 @@ const setup = (options: { readonly windows?: () => LiveViewLinks["windows"] } = 
     const mint = Effect.suspend(() => {
       mints += 1;
 
-      if (over) return Effect.fail({ message: HANDOFF_OVER });
+      if (over) return Effect.fail({ message: LIVE_VIEW_HANDOFF_OVER });
 
       const windows = (options.windows?.() ?? []).map((window) => ({
         ...window,
@@ -304,22 +304,6 @@ describe("a Live View's connection", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("asks the Session whether the handoff still waits, and ends when it does not", () =>
-    Effect.gen(function* () {
-      const { view, handoffOver, state, mints } = yield* setup();
-
-      yield* view.verify;
-
-      expect(mints()).toBe(2);
-      expect(state().status).toBe("live");
-
-      handoffOver();
-      yield* view.verify;
-
-      expect(state().status).toBe("ended");
-    }).pipe(Effect.scoped),
-  );
-
   it.effect("keeps its connection on return when it answers the ping", () =>
     Effect.gen(function* () {
       const { view, pages, mints } = yield* setup();
@@ -400,6 +384,50 @@ describe("a Live View's connection", () => {
           .filter((method) => method === "Page.startScreencast"),
       ).toHaveLength(2);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "brings back a window still listed after its socket dropped, once the grace is over",
+    () =>
+      Effect.gen(function* () {
+        const windows = [{ targetId: "W", openerId: "T", title: "Sign in", link: "" }];
+        const { view, to, state } = yield* setup({ windows: () => windows });
+
+        yield* view.show("W");
+        yield* to("W")[0]!.drop();
+
+        // The host may list a window that closed a moment longer: it is left out for the grace.
+        expect(state().strip).toMatchObject({ shown: "T", windows: [] });
+
+        yield* TestClock.adjust(GONE_GRACE_MS);
+        yield* settle;
+
+        // Still listed: it was open all along (a blip), so it is back, and shown again.
+        expect(state().strip).toMatchObject({ shown: "W", windows: [{ targetId: "W" }] });
+        expect(to("W")[1]?.readyState).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not open a window's socket after the Live View closed", () =>
+    Effect.gen(function* () {
+      const windows = [{ targetId: "W", openerId: "T", title: "Sign in", link: "" }];
+
+      const opened = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { view, to } = yield* setup({ windows: () => windows });
+
+          yield* view.show("W");
+          yield* to("W")[0]!.drop();
+
+          return to;
+        }),
+      );
+
+      yield* TestClock.adjust(GONE_GRACE_MS);
+      yield* settle;
+
+      expect(opened("W")).toHaveLength(1);
+    }),
   );
 
   it.effect("waits for a window that opened to be listed", () =>

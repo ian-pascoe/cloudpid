@@ -15,7 +15,7 @@
 // `Cloudflare.getSessionId`; one that does not answer in `RETURN_PING_MS` is dropped and the Live View reconnects with
 // fresh links, the viewport applied again.
 
-import type { LiveViewLinks } from "@cloudpid/protocol";
+import { LIVE_VIEW_HANDOFF_OVER, type LiveViewLinks } from "@cloudpid/protocol";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -31,9 +31,6 @@ import { LiveViewError, openPage, type CdpPage } from "./cdp-socket.ts";
 import type { DeviceMetrics, ScreencastSize } from "./viewport.ts";
 import { selectWindow, stripOf, windowClosed, type WindowStrip } from "./windows.ts";
 
-/** The Session's answer to `live_view` once the handoff has ended. */
-export const HANDOFF_OVER = "the handoff is over";
-
 /** How long a connection has to answer the ping on return, in ms. */
 export const RETURN_PING_MS = 1500;
 
@@ -44,6 +41,13 @@ export const RECONNECT_DELAY_MS = 1000;
 /** How often, and how long apart, a window that opened is looked for when the first reading does not list it yet. */
 const WINDOW_LOOKS = 3;
 const WINDOW_LOOK_DELAY_MS = 500;
+
+/**
+ * How long a window whose connection closed is left out of the browser host's list, in ms: the host may list a window
+ * that closed a moment longer. After it, the host's list decides again (and is read once more), so a pop-up that is
+ * still open after a blip of its socket comes back.
+ */
+export const GONE_GRACE_MS = 2000;
 
 export type LiveViewStatus =
   /** Asking for links and connecting, the first time. */
@@ -137,8 +141,6 @@ export interface LiveView {
   readonly returned: Effect.Effect<void>;
   /** Try again after the Live View was lost. */
   readonly retry: Effect.Effect<void>;
-  /** Ask the Session whether the handoff still waits (its request left the Session's list): ends when it does not. */
-  readonly verify: Effect.Effect<void>;
   /**
    * Done (`success`) or Failed with an optional `reason`: the viewport is cleared, then `Cloudflare.handoffComplete` is
    * sent on the tab's connection, as the hosted page does. The Live View ends.
@@ -146,10 +148,15 @@ export interface LiveView {
   readonly finish: (success: boolean, reason?: string) => Effect.Effect<void, LiveViewError>;
   /** Clear the viewport the Live View set, best effort: the page is going away (`pagehide`). */
   readonly clearViewport: () => void;
+  /**
+   * Run one of its effects for the DOM side (the screen's events and timers), inside the Live View's scope: it is
+   * interrupted when the Live View closes, so nothing it started outlives the Pane. Rejects when it fails or is cut off.
+   */
+  readonly run: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
 }
 
 /** The handoff ended: a sentinel failure that stops whatever was connecting. */
-const ended = LiveViewError.make({ message: HANDOFF_OVER });
+const ended = LiveViewError.make({ message: LIVE_VIEW_HANDOFF_OVER });
 
 /**
  * The Live View of a Browser Handoff, for as long as the scope is open, with `mint` asking the Session for fresh links
@@ -163,6 +170,7 @@ export const make = Effect.fnUntraced(function* (
   const state = yield* SubscriptionRef.make(INITIAL_LIVE_VIEW_STATE);
   const lock = Semaphore.makeUnsafe(1);
   const run = yield* FiberSet.makeRuntime<never, void, never>();
+  const runPromise = yield* FiberSet.makeRuntimePromise();
   const listeners = new Set<(frame: Frame) => void>();
 
   let current = INITIAL_LIVE_VIEW_STATE;
@@ -172,8 +180,8 @@ export const make = Effect.fnUntraced(function* (
   let closing = false;
   let over = false;
 
-  /** Windows whose connection closed: left out of later readings, which may list them a moment longer. */
-  const gone = new Set<string>();
+  /** Windows whose connection closed, and until when (ms) they are left out of the host's list: `GONE_GRACE_MS`. */
+  const gone = new Map<string, number>();
 
   /** Connections closed on purpose (a window no longer shown, a dead socket), whose close says nothing of the page. */
   const dropped = new WeakSet<CdpPage>();
@@ -223,14 +231,20 @@ export const make = Effect.fnUntraced(function* (
     return update({ status: "ended" });
   });
 
-  /** Fresh links, without the windows known to be closed; the Live View ends when the handoff has. */
+  /** Fresh links, without the windows that closed in the last `GONE_GRACE_MS`; the Live View ends when the handoff has. */
   const links = Effect.gen(function* () {
     const minted = yield* mint.pipe(
       Effect.mapError((error) =>
-        error.message === HANDOFF_OVER ? ended : LiveViewError.make({ message: error.message }),
+        error.message === LIVE_VIEW_HANDOFF_OVER
+          ? ended
+          : LiveViewError.make({ message: error.message }),
       ),
       Effect.tapError((error) => (error === ended ? end : Effect.void)),
     );
+
+    const now = yield* Clock.currentTimeMillis;
+
+    for (const [targetId, until] of gone) if (until <= now) gone.delete(targetId);
 
     return {
       tab: minted.tab,
@@ -238,7 +252,12 @@ export const make = Effect.fnUntraced(function* (
     };
   });
 
-  const bestEffort = <A, E>(effect: Effect.Effect<A, E>) => Effect.ignore(effect);
+  /** The domains every page shown needs: its frames and window events, and scripts. */
+  const enableDomains = (page: CdpPage) =>
+    Effect.gen(function* () {
+      yield* Effect.ignore(page.call("Page.enable", {}, Ignored));
+      yield* Effect.ignore(page.call("Runtime.enable", {}, Ignored));
+    });
 
   /** The viewport on `page`: the Pane's size, and touch emulation on a touch screen. */
   const applyViewport = (page: CdpPage) =>
@@ -247,8 +266,8 @@ export const make = Effect.fnUntraced(function* (
 
       const { metrics } = viewport.metrics;
 
-      yield* bestEffort(page.call("Emulation.setDeviceMetricsOverride", metrics, Ignored));
-      yield* bestEffort(
+      yield* Effect.ignore(page.call("Emulation.setDeviceMetricsOverride", metrics, Ignored));
+      yield* Effect.ignore(
         page.call(
           "Emulation.setTouchEmulationEnabled",
           viewport.metrics.touch ? { enabled: true, maxTouchPoints: 5 } : { enabled: false },
@@ -261,11 +280,11 @@ export const make = Effect.fnUntraced(function* (
     Effect.gen(function* () {
       const size = viewport?.size ?? {};
 
-      yield* bestEffort(
+      yield* Effect.ignore(
         page.call("Page.startScreencast", { format: "jpeg", quality: 70, ...size }, Ignored),
       );
       // A page that is not in front sends no frames.
-      yield* bestEffort(page.call("Page.bringToFront", {}, Ignored));
+      yield* Effect.ignore(page.call("Page.bringToFront", {}, Ignored));
     });
 
   /** Hear a page's frames (the shown one's go to the listeners) and the windows it opens. */
@@ -297,8 +316,7 @@ export const make = Effect.fnUntraced(function* (
 
       shown = page;
 
-      yield* bestEffort(page.call("Page.enable", {}, Ignored));
-      yield* bestEffort(page.call("Runtime.enable", {}, Ignored));
+      yield* enableDomains(page);
       yield* applyViewport(page);
       yield* startScreencast(page);
     });
@@ -324,16 +342,21 @@ export const make = Effect.fnUntraced(function* (
 
       const page = yield* openPage(makeWebSocket, link, targetId);
 
+      // The Live View closed or ended while this connected.
+      if (isOver()) {
+        drop(page);
+
+        return;
+      }
+
       attach(page);
       run(
         page.closed.pipe(
-          Effect.andThen(() => {
-            if (isOver() || page === tab || dropped.has(page)) return Effect.void;
-
-            gone.add(page.targetId);
-
-            return shown === page ? windowLost(page.targetId) : Effect.void;
-          }),
+          Effect.andThen(() =>
+            isOver() || page === tab || dropped.has(page) || shown !== page
+              ? Effect.void
+              : windowLost(page.targetId),
+          ),
         ),
       );
 
@@ -368,14 +391,27 @@ export const make = Effect.fnUntraced(function* (
 
   const windowOpened: Effect.Effect<void> = Effect.ignore(refresh(true));
 
-  /** The window shown closed: back to its opener, then the windows are read again. */
+  /**
+   * The window shown lost its connection: back to its opener, and the windows are read again. The host decides whether
+   * it closed: it is left out for `GONE_GRACE_MS`, then read again, so one still listed comes back.
+   */
   const windowLost = (targetId: string): Effect.Effect<void> =>
     Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+
+      gone.set(targetId, now + GONE_GRACE_MS);
+
       if (current.strip !== null) yield* update({ strip: windowClosed(current.strip, targetId) });
 
       if (shown?.targetId === targetId) shown = null;
 
       yield* Effect.ignore(refresh(false));
+
+      const recheck = Effect.sleep(Duration.millis(GONE_GRACE_MS)).pipe(
+        Effect.andThen(Effect.ignore(refresh(false))),
+      );
+
+      run(recheck);
     });
 
   /** Connect afresh: new links, the tab's connection, the handoff's state, and the page shown. */
@@ -387,6 +423,12 @@ export const make = Effect.fnUntraced(function* (
 
       const minted = yield* links;
       const page = yield* openPage(makeWebSocket, minted.tab.link, minted.tab.targetId);
+
+      if (isOver()) {
+        drop(page);
+
+        return;
+      }
 
       tab = page;
       attach(page);
@@ -401,8 +443,7 @@ export const make = Effect.fnUntraced(function* (
         ),
       );
 
-      yield* bestEffort(page.call("Page.enable", {}, Ignored));
-      yield* bestEffort(page.call("Runtime.enable", {}, Ignored));
+      yield* enableDomains(page);
 
       const handoff = yield* page.call("Cloudflare.getHandoffState", {}, HandoffState);
 
@@ -581,19 +622,13 @@ export const make = Effect.fnUntraced(function* (
 
       if (checks.length === 0 || checks.some((ok) => !ok)) {
         // Drop the dead sockets first, so their close does not start a reconnect of its own.
-        const dead = pages();
-
-        tab = null;
-        shown = null;
-
-        for (const page of dead) drop(page);
+        closeAll();
 
         // A new connection is sized and shown as the first was.
         yield* reconnect;
       }
     }).pipe(Effect.scoped),
     retry: Effect.suspend(() => (current.status === "lost" ? reconnect : Effect.void)),
-    verify: Effect.suspend(() => (isOver() ? Effect.void : Effect.ignore(links))),
     finish: (success, reason) =>
       Effect.gen(function* () {
         if (tab === null) {
@@ -611,6 +646,7 @@ export const make = Effect.fnUntraced(function* (
         yield* end;
       }),
     clearViewport,
+    run: (effect) => runPromise(effect),
   };
 
   return liveView;
