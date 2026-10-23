@@ -88,7 +88,7 @@ describe("the Session socket messages", () => {
     expect(await readServer(text)).toEqual(JSON.parse(text));
   });
 
-  it("carry the Browser Handoffs waiting for the owner, with the link they open", async () => {
+  it("carry the Browser Handoffs waiting for the owner, without a Live View link", async () => {
     const text = JSON.stringify({
       type: "browser_handoff_requests",
       requests: [
@@ -96,7 +96,6 @@ describe("the Session socket messages", () => {
           id: "12",
           conversationId: 1,
           instructions: "Log in, then press Done",
-          url: "https://live.browser.run/ui/view?mode=tab",
           deadline: 1_800_000,
         },
       ],
@@ -107,6 +106,12 @@ describe("the Session socket messages", () => {
       type: "browser_handoff_requests",
       requests: [],
     });
+  });
+
+  it("read a request for Live View links", async () => {
+    expect(await readClient('{"type":"live_view","id":"c1","requestId":"12"}')).toEqual(
+      Option.some({ type: "live_view", id: "c1", requestId: "12" }),
+    );
   });
 
   it("read the owner's answer to a Secret request, or its cancellation", async () => {
