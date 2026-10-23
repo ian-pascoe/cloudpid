@@ -49,6 +49,19 @@ export type WirePrompt = {
   readonly filePath: string;
 };
 
+/**
+ * One directory's project instructions the Workspace DO found (the extensions package's `InstructionFile`, which this
+ * package does not import): the answer to `instructions`.
+ */
+export type WireInstructionFile = {
+  /** The absolute path of the file. */
+  readonly path: string;
+  /** The directory it is for. */
+  readonly directory: string;
+  /** Its text, cut to the shown bounds. */
+  readonly content: string;
+};
+
 /** A watch target, resolved, as the Workspace DO scans it. */
 export type ScanTarget = {
   readonly path: string;

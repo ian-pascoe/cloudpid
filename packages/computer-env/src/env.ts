@@ -31,7 +31,7 @@ import { join, resolve } from "./paths.ts";
 import { inBash } from "./shell.ts";
 import { ComputerBinaryReader, ComputerDirReader, ComputerTextLineReader } from "./readers.ts";
 import { type PollingOptions, PollingWatcher } from "./watch.ts";
-import type { WirePrompt, WireSkill } from "./wire.ts";
+import type { WireInstructionFile, WirePrompt, WireSkill } from "./wire.ts";
 
 /**
  * A Workspace DO stub: computer's `__getWorkspaceStub()`, which `getWorkspace()` calls for exec, and the file operations
@@ -392,6 +392,21 @@ export class ComputerExecutionEnv implements ExecutionEnv {
     // SAFETY: the Workspace DO answers `prompts` with the array of plain data it found; a stub's RPC types only
     // rewrite its declared type.
     return (await this.#workspace.prompts(this.cwd)) as ReadonlyArray<WirePrompt>;
+  }
+
+  /**
+   * The project instructions for the files of `directory` (absolute), found by the Workspace DO next to the files: one
+   * RPC call however deep the directory is (the extensions package's `InstructionSource`).
+   */
+  async discoverInstructions(
+    directory: string,
+    context: Context,
+  ): Promise<ReadonlyArray<WireInstructionFile>> {
+    if (context.abortSignal?.aborted === true) throw new Error("aborted");
+
+    // SAFETY: the Workspace DO answers `instructions` with the array of plain data it found; a stub's RPC types only
+    // rewrite its declared type.
+    return (await this.#workspace.instructions(directory)) as ReadonlyArray<WireInstructionFile>;
   }
 
   /** Kill the commands this environment still runs. */

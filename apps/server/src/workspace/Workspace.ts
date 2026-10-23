@@ -31,6 +31,7 @@ import {
 } from "@cloudpid/computer-env";
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
+import type { InstructionFile } from "@cloudpid/extensions/agents-md-discovery";
 import type { ContainerUsage } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -62,7 +63,12 @@ import {
 
 import type { BuildRequest, BuildState, EnvironmentBuild } from "./build-record.ts";
 import { BuildRunner, type StoredBuilds } from "./build.ts";
-import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
+import {
+  discoverWorkspaceInstructions,
+  discoverWorkspacePrompts,
+  discoverWorkspaceSkills,
+  keepPriorSkills,
+} from "./skills.ts";
 import { runAlarmSteps } from "./alarm.ts";
 import { SparePreparation, type SpareRequest } from "./spare.ts";
 import {
@@ -472,6 +478,7 @@ export class Workspace extends ContainerHost {
       __getWorkspaceStub: () => this.#getWorkspaceStub(),
       skills: async () => [],
       prompts: async () => [],
+      instructions: async () => [],
     };
 
     return preparationHost(
@@ -808,6 +815,17 @@ export class Workspace extends ContainerHost {
     await this.#ready();
 
     return discoverWorkspacePrompts(this.#host.readEnv(cwd));
+  }
+
+  /**
+   * The project instructions for the files of `directory`: the `AGENTS.md` (or `CLAUDE.md`) of it and of each directory
+   * above it up to the Workspace root, read next to the files, so a Session's lookup is this one call.
+   */
+  async instructions(directory: string): Promise<ReadonlyArray<InstructionFile>> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return discoverWorkspaceInstructions(this.#host.readEnv(directory), directory);
   }
 
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */
