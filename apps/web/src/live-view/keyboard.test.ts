@@ -261,4 +261,12 @@ describe("typing through the textarea", () => {
     expect(keyboard.paste("copied\n")).toEqual([insert("copied")]);
     expect(textarea.value).toBe(INPUT_SENTINEL);
   });
+
+  it("pastes several lines as one insert, with no Enter that could submit a form", () => {
+    const { keyboard } = setup();
+
+    keyboard.tap(field("text"));
+
+    expect(keyboard.paste("one\ntwo\n")).toEqual([insert("one\ntwo")]);
+  });
 });

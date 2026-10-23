@@ -19,7 +19,7 @@
 // KIND. Changed here: CDP commands instead of X keysyms, and one diff path whether or not text is kept. See
 // `apps/web/NOTICE.md`.
 
-import { BACKSPACE, keyPress, typeText, type CdpCommand } from "./cdp.ts";
+import { BACKSPACE, insertText, keyPress, typeText, type CdpCommand } from "./cdp.ts";
 import { hintsFor, type Field, type FocusedElement, type KeyboardHints } from "./field-map.ts";
 import { INPUT_SENTINEL, TypedText } from "./typed-text.ts";
 
@@ -130,11 +130,11 @@ export class Keyboard {
     return this.edit();
   }
 
-  /** Text pasted into the textarea, without the line break copied text often ends with. */
+  /** Text pasted into the textarea, as one insert (`insertText`), without the line break copied text often ends with. */
   paste(text: string): readonly CdpCommand[] {
     this.reset();
 
-    return typeText(text.replace(/[\r\n]+$/, ""));
+    return insertText(text.replace(/[\r\n]+$/, ""));
   }
 
   /** A key pressed in the textarea that does not type: forwarded, or undefined to let the textarea have it. */

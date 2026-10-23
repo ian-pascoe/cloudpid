@@ -187,6 +187,13 @@ export const ENTER: readonly CdpCommand[] = keyPress("Enter", "Enter", "\r");
 export const BACKSPACE: readonly CdpCommand[] = keyPress("Backspace");
 
 /**
+ * Pasted `text`, as one `Input.insertText`: its line breaks are inserted as text, never pressed as Enter, so pasting
+ * several lines into a field does not submit its form.
+ */
+export const insertText = (text: string): readonly CdpCommand[] =>
+  text === "" ? [] : [{ method: "Input.insertText", params: { text } }];
+
+/**
  * `text` as the tab gets typed text: `Input.insertText` for each line, and Enter between lines, so a textarea gets a
  * line break and a form field submits as it would for a typed Enter.
  */
