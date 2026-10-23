@@ -48,7 +48,8 @@ self.addEventListener("notificationclick", (event) => {
 
   event.waitUntil(
     (async () => {
-      // A page of another origin (a Live View) is not ours to focus: open it.
+      // A page of another origin is not ours to focus or navigate: open it. (A push names a page of the app, such as a
+      // Session with its Live View Pane: `/sessions/:id?pane=live-view:<requestId>`.)
       if (target.origin === self.location.origin) {
         const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
         const open = windows.find((client) => client.url === target.href) ?? windows[0];

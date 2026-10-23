@@ -34,7 +34,7 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
  * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
- * browser's Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
+ * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
  * `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with

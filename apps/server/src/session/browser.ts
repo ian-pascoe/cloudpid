@@ -30,6 +30,7 @@ export const remoteBrowserHost = (
     run: ({ code, conversationId }) => call("run", (host) => host.run(code, conversationId)),
     close: call("close", (host) => host.close()),
     startHandoff: (input) => call("startHandoff", (host) => host.startHandoff(input)),
+    liveView: (requestId) => call("liveView", (host) => host.liveView(requestId)),
     waitHandoff: (requestId, maxMs) =>
       call("waitHandoff", (host) => host.waitHandoff(requestId, maxMs)),
     endHandoff: (requestId) => call("endHandoff", (host) => host.endHandoff(requestId)),

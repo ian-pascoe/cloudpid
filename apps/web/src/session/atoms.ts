@@ -1,7 +1,7 @@
 // A Session's socket as atoms (ADR-0011): one `SessionClient` per Session, its state, narrow slices of that state (a
 // card that reads the task graph does not render for every token the root streams), and the commands.
 
-import { sessionSocketPath, type WhenBusy } from "@cloudpid/protocol";
+import { sessionSocketPath, type BrowserHandoffRequest, type WhenBusy } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
@@ -71,8 +71,15 @@ export const secretRequestsAtom = slice((state) => state.secretRequests);
 /** How long an entered Secret is held, as the Session says. */
 export const secretLifetimeMinutesAtom = slice((state) => state.secretLifetimeMinutes);
 
-/** The Browser Handoffs waiting for the owner. */
-export const browserHandoffRequestsAtom = slice((state) => state.browserHandoffRequests);
+const NO_HANDOFFS: readonly BrowserHandoffRequest[] = [];
+
+/** The Browser Handoffs waiting for the owner: none until the socket lists them. */
+export const browserHandoffRequestsAtom = slice(
+  (state) => state.browserHandoffRequests ?? NO_HANDOFFS,
+);
+
+/** The Browser Handoffs waiting, or null until this socket has listed them (a Live View closes only on a list). */
+export const listedBrowserHandoffRequestsAtom = slice((state) => state.browserHandoffRequests);
 
 /** The root conversation's Todo List. */
 export const todosAtom = slice((state) => state.todos);

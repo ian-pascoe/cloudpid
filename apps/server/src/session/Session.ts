@@ -313,7 +313,7 @@ export const SessionLive = Session.make(
                   ),
         });
 
-        // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed with their Live View link.
+        // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed (with no Live View link).
         const sessionBrowserHandoffs = sessionBrowserHandoffsLayer({
           host: browser,
           storage: kv,
@@ -362,7 +362,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(Images, images),
-                  // For extensions that need the owner (a Live View link, say): pushes through the Registry.
+                  // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
                   Effect.provideService(CodemodeSandbox, sandbox),
                   Effect.provideService(BrowserHost, browser),

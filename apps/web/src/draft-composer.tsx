@@ -48,12 +48,10 @@ import {
   workspaceListAtom,
 } from "./environments-state.ts";
 import { relativeTime } from "./format.ts";
+import { isTouchScreen } from "./lib/device.ts";
 import { cn } from "./lib/utils.ts";
 import { settledFailureOf } from "./registry.ts";
 import { ENVIRONMENTS_PATH, navigate } from "./router.ts";
-
-/** Whether the screen has no mouse or trackpad: there Return starts a new line and the Send button sends. */
-const touchOnly = (): boolean => window.matchMedia("(pointer: coarse)").matches;
 
 /** Whether files are being dragged over the draft. */
 const draftDragAtom = Atom.make(false);
@@ -365,7 +363,8 @@ export const DraftComposer = () => {
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
 
-    if (touchOnly()) return;
+    // On a touch screen Return starts a new line and the Send button sends.
+    if (isTouchScreen()) return;
 
     event.preventDefault();
     submit();
@@ -425,7 +424,7 @@ export const DraftComposer = () => {
               rows={3}
               value={text}
               placeholder="Describe a task, ask a question, or paste a screenshot…"
-              autoFocus={!touchOnly()}
+              autoFocus={!isTouchScreen()}
               readOnly={sending}
               onChange={(event) => {
                 setText(event.target.value);

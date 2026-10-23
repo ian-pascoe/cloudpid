@@ -231,5 +231,5 @@ Giving the user live control of the agent's browser for a step the agent cannot 
 _Avoid_: Handoff (alone), takeover, live view (for the act)
 
 **Live View**:
-A Pane that shows an agent's browser tab live and lets the owner use it, open while a Browser Handoff waits.
+A Pane that shows an agent's browser tab, and the windows it opened, live and lets the owner use it, open while a Browser Handoff waits.
 _Avoid_: Viewer, screencast, hosted Live View (that is Browser Run's own page)
