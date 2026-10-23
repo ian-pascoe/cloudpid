@@ -111,6 +111,38 @@
       </button>
       <a id="hash-link" href="#nowhere">a link (#nowhere)</a>
     </div>
+    <h2>Picker fixtures</h2>
+    <div id="pickers">
+      <label
+        >fruit (shows the choice)
+        <select id="result-select">
+          <option value="">choose…</option>
+          <option value="a">Apple</option>
+          <option value="b">Banana</option>
+        </select></label
+      >
+      <p id="picker-result">picker result: none</p>
+      <label
+        >50 options
+        <select id="many"></select
+      ></label>
+      <label
+        >multiple
+        <select id="multi" multiple size="3">
+          <option value="red">red</option>
+          <option value="green">green</option>
+          <option value="blue">blue</option>
+          <option value="cyan">cyan</option>
+          <option value="magenta">magenta</option>
+        </select></label
+      >
+      <label
+        >date <input id="date" type="date" min="2026-01-01" max="2026-12-31" value="2026-05-15"
+      /></label>
+      <label>time <input id="time" type="time" value="09:30" /></label>
+      <label>color <input id="color" type="color" value="#3366cc" /></label>
+      <p id="picker-counts">events: none</p>
+    </div>
     <div id="tall">
       tall: fields below the fold
       <div style="height: 900px"></div>
@@ -132,6 +164,26 @@
       document.getElementById("shadow-host").attachShadow({ mode: "open" }).innerHTML =
         "<label>url in an open shadow root <input id='in-shadow' type='url' style='font-size:16px'></label>";
       window.__events = [];
+      const many = document.getElementById("many");
+      for (let i = 1; i <= 50; i++) many.append(new Option(`option ${i}`, `o${i}`));
+      document.getElementById("result-select").addEventListener("change", (event) => {
+        const select = event.target;
+        document.getElementById("picker-result").textContent =
+          `picker result: ${select.value} (${select.selectedOptions[0]?.text ?? ""})`;
+      });
+      window.__pickerCounts = {};
+      for (const type of ["input", "change"]) {
+        document.getElementById("pickers").addEventListener(type, (event) => {
+          const id = event.target.id;
+          const counts = (window.__pickerCounts[id] ??= { input: 0, change: 0 });
+          counts[type]++;
+          document.getElementById("picker-counts").textContent = `events: ${Object.entries(
+            window.__pickerCounts,
+          )
+            .map(([key, value]) => `${key} ${value.input}/${value.change}`)
+            .join(", ")}`;
+        });
+      }
       const record = (event) => {
         const entry = { type: event.type, t: Math.round(performance.now()) };
         if (event.target && event.target.id) entry.target = event.target.id;

@@ -92,6 +92,17 @@
         border: 0;
         padding: 0;
       }
+      .picker {
+        position: absolute;
+        display: none;
+        z-index: 5;
+        font-size: 16px;
+        box-sizing: border-box;
+        background: #fff;
+        color: #000;
+        opacity: 0.9;
+        outline: 3px solid #f38020;
+      }
       button.attn {
         background: #f38020;
         color: #000;
@@ -150,6 +161,8 @@
         spellcheck="false"
         aria-hidden="true"
       ></textarea>
+      <select id="pick-select" class="picker"></select>
+      <input id="pick-input" class="picker" />
       <div>
         <button class="phone" id="vcopy">Copy (11)</button>
         <button id="vsel">Read tab selection</button>
@@ -1419,6 +1432,8 @@
           previous.deviceWidth !== frame.metadata.deviceWidth
         ) {
           scheduleRefresh("frame");
+          // An open local picker no longer covers its element once the tab scrolls.
+          if (view.picker !== undefined) closePicker("tab scrolled");
         }
         await new Promise((resolve) => {
           image.onload = resolve;
@@ -1459,9 +1474,28 @@
           if (el.tagName === "TEXTAREA") return !el.disabled && !el.readOnly;
           return el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable);
         };
+        // Native pickers (select, date, time, color...): headless Chrome draws their popups outside the screencast, so
+        // the viewer opens a local one instead and writes the result back. They are kept in an append-only registry,
+        // so an index stays valid while the owner is in the picker.
+        const PICK = new Set(["date", "time", "datetime-local", "month", "week", "color"]);
+        const registry = (window[Symbol.for("liveview.pickers")] ??= []);
+        const pickerOf = (el) => {
+          let index = registry.indexOf(el);
+          if (index === -1) index = registry.push(el) - 1;
+          if (el.tagName === "SELECT") {
+            return {
+              picker: index, type: "select", multiple: el.multiple, selectedIndex: el.selectedIndex,
+              options: [...el.options].slice(0, 500).map((o) => ({
+                text: o.text, disabled: o.disabled, selected: o.selected,
+                group: o.parentElement && o.parentElement.tagName === "OPTGROUP" ? o.parentElement.label : "",
+              })),
+            };
+          }
+          return { picker: index, type: el.type, value: el.value, min: el.min, max: el.max, step: el.step };
+        };
         const out = [];
         const H = innerHeight;
-        const add = (el, hintsOf, dx, dy, via) => {
+        const add = (el, hintsOf, dx, dy, via, extra) => {
           for (const r of el.getClientRects()) {
             if (r.width === 0 || r.height === 0 || r.bottom + dy < -H || r.top + dy > 2 * H) continue;
             if (getComputedStyle(el).visibility === "hidden") return;
@@ -1472,13 +1506,16 @@
               inputMode: hintsOf.getAttribute("inputmode") || "",
               enterKeyHint: hintsOf.getAttribute("enterkeyhint") || "",
               autocapitalize: hintsOf.getAttribute("autocapitalize") || "",
+              ...extra,
             });
           }
         };
         let seen = 0;
         const walk = (root, dx, dy, via) => {
-          for (const el of root.querySelectorAll("input, textarea, [contenteditable], label")) {
-            if (el.tagName === "LABEL") {
+          for (const el of root.querySelectorAll("input, textarea, select, [contenteditable], label")) {
+            if ((el.tagName === "SELECT" || (el.tagName === "INPUT" && PICK.has(el.type))) && !el.disabled && !el.readOnly) {
+              add(el, el, dx, dy, via, pickerOf(el));
+            } else if (el.tagName === "LABEL") {
               const control = el.control;
               if (control && editable(control)) add(el, control, dx, dy, via + "label");
             } else if (editable(el)) add(el, el, dx, dy, via);
@@ -1599,6 +1636,13 @@
             changed = true;
           }
         }
+        // Text is kept for autocorrect only where the keyboard may correct it (Kernel's keepText).
+        const keep = hints.autocorrect === "on";
+        kbd.spellcheck = keep;
+        if (typed.keep !== keep) {
+          typed.keep = keep;
+          resetInputSentinel(`keep text ${keep}`);
+        }
         return changed;
       }
       function attention(on) {
@@ -1650,6 +1694,7 @@
           await cdp.send("Page.bringToFront");
           clearInterval(view.timer);
           view.timer = setInterval(() => scheduleRefresh("timer"), 1000);
+          resetInputSentinel("viewer open");
           await refreshEditables(reason);
           result(
             "11/12 viewer",
@@ -1691,6 +1736,8 @@
       canvas.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         if (!view.cdp?.alive) return;
+        // The frame's preventDefault keeps an open local picker focused: close it here instead.
+        if (event.isPrimary && view.picker !== undefined) closePicker("frame touched");
         canvas.setPointerCapture(event.pointerId);
         log(
           "ptr",
@@ -1854,7 +1901,7 @@
         scheduleRefresh("tap");
       }
       // 12: decided synchronously at pointerup, so a focus is still inside the gesture iOS needs to open the keyboard.
-      function decide(event, gesture) {
+      function classify(gesture) {
         const duration = Math.round(performance.now() - gesture.start);
         const kind = gesture.selecting
           ? "select"
@@ -1865,6 +1912,10 @@
               : duration >= 500
                 ? "long press"
                 : "tap";
+        return { duration, kind };
+      }
+      function decide(event, gesture) {
+        const { duration, kind } = classify(gesture);
         const point = toPage(event);
         const decision = {
           kind,
@@ -1886,6 +1937,8 @@
         decision.hit = test.hit;
         decision.cacheAge = test.age;
         const where = `tap (${duration} ms, moved ${gesture.moved} px) at ${point.x},${point.y}, cache ${test.count} rects, age ${test.age} ms, scroll delta ${test.dx},${test.dy}`;
+        // The tap may move the tab's caret, which autocorrect must not reach back past.
+        resetInputSentinel();
         if (test.hit !== undefined) {
           const wasFocused = kbdFocused();
           const changed = applyHints(hintsFor(test.hit));
@@ -1932,6 +1985,33 @@
             })
             .catch(() => {});
           return;
+        }
+        // A tap on a native picker: the tab does not get it, a local picker opens instead.
+        const last = gesture !== null && (event.pointerType === "mouse" || view.touches.size <= 1);
+        if (last && type === "touchEnd" && classify(gesture).kind === "tap") {
+          const test = hitTest(at);
+          if (test.hit?.picker !== undefined) {
+            view.gesture = null;
+            view.touches.delete(event.pointerId);
+            if (event.pointerType === "mouse") {
+              // The press already opened the tab's own popup: release, and close it.
+              view.cdp
+                .send("Input.dispatchMouseEvent", {
+                  type: "mouseReleased",
+                  ...at,
+                  button: "left",
+                  clickCount: 1,
+                })
+                .catch(() => {});
+              pressKey("Escape", "Escape", 27);
+            } else {
+              view.cdp
+                .send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })
+                .catch(() => {});
+            }
+            openPicker(test);
+            return;
+          }
         }
         if (event.pointerType === "mouse") {
           view.cdp
@@ -1981,52 +2061,245 @@
         },
         { passive: false },
       );
-      const sendKey = (name, code, keyCode, text) =>
-        key(view.cdp, { key: name, code, keyCode, text }).catch((error) =>
-          log("kbd", `key failed ${error.message}`),
+      // ---- native pickers -----------------------------------------------------------------------
+      // A tap on a select or a date/time/color input in the tab is not forwarded (the tab gets touchCancel), since
+      // headless Chrome would open its picker popup outside the screencast, where it is invisible and stays open. A local
+      // control of the same kind opens over the tapped spot instead, inside the gesture, and its choice is written to
+      // the tab's element with input and change events (as Puppeteer's ElementHandle.select does).
+      function openPicker(test) {
+        const item = test.hit;
+        const isSelect = item.type === "select";
+        const local = isSelect ? $("pick-select") : $("pick-input");
+        (isSelect ? $("pick-input") : $("pick-select")).style.display = "none";
+        if (kbdFocused()) kbd.blur();
+        if (isSelect) {
+          local.multiple = item.multiple;
+          local.size = item.multiple ? Math.min(item.options.length, 4) : 0;
+          local.replaceChildren();
+          let group = null;
+          item.options.forEach((option, index) => {
+            const element = new Option(option.text, String(index), false, option.selected);
+            element.disabled = option.disabled;
+            if (option.group) {
+              if (group?.label !== option.group) {
+                group = document.createElement("optgroup");
+                group.label = option.group;
+                local.append(group);
+              }
+              group.append(element);
+            } else {
+              group = null;
+              local.append(element);
+            }
+          });
+        } else {
+          local.type = item.type;
+          local.min = item.min;
+          local.max = item.max;
+          local.step = item.step;
+          local.value = item.value;
+        }
+        const screen = canvas.getBoundingClientRect();
+        const box = $("viewer").getBoundingClientRect();
+        const zoom = screen.width / (view.meta?.deviceWidth ?? screen.width);
+        local.style.left = `${Math.round(screen.left - box.left + (item.x - test.dx) * zoom)}px`;
+        local.style.top = `${Math.round(screen.top - box.top + (item.y - test.dy + (view.meta?.offsetTop ?? 0)) * zoom)}px`;
+        local.style.width = `${Math.max(60, Math.round(item.w * zoom))}px`;
+        // Exactly over the element (a list box too), so a tap beside it still reaches the frame.
+        local.style.height = `${Math.max(32, Math.round(item.h * zoom))}px`;
+        local.style.display = "block";
+        view.picker = { item, local, openedAt: Date.now() };
+        local.focus({ preventScroll: true });
+        let opened = `focus (focused=${document.activeElement === local})`;
+        try {
+          if (typeof local.showPicker === "function") {
+            local.showPicker();
+            opened += " + showPicker()";
+          } else {
+            opened += ", no showPicker";
+          }
+        } catch (error) {
+          opened += `, showPicker threw ${error.name}`;
+        }
+        view.stats.decisions.push({ kind: "tap", action: "picker", hit: item });
+        log(
+          "pick",
+          `decision: tap -> HIT picker ${item.via}${item.tag}#${item.id} (${item.type}${item.multiple ? ", multiple" : ""}, cache age ${test.age} ms) -> touchCancel to the tab; local ${local.tagName.toLowerCase()} over it, ${opened}`,
         );
+      }
+      const SET_PICKER = `((index, choice) => {
+        const el = (window[Symbol.for("liveview.pickers")] || [])[index];
+        if (!el || !el.isConnected) return { error: "element gone" };
+        el.focus({ preventScroll: true });
+        if (el.tagName === "SELECT") {
+          const want = new Set(choice.indexes);
+          [...el.options].forEach((option, i) => { if (want.has(i) || el.multiple) option.selected = want.has(i); });
+        } else {
+          el.value = choice.value;
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        return { value: el.value, selected: el.tagName === "SELECT" ? [...el.selectedOptions].map((o) => o.text) : undefined };
+      })`;
+      async function commitPicker(reason) {
+        const picker = view.picker;
+        if (picker === undefined || !view.cdp?.alive) return;
+        const choice =
+          picker.item.type === "select"
+            ? { indexes: [...picker.local.selectedOptions].map((o) => Number(o.value)) }
+            : { value: picker.local.value };
+        try {
+          const reply = await evalIn(
+            view.cdp,
+            `${SET_PICKER}(${picker.item.picker}, ${JSON.stringify(choice)})`,
+          );
+          log(
+            "pick",
+            `${reason}: ${picker.item.tag}#${picker.item.id} <- ${JSON.stringify(choice)}; tab now ${JSON.stringify(reply)}`,
+          );
+          result(
+            `picker ${picker.item.id || picker.item.type}`,
+            reply.error ? "fail" : "info",
+            `${JSON.stringify(choice)} -> tab ${JSON.stringify(reply)}`,
+          );
+        } catch (error) {
+          log("pick", `${reason}: writing to the tab failed: ${error.message}`);
+        }
+        scheduleRefresh("picker");
+      }
+      function closePicker(why) {
+        const picker = view.picker;
+        if (picker === undefined) return;
+        view.picker = undefined;
+        picker.local.style.display = "none";
+        if (document.activeElement === picker.local) picker.local.blur();
+        log("pick", `local ${picker.local.id} closed (${why})`);
+      }
+      for (const id of ["pick-select", "pick-input"]) {
+        const local = $(id);
+        local.addEventListener("change", () => {
+          const picker = view.picker;
+          if (picker?.local !== local) return;
+          commitPicker("change");
+          // A single choice is done; a multiple select, a date or a colour can still change, until it closes.
+          if (local === $("pick-select") && !local.multiple) closePicker("chosen");
+        });
+        local.addEventListener("blur", () => {
+          log("pick", `${id} blur`);
+          setTimeout(() => {
+            if (document.activeElement !== local && view.picker?.local === local) {
+              closePicker("blurred");
+            }
+          }, 400);
+        });
+      }
+      // ---- typing through the hidden textarea ---------------------------------------------------
+      // Ported from Kernel's live view (kernel-images, commit 2c3fabc9a04a9f445870f183e21e3475104cb8cc,
+      // https://github.com/kernel/kernel-images), licensed under the Apache License, Version 2.0
+      // (http://www.apache.org/licenses/LICENSE-2.0): the input sentinel and its reset, and the overlay's input handler
+      // (images/chromium-headful/client/src/components/video.vue: INPUT_SENTINEL, resetInputSentinel, onOverlayInput,
+      // onCompositionEnd), TypedText (utils/typed-text.ts) and textDiff (utils/text-input.ts). Changed here: plain
+      // functions instead of classes, CDP Input.insertText and key events instead of X keysyms, the same diff path
+      // whether or not text is kept, and line breaks sent as Enter.
+      //
+      // The textarea always holds a sentinel character before the caret, so iOS has something to delete and sends
+      // Backspace (an empty field gets nothing). Where autocorrect is on, the text typed since the last reset is kept
+      // after the sentinel so the keyboard can correct it; each change is diffed against what was sent and goes to the
+      // tab as Backspaces and text. Deleting the sentinel is one Backspace past the kept text, and starts over.
+      const INPUT_SENTINEL = " ";
+      const MAX_TEXT = 1000;
+      const typed = { text: "", keep: false, composing: false };
+      function textDiff(previous, next) {
+        const a = Array.from(previous);
+        const b = Array.from(next);
+        let common = 0;
+        while (common < a.length && common < b.length && a[common] === b[common]) common++;
+        return { deletes: a.length - common, insert: b.slice(common).join("") };
+      }
+      function resetInputSentinel(why) {
+        typed.text = "";
+        kbd.value = INPUT_SENTINEL;
+        kbd.setSelectionRange(INPUT_SENTINEL.length, INPUT_SENTINEL.length);
+        if (why) log("kbd", `sentinel reset (${why})`);
+      }
+      // A key press on the tab, both events sent at once so they keep their order with the text around them.
+      function pressKey(name, code, keyCode, text) {
+        if (!view.cdp?.alive) return;
+        const base = {
+          key: name,
+          code,
+          windowsVirtualKeyCode: keyCode,
+          nativeVirtualKeyCode: keyCode,
+        };
+        view.cdp
+          .send(
+            "Input.dispatchKeyEvent",
+            {
+              type: text ? "keyDown" : "rawKeyDown",
+              ...base,
+              ...(text ? { text, unmodifiedText: text } : {}),
+            },
+            5000,
+            true,
+          )
+          .catch(() => {});
+        view.cdp
+          .send("Input.dispatchKeyEvent", { type: "keyUp", ...base }, 5000, true)
+          .catch(() => {});
+      }
+      function sendText(text) {
+        const lines = text.split(/\r\n|\r|\n/);
+        lines.forEach((line, index) => {
+          if (index > 0) pressKey("Enter", "Enter", 13, "\r");
+          if (line) view.cdp?.send("Input.insertText", { text: line }, 5000, true).catch(() => {});
+        });
+      }
+      // The textarea's value after an edit; false when it should be reset (its sentinel went, or it holds too much).
+      function editTyped(value) {
+        const kept = value.startsWith(INPUT_SENTINEL);
+        const next = kept ? value.slice(INPUT_SENTINEL.length) : value;
+        const { deletes, insert } = textDiff(typed.text, next);
+        const backspaces = deletes + (kept ? 0 : 1);
+        for (let i = 0; i < backspaces; i++) pressKey("Backspace", "Backspace", 8);
+        if (insert) sendText(insert);
+        if (backspaces || insert) {
+          log(
+            "kbd",
+            `edit: ${backspaces} Backspace + ${JSON.stringify(insert)} (kept ${JSON.stringify(next)}${kept ? "" : ", sentinel deleted"})`,
+          );
+        }
+        typed.text = next;
+        return kept && next.length <= MAX_TEXT;
+      }
       kbd.addEventListener("beforeinput", (event) => {
         log(
           "kbd",
-          `beforeinput ${event.inputType} data=${JSON.stringify(event.data)} cancelable=${event.cancelable}`,
+          `beforeinput ${event.inputType} data=${JSON.stringify(event.data)} value=${JSON.stringify(kbd.value)}`,
         );
+      });
+      kbd.addEventListener("input", (event) => {
         if (!view.cdp?.alive) return;
         scheduleRefresh("input");
-        switch (event.inputType) {
-          case "insertText":
-          case "insertReplacementText": {
-            const text = event.data ?? event.dataTransfer?.getData("text/plain") ?? "";
-            event.preventDefault();
-            if (text) view.cdp.send("Input.insertText", { text }).catch(() => {});
-            return;
-          }
-          case "deleteContentBackward":
-            event.preventDefault();
-            sendKey("Backspace", "Backspace", 8);
-            return;
-          case "insertLineBreak":
-          case "insertParagraph":
-            event.preventDefault();
-            sendKey("Enter", "Enter", 13, "\r");
-            return;
-          default:
-        }
+        const kept = editTyped(kbd.value);
+        if ((!typed.keep || !kept) && !typed.composing) resetInputSentinel();
+      });
+      kbd.addEventListener("compositionstart", () => {
+        typed.composing = true;
+        log("kbd", "compositionstart");
       });
       kbd.addEventListener("compositionend", (event) => {
+        typed.composing = false;
         log("kbd", `compositionend ${JSON.stringify(event.data)}`);
-        if (event.data) view.cdp?.send("Input.insertText", { text: event.data }).catch(() => {});
-        kbd.value = "";
-      });
-      kbd.addEventListener("input", () => {
-        if (!kbd.matches(":focus") || kbd.value === "") return;
-        // Anything the beforeinput cases let through (composition) is cleared at its end; keep the field short.
-        if (kbd.value.length > 200) kbd.value = "";
+        // The composition's input events already sent its text; this catches one whose last input came after.
+        const kept = editTyped(kbd.value);
+        if (!typed.keep || !kept) resetInputSentinel();
       });
       kbd.addEventListener("paste", (event) => {
         event.preventDefault();
         const text = event.clipboardData?.getData("text/plain") ?? "";
         log("kbd", `paste ${text.length} chars`);
-        if (text) view.cdp?.send("Input.insertText", { text }).catch(() => {});
+        if (text) sendText(text.replace(/[\r\n]+$/, ""));
+        resetInputSentinel();
       });
       kbd.addEventListener("keydown", (event) => {
         const keys = {
@@ -2039,7 +2312,9 @@
         };
         if (keys[event.key] !== undefined) {
           event.preventDefault();
-          sendKey(event.key, event.key, keys[event.key]);
+          pressKey(event.key, event.key, keys[event.key]);
+          // The tab's caret moved: autocorrect must not reach back past it.
+          resetInputSentinel();
         }
       });
       const SELECTION = `(() => { const el = document.activeElement; if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && typeof el.selectionStart === "number") return el.value.slice(el.selectionStart, el.selectionEnd); return String(getSelection()); })()`;

@@ -187,6 +187,57 @@ Playwright: Chromium (Pixel 7, touch through CDP) passed 26/26 and WebKit (iPhon
 Faking `visibilitychange` with a socket whose answers are dropped: the check 9 socket and the viewer both reconnected
 with a fresh link (446 ms and 991 ms).
 
+## iPhone, second pass (keyboard decisions)
+
+- The keyboard opened only on taps on fields, and the hints followed the field.
+- **Backspace did nothing.** The viewer emptied the textarea after each character, and iOS sends no input event for
+  Backspace in an empty field.
+- **Tapping a `<select>` showed nothing.** Headless Chrome draws its picker as a pop-up outside the screencast, so the
+  forwarded tap opened an invisible picker.
+
+## Typing: Kernel's input sentinel (harness viewer, third version)
+
+Ported from Kernel's live view (`kernel/kernel-images` at `2c3fabc`, Apache-2.0; the licence notice is in
+`harness.html`):
+
+- The textarea always holds a sentinel space before the caret, so iOS has something to delete and sends Backspace.
+- Each `input` is diffed against what was sent since the last reset: the difference goes to the tab as Backspace key
+  events and `Input.insertText` (line breaks as Enter). Deleting the sentinel is one Backspace past the kept text.
+- Where the field allows autocorrect, the typed text is kept after the sentinel so the keyboard can replace a word; the
+  replacement arrives as Backspaces and the new text. Elsewhere, the textarea is reset after each input.
+- A tap, a focus change, an arrow key or a paste resets it, since the tab's caret has moved.
+
+## Native pickers: a local control over the tapped spot
+
+The map also lists `<select>` (single and multiple) and `date`, `time`, `datetime-local`, `month`, `week` and `color`
+inputs, with their options or value, min, max and step. The elements are kept in a registry in the tab
+(`window[Symbol.for("liveview.pickers")]`), so a choice is written to the same element.
+
+- A tap on one is not forwarded: the tab gets `touchCancel` (a mouse gets a release and Escape).
+- A local `<select>` or `<input>` of the same kind opens over the spot, inside the gesture (`focus()`, then
+  `showPicker()` where it exists), outlined in orange.
+- On `change`, `Runtime.evaluate` sets `option.selected` or `value` on the tab's element and dispatches bubbling `input`
+  and `change` events (as Puppeteer's `ElementHandle.select` does), then the map is read again.
+- A single select closes after its choice. A multiple select, a date or a colour stays open until it blurs, the frame
+  is touched or the tab scrolls.
+
+Playwright `keys.mjs` passed 24/24 on Chromium (Pixel 7, touch through CDP) and 24/24 on WebKit (iPhone 15):
+
+- **Backspace:**
+  - `hello` and two Backspaces leave `hel`;
+  - six quick Backspaces empty the field;
+  - Backspace in an empty field reaches the tab as a `keydown`;
+  - it works in an email field and a contenteditable.
+- **Autocorrect:** `teh` replaced by `the` in the textarea (a selection over it plus `insertText`) leaves `the` in the
+  tab. Typing on and Enter give `the cat\nx`.
+- **Pickers:** a fruit select whose handler shows the choice, a 50-option select, a multiple select, date, time,
+  colour and the earlier plain select.
+  - A tap shows the local control and the tab gets no click.
+  - The choice reaches the tab with one `input` and one `change`, and the page's change handler runs.
+  - A text field still takes a tap and typing afterwards.
+
+`kbd.mjs` still passes (Chromium 26/26, WebKit 19/19).
+
 ## Pending on a real device
 
 - iPhone Safari and the installed PWA: 1, 9, 11, 12, and touch input generally.
@@ -214,3 +265,6 @@ engines connect from our origin. Change #154 in these places:
    the deadline is `timeout - durationMs`. The Pane can also listen for `Cloudflare.handoffComplete` on its own
    connection to close itself when another device finishes the handoff.
 6. **Windows.** `openerId`, followed transitively, finds every window, noopener ones included. No fallback is needed.
+7. **Touch input.** The Pane decides at `pointerup` from a map of the tab's fields, types through a textarea that keeps
+   Kernel's input sentinel, and opens native pickers locally instead of forwarding the tap: headless Chrome's own
+   pickers are not in the screencast.
