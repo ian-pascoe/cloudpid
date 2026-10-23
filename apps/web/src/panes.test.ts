@@ -3,6 +3,8 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPaneAction,
+  liveViewPane,
+  NO_LABEL_CONTEXT,
   NO_PANES,
   paneAreaOf,
   paneKeyOf,
@@ -58,8 +60,28 @@ describe("a Pane key", () => {
   });
 
   it("knows the Tasks Pane by default", () => {
-    expect(paneKeyOf("tasks")?.type.label(undefined)).toEqual({ name: "Tasks" });
+    expect(paneKeyOf("tasks")?.type.label(undefined, NO_LABEL_CONTEXT)).toEqual({
+      name: "Tasks",
+    });
     expect(paneKeyOf("terminal:1")).toBeUndefined();
+  });
+
+  it("knows a Live View per Browser Handoff, named for a subagent's handoff by the agent", () => {
+    const pane = paneKeyOf(liveViewPane("call-7"));
+
+    const context = {
+      agentOfHandoff: (requestId: string) => (requestId === "call-7" ? "a2 (scout)" : undefined),
+    };
+
+    expect(liveViewPane("call-7")).toBe("live-view:call-7");
+    expect(pane?.argument).toBe("call-7");
+    expect(pane?.type.label(pane.argument, context)).toEqual({
+      name: "Live View",
+      agent: "a2 (scout)",
+    });
+    // The root agent's handoff, or one the page does not know (yet): no agent.
+    expect(pane?.type.label("call-1", context)).toEqual({ name: "Live View" });
+    expect(paneKeyOf("live-view")).toBeUndefined();
   });
 });
 

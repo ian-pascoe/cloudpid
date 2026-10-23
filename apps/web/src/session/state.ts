@@ -99,7 +99,7 @@ export interface SessionState {
   readonly secretRequests: readonly SecretRequest[];
   /** How long an entered Secret is held, as the Session says. */
   readonly secretLifetimeMinutes: number;
-  /** Browser Handoffs waiting for the owner, each with the Live View link to open; never shown in the chat. */
+  /** Browser Handoffs waiting for the owner; a Live View Pane mints its own links for one (`liveView`). */
   readonly browserHandoffRequests: readonly BrowserHandoffRequest[];
   /** The subagent threads being watched, by conversation ID. */
   readonly threads: Readonly<Record<string, ThreadState>>;

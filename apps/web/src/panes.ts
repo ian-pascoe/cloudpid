@@ -18,6 +18,15 @@ export interface PaneLabel {
   readonly agent?: string;
 }
 
+/** What a tab's label may look up beyond its argument: the Session's state, as the Pane area reads it. */
+export interface PaneLabelContext {
+  /** The agent whose Browser Handoff `requestId` is, as the owner reads it, when it is not the root agent's. */
+  readonly agentOfHandoff: (requestId: string) => string | undefined;
+}
+
+/** A context that knows nothing: every handoff reads as the root agent's. */
+export const NO_LABEL_CONTEXT: PaneLabelContext = { agentOfHandoff: () => undefined };
+
 /** One kind of Pane. */
 export interface PaneType {
   /** What a key starts with in the URL: `tasks`, later `live-view` and `terminal`. */
@@ -25,12 +34,23 @@ export interface PaneType {
   /** Whether it may be open more than once, each under its own argument (`id:argument`). */
   readonly multiple: boolean;
   /** The tab's label, for a Pane opened with `argument` (undefined for a type that may be open once). */
-  readonly label: (argument: string | undefined) => PaneLabel;
+  readonly label: (argument: string | undefined, context: PaneLabelContext) => PaneLabel;
 }
 
-/** The Pane types: the Tasks Pane, one per Session. The Live View (#154) and the Terminal (#139) join it here. */
+/** A Live View's tab: named for the agent whose handoff it is, unless that is the root agent. */
+const liveViewLabel = (argument: string | undefined, context: PaneLabelContext): PaneLabel => {
+  const agent = argument === undefined ? undefined : context.agentOfHandoff(argument);
+
+  return agent === undefined ? { name: "Live View" } : { name: "Live View", agent };
+};
+
+/**
+ * The Pane types: the Tasks Pane, one per Session, and a Live View per Browser Handoff waiting (`live-view:<requestId>`).
+ * The Terminal (#139) joins them here.
+ */
 export const PANE_TYPES = [
   { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
+  { id: "live-view", multiple: true, label: liveViewLabel },
 ] as const satisfies readonly PaneType[];
 
 /** The ID of a type in `PANE_TYPES`. */
@@ -38,6 +58,12 @@ export type PaneTypeId = (typeof PANE_TYPES)[number]["id"];
 
 /** The key of the Tasks Pane. */
 export const TASKS_PANE = "tasks";
+
+/**
+ * The key of the Live View of Browser Handoff `requestId` (a `BrowserHandoffRequest`'s `id`). A push for the handoff
+ * opens the Session page with it (`?pane=live-view:<requestId>`).
+ */
+export const liveViewPane = (requestId: string): string => `live-view:${requestId}`;
 
 /** What a Pane's component gets. */
 export interface PaneProps {
