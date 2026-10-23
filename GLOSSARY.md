@@ -152,6 +152,10 @@ _Avoid_: just-bash (as a product name), lite shell
 The Linux Backend of a Workspace, its own, which runs real programs against the same files.
 _Avoid_: Sandbox, VM, box, Machine
 
+**Memory guard**:
+What stops the largest process in a Container that is nearly out of memory, so the Container keeps answering; each command running then ends with a note naming what was stopped.
+_Avoid_: OOM killer (the kernel's, which acts too late to save the Container)
+
 **Terminal**:
 An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as a Pane. The agent does not see it.
 _Avoid_: Console, shell (alone), PTY
@@ -231,5 +235,5 @@ Giving the user live control of the agent's browser for a step the agent cannot 
 _Avoid_: Handoff (alone), takeover, live view (for the act)
 
 **Live View**:
-A Pane that shows an agent's browser tab live and lets the owner use it, open while a Browser Handoff waits.
+A Pane that shows an agent's browser tab, and the windows it opened, live and lets the owner use it, open while a Browser Handoff waits.
 _Avoid_: Viewer, screencast, hosted Live View (that is Browser Run's own page)

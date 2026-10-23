@@ -1,6 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 // The Container's Toolchain contract (docs/spec.md → Container and Toolchains, ADR-0004), kept next to the Dockerfile it
 // must agree with. The Workspace DO imports it: no Node built-ins here, since it runs in a Worker.
+import { COMMAND_BASH_ENV } from "./memory-guard.ts";
 
 /** The Workspace as the Container mounts it (`MOUNT_POINT` in the Dockerfile). */
 export const WORKSPACE_ROOT = "/workspace";
@@ -164,6 +165,7 @@ export type ToolchainEnv = {
   MISE_YES: string;
   GIT_TERMINAL_PROMPT: string;
   TURBO_CACHE_DIR: string;
+  BASH_ENV: string;
   GH_TOKEN?: string;
   GITHUB_TOKEN?: string;
 };
@@ -177,8 +179,8 @@ export type ToolchainEnvOptions = {
 /**
  * The environment every command on the Container gets, under whatever the caller passes. computerd starts a command
  * with PATH (the image's, which has mise's shims first) and HOME but none of the image's other variables, so mise's
- * settings are here. The token is only ever here, in a process's environment: `bootstrapScript` makes git read it from
- * there, so no file holds it.
+ * settings are here, and `BASH_ENV`, which gives each command the memory guard's notes (`memory-guard.ts`). The token is
+ * only ever here, in a process's environment: `bootstrapScript` makes git read it from there, so no file holds it.
  */
 export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
   const env: ToolchainEnv = {
@@ -194,6 +196,8 @@ export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
     // A prompt nobody answers would hang the command.
     GIT_TERMINAL_PROMPT: "0",
     TURBO_CACHE_DIR,
+    // The command's bash reads it first, and prints when the command ends what the memory guard stopped meanwhile.
+    BASH_ENV: COMMAND_BASH_ENV,
   };
 
   if (options.githubToken !== undefined && options.githubToken !== "") {

@@ -24,9 +24,14 @@ export {
   type BrowserOutputPart,
   type BrowserRun,
   HANDOFF_TIMEOUT_MS,
+  type HandoffEnded,
   type HandoffStarted,
   type HandoffStartInput,
   type HandoffStatus,
+  LIVE_VIEW_HANDOFF_OVER,
+  type LiveViewLinks,
+  type LiveViewTarget,
+  type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
 } from "./browser/host.ts";
 

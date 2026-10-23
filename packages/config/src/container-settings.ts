@@ -165,6 +165,7 @@ const RESERVED_VARIABLES: ReadonlySet<string> = new Set([
   "MISE_YES",
   "GIT_TERMINAL_PROMPT",
   "TURBO_CACHE_DIR",
+  "BASH_ENV",
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "PATH",

@@ -16,7 +16,7 @@ import {
   BrowserSession,
   type BrowserSessionService,
 } from "./browser.ts";
-import { fakeHandoffHost, LIVE_VIEW_URL } from "./browser/host.fixture.ts";
+import { fakeHandoffHost, LIVE_VIEW_TOKEN } from "./browser/host.fixture.ts";
 import { MAX_IMAGE_CHARACTERS } from "./images.ts";
 import { secretReference } from "./secrets/references.ts";
 import { call as secretsCall, openSecretsHarness } from "./secrets/harness.fixture.ts";
@@ -295,8 +295,11 @@ describe("the browser extension", () => {
 
 describe("browser_handoff", () => {
   /** The Browser extension over a host whose handoffs go as `waits` scripts, with what the owner was shown and pushed. */
-  const handingOver = async (waits: Parameters<typeof fakeHandoffHost>[0]) => {
-    const { host, calls } = fakeHandoffHost(waits);
+  const handingOver = async (
+    waits: Parameters<typeof fakeHandoffHost>[0],
+    options: Parameters<typeof fakeHandoffHost>[1] = {},
+  ) => {
+    const { host, calls } = fakeHandoffHost(waits, options);
     const announced: unknown[] = [];
     const notices: unknown[] = [];
     const keepAlive = fakeSession().session;
@@ -335,7 +338,7 @@ describe("browser_handoff", () => {
       ? call(["browser_handoff", { instructions: "Sign in, then press Done" }])
       : answer("Back.");
 
-  it("gives the owner the link and the instructions, and resumes the model with only how it ended", async () => {
+  it("gives the owner the instructions and the way to the Live View, and resumes the model with only how it ended", async () => {
     const { extension, calls, announced, notices } = await handingOver([
       { state: "complete", success: true },
     ]);
@@ -348,10 +351,14 @@ describe("browser_handoff", () => {
       { conversationId: 1, instructions: "Sign in, then press Done" },
     ]);
     expect(announced[0]).toMatchObject([
-      { conversationId: 1, instructions: "Sign in, then press Done", url: LIVE_VIEW_URL },
+      { conversationId: 1, instructions: "Sign in, then press Done" },
     ]);
-    // In the background: the call does not wait for the push.
-    await vi.waitFor(() => expect(notices).toMatchObject([{ kind: "notice", url: LIVE_VIEW_URL }]));
+    // In the background: the call does not wait for the push, which opens the handoff's Live View Pane.
+    await vi.waitFor(() =>
+      expect(notices).toMatchObject([
+        { kind: "notice", url: expect.stringMatching(/^\?pane=live-view:/) },
+      ]),
+    );
 
     const [result] = toolResults(await session.entries());
 
@@ -380,6 +387,64 @@ describe("browser_handoff", () => {
       },
     ]);
     expect(result?.details).toEqual({ status: "failed" });
+  });
+
+  it("tells the model how many windows the tab left open, and each one's origin only", async () => {
+    const { extension } = await handingOver([{ state: "complete", success: true }], {
+      windowOrigins: ["https://accounts.example.com", "about:blank"],
+    });
+
+    const session = await openSubagentHarness(handoffScript, {}, [extension]);
+
+    await session.prompt("Log me in");
+
+    const [result] = toolResults(await session.entries());
+
+    expect(result?.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining(
+          "The tab opened 2 windows that are still open (pop-ups or new tabs): https://accounts.example.com, about:blank.",
+        ),
+      },
+    ]);
+  });
+
+  it("tells the model it does not know which windows are open when the host could not say", async () => {
+    const { extension } = await handingOver([{ state: "complete", success: true }]);
+    const { host } = fakeHandoffHost([{ state: "complete", success: true }]);
+
+    const unsure = await Effect.runPromise(
+      Browser.pipe(
+        Effect.provideService(BrowserHost, host),
+        Effect.provideService(BrowserSession, fakeSession().session),
+        Effect.provideService(
+          BrowserHandoffs,
+          makeBrowserHandoffs(
+            {
+              host: { ...host, endHandoff: () => Effect.succeed({}) },
+              storage: memoryStorage(),
+              announce: () => Effect.void,
+            },
+            fakeSession().session,
+            { notify: () => Effect.void },
+          ),
+        ),
+      ),
+    );
+
+    for (const [installed, expected] of [
+      [extension, /^(?!.*not known).*$/s],
+      [unsure, /Whether the tab left windows it opened \(pop-ups or new tabs\) open is not known/],
+    ] as const) {
+      const session = await openSubagentHarness(handoffScript, {}, [installed]);
+
+      await session.prompt("Log me in");
+
+      const [result] = toolResults(await session.entries());
+
+      expect(result?.content).toEqual([{ type: "text", text: expect.stringMatching(expected) }]);
+    }
   });
 
   it("reports a browser that cannot hand over a tab as an error result", async () => {
@@ -425,8 +490,6 @@ describe("browser_handoff", () => {
     await session.prompt("Log me in");
     await session.prompt("Anything else?");
 
-    const [token] = LIVE_VIEW_URL.split("jwt=").slice(1);
-
     // The call reached the model's next requests as its result, and the whole transcript holds only that.
     expect(session.requests.length).toBeGreaterThanOrEqual(3);
 
@@ -435,7 +498,7 @@ describe("browser_handoff", () => {
       JSON.stringify(session.requests.map((request) => request.messages)),
       JSON.stringify(session.requests.map((request) => request.system)),
     ]) {
-      expect(surface).not.toContain(token);
+      expect(surface).not.toContain(LIVE_VIEW_TOKEN);
       expect(surface).not.toContain("live.browser.run");
     }
   });

@@ -1,5 +1,6 @@
 // The Session's Browser Handoffs (`docs/spec.md` → Browser): the requests for the owner to take over the browser, kept in
-// this object's storage and sent to every client over the Session socket, with the Live View link each carries.
+// this object's storage and sent to every client over the Session socket. None carries a Live View link: the owner's
+// Live View asks for its own with `live_view` (`./sockets.ts`), answered to that client alone.
 import {
   type BrowserHostService,
   type BrowserSession,
@@ -28,7 +29,7 @@ export type SessionBrowserHandoffsOptions = {
 
 /**
  * The Session's `BrowserHandoffs`; needs its `BrowserSession` (kept in use while the owner works) and `OwnerNotifications` (the
- * push that carries the link).
+ * push that opens the Live View Pane).
  */
 export const sessionBrowserHandoffsLayer = ({
   sockets,

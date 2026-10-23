@@ -1,5 +1,7 @@
 // What the Session and its browser host (`apps/browser`) agree on, in plain data a Durable Object RPC carries and
-// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension.
+// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and of
+// `@cloudpid/protocol` only types and its import-free `live-view` module.
+import type { LiveViewLinks } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 
 /**
@@ -30,14 +32,33 @@ export type HandoffStartInput = {
 };
 
 /**
- * A started Browser Handoff. `url` is the Live View link, a bearer credential for the owner alone: it is kept out of
- * every tool result, transcript entry, and model request.
+ * A started Browser Handoff. It carries no Live View link: the owner's client mints one with `liveView` when the owner
+ * takes over.
  */
 export type HandoffStarted = {
-  readonly url: string;
   /** When the handoff began, epoch milliseconds. */
   readonly startedAt: number;
+  /** The handoff is over already: a start that came again after the owner finished. Nothing is left to show. */
+  readonly over?: boolean;
 };
+
+/**
+ * `live_view`'s answer (`@cloudpid/protocol`'s `LiveViewLinks`): fresh Live View links to the handed-over tab and to each
+ * window it opened that is still open. Each `link` is the `webSocketDebuggerUrl` of a `Cloudflare.getLiveView`, a Browser
+ * Run `wss` URL that speaks CDP: a bearer credential for the owner alone, which opens every page of the browser session
+ * and connects any number of times until it expires, 60 s after it was minted (an open connection outlives that). It
+ * goes to the client that asked and nowhere else.
+ */
+export type { LiveViewLinks, LiveViewTarget, LiveViewWindow } from "@cloudpid/protocol";
+
+/** What `liveView` fails with once the handoff has ended (or was never started), exactly. */
+export { LIVE_VIEW_HANDOFF_OVER } from "@cloudpid/protocol/live-view";
+
+/**
+ * How a Browser Handoff was left: the origins (never the URLs) of the windows the tab opened that are still open, or no
+ * `windowOrigins` when the host could not tell.
+ */
+export type HandoffEnded = { readonly windowOrigins?: ReadonlyArray<string> };
 
 /** Where a Browser Handoff stands. */
 export type HandoffStatus =
@@ -72,13 +93,21 @@ export type BrowserHostRpc = {
   /** Close the browser; false when there was none. */
   close(): Promise<boolean>;
   /**
-   * Hand the tab of conversation `input.conversationId` to the owner: send `Cloudflare.handoff` and mint the Live View
-   * link. Idempotent by `requestId`: a handoff already started under it answers with the same link. Fails when the
-   * conversation has no tab.
+   * Hand the tab of conversation `input.conversationId` to the owner: note its viewport and send `Cloudflare.handoff`.
+   * Idempotent by `requestId`: a handoff already started under it answers as it did. Fails when the conversation has no
+   * tab.
    */
   startHandoff(input: HandoffStartInput): Promise<HandoffStarted>;
+  /**
+   * Mint fresh Live View links (60 s) to handoff `requestId`'s tab and the windows it opened, for the owner's client
+   * that asked. Fails with `LIVE_VIEW_HANDOFF_OVER` once the handoff has ended.
+   */
+  liveView(requestId: string): Promise<LiveViewLinks>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus>;
-  /** Finish handoff `requestId`: if the owner has not, end it in Browser Run, then forget it. */
-  endHandoff(requestId: string): Promise<void>;
+  /**
+   * Finish handoff `requestId`: if the owner has not, end it in Browser Run; give the agent its viewport back; then
+   * forget it. Says the origins of the tab's windows that are still open.
+   */
+  endHandoff(requestId: string): Promise<HandoffEnded>;
 };

@@ -4,9 +4,9 @@
 // until its call ends, shown to every client and pushed to the owner, withdrawn when the call is aborted, and found
 // again by a call an eviction cut off, which waits on the same handoff.
 //
-// The Live View link is a bearer credential for the owner alone. It lives here, in the Session DO's key-value storage
-// (so a client that connects later is shown it), and is sent to clients and in the push; it never enters the tool's
-// arguments, result, or details, so it never reaches the transcript or a model request.
+// A request carries no Live View link (ADR-0013). The owner's Live View asks for links when it opens (`liveView`), and the
+// browser host mints them for 60 s; they go back to that one client and are never kept here, sent to every client, put
+// in the push (which opens the Live View Pane instead), or let into the tool's arguments, result, or details.
 //
 // The handoff itself lives in the browser host, which holds Browser Run's CDP connection and hears the owner finish in
 // Live View (`Cloudflare.handoffComplete`). The call asks it in short rounds, so nothing here depends on one long call
@@ -14,12 +14,14 @@
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { OwnerNotifications } from "../notify.ts";
-import { HANDOFF_TIMEOUT_MS } from "./contract.ts";
-import { type BrowserError, type BrowserHostService } from "./host.ts";
+import { LIVE_VIEW_HANDOFF_OVER, liveViewPaneQuery } from "@cloudpid/protocol/live-view";
+import { HANDOFF_TIMEOUT_MS, type LiveViewLinks } from "./contract.ts";
+import { BrowserError, type BrowserHostService } from "./host.ts";
 import { BrowserSession, type BrowserSessionService } from "./session.ts";
 
 /** How long one round of waiting on the host lasts at most. */
@@ -44,7 +46,7 @@ export type BrowserHandoffStorage = {
   delete(key: string): boolean;
 };
 
-/** A Browser Handoff waiting for the owner, with the link to do it in. */
+/** A Browser Handoff waiting for the owner. It holds no Live View link: those are minted when the owner opens one. */
 export const BrowserHandoffRequest = Schema.Struct({
   /** Unique within the Session: the asking call's task. */
   id: Schema.String,
@@ -52,20 +54,24 @@ export const BrowserHandoffRequest = Schema.Struct({
   conversationId: Schema.Finite,
   /** What the agent needs done, shown to the owner. */
   instructions: Schema.String,
-  /** The Live View link. */
-  url: Schema.String,
   /** When the handoff times out, epoch milliseconds. */
   deadline: Schema.Finite,
 });
 
 export type BrowserHandoffRequest = typeof BrowserHandoffRequest.Type;
 
-/** How a handoff ended, as the tool tells the model; never the link. */
-export type BrowserHandoffOutcome =
+/** How the wait for a handoff ended, before the host has said which windows are left. */
+type Ending =
   | { readonly status: "completed" }
   | { readonly status: "failed"; readonly reason?: string }
   | { readonly status: "timeout" }
   | { readonly status: "ended" };
+
+/**
+ * How a handoff ended, as the tool tells the model, and the origins of the windows the tab left open (never their URLs,
+ * which may carry an OAuth code; no `windowOrigins` when the host could not say).
+ */
+export type BrowserHandoffOutcome = Ending & { readonly windowOrigins?: ReadonlyArray<string> };
 
 export type BrowserHandoffsService = {
   /** The handoffs waiting for the owner, oldest first: those past their deadline (and grace) are not shown. */
@@ -80,6 +86,11 @@ export type BrowserHandoffsService = {
     readonly conversationId: number;
     readonly instructions: string;
   }) => Effect.Effect<BrowserHandoffOutcome, BrowserError>;
+  /**
+   * Fresh Live View links for waiting handoff `requestId`, for the one client that asked (its Live View opening,
+   * reconnecting, or following a window). Fails with `LIVE_VIEW_HANDOFF_OVER` once the handoff is no longer waiting.
+   */
+  readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, BrowserError>;
   /**
    * End every handoff no call in this instance waits for. Run only while no work is live: then no call can still come
    * back for them (one an eviction cut off has rerun by then), so they were abandoned.
@@ -110,9 +121,6 @@ export type BrowserHandoffsOptions = {
 /** The words of a push that asks the owner to take over. */
 const pushBody = (instructions: string): string => `Needs you in the browser: ${instructions}`;
 
-/** `text` without the Live View link, so that nothing the model reads can carry it. */
-const withoutLink = (text: string, url: string): string => text.split(url).join("[Live View link]");
-
 export const makeBrowserHandoffs = (
   {
     host,
@@ -138,11 +146,23 @@ export const makeBrowserHandoffs = (
       return announce(requests);
     });
 
-  /** End the handoff in the host, if it is there: never fails or takes long, as it runs when a call ends. */
-  const endInHost = (id: string) =>
+  /**
+   * End the handoff in the host, if it is there, and say the origins of the windows it left open: never fails or takes
+   * long, as it runs when a call ends. Undefined when the host could not say (or could not be asked): unknown, not none.
+   */
+  const endInHost = (id: string): Effect.Effect<ReadonlyArray<string> | undefined> =>
     host.endHandoff(id).pipe(
       Effect.timeout(CLEANUP_TIMEOUT),
-      Effect.catch((error) => Effect.logWarning("Ending a Browser Handoff failed", error)),
+      Effect.map((ended) => ended.windowOrigins),
+      Effect.catch((error) =>
+        Effect.as(Effect.logWarning("Ending a Browser Handoff failed", error), undefined),
+      ),
+    );
+
+  /** Waiting handoff `id`, if it is still shown to the owner. */
+  const shown = (id: string) =>
+    Effect.map(Clock.currentTimeMillis, (now) =>
+      stored().find((pending) => pending.id === id && pending.deadline + graceMs > now),
     );
 
   const withdraw = (id: string) =>
@@ -163,7 +183,7 @@ export const makeBrowserHandoffs = (
         const now = yield* Clock.currentTimeMillis;
         const remaining = request.deadline + graceMs - now;
 
-        if (remaining <= 0) return { status: "timeout" } satisfies BrowserHandoffOutcome;
+        if (remaining <= 0) return { status: "timeout" } satisfies Ending;
 
         // The browser is in use while the owner works in it: it must not be closed as idle.
         yield* session.touch;
@@ -190,38 +210,41 @@ export const makeBrowserHandoffs = (
           case "waiting":
             continue;
           case "complete": {
-            if (round.status.success)
-              return { status: "completed" } satisfies BrowserHandoffOutcome;
+            if (round.status.success) return { status: "completed" } satisfies Ending;
 
             const ended = yield* Clock.currentTimeMillis;
 
             if (ended >= request.deadline - TIMEOUT_SLACK_MS) {
-              return { status: "timeout" } satisfies BrowserHandoffOutcome;
+              return { status: "timeout" } satisfies Ending;
             }
 
             const reason = round.status.reason?.trim();
 
-            const failed: Types.Mutable<
-              Extract<BrowserHandoffOutcome, { readonly status: "failed" }>
-            > = {
+            const failed: Types.Mutable<Extract<Ending, { readonly status: "failed" }>> = {
               status: "failed",
             };
 
-            if (reason !== undefined && reason !== "") {
-              failed.reason = withoutLink(reason, request.url);
-            }
+            if (reason !== undefined && reason !== "") failed.reason = reason;
 
-            return failed satisfies BrowserHandoffOutcome;
+            return failed satisfies Ending;
           }
 
           case "ended":
           case "unknown":
-            return { status: "ended" } satisfies BrowserHandoffOutcome;
+            return { status: "ended" } satisfies Ending;
         }
       }
     });
 
-  const request: BrowserHandoffsService["request"] = ({ id, conversationId, instructions }) =>
+  /** Withdraw request `id` and end its handoff in the host, saying the origins of the windows it left open. */
+  const finish = (id: string) => Effect.andThen(withdraw(id), endInHost(id));
+
+  /** Start the handoff (or find the one started already), show and push it, and wait for how it ends. */
+  const startAndWait = ({
+    id,
+    conversationId,
+    instructions,
+  }: Parameters<BrowserHandoffsService["request"]>[0]) =>
     Effect.gen(function* () {
       let found = stored().find((pending) => pending.id === id);
 
@@ -237,23 +260,23 @@ export const makeBrowserHandoffs = (
           id,
           conversationId,
           instructions,
-          url: started.url,
           deadline: started.startedAt + timeoutMs,
         };
 
         found = created;
 
-        // A blank link is a handoff that is over already (a start that came again after it ended): nothing to show the
-        // owner, and the wait finds the outcome.
-        if (started.url !== "") {
+        // A handoff that is over already (a start that came again after it ended) has nothing to show the owner, and
+        // the wait finds the outcome.
+        if (started.over !== true) {
           yield* put([...stored(), created]);
 
           // In the background: the push may take seconds, and the wait must neither wait on it nor outlive an abort.
+          // A tap opens the handoff's Live View Pane, which asks for its own links.
           yield* Effect.forkDetach(
             notifications.notify({
               kind: "notice",
               body: pushBody(instructions),
-              url: created.url,
+              url: liveViewPaneQuery(id),
             }),
           );
         }
@@ -262,10 +285,24 @@ export const makeBrowserHandoffs = (
       waiting.add(id);
 
       return yield* waitFor(found);
-    }).pipe(
-      // However the call ends (an outcome, a failure, an abort): the request is withdrawn and the handoff ended. An
-      // eviction runs no finalizer: the request stays, and the rerun waits for it.
-      Effect.ensuring(Effect.andThen(withdraw(id), endInHost(id))),
+    });
+
+  // However the call ends (an outcome, a failure, an abort): the request is withdrawn and the handoff ended, and an
+  // outcome says which windows were left open. An eviction runs no finalizer: the request stays, and the rerun waits for
+  // it.
+  const request: BrowserHandoffsService["request"] = (input) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.exit(restore(startAndWait(input))).pipe(
+        Effect.flatMap((exit) =>
+          Effect.flatMap(finish(input.id), (windowOrigins) =>
+            Exit.isSuccess(exit)
+              ? Effect.succeed<BrowserHandoffOutcome>(
+                  windowOrigins === undefined ? exit.value : { ...exit.value, windowOrigins },
+                )
+              : Effect.failCause(exit.cause),
+          ),
+        ),
+      ),
     );
 
   return {
@@ -275,6 +312,19 @@ export const makeBrowserHandoffs = (
       return stored().filter((pending) => pending.deadline + graceMs > now);
     }),
     request,
+    liveView: (requestId) =>
+      Effect.flatMap(shown(requestId), (waitingRequest) =>
+        waitingRequest === undefined
+          ? Effect.fail(BrowserError.make({ message: LIVE_VIEW_HANDOFF_OVER }))
+          : host.liveView(requestId).pipe(
+              // The host's word for it, as the client reads it, without the call it came through.
+              Effect.mapError((error) =>
+                error.message.includes(LIVE_VIEW_HANDOFF_OVER)
+                  ? BrowserError.make({ message: LIVE_VIEW_HANDOFF_OVER })
+                  : error,
+              ),
+            ),
+      ),
     dropAbandoned: Effect.suspend(() => {
       const abandoned = stored().filter((pending) => !waiting.has(pending.id));
 

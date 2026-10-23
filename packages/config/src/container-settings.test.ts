@@ -178,6 +178,7 @@ describe("resolveContainerSettings", () => {
       "MISE_YES",
       "GIT_TERMINAL_PROMPT",
       "TURBO_CACHE_DIR",
+      "BASH_ENV",
       "CLOUDPID_GIT_NAME",
       "CLOUDPID_",
     ]) {
