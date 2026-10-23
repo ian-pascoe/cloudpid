@@ -29,8 +29,9 @@ const setup = (nextExpiry?: number) => {
     describe: Effect.succeed(""),
     run: () => Effect.succeed({ output: [] }),
     startHandoff: () => Effect.die("no handoff"),
+    liveView: () => Effect.die("no handoff"),
     waitHandoff: () => Effect.die("no handoff"),
-    endHandoff: () => Effect.void,
+    endHandoff: () => Effect.succeed({ windows: [] }),
     close: Effect.sync(() => {
       state.closes += 1;
 

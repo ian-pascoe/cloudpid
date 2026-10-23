@@ -65,6 +65,12 @@ describe("describeEvent", () => {
     });
   });
 
+  it("opens the Session's page with a notice's query, such as a Browser Handoff's Live View Pane", () => {
+    expect(
+      describeEvent({ kind: "notice", body: "Needs you", url: "?pane=live-view:7" }, session).url,
+    ).toBe("/sessions/0190f3a0-1111-7000-8000-000000000001?pane=live-view:7");
+  });
+
   it("opens the Session's page when a notice's link is too long or not a plain URL", () => {
     const page = "/sessions/0190f3a0-1111-7000-8000-000000000001";
 
@@ -96,6 +102,18 @@ describe("describeEvent", () => {
     );
 
     expect(new TextEncoder().encode(JSON.stringify(awful)).length).toBeLessThan(MAX_PAYLOAD_BYTES);
+
+    const query = describeEvent(
+      {
+        kind: "notice",
+        title: "𝒯".repeat(500),
+        body: "𝒯".repeat(500),
+        url: `?${"a".repeat(1023)}`,
+      },
+      { id: "0190f3a0-1111-7000-8000-000000000001", title: "t" },
+    );
+
+    expect(new TextEncoder().encode(JSON.stringify(query)).length).toBeLessThan(MAX_PAYLOAD_BYTES);
   });
 
   it("titles an untitled Session plainly and bounds a long title", () => {

@@ -20,6 +20,7 @@ describe("the Session's browser host", () => {
           },
           close: () => Promise.resolve(true),
           startHandoff: () => Promise.reject(new Error("not here")),
+          liveView: () => Promise.reject(new Error("not here")),
           waitHandoff: () => Promise.reject(new Error("not here")),
           endHandoff: () => Promise.reject(new Error("not here")),
         }),
@@ -41,6 +42,7 @@ describe("the Session's browser host", () => {
           run: () => Promise.reject(new Error("overloaded")),
           close: () => Promise.reject(new Error("overloaded")),
           startHandoff: () => Promise.reject(new Error("overloaded")),
+          liveView: () => Promise.reject(new Error("overloaded")),
           waitHandoff: () => Promise.reject(new Error("overloaded")),
           endHandoff: () => Promise.reject(new Error("overloaded")),
         }),
@@ -53,7 +55,7 @@ describe("the Session's browser host", () => {
     );
   });
 
-  it("hands a conversation's tab to the owner, waits on the handoff, and ends it, in the object named for the Session", async () => {
+  it("hands a conversation's tab to the owner, mints its links, waits on the handoff, and ends it, in the object named for the Session", async () => {
     const calls: unknown[] = [];
 
     const host = remoteBrowserHost(
@@ -65,7 +67,15 @@ describe("the Session's browser host", () => {
           startHandoff: (input) => {
             calls.push({ name, start: input });
 
-            return Promise.resolve({ url: "https://live.example/view", startedAt: 5 });
+            return Promise.resolve({ startedAt: 5 });
+          },
+          liveView: (requestId) => {
+            calls.push({ name, liveView: requestId });
+
+            return Promise.resolve({
+              tab: { targetId: "tab-1", link: "wss://live.example/t" },
+              windows: [],
+            });
           },
           waitHandoff: (requestId, maxMs) => {
             calls.push({ name, wait: [requestId, maxMs] });
@@ -75,7 +85,7 @@ describe("the Session's browser host", () => {
           endHandoff: (requestId) => {
             calls.push({ name, end: requestId });
 
-            return Promise.resolve();
+            return Promise.resolve({ windows: ["https://accounts.example.com"] });
           },
         }),
       },
@@ -84,17 +94,21 @@ describe("the Session's browser host", () => {
 
     const input = { requestId: "7", conversationId: 3, instructions: "Log in", timeoutMs: 1_000 };
 
-    expect(await Effect.runPromise(host.startHandoff(input))).toEqual({
-      url: "https://live.example/view",
-      startedAt: 5,
+    expect(await Effect.runPromise(host.startHandoff(input))).toEqual({ startedAt: 5 });
+    expect(await Effect.runPromise(host.liveView("7"))).toEqual({
+      tab: { targetId: "tab-1", link: "wss://live.example/t" },
+      windows: [],
     });
     expect(await Effect.runPromise(host.waitHandoff("7", 500))).toEqual({
       state: "complete",
       success: true,
     });
-    await Effect.runPromise(host.endHandoff("7"));
+    expect(await Effect.runPromise(host.endHandoff("7"))).toEqual({
+      windows: ["https://accounts.example.com"],
+    });
     expect(calls).toEqual([
       { name: "session-1", start: input },
+      { name: "session-1", liveView: "7" },
       { name: "session-1", wait: ["7", 500] },
       { name: "session-1", end: "7" },
     ]);
@@ -108,8 +122,9 @@ describe("the Session's browser host", () => {
           run: () => Promise.resolve({ output: [] }),
           close: () => Promise.resolve(true),
           startHandoff: () => Promise.reject(new Error("This conversation has no open tab")),
+          liveView: () => Promise.reject(new Error("the handoff is over")),
           waitHandoff: () => Promise.resolve({ state: "waiting" }),
-          endHandoff: () => Promise.resolve(),
+          endHandoff: () => Promise.resolve({ windows: [] }),
         }),
       },
       "session-1",

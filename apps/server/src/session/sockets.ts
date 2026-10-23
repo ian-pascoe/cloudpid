@@ -10,6 +10,7 @@ import {
   type FileMatches,
   type HistoryPage,
   HEARTBEAT,
+  type LiveViewLinks,
   type ClientMessage,
   type ServerMessage,
   ServerMessageJson,
@@ -21,7 +22,11 @@ import {
   Secrets,
   type SecretsError,
 } from "@cloudpid/extensions/secrets";
-import { type BrowserHandoffRequest, BrowserHandoffs } from "@cloudpid/extensions/browser";
+import {
+  type BrowserError,
+  type BrowserHandoffRequest,
+  BrowserHandoffs,
+} from "@cloudpid/extensions/browser";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -111,7 +116,10 @@ export const secretRequests = (asks: ReadonlyArray<SecretAsk>): ServerMessage =>
   })),
 });
 
-/** The `browser_handoff_requests` message for `requests`: the Live View links go to the owner's clients, and nowhere else. */
+/**
+ * The `browser_handoff_requests` message for `requests`, which every client is sent. It holds no Live View link: those
+ * answer `live_view`, to the one client that asked.
+ */
 export const browserHandoffRequests = (
   requests: ReadonlyArray<BrowserHandoffRequest>,
 ): ServerMessage => ({
@@ -361,8 +369,9 @@ export const sessionSocketsLayer = (
         | CommandOutcome
         | FileMatches
         | HistoryPage
+        | LiveViewLinks
         | null,
-        SessionError | SecretsError
+        SessionError | SecretsError | BrowserError
       > => {
         switch (message.type) {
           case "submit": {
@@ -384,6 +393,10 @@ export const sessionSocketsLayer = (
 
             return host.files(search);
           }
+
+          // Answered to this socket alone, as every command is: the links are never stored or sent to other clients.
+          case "live_view":
+            return handoffs.liveView(message.requestId);
 
           case "command": {
             const { type: _type, id: _id, ...command } = message;

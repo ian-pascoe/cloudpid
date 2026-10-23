@@ -7,6 +7,7 @@ import { DurableObject } from "cloudflare:workers";
 import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
 import {
   Browser,
+  BrowserError,
   BrowserHost,
   type BrowserHostService,
   BrowserSession,
@@ -14,6 +15,7 @@ import {
   type HandoffStartInput,
   type HandoffStatus,
   imageLimitedModels,
+  type LiveViewLinks,
   makeBrowserSession,
 } from "@cloudpid/extensions/browser";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
@@ -98,9 +100,24 @@ const Echo = defineEffectTool({
   execute: ({ text }) => Effect.succeed({ output: [{ type: "text", text: `echo: ${text}` }] }),
 });
 
-/** The Live View link the test browser host mints: recognisable, so a test can look for it where it must not be. */
-export const LIVE_VIEW_URL =
-  "https://live.browser.run/ui/view?mode=tab&wss=live.browser.run/api/devtools/browser/s/page/t?jwt=SECRET-LIVE-VIEW-TOKEN";
+/** The credential in every Live View link the test browser host mints, to look for where it must not be. */
+export const LIVE_VIEW_TOKEN = "SECRET-LIVE-VIEW-TOKEN";
+
+/** The Live View links the test browser host mints: recognisable, so a test can look for them where they must not be. */
+export const LIVE_VIEW_LINKS: LiveViewLinks = {
+  tab: {
+    targetId: "tab-1",
+    link: `wss://live.browser.run/api/devtools/browser/s/page/tab-1?jwt=${LIVE_VIEW_TOKEN}`,
+  },
+  windows: [
+    {
+      targetId: "popup-1",
+      openerId: "tab-1",
+      title: "Sign in",
+      link: `wss://live.browser.run/api/devtools/browser/s/page/popup-1?jwt=${LIVE_VIEW_TOKEN}`,
+    },
+  ],
+};
 
 /** How long one round of waiting on the test browser host lasts at most, and how long a call may wait past a deadline. */
 const HANDOFF_ROUND_MS = 10_000;
@@ -128,8 +145,16 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
         kv.put(`handoff-status:${input.requestId}`, { state: "waiting" } satisfies HandoffStatus);
       }
 
-      return { url: LIVE_VIEW_URL, startedAt: Date.now() };
+      return { startedAt: Date.now() };
     }),
+  liveView: (requestId) =>
+    kv.get<HandoffStatus>(`handoff-status:${requestId}`)?.state === "waiting"
+      ? Effect.sync(() => {
+          kv.put("live-views", [...(kv.get<string[]>("live-views") ?? []), requestId]);
+
+          return LIVE_VIEW_LINKS;
+        })
+      : Effect.fail(BrowserError.make({ message: "liveView: Error: the handoff is over" })),
   waitHandoff: (requestId, maxMs) =>
     Effect.promise(
       () =>
@@ -160,6 +185,8 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
     Effect.sync(() => {
       kv.put("handoff-ended", [...(kv.get<string[]>("handoff-ended") ?? []), requestId]);
       kv.delete(`handoff-status:${requestId}`);
+
+      return { windows: kv.get<string[]>("handoff-windows") ?? [] };
     }),
 });
 
@@ -786,6 +813,21 @@ export class TestSession extends DurableObject {
   /** The handoffs the test browser host was asked to start, oldest first. */
   handoffStarts(): readonly HandoffStartInput[] {
     return this.ctx.storage.kv.get<HandoffStartInput[]>("handoff-starts") ?? [];
+  }
+
+  /** The handoffs the test browser host minted Live View links for, oldest first. */
+  liveViews(): readonly string[] {
+    return this.ctx.storage.kv.get<string[]>("live-views") ?? [];
+  }
+
+  /** The origins of the windows the test browser host says a handoff left open when it ends. */
+  leaveWindows(origins: readonly string[]): void {
+    this.ctx.storage.kv.put("handoff-windows", origins);
+  }
+
+  /** Everything in the object's key-value storage, as JSON. */
+  kvDump(): string {
+    return JSON.stringify([...this.ctx.storage.kv.list()]);
   }
 
   /** The handoffs the test browser host was told to end, oldest first. */

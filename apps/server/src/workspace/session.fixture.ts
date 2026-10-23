@@ -76,8 +76,9 @@ export class TestWorkspaceSession extends TestSession {
         run: () => Effect.succeed({ output: [] }),
         close: Effect.succeed(false),
         startHandoff: () => Effect.die("No browser"),
+        liveView: () => Effect.die("No browser"),
         waitHandoff: () => Effect.die("No browser"),
-        endHandoff: () => Effect.void,
+        endHandoff: () => Effect.succeed({ windows: [] }),
       }),
       Effect.provideService(BrowserSession, {
         touch: Effect.void,

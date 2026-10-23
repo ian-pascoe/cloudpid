@@ -10,7 +10,7 @@ export type { PushEvent, PushNotice } from "@cloudpid/extensions/notify";
 export type PushPayload = {
   readonly title: string;
   readonly body: string;
-  /** The Session's page, relative to the app's origin. */
+  /** Where a tap goes: the Session's page (with the Panes a notice opens), relative to the app's origin. */
   readonly url: string;
   /** A notification with the same tag replaces the one on screen, so a repeat does not pile up. */
   readonly tag: string;
@@ -47,14 +47,22 @@ const body = (event: PushEvent): string => {
 /** A URL as it is written on the wire: printable ASCII only, so its JSON stays as long as it looks. */
 const PLAIN_URL = /^[\x21-\x7e]+$/;
 
-/** Where a tap goes: the notice's own URL when it is usable, otherwise the Session's page. */
-const target = (event: PushEvent, sessionId: string): string =>
-  event.kind === "notice" &&
-  event.url !== undefined &&
-  event.url.length <= MAX_NOTICE_URL_LENGTH &&
-  PLAIN_URL.test(event.url)
-    ? event.url
-    : sessionPagePath(sessionId);
+/**
+ * Where a tap goes: the notice's own URL when it is usable (a query, such as a Browser Handoff's `?pane=live-view:7`, on
+ * the Session's page), otherwise the Session's page.
+ */
+const target = (event: PushEvent, sessionId: string): string => {
+  if (
+    event.kind !== "notice" ||
+    event.url === undefined ||
+    event.url.length > MAX_NOTICE_URL_LENGTH ||
+    !PLAIN_URL.test(event.url)
+  ) {
+    return sessionPagePath(sessionId);
+  }
+
+  return event.url.startsWith("?") ? `${sessionPagePath(sessionId)}${event.url}` : event.url;
+};
 
 /** The push for `event` in Session `session`, titled by the Session's title once it has one. */
 export const describeEvent = (

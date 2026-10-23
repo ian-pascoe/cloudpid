@@ -1,6 +1,7 @@
 // Browser Handoffs over the Session socket, against real Durable Object storage: the agent's request reaches every client
-// with the Live View link, the owner finishing in Live View resumes the tool, a pending handoff survives an eviction, and
-// the link never enters the transcript or a model request.
+// without a Live View link, the owner's client mints links with `live_view` and is the only one that sees them, the
+// owner finishing in Live View resumes the tool, and a pending handoff survives an eviction. No link is stored, pushed,
+// broadcast, or let into the transcript or a model request.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
@@ -14,7 +15,8 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
-import { LIVE_VIEW_URL, type TestSession } from "./host.fixture.ts";
+import { describeEvent } from "../push/notification.ts";
+import { LIVE_VIEW_LINKS, LIVE_VIEW_TOKEN, type TestSession } from "./host.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -27,8 +29,8 @@ declare global {
 
 const decode = Schema.decodeUnknownEffect(ServerMessageJson);
 
-/** The part of the link that is a credential. */
-const TOKEN = "SECRET-LIVE-VIEW-TOKEN";
+/** The part of a Live View link that is a credential. */
+const TOKEN = LIVE_VIEW_TOKEN;
 
 /** A client of a Session's socket that keeps every message the Session sent it. */
 const connect = async (stub: DurableObjectStub<TestSession>) => {
@@ -69,6 +71,14 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
 
 type Requests = Extract<ServerMessage, { type: "browser_handoff_requests" }>;
 
+type Answer = Extract<ServerMessage, { type: "result" | "error" }>;
+
+/** The answer to the command with `id`. */
+const answerTo =
+  (id: string) =>
+  (message: ServerMessage): message is Answer =>
+    (message.type === "result" || message.type === "error") && message.id === id;
+
 const isRequests = (message: ServerMessage): message is Requests =>
   message.type === "browser_handoff_requests";
 
@@ -105,10 +115,13 @@ const results = (stub: DurableObjectStub<TestSession>) =>
   runInDurableObject(stub, (instance: TestSession) => instance.toolResults());
 
 describe("Browser Handoffs over the Session socket", () => {
-  it("shows the owner the link and the instructions, pushes them, resumes the tool when the owner finishes, and keeps the link out of the transcript and the model's requests", async () => {
+  it("shows every client the instructions, pushes the way to the Live View Pane, mints links only for the client that asks, and resumes the tool when the owner finishes", async () => {
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
 
-    await runInDurableObject(stub, (instance: TestSession) => instance.script(SCRIPT));
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.script(SCRIPT);
+      instance.leaveWindows(["https://accounts.example.com"]);
+    });
 
     const owner = await connect(stub);
     const other = await connect(stub);
@@ -118,10 +131,11 @@ describe("Browser Handoffs over the Session socket", () => {
     const pending = await owner.next(isPending);
     const request = only(pending);
 
-    expect(request).toMatchObject({
+    expect(request).toEqual({
+      id: expect.any(String),
       conversationId: 1,
       instructions: "Log in, then press Done",
-      url: LIVE_VIEW_URL,
+      deadline: expect.any(Number),
     });
     expect(request.deadline).toBeGreaterThan(Date.now() + 29 * 60_000);
     expect((await other.next(isPending)).requests).toEqual(pending.requests);
@@ -130,7 +144,7 @@ describe("Browser Handoffs over the Session socket", () => {
       { requestId: request.id, conversationId: 1, instructions: "Log in, then press Done" },
     ]);
 
-    // The owner may not have the app open: the link is pushed to them with the instructions.
+    // The owner may not have the app open: the push opens the Session with the handoff's Live View Pane.
     await vi.waitFor(
       async () =>
         expect(
@@ -139,11 +153,37 @@ describe("Browser Handoffs over the Session socket", () => {
           {
             kind: "notice",
             body: "Needs you in the browser: Log in, then press Done",
-            url: LIVE_VIEW_URL,
+            url: `?pane=live-view:${request.id}`,
           },
         ]),
       { timeout: 10_000 },
     );
+
+    const [push] = await runInDurableObject(stub, (instance: TestSession) => instance.notified());
+
+    expect(push && describeEvent(push, { id: "session-1", title: null }).url).toBe(
+      `/sessions/session-1?pane=live-view:${request.id}`,
+    );
+
+    // The owner takes over: their Live View asks for links, and only they get them.
+    owner.send({ type: "live_view", id: "lv-1", requestId: request.id });
+
+    expect(await owner.next(answerTo("lv-1"))).toEqual({
+      type: "result",
+      id: "lv-1",
+      result: LIVE_VIEW_LINKS,
+    });
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.liveViews())).toEqual(
+      [request.id],
+    );
+
+    // A handoff the Session does not have gets none.
+    owner.send({ type: "live_view", id: "lv-x", requestId: "nope" });
+    expect(await owner.next(answerTo("lv-x"))).toEqual({
+      type: "error",
+      id: "lv-x",
+      message: "the handoff is over",
+    });
 
     const seen = other.received.length;
 
@@ -156,18 +196,41 @@ describe("Browser Handoffs over the Session socket", () => {
     expect((await other.next(isRequests, seen)).requests).toEqual([]);
     await idle(stub);
 
+    // The model hears how it ended and which windows are left, by origin.
     expect((await results(stub)).at(-1)).toMatch(/The user finished the handoff/);
+    expect((await results(stub)).at(-1)).toMatch(
+      /still open \(pop-ups or new tabs\): https:\/\/accounts\.example\.com/,
+    );
     expect(
       await runInDurableObject(stub, (instance: TestSession) => instance.endedHandoffs()),
     ).toEqual([request.id]);
 
-    // The link reached the owner's clients and the push, and nothing the model or the transcript holds.
+    // Once it is over, no more links.
+    owner.send({ type: "live_view", id: "lv-2", requestId: request.id });
+    expect(await owner.next(answerTo("lv-2"))).toEqual({
+      type: "error",
+      id: "lv-2",
+      message: "the handoff is over",
+    });
+
+    // A link reached the one answer to the asking client, and nothing else: no other message to any client, no push,
+    // nothing the object stores, nor the transcript or the model's requests.
+    const elsewhere = [
+      ...owner.received.filter((message) => !answerTo("lv-1")(message)),
+      ...other.received,
+    ];
+
     const surfaces = await runInDurableObject(stub, async (instance: TestSession) => [
+      JSON.stringify(elsewhere),
+      JSON.stringify(instance.notified()),
+      instance.kvDump(),
       JSON.stringify(await instance.toolResults()),
       instance.requestMessages().join("\n"),
       instance.harnessDump(),
       JSON.stringify(await instance.snapshot()),
     ]);
+
+    expect(JSON.stringify(owner.received.filter(answerTo("lv-1")))).toContain(TOKEN);
 
     for (const surface of surfaces) {
       expect(surface).not.toContain(TOKEN);
@@ -283,7 +346,6 @@ describe("Browser Handoffs over the Session socket", () => {
       // SAFETY: a conversation ID, as the protocol brands it.
       conversationId: 1 as BrowserHandoffRequest["conversationId"],
       instructions: "Log in",
-      url: LIVE_VIEW_URL,
       deadline: Date.now() + 60_000,
     };
 
