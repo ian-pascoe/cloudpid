@@ -1,22 +1,34 @@
 // Which backend a `bash` command runs on when the model names none (docs/spec.md → Backends): the Worker Shell, unless
-// the command needs something the Worker Shell does not have, and then the Container. A command that is not understood
-// goes to the Container, which can run anything; the Worker Shell is the fast path for commands it is known to run.
+// the command needs something the Worker Shell does not have, and then the Container. The Container is the costly
+// backend, so the Worker Shell gets every command it can run: a program neither list below holds is asked of the Worker
+// Shell itself (`resolveRoute`), and a command that writes no file is run again on the Container when the Worker Shell
+// turns out not to run it (`workerShellCannot`). A command that is not understood goes to the Container.
 //
-// The command is read the way bash reads it (quotes, pipelines and lists, subshells, substitutions, heredocs), so a
-// program named inside a string or a heredoc body does not count and one inside `$(…)` does. Every simple command in it
-// must be one the Worker Shell runs, or the whole call goes to the Container: one call has one backend.
+// The command is read the way bash reads it (quotes, pipelines and lists, subshells, substitutions, heredocs, `case`),
+// so a program named inside a string or a heredoc body does not count and one inside `$(…)` does. Every simple command
+// in it must be one the Worker Shell runs, or the whole call goes to the Container: one call has one backend.
 //
 // What the Worker Shell runs is `@cloudflare/computer`'s (0.6.0) just-bash core, `jq` (the Workspace DO adds that
 // module), the shell's built-ins, and a `git` over computer's isomorphic-git client. The sets below are that, copied: a
 // workerd test in apps/server runs every name in `WORKER_SHELL_COMMANDS` through the real Worker Shell, so an upgrade
 // that drops one fails there.
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
 import type { BashBackend } from "./coding-tools.ts";
 
 /** Where a command runs and why: the reason names the command that decided it. */
 export type BashRoute = {
   readonly backend: BashBackend;
   readonly reason: string;
+  /**
+   * On the Worker Shell: the programs in it that neither list holds, so whether the Worker Shell has them is asked at
+   * run time (`resolveRoute`). Empty for the Container.
+   */
+  readonly unknown: readonly string[];
+  /**
+   * What in it may write a file (a redirect, `rm`, `sed -i`, a program not known to be read-only); undefined when
+   * nothing does: then it can run again on the Container, after the Worker Shell could not run it, without writing twice.
+   */
+  readonly writes: string | undefined;
 };
 
 const names = (list: string): readonly string[] => list.split(" ");
@@ -38,6 +50,28 @@ export const WORKER_SHELL_BUILTINS: readonly string[] = names(
     "read mapfile readarray declare typeset readonly let test [ [[ echo printf pwd alias unalias type hash",
     "ulimit umask trap wait kill jobs fg bg history help builtin command exec shopt time",
   ].join(" "),
+);
+
+/**
+ * Programs the Worker Shell is known not to have: real binaries the model runs often. They go to the Container without
+ * asking the Worker Shell first; any other program neither list holds is asked about (`resolveRoute`).
+ */
+export const CONTAINER_PROGRAMS: readonly string[] = names(
+  [
+    "node npm npx pnpm pnpx yarn bun bunx deno corepack tsx ts-node tsc vitest jest mocha playwright eslint prettier",
+    "oxlint oxfmt biome turbo nx vite webpack esbuild rollup wrangler alchemy python python3 pip pip3 pipx uv uvx",
+    "poetry pytest ruff mypy black cargo rustc rustup go gofmt make cmake ninja gcc g++ cc c++ clang ld java javac",
+    "mvn gradle kotlin dotnet ruby gem bundle rake php composer perl lua swift zig gh curl wget ssh scp rsync",
+    "docker docker-compose kubectl terraform mise apt apt-get dpkg sudo su nohup nice ps top htop lsof pkill pgrep",
+    "killall sqlite3 psql mysql redis-cli yq unzip zip 7z openssl cloudpid-dockerd",
+  ].join(" "),
+);
+
+const CONTAINER_PROGRAM_SET: ReadonlySet<string> = new Set(CONTAINER_PROGRAMS);
+
+/** Worker Shell programs that write files whatever their options; the others write only in the forms `writesOf` names. */
+const WRITERS: ReadonlySet<string> = new Set(
+  names("rm rmdir mkdir touch cp mv ln chmod tee split"),
 );
 
 const SHELL_BUILTINS: ReadonlySet<string> = new Set(WORKER_SHELL_BUILTINS);
@@ -94,7 +128,16 @@ const KEYWORDS: ReadonlySet<string> = new Set(
 );
 
 /** Compound commands the heuristic leaves to the Container's bash. */
-const UNREAD_KEYWORDS: ReadonlySet<string> = new Set(names("case select coproc"));
+const UNREAD_KEYWORDS: ReadonlySet<string> = new Set(names("select coproc"));
+
+/**
+ * Where the scan is in a `case`: before its word, before `in`, at a pattern (up to `)`), or in a clause's commands (up to
+ * `;;`, `;&`, `;;&`, or `esac`).
+ */
+type CaseState = "word" | "in" | "pattern" | "body";
+
+/** Redirect targets that are not files. */
+const NOT_FILES: ReadonlySet<string> = new Set(names("/dev/null /dev/stdout /dev/stderr"));
 
 const isBlank = (char: string) => char === " " || char === "\t";
 
@@ -110,6 +153,8 @@ type Parsed = {
   readonly functions: ReadonlySet<string>;
   /** Set when the command uses shell syntax the heuristic does not read. */
   readonly unreadable: string | undefined;
+  /** The first redirect in it that writes a file. */
+  readonly writes: string | undefined;
 };
 
 /** Reads a command into its simple commands. A recursive-descent scan, because `$( … )` and heredocs nest. */
@@ -117,6 +162,7 @@ class Reader {
   readonly commands: Word[][];
   readonly functions: Set<string>;
   unreadable: string | undefined;
+  writes: string | undefined;
   readonly #source: string;
   #at: number;
   #words: Word[] = [];
@@ -125,6 +171,8 @@ class Reader {
   #inConditional = false;
   #heredocs: Heredoc[] = [];
   #subshells = 0;
+  /** The `case` commands the scan is in, innermost last. */
+  #cases: CaseState[] = [];
   #stop: ")" | "`" | undefined;
 
   constructor(source: string, at = 0, commands: Word[][] = [], functions = new Set<string>()) {
@@ -136,9 +184,14 @@ class Reader {
 
   /** Read the whole source; undefined when it ends inside a quote, substitution or subshell. */
   readAll(): Parsed | undefined {
-    if (!this.#list(undefined) || this.#subshells > 0) return undefined;
+    if (!this.#list(undefined) || this.#subshells > 0 || this.#cases.length > 0) return undefined;
 
-    return { commands: this.commands, functions: this.functions, unreadable: this.unreadable };
+    return {
+      commands: this.commands,
+      functions: this.functions,
+      unreadable: this.unreadable,
+      writes: this.writes,
+    };
   }
 
   /** Read text that the shell expands but does not run, a heredoc body: only its substitutions run commands. */
@@ -192,6 +245,11 @@ class Reader {
         this.#flush();
 
         return true;
+      } else if (char === ")" && this.#cases.at(-1) === "pattern") {
+        // The end of a `case` pattern: the clause's commands follow.
+        this.#at++;
+        this.#flush();
+        this.#setCase("body");
       } else if (char === ")" && this.#subshells > 0) {
         this.#at++;
         this.#flush();
@@ -210,6 +268,10 @@ class Reader {
     }
   }
 
+  #setCase(state: CaseState): void {
+    this.#cases[this.#cases.length - 1] = state;
+  }
+
   /** Whether the scan is at the start of a word: after a blank, operator, or the start. */
   #atWordStart(): boolean {
     return this.#at === 0 || /[\s;&|()<>]/.test(this.#source.charAt(this.#at - 1));
@@ -221,16 +283,32 @@ class Reader {
 
     if (char === ";" || char === "&" || char === "|") {
       if (char === "&" && this.#peek(1) === ">") {
-        this.#at += this.#peek(2) === ">" ? 3 : 2;
-        this.#redirectTarget();
+        const operator = this.#peek(2) === ">" ? "&>>" : "&>";
+
+        this.#at += operator.length;
+        this.#output(operator, this.#redirectTarget());
 
         return true;
       }
+
+      const start = this.#at;
 
       this.#at++;
 
       while (this.#peek() === char || this.#peek() === "&") this.#at++;
       this.#flush();
+
+      // `;;`, `;&`, `;;&` end a `case` clause: a pattern follows.
+      if (char === ";" && this.#at - start > 1 && this.#cases.at(-1) === "body") {
+        this.#setCase("pattern");
+      }
+
+      return true;
+    }
+
+    if (char === "(" && this.#cases.at(-1) === "pattern") {
+      // A `case` pattern may open with `(`.
+      this.#at++;
 
       return true;
     }
@@ -276,10 +354,17 @@ class Reader {
   /** A redirect operator at the scan, and the word it takes. */
   #redirect(): void {
     if (this.#peek(1) === "(") {
-      // Process substitution runs a command whose output the shell wires up itself; the Container's bash does that.
-      this.unreadable = "process substitution";
-      this.#at += 2;
-      this.#subshells++;
+      // Process substitution, `<(…)` or `>(…)`: its commands are read as a substitution's are, but
+      // computer's Worker Shell does not parse it (just-bash 3.6 does), so the command is left to the Container.
+      const inner = new Reader(this.#source, this.#at + 2, this.commands, this.functions);
+      const ended = inner.#list(")");
+
+      this.#at = inner.#at;
+      this.#inherit(inner);
+
+      this.unreadable ??= ended
+        ? "process substitution"
+        : "a process substitution that does not end";
 
       return;
     }
@@ -301,14 +386,40 @@ class Reader {
     }
 
     // Two-character operators: >>, >&, >|, <>, <&
-    this.#at += /[>&|<]/.test(this.#peek(1)) ? 2 : 1;
-    this.#redirectTarget();
+    const operator = this.#source.slice(
+      this.#at,
+      this.#at + (/[>&|<]/.test(this.#peek(1)) ? 2 : 1),
+    );
+
+    this.#at += operator.length;
+
+    const target = this.#redirectTarget();
+
+    if (operator.startsWith(">") || operator === "<>") this.#output(operator, target);
   }
 
-  /** Read the word of a redirect and drop it: a file or file descriptor, not a command. */
-  #redirectTarget(): void {
+  /** Read the word of a redirect: a file or file descriptor, not a command. */
+  #redirectTarget(): Word | undefined {
     while (isBlank(this.#peek())) this.#at++;
-    this.#wordText(false);
+
+    return this.#wordText(false);
+  }
+
+  /** Record an output redirect to `target` when it writes a file: not a file descriptor or `/dev/null`. */
+  #output(operator: string, target: Word | undefined): void {
+    if (target === undefined) return;
+
+    if (!target.dynamic && NOT_FILES.has(target.text)) return;
+
+    if (operator.endsWith("&") && !target.dynamic && /^(\d+|-)$/.test(target.text)) return;
+
+    this.writes ??= `${operator} ${target.text || "a file"}`;
+  }
+
+  /** What a reader of a part of this command (a substitution, a heredoc body) found that the whole command has. */
+  #inherit(inner: Reader): void {
+    this.unreadable ??= inner.unreadable;
+    this.writes ??= inner.writes;
   }
 
   #heredocTarget(strip: boolean): void {
@@ -349,7 +460,7 @@ class Reader {
         const inner = new Reader(body, 0, this.commands, this.functions);
 
         if (!inner.readExpansions()) this.unreadable = "a heredoc body that does not parse";
-        this.unreadable ??= inner.unreadable;
+        this.#inherit(inner);
       }
     }
   }
@@ -381,6 +492,39 @@ class Reader {
 
   #push(word: Word): void {
     const first = this.#words.length === 0;
+    const keyword = !word.quoted && !word.dynamic;
+    const inCase = this.#cases.at(-1);
+
+    // A `case`'s word, its `in`, and its patterns are not commands; a substitution in them was recorded as it was read.
+    if (inCase === "word") {
+      this.#setCase("in");
+
+      return;
+    }
+
+    if (inCase === "in") {
+      this.#setCase("pattern");
+
+      return;
+    }
+
+    if (inCase === "pattern") {
+      if (keyword && word.text === "esac") this.#cases.pop();
+
+      return;
+    }
+
+    if (first && keyword && inCase === "body" && word.text === "esac") {
+      this.#cases.pop();
+
+      return;
+    }
+
+    if (first && keyword && word.text === "case") {
+      this.#cases.push("word");
+
+      return;
+    }
 
     if (this.#functionName) {
       this.#functionName = false;
@@ -511,7 +655,7 @@ class Reader {
       const ended = inner.#list(backtick ? "`" : ")");
 
       this.#at = inner.#at;
-      this.unreadable ??= inner.unreadable;
+      this.#inherit(inner);
 
       return ended;
     }
@@ -598,11 +742,108 @@ class Reader {
   }
 }
 
-/** Why `name` is not for the Worker Shell; undefined when it is. */
-const nameNeeds = (name: string, functions: ReadonlySet<string>): string | undefined =>
-  name === "git" || WORKER_COMMAND_SET.has(name) || SHELL_BUILTINS.has(name) || functions.has(name)
-    ? undefined
-    : `${name} is not a Worker Shell command`;
+/** Whether the Worker Shell is known to run `name`: one of its programs or built-ins, or a function the command defines. */
+const knownOnWorker = (name: string, functions: ReadonlySet<string>): boolean =>
+  name === "git" || WORKER_COMMAND_SET.has(name) || SHELL_BUILTINS.has(name) || functions.has(name);
+
+/** The reason a command goes to the Container: `name` is not a program the Worker Shell has. */
+const notOnWorker = (name: string): string => `${name} is not a Worker Shell command`;
+
+/** A name the Worker Shell can be asked about with `command -v`: a plain program name. */
+const PROGRAM_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
+
+/**
+ * Why `name` is not for the Worker Shell; undefined when it is or may be. A name neither list holds is recorded in
+ * `context.unknown`, for the Worker Shell to be asked about.
+ */
+const nameNeeds = (name: string, context: Context): string | undefined => {
+  if (knownOnWorker(name, context.functions)) return undefined;
+
+  if (CONTAINER_PROGRAM_SET.has(name) || !PROGRAM_NAME.test(name)) return notOnWorker(name);
+
+  context.found.unknown.add(name);
+
+  return undefined;
+};
+
+/** The words of `args` that are not options. */
+const operands = (args: readonly Word[]): readonly Word[] =>
+  args.filter((arg) => arg.quoted || !arg.text.startsWith("-") || arg.text === "-");
+
+/** Whether one of `args` is an option in `options`, or a cluster of short options (`-ni`) holding `short`. */
+const hasOption = (args: readonly Word[], options: readonly string[], short?: string): boolean =>
+  args.some(
+    (arg) =>
+      options.some((option) => arg.text === option || arg.text.startsWith(`${option}=`)) ||
+      (short !== undefined && /^-[A-Za-z]+$/.test(arg.text) && arg.text.includes(short)),
+  );
+
+/**
+ * Whether one of `args` may hold the short option `short`, alone, in a cluster, or with its value attached (`-i.bak`,
+ * `-uo out`, `-ofile`), or the long option `long`. For options that write: it errs towards finding one.
+ */
+const mayHaveOption = (args: readonly Word[], short: string, long: string): boolean =>
+  args.some(
+    (arg) =>
+      arg.text === long ||
+      arg.text.startsWith(`${long}=`) ||
+      new RegExp(`^-[A-Za-z0-9]*${short}`).test(arg.text),
+  );
+
+/**
+ * What running `name` with `args` may write, for a command the Worker Shell runs; undefined when it writes no file.
+ * Conservative: a form not known to be read-only counts as writing.
+ */
+const writesOf = (name: string, args: readonly Word[], context: Context): string | undefined => {
+  if (WRITERS.has(name)) return name;
+
+  switch (name) {
+    case "sed":
+      // `-i` edits in place; a `w` command writes a file.
+      return mayHaveOption(args, "i", "--in-place") ||
+        operands(args).some((arg) => /(^|[\s;}/])[wW]\s+\S/.test(arg.text))
+        ? "sed writing a file"
+        : undefined;
+
+    case "sort":
+      return mayHaveOption(args, "o", "--output") ? "sort -o" : undefined;
+
+    case "uniq":
+      return operands(args).length > 1 ? "uniq writing a file" : undefined;
+
+    case "awk":
+      // `print > "f"`, `| "cmd"`, `system()`: anything that may redirect inside the program, or a program it reads
+      // from a file (`-f`), which cannot be seen.
+      return mayHaveOption(args, "f", "--file") ||
+        operands(args).some((arg) => /system\s*\(|\||>(?!=)/.test(arg.text))
+        ? "awk writing a file"
+        : undefined;
+
+    case "find":
+      return hasOption(args, ["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"])
+        ? "find writing files"
+        : undefined;
+
+    case "tar": {
+      const mode = args[0]?.text ?? "";
+
+      return hasOption(args, ["--list"], "t") || /^[a-z]*t[a-z]*$/.test(mode)
+        ? undefined
+        : "tar writing files";
+    }
+
+    case "gzip":
+    case "gunzip":
+      return hasOption(args, ["--stdout", "--list", "--test"], "c") ||
+        hasOption(args, [], "l") ||
+        hasOption(args, [], "t")
+        ? undefined
+        : `${name} writing files`;
+
+    default:
+      return knownOnWorker(name, context.functions) ? undefined : `${name} may write files`;
+  }
+};
 
 /** Why `git` with `args` is not for the Worker Shell's git; undefined when it is. */
 const gitNeeds = (args: readonly Word[]): string | undefined => {
@@ -650,9 +891,18 @@ const gitNeeds = (args: readonly Word[]): string | undefined => {
     : `${label} without ${spec.oneOf?.join(" or ")}: its output is not git's`;
 };
 
+/** What reading a command found besides whether it needs the Container. */
+type Found = {
+  /** The programs in it that neither list holds. */
+  readonly unknown: Set<string>;
+  /** The first thing in it that may write a file. */
+  writes: string | undefined;
+};
+
 type Context = {
   readonly functions: ReadonlySet<string>;
   readonly depth: number;
+  readonly found: Found;
 };
 
 /** The first of `words` (a command with its arguments) that the Worker Shell cannot run; undefined if none. */
@@ -668,6 +918,8 @@ const commandNeeds = (words: readonly Word[], context: Context): string | undefi
   if (name.includes("/")) return `${name} is a program by path`;
 
   if (context.functions.has(name)) return undefined;
+
+  context.found.writes ??= writesOf(name, args, context);
 
   switch (name) {
     case "git":
@@ -712,7 +964,7 @@ const commandNeeds = (words: readonly Word[], context: Context): string | undefi
       return shellNeeds(name, args, context);
 
     default:
-      return nameNeeds(name, context.functions);
+      return nameNeeds(name, context);
   }
 };
 
@@ -723,7 +975,7 @@ const namesNeed = (args: readonly Word[], context: Context): string | undefined 
 
     if (arg.dynamic) return `${arg.text || "a name"} is chosen by the shell at run time`;
 
-    const needs = nameNeeds(arg.text, context.functions);
+    const needs = nameNeeds(arg.text, context);
 
     if (needs !== undefined) return needs;
   }
@@ -829,6 +1081,8 @@ const scriptNeeds = (source: string, context: Context): string | undefined => {
 
   if (parsed.unreadable !== undefined) return parsed.unreadable;
 
+  context.found.writes ??= parsed.writes;
+
   const inner = {
     ...context,
     functions: new Set([...context.functions, ...parsed.functions]),
@@ -843,14 +1097,107 @@ const scriptNeeds = (source: string, context: Context): string | undefined => {
   return undefined;
 };
 
+const ON_WORKER = "every command in it runs on the Worker Shell";
+
 /**
- * Where `command` runs: the Worker Shell when every command in it is one the Worker Shell runs, and the Container
- * otherwise, or when it is not understood.
+ * Where `command` runs, as far as the command alone tells: the Container when something in it needs the Container or it
+ * is not understood, and the Worker Shell otherwise, if the Worker Shell has the programs in `unknown`.
  */
 export const routeCommand = (command: string): BashRoute => {
-  const needs = scriptNeeds(command, { functions: new Set(), depth: 0 });
+  const found: Found = { unknown: new Set(), writes: undefined };
+  const needs = scriptNeeds(command, { functions: new Set(), depth: 0, found });
 
-  return needs === undefined
-    ? { backend: "worker", reason: "every command in it runs on the Worker Shell" }
-    : { backend: "container", reason: needs };
+  if (needs !== undefined) {
+    return { backend: "container", reason: needs, unknown: [], writes: found.writes };
+  }
+
+  const unknown = [...found.unknown];
+
+  return {
+    backend: "worker",
+    reason:
+      unknown.length === 0 ? ON_WORKER : `on the Worker Shell if it has ${unknown.join(", ")}`,
+    unknown,
+    writes: found.writes,
+  };
+};
+
+/**
+ * `route` settled: when it runs on the Worker Shell only if the Worker Shell has its `unknown` programs, `has` asks which
+ * of them it has, and the route goes to the Container when one is missing.
+ */
+export const resolveRoute = async (
+  route: BashRoute,
+  has: (programs: readonly string[]) => Promise<ReadonlySet<string>>,
+): Promise<BashRoute> => {
+  if (route.backend === "container" || route.unknown.length === 0) return route;
+
+  const present = await has(route.unknown);
+  const missing = route.unknown.find((name) => !present.has(name));
+
+  return missing === undefined
+    ? { ...route, reason: ON_WORKER, unknown: [] }
+    : { ...route, backend: "container", reason: notOnWorker(missing), unknown: [] };
+};
+
+/** The last line of the probe's output: an answer without it was cut short, and says nothing about what is missing. */
+const PROBE_END = "-- end of probe --";
+
+/**
+ * A Worker Shell script that prints each of `programs` it has, one per line, then {@link PROBE_END}: what
+ * `resolveRoute` asks it. Each is a plain program name (`routeCommand` sends any other to the Container).
+ */
+export const probeScript = (programs: readonly string[]): string =>
+  [
+    ...programs.map((name) => `command -v '${name}' >/dev/null 2>&1 && echo '${name}'`),
+    `echo '${PROBE_END}'`,
+  ].join("\n");
+
+/**
+ * Which of `programs` the Worker Shell has, from the stdout of {@link probeScript}; undefined when the output did not
+ * end the way the script ends, so the answer cannot be trusted.
+ */
+export const probeAnswer = (
+  programs: readonly string[],
+  stdout: string,
+): ReadonlySet<string> | undefined => {
+  const lines = stdout.split("\n");
+
+  if (!lines.includes(PROBE_END)) return undefined;
+
+  return new Set(programs.filter((name) => lines.includes(name)));
+};
+
+/** A command's output on the Worker Shell, by stream. */
+export type WorkerOutput = { readonly stdout: string; readonly stderr: string };
+
+/**
+ * What the Worker Shell writes to stderr when it cannot do what a command asks, where the Container can: a program it
+ * lacks, a syntax its parser does not take, an option its version of a program does not take, a feature it does not
+ * support, a repository too big for its git (`apps/server/src/workspace/git.ts`).
+ */
+const CANNOT: readonly RegExp[] = [
+  /^bash: [^\n:]+: command not found$/m,
+  /^bash: syntax error: .*$/m,
+  /^[\w.-]+: (?:unrecognized option|invalid option)\b.*$/m,
+  /^[\w.-]+: .*\bnot supported\b.*$/m,
+  /^git: this repository's packfiles are .* Rerun with backend: "container"\.$/m,
+];
+
+/**
+ * The shell's own lines among {@link CANNOT}, which a command that sends its stderr to stdout (`2>&1`) puts there; the
+ * rest are looked for in stderr only, since a file the command prints may hold anything.
+ */
+const CANNOT_ON_STDOUT: readonly RegExp[] = CANNOT.slice(0, 2);
+
+/**
+ * The line of a command's `output` on the Worker Shell saying that the Worker Shell could not run it as the Container
+ * would; undefined when there is none.
+ */
+export const workerShellCannot = (output: WorkerOutput): string | undefined => {
+  const match =
+    CANNOT.map((pattern) => pattern.exec(output.stderr)).find((found) => found !== null) ??
+    CANNOT_ON_STDOUT.map((pattern) => pattern.exec(output.stdout)).find((found) => found !== null);
+
+  return match?.[0].trim();
 };

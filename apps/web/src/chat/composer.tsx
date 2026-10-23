@@ -7,9 +7,8 @@ import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Atom from "effect/reactivity/Atom";
-import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Paperclip, Square } from "lucide-react";
+import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Square } from "lucide-react";
 import {
-  type ClipboardEvent,
   type SubmitEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -35,6 +34,14 @@ import {
 import { catalogAtom } from "./catalog.ts";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu, rowId } from "./completion-menu.tsx";
+import {
+  AttachButton,
+  attachPasted,
+  composerBox,
+  roundButton,
+  sendButton,
+  toolbarButton,
+} from "./composer-parts.tsx";
 import { type Edited, replaceTrigger } from "./completion.ts";
 import {
   type ComposerSource,
@@ -79,9 +86,6 @@ const Lane = ({
 
 /** One composer's state (`composerState`), kept while it is shown. */
 const ComposerScope = ScopedAtom.make((source: ComposerSource) => Atom.make(composerState(source)));
-
-const roundButton =
-  "touch-target inline-flex size-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none";
 
 type ComposerProps = {
   steerLane: readonly QueuedEntry[];
@@ -150,7 +154,6 @@ const ComposerBox = ({
   const addAttachments = useAtomSet(addAttachmentsAtom(key));
   const removeAttachment = useAtomSet(removeAttachmentAtom(key));
   const sendAttached = useCall(sendAttachedAtom(key));
-  const picker = useRef<HTMLInputElement>(null);
 
   useFileDropZone(dropZone, key);
 
@@ -371,17 +374,6 @@ const ComposerBox = ({
     }
   };
 
-  /** Pasted files attach; the clipboard's text, when it has any too, is pasted as well. */
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData.files);
-
-    if (files.length === 0) return;
-
-    if (!event.clipboardData.types.includes("text/plain")) event.preventDefault();
-
-    addAttachments(files);
-  };
-
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
 
@@ -446,12 +438,7 @@ const ComposerBox = ({
             onPick={pick}
           />
         )}
-        <div
-          className={cn(
-            "rounded-lg border bg-background transition-colors focus-within:border-ring",
-            dragging && "border-ring bg-muted",
-          )}
-        >
+        <div className={composerBox(dragging)}>
           <AttachmentTiles
             items={attachments.items}
             fits={attachments.fits}
@@ -466,7 +453,9 @@ const ComposerBox = ({
             // messaging app; with a mouse or trackpad, Enter still sends.
             unstable_insertNewlineOnTouchEnter
             addAttachmentOnPaste={false}
-            onPaste={onPaste}
+            onPaste={(event) => {
+              attachPasted(event, addAttachments);
+            }}
             placeholder={placeholder}
             aria-label="Message"
             aria-autocomplete="list"
@@ -492,28 +481,7 @@ const ComposerBox = ({
           <div className="flex items-center gap-2 px-1.5 pb-1.5">
             <div className="flex min-w-0 flex-1 items-center gap-0.5">{tools}</div>
             <div className="flex shrink-0 items-center gap-1">
-              <input
-                ref={picker}
-                type="file"
-                multiple
-                hidden
-                tabIndex={-1}
-                onChange={(event) => {
-                  addAttachments(Array.from(event.target.files ?? []));
-                  event.target.value = "";
-                }}
-              />
-              <button
-                type="button"
-                aria-label="Attach files"
-                title="Attach files"
-                onClick={() => {
-                  picker.current?.click();
-                }}
-                className="touch-target inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
-              >
-                <Paperclip aria-hidden />
-              </button>
+              <AttachButton onAttach={addAttachments} />
               {running && hasMessage && (
                 <button
                   type="button"
@@ -521,7 +489,7 @@ const ComposerBox = ({
                   aria-label="Queue"
                   title="Queue: starts after this run (Alt+Enter)"
                   onClick={queue}
-                  className="touch-target inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50 [&_svg]:size-4"
+                  className={toolbarButton}
                 >
                   <ListPlus aria-hidden />
                 </button>
@@ -567,10 +535,7 @@ const ComposerBox = ({
                         ? "Steer: joins the run after its tool calls (Enter)"
                         : "Send (Enter)"
                   }
-                  className={cn(
-                    roundButton,
-                    "bg-primary text-primary-foreground hover:bg-primary/90 [&_svg]:size-4",
-                  )}
+                  className={sendButton}
                 >
                   {running ? <CornerUpRight aria-hidden /> : <ArrowUp aria-hidden />}
                 </button>

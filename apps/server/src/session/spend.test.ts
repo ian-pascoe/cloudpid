@@ -139,6 +139,33 @@ describe("usageMessage", () => {
     expect(usageMessage({ ...NO_TOTALS, cost: 1 }, 2)).toEqual({ ...NO_TOTALS, cost: 1, limit: 2 });
     expect(usageMessage(NO_TOTALS, null).limit).toBeNull();
   });
+
+  it("carries the Containers' usage when known, apart from the models' cost", () => {
+    const container = {
+      instance: "custom-2",
+      runSeconds: 60,
+      cpuSeconds: 5,
+      egressBytes: 0,
+      memory: 0.001,
+      disk: 0,
+      cpu: 0.0001,
+      egress: 0,
+      reportedThrough: null,
+      asOf: 1,
+      running: false,
+      busy: false,
+      rates: { memory: 0, disk: 0, cpu: 0 },
+      until: null,
+    } as const;
+
+    expect(usageMessage({ ...NO_TOTALS, cost: 1 }, null, container)).toEqual({
+      ...NO_TOTALS,
+      cost: 1,
+      limit: null,
+      container,
+    });
+    expect(usageMessage(NO_TOTALS, null, null)).not.toHaveProperty("container");
+  });
 });
 
 describe("limitingModels", () => {

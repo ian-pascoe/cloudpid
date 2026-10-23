@@ -44,10 +44,23 @@ export type BackendCall = {
   readonly timeout?: number | undefined;
 };
 
+/** What the fake environment answers a command with, instead of naming where it ran. */
+export type FakeAnswer = {
+  readonly output: string;
+  /** The stream the output is on; stdout by default. */
+  readonly stream?: "stdout" | "stderr";
+  readonly exitCode?: number;
+};
+
+/** How the fake environment answers `command` on `backend`; undefined for the default answer. */
+export type Respond = (backend: BashBackend | undefined, command: string) => FakeAnswer | undefined;
+
 export type CodingHarnessOptions = {
   /** Whether the environment can run on a chosen backend. */
   readonly backends: boolean;
   readonly exitCode?: number;
+  /** Answers for some commands; every other prints where it ran, as `<backend>: <command>`. */
+  readonly respond?: Respond;
   /** The files the environment holds, by absolute path, for `read`. */
   readonly files?: Readonly<Record<string, Uint8Array>>;
   /** The Images binding `read` prepares images with; none by default. */
@@ -90,26 +103,31 @@ const readerOf = (path: string, bytes: Uint8Array, reads: FileReads): BinaryRead
   close: async () => {},
 });
 
-/** An environment whose commands only report where they ran, and whose files are `files`. */
+/** What every fake environment of one Harness shares. */
+type FakeSetup = {
+  readonly calls: BackendCall[];
+  readonly exitCode: number;
+  readonly respond: Respond;
+  readonly files: Readonly<Record<string, Uint8Array>>;
+  readonly reads: FileReads;
+};
+
+/** An environment whose commands report where they ran (or answer as `respond` says), and whose files are `files`. */
 class FakeEnv implements FakeShell {
   readonly cwd = "/workspace";
   readonly #calls: BackendCall[];
   readonly #backend: BashBackend | undefined;
   readonly #exitCode: number;
+  readonly #respond: Respond;
   readonly #files: Readonly<Record<string, Uint8Array>>;
   readonly #reads: FileReads;
 
-  constructor(
-    calls: BackendCall[],
-    exitCode: number,
-    files: Readonly<Record<string, Uint8Array>>,
-    reads: FileReads,
-    backend?: BashBackend,
-  ) {
-    this.#calls = calls;
-    this.#exitCode = exitCode;
-    this.#files = files;
-    this.#reads = reads;
+  constructor(setup: FakeSetup, backend?: BashBackend) {
+    this.#calls = setup.calls;
+    this.#exitCode = setup.exitCode;
+    this.#respond = setup.respond;
+    this.#files = setup.files;
+    this.#reads = setup.reads;
     this.#backend = backend;
   }
 
@@ -139,36 +157,29 @@ class FakeEnv implements FakeShell {
       command: String(command),
       timeout: options?.timeout,
     });
-    options?.onOutput?.(`${this.#backend ?? "default"}: ${String(command)}`, ctx, {
-      stream: "stdout",
-    });
+    const answer = this.#respond(this.#backend, String(command));
 
-    return ok({ exitCode: this.#exitCode });
+    options?.onOutput?.(
+      answer?.output ?? `${this.#backend ?? "default"}: ${String(command)}`,
+      ctx,
+      { stream: answer?.stream ?? "stdout" },
+    );
+
+    return ok({ exitCode: answer?.exitCode ?? this.#exitCode });
   }
 }
 
 /** A fake environment that can also run on a chosen backend. */
 class FakeBackendEnv extends FakeEnv {
-  readonly #calls: BackendCall[];
-  readonly #exitCode: number;
-  readonly #files: Readonly<Record<string, Uint8Array>>;
-  readonly #reads: FileReads;
+  readonly #setup: FakeSetup;
 
-  constructor(
-    calls: BackendCall[],
-    exitCode: number,
-    files: Readonly<Record<string, Uint8Array>>,
-    reads: FileReads,
-  ) {
-    super(calls, exitCode, files, reads);
-    this.#calls = calls;
-    this.#exitCode = exitCode;
-    this.#files = files;
-    this.#reads = reads;
+  constructor(setup: FakeSetup) {
+    super(setup);
+    this.#setup = setup;
   }
 
   onBackend(backend: BashBackend): ExecutionEnv {
-    return asEnv(new FakeEnv(this.#calls, this.#exitCode, this.#files, this.#reads, backend));
+    return asEnv(new FakeEnv(this.#setup, backend));
   }
 }
 
@@ -176,8 +187,15 @@ class FakeBackendEnv extends FakeEnv {
 export const openCodingHarness = async (options: CodingHarnessOptions) => {
   const calls: BackendCall[] = [];
   const reads: FileReads = { largest: 0 };
-  const files = options.files ?? {};
-  const exitCode = options.exitCode ?? 0;
+
+  const setup: FakeSetup = {
+    calls,
+    exitCode: options.exitCode ?? 0,
+    respond: options.respond ?? (() => undefined),
+    files: options.files ?? {},
+    reads,
+  };
+
   const tools = codingToolsWith(options.images === undefined ? {} : { images: options.images });
   const faux = fauxProvider();
   const models = createModels();
@@ -191,12 +209,7 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
     {
       models,
       registry,
-      env: () =>
-        asEnv(
-          options.backends
-            ? new FakeBackendEnv(calls, exitCode, files, reads)
-            : new FakeEnv(calls, exitCode, files, reads),
-        ),
+      env: () => asEnv(options.backends ? new FakeBackendEnv(setup) : new FakeEnv(setup)),
     },
     context,
   );

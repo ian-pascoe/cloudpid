@@ -5,15 +5,19 @@ import { EnvironmentError, type SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Record from "effect/Record";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as Socket from "effect/socket/Socket";
 import { afterEach, beforeEach, vi } from "vitest";
+import { addDraftAttachmentsAtom, draftAttachmentsAtom } from "./chat/attachments-state.ts";
+import { fakeImages, fakeUploads } from "./chat/chat.testing.ts";
 import {
   drainFirstMessageAtom,
   draftBaseAtom,
+  type FirstMessage,
   draftBranchAtom,
   draftEnvironmentAtom,
   draftTextAtom,
@@ -128,7 +132,7 @@ describe("sending the draft", () => {
       expect(told).toEqual([
         { environment: "work", workspace: "new", branch: "fix/build", base: "main" },
       ]);
-      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: "Fix the build" });
+      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: { text: "Fix the build" } });
       expect(registry.get(pathAtom)).toBe("/sessions/s1");
       expect(registry.get(draftTextAtom)).toBe("");
       expect(registry.get(draftBranchAtom)).toBe("");
@@ -177,7 +181,7 @@ describe("sending the draft", () => {
       yield* settled(registry, sendDraftAtom);
 
       expect(told).toHaveLength(2);
-      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: "Fix the build" });
+      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: { text: "Fix the build" } });
     }),
   );
 
@@ -189,6 +193,180 @@ describe("sending the draft", () => {
       yield* settled(registry, sendDraftAtom);
 
       expect(told).toEqual([]);
+    }),
+  );
+});
+
+describe("the draft's Attachments", () => {
+  /** A registry whose uploads the test drives, with the draft's Attachments read as the page reads them. */
+  const attaching = () => {
+    const uploads = fakeUploads();
+    const told: unknown[] = [];
+
+    const registry = AtomRegistry.make({
+      initialValues: [
+        Atom.initialValue(
+          appRuntime.layer,
+          Layer.mergeAll(
+            Clipboard.layer,
+            uploads.layer,
+            fakeImages().layer,
+            fakeRegistryLayer({
+              listSessions: () => Effect.succeed([]),
+              listWorkspaces: () => Effect.succeed([]),
+              createSession: (payload) =>
+                Effect.sync(() => {
+                  told.push(payload);
+
+                  return created("s1", payload.environment ?? "default");
+                }),
+            }),
+          ),
+        ),
+      ],
+    });
+
+    registry.mount(pathAtom);
+    registry.mount(pendingFirstMessagesAtom);
+    registry.mount(refusedFirstMessagesAtom);
+
+    // What the draft page reads, and lets go of when the owner leaves it.
+    const page = [
+      registry.mount(draftAttachmentsAtom),
+      registry.mount(addDraftAttachmentsAtom),
+      registry.mount(sendDraftAtom),
+    ];
+
+    const leave = Effect.sync(() => {
+      for (const unmount of page) unmount();
+    }).pipe(Effect.andThen(settle));
+
+    const add = (...files: File[]) =>
+      Effect.sync(() => {
+        registry.set(addDraftAttachmentsAtom, files);
+      }).pipe(Effect.andThen(settle));
+
+    const summary = () =>
+      registry.get(draftAttachmentsAtom).items.map((item) => `${item.name} ${item.status}`);
+
+    return { registry, uploads, told, add, summary, leave };
+  };
+
+  const file = (name: string) => new File(["x"], name, { type: "text/plain" });
+
+  it.effect("upload to the Session once Send has made it, and go with the first message", () =>
+    Effect.gen(function* () {
+      const { registry, uploads, add, summary } = attaching();
+
+      yield* add(file("notes.txt"));
+
+      // Nowhere to go before the Session is made.
+      expect(summary()).toEqual(["notes.txt queued"]);
+      expect(uploads.started).toEqual([]);
+
+      registry.set(sendDraftAtom, draft({ text: "Read this" }));
+      yield* settle;
+
+      expect(uploads.started.map((upload) => `${upload.sessionId}/${upload.name}`)).toEqual([
+        "s1/notes.txt",
+      ]);
+      expect(summary()).toEqual(["notes.txt uploading"]);
+      // The page stays on the draft while it uploads.
+      expect(registry.get(pathAtom)).toBe("/");
+
+      yield* uploads.started[0]!.finish();
+      yield* settled(registry, sendDraftAtom);
+
+      expect(registry.get(pendingFirstMessagesAtom)).toMatchObject({
+        s1: {
+          text: "Read this",
+          message: {
+            input: [
+              { type: "text", text: "Read this" },
+              { type: "text", text: "@/workspace/.uploads/s1/notes.txt" },
+            ],
+          },
+        },
+      });
+      expect(registry.get(pathAtom)).toBe("/sessions/s1");
+      // The next draft starts with none.
+      expect(summary()).toEqual([]);
+    }),
+  );
+
+  it.effect("make a message on their own", () =>
+    Effect.gen(function* () {
+      const { registry, uploads, told, add } = attaching();
+
+      yield* add(file("notes.txt"));
+      registry.set(sendDraftAtom, draft({ text: "  " }));
+      yield* settle;
+      yield* uploads.started[0]!.finish();
+      yield* settled(registry, sendDraftAtom);
+
+      expect(told).toHaveLength(1);
+      expect(registry.get(pendingFirstMessagesAtom)).toMatchObject({
+        s1: {
+          text: "",
+          message: { input: [{ type: "text", text: "@/workspace/.uploads/s1/notes.txt" }] },
+        },
+      });
+    }),
+  );
+
+  it.effect(
+    "wait for every upload, delete the ones that did, and go back to the Session's composer when one did not",
+    () =>
+      Effect.gen(function* () {
+        const { registry, uploads, add } = attaching();
+        const notes = file("notes.txt");
+        const plan = file("plan.md");
+        const todo = file("todo.txt");
+
+        yield* add(notes, plan, todo);
+        registry.set(sendDraftAtom, draft({ text: "Read this" }));
+        yield* settle;
+        yield* uploads.started[0]!.finish();
+        yield* uploads.started[1]!.fail("The upload failed (500).");
+
+        // The last one still uploads: nothing is decided yet.
+        expect(registry.get(sendDraftAtom).waiting).toBe(true);
+
+        yield* uploads.started[2]!.finish();
+        yield* settled(registry, sendDraftAtom);
+
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({});
+        expect(registry.get(refusedFirstMessagesAtom)).toEqual({
+          s1: {
+            text: "Read this",
+            reason:
+              "The session was made, but not every attachment uploaded: plan.md (The upload failed (500).). Send the message again.",
+            files: [notes, plan, todo],
+          },
+        });
+        // The message is not sent, so the files that went up are not left behind.
+        expect(uploads.removed).toEqual(["s1/notes.txt", "s1/todo.txt"]);
+        expect(registry.get(pathAtom)).toBe("/sessions/s1");
+      }),
+  );
+
+  it.effect("go on uploading when the page is left, and leave the owner where they went", () =>
+    Effect.gen(function* () {
+      const { registry, uploads, add, leave } = attaching();
+
+      yield* add(file("notes.txt"));
+      registry.set(sendDraftAtom, draft({ text: "Read this" }));
+      yield* settle;
+      // The owner opens another Session while it uploads; nothing reads the draft any more.
+      registry.set(pathAtom, "/sessions/other");
+      yield* leave;
+      yield* uploads.started[0]!.finish();
+      yield* settled(registry, sendDraftAtom);
+
+      expect(registry.get(pendingFirstMessagesAtom)).toMatchObject({
+        s1: { text: "Read this" },
+      });
+      expect(registry.get(pathAtom)).toBe("/sessions/other");
     }),
   );
 });
@@ -250,7 +428,7 @@ describe("the first message of a Session", () => {
   });
 
   /** An atom registry whose runtime dials fake sockets, recorded in `sockets`, holding `pending`. */
-  const setup = (pending: Record<string, string>) => {
+  const setup = (pending: Readonly<{ [sessionId: string]: string }>) => {
     const sockets: FakeSocket[] = [];
 
     const registry = AtomRegistry.make({
@@ -270,7 +448,10 @@ describe("the first message of a Session", () => {
             fakeRegistryLayer({}),
           ),
         ),
-        Atom.initialValue(pendingFirstMessagesAtom, pending),
+        Atom.initialValue(
+          pendingFirstMessagesAtom,
+          Record.map(pending, (text): FirstMessage => ({ text })),
+        ),
       ],
     });
 
@@ -325,8 +506,8 @@ describe("the first message of a Session", () => {
         expect(submits[0]).toMatchObject({ input: "Fix the build", whenBusy: "followUp" });
         // Until the Session answers, the message is still waiting.
         expect(registry.get(pendingFirstMessagesAtom)).toEqual({
-          s1: "Fix the build",
-          s2: "Another",
+          s1: { text: "Fix the build" },
+          s2: { text: "Another" },
         });
 
         yield* latest().say({
@@ -336,7 +517,7 @@ describe("the first message of a Session", () => {
         });
         yield* settle;
 
-        expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s2: "Another" });
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s2: { text: "Another" } });
         expect(registry.get(refusedFirstMessagesAtom)).toEqual({});
       }),
   );
@@ -351,7 +532,7 @@ describe("the first message of a Session", () => {
       unmount();
       yield* settle;
 
-      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: "Fix the build" });
+      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: { text: "Fix the build" } });
 
       registry.mount(drainFirstMessageAtom("s1"));
       yield* settle;
@@ -378,7 +559,7 @@ describe("the first message of a Session", () => {
 
         unmount();
         yield* settle;
-        expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: "Fix the build" });
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({ s1: { text: "Fix the build" } });
 
         registry.mount(drainFirstMessageAtom("s1"));
         yield* settle;
@@ -454,7 +635,7 @@ describe("the first message of a Session", () => {
           .commands()
           .filter((command) => command.type === "submit"),
       ).toHaveLength(0);
-      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ other: "Not mine" });
+      expect(registry.get(pendingFirstMessagesAtom)).toEqual({ other: { text: "Not mine" } });
     }),
   );
 });

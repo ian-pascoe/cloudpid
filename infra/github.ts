@@ -1,7 +1,8 @@
 /**
  * CI credentials as code: the GitHub Actions environments `production` (deployments from `main` only) and `preview`
  * (pull request previews, any branch), a scoped Cloudflare API token for each, and the secrets and variables that hand
- * them to .github/workflows/ci.yml.
+ * them to .github/workflows/ci.yml, and for each environment a read-only analytics token its deploys bind to the
+ * Workspaces Worker (CLOUDPID_ANALYTICS_TOKEN), which reads the Containers' usage for the Session header's cost.
  * Deployed once from a workstation with a profile that may create API tokens, and again to rotate the token or change
  * its permissions:
  *
@@ -147,6 +148,44 @@ export default Alchemy.Stack(
       environment: preview,
       name: "MODEL_PROXY_URL",
       value: modelProxyUrl,
+    });
+
+    // The Workspace DO reads its Containers' usage from Cloudflare's GraphQL Analytics API with these
+    // (apps/server/src/workspace/container-analytics.ts); the deploy binds the environment's as a Worker secret. Read-only,
+    // but account-wide: Cloudflare has no narrower analytics scope. One per environment, so either can be revoked alone.
+    const analyticsPolicy: Cloudflare.ApiToken.Policy = {
+      effect: "allow",
+      permissionGroups: ["Account Analytics Read"],
+      resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
+    };
+
+    const analyticsToken = yield* Cloudflare.ApiToken.AccountApiToken("AnalyticsToken", {
+      name: "cloudpid-container-analytics",
+      accountId,
+      policies: [analyticsPolicy],
+    });
+
+    yield* GitHub.Secret("CloudpidAnalyticsToken", {
+      ...repo,
+      environment: production,
+      name: "CLOUDPID_ANALYTICS_TOKEN",
+      value: analyticsToken.value,
+    });
+
+    const previewAnalyticsToken = yield* Cloudflare.ApiToken.AccountApiToken(
+      "PreviewAnalyticsToken",
+      {
+        name: "cloudpid-container-analytics-preview",
+        accountId,
+        policies: [analyticsPolicy],
+      },
+    );
+
+    yield* GitHub.Secret("PreviewCloudpidAnalyticsToken", {
+      ...repo,
+      environment: preview,
+      name: "CLOUDPID_ANALYTICS_TOKEN",
+      value: previewAnalyticsToken.value,
     });
 
     return { environments: ["production", "preview"], zoneId: ZONE_ID };

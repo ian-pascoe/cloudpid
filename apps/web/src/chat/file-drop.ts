@@ -1,5 +1,6 @@
-// Files dragged over a thread attach to its composer: while a drag that carries files is over the zone,
-// `fileDragAtom` is true (the composer shows it), and a drop attaches the files. A zone inside another (a subagent's
+// Files dragged over a thread attach to its composer, and over the draft page to the draft (`useFileDrop`): while a
+// drag that carries files is over the zone, `fileDragAtom` is true (the composer shows it), and a drop attaches the
+// files. A zone inside another (a subagent's
 // thread in the Session's) keeps its drags to itself. While a zone is listening, a file dropped anywhere else on the
 // page is refused rather than opened by the browser in place of the app.
 
@@ -7,7 +8,7 @@
 
 import { useAtomSet } from "@effect/atom-react";
 import * as Atom from "effect/reactivity/Atom";
-import { type RefObject, useEffect } from "react";
+import { type RefObject, useEffect, useRef } from "react";
 import { addAttachmentsAtom } from "./attachments-state.ts";
 import type { ConversationKey } from "./conversation.ts";
 
@@ -31,8 +32,22 @@ export const useFileDropZone = (
   zone: RefObject<HTMLElement | null> | undefined,
   key: ConversationKey,
 ): void => {
-  const setActive = useAtomSet(fileDragAtom(key));
-  const attach = useAtomSet(addAttachmentsAtom(key));
+  useFileDrop(zone, useAtomSet(addAttachmentsAtom(key)), useAtomSet(fileDragAtom(key)));
+};
+
+/**
+ * Listen for files dragged over `zone` while mounted: `setActive` hears whether a drag that carries files is over it,
+ * and `attach` gets the files dropped.
+ */
+export const useFileDrop = (
+  zone: RefObject<HTMLElement | null> | undefined,
+  attach: (files: File[]) => void,
+  setActive: (active: boolean) => void,
+): void => {
+  // The latest callbacks, read as a drag happens, so the listeners are added once per zone.
+  const heard = useRef({ attach, setActive });
+
+  heard.current = { attach, setActive };
 
   useEffect(() => {
     const element = zone?.current;
@@ -48,7 +63,7 @@ export const useFileDropZone = (
       event.preventDefault();
       event.stopPropagation();
       depth += 1;
-      setActive(true);
+      heard.current.setActive(true);
     };
 
     const over = (event: DragEvent) => {
@@ -66,7 +81,7 @@ export const useFileDropZone = (
       event.stopPropagation();
       depth = Math.max(0, depth - 1);
 
-      if (depth === 0) setActive(false);
+      if (depth === 0) heard.current.setActive(false);
     };
 
     const drop = (event: DragEvent) => {
@@ -75,8 +90,8 @@ export const useFileDropZone = (
       event.preventDefault();
       event.stopPropagation();
       depth = 0;
-      setActive(false);
-      attach(Array.from(event.dataTransfer?.files ?? []));
+      heard.current.setActive(false);
+      heard.current.attach(Array.from(event.dataTransfer?.files ?? []));
     };
 
     element.addEventListener("dragenter", enter);
@@ -93,7 +108,7 @@ export const useFileDropZone = (
       element.removeEventListener("drop", drop);
       window.removeEventListener("dragover", refuse);
       window.removeEventListener("drop", refuse);
-      setActive(false);
+      heard.current.setActive(false);
     };
-  }, [zone, setActive, attach]);
+  }, [zone]);
 };

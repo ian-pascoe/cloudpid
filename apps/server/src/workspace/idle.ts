@@ -21,6 +21,10 @@ export type IdleStopDeps = {
   readonly snapshot: () => Promise<void>;
   /** Stop the Container. */
   readonly stop: () => Promise<void>;
+  /** Told of every use of the Container (`ContainerUsageLedger.seen`). */
+  readonly used?: (() => void) | undefined;
+  /** Told when commands begin to run on the Container and when the last one ends (`ContainerUsageLedger.busy`). */
+  readonly busy?: ((busy: boolean) => void) | undefined;
 };
 
 export class IdleStop {
@@ -42,6 +46,7 @@ export class IdleStop {
     const at = this.#deps.now();
 
     this.#lastUse = at;
+    this.#deps.used?.();
 
     const idleMs = await this.#deps.idleMs();
 
@@ -65,14 +70,32 @@ export class IdleStop {
   begin(): Promise<void> {
     this.#running++;
 
+    if (this.#running === 1) this.#deps.busy?.(true);
+
     return this.touch();
   }
 
   /** A command on the Container ended (or its client went away). */
   end(): Promise<void> {
+    const wasRunning = this.#running > 0;
+
     this.#running = Math.max(0, this.#running - 1);
 
+    if (wasRunning && this.#running === 0) this.#deps.busy?.(false);
+
     return this.touch();
+  }
+
+  /**
+   * The latest the Container goes on without another use: when the idle time since its last use runs out (its snapshot
+   * then takes a little longer). Null while a command runs, or when no use is known.
+   */
+  async stopsBy(): Promise<number | null> {
+    if (this.#running > 0) return null;
+
+    const lastUse = this.#lastUse ?? (await this.#deps.load());
+
+    return lastUse === undefined ? null : lastUse + (await this.#deps.idleMs());
   }
 
   /** The alarm: stop the Container if it has been idle for the whole idle time, else wait for the rest of it. */

@@ -1,11 +1,9 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import { Ellipsis } from "lucide-react";
+import { Check, Ellipsis } from "lucide-react";
 import { type ComponentProps, type ReactNode, useEffect, useId, useRef } from "react";
 import { cn } from "../../lib/utils.ts";
-
-/** The gap between the button and its menu, and the least room kept from the viewport's edges. */
-const GAP = 4;
+import { type Align, popoverPanel, useAnchoredPopover } from "./popover.tsx";
 
 /** Where each key moves focus among `count` items from `at` (-1 when none has it), if anywhere. */
 const MOVES = {
@@ -20,55 +18,42 @@ const isMoveKey = (key: string): key is keyof typeof MOVES => Object.hasOwn(MOVE
 
 /** The menu's items that can take focus, in order. */
 const itemsOf = (menu: HTMLElement): HTMLElement[] => [
-  ...menu.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)'),
+  ...menu.querySelectorAll<HTMLElement>(
+    '[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)',
+  ),
 ];
 
 /**
- * Place `menu` under `trigger`, its right edge on the trigger's, or above it when there is no room below. The menu is a
- * popover in the top layer, so it is positioned against the viewport.
- */
-const place = (menu: HTMLElement, trigger: HTMLElement) => {
-  const anchor = trigger.getBoundingClientRect();
-  const { offsetWidth: width, offsetHeight: height } = menu;
-
-  const below = anchor.bottom + GAP;
-
-  const top =
-    below + height > window.innerHeight - GAP && anchor.top - GAP - height >= GAP
-      ? anchor.top - GAP - height
-      : below;
-
-  const left = Math.min(Math.max(GAP, anchor.right - width), window.innerWidth - width - GAP);
-
-  menu.style.top = `${top}px`;
-  menu.style.left = `${left}px`;
-};
-
-/**
- * A "⋯" button and the menu it opens: the platform's Popover API, so the menu sits in the top layer, closes on Escape
- * or a click outside, and gives focus back to the button. Arrow keys, Home and End move between the items.
+ * A button and the menu it opens: the platform's Popover API, so the menu sits in the top layer, closes on Escape or a
+ * click outside, and gives focus back to the button. Arrow keys, Home and End move between the items; opening it
+ * focuses the checked item, else the first. The button is a "⋯" unless `icon` gives it other content.
  */
 export const Menu = ({
   label,
   icon = <Ellipsis className="size-4" aria-hidden />,
   title,
   disabled = false,
+  align = "end",
   onOpenChange,
   children,
   className,
+  menuClassName,
 }: {
   /** What the button says to assistive technology, such as "Actions for Fix the build". */
   label: string;
-  /** The button's icon: "⋯" unless the menu is better named by another. */
+  /** What the button shows: "⋯" unless the menu is better named by another icon, or by its value. */
   icon?: ReactNode;
   /** The button's tooltip. */
   title?: string | undefined;
   /** Holds the button, so the menu cannot be opened. */
   disabled?: boolean;
+  /** Which edge of the button the menu lines up with. */
+  align?: Align;
   /** Hears the menu open and close, for a menu whose items are only worth fetching while it is open. */
   onOpenChange?: ((open: boolean) => void) | undefined;
   children: ReactNode;
   className?: string | undefined;
+  menuClassName?: string | undefined;
 }) => {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -90,43 +75,16 @@ export const Menu = ({
     };
   }, [onOpenChange]);
 
-  useEffect(() => {
-    const element = menu.current;
+  useAnchoredPopover(trigger, menu, align, (element) => {
+    const items = itemsOf(element);
 
-    if (element === null) return;
+    const first = Arr.findFirst(items, (item) => item.getAttribute("aria-checked") === "true").pipe(
+      Option.orElse(() => Arr.head(items)),
+      Option.getOrUndefined,
+    );
 
-    const onToggle = (event: Event) => {
-      const open = event instanceof ToggleEvent && event.newState === "open";
-
-      trigger.current?.setAttribute("aria-expanded", String(open));
-
-      if (!open || trigger.current === null) return;
-
-      place(element, trigger.current);
-      itemsOf(element)[0]?.focus();
-    };
-
-    // The menu is placed again while open, so it follows its button when the page scrolls or resizes, and stays on screen
-    // when items that arrive after it opened change its size.
-    const follow = () => {
-      if (trigger.current !== null && element.matches(":popover-open"))
-        place(element, trigger.current);
-    };
-
-    const resized = new ResizeObserver(follow);
-
-    element.addEventListener("toggle", onToggle);
-    window.addEventListener("resize", follow);
-    window.addEventListener("scroll", follow, true);
-    resized.observe(element);
-
-    return () => {
-      element.removeEventListener("toggle", onToggle);
-      window.removeEventListener("resize", follow);
-      window.removeEventListener("scroll", follow, true);
-      resized.disconnect();
-    };
-  }, []);
+    first?.focus();
+  });
 
   return (
     <>
@@ -170,7 +128,7 @@ export const Menu = ({
           event.preventDefault();
           next.focus();
         }}
-        className="fixed m-0 max-h-[70vh] min-w-44 overflow-y-auto rounded-lg border bg-background p-1 text-foreground shadow-sm"
+        className={cn(popoverPanel, "max-h-[70vh] min-w-44 overflow-y-auto", menuClassName)}
       >
         {children}
       </div>
@@ -178,9 +136,13 @@ export const Menu = ({
   );
 };
 
-/** One action of a `Menu`. It closes the menu, then runs. */
+/**
+ * One action of a `Menu`. It closes the menu, then runs. With `checked` it is one choice of several (a radio item),
+ * marked when it is the one chosen.
+ */
 export const MenuItem = ({
   destructive = false,
+  checked,
   onSelect,
   children,
   className,
@@ -188,11 +150,14 @@ export const MenuItem = ({
 }: Omit<ComponentProps<"button">, "onClick" | "onSelect"> & {
   /** Brick Red: the action deletes. */
   destructive?: boolean;
+  /** Whether this choice is the one chosen; absent for an action. */
+  checked?: boolean | undefined;
   onSelect: () => void;
 }) => (
   <button
     type="button"
-    role="menuitem"
+    role={checked === undefined ? "menuitem" : "menuitemradio"}
+    aria-checked={checked}
     onClick={(event) => {
       event.currentTarget.closest<HTMLElement>("[popover]")?.hidePopover();
       onSelect();
@@ -206,6 +171,23 @@ export const MenuItem = ({
     )}
     {...props}
   >
-    {children}
+    {checked === undefined ? (
+      children
+    ) : (
+      <>
+        <span className="flex min-w-0 flex-1 items-center gap-2">{children}</span>
+        <Check className={cn("text-foreground", !checked && "invisible")} aria-hidden />
+      </>
+    )}
   </button>
 );
+
+/** A heading over a group of a `Menu`'s items. */
+export const MenuLabel = ({ children }: { children: ReactNode }) => (
+  <div role="presentation" className="px-2.5 pt-1.5 pb-1 text-xs font-medium text-muted-foreground">
+    {children}
+  </div>
+);
+
+/** A line between groups of a `Menu`'s items. */
+export const MenuSeparator = () => <div role="separator" className="-mx-1 my-1 h-px bg-border" />;
