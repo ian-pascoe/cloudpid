@@ -217,8 +217,20 @@ export const HistoryRequest = Schema.Struct({
   before: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 
+/**
+ * Mint Live View links for the Browser Handoff `requestId` names (a `BrowserHandoffRequest`'s `id`): the owner's Live View
+ * Pane opening, reconnecting, or following a window. Answered with `LiveViewLinks`, to the asking client only; fails
+ * with "the handoff is over" once it has ended.
+ */
+export const LiveViewRequest = Schema.Struct({
+  type: Schema.Literal("live_view"),
+  id: CommandId,
+  requestId: Schema.String,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
+  LiveViewRequest,
   Submit,
   Abort,
   CatalogRequest,
@@ -279,8 +291,7 @@ export const SecretRequests = Schema.Struct({
 
 /**
  * A Browser Handoff waiting for the owner (`docs/spec.md` → Browser): the agent gave the owner live control of its browser
- * for a step it cannot do. `url` is the Live View link, a bearer credential for the owner alone: a client shows it as a
- * link for the owner to open and never to the agent or the chat.
+ * for a step it cannot do. It carries no Live View link: a client mints one with `live_view` when the owner takes over.
  */
 export const BrowserHandoffRequest = Schema.Struct({
   /** The asking call's task, unique within the Session. */
@@ -289,8 +300,6 @@ export const BrowserHandoffRequest = Schema.Struct({
   conversationId: ConversationId,
   /** What the agent needs done. */
   instructions: Schema.String,
-  /** The Live View link, to open in a browser. */
-  url: Schema.String,
   /** When the handoff times out, in milliseconds since the epoch. */
   deadline: Schema.Finite,
 });
@@ -512,6 +521,34 @@ export type Catalog = typeof Catalog.Type;
 export const FileMatches = Schema.Struct({ paths: Schema.Array(Schema.String) });
 
 export type FileMatches = typeof FileMatches.Type;
+
+/**
+ * A page of the handed-over browser and a Live View link to it: a Browser Run `wss` URL that speaks CDP to the page
+ * `targetId` names. A bearer credential for the owner alone: it opens every page of the browser session, connects any
+ * number of times until it expires (60 s after it was minted; an open connection outlives it), and is never stored,
+ * broadcast, pushed, or shown to the agent.
+ */
+export const LiveViewTarget = Schema.Struct({
+  targetId: Schema.String,
+  link: Schema.String,
+});
+
+/** A window the handed-over tab opened (a pop-up or new tab), directly or through another such window. */
+export const LiveViewWindow = Schema.Struct({
+  targetId: Schema.String,
+  /** The page that opened it: the handed-over tab or another window. */
+  openerId: Schema.String,
+  title: Schema.String,
+  link: Schema.String,
+});
+
+/** The answer to `live_view`: fresh links to the handed-over tab and to each window it opened that is still open. */
+export const LiveViewLinks = Schema.Struct({
+  tab: LiveViewTarget,
+  windows: Schema.Array(LiveViewWindow),
+});
+
+export type LiveViewLinks = typeof LiveViewLinks.Type;
 
 /** A file a Slash command hands the owner, such as `/export`'s transcript, for the client to download. */
 export const CommandFile = Schema.Struct({
