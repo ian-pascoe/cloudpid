@@ -296,8 +296,7 @@ without long press, which Playwright's WebKit touchscreen cannot do, and without
   - A long press in an empty field shows Paste and Select All, and Paste puts the clipboard text in the field.
   - A long-press selection with a drag shows Copy.
 
-`keys.mjs` (Chromium 24/24) and `kbd.mjs` (Chromium 26/26, WebKit 19/19) still pass. The WebKit `keys.mjs` run of
-this version stopped on a closed page after 23 passes; it was not repeated before the wrap-up.
+`keys.mjs` (Chromium 24/24, WebKit 24/24) and `kbd.mjs` (Chromium 26/26, WebKit 19/19) still pass.
 
 Not verified on the iPhone:
 
