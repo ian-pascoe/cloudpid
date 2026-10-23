@@ -515,10 +515,9 @@ export const sessionSocketsLayer = (
 
         if (asks.length > 0) yield* send(server, secretRequests(asks));
 
-        // So are Browser Handoffs, which wait for the owner for up to 30 minutes.
-        const pending = yield* handoffs.pending;
-
-        if (pending.length > 0) yield* send(server, browserHandoffRequests(pending));
+        // So are Browser Handoffs, which wait for the owner for up to 30 minutes. Sent when none waits too, so a client
+        // can tell "none waits" (a Live View Pane whose handoff is gone closes) from "not heard yet".
+        yield* send(server, browserHandoffRequests(yield* handoffs.pending));
 
         return client;
       });

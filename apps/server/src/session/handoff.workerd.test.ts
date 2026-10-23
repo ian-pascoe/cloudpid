@@ -368,7 +368,22 @@ describe("Browser Handoffs over the Session socket", () => {
 
     const client = await connect(stub);
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Told there is none waiting, rather than nothing.
+    expect((await client.next(isRequests)).requests).toEqual([]);
     expect(client.received.some(isPending)).toBe(false);
+  });
+
+  it("tells a client that connects, right after hello, which handoffs wait, an empty list too", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    const client = await connect(stub);
+
+    await client.next(isRequests);
+
+    const types = client.received.map((message) => message.type);
+
+    expect(types[0]).toBe("hello");
+    expect(client.received.filter(isRequests)).toEqual([
+      { type: "browser_handoff_requests", requests: [] },
+    ]);
   });
 });

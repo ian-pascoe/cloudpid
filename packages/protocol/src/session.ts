@@ -307,9 +307,9 @@ export const BrowserHandoffRequest = Schema.Struct({
 export type BrowserHandoffRequest = typeof BrowserHandoffRequest.Type;
 
 /**
- * The Browser Handoffs waiting for the owner, oldest first. A client shows each with its instructions and a link to open,
- * outside the chat. Sent after `hello` while any waits, and to every client whenever they change (an empty list once none
- * waits). The owner finishes in the Live View itself, so there is no answer command; a request ends when the owner is
+ * The Browser Handoffs waiting for the owner, oldest first. A client shows each with its instructions, outside the chat,
+ * and opens its Live View on the owner's word. Sent after `hello` on every connect (an empty list when none waits, so a
+ * client can tell "none waits" from "not heard yet"), and to every client whenever they change. The owner finishes in the Live View itself, so there is no answer command; a request ends when the owner is
  * done, the handoff times out, or the run is stopped, and it outlives reconnects and evictions until then.
  */
 export const BrowserHandoffRequests = Schema.Struct({
