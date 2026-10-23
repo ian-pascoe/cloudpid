@@ -62,6 +62,10 @@ const startDueDirectory = (root: string): string => `/tmp/cloudpid-start-due${ro
  * the branch is checked out as a clone's would be, and the spare's branch is deleted. When that moved the commit, the
  * clone's Setup Script record is removed (`state`), so it is due again, and the clone is flagged for its Start Script
  * and gets `mise install`, as a new clone does.
+ *
+ * Either way, uncommitted Changes a Fork or Clone carried to the branch from its source (`carryWorkspaceScript`) are
+ * applied to the work tree, uncommitted still, and taken off the remote; when they do not apply, the Repo fails and
+ * they are left on the remote.
  */
 export const prepareWorkspaceScript = (
   clones: WorkspaceClones,
@@ -80,6 +84,23 @@ start_due=${shellQuote(startDueDirectory(root))}
 ${locked("workspace")}
 ${HAS_MISE_CONFIG}
 nohooks() { git -c core.hooksPath=/dev/null "$@"; }
+
+# apply_carry <dir>: the uncommitted Changes a Fork or Clone in a new Workspace carried from its source's clone
+# (carryWorkspaceScript), applied to the work tree at <dir>, then taken off the remote. Left there when they do not
+# apply, for the owner to take by hand.
+apply_carry() {
+  carry="${carryRef("$branch")}"
+  found=$(git -C "$1" ls-remote origin "$carry") || return 1
+  [ -n "$found" ] || return 0
+  nohooks -C "$1" fetch --quiet origin "$carry" || return 1
+  if ! git -C "$1" diff --binary FETCH_HEAD^ FETCH_HEAD | git -C "$1" apply --whitespace=nowarn; then
+    echo "cloudpid: the uncommitted changes carried to $1 do not apply; they are kept on its origin at $carry" >&2
+    return 1
+  fi
+  nohooks -C "$1" push --quiet origin ":$carry" ||
+    echo "cloudpid: could not delete $carry from $1's origin" >&2
+  return 0
+}
 
 # on_spare <dir>: whether the clone at <dir> is on the spare's branch, to switch to $branch.
 on_spare() {
@@ -120,6 +141,7 @@ switch_from_spare() (
   if git -C "$dir" show-ref --verify --quiet "refs/heads/$spare"; then
     git -C "$dir" branch --quiet -D -- "$spare" || exit 1
   fi
+  apply_carry "$dir" || exit 1
   if [ "$(git -C "$dir" rev-parse --quiet --verify HEAD 2>/dev/null || echo none)" != "$before" ]; then
     # The spare was set up for another commit: its Setup Script is due again, and its Start Script runs once more.
     rm -f -- "$state/$1"
@@ -157,6 +179,8 @@ clone() {
     # A Repo with no commits yet: the branch is born with the first.
     nohooks -C "$partial" checkout --quiet --orphan "$branch" || return 1
   fi
+  # Before the clone is in place, so one whose carried changes did not apply is made again at the next readying.
+  apply_carry "$partial" || return 1
   mv -- "$partial" "$dir" || return 1
   mkdir -p -- "$start_due" && : > "$start_due/$1"
   if has_mise_config "$dir"; then
@@ -206,3 +230,81 @@ export const repoStartScript = (
 ): string => `${locked(`setup-${name}`)}
 rm -- ${shellQuote(`${startDueDirectory(root)}/${name}`)} 2>/dev/null || exit 0
 ${startScriptRunIfThere(`${root}/${name}`, timeoutSeconds)}`;
+
+/** Where a Fork or Clone's uncommitted Changes wait on a Repo's remote for the new Workspace on `branch`. */
+export const carryRef = (branch: string): string => `refs/cloudpid/carry/${branch}`;
+
+/**
+ * The bash script a source Workspace's Container runs for a Fork or Clone in a new Workspace on `branch` (GLOSSARY.md →
+ * Fork): each of `repos` cloned at `<root>/<repo>` has its HEAD, commits not pushed included, pushed to `origin` as
+ * `branch`, and its uncommitted Changes (untracked files that are not ignored included), when it has any, pushed as a
+ * commit on HEAD to `carryRef(branch)`, which the new Workspace's readying applies (`prepareWorkspaceScript`). They are
+ * read through an index of their own, so the clone's own index and work tree are left as they were. A Repo not cloned
+ * there, or with no commit, carries nothing: the new Workspace clones it afresh. Nothing is pushed when any Repo's
+ * remote has `branch` already, and when a push fails, what was pushed is taken back; the script then exits 1.
+ */
+export const carryWorkspaceScript = (
+  repos: ReadonlyArray<string>,
+  branch: string,
+  root: string = WORKSPACE_ROOT,
+): string => `set -u -o pipefail
+export GIT_TERMINAL_PROMPT=0
+root=${shellQuote(root)}
+branch=${shellQuote(branch)}
+carry=${shellQuote(carryRef(branch))}
+${locked("workspace")}
+nohooks() { git -c core.hooksPath=/dev/null "$@"; }
+pushed=()
+
+# fail <message>: say why, take back what was pushed, and stop.
+fail() {
+  echo "cloudpid: $1" >&2
+  for dir in \${pushed[@]+"\${pushed[@]}"}; do
+    nohooks -C "$dir" push --quiet origin ":refs/heads/$branch" ":$carry" 2>/dev/null ||
+      nohooks -C "$dir" push --quiet origin ":refs/heads/$branch" 2>/dev/null
+  done
+  exit 1
+}
+
+# carries <name>: whether the clone of <name> has a commit to carry.
+carries() {
+  [ -e "$root/$1/.git" ] && git -C "$root/$1" rev-parse --quiet --verify HEAD >/dev/null 2>&1
+}
+
+# free <name>: refuse when the remote of <name> has $branch already.
+free() {
+  found=$(git -C "$root/$1" ls-remote --heads origin "refs/heads/$branch") ||
+    fail "could not reach the remote of $1"
+  [ -z "$found" ] || fail "the remote of $1 already has a branch $branch"
+}
+
+# carry <name>: push the clone of <name>'s HEAD as $branch, and its uncommitted changes to $carry.
+carry() {
+  dir="$root/$1"
+  head=$(git -C "$dir" rev-parse HEAD) || fail "could not read the HEAD of $1"
+  index=$(mktemp) || fail "could not make a temporary index"
+  tree=$(GIT_INDEX_FILE="$index" git -C "$dir" read-tree HEAD &&
+    GIT_INDEX_FILE="$index" git -C "$dir" add -A &&
+    GIT_INDEX_FILE="$index" git -C "$dir" write-tree)
+  made=$?
+  rm -f -- "$index"
+  [ "$made" -eq 0 ] || fail "could not read the uncommitted changes of $1"
+  nohooks -C "$dir" push --quiet origin "$head:refs/heads/$branch" || fail "could not push the HEAD of $1 as $branch"
+  pushed+=("$dir")
+  [ "$tree" != "$(git -C "$dir" rev-parse "HEAD^{tree}")" ] || return 0
+  name=$(git -C "$dir" config user.name || echo cloudpid)
+  email=$(git -C "$dir" config user.email || echo cloudpid@users.noreply.github.com)
+  wip=$(git -C "$dir" -c user.name="$name" -c user.email="$email" commit-tree "$tree" -p "$head" \\
+    -m "cloudpid: uncommitted changes carried to $branch") || fail "could not record the uncommitted changes of $1"
+  nohooks -C "$dir" push --quiet origin "$wip:$carry" || fail "could not push the uncommitted changes of $1"
+}
+
+repos=(${repos.map(shellQuote).join(" ")})
+for repo in \${repos[@]+"\${repos[@]}"}; do
+  if carries "$repo"; then free "$repo"; fi
+done
+for repo in \${repos[@]+"\${repos[@]}"}; do
+  if carries "$repo"; then carry "$repo"; fi
+done
+exit 0
+`;

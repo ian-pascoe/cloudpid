@@ -13,7 +13,9 @@ import * as Predicate from "effect/Predicate";
 import { MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent.ts";
-import { type ShownSkill, shownSkills } from "../session/thread-messages.ts";
+import { answerOf, entriesOf, type ShownSkill, shownSkills } from "../session/thread-messages.ts";
+import { entryIdOf } from "../session/tree.ts";
+import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
 
 /**
  * A Skill the Session expanded into the owner's message: closed, under the typed text, so what the model got beyond it
@@ -50,16 +52,18 @@ const USER_PARTS = { Image: UserImage };
 
 const UserMessage = () => {
   const custom = useAuiState((state) => state.message.metadata.custom);
+  const id = useAuiState((state) => state.message.id);
   const skills = shownSkills(custom);
 
   return (
-    <MessagePrimitive.Root className="flex justify-end">
+    <MessagePrimitive.Root className="group/message flex flex-col items-end gap-1">
       <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
         <MessagePrimitive.Parts components={USER_PARTS} />
         {Arr.map(skills, (skill) => (
           <SkillDisclosure key={skill.name} skill={skill} />
         ))}
       </div>
+      <OwnerMessageBar messageId={id} />
     </MessagePrimitive.Root>
   );
 };
@@ -93,18 +97,30 @@ const SubagentToolCard: ToolCallMessagePartComponent = (props) => {
   );
 };
 
-const AssistantMessage = () => (
-  <MessagePrimitive.Root className="min-w-0 break-words">
-    <MessagePrimitive.Parts
-      components={{
-        Text: MarkdownText,
-        Reasoning: ReasoningPart,
-        tools: { by_name: { subagent: SubagentToolCard }, Fallback: ToolCallCard },
-      }}
-    />
-    <FailureNotice />
-  </MessagePrimitive.Root>
-);
+const AssistantMessage = () => {
+  const answer = useAuiState((state) =>
+    state.message.status?.type === "running" ? undefined : answerOf(state.message.metadata.custom),
+  );
+
+  // The metadata itself, not a list made from it: a selector's result is compared by identity.
+  const custom = useAuiState((state) => state.message.metadata.custom);
+  const entries = entriesOf(custom);
+
+  return (
+    <MessagePrimitive.Root className="group/message min-w-0 break-words">
+      <BranchChevrons ids={entries} />
+      <MessagePrimitive.Parts
+        components={{
+          Text: MarkdownText,
+          Reasoning: ReasoningPart,
+          tools: { by_name: { subagent: SubagentToolCard }, Fallback: ToolCallCard },
+        }}
+      />
+      <FailureNotice />
+      <AnswerBar answer={answer} />
+    </MessagePrimitive.Root>
+  );
+};
 
 /**
  * A notice between turns: a Handoff, a compaction summary, or a Rollover request. Its title shows; the text it carried
@@ -124,8 +140,11 @@ const NoticeMessage = () => {
     ),
   );
 
+  const id = useAuiState((state) => entryIdOf(state.message.id));
+
   return (
     <MessagePrimitive.Root className="flex items-center gap-3 text-xs text-muted-foreground">
+      <BranchChevrons ids={id === undefined ? [] : [id]} />
       <span className="h-px flex-1 bg-border" aria-hidden />
       {text === "" ? (
         <span>{title}</span>

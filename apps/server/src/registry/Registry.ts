@@ -11,6 +11,7 @@ import type {
   EnvironmentSecretRecord,
   PushState,
   PushSubscription,
+  SessionOrigin,
 } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
@@ -95,6 +96,8 @@ export type RegistryMethods = {
   readonly createSession: (input: {
     readonly title?: string | undefined;
     readonly workspace: WorkspaceChoice;
+    /** The Session it is a Fork or Clone of. */
+    readonly origin?: SessionOrigin | undefined;
   }) => Effect.Effect<SessionRecord | SessionRefusal>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
@@ -338,13 +341,16 @@ export const RegistryLive = Registry.make(
           });
 
         return {
-          createSession: ({ title, workspace }) =>
+          createSession: ({ title, workspace, origin }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
               if (workspace.kind === "existing") {
-                return store.createSession({ id, title: title ?? null, workspace }, now);
+                return store.createSession(
+                  { id, title: title ?? null, workspace, origin: origin ?? null },
+                  now,
+                );
               }
 
               // Eight hex digits rarely collide; one that does (a spare's too, which only its set-up shows) is drawn again.
@@ -365,6 +371,7 @@ export const RegistryLive = Registry.make(
                     branch: workspace.branch ?? null,
                     base: workspace.base ?? null,
                   },
+                  origin: origin ?? null,
                 },
                 now,
               );

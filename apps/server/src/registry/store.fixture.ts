@@ -10,6 +10,7 @@ import type {
   EnvironmentRepo,
   EnvironmentSecretRecord,
   PushSubscription,
+  SessionOrigin,
 } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -47,7 +48,12 @@ export class TestRegistry extends DurableObject {
   }
 
   createSession(
-    input: { id: string; title: string | null; workspace: StoredWorkspaceChoice },
+    input: {
+      id: string;
+      title: string | null;
+      workspace: StoredWorkspaceChoice;
+      origin?: SessionOrigin | null;
+    },
     now: number,
   ): SessionRecord | SessionRefusal {
     return this.#store.createSession(input, now);

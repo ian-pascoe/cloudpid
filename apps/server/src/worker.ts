@@ -170,6 +170,12 @@ export default class Server extends Cloudflare.Worker<Server>()(
           Effect.andThen(Effect.ignoreCause(session.reset())),
         );
       },
+      forkSource: (id, request) => Effect.orDie(sessions.getByName(id).forkSource(request)),
+      exportEntries: (id, request) => Effect.orDie(sessions.getByName(id).exportEntries(request)),
+      importStart: (id) => Effect.orDie(sessions.getByName(id).importStart()),
+      importEntries: (id, entries) => Effect.orDie(sessions.getByName(id).importEntries(entries)),
+      importFinish: (id, plan) => Effect.orDie(sessions.getByName(id).importFinish(plan)),
+      releaseFork: (id) => Effect.orDie(sessions.getByName(id).releaseFork()),
     };
 
     // Built once per isolate, so a cleanup that found nothing left is not asked again.

@@ -1627,3 +1627,93 @@ describe("the catalog and Slash commands", () => {
       }),
   );
 });
+
+describe("a Session's tree", () => {
+  it.effect(
+    "follows the active branch: the branch left is unwatched, and the new one watched",
+    () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+
+        yield* watching(latest());
+
+        expect(state()).toMatchObject({ activeBranch: 1, treeVersion: 0, copying: false });
+
+        latest().sent.length = 0;
+        yield* latest().say({ type: "active_branch", conversationId: 7 });
+
+        const [unwatch, watch] = latest().commands();
+
+        expect(unwatch).toMatchObject({ type: "unwatch", conversationId: 1 });
+        expect(watch).toMatchObject({ type: "watch", conversationId: 7 });
+        expect(state()).toMatchObject({ activeBranch: 7, treeVersion: 1 });
+
+        // The new branch's events are the root view's; the old one's are not.
+        yield* latest().say({ type: "result", id: watch?.id, result: null });
+        yield* latest().say({ ...snapshot({ entries: [entry(3, "other")] }), conversationId: 7 });
+        yield* latest().say({ ...snapshot({ entries: [entry(2, "old")] }), conversationId: 1 });
+
+        expect(state().view.messages.map((message) => message.id)).toEqual(["3"]);
+
+        // A branch made that is the active one already only makes the tree stale.
+        latest().sent.length = 0;
+        yield* latest().say({ type: "active_branch", conversationId: 7 });
+
+        expect(latest().commands()).toEqual([]);
+        expect(state().treeVersion).toBe(2);
+      }),
+  );
+
+  it.effect("says when the Session is still being copied, as its hello does", () =>
+    Effect.gen(function* () {
+      const { latest, state } = yield* setup();
+
+      yield* latest().open();
+      yield* latest().say({ type: "hello", root: 1, copying: true });
+
+      expect(state().copying).toBe(true);
+    }),
+  );
+
+  it.effect("asks for the tree, navigates and switches branches, with the Session's answers", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* watching(latest());
+      latest().sent.length = 0;
+
+      const tree = yield* asking(client.tree);
+
+      const went = yield* asking(
+        client.navigate({ entryId: 4, position: "before" }, { instructions: "tests" }),
+      );
+
+      const switched = yield* asking(client.switchBranch(9));
+      const [asked, navigate, switching] = latest().commands();
+
+      expect(asked).toEqual({ type: "tree", id: asked?.id });
+      expect(navigate).toEqual({
+        type: "navigate",
+        id: navigate?.id,
+        entryId: 4,
+        position: "before",
+        summary: { instructions: "tests" },
+      });
+      expect(switching).toEqual({ type: "switch_branch", id: switching?.id, conversationId: 9 });
+
+      const answer = { nodes: [], active: 1, leaf: null, branches: [] };
+
+      yield* latest().say({ type: "result", id: asked?.id, result: answer });
+      yield* latest().say({
+        type: "result",
+        id: navigate?.id,
+        result: { conversationId: 5, text: "second" },
+      });
+      yield* latest().say({ type: "error", id: switching?.id, message: "A Run is in progress" });
+
+      expect(yield* Fiber.join(tree)).toEqual(answer);
+      expect(yield* Fiber.join(went)).toEqual({ conversationId: 5, text: "second" });
+      expect(yield* failureOf(switched)).toBe("A Run is in progress");
+    }),
+  );
+});

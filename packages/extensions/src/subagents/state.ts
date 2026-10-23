@@ -67,6 +67,12 @@ export type AgentRecord = {
   parent: string;
   depth: number;
   conversationId: ConversationId;
+  /**
+   * For a child of the root agent: the Session branch it was started from (`branches`), which its reports go to whichever
+   * branch is active by then. Absent for a deeper child, and for a child started before Session branches existed (the
+   * root conversation's).
+   */
+  origin?: ConversationId;
   /** The background task that owns the child's conversation. */
   anchor: TaskId;
   createdAt: number;
@@ -111,6 +117,13 @@ export type SubagentsState = {
   /** The next automatic ID number, by parent. */
   nextIndex: Record<string, number>;
   waiters: Record<string, Waiter>;
+  /**
+   * The conversation the root agent runs now: the Session's active branch (GLOSSARY.md → Session tree). Absent while it
+   * is the root conversation.
+   */
+  activeBranch?: ConversationId;
+  /** Every Session branch's conversation but the root conversation's: each is the root agent's when it calls a tool. */
+  branches?: ConversationId[];
 };
 
 /** How many settled turns an agent keeps, besides running ones. */
@@ -126,16 +139,37 @@ export const SubagentsDoc = defineDoc<SubagentsState>({
 /** The state as read outside a commit: the initial one until the first spawn. */
 export const EMPTY_STATE: SubagentsState = SubagentsDoc.definition.initial();
 
-/** The agent conversation `conversationId` runs, `root` for the Session's root conversation. */
+/** Whether `conversationId` is one of the Session's branches: the root conversation, or a branch made from it. */
+export const isSessionBranch = (state: SubagentsState, conversationId: ConversationId): boolean =>
+  conversationId === ROOT_CONVERSATION_ID || (state.branches ?? []).includes(conversationId);
+
+/** The agent conversation `conversationId` runs, `root` for any of the Session's branches. */
 export const agentOf = (
   state: SubagentsState,
   conversationId: ConversationId,
 ): string | undefined =>
-  conversationId === ROOT_CONVERSATION_ID ? "root" : state.conversations[String(conversationId)];
+  isSessionBranch(state, conversationId) ? "root" : state.conversations[String(conversationId)];
 
-/** The conversation agent `id` runs. */
+/** The conversation agent `id` runs: the active Session branch's for the root agent. */
 export const conversationOf = (state: SubagentsState, id: string): ConversationId | undefined =>
-  id === "root" ? ROOT_CONVERSATION_ID : state.agents[id]?.conversationId;
+  id === "root" ? (state.activeBranch ?? ROOT_CONVERSATION_ID) : state.agents[id]?.conversationId;
+
+/**
+ * Where agent `id`'s reports go: its parent's conversation, or, for a child of the root agent, the Session branch it was
+ * started from, so a branch left since still hears from the work it started.
+ */
+export const reportConversationOf = (
+  state: SubagentsState,
+  id: string,
+): ConversationId | undefined => {
+  const agent = state.agents[id];
+
+  if (agent === undefined) return undefined;
+
+  return agent.parent === "root" && agent.origin !== undefined
+    ? agent.origin
+    : conversationOf(state, agent.parent);
+};
 
 /** The direct children of `id`, oldest first. */
 export const childrenOf = (state: SubagentsState, id: string): AgentRecord[] =>

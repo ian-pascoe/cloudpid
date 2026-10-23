@@ -7,9 +7,12 @@ import {
   parseRepoSource,
   RegistryRpcs,
   SessionActionError,
+  type ForkKind,
   ownBranchProblem,
   SessionNotFound,
+  forkTitle,
 } from "@cloudpid/protocol";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -18,6 +21,14 @@ import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
+import {
+  type ExportPage,
+  type ExportRequest,
+  fillSession,
+  type ForkPlan,
+  type ForkQuiet,
+  type ForkSourceRequest,
+} from "../session/fork.ts";
 import { buildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
@@ -35,6 +46,18 @@ export type SessionObjects = {
   readonly stop: (id: string) => Effect.Effect<void>;
   /** Stop Session `id`, close its browser and its clients' sockets, and wipe its storage. */
   readonly destroy: (id: string) => Effect.Effect<void>;
+  /** What a Fork or Clone of Session `id` carries besides its entries (`SessionMethods.forkSource`). */
+  readonly forkSource: (id: string, request: ForkSourceRequest) => Effect.Effect<ForkPlan>;
+  /** A page of the entries a Fork or Clone of Session `id` copies (`SessionMethods.exportEntries`). */
+  readonly exportEntries: (id: string, request: ExportRequest) => Effect.Effect<ExportPage>;
+  /** Start filling new Session `id` as a Fork or Clone (`SessionMethods.importStart`). */
+  readonly importStart: (id: string) => Effect.Effect<void>;
+  /** Append a page of the source's entries to new Session `id` (`SessionMethods.importEntries`). */
+  readonly importEntries: (id: string, entries: ReadonlyArray<EntryRecord>) => Effect.Effect<void>;
+  /** Give new Session `id` what `plan` carries, and let it take messages (`SessionMethods.importFinish`). */
+  readonly importFinish: (id: string, plan: ForkPlan) => Effect.Effect<void>;
+  /** Let Session `id` take messages again once a Fork or Clone carried its files (`SessionMethods.releaseFork`). */
+  readonly releaseFork: (id: string) => Effect.Effect<void>;
 };
 
 /**
@@ -259,7 +282,7 @@ export const serveRegistryRpc = <R = never>(
         .pipe(Effect.filterOrFail(Predicate.isNotNull, () => notFound(id)));
 
     /** A call to a Session's object, failing with a `SessionActionError` that says what could not be done and why. */
-    const onSession = (what: string, call: Effect.Effect<void>) =>
+    const onSession = <A>(what: string, call: Effect.Effect<A>) =>
       call.pipe(
         Effect.catchCause((cause) =>
           Effect.fail(SessionActionError.make({ message: `${what}: ${reason(cause)}` })),
@@ -387,6 +410,104 @@ export const serveRegistryRpc = <R = never>(
             )
         : background(builds.of(environment));
 
+    /**
+     * The Workspace whose files a Fork or Clone carries to a new one (`fresh`), after checking the Git branch asked for;
+     * none for one in its source's Workspace, which takes no branch.
+     */
+    const carriedWorkspace = (origin: SessionRecord, fresh: boolean, branch: string | undefined) =>
+      Effect.gen(function* () {
+        if (!fresh) {
+          return branch === undefined
+            ? undefined
+            : yield* failed("A branch is only for a new workspace");
+        }
+
+        const problem = branch === undefined ? undefined : ownBranchProblem(branch);
+
+        if (problem !== undefined) return yield* failed(problem);
+
+        return yield* knownWorkspace(origin.workspace);
+      });
+
+    /** Register Fork or Clone `kind` of `origin`: in its Workspace, or in a new one of `carried`'s Environment on `branch`. */
+    const registerFork = (
+      origin: SessionRecord,
+      kind: ForkKind,
+      carried: WorkspaceRecord | undefined,
+      branch: string | undefined,
+    ) =>
+      Effect.gen(function* () {
+        const created = yield* registry.createSession({
+          title: forkTitle(origin.title, kind),
+          workspace:
+            carried === undefined
+              ? { kind: "existing", id: origin.workspace }
+              : { kind: "new", environment: carried.environment, branch },
+          origin: { session: origin.id, kind },
+        });
+
+        if ("refused" in created) return yield* refused(created, origin.environment, branch);
+
+        if (carried !== undefined) {
+          // The Session took the Environment's spare or made a Workspace: either way, the next one is made ahead.
+          yield* background(spares.of(carried.environment));
+          yield* background(builds.of(carried.environment));
+        }
+
+        return created;
+      });
+
+    /**
+     * Fill Fork or Clone `created` with what `plan` of Session `source` carries, then carry `carried`'s files to its new
+     * Workspace. When anything fails, nothing is left of it: its Session, and the Workspace made for it with it.
+     */
+    const fillFork = (
+      source: string,
+      created: SessionRecord,
+      plan: ForkPlan,
+      carried: WorkspaceRecord | undefined,
+      kind: ForkKind,
+    ) => {
+      // The files go last, so a Fork that failed pushed nothing.
+      const fill = Effect.gen(function* () {
+        yield* onSession(
+          `Could not ${kind} the session`,
+          fillSession(
+            { exportEntries: (request) => sessions.exportEntries(source, request) },
+            {
+              importStart: sessions.importStart(created.id),
+              importEntries: (entries) => sessions.importEntries(created.id, entries),
+              importFinish: (finished) => sessions.importFinish(created.id, finished),
+            },
+            plan,
+          ),
+        );
+
+        if (carried === undefined) return;
+
+        const made = yield* knownWorkspace(created.workspace);
+
+        yield* inWorkspace("Could not carry the workspace's files", () =>
+          workspaces.carry(workspaceObjectName(carried.id), made.branch, carried.repos),
+        );
+      });
+
+      const undo: Effect.Effect<void, EnvironmentError | SessionActionError> =
+        carried === undefined
+          ? deleteSession(created)
+          : knownWorkspace(created.workspace).pipe(Effect.flatMap(removeWorkspace));
+
+      return fill.pipe(
+        Effect.tapError(() =>
+          undo.pipe(
+            Effect.catch((error) =>
+              Effect.logWarning(`Could not remove the failed ${kind} ${created.id}`, error),
+            ),
+          ),
+        ),
+      );
+    };
+
     /** Why the Registry did not create a Session, for the owner. */
     const refused = (refusal: SessionRefusal, environment: string, branch: string | undefined) => {
       switch (refusal.refused) {
@@ -456,6 +577,46 @@ export const serveRegistryRpc = <R = never>(
           yield* background(builds.of(made));
 
           return created;
+        }),
+      forkSession: ({ source, point, workspace, branch }) =>
+        Effect.gen(function* () {
+          const origin = yield* known(source);
+          const fresh = workspace === NEW_WORKSPACE;
+          const carried = yield* carriedWorkspace(origin, fresh, branch);
+          const kind: ForkKind = point === undefined ? "clone" : "fork";
+
+          // A Clone takes the branch as it stands, and a new Workspace the files as they are: what changes them must rest.
+          const quiet: ForkQuiet = fresh ? "session" : kind === "clone" ? "branch" : "none";
+          const asked: ForkSourceRequest = point === undefined ? { quiet } : { point, quiet };
+
+          const plan = yield* onSession(
+            `Could not ${kind} the session`,
+            sessions.forkSource(source, asked),
+          );
+
+          // A source whose files are carried takes no message until they are.
+          const released =
+            quiet === "session"
+              ? sessions
+                  .releaseFork(source)
+                  .pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning(
+                        `Could not release session ${source} after a ${kind}`,
+                        cause,
+                      ),
+                    ),
+                  )
+              : Effect.void;
+
+          const created = yield* Effect.ensuring(
+            registerFork(origin, kind, carried, branch).pipe(
+              Effect.tap((made) => fillFork(source, made, plan, carried, kind)),
+            ),
+            released,
+          );
+
+          return { session: created, text: plan.text };
         }),
       renameSession: ({ id, title }) =>
         registry

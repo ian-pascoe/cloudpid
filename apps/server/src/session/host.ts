@@ -29,6 +29,8 @@ import {
   type CommandOutcome,
   type FileMatches,
   type HistoryPage,
+  type Navigated,
+  type SessionTree,
   type SessionUsage,
   type ContainerUsage,
   type TaskGraphSummary,
@@ -36,15 +38,13 @@ import {
   USER_ENTRY_KIND,
 } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Models } from "@earendil-works/pi-ai";
-import { formatModelId, isModelId } from "@cloudpid/config";
+import type { Models, Usage } from "@earendil-works/pi-ai";
 import { limitEventImages, SNAPSHOT_IMAGES } from "@cloudpid/extensions/browser";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   type Agent,
   type AgentChange,
   type DocumentWatch,
-  type ModelRef,
+  type EntryRecord,
   type AgentEvent,
   AssistantEntry,
   type Conversation,
@@ -56,7 +56,6 @@ import {
   InboxDoc,
   type InputSubmissionDraft,
   LiveDoc,
-  ROOT_CONVERSATION_ID,
   type Submission,
   type SubmissionId,
   type SubmissionRecord,
@@ -84,7 +83,6 @@ import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Random from "effect/Random";
 import * as Record from "effect/Record";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -100,11 +98,13 @@ import {
 import {
   type Ledger,
   limitingModels,
-  recordTitleUsage,
+  recordUnledgeredUsage,
   sessionTotals,
   usageMessage,
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
+import { attempt, refuse, SessionError } from "./errors.ts";
+import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
 import {
@@ -123,6 +123,11 @@ import { inputProblem, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
+import { type NavigateRequest, sessionBranches } from "./branches.ts";
+import { branchIds } from "./tree.ts";
+import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
+import { isFilling, sessionForks, STILL_FILLING } from "./fork-host.ts";
+import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -258,9 +263,9 @@ export type SessionHostOptions<R = never> = {
   readonly expandTimeout?: Duration.Input;
 };
 
-/** User input for the root conversation, or for the conversation of one of its subagents. */
+/** User input for the active branch, or for the conversation of one of its subagents. */
 export type Prompt = {
-  /** The conversation to submit to: the root by default, or a live subagent's; anything else fails. */
+  /** The conversation to submit to: the active branch's by default, or a live subagent's; anything else fails. */
   readonly conversationId?: ConversationId;
   /** Submitting the same `requestId` again finds the first submission. */
   readonly requestId?: string;
@@ -274,7 +279,7 @@ export type SlashCommand = {
   /** Its name, without the `/`. */
   readonly name: string;
   readonly args: string;
-  /** The conversation it is for: the root by default, or a live subagent's. */
+  /** The conversation it is for: the active branch's by default, or a live subagent's. */
   readonly conversationId?: ConversationId;
 };
 
@@ -282,7 +287,7 @@ export type SlashCommand = {
 export type FileSearch = {
   /** What follows the `@`. */
   readonly query: string;
-  /** The conversation whose directory to search: the root by default, or a live subagent's. */
+  /** The conversation whose directory to search: the active branch's by default, or a live subagent's. */
   readonly conversationId?: ConversationId;
 };
 
@@ -290,13 +295,13 @@ export type FileSearch = {
 export type HistoryRequest = {
   /** The entry the page ends before. */
   readonly before: number;
-  /** The conversation: the root by default, or a live subagent's. */
+  /** The conversation: the active branch's by default, or a live subagent's. */
   readonly conversationId?: ConversationId;
 };
 
 /** What an abort reaches. */
 export type AbortOptions = {
-  /** The conversation to abort: the root by default. */
+  /** The conversation to abort: the active branch's by default. */
   readonly conversationId?: ConversationId;
   /** Also stop every subagent below it, and drop the reports they held. */
   readonly subagents?: boolean;
@@ -315,17 +320,8 @@ export type Answer =
   | { readonly status: "answered"; readonly submissionId: number; readonly text: string }
   | { readonly status: "unanswered"; readonly submissionId: number; readonly reason: string };
 
-/** A Harness or Durable Object storage call failed. */
-export class SessionError extends Schema.TaggedError<
-  SessionError,
-  { readonly brand: unique symbol }
->()("SessionError", {
-  operation: Schema.String,
-  message: Schema.String,
-}) {}
-
 export type SessionHostService = {
-  /** Durably admit `prompt` to its conversation (the root's by default) and return its submission ID. */
+  /** Durably admit `prompt` to its conversation (the active branch's by default) and return its submission ID. */
   readonly submit: (prompt: Prompt) => Effect.Effect<number, SessionError>;
   /** Submit `prompt` and wait for its answer. */
   readonly prompt: (prompt: Prompt) => Effect.Effect<Answer, SessionError>;
@@ -335,20 +331,49 @@ export type SessionHostService = {
   readonly idle: Effect.Effect<boolean, SessionError>;
   /** The root conversation's ID; the root is created when absent. */
   readonly root: Effect.Effect<ConversationId, SessionError>;
+  /** The active branch's conversation ID (GLOSSARY.md → Session branch); the root is created when absent. */
+  readonly activeBranch: Effect.Effect<ConversationId, SessionError>;
+  /** Whether the Session is still being filled from the one it is a Fork or Clone of. */
+  readonly copying: Effect.Effect<boolean>;
+  /** The Session tree: every branch's entries a client shows, and the active branch. */
+  readonly tree: Effect.Effect<SessionTree, SessionError>;
   /**
-   * Pick the root conversation's model and thinking level, from its next request on: a field left out stays as it is,
-   * and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
+   * Move the active branch to a point of the Session tree (`/tree`), making the branch when needed, with a summary of
+   * the branch left when asked. Refused while the active branch is busy.
+   */
+  readonly navigate: (request: NavigateRequest) => Effect.Effect<Navigated, SessionError>;
+  /** Make Session branch `conversationId` the active branch as it stands. Refused while the active branch is busy. */
+  readonly switchBranch: (conversationId: ConversationId) => Effect.Effect<void, SessionError>;
+  /** Stop everything the Session runs: every branch, and every subagent. For an archived or deleted Session. */
+  readonly stopEverything: Effect.Effect<void, SessionError>;
+  /** What a Fork or Clone of this Session carries besides the entries (`ForkPlan`). */
+  readonly forkSource: (request: ForkSourceRequest) => Effect.Effect<ForkPlan, SessionError>;
+  /** A page of the entries a Fork or Clone of this Session copies. */
+  readonly exportEntries: (request: ExportRequest) => Effect.Effect<ExportPage, SessionError>;
+  /** Start filling this new Session as a Fork or Clone: it takes no message until `importFinish`. */
+  readonly importStart: Effect.Effect<void, SessionError>;
+  /** Append a page of the source's entries to the root conversation, renumbered. */
+  readonly importEntries: (
+    entries: ReadonlyArray<EntryRecord>,
+  ) => Effect.Effect<void, SessionError>;
+  /** Take the agent and documents the plan carries, and take messages from then on. */
+  readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
+  /** Take messages again once a Fork or Clone in a new Workspace carried this Session's files. */
+  readonly releaseFork: Effect.Effect<void>;
+  /**
+   * Pick the root agent's model and thinking level (the active branch's), from its next request on: a field left out
+   * stays as it is, and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
    */
   readonly configure: (change: AgentChange) => Effect.Effect<void, SessionError>;
   /**
-   * Read the settings now and bring the root's agent to the default in force, unless the Session picked its own, so
+   * Read the settings now and bring the active branch's agent to the default in force, unless the Session picked its own, so
    * what a client is shown is what the next request runs on.
    */
   readonly sync: Effect.Effect<void, SessionError>;
   /** Which of its model and thinking level the Session picked itself; the rest follows the default. */
   readonly picks: Effect.Effect<Picks>;
   /**
-   * Abort the work of the root conversation, or of the subagent's that `conversationId` names (anything else fails),
+   * Abort the work of the active branch, or of the conversation `conversationId` names (anything else fails),
    * and withdraw its queued input, once it is idle. Subagents below it keep working unless `subagents` is true.
    */
   readonly abort: (options?: AbortOptions) => Effect.Effect<void, SessionError>;
@@ -382,7 +407,7 @@ export type SessionHostService = {
     conversationId: ConversationId,
   ) => Stream.Stream<ReadonlyArray<TodoTask>, SessionError>;
   /**
-   * What the composer of the root conversation, or of the subagent's that `conversationId` names, offers: the Session's
+   * What the composer of the active branch, or of the subagent's that `conversationId` names, offers: the Session's
    * Slash commands, and the Prompt templates and Skills of the conversation's directory, nearest first.
    */
   readonly catalog: (conversationId?: ConversationId) => Effect.Effect<Catalog, SessionError>;
@@ -395,7 +420,7 @@ export type SessionHostService = {
    */
   readonly files: (search: FileSearch) => Effect.Effect<FileMatches, SessionError>;
   /**
-   * A page of the History of the root conversation, or of the subagent's that `conversationId` names, before entry
+   * A page of the History of the active branch, or of the conversation `conversationId` names, before entry
    * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
    */
   readonly history: (request: HistoryRequest) => Effect.Effect<HistoryPage, SessionError>;
@@ -405,12 +430,6 @@ export type SessionHostService = {
 export class SessionHost extends Context.Service<SessionHost, SessionHostService>()(
   "@cloudpid/server/session/host/SessionHost",
 ) {}
-
-const attempt = <A>(operation: string, run: () => Promise<A>): Effect.Effect<A, SessionError> =>
-  Effect.tryPromise({
-    try: run,
-    catch: (cause) => SessionError.make({ operation, message: String(cause) }),
-  });
 
 const fromHarness = Effect.mapError((error: HarnessError) =>
   SessionError.make({ operation: error.operation, message: error.message }),
@@ -424,26 +443,6 @@ const watchEnded = (end: WatchEnd): string =>
 
 /** Which of the root conversation's model and thinking level the Session picked, rather than follows the default. */
 export type Picks = { readonly model: boolean; readonly thinkingLevel: boolean };
-
-/** The model and thinking level a Session picked itself, in its storage. */
-type Pick = { readonly model?: ModelRef; readonly thinkingLevel?: ModelThinkingLevel };
-
-const PICK_KEY = "agent-pick";
-
-/** `pick` with `change` applied: a field left out stays, `null` clears it. */
-const withChange = (pick: Pick, change: AgentChange): Pick => {
-  const next: Types.Mutable<Pick> = {};
-  const model = change.model === undefined ? pick.model : (change.model ?? undefined);
-
-  const thinkingLevel =
-    change.thinkingLevel === undefined ? pick.thinkingLevel : (change.thinkingLevel ?? undefined);
-
-  if (model !== undefined) next.model = model;
-
-  if (thinkingLevel !== undefined) next.thinkingLevel = thinkingLevel;
-
-  return next;
-};
 
 /** Whether a conversation's resolved agent is already the `want`ed one. */
 const sameAgent = (have: Agent, want: AgentChange): boolean =>
@@ -582,13 +581,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const { kv } = storage;
 
   /** What this Session picked: a field is absent while the Session follows the default. */
-  const picked = (): Pick => {
-    const kept = kv.get<Pick>(PICK_KEY) ?? {};
+  const picked = (): AgentPick => pickedIn(kv);
 
-    // A model the settings no longer accept is ignored: the Session follows the default rather than fail every request.
-    return kept.model === undefined || isModelId(formatModelId(kept.model))
-      ? kept
-      : withChange(kept, { model: null });
+  /** The conversations whose `/compact` waits for their Run to end, with the focus asked for. */
+  const pendingCompactions = (): Readonly<Record<string, string>> =>
+    kv.get<Record<string, string>>(COMPACT_KEY) ?? {};
+
+  /** Count one of the Session's own model calls (the title call, a branch summary) in its spend. */
+  const recordUsage = (usage: Usage): void => {
+    recordUnledgeredUsage(kv, usage);
+
+    for (const listener of usageListeners) listener();
   };
 
   /** The agent the root conversation runs with: what the Session picked, then the default in the settings. */
@@ -605,9 +608,22 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   // The agent applies when the root is created: a new Session starts on the default in force.
   const root = Effect.suspend(() => harness.root(wanted())).pipe(fromHarness);
 
-  /** Bring the root's agent to the one it wants, so its next request runs on it; nothing is written when it does. */
+  const branches = sessionBranches({
+    harness: harness.harness,
+    root,
+    models,
+    wanted,
+    onUsage: recordUsage,
+    pendingCompactions,
+    refusal: () => (isFilling(kv) ? STILL_FILLING : undefined),
+    inArrivalOrder,
+  });
+
+  const { active, treeState } = branches;
+
+  /** Bring the active branch's agent to the one it wants, so its next request runs on it; nothing is written when it does. */
   const applyAgent = Effect.gen(function* () {
-    const conversation = yield* root;
+    const conversation = yield* active;
     const want = wanted();
     const have = yield* attempt("agent", () => conversation.agent(context));
 
@@ -618,6 +634,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const inspect = harness.inspect.pipe(fromHarness);
 
+  const forks = sessionForks({
+    harness: harness.harness,
+    kv,
+    root,
+    active,
+    busyReason: branches.busyReason,
+    inspect,
+    pendingCompactions,
+    picked,
+    inArrivalOrder,
+  });
+
   /**
    * Names the Session after its first answer (`docs/spec.md` → Client and protocol → Titles). The root's first message
    * and answer come from its first entries; a first Run so long that its answer is past them is named by its message.
@@ -626,11 +654,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     kv,
     models,
     // The call is counted in the Session's spend, though no conversation holds it.
-    onUsage: (usage) => {
-      recordTitleUsage(kv, usage);
-
-      for (const listener of usageListeners) listener();
-    },
+    onUsage: recordUsage,
     // The `small` role's model; the Session's own (its pick, else the default) when the roles hold none.
     model: () =>
       settings.current().subagents.roles.small?.model ??
@@ -849,31 +873,51 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   );
 
   /**
-   * The conversation the owner addresses: the root's when `conversationId` is left out, otherwise a live subagent's.
-   * Anything else fails, so a client cannot reach a conversation that is not an agent's.
+   * The conversation the owner addresses: the active branch's when `conversationId` is left out, otherwise a Session
+   * branch's or a live subagent's. Anything else fails, so a client cannot reach a conversation that is not an agent's.
    */
   const addressed = (conversationId: ConversationId | undefined) =>
-    conversationId === undefined || conversationId === ROOT_CONVERSATION_ID
-      ? root
-      : attempt("agent", () => isAgentConversation(harness.harness, conversationId, context)).pipe(
-          Effect.filterOrFail(
-            (known) => known,
-            () =>
-              SessionError.make({
-                operation: "agent",
-                message: `Conversation ${conversationId} is not the root or a subagent of this Session`,
-              }),
-          ),
-          Effect.andThen(
-            attempt("conversation", () => harness.harness.conversation(conversationId, context)),
-          ),
-          Effect.filterOrFail(Predicate.isNotUndefined, () =>
-            SessionError.make({
-              operation: "agent",
-              message: `Conversation ${conversationId} does not exist`,
-            }),
-          ),
+    conversationId === undefined
+      ? active
+      : Effect.all([active, treeState]).pipe(
+          Effect.flatMap(([current, state]) => {
+            if (current.id === conversationId) return Effect.succeed(current);
+
+            // Only the active branch is the root agent's now: another branch is reached by making it active.
+            if (Arr.contains(branchIds(state), conversationId)) {
+              return Effect.fail(
+                SessionError.make({
+                  operation: "agent",
+                  message: `Conversation ${conversationId} is a Session branch that is not the active one`,
+                }),
+              );
+            }
+
+            return subagentConversation(conversationId);
+          }),
         );
+
+  /** The conversation of a live subagent, `conversationId`; anything else fails. */
+  const subagentConversation = (conversationId: ConversationId) =>
+    attempt("agent", () => isAgentConversation(harness.harness, conversationId, context)).pipe(
+      Effect.filterOrFail(
+        (known) => known,
+        () =>
+          SessionError.make({
+            operation: "agent",
+            message: `Conversation ${conversationId} is not the root or a subagent of this Session`,
+          }),
+      ),
+      Effect.andThen(
+        attempt("conversation", () => harness.harness.conversation(conversationId, context)),
+      ),
+      Effect.filterOrFail(Predicate.isNotUndefined, () =>
+        SessionError.make({
+          operation: "agent",
+          message: `Conversation ${conversationId} does not exist`,
+        }),
+      ),
+    );
 
   /** End `span` as `exit` says. */
   const endSpan = (span: Tracer.Span, exit: Exit.Exit<unknown, unknown>) =>
@@ -910,49 +954,67 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
+  /** Fail while the Session takes no message: it is being filled as a Fork or Clone, or carries its files to one. */
+  const unlessForking = forks.refusal.pipe(
+    Effect.flatMap((refusal) =>
+      refusal === undefined
+        ? Effect.void
+        : Effect.fail(SessionError.make({ operation: "submit", message: refusal })),
+    ),
+  );
+
   /**
-   * Admit `draft` to conversation `conversationId` (the root's by default). `named` says whether the Session may be
-   * named after it: only the owner's own messages to the root name it, a subagent's conversation being the root's own
-   * work and a Rollover request not being the owner's words.
+   * Admit `draft` to conversation `conversationId` (the active branch's by default). `named` says whether the Session may
+   * be named after it: only the owner's own messages to the active branch name it, a subagent's conversation being the
+   * root agent's own work and a Rollover request not being the owner's words. Refused while the Session is being filled
+   * as a Fork or Clone, or carries its files to one.
    */
   const admitDraft = (
     conversationId: ConversationId | undefined,
     draft: InputSubmissionDraft,
     named: boolean,
-  ): Effect.Effect<Submission, SessionError> => {
-    const toRoot = conversationId === undefined || conversationId === ROOT_CONVERSATION_ID;
+  ): Effect.Effect<Submission, SessionError> =>
+    Effect.gen(function* () {
+      yield* unlessForking;
 
-    // A subagent keeps the agent it was started with; only the root follows the settings and the owner's pick.
-    const target = toRoot ? applyAgent.pipe(Effect.andThen(root)) : addressed(conversationId);
+      // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never
+      // holds up the alarm or a status report.
+      yield* refreshSettings;
 
-    // The next request runs on the settings in force now. The read stays out of the lock, so a slow Registry never holds
-    // up the alarm or a status report.
-    return refreshSettings.pipe(
       // Another conversation is checked before arming: a bad ID must not report the Session running to the Registry.
-      Effect.andThen(toRoot ? Effect.succeed(target) : Effect.map(target, Effect.succeed)),
-      Effect.flatMap((resolved) =>
-        // Arm before admitting work: an object that dies after the commit is still woken.
-        arm({ active: true }).pipe(
-          Effect.andThen(resolved),
-          Effect.flatMap((conversation) =>
-            tracedRun(
-              conversation.id,
-              attempt("submit", () => conversation.submit(draft, context)),
-            ),
+      const other = conversationId === undefined ? undefined : yield* addressed(conversationId);
+      const toActive = other === undefined || other.id === (yield* active).id;
+
+      // A subagent keeps the agent it was started with; only the active branch follows the settings and the owner's pick.
+      const target =
+        other === undefined || toActive
+          ? applyAgent.pipe(Effect.andThen(active))
+          : Effect.succeed(other);
+
+      // Arm before admitting work: an object that dies after the commit is still woken.
+      const submission = yield* arm({ active: true }).pipe(
+        Effect.andThen(target),
+        Effect.flatMap((conversation) =>
+          tracedRun(
+            conversation.id,
+            attempt("submit", () => conversation.submit(draft, context)),
           ),
-          // The owner hears how this Run ends, even after an eviction: the submission is kept until it is told.
-          Effect.tap((submission) =>
-            Effect.sync(() => {
-              kv.put(NOTIFY_KEY, Arr.dedupe([...pendingNotices(), submission.id]));
-            }),
-          ),
-          serially,
         ),
-      ),
-      Effect.tap(settleWhenIdle),
-      Effect.tap((submission) => (toRoot && named ? titleAfter(submission) : Effect.void)),
-    );
-  };
+        // The owner hears how this Run ends, even after an eviction: the submission is kept until it is told.
+        Effect.tap((admitted) =>
+          Effect.sync(() => {
+            kv.put(NOTIFY_KEY, Arr.dedupe([...pendingNotices(), admitted.id]));
+          }),
+        ),
+        serially,
+      );
+
+      yield* settleWhenIdle;
+
+      if (toActive && named) yield* titleAfter(submission);
+
+      return submission;
+    });
 
   /**
    * The execution environment of `conversation`, in its own `cwd`: the Session's Workspace. For a `lookup` (the
@@ -1222,7 +1284,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     });
 
   const admit = (prompt: Prompt): Effect.Effect<Submission, SessionError> =>
-    draftOf(prompt).pipe(
+    // A message the Session would refuse is not expanded first.
+    unlessForking.pipe(
+      Effect.andThen(draftOf(prompt)),
       Effect.tap((draft) => guard(prompt.conversationId, draft)),
       Effect.flatMap((draft) => admitDraft(prompt.conversationId, draft, true)),
       inArrivalOrder,
@@ -1243,7 +1307,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       } satisfies Answer;
     }
 
-    const conversation = yield* root;
+    const conversation = yield* addressed(prompt.conversationId);
 
     const entry = yield* attempt("answer", () =>
       conversation.commit((tx) => tx.entry(AssistantEntry, settled.answer), context),
@@ -1251,23 +1315,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     const message = entry?.model?.[0];
 
-    const text =
-      message?.role === "assistant"
-        ? Arr.join(
-            Arr.flatMap(message.content, (block) => (block.type === "text" ? [block.text] : [])),
-            "",
-          )
-        : "";
+    const text = message?.role === "assistant" ? contentText(message.content, "") : "";
 
     return { status: "answered", submissionId: submission.id, text } satisfies Answer;
   });
-
-  /** A failure the owner's Slash command reports to the composer. */
-  const refuse = (message: string) => SessionError.make({ operation: "command", message });
-
-  /** The conversations whose `/compact` waits for their Run to end, with the focus asked for. */
-  const pendingCompactions = (): Readonly<Record<string, string>> =>
-    kv.get<Record<string, string>>(COMPACT_KEY) ?? {};
 
   /** Admit a manual compaction of `conversationId`, with `focus` as its summary's additional focus. */
   const startCompaction = (conversationId: ConversationId, focus: string) =>
@@ -1711,6 +1762,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Effect.map(({ tasks, submissions }) => tasks.length === 0 && submissions.length === 0),
     ),
     root: Effect.map(root, (conversation) => conversation.id),
+    activeBranch: Effect.map(active, (conversation) => conversation.id),
+    copying: forks.filling,
+    tree: branches.tree,
+    navigate: branches.navigate,
+    switchBranch: branches.switchBranch,
+    stopEverything: branches.stopEverything,
+    forkSource: forks.forkSource,
+    exportEntries: forks.exportEntries,
+    importStart: forks.importStart,
+    importEntries: forks.importEntries,
+    importFinish: forks.importFinish,
+    releaseFork: forks.releaseFork,
     configure: (change) =>
       refreshSettings.pipe(
         Effect.andThen(

@@ -43,11 +43,12 @@ const liveViewLabel = (argument: string | undefined, agentOfHandoff: AgentOfHand
 };
 
 /**
- * The Pane types: the Tasks Pane, one per Session, and a Live View per Browser Handoff waiting (`live-view:<requestId>`).
- * The Terminal (#139) joins them here.
+ * The Pane types: the Tasks Pane and the Session tree Pane, one each per Session, and a Live View per Browser Handoff
+ * waiting (`live-view:<requestId>`). The Terminal (#139) joins them here.
  */
 export const PANE_TYPES = [
   { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
+  { id: "tree", multiple: false, label: () => ({ name: "Tree" }) },
   { id: "live-view", multiple: true, label: liveViewLabel },
 ] as const satisfies readonly PaneType[];
 
@@ -56,6 +57,9 @@ export type PaneTypeId = (typeof PANE_TYPES)[number]["id"];
 
 /** The key of the Tasks Pane. */
 export const TASKS_PANE = "tasks";
+
+/** The key of the Session tree Pane. */
+export const TREE_PANE = "tree";
 
 /** What a Pane's component gets. */
 export interface PaneProps {

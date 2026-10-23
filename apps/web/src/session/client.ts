@@ -17,12 +17,16 @@ import {
   FileMatches,
   HEARTBEAT,
   HistoryPage,
+  Navigated,
+  SessionTree,
   LiveViewLinks,
   reduceEvents,
   withEarlier,
   SESSION_DELETED_CLOSE_CODE,
   ServerMessageJson,
   type ClientMessage,
+  type BranchSummaryRequest,
+  type TreePoint,
   type ConversationId,
   type ServerMessage,
   type SessionView,
@@ -217,6 +221,19 @@ export interface SessionClient {
     before: number,
     conversationId?: number,
   ) => Effect.Effect<void, SessionCommandError>;
+  /** The Session tree (GLOSSARY.md → Session tree), as it is now. Fails as `catalog` does. */
+  readonly tree: Effect.Effect<SessionTree, SessionCommandError>;
+  /**
+   * Move the active branch to `point` (just `before` an owner's message, or just after an entry: `at`), with a summary
+   * of the Session branch left when `summary` asks: where it went, and the owner's message to put back in the composer.
+   * The Session's `active_branch` moves the root view first. Fails with why the Session refused it.
+   */
+  readonly navigate: (
+    point: TreePoint,
+    summary?: BranchSummaryRequest,
+  ) => Effect.Effect<Navigated, SessionCommandError>;
+  /** Make Session branch `conversationId` the active branch as it stands (the chevrons). Fails as `navigate` does. */
+  readonly switchBranch: (conversationId: number) => Effect.Effect<void, SessionCommandError>;
   /**
    * Fresh Live View links to the tab of the Browser Handoff `requestId` names and to each window it opened, for this
    * client alone: a link may start a connection for 60 s. Fails as `catalog` does, and with the Session's "the handoff
@@ -289,6 +306,10 @@ const decodeFileMatches = Schema.decodeUnknownOption(FileMatches);
 const decodeOutcome = Schema.decodeUnknownOption(CommandOutcome);
 
 const decodeHistoryPage = Schema.decodeUnknownOption(HistoryPage);
+
+const decodeSessionTree = Schema.decodeUnknownOption(SessionTree);
+
+const decodeNavigated = Schema.decodeUnknownOption(Navigated);
 
 const decodeLiveViewLinks = Schema.decodeUnknownOption(LiveViewLinks);
 
@@ -485,6 +506,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "taskGraph"
         | "usage"
         | "todos"
+        | "activeBranch"
+        | "treeVersion"
+        | "copying"
       >
     >,
     thread?: number,
@@ -672,8 +696,15 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
   const handle = (from: Connection, message: ServerMessage): void => {
     switch (message.type) {
-      case "hello":
+      case "hello": {
+        const moved = root !== null && root !== message.root;
+
         root = message.root;
+        update({
+          activeBranch: root,
+          copying: message.copying === true,
+          treeVersion: moved ? current.treeVersion + 1 : current.treeVersion,
+        });
         watch();
 
         for (const conversationId of threadWatches.keys()) startThreadWatch(conversationId);
@@ -681,6 +712,20 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         if (graphWanted) send({ type: "watch_task_graph", id: nextCommandId() });
 
         if (usageWanted) send({ type: "watch_usage", id: nextCommandId() });
+
+        return;
+      }
+
+      case "active_branch":
+        // The root view follows the active branch: the branch left is unwatched, and the new one watched from a snapshot.
+        if (message.conversationId !== root) {
+          if (root !== null) send({ type: "unwatch", id: nextCommandId(), conversationId: root });
+
+          root = message.conversationId;
+          watch();
+        }
+
+        update({ activeBranch: root, treeVersion: current.treeVersion + 1 });
 
         return;
       case "task_graph":
@@ -1218,6 +1263,30 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           thread.view = withEarlier(thread.view, before, page);
           update({}, conversationId);
         }),
+      ),
+    tree: request((id) => ({ type: "tree", id }), decodeSessionTree),
+    navigate: ({ entryId, position }, summary) =>
+      request(
+        (id) => {
+          const message: Types.Mutable<Extract<ClientMessage, { type: "navigate" }>> = {
+            type: "navigate",
+            id,
+            entryId,
+            position,
+          };
+
+          if (summary !== undefined) message.summary = summary;
+
+          return message;
+        },
+        decodeNavigated,
+        true,
+      ),
+    switchBranch: (conversationId) =>
+      request(
+        (id) => ({ type: "switch_branch", id, conversationId: conversation(conversationId) }),
+        () => Option.some(undefined),
+        true,
       ),
     liveView: (requestId) =>
       request((id) => ({ type: "live_view", id, requestId }), decodeLiveViewLinks),

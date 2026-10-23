@@ -5,6 +5,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { answer, call, context, gate, openSubagentHarness } from "./subagents/harness.fixture.ts";
 import { isAgentConversation, stopConversation } from "./subagents/owner.ts";
+import { SubagentsDoc } from "./subagents/state.ts";
 
 describe("subagents", () => {
   it("reports a child's answer back to its parent as a follow-up when nobody waits for it", async () => {
@@ -145,6 +146,50 @@ describe("subagents", () => {
       "Delegate it",
       "[Subagent result | agent=agent-1 | turn=turn-1 | status=completed]\nThe answer is 42.",
     ]);
+  });
+
+  it("sends a child's message to the root agent to the Session branch it was started from", async () => {
+    const moved = gate();
+
+    const session = await openSubagentHarness(async (request) => {
+      if (request.agent === "agent-1") {
+        if (request.text !== "Find the answer") return answer("Done.");
+
+        await moved.promise;
+
+        return call(["agent_message", { message: "Still on it" }]);
+      }
+
+      if (request.text === "Delegate it") return call(["subagent", { task: "Find the answer" }]);
+
+      return answer("Noted.");
+    });
+
+    await session.prompt("Delegate it");
+
+    // The owner moves to another Session branch while the child works.
+    const at = (await session.entries()).at(-1)!.id;
+
+    const branch = await session.harness.commit(async (tx) => {
+      const fork = await tx.forkConversation(ROOT_CONVERSATION_ID, at, {
+        ownership: { kind: "ownerless" },
+      });
+
+      const doc = await tx.doc(SubagentsDoc);
+
+      doc.activeBranch = fork.id;
+      doc.branches = [fork.id];
+
+      return fork.id;
+    }, context);
+
+    moved.resolve();
+    await session.settle();
+
+    expect((await session.texts("user")).some((text) => text.endsWith("Still on it"))).toBe(true);
+    expect((await session.texts("user", branch)).some((text) => text.endsWith("Still on it"))).toBe(
+      false,
+    );
   });
 
   it("starts a new turn on an idle child with agent_message, and reports its answer", async () => {

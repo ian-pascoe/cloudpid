@@ -28,7 +28,7 @@ export type DestroySessionOptions = {
 export const SESSION_DELETED_REASON = "Session deleted";
 
 /** Stop everything the Session runs: its root conversation and every subagent below it, background work included. */
-export const stopSession = Effect.flatMap(SessionHost, (host) => host.abort({ subagents: true }));
+export const stopSession = Effect.flatMap(SessionHost, (host) => host.stopEverything);
 
 /**
  * Delete the Session's own state: stop everything it runs, close its browser and its clients' sockets (with

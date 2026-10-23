@@ -10,6 +10,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { liveCalls, type NestedCall, settledCalls } from "../chat/nested-calls.ts";
 import { type StartedSubagent, startedSubagent } from "../chat/subagent.ts";
+import { entryIdOf } from "./tree.ts";
 
 type ContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
@@ -21,6 +22,10 @@ interface Turn {
   readonly createdAt: Date | undefined;
   readonly content: ContentPart[];
   status: Status;
+  /** Its last committed assistant message's ID (its pi entry's): where the Session tree's bar under it points. */
+  answer?: string;
+  /** The IDs of its committed messages, assistant and tool alike: where a Session branch may start in it. */
+  readonly entries: string[];
 }
 
 /** The turn before any user message (a Session can start with a queued run, or have its first message compacted). */
@@ -239,16 +244,24 @@ const buildTurn = (
       createdAt: dateOf(message.timestamp),
       content: [],
       status,
+      entries: [],
     };
 
     turn.content.push(...assistantParts(message));
     turn.status = status;
+
+    if (status.type !== "running") {
+      turn.answer = message.id;
+      turn.entries.push(message.id);
+    }
   };
 
   for (const message of group) {
     if (message.role === "assistant") addAssistant(message, statusOf(message));
     else if (message.role === "tool") {
       for (const part of message.parts) if (part.type === "tool-result") resolveCall(turn, part);
+
+      turn?.entries.push(message.id);
     }
   }
 
@@ -257,13 +270,46 @@ const buildTurn = (
   return turn;
 };
 
-const toAssistant = (turn: Turn): ThreadMessageLike => ({
-  role: "assistant",
-  id: turn.id,
-  createdAt: turn.createdAt,
-  content: turn.content,
-  status: turn.status,
-});
+const toAssistant = (turn: Turn): ThreadMessageLike => {
+  const message: ThreadMessageLike = {
+    role: "assistant",
+    id: turn.id,
+    createdAt: turn.createdAt,
+    content: turn.content,
+    status: turn.status,
+  };
+
+  return {
+    ...message,
+    metadata: {
+      custom:
+        turn.answer === undefined
+          ? { entries: turn.entries }
+          : { answer: turn.answer, entries: turn.entries },
+    },
+  };
+};
+
+const decodeEntries = Schema.decodeUnknownOption(Schema.Array(Schema.String));
+
+/** The pi entry IDs of the committed messages an assistant message's turn holds, from its metadata. */
+export const entriesOf = (custom: MessageCustom | undefined): readonly number[] =>
+  Option.match(decodeEntries(custom?.["entries"]), {
+    onNone: () => [],
+    onSome: (ids) =>
+      ids.flatMap((id) => {
+        const entry = entryIdOf(id);
+
+        return entry === undefined ? [] : [entry];
+      }),
+  });
+
+/** The entry ID of the answer an assistant message's turn ended with, from its metadata; undefined while it runs. */
+export const answerOf = (custom: MessageCustom | undefined): number | undefined => {
+  const answer = custom?.["answer"];
+
+  return Predicate.isString(answer) ? entryIdOf(answer) : undefined;
+};
 
 /** The last turn: its tool calls without a result are running, and may have streamed output. */
 const withRunning = (turn: Turn, view: SessionView): Turn => {

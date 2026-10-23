@@ -66,15 +66,19 @@ export const totalsOf = (state: UsageState): Totals =>
     (total, spend: Spend) => addTotals(total, spend),
   );
 
-/** Where the title calls' usage is kept: they belong to no conversation, so no ledger of pi-durable's holds them. */
-const TITLE_USAGE_KEY = "title-usage";
+/**
+ * Where the usage of the Session's own model calls is kept (the title call, a branch summary): they belong to no
+ * conversation, so no ledger of pi-durable's holds them. The key is from when only the title call was kept there.
+ */
+const UNLEDGERED_USAGE_KEY = "title-usage";
 
-/** What the title calls have cost so far. */
-export const titleTotals = (kv: SettingsKv): Totals => kv.get<Totals>(TITLE_USAGE_KEY) ?? NO_TOTALS;
+/** What the Session's own model calls have cost so far. */
+export const unledgeredTotals = (kv: SettingsKv): Totals =>
+  kv.get<Totals>(UNLEDGERED_USAGE_KEY) ?? NO_TOTALS;
 
-/** Add one title call's usage to what the Session keeps. */
-export const recordTitleUsage = (kv: SettingsKv, usage: Spend): void =>
-  kv.put(TITLE_USAGE_KEY, addTotals(titleTotals(kv), usage));
+/** Add one of the Session's own model calls' usage to what the Session keeps. */
+export const recordUnledgeredUsage = (kv: SettingsKv, usage: Spend): void =>
+  kv.put(UNLEDGERED_USAGE_KEY, addTotals(unledgeredTotals(kv), usage));
 
 /** `left` and `right` added. */
 export const plusTotals = (left: Totals, right: Totals): Totals => ({
@@ -91,7 +95,7 @@ export type Ledger = { readonly usage: (context: Context) => Promise<UsageState>
 
 /** What the Session has spent: every conversation's ledger summed, and the title calls'. */
 export const sessionTotals = async (ledger: Ledger, kv: SettingsKv): Promise<Totals> =>
-  plusTotals(totalsOf(await ledger.usage(BACKGROUND_CONTEXT)), titleTotals(kv));
+  plusTotals(totalsOf(await ledger.usage(BACKGROUND_CONTEXT)), unledgeredTotals(kv));
 
 /** What a client is shown: the totals, the limit in force, and what the Workspace's Containers cost, when known. */
 export const usageMessage = (

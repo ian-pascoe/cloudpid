@@ -18,6 +18,7 @@ import {
   type RefObject,
 } from "react";
 import { useShownSessionId } from "./chat/conversation.ts";
+import { SessionTreePane } from "./chat/tree-pane.tsx";
 import { TasksPane } from "./chat/tasks-pane.tsx";
 import { cn } from "./lib/utils.ts";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
@@ -39,7 +40,11 @@ import {
 } from "./panes-state.ts";
 
 /** The component each Pane type shows. A type in `PANE_TYPES` with none is a type error. */
-const PANE_COMPONENTS = { tasks: TasksPane, "live-view": LiveViewPane } satisfies {
+const PANE_COMPONENTS = {
+  tasks: TasksPane,
+  tree: SessionTreePane,
+  "live-view": LiveViewPane,
+} satisfies {
   readonly [Id in PaneTypeId]: ComponentType<PaneProps>;
 };
 

@@ -33,6 +33,9 @@ const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): Lifecycl
 
     return { image: "img", last: null, progress: null, attemptedAt: null };
   },
+  carry: async (branch, repos) => {
+    calls.push(`carry:${branch}:${repos.length}`);
+  },
   ...overrides,
 });
 

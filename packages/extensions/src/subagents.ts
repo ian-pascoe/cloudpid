@@ -27,6 +27,7 @@ export {
 export {
   type AgentRecord,
   EMPTY_STATE as EMPTY_SUBAGENTS_STATE,
+  isSessionBranch,
   SubagentsDoc,
   type SubagentsState,
 } from "./subagents/state.ts";

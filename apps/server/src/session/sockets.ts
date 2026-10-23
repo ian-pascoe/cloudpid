@@ -9,6 +9,8 @@ import {
   decodeClientMessage,
   type FileMatches,
   type HistoryPage,
+  type Navigated,
+  type SessionTree,
   HEARTBEAT,
   type LiveViewLinks,
   type ClientMessage,
@@ -42,7 +44,8 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { SessionError, SessionHost } from "./host.ts";
+import { SessionError } from "./errors.ts";
+import { SessionHost } from "./host.ts";
 
 /**
  * The parts of a Durable Object's `ctx` the sockets use. Narrow on purpose, as `SessionStorage` is, so the module and
@@ -84,7 +87,15 @@ export type SessionSocketsService = {
   readonly receive: (socket: WebSocket, message: string | ArrayBuffer) => Effect.Effect<void>;
   /** `socket` closed or failed: stop its watches. */
   readonly drop: (socket: WebSocket) => Effect.Effect<void>;
+  /**
+   * Close every client's socket, so each connects again and is greeted as the Session is now: a Fork or Clone's copy
+   * ended, which its `hello` said was under way.
+   */
+  readonly greetAgain: Effect.Effect<void>;
 };
+
+/** WebSocket's "Service Restart": the client connects again at once, as after any close but the Session's deletion. */
+const SERVICE_RESTART_CLOSE_CODE = 1012;
 
 /** The Session DO's client sockets. */
 export class SessionSockets extends Context.Service<SessionSockets, SessionSocketsService>()(
@@ -369,11 +380,27 @@ export const sessionSocketsLayer = (
         | CommandOutcome
         | FileMatches
         | HistoryPage
+        | SessionTree
+        | Navigated
         | LiveViewLinks
         | null,
         SessionError | SecretsError | BrowserError
       > => {
         switch (message.type) {
+          case "tree":
+            return host.tree;
+          case "navigate": {
+            const { type: _type, id: _id, ...request } = message;
+
+            return host
+              .navigate(request)
+              .pipe(Effect.tap((navigated) => announceBranch(navigated.conversationId)));
+          }
+
+          case "switch_branch":
+            return host
+              .switchBranch(message.conversationId)
+              .pipe(Effect.andThen(announceBranch(message.conversationId)), Effect.as(null));
           case "submit": {
             const { type: _type, id: _id, ...prompt } = message;
 
@@ -484,6 +511,14 @@ export const sessionSocketsLayer = (
           return fibers === undefined ? Effect.void : FiberMap.clear(fibers);
         });
 
+      /** Tell every connected client which Session branch is active now, so each watches it instead. */
+      const announceBranch = (conversationId: ConversationId) =>
+        Effect.forEach(
+          state.getWebSockets(),
+          (socket) => send(socket, { type: "active_branch", conversationId }),
+          { discard: true },
+        );
+
       /** Tell `socket`, or every connected client, which of the model and thinking level the Session picked. */
       const announcePicks = host.picks.pipe(
         Effect.flatMap((picks) =>
@@ -500,12 +535,13 @@ export const sessionSocketsLayer = (
           Effect.catch((error) => Effect.logWarning("Syncing the agent on connect failed", error)),
         );
 
-        const root = yield* host.root;
+        const root = yield* host.activeBranch;
+        const copying = yield* host.copying;
         const { 0: client, 1: server } = new WebSocketPair();
 
         state.acceptWebSocket(server);
         server.serializeAttachment({ watches: [] } satisfies Attachment);
-        yield* send(server, { type: "hello", root });
+        yield* send(server, copying ? { type: "hello", root, copying } : { type: "hello", root });
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
         );
@@ -538,6 +574,16 @@ export const sessionSocketsLayer = (
         }
       }
 
-      return { connect, receive, drop } satisfies SessionSocketsService;
+      // Each client connects again, as after any close, and its `hello` says the Session as it is now.
+      const greetAgain = Effect.forEach(
+        state.getWebSockets(),
+        (socket) =>
+          Effect.try(() => socket.close(SERVICE_RESTART_CLOSE_CODE, "The session is ready")).pipe(
+            Effect.ignore,
+          ),
+        { discard: true },
+      );
+
+      return { connect, receive, drop, greetAgain } satisfies SessionSocketsService;
     }),
   );

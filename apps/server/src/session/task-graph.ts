@@ -1,17 +1,21 @@
 // The Session's task graph as a client's panel shows it (`docs/spec.md` → Client and protocol): pi-durable's
 // `TaskGraph` lists every live task with its internals, so it is boiled down to the Session's subagents and its live
 // background work before it goes on a socket.
-import type { AgentRecord, SubagentsState } from "@cloudpid/extensions/subagents";
+import {
+  type AgentRecord,
+  isSessionBranch,
+  type SubagentsState,
+} from "@cloudpid/extensions/subagents";
 import {
   type ConversationId,
   type GraphAgent,
   type GraphBackgroundTask,
   type TaskGraphSummary,
 } from "@cloudpid/protocol";
-import {
-  ROOT_CONVERSATION_ID,
-  type TaskGraph,
-  type TaskGraphNode,
+import type {
+  ConversationId as PiConversationId,
+  TaskGraph,
+  TaskGraphNode,
 } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
@@ -52,9 +56,12 @@ export const summarizeTaskGraph = (graph: TaskGraph, state: SubagentsState): Tas
     Arr.flatMap(tasks, (task) => (task.background ? [] : [task.conversationId])),
   );
 
-  const agentOf = (conversationId: number): string =>
-    state.conversations[String(conversationId)] ??
-    (conversationId === ROOT_CONVERSATION_ID ? ROOT : "unknown");
+  const agentOf = (conversationId: number): string => {
+    // SAFETY: a task's conversation is a pi-durable conversation ID.
+    const id = conversationId as PiConversationId;
+
+    return state.conversations[String(id)] ?? (isSessionBranch(state, id) ? ROOT : "unknown");
+  };
 
   const agents = Arr.map(inTreeOrder(Record.values(state.agents), ROOT), (agent): GraphAgent => ({
     id: agent.id,

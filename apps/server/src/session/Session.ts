@@ -41,7 +41,10 @@ import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from ".
 import type { PushEvent } from "../push/notification.ts";
 import { sessionExtensions } from "./extensions.ts";
 import { IMAGES_BINDING } from "./images.ts";
-import { NOTIFY_TIMEOUT, SessionError, SessionHost, sessionHostLayer } from "./host.ts";
+import { NOTIFY_TIMEOUT, SessionHost, sessionHostLayer } from "./host.ts";
+import { SessionError } from "./errors.ts";
+import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 import {
   reloadSessionExtensions,
   sessionSettingsLayer,
@@ -119,6 +122,20 @@ export type SessionMethods = {
   readonly webSocketError: (socket: Cloudflare.WebSocket) => Effect.Effect<void>;
   /** Stop everything the Session runs (its root and every subagent): the owner archived it. */
   readonly stopAll: () => Effect.Effect<void, SessionError>;
+  /** What a Fork or Clone of this Session carries besides the entries: the main Worker makes one (`forkSession`). */
+  readonly forkSource: (request: ForkSourceRequest) => Effect.Effect<ForkPlan, SessionError>;
+  /** A page of the entries a Fork or Clone of this Session copies. */
+  readonly exportEntries: (request: ExportRequest) => Effect.Effect<ExportPage, SessionError>;
+  /** Start filling this new Session as a Fork or Clone; it takes no message until `importFinish`. */
+  readonly importStart: () => Effect.Effect<void, SessionError>;
+  /** Append a page of the source's entries, renumbered. */
+  readonly importEntries: (
+    entries: ReadonlyArray<EntryRecord>,
+  ) => Effect.Effect<void, SessionError>;
+  /** Take the agent and documents a Fork or Clone carries, and take messages from then on. */
+  readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
+  /** Take messages again once a Fork or Clone in a new Workspace carried this Session's files. */
+  readonly releaseFork: () => Effect.Effect<void>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -440,6 +457,16 @@ export const SessionLive = Session.make(
           webSocketError: (socket) => invoked("session.close", sockets.drop(socket.ws)),
           stopAll: () =>
             invoked("session.stop", stopSession.pipe(Effect.provideService(SessionHost, host))),
+          forkSource: (request) => invoked("session.fork.source", host.forkSource(request)),
+          exportEntries: (request) => invoked("session.fork.export", host.exportEntries(request)),
+          importStart: () => invoked("session.fork.start", host.importStart),
+          importEntries: (entries) => invoked("session.fork.import", host.importEntries(entries)),
+          importFinish: (plan) =>
+            invoked(
+              "session.fork.finish",
+              host.importFinish(plan).pipe(Effect.andThen(sockets.greetAgain)),
+            ),
+          releaseFork: () => invoked("session.fork.release", host.releaseFork),
           destroy: () =>
             invoked(
               "session.destroy",

@@ -23,6 +23,7 @@ const unexpected = (tag: string) => () => Effect.die(`unexpected Registry call: 
 const UNEXPECTED: Handlers = {
   listSessions: unexpected("listSessions"),
   createSession: unexpected("createSession"),
+  forkSession: unexpected("forkSession"),
   renameSession: unexpected("renameSession"),
   archiveSession: unexpected("archiveSession"),
   unarchiveSession: unexpected("unarchiveSession"),
