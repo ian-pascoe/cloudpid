@@ -19,7 +19,7 @@ import {
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
-import type { Catalog, CommandOutcome, ConversationId } from "@cloudpid/protocol";
+import type { Catalog, CommandOutcome, ConversationId, FileMatches } from "@cloudpid/protocol";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -264,6 +264,11 @@ export class TestSession extends DurableObject {
     return undefined;
   }
 
+  /** What builds a conversation's environment for the composer's lookups, if not `hostEnv`'s. */
+  protected hostLookupEnv(): HarnessOptions["env"] | undefined {
+    return undefined;
+  }
+
   /** The spans this instance's Effects made, in the order they started. */
   readonly #spans: Tracer.NativeSpan[] = [];
   #host!: SessionHostService;
@@ -308,6 +313,7 @@ export class TestSession extends DurableObject {
               extensions: this.hostExtensions(),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               env: this.hostEnv(),
+              lookupEnv: this.hostLookupEnv(),
               onSubmit: this.hostOnSubmit(),
               // Short only for a Registry that hangs; a loaded runner can take longer than that for a report that
               // lands, which would count it failed and report it again.
@@ -502,6 +508,11 @@ export class TestSession extends DurableObject {
   /** What the composer of the root conversation, or of a subagent's, offers. */
   catalog(conversationId?: ConversationId): Promise<Catalog> {
     return this.#runtime.runPromise(this.#host.catalog(conversationId));
+  }
+
+  /** What the composer's `@` menu offers for `query`. */
+  files(query: string): Promise<FileMatches> {
+    return this.#runtime.runPromise(this.#host.files({ query }));
   }
 
   /** Run the Session's Slash command `name`: what it did, or why it could not. */
