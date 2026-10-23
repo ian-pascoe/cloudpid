@@ -20,6 +20,7 @@ import {
 import { type ThreadState } from "../session/state.ts";
 import { Composer } from "./composer.tsx";
 import { conversationKey, useShownSessionId } from "./conversation.ts";
+import { EarlierHistory } from "./earlier-history.tsx";
 import { textOf } from "./queue-adapter.ts";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { TodoList } from "./todo-list.tsx";
@@ -78,6 +79,7 @@ const LiveChildThread = ({
             <ThreadPrimitive.Empty>
               <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
             </ThreadPrimitive.Empty>
+            <EarlierHistory conversation={key} before={thread.view.before} />
             {messages}
           </div>
         </ThreadPrimitive.Viewport>

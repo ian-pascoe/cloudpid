@@ -2,8 +2,25 @@
 
 import type { SessionRecord } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
-import { ChevronRight, FolderGit2, Plus, Settings as SettingsIcon, X } from "lucide-react";
-import { useId } from "react";
+import {
+  ChevronRight,
+  FolderGit2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  Settings as SettingsIcon,
+  X,
+} from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
 import { cn } from "./lib/utils.ts";
@@ -15,6 +32,15 @@ import { type SessionActions, SessionMenu } from "./session-menu.tsx";
 import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import { environmentNamesAtom, workspaceBranchesAtom } from "./environments-state.ts";
 import { groupByEnvironment, splitArchived, type EnvironmentGroup } from "./environments.ts";
+import {
+  COLLAPSE_BELOW,
+  DEFAULT_SIDEBAR_WIDTH,
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  sidebarCollapsedAtom,
+  sidebarWidthAtom,
+  sidebarWidthForKey,
+} from "./sidebar-state.ts";
 
 export const sessionTitle = (session: SessionRecord): string => session.title ?? "Untitled session";
 
@@ -187,20 +213,188 @@ const SessionGroups = ({
   </div>
 );
 
+/** Open the draft, where the owner chooses the Environment and the Workspace of a new Session. */
+const openDraft = () => {
+  navigate(DRAFT_PATH);
+};
+
 /** The New session button: it opens the draft, where the owner chooses the Environment and the Workspace. */
 const NewSessionButton = () => (
-  <Button
-    size="sm"
-    variant="outline"
-    onClick={() => {
-      navigate(DRAFT_PATH);
-    }}
-  >
+  <Button size="sm" variant="outline" aria-label="New session" onClick={openDraft}>
     <Plus />
-    New session
+    {/* A narrow list keeps the icon alone; the label still names it. */}
+    <span className="hidden @[18.5rem]:inline">New session</span>
   </Button>
 );
 
+/** A link to a page at the foot of the list (Environments, Settings): with its name, or as an icon alone on the rail. */
+const PageLink = ({
+  href,
+  active,
+  icon,
+  label,
+  iconOnly = false,
+}: {
+  href: string;
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  iconOnly?: boolean;
+}) => (
+  <a
+    href={href}
+    aria-current={active ? "page" : undefined}
+    aria-label={iconOnly ? label : undefined}
+    title={iconOnly ? label : undefined}
+    onClick={(event) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+
+      event.preventDefault();
+      navigate(href);
+    }}
+    className={cn(
+      "flex items-center rounded-md text-sm transition-colors hover:bg-accent [&_svg]:size-4",
+      iconOnly ? "size-9 justify-center" : "gap-2 px-3 py-2",
+      active && "bg-accent text-accent-foreground",
+    )}
+  >
+    {icon}
+    {!iconOnly && label}
+  </a>
+);
+
+/**
+ * The strip between the list and the page beside it on a wide screen: drag it, or focus it and use the arrow keys, Home
+ * and End; a double click puts back the default width. Dragged far enough to the left, it collapses the list.
+ */
+const SidebarResizeHandle = ({
+  column,
+  controls,
+  collapse,
+}: {
+  column: RefObject<HTMLElement | null>;
+  controls: string;
+  collapse: () => void;
+}) => {
+  const [width, setWidth] = useAtom(sidebarWidthAtom);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const next = sidebarWidthForKey(width, event.key, event.shiftKey);
+
+    if (next === undefined) return;
+
+    event.preventDefault();
+    setWidth(next);
+  };
+
+  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+
+    const left = column.current?.getBoundingClientRect().left;
+
+    if (left === undefined) return;
+
+    const next = event.clientX - left;
+
+    if (next < COLLAPSE_BELOW) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      collapse();
+
+      return;
+    }
+
+    setWidth(next);
+  };
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize sidebar"
+      aria-controls={controls}
+      aria-valuemin={MIN_SIDEBAR_WIDTH}
+      aria-valuemax={MAX_SIDEBAR_WIDTH}
+      aria-valuenow={width}
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={onPointerMove}
+      onDoubleClick={() => {
+        setWidth(DEFAULT_SIDEBAR_WIDTH);
+      }}
+      className="group absolute inset-y-0 -right-1.5 z-10 hidden w-3 cursor-col-resize touch-none select-none outline-none md:block"
+    >
+      <span className="pointer-events-none absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 transition-colors group-hover:bg-ring group-focus-visible:bg-ring group-active:bg-ring" />
+    </div>
+  );
+};
+
+/** The list collapsed on a wide screen: a rail with the button that expands it, New session, and the pages' links. */
+const SidebarRail = ({
+  expand,
+  expandButton,
+  controls,
+  settingsActive,
+  environmentsActive,
+}: {
+  expand: () => void;
+  expandButton: RefObject<HTMLButtonElement | null>;
+  controls: string;
+  settingsActive: boolean;
+  environmentsActive: boolean;
+}) => (
+  <nav
+    aria-label="Sessions"
+    className="hidden w-14 shrink-0 flex-col items-center gap-2 border-r pt-3 pb-2 md:flex"
+  >
+    <Button
+      ref={expandButton}
+      variant="ghost"
+      size="icon"
+      aria-label="Expand sidebar"
+      aria-expanded={false}
+      aria-controls={controls}
+      title="Expand sidebar"
+      onClick={expand}
+      className="size-8"
+    >
+      <PanelLeftOpen />
+    </Button>
+    <Button
+      variant="outline"
+      size="icon"
+      aria-label="New session"
+      title="New session"
+      onClick={openDraft}
+      className="size-8"
+    >
+      <Plus />
+    </Button>
+    <div className="mt-auto flex w-full flex-col items-center gap-0.5 border-t pt-2">
+      <PageLink
+        href={ENVIRONMENTS_PATH}
+        active={environmentsActive}
+        icon={<FolderGit2 aria-hidden />}
+        label="Environments"
+        iconOnly
+      />
+      <PageLink
+        href={SETTINGS_PATH}
+        active={settingsActive}
+        icon={<SettingsIcon aria-hidden />}
+        label="Settings"
+        iconOnly
+      />
+    </div>
+  </nav>
+);
+
+/**
+ * The Session list. On a wide screen it is a column beside the page whose width is dragged and kept on this device, and
+ * it collapses to a rail of icons (kept too); on a phone it is the whole screen, in turns with the page.
+ */
 export const Sidebar = ({
   activeId,
   settingsActive,
@@ -212,6 +406,27 @@ export const Sidebar = ({
   environmentsActive: boolean;
   className?: string;
 }) => {
+  const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
+  const width = useAtomValue(sidebarWidthAtom);
+  const column = useRef<HTMLElement>(null);
+  const expandButton = useRef<HTMLButtonElement>(null);
+  const collapseButton = useRef<HTMLButtonElement>(null);
+  // Set as the owner collapses or expands the list, so the focus moves to the button that undoes it.
+  const refocus = useRef(false);
+  const columnId = useId();
+
+  useEffect(() => {
+    if (!refocus.current) return;
+
+    refocus.current = false;
+    (collapsed ? expandButton : collapseButton).current?.focus();
+  }, [collapsed]);
+
+  const toggle = (next: boolean) => {
+    refocus.current = true;
+    setCollapsed(next);
+  };
+
   const sessions = useAtomValue(sessionListAtom);
   const [notice, setNotice] = useAtom(noticeAtom);
   const listError = useAtomValue(sessionsErrorAtom);
@@ -223,113 +438,139 @@ export const Sidebar = ({
   const { active, archived } = splitArchived(sessions ?? []);
   const error = problem ?? listError;
 
+  const style: CSSProperties & Record<`--${string}`, string> = { "--sidebar-width": `${width}px` };
+
   return (
-    <nav aria-label="Sessions" className={cn("flex w-full flex-col border-r md:w-72", className)}>
-      <div className="flex items-center justify-between gap-2 p-3">
-        <h1 className="text-sm font-semibold">Sessions</h1>
-        <NewSessionButton />
-      </div>
-      {notice !== null && (
-        <div
-          role="status"
-          className="mx-3 mb-2 flex items-start gap-2 rounded-md bg-muted px-3 py-2 text-sm"
-        >
-          <span className="min-w-0 flex-1">{notice}</span>
-          <button
-            type="button"
+    <>
+      {collapsed && (
+        <SidebarRail
+          expand={() => {
+            toggle(false);
+          }}
+          expandButton={expandButton}
+          controls={columnId}
+          settingsActive={settingsActive}
+          environmentsActive={environmentsActive}
+        />
+      )}
+      <nav
+        ref={column}
+        id={columnId}
+        aria-label="Sessions"
+        style={style}
+        className={cn(
+          "@container relative flex w-full flex-col border-r md:w-(--sidebar-width) md:max-w-[calc(100%-20rem)] md:shrink-0",
+          className,
+          // Collapsed, the rail stands in for it on a wide screen; a phone still shows it whole.
+          collapsed && "md:hidden",
+        )}
+      >
+        <SidebarResizeHandle
+          column={column}
+          controls={columnId}
+          collapse={() => {
+            toggle(true);
+          }}
+        />
+        <div className="flex items-center gap-2 p-3">
+          <h1 className="mr-auto truncate text-sm font-semibold">Sessions</h1>
+          <NewSessionButton />
+          <Button
+            ref={collapseButton}
+            variant="ghost"
+            size="icon"
+            aria-label="Collapse sidebar"
+            aria-expanded
+            aria-controls={columnId}
+            title="Collapse sidebar"
             onClick={() => {
-              setNotice(null);
+              toggle(true);
             }}
-            aria-label="Dismiss"
-            className="-m-1 shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="hidden size-8 md:inline-flex"
           >
-            <X className="size-3.5" aria-hidden />
-          </button>
+            <PanelLeftClose />
+          </Button>
         </div>
-      )}
-      {error !== null && (
-        <p role="alert" className="mx-3 mb-2 text-sm whitespace-pre-wrap text-destructive">
-          {error}
-        </p>
-      )}
-      <div className="flex-1 overflow-y-auto px-2 pb-3">
-        {sessions === null ? (
-          <p className="px-3 py-2 text-sm text-muted-foreground">Loading…</p>
-        ) : (
-          <div className="flex flex-col gap-4">
-            {active.length === 0 ? (
-              <p className="px-3 py-2 text-sm text-muted-foreground">
-                {archived.length === 0 ? "No sessions yet." : "No sessions outside the archive."}
-              </p>
-            ) : (
-              <SessionGroups
-                groups={groupByEnvironment(active, names)}
-                section="active"
-                activeId={activeId}
-                actions={actions}
-              />
-            )}
-            {archived.length > 0 && (
-              <details
-                className="group/archived"
-                open={archived.some((session) => session.id === activeId) ? true : undefined}
-              >
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground select-none hover:bg-accent hover:text-foreground [&::-webkit-details-marker]:hidden">
-                  <ChevronRight
-                    className="size-3.5 transition-transform group-open/archived:rotate-90"
-                    aria-hidden
-                  />
-                  Archived ({archived.length})
-                </summary>
-                <div className="mt-2">
-                  <SessionGroups
-                    groups={groupByEnvironment(archived, names)}
-                    section="archived"
-                    activeId={activeId}
-                    actions={actions}
-                  />
-                </div>
-              </details>
-            )}
+        {notice !== null && (
+          <div
+            role="status"
+            className="mx-3 mb-2 flex items-start gap-2 rounded-md bg-muted px-3 py-2 text-sm"
+          >
+            <span className="min-w-0 flex-1">{notice}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setNotice(null);
+              }}
+              aria-label="Dismiss"
+              className="-m-1 shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <X className="size-3.5" aria-hidden />
+            </button>
           </div>
         )}
-      </div>
-      <div className="flex flex-col gap-0.5 border-t p-2">
-        <a
-          href={ENVIRONMENTS_PATH}
-          aria-current={environmentsActive ? "page" : undefined}
-          onClick={(event) => {
-            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-            event.preventDefault();
-            navigate(ENVIRONMENTS_PATH);
-          }}
-          className={cn(
-            "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
-            environmentsActive && "bg-accent text-accent-foreground",
+        {error !== null && (
+          <p role="alert" className="mx-3 mb-2 text-sm whitespace-pre-wrap text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex-1 overflow-y-auto px-2 pb-3">
+          {sessions === null ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">Loading…</p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {active.length === 0 ? (
+                <p className="px-3 py-2 text-sm text-muted-foreground">
+                  {archived.length === 0 ? "No sessions yet." : "No sessions outside the archive."}
+                </p>
+              ) : (
+                <SessionGroups
+                  groups={groupByEnvironment(active, names)}
+                  section="active"
+                  activeId={activeId}
+                  actions={actions}
+                />
+              )}
+              {archived.length > 0 && (
+                <details
+                  className="group/archived"
+                  open={archived.some((session) => session.id === activeId) ? true : undefined}
+                >
+                  <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground select-none hover:bg-accent hover:text-foreground [&::-webkit-details-marker]:hidden">
+                    <ChevronRight
+                      className="size-3.5 transition-transform group-open/archived:rotate-90"
+                      aria-hidden
+                    />
+                    Archived ({archived.length})
+                  </summary>
+                  <div className="mt-2">
+                    <SessionGroups
+                      groups={groupByEnvironment(archived, names)}
+                      section="archived"
+                      activeId={activeId}
+                      actions={actions}
+                    />
+                  </div>
+                </details>
+              )}
+            </div>
           )}
-        >
-          <FolderGit2 className="size-4" aria-hidden />
-          Environments
-        </a>
-        <a
-          href={SETTINGS_PATH}
-          aria-current={settingsActive ? "page" : undefined}
-          onClick={(event) => {
-            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-            event.preventDefault();
-            navigate(SETTINGS_PATH);
-          }}
-          className={cn(
-            "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
-            settingsActive && "bg-accent text-accent-foreground",
-          )}
-        >
-          <SettingsIcon className="size-4" aria-hidden />
-          Settings
-        </a>
-      </div>
-    </nav>
+        </div>
+        <div className="flex flex-col gap-0.5 border-t p-2">
+          <PageLink
+            href={ENVIRONMENTS_PATH}
+            active={environmentsActive}
+            icon={<FolderGit2 aria-hidden />}
+            label="Environments"
+          />
+          <PageLink
+            href={SETTINGS_PATH}
+            active={settingsActive}
+            icon={<SettingsIcon aria-hidden />}
+            label="Settings"
+          />
+        </div>
+      </nav>
+    </>
   );
 };

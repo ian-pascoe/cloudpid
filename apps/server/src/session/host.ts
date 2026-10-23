@@ -28,6 +28,7 @@ import {
   type Catalog,
   type CommandOutcome,
   type FileMatches,
+  type HistoryPage,
   type SessionUsage,
   type TaskGraphSummary,
   type TodoTask,
@@ -104,6 +105,7 @@ import {
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
+import { historyPage } from "./history.ts";
 import {
   EXCLUDED_NAMES,
   fileCandidates,
@@ -278,6 +280,14 @@ export type FileSearch = {
   readonly conversationId?: ConversationId;
 };
 
+/** What the transcript asks of a conversation's earlier History. */
+export type HistoryRequest = {
+  /** The entry the page ends before. */
+  readonly before: number;
+  /** The conversation: the root by default, or a live subagent's. */
+  readonly conversationId?: ConversationId;
+};
+
 /** What an abort reaches. */
 export type AbortOptions = {
   /** The conversation to abort: the root by default. */
@@ -378,6 +388,11 @@ export type SessionHostService = {
    * conversation without an environment, or whose environment cannot list files, has none; a listing that fails fails.
    */
   readonly files: (search: FileSearch) => Effect.Effect<FileMatches, SessionError>;
+  /**
+   * A page of the History of the root conversation, or of the subagent's that `conversationId` names, before entry
+   * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
+   */
+  readonly history: (request: HistoryRequest) => Effect.Effect<HistoryPage, SessionError>;
 };
 
 /** What the Session DO answers with: its Harness, prompted and woken. */
@@ -1707,6 +1722,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     files: ({ query, conversationId }) =>
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) => filesFor(conversation, query)),
+      ),
+    history: ({ before, conversationId }) =>
+      addressed(conversationId).pipe(
+        Effect.flatMap((conversation) =>
+          historyPage(
+            (maxEntryId, limit, cursor) =>
+              attempt("entries", () =>
+                conversation.entries({ order: "descending", maxEntryId }, limit, cursor, context),
+              ),
+            before,
+          ),
+        ),
       ),
   } satisfies SessionHostService;
 });

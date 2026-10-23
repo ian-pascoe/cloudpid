@@ -25,7 +25,8 @@ import {
 import type { ConfigureChange } from "../session/state.ts";
 import type { ComposerCommand } from "./commands.ts";
 import { Composer } from "./composer.tsx";
-import { useShownSessionId } from "./conversation.ts";
+import { conversationKey, useShownSessionId } from "./conversation.ts";
+import { EarlierHistory } from "./earlier-history.tsx";
 import { isLevel, ModelPicker, type PickerHandle } from "./model-picker.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
@@ -401,6 +402,10 @@ export const Thread = ({
               {live ? "Send a message to start the conversation." : null}
             </p>
           </ThreadPrimitive.Empty>
+          <EarlierHistory
+            conversation={conversationKey(sessionId, undefined)}
+            before={view.before}
+          />
           <Messages />
           {view.retry !== null && (
             <p role="status" className="text-sm text-muted-foreground">

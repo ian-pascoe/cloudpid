@@ -8,6 +8,7 @@ import {
   ConversationId,
   decodeClientMessage,
   type FileMatches,
+  type HistoryPage,
   HEARTBEAT,
   type ClientMessage,
   type ServerMessage,
@@ -355,7 +356,12 @@ export const sessionSocketsLayer = (
         socket: WebSocket,
         message: ClientMessage,
       ): Effect.Effect<
-        { readonly submissionId: number } | Catalog | CommandOutcome | FileMatches | null,
+        | { readonly submissionId: number }
+        | Catalog
+        | CommandOutcome
+        | FileMatches
+        | HistoryPage
+        | null,
         SessionError | SecretsError
       > => {
         switch (message.type) {
@@ -383,6 +389,12 @@ export const sessionSocketsLayer = (
             const { type: _type, id: _id, ...command } = message;
 
             return host.command(command);
+          }
+
+          case "history": {
+            const { type: _type, id: _id, ...request } = message;
+
+            return host.history(request);
           }
 
           case "configure":
