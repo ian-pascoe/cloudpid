@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   type BashRoute,
+  probeAnswer,
   probeScript,
   resolveRoute,
   routeCommand,
@@ -325,13 +326,27 @@ describe("routeCommand", () => {
     expect(asked).toBe(false);
   });
 
-  it("asks with a script that prints each program the Worker Shell has", () => {
+  it("asks with a script that prints each program the Worker Shell has, then the end", () => {
     expect(probeScript(["realpath", "x.y"])).toBe(
       [
         "command -v 'realpath' >/dev/null 2>&1 && echo 'realpath'",
         "command -v 'x.y' >/dev/null 2>&1 && echo 'x.y'",
+        "echo '-- end of probe --'",
       ].join("\n"),
     );
+  });
+
+  it("trusts an answer only when it reached the end of the script", () => {
+    expect(probeAnswer(["realpath", "less"], "realpath\n-- end of probe --\n")).toEqual(
+      new Set(["realpath"]),
+    );
+    expect(probeAnswer(["realpath", "less"], "-- end of probe --\n")).toEqual(new Set());
+    expect(probeAnswer(["realpath", "less"], "realpath\n")).toBeUndefined();
+    expect(probeAnswer(["realpath"], "")).toBeUndefined();
+  });
+
+  it("leaves no unknown program in a route it sends to the Container", async () => {
+    expect(await route("realpath src")).toMatchObject({ backend: "container", unknown: [] });
   });
 
   it.each([
@@ -369,6 +384,13 @@ describe("routeCommand", () => {
     "sed -i 's/a/b/' a.ts",
     "sed -ni 's/a/b/p' a.ts",
     "sed --in-place=.bak 's/a/b/' a.ts",
+    "sed -i.bak 's/a/b/' a.ts",
+    "sed -i'' 's/a/b/' a.ts",
+    "sed -Ei 's/a/b/' a.ts",
+    "sort -uo a a",
+    "sort -oa a",
+    "sort --output=a a",
+    "awk -f prog.awk a",
     "sed -n '/x/w out' a",
     "sort -o a a",
     "uniq a b",
@@ -401,8 +423,15 @@ describe("routeCommand", () => {
       'git: this repository\'s packfiles are 20 MB, more than the Worker Shell can read (limit 16 MB). Rerun with backend: "container".\n',
       'git: this repository\'s packfiles are 20 MB, more than the Worker Shell can read (limit 16 MB). Rerun with backend: "container".',
     ],
-  ])("reads `%s` as the Worker Shell unable to run the command", (output, line) => {
-    expect(workerShellCannot(output)).toBe(line);
+  ])("reads `%s` on stderr as the Worker Shell unable to run the command", (stderr, line) => {
+    expect(workerShellCannot({ stdout: "", stderr })).toBe(line);
+  });
+
+  it.each([
+    "bash: realpath: command not found\n",
+    "bash: syntax error: Parse error at 1:7: Expected redirection target\n",
+  ])("reads the shell's own `%s` on stdout too, where `2>&1` puts it", (stdout) => {
+    expect(workerShellCannot({ stdout, stderr: "" })).toBe(stdout.trim());
   });
 
   it.each([
@@ -410,8 +439,17 @@ describe("routeCommand", () => {
     "src/a.ts:3: bash: x: command not found\n",
     "grep: a.txt: No such file or directory\n",
     "bash: set: x: invalid option name\n",
-  ])("reads `%s` as an ordinary result", (output) => {
-    expect(workerShellCannot(output)).toBeUndefined();
+    '  // the message says to rerun with backend: "container".\n',
+  ])("reads `%s` on stderr as an ordinary result", (stderr) => {
+    expect(workerShellCannot({ stdout: "", stderr })).toBeUndefined();
+  });
+
+  it.each([
+    "ls: unrecognized option '--color=auto'\n",
+    "Note: streaming is not supported here\n",
+    'git: this repository\'s packfiles are 20 MB, more than the Worker Shell can read (limit 16 MB). Rerun with backend: "container".\n',
+  ])("reads `%s` on stdout as what a file holds, not the Worker Shell's", (stdout) => {
+    expect(workerShellCannot({ stdout, stderr: "" })).toBeUndefined();
   });
 
   it("names the command that needs the Container", () => {

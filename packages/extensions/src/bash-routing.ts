@@ -26,7 +26,7 @@ export type BashRoute = {
   readonly unknown: readonly string[];
   /**
    * What in it may write a file (a redirect, `rm`, `sed -i`, a program not known to be read-only); undefined when
-   * nothing does, so that running it again on the Container after the Worker Shell could not changes nothing twice.
+   * nothing does: then it can run again on the Container, after the Worker Shell could not run it, without writing twice.
    */
   readonly writes: string | undefined;
 };
@@ -746,6 +746,9 @@ class Reader {
 const knownOnWorker = (name: string, functions: ReadonlySet<string>): boolean =>
   name === "git" || WORKER_COMMAND_SET.has(name) || SHELL_BUILTINS.has(name) || functions.has(name);
 
+/** The reason a command goes to the Container: `name` is not a program the Worker Shell has. */
+const notOnWorker = (name: string): string => `${name} is not a Worker Shell command`;
+
 /** A name the Worker Shell can be asked about with `command -v`: a plain program name. */
 const PROGRAM_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
 
@@ -756,9 +759,7 @@ const PROGRAM_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
 const nameNeeds = (name: string, context: Context): string | undefined => {
   if (knownOnWorker(name, context.functions)) return undefined;
 
-  if (CONTAINER_PROGRAM_SET.has(name) || !PROGRAM_NAME.test(name)) {
-    return `${name} is not a Worker Shell command`;
-  }
+  if (CONTAINER_PROGRAM_SET.has(name) || !PROGRAM_NAME.test(name)) return notOnWorker(name);
 
   context.found.unknown.add(name);
 
@@ -773,9 +774,20 @@ const operands = (args: readonly Word[]): readonly Word[] =>
 const hasOption = (args: readonly Word[], options: readonly string[], short?: string): boolean =>
   args.some(
     (arg) =>
-      !arg.quoted &&
-      (options.some((option) => arg.text === option || arg.text.startsWith(`${option}=`)) ||
-        (short !== undefined && /^-[A-Za-z]+$/.test(arg.text) && arg.text.includes(short))),
+      options.some((option) => arg.text === option || arg.text.startsWith(`${option}=`)) ||
+      (short !== undefined && /^-[A-Za-z]+$/.test(arg.text) && arg.text.includes(short)),
+  );
+
+/**
+ * Whether one of `args` may hold the short option `short`, alone, in a cluster, or with its value attached (`-i.bak`,
+ * `-uo out`, `-ofile`), or the long option `long`. For options that write: it errs towards finding one.
+ */
+const mayHaveOption = (args: readonly Word[], short: string, long: string): boolean =>
+  args.some(
+    (arg) =>
+      arg.text === long ||
+      arg.text.startsWith(`${long}=`) ||
+      new RegExp(`^-[A-Za-z0-9]*${short}`).test(arg.text),
   );
 
 /**
@@ -788,20 +800,22 @@ const writesOf = (name: string, args: readonly Word[], context: Context): string
   switch (name) {
     case "sed":
       // `-i` edits in place; a `w` command writes a file.
-      return hasOption(args, ["--in-place"], "i") ||
+      return mayHaveOption(args, "i", "--in-place") ||
         operands(args).some((arg) => /(^|[\s;}/])[wW]\s+\S/.test(arg.text))
         ? "sed writing a file"
         : undefined;
 
     case "sort":
-      return hasOption(args, ["-o", "--output"]) ? "sort -o" : undefined;
+      return mayHaveOption(args, "o", "--output") ? "sort -o" : undefined;
 
     case "uniq":
       return operands(args).length > 1 ? "uniq writing a file" : undefined;
 
     case "awk":
-      // `print > "f"`, `| "cmd"`, `system()`: anything that may redirect inside the program.
-      return operands(args).some((arg) => /system\s*\(|\||>(?!=)/.test(arg.text))
+      // `print > "f"`, `| "cmd"`, `system()`: anything that may redirect inside the program, or a program it reads
+      // from a file (`-f`), which cannot be seen.
+      return mayHaveOption(args, "f", "--file") ||
+        operands(args).some((arg) => /system\s*\(|\||>(?!=)/.test(arg.text))
         ? "awk writing a file"
         : undefined;
 
@@ -1123,38 +1137,67 @@ export const resolveRoute = async (
 
   return missing === undefined
     ? { ...route, reason: ON_WORKER, unknown: [] }
-    : { ...route, backend: "container", reason: `${missing} is not a Worker Shell command` };
+    : { ...route, backend: "container", reason: notOnWorker(missing), unknown: [] };
 };
 
-/**
- * A Worker Shell script that prints each of `programs` it has, one per line: what `resolveRoute` asks it. Each is a
- * plain program name (`routeCommand` sends any other to the Container).
- */
-export const probeScript = (programs: readonly string[]): string =>
-  programs.map((name) => `command -v '${name}' >/dev/null 2>&1 && echo '${name}'`).join("\n");
+/** The last line of the probe's output: an answer without it was cut short, and says nothing about what is missing. */
+const PROBE_END = "-- end of probe --";
 
 /**
- * What the Worker Shell prints when it cannot do what a command asks, where the Container can: a program it lacks, an
- * option its version of a program does not take, a feature it does not support, a repository too big for its git.
+ * A Worker Shell script that prints each of `programs` it has, one per line, then {@link PROBE_END}: what
+ * `resolveRoute` asks it. Each is a plain program name (`routeCommand` sends any other to the Container).
+ */
+export const probeScript = (programs: readonly string[]): string =>
+  [
+    ...programs.map((name) => `command -v '${name}' >/dev/null 2>&1 && echo '${name}'`),
+    `echo '${PROBE_END}'`,
+  ].join("\n");
+
+/**
+ * Which of `programs` the Worker Shell has, from the stdout of {@link probeScript}; undefined when the output did not
+ * end the way the script ends, so the answer cannot be trusted.
+ */
+export const probeAnswer = (
+  programs: readonly string[],
+  stdout: string,
+): ReadonlySet<string> | undefined => {
+  const lines = stdout.split("\n");
+
+  if (!lines.includes(PROBE_END)) return undefined;
+
+  return new Set(programs.filter((name) => lines.includes(name)));
+};
+
+/** A command's output on the Worker Shell, by stream. */
+export type WorkerOutput = { readonly stdout: string; readonly stderr: string };
+
+/**
+ * What the Worker Shell writes to stderr when it cannot do what a command asks, where the Container can: a program it
+ * lacks, a syntax its parser does not take, an option its version of a program does not take, a feature it does not
+ * support, a repository too big for its git (`apps/server/src/workspace/git.ts`).
  */
 const CANNOT: readonly RegExp[] = [
   /^bash: [^\n:]+: command not found$/m,
   /^bash: syntax error: .*$/m,
   /^[\w.-]+: (?:unrecognized option|invalid option)\b.*$/m,
   /^[\w.-]+: .*\bnot supported\b.*$/m,
-  /^.*Rerun with backend: "container".*$/m,
+  /^git: this repository's packfiles are .* Rerun with backend: "container"\.$/m,
 ];
 
 /**
- * The line of `output` (a command's on the Worker Shell) saying that the Worker Shell could not run it as the Container
+ * The shell's own lines among {@link CANNOT}, which a command that sends its stderr to stdout (`2>&1`) puts there; the
+ * rest are looked for in stderr only, since a file the command prints may hold anything.
+ */
+const CANNOT_ON_STDOUT: readonly RegExp[] = CANNOT.slice(0, 2);
+
+/**
+ * The line of a command's `output` on the Worker Shell saying that the Worker Shell could not run it as the Container
  * would; undefined when there is none.
  */
-export const workerShellCannot = (output: string): string | undefined => {
-  for (const pattern of CANNOT) {
-    const match = pattern.exec(output);
+export const workerShellCannot = (output: WorkerOutput): string | undefined => {
+  const match =
+    CANNOT.map((pattern) => pattern.exec(output.stderr)).find((found) => found !== null) ??
+    CANNOT_ON_STDOUT.map((pattern) => pattern.exec(output.stdout)).find((found) => found !== null);
 
-    if (match !== null) return match[0].trim();
-  }
-
-  return undefined;
+  return match?.[0].trim();
 };

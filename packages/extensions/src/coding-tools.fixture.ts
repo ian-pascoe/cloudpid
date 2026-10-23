@@ -45,7 +45,12 @@ export type BackendCall = {
 };
 
 /** What the fake environment answers a command with, instead of naming where it ran. */
-export type FakeAnswer = { readonly output: string; readonly exitCode?: number };
+export type FakeAnswer = {
+  readonly output: string;
+  /** The stream the output is on; stdout by default. */
+  readonly stream?: "stdout" | "stderr";
+  readonly exitCode?: number;
+};
 
 /** How the fake environment answers `command` on `backend`; undefined for the default answer. */
 export type Respond = (backend: BashBackend | undefined, command: string) => FakeAnswer | undefined;
@@ -157,7 +162,7 @@ class FakeEnv implements FakeShell {
     options?.onOutput?.(
       answer?.output ?? `${this.#backend ?? "default"}: ${String(command)}`,
       ctx,
-      { stream: "stdout" },
+      { stream: answer?.stream ?? "stdout" },
     );
 
     return ok({ exitCode: answer?.exitCode ?? this.#exitCode });

@@ -122,9 +122,10 @@ describe("bash", () => {
     (backend, command) =>
       backend === "worker" && command.startsWith("command -v")
         ? {
-            output: programs
-              .flatMap((name) => (command.includes(`'${name}'`) ? [`${name}\n`] : []))
-              .join(""),
+            output: [
+              ...programs.flatMap((name) => (command.includes(`'${name}'`) ? [`${name}\n`] : [])),
+              "-- end of probe --\n",
+            ].join(""),
           }
         : then(backend, command);
 
@@ -163,10 +164,28 @@ describe("bash", () => {
     ]);
   });
 
+  it("does not remember an answer the Worker Shell cut short, and runs the command in the Container", async () => {
+    const { call, calls } = await openCodingHarness({
+      backends: true,
+      respond: (backend, command) =>
+        backend === "worker" && command.startsWith("command -v") ? { output: "" } : undefined,
+    });
+
+    await call("bash", { command: "uname" });
+    await call("bash", { command: "uname" });
+
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "worker", command: probeScript(["uname"]) },
+      { backend: "container", command: "uname" },
+      { backend: "worker", command: probeScript(["uname"]) },
+      { backend: "container", command: "uname" },
+    ]);
+  });
+
   /** A Worker Shell whose `ls` does not take `--color`, as just-bash's does not. */
   const noColor: Respond = (backend, command) =>
     backend === "worker" && command.includes("--color")
-      ? { output: "ls: unrecognized option '--color=auto'\n", exitCode: 1 }
+      ? { output: "ls: unrecognized option '--color=auto'\n", stream: "stderr", exitCode: 1 }
       : undefined;
 
   it("runs a command that writes nothing again in the Container when the Worker Shell cannot run it", async () => {
@@ -219,6 +238,7 @@ describe("the coding_tools section", () => {
 
   it("names only the tools the request offers", async () => {
     expect(await render(["bash"])).not.toMatch(/`read`/);
+    expect(await render(["find", "ls"])).toMatch(/`grep`, `find` and `ls`/);
     expect(await render([])).toBeUndefined();
   });
 });

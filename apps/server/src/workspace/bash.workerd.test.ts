@@ -340,7 +340,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
 
     expect(
       await run({ command: probeScript(["cat", "realpath", "jq"]), backend: "worker" }),
-    ).toEqual({ text: "cat\njq\n", isError: false });
+    ).toEqual({ text: "cat\njq\n-- end of probe --\n", isError: false });
   });
 
   it("sends a program the router does not know to the Container once the Worker Shell says it lacks it", async () => {
