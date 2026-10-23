@@ -152,6 +152,10 @@ _Avoid_: just-bash (as a product name), lite shell
 The Linux Backend of a Workspace, its own, which runs real programs against the same files.
 _Avoid_: Sandbox, VM, box, Machine
 
+**Memory guard**:
+What stops the largest process in a Container that is nearly out of memory, so the Container keeps answering; each command running then ends with a note naming what was stopped.
+_Avoid_: OOM killer (the kernel's, which acts too late to save the Container)
+
 **Terminal**:
 An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as a Pane. The agent does not see it.
 _Avoid_: Console, shell (alone), PTY

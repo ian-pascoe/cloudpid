@@ -3,13 +3,21 @@
 // around a fake computerd, and reports to a local HTTP server standing in for the Workspace DO's intercept.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off asyncFunction:off globalDate:off newPromise:off
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
+import { MEMORY_GUARD_AVOID } from "@cloudpid/sandbox-image/memory-guard";
 import {
   EXIT_REPORT_BASE64_MARKER,
   EXIT_REPORT_BASE64_MIN,
@@ -81,6 +89,10 @@ const supervise = (
         CLOUDPID_COMPUTERD: computerd,
         CLOUDPID_REPORT_HOST: "127.0.0.1",
         CLOUDPID_REPORT_PORT: String(port),
+        // No memory guard unless a test gives one, whatever the machine has installed.
+        CLOUDPID_MEMORY_GUARD: "/nonexistent/cloudpid-memory-guard",
+        CLOUDPID_EARLYOOM: "/nonexistent/earlyoom",
+        CLOUDPID_MEMORY_NOTES: join(mkdtempSync(join(tmpdir(), "memory-notes-")), "notes"),
         ...env,
       },
     });
@@ -265,4 +277,101 @@ describe("the supervisor", () => {
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(reports[0]?.body).toContain("left one");
   }, 15_000);
+});
+
+/** A fake earlyoom: it records its arguments and its pid, says it is up, and runs until it is stopped, as earlyoom does. */
+const fakeEarlyoom = () => {
+  const dir = mkdtempSync(join(tmpdir(), "earlyoom-"));
+  const path = join(dir, "earlyoom");
+  const args = join(dir, "args");
+  const pid = join(dir, "pid");
+
+  writeFileSync(
+    path,
+    `#!/bin/bash\nprintf '%s\\n' "$@" >${args}\necho $$ >${pid}\necho "earlyoom up"\nexec sleep 600\n`,
+  );
+  chmodSync(path, 0o755);
+
+  return { path, args, pid };
+};
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** The image's guard, around `earlyoom`. */
+const withGuard = (earlyoom: string) => ({
+  CLOUDPID_MEMORY_GUARD: join(sandboxImageContext, "cloudpid-memory-guard"),
+  CLOUDPID_EARLYOOM: earlyoom,
+});
+
+describe("the supervisor's memory guard", () => {
+  it("runs the guard beside computerd, its lines where computerd's go, and stops it with computerd", async () => {
+    const { reports, port } = await reportServer();
+    const earlyoom = fakeEarlyoom();
+    // Long enough for the guard to have started.
+    const computerd = fakeComputerd('sleep 0.5; echo "computerd out"; exit 1');
+    const started = Date.now();
+
+    const run = await supervise(computerd, port, undefined, withGuard(earlyoom.path));
+
+    expect(run.status).toBe(1);
+    // earlyoom's arguments are the guard's (`memory-guard.test.ts`).
+    expect(readFileSync(earlyoom.args, "utf8")).toContain(`--avoid\n${MEMORY_GUARD_AVOID}\n`);
+    // Its lines go where computerd's do: the Container's log and the exit report.
+    expect(run.stdout).toContain("earlyoom up\n");
+    expect(run.stdout).toContain("computerd out\n");
+    expect(reports[0]?.body).toContain("earlyoom up\n");
+    // Stopped with computerd, and nothing waited on its output.
+    expect(alive(Number(readFileSync(earlyoom.pid, "utf8")))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 15_000);
+
+  it("stops the guard too when the supervisor is asked to stop", async () => {
+    const { reports, port } = await reportServer();
+    const earlyoom = fakeEarlyoom();
+
+    const computerd = fakeComputerd(
+      'trap "exit 0" TERM; sleep 0.5; echo ready; while :; do sleep 0.1; done',
+    );
+
+    const run = await supervise(computerd, port, "SIGTERM", withGuard(earlyoom.path));
+
+    expect(run.status).toBe(0);
+    expect(reports).toEqual([]);
+    expect(alive(Number(readFileSync(earlyoom.pid, "utf8")))).toBe(false);
+  });
+
+  it("starts computerd all the same where the guard or earlyoom is missing", async () => {
+    const { port } = await reportServer();
+
+    for (const env of [{}, withGuard("/nonexistent/earlyoom")]) {
+      const run = await supervise(fakeComputerd("echo bye; exit 0"), port, undefined, env);
+
+      expect(run).toEqual({ status: 0, stdout: "bye\n" });
+    }
+  });
+
+  it("clears the notes a snapshot kept before computerd starts: they are not this Container start's", async () => {
+    const { port } = await reportServer();
+    const notes = join(mkdtempSync(join(tmpdir(), "memory-notes-")), "notes");
+
+    mkdirSync(notes);
+    writeFileSync(join(notes, "1700000000000000"), "an old note");
+
+    const computerd = fakeComputerd(
+      '[ -e "$CLOUDPID_MEMORY_NOTES" ] && echo "still there"; exit 0',
+    );
+
+    const run = await supervise(computerd, port, undefined, { CLOUDPID_MEMORY_NOTES: notes });
+
+    expect(run.stdout).toBe("");
+    expect(existsSync(notes)).toBe(false);
+  });
 });
