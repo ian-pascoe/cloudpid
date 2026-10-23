@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dollars, duration, relativeTime, spendLevel, tokenCount } from "./format.ts";
+import { byteSize, dollars, duration, relativeTime, spendLevel, tokenCount } from "./format.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -14,12 +14,22 @@ describe("relativeTime", () => {
 });
 
 describe("duration", () => {
-  it("shows milliseconds under a second, then seconds, then minutes", () => {
+  it("shows milliseconds under a second, then seconds, then minutes, then hours", () => {
     expect(duration(12)).toBe("12 ms");
     expect(duration(999.6)).toBe("1000 ms");
     expect(duration(1500)).toBe("1.5 s");
     expect(duration(59_000)).toBe("59 s");
     expect(duration(125_000)).toBe("2 min 5 s");
+    expect(duration(119_600)).toBe("1 min 59 s");
+    expect(duration(4_330_000)).toBe("1 h 12 min");
+  });
+});
+
+describe("byteSize", () => {
+  it("shows bytes, then powers of 1000 to one decimal", () => {
+    expect(byteSize(950)).toBe("950 B");
+    expect(byteSize(12_345)).toBe("12.3 kB");
+    expect(byteSize(4_500_000_000)).toBe("4.5 GB");
   });
 });
 

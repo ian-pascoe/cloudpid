@@ -343,6 +343,13 @@ export const SessionLive = Session.make(
                   ),
                 ),
                 reset: (reason) => state.raw.abort(reason),
+                // Read where the Session works, without readying the Workspace: it starts nothing.
+                // @effect-diagnostics-next-line asyncFunction:off
+                containerUsage: async () => {
+                  const { workspace: id, object } = await placement();
+
+                  return id === null ? null : workspaces.getByName(object).containerUsage();
+                },
                 extensions: sessionExtensions.pipe(
                   // After every other extension, so each of their tools is named and its call is a span.
                   Effect.map((installed) => [
