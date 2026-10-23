@@ -1,15 +1,22 @@
 // A Workspace's set-up (docs/spec.md → Workspaces, ADR-0016): when a Session first works in it, and at most once a
 // minute after, the Session readies its Workspace: the Environment's Container settings are handed to the Workspace's
 // Durable Object (its Worker cannot reach the Registry), and each Repo the Workspace's files lack is cloned on its
-// Container, on the Workspace's branch, then its Setup Script run. The scripts are `@cloudpid/sandbox-image/workspaces`';
-// this runs them, and asks the Workspace's files first, so a Workspace whose clones are there costs no Container.
+// Container, on the Workspace's branch, then its Setup Script and its Start Script run. The scripts are
+// `@cloudpid/sandbox-image/workspaces`'; this runs them, and asks the Workspace's files first, so a Workspace whose
+// clones are there costs no Container.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off
 import { ContainerSettings, resolveContainerSettingsLeniently } from "@cloudpid/config";
 import { repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
-import { SETUP_SCRIPT, SETUP_TIMEOUT_SECONDS } from "@cloudpid/sandbox-image/toolchains";
+import {
+  SETUP_SCRIPT,
+  SETUP_TIMEOUT_SECONDS,
+  START_SCRIPT,
+  START_TIMEOUT_SECONDS,
+} from "@cloudpid/sandbox-image/toolchains";
 import {
   prepareWorkspaceScript,
   repoSetupScript,
+  repoStartScript,
   type WorkspaceClones,
 } from "@cloudpid/sandbox-image/workspaces";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -68,9 +75,10 @@ const sameOverrides = (left: Schema.Json, right: Schema.Json): boolean =>
 /**
  * Ready the Workspace `host` reaches with `setup`: its Durable Object gets the Environment's Container settings when
  * they differ from what it holds, and each Repo its files lack is cloned on the Container, then has its Setup Script
- * run if it is due. Rejects with git's output when a Repo could not be cloned (the others still are); a settings write
- * the Workspace refuses, or a Setup Script that fails, is only reported (`warn`): the Workspace is there to work in,
- * and the script is due again at the next Container start.
+ * run if it is due, and its Start Script (the Container is running already, so its bootstrap did not see the clone).
+ * Rejects with git's output when a Repo could not be cloned (the others still are); a settings write the Workspace
+ * refuses, or a Setup or Start Script that fails, is only reported (`warn`): the Workspace is there to work in, and
+ * the script runs again at the next Container start.
  */
 export const prepareWorkspace = async (
   { exists, run, settings, warn }: PreparationHost,
@@ -108,6 +116,14 @@ export const prepareWorkspace = async (
     if (ran.exitCode !== 0) {
       warn(
         `${failure(`The Setup Script ${repoDirectory(repo.name)}/${SETUP_SCRIPT} failed`, ran).message}. It runs again at the next Container start.`,
+      );
+    }
+
+    const started = await run(repoStartScript(repo.name), START_TIMEOUT_SECONDS + 120);
+
+    if (started.exitCode !== 0) {
+      warn(
+        `${failure(`The Start Script ${repoDirectory(repo.name)}/${START_SCRIPT} failed`, started).message}. It runs again at the next Container start.`,
       );
     }
   }

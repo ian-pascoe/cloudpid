@@ -207,12 +207,15 @@ export class Workspace extends ContainerHost {
       ignore: () => launch.ignore(),
     });
 
-    // Before the first command of each Container start, the Toolchains are installed (the lockfile's) and the repos'
-    // Setup Scripts that are due run; every command gets the GitHub token and mise's settings, and the token is taken out
-    // of its output. The Workspace sees this as the Container's backend.
+    // Before the first command of each Container start, the Toolchains are installed (the lockfile's), the Environment's
+    // and the repos' Setup Scripts that are due run, then their Start Scripts; every command gets the Environment's
+    // variables, the GitHub token and mise's settings, and the token is taken out of its output. The Workspace sees this
+    // as the Container's backend.
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
+      // The variables and the Environment's scripts of each Container start are the Workspace's settings at its bootstrap.
+      settings: async () => (await this.#settings.read()).settings,
       // Once the bootstrap has installed something (a Toolchain, a Setup Script's work) in a Container that started from
       // the image, its disk is snapshotted.
       afterInstall: (changed) => launch.afterInstall(changed),
@@ -311,7 +314,10 @@ export class Workspace extends ContainerHost {
     );
   }
 
-  /** The Container settings the Workspace holds (size, idle time and Container-only paths): its Environment's, as last handed over. */
+  /**
+   * The Container settings the Workspace holds (size, idle time, Container-only paths, variables, and Setup and Start
+   * Scripts): its Environment's, as last handed over.
+   */
   containerSettings(): Promise<WorkspaceSettingsAnswer> {
     return this.#settings.read();
   }

@@ -1,4 +1,4 @@
-// How the Workspace DO launches its Container (docs/spec.md → Container and Toolchains → Size and idle, Snapshots).
+// How the Workspace DO launches its Container (docs/spec.md → Container and Toolchains → Container settings, Snapshots).
 // `@cloudflare/computer`'s `ContainerBackend` builds each launch's spec itself and has no hook for either a size that
 // changes or a snapshot, so this wraps the Container API it launches through (`wrap`):
 //

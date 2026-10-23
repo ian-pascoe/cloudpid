@@ -21,14 +21,21 @@ import {
   BASE_MISE_TOML,
   BOOTSTRAP_CHANGED,
   bootstrapScript,
+  ENVIRONMENT_SETUP_RECORD,
+  environmentSetupScript,
+  environmentStartScriptRun,
   pendingSetupScripts,
+  repoSetupScriptOf,
   ROOT_MISE_TOML,
   SETUP_SCRIPT,
   setupRecordName,
   setupScriptRun,
   setupScriptRunIfDue,
-  setupScriptTimedOut,
+  scriptTimedOut,
   setupRecord,
+  START_SCRIPT,
+  startScriptDirectories,
+  startScriptRun,
   PNPM_GLOBAL_CONFIG,
   PNPM_STORE_DIRECTORY_NAME,
   TOOLCHAIN_IGNORE,
@@ -738,18 +745,33 @@ const setupSandbox = () => {
     return dir;
   };
 
-  const pending = () =>
-    spawnSync("bash", ["-c", pendingSetupScripts(root, state)], { encoding: "utf8" })
+  const environmentFile = join(base, "environment", "setup.sh");
+
+  const pending = (environment?: string) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        pendingSetupScripts(
+          root,
+          state,
+          environment === undefined ? undefined : { source: environment, file: environmentFile },
+        ),
+      ],
+      { encoding: "utf8" },
+    )
       .stdout.split("\n")
       .filter((line) => line !== "");
 
   const env = { PATH: process.env.PATH ?? "", CLOUDPID_MARK: "from the environment" };
 
+  const bash = (script: string) => spawnSync("bash", ["-c", script], { encoding: "utf8", env });
+
   const run = (dir: string, timeoutSeconds?: number) =>
-    spawnSync("bash", ["-c", setupScriptRun(dir, state, timeoutSeconds, root)], {
-      encoding: "utf8",
-      env,
-    });
+    bash(setupScriptRun(repoSetupScriptOf(dir, root), state, timeoutSeconds));
+
+  const runEnvironment = () =>
+    bash(setupScriptRun(environmentSetupScript(root, environmentFile), state));
 
   const runIfDue = (dir: string) =>
     spawnSync("bash", ["-c", setupScriptRunIfDue(dir, state, undefined, root)], {
@@ -757,7 +779,7 @@ const setupSandbox = () => {
       env,
     });
 
-  return { root, state, repo, pending, run, runIfDue };
+  return { base, root, state, repo, pending, run, runEnvironment, runIfDue, environmentFile, bash };
 };
 
 describe("a Setup Script's record", () => {
@@ -836,7 +858,7 @@ describe("the Setup Scripts", () => {
     const result = run(dir, 1);
 
     expect(Date.now() - started).toBeLessThan(10_000);
-    expect(setupScriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
+    expect(scriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
     expect(pending()).toEqual([dir]);
   });
 
@@ -856,6 +878,183 @@ describe("the Setup Scripts", () => {
     const result = run(repo("a", "exit 124\n"), 60);
 
     expect(result.status).toBe(124);
-    expect(setupScriptTimedOut(result.status ?? undefined, result.stderr)).toBe(false);
+    expect(scriptTimedOut(result.status ?? undefined, result.stderr)).toBe(false);
+  });
+});
+
+/** A script with what bash quoting or a heredoc could trip on: quotes, `$`, backslashes, a heredoc, UTF-8. */
+const AWKWARD_SCRIPT = String.raw`printf '%s\n' "it's \$HOME" 'a "b"' \
+  "\\ back" €
+cat <<'EOF'
+CLOUDPID_EOF
+EOF
+`;
+
+/** What `AWKWARD_SCRIPT` prints. */
+const AWKWARD_OUTPUT = 'it\'s $HOME\na "b"\n\\ back\n€\nCLOUDPID_EOF\n';
+
+describe("the Environment's Setup Script", () => {
+  it("is due before the repos' when it has one, written to its file outside the Workspace as it is", () => {
+    const { repo, pending, environmentFile, bash } = setupSandbox();
+    const a = repo("a", "true\n");
+
+    expect(pending(AWKWARD_SCRIPT)).toEqual([environmentFile, a]);
+    expect(readFileSync(environmentFile, "utf8")).toBe(AWKWARD_SCRIPT);
+    expect(bash(`bash ${environmentFile}`).stdout).toBe(AWKWARD_OUTPUT);
+  });
+
+  it("is not due when the Environment has none, and its old file is removed", () => {
+    const { repo, pending, environmentFile } = setupSandbox();
+    const a = repo("a", "true\n");
+
+    pending("true\n");
+
+    expect(pending("")).toEqual([a]);
+    expect(existsSync(environmentFile)).toBe(false);
+  });
+
+  it("runs with bash in the Workspace root, with no input, and is recorded under a name no repo can have", () => {
+    const { root, state, pending, runEnvironment } = setupSandbox();
+
+    pending('printf "%s|%s" "$PWD" "$CLOUDPID_MARK"\nread -r line || echo " no input"\n');
+
+    const result = runEnvironment();
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${root}|from the environment no input\n`);
+    expect(ENVIRONMENT_SETUP_RECORD).toMatch(/^[.@-]/);
+    expect(readFileSync(setupRecord(ENVIRONMENT_SETUP_RECORD, state), "utf8").trim()).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+  });
+
+  it("is not due again once it succeeded, until it changes, and stays due after a failure", () => {
+    const { pending, runEnvironment, environmentFile } = setupSandbox();
+
+    pending("true\n");
+    expect(runEnvironment().status).toBe(0);
+    expect(pending("true\n")).toEqual([]);
+    expect(pending("exit 4\n")).toEqual([environmentFile]);
+    expect(runEnvironment().status).toBe(4);
+    expect(pending("exit 4\n")).toEqual([environmentFile]);
+  });
+
+  it("does not take a repo's record, nor a repo the Environment's", () => {
+    const { repo, pending, run, runEnvironment, environmentFile } = setupSandbox();
+    const a = repo("a", "true\n");
+
+    pending("true\n");
+    runEnvironment();
+
+    expect(pending("true\n")).toEqual([a]);
+
+    run(a);
+
+    expect(pending("true # changed\n")).toEqual([environmentFile]);
+  });
+});
+
+describe("the Start Scripts", () => {
+  /** A Workspace root whose repos may have a Start Script, and the Start Script commands run for real. */
+  const startSandbox = () => {
+    const sandbox = setupSandbox();
+
+    const repo = (name: string, script?: string) => {
+      const dir = sandbox.repo(name);
+
+      if (script !== undefined) writeFileSync(join(dir, START_SCRIPT), script);
+
+      return dir;
+    };
+
+    const listed = () =>
+      sandbox
+        .bash(startScriptDirectories(sandbox.root))
+        .stdout.split("\n")
+        .filter((line) => line !== "");
+
+    const start = (dir: string, timeoutSeconds?: number) =>
+      sandbox.bash(startScriptRun({ directory: dir, file: START_SCRIPT }, timeoutSeconds));
+
+    const environmentFile = join(sandbox.base, "environment", "start.sh");
+
+    const startEnvironment = (source: string) =>
+      sandbox.bash(environmentStartScriptRun(source, sandbox.root, environmentFile));
+
+    return { ...sandbox, repo, listed, start, startEnvironment, environmentFile };
+  };
+
+  it("are found in each repo that has one, and only those", () => {
+    const { repo, listed } = startSandbox();
+    const a = repo("a", "true\n");
+
+    repo("b");
+    const c = repo("c", "true\n");
+
+    expect(listed()).toEqual([a, c]);
+  });
+
+  it("run with bash in the repo's directory, with the environment they are given, and no input", () => {
+    const { repo, start } = startSandbox();
+
+    const dir = repo(
+      "a",
+      'printf "%s|%s|%s" "$PWD" "$CLOUDPID_MARK" "${BASH_VERSION:+bash}"\nread -r line || echo " no input"\n',
+    );
+
+    const result = start(dir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${dir}|from the environment|bash no input\n`);
+  });
+
+  it("run every time: nothing records them", () => {
+    const { repo, start, state } = startSandbox();
+    const dir = repo("a", "echo up\n");
+
+    expect(start(dir).stdout).toBe("up\n");
+    expect(start(dir).stdout).toBe("up\n");
+    expect(existsSync(state)).toBe(false);
+  });
+
+  it("exit with the script's status", () => {
+    const { repo, start } = startSandbox();
+
+    expect(start(repo("a", "exit 3\n")).status).toBe(3);
+  });
+
+  it("are stopped, with what they started, once past their time", () => {
+    const { repo, start } = startSandbox();
+    const started = Date.now();
+
+    const result = start(repo("a", "sleep 30 &\nwait\n"), 1);
+
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(scriptTimedOut(result.status ?? undefined, result.stderr)).toBe(true);
+  });
+
+  it("let a service they detach outlive them", () => {
+    const { repo, start, root } = startSandbox();
+    const marker = join(root, "service-up");
+
+    const result = start(
+      repo("a", `setsid nohup bash -c 'sleep 1; touch ${marker}' >/dev/null 2>&1 &\n`),
+      60,
+    );
+
+    expect(result.status).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    spawnSync("sleep", ["2"]);
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("include the Environment's, written to its file as it is and run in the Workspace root", () => {
+    const { startEnvironment, environmentFile, root } = startSandbox();
+
+    const result = startEnvironment(`printf '%s\\n' "$PWD"\n${AWKWARD_SCRIPT}`);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${root}\n${AWKWARD_OUTPUT}`);
+    expect(readFileSync(environmentFile, "utf8")).toContain("CLOUDPID_EOF");
   });
 });

@@ -1,3 +1,4 @@
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
@@ -8,11 +9,17 @@ import {
   INSTANCE_DESCRIPTIONS,
   INSTANCE_TYPES,
   MAX_IGNORE_PATTERNS,
+  MAX_SCRIPT_BYTES,
+  MAX_VARIABLES,
   resolveContainerSettings,
   resolveContainerSettingsLeniently,
   containerOverridesFrom,
+  scriptProblem,
   type ContainerSettings,
+  variableNameProblem,
 } from "./container-settings.ts";
+
+const NONE = { variables: {}, setupScript: "", startScript: "" };
 
 const resolved = (overrides: Schema.Json): ContainerSettings => {
   const result = resolveContainerSettings(overrides);
@@ -36,6 +43,9 @@ describe("the defaults", () => {
       instance: "custom-2",
       idleMinutes: 5,
       ignore: [],
+      variables: {},
+      setupScript: "",
+      startScript: "",
     });
   });
 
@@ -67,11 +77,13 @@ describe("resolveContainerSettings", () => {
       instance: "basic",
       idleMinutes: 5,
       ignore: [],
+      ...NONE,
     });
     expect(resolved({ idleMinutes: 90 })).toEqual({
       instance: "custom-2",
       idleMinutes: 90,
       ignore: [],
+      ...NONE,
     });
   });
 
@@ -134,6 +146,87 @@ describe("resolveContainerSettings", () => {
     expect(resolved({ ignore: many.slice(1) }).ignore).toHaveLength(MAX_IGNORE_PATTERNS);
   });
 
+  it("takes variables by name, a value holding anything but NUL", () => {
+    expect(
+      resolved({ variables: { NODE_ENV: "test", _private2: "a=b c\n'\"$x" } }).variables,
+    ).toEqual({ NODE_ENV: "test", _private2: "a=b c\n'\"$x" });
+  });
+
+  it("rejects a variable name a shell could not export", () => {
+    for (const name of ["", "1ABC", "A-B", "A B", "É", "A=B", "a".repeat(129)]) {
+      expect(variableNameProblem(name), name).toBeDefined();
+      expect(rejected({ variables: { [name]: "x" } })).toContain("variables");
+    }
+
+    expect(variableNameProblem("a".repeat(128))).toBeUndefined();
+  });
+
+  it("refuses the names the Container sets itself, saying they are reserved", () => {
+    for (const name of [
+      "PATH",
+      "HOME",
+      "PWD",
+      "SHELL",
+      "USER",
+      "GH_TOKEN",
+      "GITHUB_TOKEN",
+      "MISE_GLOBAL_CONFIG_FILE",
+      "MISE_TRUSTED_CONFIG_PATHS",
+      "MISE_YES",
+      "GIT_TERMINAL_PROMPT",
+      "TURBO_CACHE_DIR",
+      "CLOUDPID_GIT_NAME",
+      "CLOUDPID_",
+    ]) {
+      expect(variableNameProblem(name), name).toContain("reserved");
+      expect(rejected({ variables: { [name]: "x" } })).toContain("reserved");
+    }
+
+    expect(variableNameProblem("MISE_ENV")).toBeUndefined();
+    expect(variableNameProblem("cloudpid_x")).toBeUndefined();
+  });
+
+  it("rejects a variable value with a NUL or longer than 4096 characters", () => {
+    expect(rejected({ variables: { A: "a\u0000b" } })).toContain("variables");
+    expect(rejected({ variables: { A: "a".repeat(4097) } })).toContain("variables");
+    expect(resolved({ variables: { A: "a".repeat(4096) } }).variables.A).toHaveLength(4096);
+  });
+
+  it(`takes at most ${MAX_VARIABLES} variables`, () => {
+    const many = Record.fromEntries(
+      Array.from({ length: MAX_VARIABLES + 1 }, (_, i) => [`V${i}`, "x"]),
+    );
+
+    expect(rejected({ variables: many })).toContain("variables");
+
+    const { V0: _, ...fewer } = many;
+
+    expect(Record.keys(resolved({ variables: fewer }).variables)).toHaveLength(MAX_VARIABLES);
+  });
+
+  it("takes a Setup Script and a Start Script as bash source", () => {
+    expect(resolved({ setupScript: "pnpm install\n", startScript: "docker start db\n" })).toEqual({
+      ...DEFAULT_CONTAINER_SETTINGS,
+      setupScript: "pnpm install\n",
+      startScript: "docker start db\n",
+    });
+  });
+
+  it(`rejects a script over ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8`, () => {
+    expect(resolved({ setupScript: "a".repeat(MAX_SCRIPT_BYTES) }).setupScript).toHaveLength(
+      MAX_SCRIPT_BYTES,
+    );
+    expect(rejected({ setupScript: "a".repeat(MAX_SCRIPT_BYTES + 1) })).toContain("setupScript");
+    // Three bytes each: under the limit in characters, over it in bytes.
+    expect(rejected({ startScript: "€".repeat(MAX_SCRIPT_BYTES / 2) })).toContain("startScript");
+    expect(scriptProblem("€".repeat(MAX_SCRIPT_BYTES / 3))).toBeUndefined();
+    expect(scriptProblem("€".repeat(MAX_SCRIPT_BYTES / 2))).toBe("is longer than 64 KiB");
+  });
+
+  it("rejects a script with a NUL, which bash cannot read", () => {
+    expect(rejected({ setupScript: "a\u0000b" })).toContain("setupScript");
+  });
+
   it("rejects a key it does not know, so a typo is not silently ignored", () => {
     expect(rejected({ idleMinute: 5 })).toContain("idleMinute");
   });
@@ -163,6 +256,16 @@ describe("containerOverridesFrom", () => {
     expect(containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, ignore: ["/data"] })).toEqual({
       ignore: ["/data"],
     });
+    expect(
+      containerOverridesFrom({
+        ...DEFAULT_CONTAINER_SETTINGS,
+        variables: { A: "1" },
+        setupScript: "pnpm install\n",
+      }),
+    ).toEqual({ variables: { A: "1" }, setupScript: "pnpm install\n" });
+    expect(
+      containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, startScript: "make up\n" }),
+    ).toEqual({ startScript: "make up\n" });
   });
 });
 
@@ -173,9 +276,23 @@ describe("resolveContainerSettingsLeniently", () => {
       idleMinutes: 30,
     });
 
-    expect(settings).toEqual({ instance: "custom-2", idleMinutes: 30, ignore: [] });
+    expect(settings).toEqual({ instance: "custom-2", idleMinutes: 30, ignore: [], ...NONE });
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("instance");
+  });
+
+  it("drops every stale override, however many, and keeps the rest", () => {
+    const { settings, dropped } = resolveContainerSettingsLeniently({
+      instance: "retired-9",
+      idleMinutes: 0,
+      ignore: ["data"],
+      variables: { PATH: "/bin" },
+      setupScript: "a\u0000",
+      startScript: "make up\n",
+    });
+
+    expect(settings).toEqual({ ...DEFAULT_CONTAINER_SETTINGS, startScript: "make up\n" });
+    expect(dropped).toHaveLength(5);
   });
 
   it("gives the defaults for overrides that are not an object", () => {

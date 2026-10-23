@@ -1,5 +1,5 @@
 // The Container's backend as the Workspace sees it, with each launch's Container-only paths (docs/spec.md → Container
-// and Toolchains → Size and idle). computer's `ContainerBackend` takes its `ignore` list when it is built and passes it
+// and Toolchains → Container settings). computer's `ContainerBackend` takes its `ignore` list when it is built and passes it
 // to every Container it launches (`MOUNT_IGNORE`), checking that computerd applies exactly that list, while the
 // Workspace's own paths are a setting that can change between launches. So the backend is built again whenever the
 // Container a connection reaches has other paths than the last one built: a new launch, or another Durable Object

@@ -329,12 +329,34 @@ exit "$status"
 export const SETUP_SCRIPT = ".agents/setup.sh";
 
 /**
- * Where the Container records the Setup Scripts that succeeded, one file per repo directory holding the script's SHA-256.
- * On the Container's disk, outside `/workspace`: nothing syncs it, and a snapshot of the disk carries it.
+ * A repo's Start Script, relative to the repo's directory: what brings up the repo's services (a database, a dev
+ * dependency) at each Container start, which a snapshot of the disk cannot hold.
+ */
+export const START_SCRIPT = ".agents/start.sh";
+
+/**
+ * Where the Container records the Setup Scripts that succeeded, one file per script holding its SHA-256: a repo's under
+ * the repo's name, the Environment's under `ENVIRONMENT_SETUP_RECORD`. On the Container's disk, outside `/workspace`:
+ * nothing syncs it, and a snapshot of the disk carries it.
  */
 export const SETUP_STATE_DIRECTORY = "/var/lib/cloudpid/setup";
 
-/** Where the Container records the Setup Script that last succeeded in a repo, by its record name (`setupRecordName`). */
+/**
+ * Where the bootstrap writes the Environment's own Setup and Start Scripts (its Container settings) to run them: on the
+ * Container's disk, outside `/workspace`, so they never reach the Workspace's files.
+ */
+export const ENVIRONMENT_SCRIPTS_DIRECTORY = "/var/lib/cloudpid/environment";
+
+/** The file the Environment's Setup Script is written to. */
+export const ENVIRONMENT_SETUP_FILE = `${ENVIRONMENT_SCRIPTS_DIRECTORY}/setup.sh`;
+
+/** The file the Environment's Start Script is written to. */
+export const ENVIRONMENT_START_FILE = `${ENVIRONMENT_SCRIPTS_DIRECTORY}/start.sh`;
+
+/** The name the Environment's Setup Script is recorded under: no Repo's name starts with `@`. */
+export const ENVIRONMENT_SETUP_RECORD = "@environment";
+
+/** Where the Container records the Setup Script that last succeeded under the record name `name` (`setupRecordName`). */
 export const setupRecord = (name: string, state: string = SETUP_STATE_DIRECTORY): string =>
   `${state}/${name}`;
 
@@ -345,38 +367,106 @@ export const setupRecordName = (directory: string, root: string = WORKSPACE_ROOT
   return relative.slice(relative.lastIndexOf("/") + 1);
 };
 
+/** A script the Container runs: the directory it runs in, and its file, absolute or relative to that directory. */
+export type ContainerScript = { readonly directory: string; readonly file: string };
+
+/** A Setup Script, with the name its success is recorded under (`setupRecord`). */
+export type SetupScript = ContainerScript & { readonly record: string };
+
+/** The Setup Script of the repo in `directory` (`<root>/<repo>`). */
+export const repoSetupScriptOf = (
+  directory: string,
+  root: string = WORKSPACE_ROOT,
+): SetupScript => ({
+  directory,
+  file: SETUP_SCRIPT,
+  record: setupRecordName(directory, root),
+});
+
+/** The Environment's Setup Script, once written to `file` (`pendingSetupScripts`): run in the Workspace root. */
+export const environmentSetupScript = (
+  root: string = WORKSPACE_ROOT,
+  file: string = ENVIRONMENT_SETUP_FILE,
+): SetupScript => ({ directory: root, file, record: ENVIRONMENT_SETUP_RECORD });
+
 /** How long a Setup Script may run before it is stopped. */
 export const SETUP_TIMEOUT_SECONDS = 15 * 60;
+
+/** How long a Start Script may run before it is stopped: a service it starts must detach to outlive it. */
+export const START_TIMEOUT_SECONDS = 5 * 60;
 
 /** The last line a Setup Script's run prints, on stderr, when the script ran past its time and was stopped. */
 export const SETUP_TIMED_OUT_MESSAGE =
   "cloudpid: the Setup Script ran past its time and was stopped";
 
-/** The exit status of a Setup Script's run that ran past its time (`timeout`'s); a script may exit with it too. */
-const SETUP_TIMED_OUT_STATUS = 124;
+/** The last line a Start Script's run prints, on stderr, when the script ran past its time and was stopped. */
+export const START_TIMED_OUT_MESSAGE =
+  "cloudpid: the Start Script ran past its time and was stopped";
+
+/** The exit status of a script's run that ran past its time (`timeout`'s); a script may exit with it too. */
+const TIMED_OUT_STATUS = 124;
 
 /**
- * Whether a Setup Script's run that exited with `code` and printed `output` (its end will do) was stopped for running
- * past its time, not a script that exited with the same status on its own.
+ * Whether a Setup or Start Script's run that exited with `code` and printed `output` (its end will do) was stopped for
+ * running past its time, not a script that exited with the same status on its own.
  */
-export const setupScriptTimedOut = (code: number | undefined, output: string): boolean =>
-  code === SETUP_TIMED_OUT_STATUS && output.trimEnd().endsWith(SETUP_TIMED_OUT_MESSAGE);
+export const scriptTimedOut = (code: number | undefined, output: string): boolean => {
+  const end = output.trimEnd();
+
+  return (
+    code === TIMED_OUT_STATUS &&
+    (end.endsWith(SETUP_TIMED_OUT_MESSAGE) || end.endsWith(START_TIMED_OUT_MESSAGE))
+  );
+};
 
 /** The SHA-256 of the file at the bash word `file`, in bash: its hex digest alone. */
 const sha256 = (file: string): string => `sha256sum < ${file} | cut -d' ' -f1`;
 
+/** `text`'s UTF-8 bytes in base64. */
+const base64 = (text: string): string => {
+  let binary = "";
+
+  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+
+  return btoa(binary);
+};
+
 /**
- * The bash script that prints, one per line, the directories whose Setup Script is due: each repo directly below `root`
- * with a `SETUP_SCRIPT` file whose content differs from the last one that succeeded there (`setupRecord`). One that
- * never ran its script is due.
+ * The bash lines that write `source` to `file` exactly (through base64, so no quoting or heredoc delimiter can meet
+ * the script's text, and the command stays one Linux argument for the largest script), or remove `file` when `source`
+ * is empty. They exit 1 when the file cannot be written.
+ */
+const writeScript = (source: string, file: string): string =>
+  source === ""
+    ? `rm -f -- ${shellQuote(file)}`
+    : `mkdir -p -- ${shellQuote(file.slice(0, file.lastIndexOf("/")) || "/")} && printf '%s' ${shellQuote(base64(source))} | base64 -d > ${shellQuote(file)} || exit 1`;
+
+/** The Environment's script `source`, and the file it is written to. */
+export type EnvironmentScript = { readonly source: string; readonly file: string };
+
+/**
+ * The bash script that prints, one per line, the Setup Scripts that are due: first the Environment's (its file, once
+ * written there), when `environment` has one, then each repo directly below `root` with a `SETUP_SCRIPT` file. A
+ * script is due when its content differs from the last one that succeeded under its record (`setupRecord`); one that
+ * never ran is due. An Environment with no Setup Script has its old file removed.
  */
 export const pendingSetupScripts = (
   root: string = WORKSPACE_ROOT,
   state: string = SETUP_STATE_DIRECTORY,
+  environment?: EnvironmentScript,
 ): string => `
 set -u -o pipefail
 state=${shellQuote(state)}
 root=${shellQuote(root)}
+${
+  environment === undefined
+    ? ""
+    : `${writeScript(environment.source, environment.file)}
+if [ -f ${shellQuote(environment.file)} ]; then
+  hash=$(${sha256(shellQuote(environment.file))}) || exit 1
+  [ "$(cat "$state"/${shellQuote(ENVIRONMENT_SETUP_RECORD)} 2>/dev/null)" = "$hash" ] || printf '%s\\n' ${shellQuote(environment.file)}
+fi`
+}
 for dir in "$root"/*/; do
   dir=\${dir%/}
   [ -f "$dir"/${SETUP_SCRIPT} ] || continue
@@ -390,38 +480,53 @@ exit 0
 `;
 
 /**
- * The bash script that runs the Setup Script of the repo in `directory`: with bash, in that directory, with no input,
- * stopped (with every process it started) after `timeoutSeconds`. When it succeeds, the content it ran is recorded
- * (`setupRecord`), so it is not run again until it changes. It exits with the script's status; one stopped for its time
- * ends with `SETUP_TIMED_OUT_MESSAGE` (`setupScriptTimedOut`).
+ * The bash script that runs `script`: with bash, in its directory, with no input, stopped (with every process it
+ * started) after `timeoutSeconds`, then `timedOut` printed on stderr and status 124. `record`, when given, is the bash
+ * lines run after a success with `$hash` the SHA-256 of the file that ran. It exits with the script's status.
  */
-export const setupScriptRun = (
-  directory: string,
-  state: string = SETUP_STATE_DIRECTORY,
-  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
-  root: string = WORKSPACE_ROOT,
+const scriptRun = (
+  { directory, file }: ContainerScript,
+  timeoutSeconds: number,
+  timedOut: string,
+  record?: string,
 ): string => `
 set -u -o pipefail
 cd ${shellQuote(directory)} || exit 1
-hash=$(${sha256(SETUP_SCRIPT)}) || exit 1
+${record === undefined ? "" : `hash=$(${sha256(shellQuote(file))}) || exit 1`}
 started=$SECONDS
 # timeout puts the script in a process group of its own and signals all of it, so what the script started stops too.
-timeout --kill-after=10 ${timeoutSeconds} bash ${SETUP_SCRIPT} </dev/null
+timeout --kill-after=10 ${timeoutSeconds} bash ${shellQuote(file)} </dev/null
 status=$?
 if [ "$status" -ne 0 ] && [ $((SECONDS - started)) -ge ${timeoutSeconds} ]; then
-  printf '%s\\n' ${shellQuote(SETUP_TIMED_OUT_MESSAGE)} >&2
-  exit ${SETUP_TIMED_OUT_STATUS}
+  printf '%s\\n' ${shellQuote(timedOut)} >&2
+  exit ${TIMED_OUT_STATUS}
 fi
-if [ "$status" -eq 0 ]; then
-  mkdir -p ${shellQuote(state)} && printf '%s\\n' "$hash" > ${shellQuote(setupRecord(setupRecordName(directory, root), state))} || exit 1
-fi
+${record === undefined ? "" : `if [ "$status" -eq 0 ]; then\n${record}\nfi`}
 exit "$status"
 `;
 
 /**
- * `setupScriptRun`, only when the Setup Script of `directory` is due: there is one, and it is not the one that last
- * succeeded there. It exits 0 without running anything otherwise. For a repo cloned after the Container started,
- * which the bootstrap did not see.
+ * The bash script that runs the Setup Script `script` (`repoSetupScriptOf`, `environmentSetupScript`): with bash, in
+ * its directory, with no input, stopped (with every process it started) after `timeoutSeconds`. When it succeeds, the
+ * content it ran is recorded (`setupRecord`), so it is not run again until it changes. It exits with the script's
+ * status; one stopped for its time ends with `SETUP_TIMED_OUT_MESSAGE` (`scriptTimedOut`).
+ */
+export const setupScriptRun = (
+  script: SetupScript,
+  state: string = SETUP_STATE_DIRECTORY,
+  timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
+): string =>
+  scriptRun(
+    script,
+    timeoutSeconds,
+    SETUP_TIMED_OUT_MESSAGE,
+    `  mkdir -p ${shellQuote(state)} && printf '%s\\n' "$hash" > ${shellQuote(setupRecord(script.record, state))} || exit 1`,
+  );
+
+/**
+ * `setupScriptRun` of the repo in `directory`, only when its Setup Script is due: there is one, and it is not the one
+ * that last succeeded there. It exits 0 without running anything otherwise. For a repo cloned after the Container
+ * started, which the bootstrap did not see.
  */
 export const setupScriptRunIfDue = (
   directory: string,
@@ -431,4 +536,48 @@ export const setupScriptRunIfDue = (
 ): string => `
 [ -f ${shellQuote(`${directory}/${SETUP_SCRIPT}`)} ] || exit 0
 [ "$(cat ${shellQuote(setupRecord(setupRecordName(directory, root), state))} 2>/dev/null)" = "$(${sha256(shellQuote(`${directory}/${SETUP_SCRIPT}`))})" ] && exit 0
-${setupScriptRun(directory, state, timeoutSeconds, root)}`;
+${setupScriptRun(repoSetupScriptOf(directory, root), state, timeoutSeconds)}`;
+
+/** The bash script that prints, one per line, each repo directly below `root` that has a Start Script (`START_SCRIPT`). */
+export const startScriptDirectories = (root: string = WORKSPACE_ROOT): string => `
+root=${shellQuote(root)}
+for dir in "$root"/*/; do
+  dir=\${dir%/}
+  [ -f "$dir"/${START_SCRIPT} ] && printf '%s\\n' "$dir"
+done
+exit 0
+`;
+
+/**
+ * The bash script that runs the Start Script `script` (a repo's: `{ directory, file: START_SCRIPT }`) as
+ * `setupScriptRun` runs a Setup Script, bounded by `timeoutSeconds`, but records nothing: it runs at every Container
+ * start. One stopped for its time ends with `START_TIMED_OUT_MESSAGE` (`scriptTimedOut`). The run ends when the script
+ * and what holds its output have: a service it starts must detach (`setsid nohup cmd >/tmp/cmd.log 2>&1 &`).
+ */
+export const startScriptRun = (
+  script: ContainerScript,
+  timeoutSeconds: number = START_TIMEOUT_SECONDS,
+): string => scriptRun(script, timeoutSeconds, START_TIMED_OUT_MESSAGE);
+
+/**
+ * The bash script that writes the Environment's Start Script `source` to `file`, then runs it in the Workspace root
+ * (`startScriptRun`).
+ */
+export const environmentStartScriptRun = (
+  source: string,
+  root: string = WORKSPACE_ROOT,
+  file: string = ENVIRONMENT_START_FILE,
+  timeoutSeconds: number = START_TIMEOUT_SECONDS,
+): string =>
+  `${writeScript(source, file)}\n${startScriptRun({ directory: root, file }, timeoutSeconds)}`;
+
+/**
+ * `startScriptRun` of the repo in `directory`, when it has a Start Script; it exits 0 without running anything
+ * otherwise. For a repo cloned after the Container started, which the bootstrap did not see.
+ */
+export const startScriptRunIfThere = (
+  directory: string,
+  timeoutSeconds: number = START_TIMEOUT_SECONDS,
+): string => `
+[ -f ${shellQuote(`${directory}/${START_SCRIPT}`)} ] || exit 0
+${startScriptRun({ directory, file: START_SCRIPT }, timeoutSeconds)}`;

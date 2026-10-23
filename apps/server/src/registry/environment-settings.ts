@@ -1,4 +1,4 @@
-// An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Size and idle), kept as overrides in
+// An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Container settings), kept as overrides in
 // its Registry row. Reading is lenient and writing strict, as for the global settings, so what a Workspace is told
 // always resolves. Each Workspace is told them when a Session readies it, and applies them at its next launch.
 import {

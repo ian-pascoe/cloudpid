@@ -1,5 +1,5 @@
-// A Workspace's Container settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Size
-// and idle). They are its Environment's, which the Registry keeps: a Session hands them over when it readies the
+// A Workspace's Container settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Container
+// settings). They are its Environment's, which the Registry keeps: a Session hands them over when it readies the
 // Workspace (`prepare.ts`), since the Workspace DO reads them when it launches its Container, and its Worker
 // (`Workspaces`) deploys before the main Worker that hosts the Registry, so it cannot reach the Registry.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off

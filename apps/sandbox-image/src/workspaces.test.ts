@@ -13,10 +13,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SETUP_SCRIPT, setupRecord } from "@cloudpid/sandbox-image/toolchains";
+import { SETUP_SCRIPT, setupRecord, START_SCRIPT } from "@cloudpid/sandbox-image/toolchains";
 import {
   prepareWorkspaceScript,
   repoSetupScript,
+  repoStartScript,
   type WorkspaceClones,
 } from "@cloudpid/sandbox-image/workspaces";
 
@@ -302,5 +303,59 @@ describe("a clone's Setup Script", () => {
 
     expect(sh(repoSetupScript("api", root, state)).status).toBe(0);
     expect(existsSync(setupRecord("api", state))).toBe(false);
+  });
+});
+
+describe("a clone's Start Script", () => {
+  /** A Workspace whose clone `app` was made with a Start Script that counts its runs. */
+  const withStartScript = () => {
+    const workspace = container();
+    const { root, prepare } = workspace;
+
+    prepare();
+    mkdirSync(join(root, "app", ".agents"), { recursive: true });
+    writeFileSync(join(root, "app", START_SCRIPT), 'echo "$PWD" >> ../start-runs\n');
+
+    const runs = () =>
+      existsSync(join(root, "start-runs")) ? readFileSync(join(root, "start-runs"), "utf8") : "";
+
+    return { ...workspace, runs };
+  };
+
+  it("runs once in the clone that was made, though two Sessions ask", async () => {
+    const { root, runs, start } = withStartScript();
+
+    expect(
+      await Promise.all([start(repoStartScript("app", root)), start(repoStartScript("app", root))]),
+    ).toEqual([0, 0]);
+    expect(runs()).toBe(`${join(root, "app")}\n`);
+  });
+
+  it("runs again in a clone made again", () => {
+    const { root, sh, runs, prepare } = withStartScript();
+
+    sh(repoStartScript("app", root));
+    sh(`rm -rf ${join(root, "app")}`);
+    prepare();
+    mkdirSync(join(root, "app", ".agents"), { recursive: true });
+    writeFileSync(join(root, "app", START_SCRIPT), 'echo "$PWD" >> ../start-runs\n');
+    sh(repoStartScript("app", root));
+
+    expect(runs()).toBe(`${join(root, "app")}\n${join(root, "app")}\n`);
+  });
+
+  it("exits with the script's status", () => {
+    const { root, sh } = withStartScript();
+
+    writeFileSync(join(root, "app", START_SCRIPT), "exit 5\n");
+
+    expect(sh(repoStartScript("app", root)).status).toBe(5);
+  });
+
+  it("does nothing for a clone without one", () => {
+    const { root, sh, runs } = withStartScript();
+
+    expect(sh(repoStartScript("api", root)).status).toBe(0);
+    expect(runs()).toBe("");
   });
 });

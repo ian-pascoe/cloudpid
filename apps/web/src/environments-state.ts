@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
+import { variablesText } from "./environments.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
 
@@ -235,7 +236,10 @@ export const environmentSettingsAtom = Atom.family((id: string) =>
   ),
 );
 
-/** What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes) and paths as typed. */
+/**
+ * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables and
+ * scripts as typed.
+ */
 export interface EnvironmentDraft {
   readonly name: string;
   /** Undefined until the Environment's settings have answered and nothing was picked. */
@@ -244,6 +248,12 @@ export interface EnvironmentDraft {
   readonly idle: string;
   /** The extra Container-only paths, one per line; undefined until the settings have answered and nothing was typed. */
   readonly ignore: string | undefined;
+  /** The variables, a `NAME=value` line each; undefined until the settings have answered and nothing was typed. */
+  readonly variables: string | undefined;
+  /** The Environment's Setup Script; undefined until the settings have answered and nothing was typed. */
+  readonly setupScript: string | undefined;
+  /** The Environment's Start Script; undefined until the settings have answered and nothing was typed. */
+  readonly startScript: string | undefined;
 }
 
 /** `draft`, with the settings it has not got yet taken from `saved`, the settings in force once they answer. */
@@ -258,6 +268,9 @@ const filledFrom = (
         instance: draft.instance ?? saved.settings.instance,
         idle: draft.idle === "" ? String(saved.settings.idleMinutes) : draft.idle,
         ignore: draft.ignore ?? Arr.join(saved.settings.ignore, "\n"),
+        variables: draft.variables ?? variablesText(saved.settings.variables),
+        setupScript: draft.setupScript ?? saved.settings.setupScript,
+        startScript: draft.startScript ?? saved.settings.startScript,
       };
 
 /**
@@ -275,6 +288,9 @@ export const environmentDraftAtom = Atom.family((id: string) =>
           instance: undefined,
           idle: "",
           ignore: undefined,
+          variables: undefined,
+          setupScript: undefined,
+          startScript: undefined,
         })),
         saved,
       );

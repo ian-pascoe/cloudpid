@@ -13,7 +13,12 @@ import {
   type InstanceType,
   MAX_IDLE_MINUTES,
   MAX_IGNORE_PATTERNS,
+  MAX_VARIABLE_VALUE_LENGTH,
+  MAX_VARIABLES,
+  scriptProblem,
+  variableNameProblem,
 } from "@cloudpid/config";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 
 /** An Environment's Sessions, newest first. */
@@ -143,4 +148,57 @@ export const ignoreProblem = (text: string): string | null => {
   }
 
   return null;
+};
+
+/** An Environment's variables as the Edit dialog shows them: a `NAME=value` line each. */
+export const variablesText = (variables: Readonly<Record<string, string>>): string =>
+  Record.toEntries(variables)
+    .map(([name, value]) => `${name}=${value}`)
+    .join("\n");
+
+/**
+ * The variables typed in the Edit dialog, or why they cannot be saved: a `NAME=value` line each, the value everything
+ * after the first `=` as typed, blank lines and lines starting with `#` left out. The server's rules
+ * (`variableNameProblem`), with the first line that breaks them.
+ */
+export const parseVariables = (text: string): Result.Result<Record<string, string>, string> => {
+  // A Map, so a name like `__proto__` is a variable like any other.
+  const variables = new Map<string, string>();
+  const lines = text.split("\n");
+
+  for (const [index, line] of lines.entries()) {
+    const trimmed = line.trim();
+
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+
+    const equals = line.indexOf("=");
+
+    if (equals === -1) return Result.fail(`Line ${index + 1}: write NAME=value`);
+
+    const name = line.slice(0, equals).trim();
+    const value = line.slice(equals + 1);
+    const problem = variableNameProblem(name);
+
+    if (problem !== undefined)
+      return Result.fail(`${name === "" ? `Line ${index + 1}: the name` : name} ${problem}`);
+
+    if (variables.has(name)) return Result.fail(`${name} is set twice`);
+
+    if (value.length > MAX_VARIABLE_VALUE_LENGTH) {
+      return Result.fail(`${name}'s value is longer than ${MAX_VARIABLE_VALUE_LENGTH} characters`);
+    }
+
+    variables.set(name, value);
+  }
+
+  return variables.size > MAX_VARIABLES
+    ? Result.fail(`Use at most ${MAX_VARIABLES} variables`)
+    : Result.succeed(Record.fromEntries(variables));
+};
+
+/** Why `text` cannot be an Environment's Setup or Start Script, or null when it can: the server's rules (`scriptProblem`). */
+export const scriptFieldProblem = (text: string): string | null => {
+  const problem = scriptProblem(text);
+
+  return problem === undefined ? null : `The script ${problem}`;
 };

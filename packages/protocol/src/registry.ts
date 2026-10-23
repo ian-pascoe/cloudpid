@@ -148,7 +148,7 @@ export const SettingsState = Schema.Struct({
 export type SettingsState = typeof SettingsState.Type;
 
 /**
- * An Environment's Container settings in force (`docs/spec.md` → Container and Toolchains → Size and idle), and the
+ * An Environment's Container settings in force (`docs/spec.md` → Container and Toolchains → Container settings), and the
  * overrides they come from. Each of its Workspaces applies them at its next Container launch.
  */
 export const ContainerSettingsState = Schema.Struct({

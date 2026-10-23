@@ -10,6 +10,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { ArrowLeft, GitBranch, GitFork, Pencil, Play, RotateCw, Trash2 } from "lucide-react";
@@ -58,7 +59,10 @@ import {
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
+  parseVariables,
+  scriptFieldProblem,
   sourceProblem,
+  variablesText,
 } from "./environments.ts";
 
 const NewEnvironmentForm = ({ names }: { names: readonly string[] }) => {
@@ -155,6 +159,122 @@ const AddRepoForm = ({ id }: { id: string }) => {
   );
 };
 
+/** The look of the Edit dialog's monospace text areas. */
+const CODE_FIELD =
+  "min-w-0 rounded-md border border-input bg-background px-2.5 py-2 font-mono text-sm focus-visible:outline-2 focus-visible:outline-ring";
+
+/** A monospace text area of the Edit dialog, with what it is for under it, or its problem instead. */
+const CodeField = ({
+  id,
+  label,
+  value,
+  rows,
+  placeholder,
+  problem,
+  hint,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  rows: number;
+  placeholder: string;
+  problem: string | null;
+  hint: string;
+  onChange: (value: string) => void;
+}) => (
+  <div className="flex flex-col gap-1.5">
+    <label htmlFor={id} className="text-sm font-medium">
+      {label}
+    </label>
+    <textarea
+      id={id}
+      rows={rows}
+      value={value}
+      placeholder={placeholder}
+      spellCheck={false}
+      autoComplete="off"
+      data-1p-ignore
+      onChange={(event) => {
+        onChange(event.target.value);
+      }}
+      aria-invalid={problem !== null}
+      className={CODE_FIELD}
+    />
+    {problem === null ? (
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    ) : (
+      <p className="text-xs text-destructive">{problem}</p>
+    )}
+  </div>
+);
+
+/** The variables and scripts of the Edit dialog, as typed, and what each change sets. */
+type StartupDraft = {
+  readonly variables: string;
+  readonly setupScript: string;
+  readonly startScript: string;
+};
+
+/** The Edit dialog's fields for what every Container start gets: variables, and the Environment's Setup and Start Scripts. */
+const StartupFields = ({
+  id,
+  draft,
+  variablesProblem,
+  onChange,
+}: {
+  id: string;
+  draft: StartupDraft;
+  variablesProblem: string | null;
+  onChange: (change: Partial<StartupDraft>) => void;
+}) => (
+  <fieldset className="flex min-w-0 flex-col gap-3">
+    <legend className="mb-2 text-xs font-medium text-muted-foreground">
+      Variables and scripts
+    </legend>
+    <CodeField
+      id={`variables-${id}`}
+      label="Variables (NAME=value, one per line)"
+      rows={3}
+      value={draft.variables}
+      placeholder={"NODE_ENV=development\nDATABASE_URL=postgres://localhost/app"}
+      problem={variablesProblem}
+      hint="Every command, Setup Script and Start Script gets them. They are plain: the agent can read them, so keep secrets out until Environments get Secrets."
+      onChange={(variables) => {
+        onChange({ variables });
+      }}
+    />
+    <CodeField
+      id={`setup-${id}`}
+      label="Setup Script (bash)"
+      rows={4}
+      value={draft.setupScript}
+      placeholder="sudo apt-get install -y postgresql-client"
+      problem={scriptFieldProblem(draft.setupScript)}
+      hint="Runs in /workspace before the repos' .agents/setup.sh, to install what the Workspace needs. It runs again only when it changes, or after it failed."
+      onChange={(setupScript) => {
+        onChange({ setupScript });
+      }}
+    />
+    <CodeField
+      id={`start-${id}`}
+      label="Start Script (bash)"
+      rows={4}
+      value={draft.startScript}
+      placeholder={"setsid nohup docker compose up >/tmp/compose.log 2>&1 &"}
+      problem={scriptFieldProblem(draft.startScript)}
+      hint="Runs in /workspace at every Container start, before the repos' .agents/start.sh, and is stopped after 5 minutes. A service it starts must detach (setsid nohup cmd >/tmp/cmd.log 2>&1 &), or the script does not end."
+      onChange={(startScript) => {
+        onChange({ startScript });
+      }}
+    />
+    <p className="text-xs text-muted-foreground">
+      These apply the next time a Workspace's Container starts. Commands wait for the scripts; one
+      that fails is reported to the first command and does not stop the others.
+    </p>
+  </fieldset>
+);
+
 /** The Container fields of the Edit dialog: size, idle time and extra paths, saved together with the name. */
 const ContainerFields = ({
   id,
@@ -230,7 +350,7 @@ const ContainerFields = ({
           onPaths(event.target.value);
         }}
         aria-invalid={pathsProblem !== null}
-        className="min-w-0 rounded-md border border-input bg-background px-2.5 py-2 font-mono text-sm focus-visible:outline-2 focus-visible:outline-ring"
+        className={CODE_FIELD}
       />
       {pathsProblem === null ? (
         <p className="text-xs text-muted-foreground">
@@ -250,7 +370,10 @@ const ContainerFields = ({
   </fieldset>
 );
 
-/** Edit an Environment: its name, and its Container's size, idle time and extra paths. Its id never changes. */
+/**
+ * Edit an Environment: its name, and its Container's size, idle time, extra paths, variables and scripts. Its id never
+ * changes.
+ */
 const EditEnvironmentDialog = ({
   environment,
   otherNames,
@@ -265,7 +388,7 @@ const EditEnvironmentDialog = ({
   const [draft, setDraft] = useAtom(environmentDraftAtom(id));
   const [edited, save] = useAtom(saveEnvironmentAtom(id));
   const setDialog = useAtomSet(environmentDialogAtom(id));
-  const { name, instance, idle, ignore } = draft;
+  const { name, instance, idle, ignore, variables, setupScript, startScript } = draft;
 
   const saved = loaded.pipe(
     AsyncResult.value,
@@ -282,15 +405,29 @@ const EditEnvironmentDialog = ({
   const pathsProblem = ignore === undefined ? null : ignoreProblem(ignore);
   const renamed = name.trim() !== environment.name;
   const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
+  const parsedVariables = parseVariables(variables ?? "");
+  const variablesProblem = Result.isFailure(parsedVariables) ? parsedVariables.failure : null;
+  const typedVariables = Result.getOrElse(parsedVariables, () => ({}));
+
+  const scriptsProblem =
+    scriptFieldProblem(setupScript ?? "") ?? scriptFieldProblem(startScript ?? "");
 
   const settingsChanged =
     saved !== undefined &&
     instance !== undefined &&
     (instance !== saved.instance ||
       idle !== String(saved.idleMinutes) ||
-      patterns.join("\n") !== saved.ignore.join("\n"));
+      patterns.join("\n") !== saved.ignore.join("\n") ||
+      variablesText(typedVariables) !== variablesText(saved.variables) ||
+      (setupScript ?? saved.setupScript) !== saved.setupScript ||
+      (startScript ?? saved.startScript) !== saved.startScript);
 
-  const invalid = nameProblem !== null || idleProblem !== null || pathsProblem !== null;
+  const invalid =
+    nameProblem !== null ||
+    idleProblem !== null ||
+    pathsProblem !== null ||
+    variablesProblem !== null ||
+    scriptsProblem !== null;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -301,7 +438,14 @@ const EditEnvironmentDialog = ({
       name: renamed ? name.trim() : undefined,
       settings:
         settingsChanged && instance !== undefined
-          ? { instance, idleMinutes: Number(idle), ignore: patterns }
+          ? {
+              instance,
+              idleMinutes: Number(idle),
+              ignore: patterns,
+              variables: typedVariables,
+              setupScript: setupScript ?? saved.setupScript,
+              startScript: startScript ?? saved.startScript,
+            }
           : undefined,
     });
   };
@@ -328,23 +472,37 @@ const EditEnvironmentDialog = ({
         {nameProblem !== null && <p className="text-xs text-destructive">{nameProblem}</p>}
       </div>
       {saved !== undefined && instance !== undefined ? (
-        <ContainerFields
-          id={id}
-          instance={instance}
-          idle={idle}
-          idleProblem={idleProblem}
-          paths={ignore ?? ""}
-          pathsProblem={pathsProblem}
-          onPaths={(typed) => {
-            setDraft((current) => ({ ...current, ignore: typed }));
-          }}
-          onInstance={(picked) => {
-            setDraft((current) => ({ ...current, instance: picked }));
-          }}
-          onIdle={(typed) => {
-            setDraft((current) => ({ ...current, idle: typed }));
-          }}
-        />
+        <>
+          <ContainerFields
+            id={id}
+            instance={instance}
+            idle={idle}
+            idleProblem={idleProblem}
+            paths={ignore ?? ""}
+            pathsProblem={pathsProblem}
+            onPaths={(typed) => {
+              setDraft((current) => ({ ...current, ignore: typed }));
+            }}
+            onInstance={(picked) => {
+              setDraft((current) => ({ ...current, instance: picked }));
+            }}
+            onIdle={(typed) => {
+              setDraft((current) => ({ ...current, idle: typed }));
+            }}
+          />
+          <StartupFields
+            id={id}
+            draft={{
+              variables: variables ?? "",
+              setupScript: setupScript ?? "",
+              startScript: startScript ?? "",
+            }}
+            variablesProblem={variablesProblem}
+            onChange={(change) => {
+              setDraft((current) => ({ ...current, ...change }));
+            }}
+          />
+        </>
       ) : loadError === null ? (
         <p className="text-sm text-muted-foreground">Loading the Container's settings…</p>
       ) : (

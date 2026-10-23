@@ -1,4 +1,5 @@
 // @effect-diagnostics asyncFunction:off
+import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type { Context } from "@earendil-works/chord";
 import { ExecutionError, err, ok, type Shell } from "@earendil-works/pi-durable/env";
 import type * as Schema from "effect/Schema";
@@ -48,7 +49,7 @@ const host = (
         settings: {
           read: () =>
             Promise.resolve({
-              settings: { instance: "custom-2", idleMinutes: 5, ignore: [] },
+              settings: DEFAULT_CONTAINER_SETTINGS,
               overrides: held,
             }),
           write: (overrides) => {
@@ -60,7 +61,7 @@ const host = (
                 : {
                     ok: true as const,
                     state: {
-                      settings: { instance: "custom-2", idleMinutes: 5, ignore: [] },
+                      settings: DEFAULT_CONTAINER_SETTINGS,
                       overrides,
                     },
                   },
@@ -96,17 +97,19 @@ describe("readying a Workspace", () => {
     expect(scripts).toEqual([]);
   });
 
-  it("clones only the Repos that are missing, then runs each one's Setup Script if due", async () => {
+  it("clones only the Repos that are missing, then runs each one's Setup Script if due, then its Start Script", async () => {
     const { prepare, scripts } = host(["/workspace/app/.git"]);
 
     await prepare();
 
-    expect(scripts).toHaveLength(2);
+    expect(scripts).toHaveLength(3);
     expect(scripts[0]?.script).toContain("clone_or_report 'api' 'https://github.com/acme/api.git'");
     expect(scripts[0]?.script).not.toContain("clone_or_report 'app'");
     expect(scripts[0]?.script).toContain("branch='cloudpid/1a2b3c4d'");
     expect(scripts[0]?.timeoutSeconds).toBe(CLONE_TIMEOUT_SECONDS);
     expect(scripts[1]?.script).toContain("/workspace/api/.agents/setup.sh");
+    expect(scripts[2]?.script).toContain("/workspace/api/.agents/start.sh");
+    expect(scripts[2]?.timeoutSeconds).toBeGreaterThan(5 * 60);
   });
 
   it("starts a new branch from the base it is given", async () => {
@@ -126,7 +129,7 @@ describe("readying a Workspace", () => {
     await expect(prepare()).rejects.toThrow(
       "The Workspace's repos could not all be cloned on branch cloudpid/1a2b3c4d (exit 1): fatal: repository",
     );
-    expect(scripts).toHaveLength(3);
+    expect(scripts).toHaveLength(5);
   });
 
   it("only reports a Setup Script that fails: the Workspace is there to work in", async () => {
@@ -143,6 +146,23 @@ describe("readying a Workspace", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("/workspace/app/.agents/setup.sh failed");
     expect(warnings[0]).toContain("ERR_PNPM_NO_LOCKFILE");
+  });
+
+  it("only reports a Start Script that fails, after a Setup Script that failed too", async () => {
+    const { prepare, warnings } = host(
+      ["/workspace/api/.git"],
+      [
+        { exitCode: 0, output: "" },
+        { exitCode: 1, output: "ERR_PNPM_NO_LOCKFILE\n" },
+        { exitCode: 2, output: "docker: not running\n" },
+      ],
+    );
+
+    await prepare();
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toContain("/workspace/app/.agents/start.sh failed");
+    expect(warnings[1]).toContain("docker: not running");
   });
 
   it("hands the Environment's settings to the Workspace when they differ from what it holds", async () => {

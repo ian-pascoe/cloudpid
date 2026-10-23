@@ -1,4 +1,4 @@
-// Each Container launch (docs/spec.md → Container and Toolchains → Size and idle, Snapshots): the instance type, idle
+// Each Container launch (docs/spec.md → Container and Toolchains → Container settings, Snapshots): the instance type, idle
 // time and Container-only paths are the Workspace's settings at that moment, kept for as long as that Container runs; a
 // snapshot of the image's Toolchains is restored when there is one, and a restore that does not come up falls back to
 // the image.

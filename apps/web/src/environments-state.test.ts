@@ -447,13 +447,26 @@ describe("the settings of an Environment", () => {
         yield* settled(registry, environmentSettingsAtom("work"));
         registry.set(saveEnvironmentAtom("work"), {
           name: undefined,
-          settings: { instance: "basic", idleMinutes: 5, ignore: ["/data"] },
+          settings: {
+            ...DEFAULT_CONTAINER_SETTINGS,
+            instance: "basic",
+            ignore: ["/data"],
+            variables: { NODE_ENV: "test" },
+            startScript: "make up\n",
+          },
         });
 
         const answer = yield* settled(registry, saveEnvironmentAtom("work"));
 
         expect(AsyncResult.getOrThrow(answer)?.settings.instance).toBe("basic");
-        expect(saved).toEqual([{ instance: "basic", ignore: ["/data"] }]);
+        expect(saved).toEqual([
+          {
+            instance: "basic",
+            ignore: ["/data"],
+            variables: { NODE_ENV: "test" },
+            startScript: "make up\n",
+          },
+        ]);
         expect(
           AsyncResult.getOrThrow(yield* settled(registry, environmentSettingsAtom("work"))).settings
             .instance,
@@ -467,7 +480,7 @@ describe("the settings of an Environment", () => {
 
       registry.set(saveEnvironmentAtom("work"), {
         name: undefined,
-        settings: { instance: "basic", idleMinutes: 9999, ignore: [] },
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 9999 },
       });
 
       expect(failureOf(yield* settled(registry, saveEnvironmentAtom("work")))).toBe(
@@ -479,10 +492,13 @@ describe("the settings of an Environment", () => {
 });
 
 /** A Registry for the page's dialogs: Environment `work`, which refuses a rename to `bad`, and `stuck`, which refuses deletes. */
-const paging = (settingsGate?: Deferred.Deferred<void>) => {
+const paging = (
+  settingsGate?: Deferred.Deferred<void>,
+  initial: ContainerSettings = DEFAULT_CONTAINER_SETTINGS,
+) => {
   const saved: unknown[] = [];
   const renamed: string[] = [];
-  let held = DEFAULT_CONTAINER_SETTINGS;
+  let held = initial;
 
   const registry = registryWith({
     listEnvironments: () => Effect.succeed([environment("work", "Work")]),
@@ -533,7 +549,7 @@ describe("the dialogs of an Environment's card", () => {
       registry.set(environmentDialogAtom("work"), "edit");
       registry.set(saveEnvironmentAtom("work"), {
         name: "Renamed",
-        settings: { instance: "basic", idleMinutes: 30, ignore: [] },
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 },
       });
       yield* settled(registry, saveEnvironmentAtom("work"));
 
@@ -551,7 +567,7 @@ describe("the dialogs of an Environment's card", () => {
       registry.set(environmentDialogAtom("work"), "edit");
       registry.set(saveEnvironmentAtom("work"), {
         name: "bad",
-        settings: { instance: "basic", idleMinutes: 30, ignore: [] },
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "basic", idleMinutes: 30 },
       });
 
       expect(settledFailureOf(yield* settled(registry, saveEnvironmentAtom("work")))).toBe(
@@ -645,6 +661,9 @@ describe("the Edit dialog's draft", () => {
         instance: undefined,
         idle: "",
         ignore: undefined,
+        variables: undefined,
+        setupScript: undefined,
+        startScript: undefined,
       });
 
       yield* Deferred.succeed(gate, undefined);
@@ -655,6 +674,29 @@ describe("the Edit dialog's draft", () => {
         instance: DEFAULT_CONTAINER_SETTINGS.instance,
         idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "",
+        variables: "",
+        setupScript: "",
+        startScript: "",
+      });
+    }),
+  );
+
+  it.effect("shows the saved variables as NAME=value lines, and the scripts as they are", () =>
+    Effect.gen(function* () {
+      const { registry } = paging(undefined, {
+        ...DEFAULT_CONTAINER_SETTINGS,
+        variables: { NODE_ENV: "test", QUERY: "a=b" },
+        setupScript: "pnpm install\n",
+        startScript: "docker start db\n",
+      });
+
+      yield* opened(registry);
+      yield* settled(registry, environmentSettingsAtom("work"));
+
+      expect(registry.get(environmentDraftAtom("work"))).toMatchObject({
+        variables: "NODE_ENV=test\nQUERY=a=b",
+        setupScript: "pnpm install\n",
+        startScript: "docker start db\n",
       });
     }),
   );
@@ -673,6 +715,9 @@ describe("the Edit dialog's draft", () => {
         instance: other,
         idle: "",
         ignore: "/data",
+        variables: "A=1",
+        setupScript: undefined,
+        startScript: "typed\n",
       });
       yield* Deferred.succeed(gate, undefined);
       yield* settled(registry, environmentSettingsAtom("work"));
@@ -682,6 +727,9 @@ describe("the Edit dialog's draft", () => {
         instance: other,
         idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "/data",
+        variables: "A=1",
+        setupScript: "",
+        startScript: "typed\n",
       });
     }),
   );
@@ -697,6 +745,9 @@ describe("the Edit dialog's draft", () => {
         instance: "lite",
         idle: "20",
         ignore: "",
+        variables: "",
+        setupScript: "",
+        startScript: "",
       });
       registry.refresh(environmentSettingsAtom("work"));
       yield* settled(registry, environmentSettingsAtom("work"));
@@ -706,6 +757,9 @@ describe("the Edit dialog's draft", () => {
         instance: "lite",
         idle: "20",
         ignore: "",
+        variables: "",
+        setupScript: "",
+        startScript: "",
       });
     }),
   );

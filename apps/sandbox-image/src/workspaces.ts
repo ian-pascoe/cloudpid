@@ -8,6 +8,8 @@ import {
   SETUP_TIMEOUT_SECONDS,
   setupScriptRunIfDue,
   shellQuote,
+  START_TIMEOUT_SECONDS,
+  startScriptRunIfThere,
   WORKSPACE_ROOT,
 } from "./toolchains.ts";
 
@@ -33,12 +35,19 @@ fi
 `;
 
 /**
+ * Where each new clone under `root` leaves a flag of its name on the Container's disk, outside the Workspace, until its
+ * Start Script has been run once (`repoStartScript`): of two Sessions that made the clone at once, only one runs it.
+ */
+const startDueDirectory = (root: string): string => `/tmp/cloudpid-start-due${root}`;
+
+/**
  * The bash script that clones each of the Workspace's Repos that is not there yet. Each clone is full (switching
  * branches later fetches nothing), made beside the root's repos and moved into place once its branch is checked out.
  * The branch is tracked from `origin` when the remote has it, and otherwise made from `base` (which the remote must
  * have) or from the remote's default branch. git's hooks are off while it runs, and `SKIP_REFERENCE_REPOS` is set, so
  * a Repo's own checkout hooks (installs, reference clones) do not run before its Setup Script does. Then `mise install`
- * runs in each new clone that declares Toolchains, since the bootstrap ran before it was there. A Repo that fails is
+ * runs in each new clone that declares Toolchains, since the bootstrap ran before it was there, and the clone is flagged
+ * for its Start Script (`repoStartScript`). A Repo that fails is
  * reported and the others are still made; the script exits 1 when any failed.
  */
 export const prepareWorkspaceScript = (
@@ -51,6 +60,7 @@ export SKIP_REFERENCE_REPOS=1 GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=${shellQu
 root=${shellQuote(root)}
 branch=${shellQuote(clones.branch)}
 base=${shellQuote(clones.base ?? "")}
+start_due=${shellQuote(startDueDirectory(root))}
 ${locked("workspace")}
 ${HAS_MISE_CONFIG}
 nohooks() { git -c core.hooksPath=/dev/null "$@"; }
@@ -82,6 +92,7 @@ clone() {
     nohooks -C "$partial" checkout --quiet --orphan "$branch" || return 1
   fi
   mv -- "$partial" "$dir" || return 1
+  mkdir -p -- "$start_due" && : > "$start_due/$1"
   if has_mise_config "$dir"; then
     (cd "$dir" && mise install) || echo "cloudpid: mise install failed in $dir; it runs again at the next Container start" >&2
   fi
@@ -110,3 +121,16 @@ export const repoSetupScript = (
   timeoutSeconds: number = SETUP_TIMEOUT_SECONDS,
 ): string =>
   `${locked(`setup-${name}`)}${setupScriptRunIfDue(`${root}/${name}`, state, timeoutSeconds, root)}`;
+
+/**
+ * The bash script that runs the Start Script of the Workspace's clone `name` (`startScriptRunIfThere`) once after the
+ * clone was made, since the bootstrap of the Container that was already running did not see it, under the clone's lock:
+ * of two Sessions that made the clone at once, the second finds it run. Later starts are the bootstrap's.
+ */
+export const repoStartScript = (
+  name: string,
+  root: string = WORKSPACE_ROOT,
+  timeoutSeconds: number = START_TIMEOUT_SECONDS,
+): string => `${locked(`setup-${name}`)}
+rm -- ${shellQuote(`${startDueDirectory(root)}/${name}`)} 2>/dev/null || exit 0
+${startScriptRunIfThere(`${root}/${name}`, timeoutSeconds)}`;

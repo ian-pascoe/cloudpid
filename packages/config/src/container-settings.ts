@@ -1,6 +1,6 @@
-// An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Size and idle): the Container's
-// instance size, how long it may sit unused before its Workspace stops it, and the paths it keeps to itself on top of
-// the built-in ones. Like the global settings, every field has a decoding default, so decoding the saved overrides gives
+// An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Container settings): the Container's
+// instance size, how long it may sit unused before its Workspace stops it, the paths it keeps to itself on top of the
+// built-in ones, the variables every command gets, and the Environment's own Setup and Start Scripts. Like the global settings, every field has a decoding default, so decoding the saved overrides gives
 // the resolved settings and the schema's `Encoded` side is the overrides' shape. The Registry keeps them per
 // Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
 import * as Arr from "effect/Array";
@@ -143,6 +143,101 @@ const IgnorePattern = Schema.String.check(
   }),
 );
 
+/** The most variables an Environment may have. */
+export const MAX_VARIABLES = 50;
+
+/** The longest variable name. */
+const MAX_VARIABLE_NAME_LENGTH = 128;
+
+/** The longest variable value. */
+export const MAX_VARIABLE_VALUE_LENGTH = 4096;
+
+/**
+ * The names a variable may not have: what the Container sets for every command itself (`toolchainEnv` in
+ * `@cloudpid/sandbox-image/toolchains`, which this package cannot import, and what computerd starts a command with),
+ * which a variable would otherwise override, and `CLOUDPID_`'s prefix, which is cloudpid's own.
+ */
+const RESERVED_VARIABLES: ReadonlySet<string> = new Set([
+  "MISE_GLOBAL_CONFIG_FILE",
+  "MISE_TRUSTED_CONFIG_PATHS",
+  "MISE_YES",
+  "GIT_TERMINAL_PROMPT",
+  "TURBO_CACHE_DIR",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "PATH",
+  "HOME",
+  "PWD",
+  "SHELL",
+  "USER",
+]);
+
+const RESERVED_PREFIX = "CLOUDPID_";
+
+/** Why `name` cannot be a variable's, or undefined when it can: a name a shell can export, and not one the Container sets. */
+export const variableNameProblem = (name: string): string | undefined => {
+  if (name === "") return "is empty";
+
+  if (name.length > MAX_VARIABLE_NAME_LENGTH) {
+    return `is longer than ${MAX_VARIABLE_NAME_LENGTH} characters`;
+  }
+
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    return "must be letters, digits and _, and not start with a digit";
+  }
+
+  if (RESERVED_VARIABLES.has(name)) return "is reserved: the Container sets it itself";
+
+  if (name.startsWith(RESERVED_PREFIX))
+    return `is reserved: ${RESERVED_PREFIX} names are cloudpid's`;
+
+  return undefined;
+};
+
+/**
+ * Why the names of `variables` cannot all be variables', one problem per name. A check of the record, not a key
+ * schema: a key that fails the record's key schema is reported as an excess property, which would hide why.
+ */
+const variableNamesProblem = (variables: Readonly<Record<string, string>>): string | undefined => {
+  const problems = Arr.flatMap(Record.keys(variables), (name) => {
+    const problem = variableNameProblem(name);
+
+    return problem === undefined ? [] : [`${JSON.stringify(name)} ${problem}`];
+  });
+
+  return problems.length === 0 ? undefined : Arr.join(problems, "; ");
+};
+
+/** Whether `text` has a NUL, which neither an environment variable nor a bash script can hold. */
+const hasNul = (text: string): boolean => text.includes("\u0000");
+
+const VariableValue = Schema.String.check(
+  Schema.isMaxLength(MAX_VARIABLE_VALUE_LENGTH),
+  Schema.makeFilter((value: string) => (hasNul(value) ? "contains a NUL character" : undefined)),
+);
+
+/**
+ * The largest Setup or Start Script, in bytes of UTF-8. The bootstrap passes one to the Container base64-encoded in the
+ * text of a bash command, and Linux takes one argument of at most 128 KiB.
+ */
+export const MAX_SCRIPT_BYTES = 64 * 1024;
+
+const utf8 = new TextEncoder();
+
+/** Why `script` cannot be an Environment's Setup or Start Script, or undefined when it can. */
+export const scriptProblem = (script: string): string | undefined => {
+  if (hasNul(script)) return "contains a NUL character";
+
+  // A character is at most 3 bytes of UTF-8 (a pair of surrogates 4): only a long script needs encoding.
+  if (script.length > MAX_SCRIPT_BYTES / 3 && utf8.encode(script).length > MAX_SCRIPT_BYTES) {
+    return `is longer than ${MAX_SCRIPT_BYTES / 1024} KiB`;
+  }
+
+  return undefined;
+};
+
+const Script = Schema.String.check(Schema.makeFilter(scriptProblem));
+
 export const ContainerSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-2"))),
@@ -155,6 +250,17 @@ export const ContainerSettings = Schema.Struct({
   ignore: Schema.Array(IgnorePattern)
     .check(Schema.isMaxLength(MAX_IGNORE_PATTERNS))
     .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /**
+   * Environment variables every command on the Container gets, and its bootstrap and scripts, under the Container's own
+   * (`toolchainEnv`) and what a caller passes. Plain: the agent can read them.
+   */
+  variables: Schema.Record(Schema.String, VariableValue)
+    .check(Schema.isMaxProperties(MAX_VARIABLES), Schema.makeFilter(variableNamesProblem))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
+  /** The Environment's own Setup Script (bash), run in `/workspace` before the repos' when it is due. Empty: none. */
+  setupScript: Script.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  /** The Environment's Start Script (bash), run in `/workspace` at each Container start before the repos'. Empty: none. */
+  startScript: Script.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
 });
 
 export type ContainerSettings = typeof ContainerSettings.Type;
@@ -224,6 +330,12 @@ export const containerOverridesFrom = (settings: ContainerSettings): ContainerSe
 
   if (settings.ignore.length > 0) overrides.ignore = settings.ignore;
 
+  if (!Record.isEmptyRecord(settings.variables)) overrides.variables = settings.variables;
+
+  if (settings.setupScript !== "") overrides.setupScript = settings.setupScript;
+
+  if (settings.startScript !== "") overrides.startScript = settings.startScript;
+
   return overrides;
 };
 
@@ -255,8 +367,8 @@ export const resolveContainerSettingsLeniently = (
   let rest: Schema.JsonObject = overrides;
   const dropped: string[] = [];
 
-  // Dropping a key settles its problem; a round per key covers a document with several.
-  for (let round = 0; round < 4; round += 1) {
+  // Dropping a key settles its problem; a round per key, and one for what is left, covers a document with several.
+  for (let round = 0; round <= Record.size(overrides); round += 1) {
     const result = decodeOverrides(rest);
 
     if (Result.isSuccess(result)) return { settings: result.success, dropped };
