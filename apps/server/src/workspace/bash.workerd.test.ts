@@ -5,7 +5,11 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { codingToolsWith } from "@cloudpid/extensions/coding-tools";
-import { WORKER_SHELL_BUILTINS, WORKER_SHELL_COMMANDS } from "@cloudpid/extensions/bash-routing";
+import {
+  probeScript,
+  WORKER_SHELL_BUILTINS,
+  WORKER_SHELL_COMMANDS,
+} from "@cloudpid/extensions/bash-routing";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { env } from "cloudflare:workers";
@@ -107,6 +111,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     ["jq -r .version package.json", "1.2.3"],
     ["grep -c a notes.txt | cat", "2"],
     ["cd . && ls | head -1", "notes.txt"],
+    ["case notes.txt in *.txt) grep needle notes.txt;; *) echo other;; esac", "needle"],
   ])("runs `%s` on the Worker Shell without starting the Container", async (command, output) => {
     const { run, counts } = await open();
 
@@ -226,11 +231,16 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
       // the guard answers before git opens it.
       await put(".git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1));
 
-      const status = await run({ command: "git status" });
+      const status = await run({ command: "git status", backend: "worker" });
 
       expect(status.isError).toBe(true);
       expect(status.text).toMatch(/packfiles are 17 MB.*backend: "container"/);
       expect(await counts()).toMatchObject({ container: 0 });
+
+      // Without a backend, the refusal sends the command on to the Container's git.
+      await run({ command: "git status" });
+
+      expect(await counts()).toMatchObject({ container: 1 });
     });
 
     it("measures the repository a leading -C names, not the one the command runs in", async () => {
@@ -238,7 +248,7 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
 
       await put("repo/.git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1));
       // `repo` is not a repository to git, but the guard looks only at the pack: the command is refused before git runs.
-      const status = await run({ command: "git -C repo status" });
+      const status = await run({ command: "git -C repo status", backend: "worker" });
 
       expect(status.isError).toBe(true);
       expect(status.text).toMatch(/packfiles are 17 MB.*backend: "container"/);
@@ -324,6 +334,40 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
       expect(await counts()).toMatchObject({ started: 1, container: 1 });
     },
   );
+
+  it("asks the Worker Shell which programs it has, with the script the router asks with", async () => {
+    const { run } = await open();
+
+    expect(
+      await run({ command: probeScript(["cat", "realpath", "jq"]), backend: "worker" }),
+    ).toEqual({ text: "cat\njq\n", isError: false });
+  });
+
+  it("sends a program the router does not know to the Container once the Worker Shell says it lacks it", async () => {
+    const { run, counts } = await open();
+
+    await run({ command: "realpath notes.txt | head" });
+
+    // The question, then the command, in the Container.
+    expect(await counts()).toMatchObject({ started: 2, container: 1 });
+  });
+
+  it("runs a command that writes nothing again in the Container when the Worker Shell rejects an option", async () => {
+    const { run, counts } = await open();
+
+    await run({ command: "ls --color=auto | head" });
+
+    expect(await counts()).toMatchObject({ started: 2, container: 1 });
+  });
+
+  it("keeps a command that writes a file on the Worker Shell when it rejects an option", async () => {
+    const { run, counts } = await open();
+
+    const result = await run({ command: "ls --color=auto > files.txt" });
+
+    expect(result.text).toMatch(/unrecognized option/);
+    expect(await counts()).toMatchObject({ started: 1, container: 0 });
+  });
 
   it("runs an explicit worker backend on the Worker Shell even for a binary, which fails there", async () => {
     const { run, counts } = await open();

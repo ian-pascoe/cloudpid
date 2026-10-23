@@ -1,8 +1,11 @@
 // The `bash` tool's backend argument, through a real Harness with a scripted model: the call reaches the environment's
 // Worker Shell or Container as asked, and the model's description of the two is what tells it which to pick.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, it } from "vitest";
-import { type BackendCall, openCodingHarness } from "./coding-tools.fixture.ts";
+import { probeScript } from "./bash-routing.ts";
+import { codingToolsWith } from "./coding-tools.ts";
+import { type BackendCall, openCodingHarness, type Respond } from "./coding-tools.fixture.ts";
 import { fakeImage, fakeImages } from "./images.fixture.ts";
 import { MAX_IMAGE_CHARACTERS, MAX_IMAGE_FILE_BYTES } from "./images.ts";
 
@@ -111,6 +114,112 @@ describe("bash", () => {
     expect(tool("bash")?.description).toMatch(/automatic/i);
     expect(tool("bash")?.description).toMatch(/override|explicit/i);
     expect(JSON.stringify(tool("bash")?.parameters)).toContain("container");
+  });
+
+  /** A Worker Shell that has `programs` besides the ones the router knows, as the probe finds them. */
+  const workerWith =
+    (programs: readonly string[], then: Respond = () => undefined): Respond =>
+    (backend, command) =>
+      backend === "worker" && command.startsWith("command -v")
+        ? {
+            output: programs
+              .flatMap((name) => (command.includes(`'${name}'`) ? [`${name}\n`] : []))
+              .join(""),
+          }
+        : then(backend, command);
+
+  it("runs a program it does not know on the Worker Shell when the Worker Shell has it, asking once", async () => {
+    const { call, calls } = await openCodingHarness({
+      backends: true,
+      respond: workerWith(["realpath"]),
+    });
+
+    expect(await call("bash", { command: "realpath src" })).toEqual({
+      text: "worker: realpath src",
+      isError: false,
+    });
+    await call("bash", { command: "realpath lib" });
+
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "worker", command: probeScript(["realpath"]) },
+      { backend: "worker", command: "realpath src" },
+      { backend: "worker", command: "realpath lib" },
+    ]);
+  });
+
+  it("runs a program the Worker Shell does not have in the Container, asking once", async () => {
+    const { call, calls } = await openCodingHarness({ backends: true, respond: workerWith([]) });
+
+    expect(await call("bash", { command: "cd src && uname -a" })).toEqual({
+      text: "container: cd src && uname -a",
+      isError: false,
+    });
+    await call("bash", { command: "uname" });
+
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "worker", command: probeScript(["uname"]) },
+      { backend: "container", command: "cd src && uname -a" },
+      { backend: "container", command: "uname" },
+    ]);
+  });
+
+  /** A Worker Shell whose `ls` does not take `--color`, as just-bash's does not. */
+  const noColor: Respond = (backend, command) =>
+    backend === "worker" && command.includes("--color")
+      ? { output: "ls: unrecognized option '--color=auto'\n", exitCode: 1 }
+      : undefined;
+
+  it("runs a command that writes nothing again in the Container when the Worker Shell cannot run it", async () => {
+    const { call, calls } = await openCodingHarness({ backends: true, respond: noColor });
+
+    const result = await call("bash", { command: "ls --color=auto | head" });
+
+    // The model sees the Container's answer, not the Worker Shell's, and a note of why it ran there.
+    expect(result.isError).toBe(false);
+    expect(result.text.startsWith("container: ls --color=auto | head")).toBe(true);
+    expect(result.text).toContain("Ran on the container: the worker could not (ls: unrecognized");
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "worker", command: "ls --color=auto | head" },
+      { backend: "container", command: "ls --color=auto | head" },
+    ]);
+  });
+
+  it("does not run a command that writes a file again, even when the Worker Shell could not run it", async () => {
+    const { call, calls } = await openCodingHarness({ backends: true, respond: noColor });
+
+    const result = await call("bash", { command: "ls --color=auto > files.txt" });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("unrecognized option");
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "worker", command: "ls --color=auto > files.txt" },
+    ]);
+  });
+});
+
+describe("the coding_tools section", () => {
+  const [section] = codingToolsWith({}).sections ?? [];
+
+  /** The section for a request that offers `tools`. */
+  const render = async (tools: readonly string[]) =>
+    section?.render(
+      // SAFETY: the section reads only the names of the offered tools.
+      { agent: { tools: tools.map((name) => ({ name })) } } as never,
+      BACKGROUND_CONTEXT,
+    );
+
+  it("tells the model to use the file tools for files, and to leave the Container to what needs it", async () => {
+    const text = await render(["read", "write", "edit", "bash", "ls", "find", "grep"]);
+
+    expect(text).toMatch(/`read`[^\n]*not `cat`/);
+    expect(text).toMatch(/`edit`[^\n]*no python/);
+    expect(text).toMatch(/`grep`/);
+    expect(text).toMatch(/`backend` unset/);
+  });
+
+  it("names only the tools the request offers", async () => {
+    expect(await render(["bash"])).not.toMatch(/`read`/);
+    expect(await render([])).toBeUndefined();
   });
 });
 
