@@ -19,7 +19,12 @@ import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
-import { earlyStartOnSubmit, type Placement, sessionWorkspace } from "../session/workspace.ts";
+import {
+  earlyStartOnSubmit,
+  type PlacedWorktree,
+  type Placement,
+  sessionWorkspace,
+} from "../session/workspace.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -54,7 +59,8 @@ export class TestWorkspaceSession extends TestSession {
             worktree: null,
           },
         ),
-      // The test Worker has no Container to make a worktree on; these Sessions work in main checkouts.
+      // The test Worker has no Container to make a worktree on: a Session placed in one can use only what does not
+      // wait for it to be made, such as the composer's lookups.
       prepare: () => Promise.reject(new Error("The test Worker makes no worktrees")),
     });
   }
@@ -127,8 +133,19 @@ export class TestWorkspaceSession extends TestSession {
     return this.#workspace().env;
   }
 
-  /** Bind this Session to Workspace `slug` (and the repo directory in it), as the Registry binds a Session when it is created. */
-  bindWorkspace(slug: string, repo: string | null = null): void {
-    this.ctx.storage.kv.put(KEY, { machine: slug, repo, worktree: null } satisfies Placement);
+  protected override hostLookupEnv(): HarnessOptions["env"] {
+    return this.#workspace().lookupEnv;
+  }
+
+  /**
+   * Bind this Session to Workspace `slug` (and the repo directory in it, and its worktree of that repo), as the Registry
+   * binds a Session when it is created. The test Worker makes no worktree: a test writes the files of one it names.
+   */
+  bindWorkspace(
+    slug: string,
+    repo: string | null = null,
+    worktree: PlacedWorktree | null = null,
+  ): void {
+    this.ctx.storage.kv.put(KEY, { machine: slug, repo, worktree } satisfies Placement);
   }
 }

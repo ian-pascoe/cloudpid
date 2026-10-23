@@ -245,6 +245,11 @@ export type SessionHostOptions<R = never> = {
   readonly onSubmit?: Effect.Effect<void, never, R> | undefined;
   /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
   readonly env?: HarnessOptions["env"];
+  /**
+   * Builds a conversation's environment for the composer's lookups (its catalog and `@` menu), which only read files
+   * and must not wait for what `env` waits for, such as the Session's worktree being made. Defaults to `env`.
+   */
+  readonly lookupEnv?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
   /** How long a submitted message's expansion may take before it goes as typed. Defaults to `EXPAND_TIMEOUT`. */
@@ -939,10 +944,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     );
   };
 
-  /** The execution environment of `conversation`, in its own `cwd`: the Session's Workspace. */
-  const environment = (conversation: Conversation) =>
+  /**
+   * The execution environment of `conversation`, in its own `cwd`: the Session's Workspace. For a `lookup` (the
+   * composer's catalog and `@` menu), the one `lookupEnv` builds.
+   */
+  const environment = (conversation: Conversation, { lookup = false } = {}) =>
     Effect.suspend(() => {
-      const build = options.env;
+      const build = lookup ? (options.lookupEnv ?? options.env) : options.env;
 
       if (build === undefined) return Effect.undefined;
 
@@ -1005,7 +1013,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Effect.all(
       [
         canRollOver(conversation),
-        environment(conversation).pipe(
+        environment(conversation, { lookup: true }).pipe(
           Effect.flatMap((env) =>
             env === undefined
               ? Effect.succeed<readonly [ReadonlyArray<Skill>, ReadonlyArray<PromptTemplate>]>([
@@ -1074,7 +1082,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /** What `conversation`'s `@` menu offers for `query`. */
   const filesFor = (conversation: Conversation, query: string) =>
-    environment(conversation).pipe(
+    environment(conversation, { lookup: true }).pipe(
       Effect.flatMap((env) => (env === undefined ? Effect.succeed([]) : pathsIn(env))),
       Effect.map((paths): FileMatches => ({ paths: matchFiles(query, paths) })),
     );

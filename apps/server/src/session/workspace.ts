@@ -3,10 +3,11 @@
 // `grep` search the same Machine's files. Every Session on a Machine reaches the same DO, so they share one tree. A
 // Session works in its Workspace unless a conversation names another `cwd`: a worktree of its repo of its own,
 // `/workspace/.worktrees/<repo>/<id>` (made on first use), the repo's main checkout, `/workspace/<repo>`, or the root.
-// @effect-diagnostics asyncFunction:off globalDate:off
+// @effect-diagnostics asyncFunction:off globalDate:off missingPipeableSignature:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { FileSearch } from "@cloudpid/extensions/files";
 import { DEFAULT_MACHINE, repoDirectory, worktreeDirectory } from "@cloudpid/protocol";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { WORKSPACE_ROOT } from "../workspace/binding.ts";
@@ -142,10 +143,34 @@ export type SessionWorkspaceOptions = {
   readonly prepare: PrepareWorktree;
 };
 
+/**
+ * The directory the composer's lookups (its catalog of Skills and Prompt templates, its `@` menu) read when a
+ * conversation names no `cwd`: the Session's Workspace once its worktree is there (`made`), and the repo's main checkout
+ * until then, which has the same Skills and templates. Lookups only read files, so they never wait for the worktree to
+ * be made and its Setup Script to run, which can take minutes on a Container that has to start first.
+ */
+export const lookupDirectory = async (
+  placed: Placement,
+  made: (directory: string) => Promise<boolean>,
+): Promise<string> => {
+  const { repo, worktree } = placed;
+
+  if (repo === null || worktree === null) return placementDirectory(placed);
+
+  const directory = worktreeDirectory(repo, worktree.id);
+
+  return (await made(directory)) ? directory : repoDirectory(repo);
+};
+
 /** What a Session runs its tools on. */
 export type SessionWorkspace = {
   /** `HarnessOptions.env`: a conversation's environment, in its `cwd` or at the Workspace root. */
   readonly env: NonNullable<HarnessOptions["env"]>;
+  /**
+   * A conversation's environment for the composer's lookups, as `env` but without making the Session's worktree first:
+   * until it is there, a conversation that names no `cwd` reads the repo's main checkout (`lookupDirectory`).
+   */
+  readonly lookupEnv: NonNullable<HarnessOptions["env"]>;
   /** The Workspace's file search, for `ls`, `find`, and `grep`. */
   readonly files: FileSearch;
   /**
@@ -170,18 +195,49 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
     grep: async (pattern, path, matched) => (await search()).grep(pattern, path, matched),
   };
 
+  /** Worktree directories seen with their `.git`: a worktree is not removed while a Session works in it. */
+  const made = new Set<string>();
+
+  const envIn = async (machine: string, cwd: string) => {
+    const { ComputerExecutionEnv } = await computer();
+
+    return new ComputerExecutionEnv({
+      workspace: options.namespace.getByName(machine),
+      // Environments with equal ids see the same files: one per Machine.
+      id: `computer:${machine}`,
+      cwd,
+    });
+  };
+
+  const isMade = async (machine: string, directory: string): Promise<boolean> => {
+    if (made.has(directory)) return true;
+
+    const env = await envIn(machine, WORKSPACE_ROOT);
+    const info = await env.fileInfo(`${directory}/.git`, BACKGROUND_CONTEXT).catch(() => undefined);
+
+    // Not there yet, or it cannot be told: the main checkout answers meanwhile.
+    if (info?.ok !== true) return false;
+
+    made.add(directory);
+
+    return true;
+  };
+
   return {
     env: async (target) => {
-      const { ComputerExecutionEnv } = await computer();
       const placed = await ready();
 
-      return new ComputerExecutionEnv({
-        workspace: options.namespace.getByName(placed.machine),
-        // Environments with equal ids see the same files: one per Machine.
-        id: `computer:${placed.machine}`,
-        // A conversation's own `cwd` first, then the Session's Workspace.
-        cwd: target.cwd ?? placementDirectory(placed),
-      });
+      // A conversation's own `cwd` first, then the Session's Workspace.
+      return envIn(placed.machine, target.cwd ?? placementDirectory(placed));
+    },
+    lookupEnv: async (target) => {
+      const placed = await options.placement();
+
+      return envIn(
+        placed.machine,
+        target.cwd ??
+          (await lookupDirectory(placed, (directory) => isMade(placed.machine, directory))),
+      );
     },
     files,
     startContainerEarly: async () => {

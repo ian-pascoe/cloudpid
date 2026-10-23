@@ -355,6 +355,8 @@ export const SessionLive = Session.make(
                 ),
                 reload: reloadSessionExtensions,
                 env: workspace.env,
+                // The composer's catalog and `@` menu do not wait for the Session's worktree to be made.
+                lookupEnv: workspace.lookupEnv,
                 // A message the owner sends starts the Workspace's Container early, so the turn's first command does
                 // not wait for it.
                 onSubmit: earlyStartOnSubmit(workspace),

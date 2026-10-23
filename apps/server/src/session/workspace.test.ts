@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   cachedPlacement,
   earlyStartOnSubmit,
+  lookupDirectory,
   type Placement,
   placementDirectory,
   readyPlacement,
@@ -117,6 +118,38 @@ describe("placementDirectory", () => {
       "/workspace/pi",
     );
     expect(placementDirectory(ROOT_OF_DEFAULT)).toBe("/workspace");
+  });
+});
+
+describe("lookupDirectory", () => {
+  const worktree = { id: "0a1b2c3d", branch: "cloudpid/0a1b2c3d" };
+
+  it("is the Session's worktree once it is made, and its repo's main checkout until then", async () => {
+    const asked: string[] = [];
+
+    const made = (answer: boolean) => (directory: string) => {
+      asked.push(directory);
+
+      return Promise.resolve(answer);
+    };
+
+    const placed: Placement = { machine: "acme", repo: "pi", worktree };
+
+    expect(await lookupDirectory(placed, made(true))).toBe("/workspace/.worktrees/pi/0a1b2c3d");
+    expect(await lookupDirectory(placed, made(false))).toBe("/workspace/pi");
+    expect(asked).toEqual([
+      "/workspace/.worktrees/pi/0a1b2c3d",
+      "/workspace/.worktrees/pi/0a1b2c3d",
+    ]);
+  });
+
+  it("asks nothing of a Session without a worktree", async () => {
+    const made = () => Promise.reject(new Error("not asked"));
+
+    expect(await lookupDirectory({ machine: "acme", repo: "pi", worktree: null }, made)).toBe(
+      "/workspace/pi",
+    );
+    expect(await lookupDirectory(ROOT_OF_DEFAULT, made)).toBe("/workspace");
   });
 });
 
