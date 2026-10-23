@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# cloudpid-dockerd: bring up Docker's daemon in this Container, for a Start Script to call before it starts services
+# (docs/spec.md → Container and Toolchains → Docker). Nothing runs systemd here, so nothing else starts it. It does
+# nothing when the daemon answers already, and otherwise starts it detached, with its output in a log of its own, and
+# waits for it to answer. Two calls at once start one daemon. Arguments are passed on to dockerd.
+#
+# The daemon's configuration (/etc/docker/daemon.json) turns off iptables and IP forwarding, which the Container's
+# read-only /proc/sys refuses, and DOCKER_ALLOW_IPV6_ON_IPV4_INTERFACE lets it come up without IPv6 forwarding. So
+# published ports reach the Workspace's localhost, and bridge-networked containers have no internet
+# (`network_mode: host` does).
+set -u
+
+log=${CLOUDPID_DOCKERD_LOG:-/var/log/dockerd.log}
+lock=${CLOUDPID_DOCKERD_LOCK:-/tmp/cloudpid-dockerd.lock}
+wait_seconds=${CLOUDPID_DOCKERD_WAIT:-60}
+
+answers() { docker info >/dev/null 2>&1; }
+
+answers && exit 0
+
+# Held until the daemon answers, so a second call waits for the first one's daemon instead of starting another.
+exec 9>"$lock"
+flock 9
+
+answers && exit 0
+
+mkdir -p "${log%/*}"
+DOCKER_ALLOW_IPV6_ON_IPV4_INTERFACE=1 setsid nohup dockerd "$@" </dev/null >>"$log" 2>&1 9>&- &
+
+for ((waited = 0; waited < wait_seconds; waited++)); do
+  sleep 1
+  answers && exit 0
+done
+
+printf 'cloudpid-dockerd: dockerd did not answer within %s s. The end of its log (%s):\n' "$wait_seconds" "$log" >&2
+tail -n 20 "$log" >&2
+exit 1
