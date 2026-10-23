@@ -2,14 +2,24 @@
 
 // A Live View as atoms (ADR-0011): one connection per Browser Handoff, open while its Pane reads it (the Pane stays
 // mounted while another tab is shown), and its state. Closing the Pane disposes the atom, which closes the scope: the
-// viewport is cleared and the sockets close, and the handoff goes on.
+// viewport is cleared, the sockets close and whatever the screen was running is interrupted, and the handoff goes on.
 
+import type { BrowserHandoffRequest } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import { settledFailureOf } from "../registry.ts";
 import { appRuntime } from "../runtime.ts";
-import { sessionClientAtom } from "../session/atoms.ts";
-import { INITIAL_LIVE_VIEW_STATE, make } from "./connection.ts";
+import { agentLabel } from "../session/agents.ts";
+import {
+  browserHandoffRequestsAtom,
+  listedBrowserHandoffRequestsAtom,
+  sessionClientAtom,
+  taskGraphAtom,
+} from "../session/atoms.ts";
+import { INITIAL_LIVE_VIEW_STATE, make, type LiveViewState } from "./connection.ts";
 
 /** The Browser Handoff `requestId` of Session `sessionId`. */
 export interface LiveViewKey {
@@ -38,11 +48,53 @@ const stateRefAtom = Atom.family((key: LiveViewKey) =>
   ),
 );
 
-/** The Live View's state: `connecting` until it is built. */
+/**
+ * The Live View's state: `connecting` until it is built, and `lost` (with Try again) when it could not be: the
+ * Session's client failed.
+ */
 export const liveViewStateAtom = Atom.family((key: LiveViewKey) =>
-  Atom.map(stateRefAtom(key), (result) =>
-    AsyncResult.getOrElse(result, () => INITIAL_LIVE_VIEW_STATE),
-  ),
+  Atom.make((get): LiveViewState => {
+    const built = get(liveViewAtom(key));
+
+    // Built again (Try again): connecting, until it fails again.
+    if (AsyncResult.isFailure(built) && !built.waiting) {
+      return {
+        ...INITIAL_LIVE_VIEW_STATE,
+        status: "lost",
+        failure: settledFailureOf(built) ?? "The Live View could not start.",
+      };
+    }
+
+    return AsyncResult.getOrElse(get(stateRefAtom(key)), () => INITIAL_LIVE_VIEW_STATE);
+  }),
+);
+
+/**
+ * The handoff's request in the Session's list: undefined while this socket has not listed the handoffs yet, null once
+ * a list came without it (the handoff is over, and its Pane closes).
+ */
+export const handoffRequestAtom = Atom.family((key: LiveViewKey) =>
+  Atom.make((get): BrowserHandoffRequest | null | undefined => {
+    const listed = get(listedBrowserHandoffRequestsAtom(key.sessionId));
+
+    if (listed === null) return undefined;
+
+    return Option.getOrNull(Arr.findFirst(listed, (request) => request.id === key.requestId));
+  }),
+);
+
+/** The agent each waiting Browser Handoff of Session `sessionId` is for, by request ID, when it is a subagent. */
+export const handoffAgentsAtom = Atom.family((sessionId: string) =>
+  Atom.make((get): ReadonlyMap<string, string | undefined> => {
+    const graph = get(taskGraphAtom(sessionId));
+
+    return new Map(
+      Arr.map(get(browserHandoffRequestsAtom(sessionId)), (request) => [
+        request.id,
+        agentLabel(graph, request.conversationId),
+      ]),
+    );
+  }),
 );
 
 /** Mint links for Browser Handoff `requestId` of Session `sessionId`: for the hosted Live View, opened on a tap. */
@@ -78,22 +130,15 @@ export const showLiveViewWindowAtom = Atom.family((key: LiveViewKey) =>
   ),
 );
 
-/** Connect again after the Live View was lost. */
+/** Try again: connect again after the Live View was lost, or build it again when it could not be built. */
 export const retryLiveViewAtom = Atom.family((key: LiveViewKey) =>
-  appRuntime.fn((_: void, get) =>
-    get.result(liveViewAtom(key)).pipe(Effect.flatMap((view) => view.retry)),
-  ),
+  appRuntime.fn((_: void, get) => {
+    if (AsyncResult.isFailure(get(liveViewAtom(key)))) {
+      get.refresh(liveViewAtom(key));
+
+      return Effect.void;
+    }
+
+    return get.result(liveViewAtom(key)).pipe(Effect.flatMap((view) => view.retry));
+  }),
 );
-
-/** Ask the Session whether the handoff still waits; the Live View ends when it does not. */
-export const verifyLiveViewAtom = Atom.family((key: LiveViewKey) =>
-  appRuntime.fn((_: void, get) =>
-    get.result(liveViewAtom(key)).pipe(Effect.flatMap((view) => view.verify)),
-  ),
-);
-
-/** Whether the Live View shows the Desktop layout (a 1280-wide viewport, panned and zoomed here). */
-export const desktopLayoutAtom = Atom.family((_key: LiveViewKey) => Atom.make(false));
-
-/** Whether the Failed form, which asks for an optional reason, is open. */
-export const failingAtom = Atom.family((_key: LiveViewKey) => Atom.make(false));

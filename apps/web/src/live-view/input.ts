@@ -422,8 +422,8 @@ const CLIPBOARD_KEYS: ReadonlyMap<string, "copy" | "cut" | "paste"> = new Map([
 
 /**
  * A desktop key as CDP key events. The tab runs on Linux, so on a Mac Cmd goes as Ctrl (Cmd+A selects all there too).
- * Copy, cut and paste go through the owner's clipboard instead: paste is left to the page's `paste` event, which
- * carries the clipboard's text.
+ * Copy, cut and paste go through the owner's clipboard instead: paste is left to a `paste` event, which carries the
+ * clipboard's text (the screen moves the focus to a textarea for it, since Safari fires none on the frame).
  */
 export const keyAction = (sample: KeySample, mac: boolean): KeyAction => {
   const ctrl = sample.ctrl || (mac && sample.meta);

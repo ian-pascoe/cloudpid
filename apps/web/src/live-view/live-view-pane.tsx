@@ -1,32 +1,33 @@
-// @effect-diagnostics globalDate:off preferEffectArray:off -- the deadline in the browser's own time of day format; and a handful of windows rendered as JSX lists.
+// @effect-diagnostics preferEffectArray:off -- a handful of windows rendered as JSX lists.
 
 // The Live View Pane (#154, ADR-0013): the agent's browser tab, live, for the owner to use while a Browser Handoff
 // waits. A header with the agent's instructions, the deadline, Done and Failed; a strip of the tab's windows; and the
 // screen, which `screen.ts` wires to the connection (`connection.ts`). It opens only from the handoff card's Take over
 // (or a push's link to it) and closes when the handoff ends; closing it does not end the handoff.
 
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as Atom from "effect/reactivity/Atom";
 import { AlertTriangle, Check, Keyboard, Loader2, Monitor, RotateCw, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useContext, useEffect, useRef } from "react";
 import { useShownSessionId } from "../chat/conversation.ts";
 import { Button } from "../components/ui/button.tsx";
 import { Dialog } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { isTouchScreen } from "../lib/device.ts";
+import { timeOfDay } from "../lib/time.ts";
 import { cn } from "../lib/utils.ts";
 import type { PaneProps } from "../panes.ts";
-import { browserHandoffRequestsAtom, sessionStatusAtom } from "../session/atoms.ts";
 import {
-  desktopLayoutAtom,
-  failingAtom,
   finishLiveViewAtom,
+  handoffRequestAtom,
   liveViewAtom,
   liveViewKey,
   liveViewStateAtom,
   retryLiveViewAtom,
   showLiveViewWindowAtom,
-  verifyLiveViewAtom,
   type LiveViewKey,
 } from "./atoms.ts";
 import { LiveViewScreen } from "./screen.ts";
@@ -34,9 +35,11 @@ import { LiveViewScreen } from "./screen.ts";
 /** The edit menu's items, in the order iOS shows them. */
 const MENU_ITEMS = ["Copy", "Cut", "Paste", "Select All"] as const;
 
-/** The time of day a handoff times out, as the owner reads it. */
-const until = (deadline: number): string =>
-  new Date(deadline).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** Whether the Live View shows the Desktop layout (a 1280-wide viewport, panned and zoomed here), for one Pane. */
+const DesktopLayout = ScopedAtom.make(() => Atom.make(false));
+
+/** Whether the Failed form, which asks for an optional reason, is open, for one Pane. */
+const Failing = ScopedAtom.make(() => Atom.make(false));
 
 /** Keeps the typing textarea focused when a control is touched: its default would move the focus. */
 const keepFocus = {
@@ -48,11 +51,9 @@ const keepFocus = {
   },
 };
 
-const isTouchScreen = (): boolean => matchMedia("(pointer: coarse)").matches;
-
 /** Failed, with an optional reason for the agent. */
 const FailedDialog = ({ liveView }: { liveView: LiveViewKey }) => {
-  const [open, setOpen] = useAtom(failingAtom(liveView));
+  const [open, setOpen] = useAtom(Failing.use());
   const finish = useAtomSet(finishLiveViewAtom(liveView));
 
   return (
@@ -104,12 +105,9 @@ const FailedDialog = ({ liveView }: { liveView: LiveViewKey }) => {
 const Header = ({ liveView }: { liveView: LiveViewKey }) => {
   const state = useAtomValue(liveViewStateAtom(liveView));
 
-  const request = useAtomValue(browserHandoffRequestsAtom(liveView.sessionId), (requests) =>
-    requests.find((each) => each.id === liveView.requestId),
-  );
-
+  const request = useAtomValue(handoffRequestAtom(liveView)) ?? undefined;
   const finish = useAtomSet(finishLiveViewAtom(liveView));
-  const setFailing = useAtomSet(failingAtom(liveView));
+  const setFailing = useAtomSet(Failing.use());
 
   const instructions = state.instructions ?? request?.instructions;
   const deadline = state.deadline ?? request?.deadline;
@@ -124,7 +122,7 @@ const Header = ({ liveView }: { liveView: LiveViewKey }) => {
       )}
       <div className="flex flex-wrap items-center gap-2">
         {deadline !== undefined && (
-          <span className="text-xs text-muted-foreground">Waits until {until(deadline)}</span>
+          <span className="text-xs text-muted-foreground">Waits until {timeOfDay(deadline)}</span>
         )}
         <div className="ml-auto flex items-center gap-2">
           <Button
@@ -171,7 +169,7 @@ const Toolbar = ({
 }) => {
   const strip = useAtomValue(liveViewStateAtom(liveView), (state) => state.strip);
   const show = useAtomSet(showLiveViewWindowAtom(liveView));
-  const [desktop, setDesktop] = useAtom(desktopLayoutAtom(liveView));
+  const [desktop, setDesktop] = useAtom(DesktopLayout.use());
   const windows = strip?.windows ?? [];
 
   if (windows.length === 0 && !touch) return null;
@@ -246,7 +244,7 @@ const Toolbar = ({
   );
 };
 
-/** What covers the screen while it is not live: connecting, or lost with a way to try again. */
+/** What covers the screen while it is not live: connecting, or lost (or never built) with a way to try again. */
 const Status = ({ liveView }: { liveView: LiveViewKey }) => {
   const state = useAtomValue(liveViewStateAtom(liveView));
   const retry = useAtomSet(retryLiveViewAtom(liveView));
@@ -257,7 +255,7 @@ const Status = ({ liveView }: { liveView: LiveViewKey }) => {
     return (
       <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-background/90 p-6 text-center">
         <AlertTriangle className="size-5 text-destructive" aria-hidden />
-        <p className="text-sm">The Live View lost its connection.</p>
+        <p className="text-sm">The Live View is not connected.</p>
         {state.failure !== null && (
           <p className="max-w-sm text-xs break-words text-muted-foreground">{state.failure}</p>
         )}
@@ -290,18 +288,13 @@ const LiveViewOf = ({ liveView, close }: { liveView: LiveViewKey; close: () => v
   );
 
   const status = useAtomValue(liveViewStateAtom(liveView), (state) => state.status);
-  const desktop = useAtomValue(desktopLayoutAtom(liveView));
+  const desktopAtom = DesktopLayout.use();
+  const desktop = useAtomValue(desktopAtom);
+  const registry = useContext(RegistryContext);
 
-  const sessionLive = useAtomValue(
-    sessionStatusAtom(liveView.sessionId),
-    (each) => each === "live",
-  );
+  // Null once a list of the Session's handoffs came without it: the handoff is over.
+  const over = useAtomValue(handoffRequestAtom(liveView), (request) => request === null);
 
-  const waiting = useAtomValue(browserHandoffRequestsAtom(liveView.sessionId), (requests) =>
-    requests.some((request) => request.id === liveView.requestId),
-  );
-
-  const verify = useAtomSet(verifyLiveViewAtom(liveView));
   const container = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -316,13 +309,8 @@ const LiveViewOf = ({ liveView, close }: { liveView: LiveViewKey; close: () => v
 
   // The handoff ended (Done, Failed, from here or another device, Stop, or its timeout): the Pane closes.
   useEffect(() => {
-    if (status === "ended") close();
-  }, [status, close]);
-
-  // Its request left the Session's list: ask whether it is over (a list read mid-reconnect may just be late).
-  useEffect(() => {
-    if (sessionLive && !waiting) verify();
-  }, [sessionLive, waiting, verify]);
+    if (status === "ended" || over) close();
+  }, [status, over, close]);
 
   useEffect(() => {
     const elements = {
@@ -363,6 +351,11 @@ const LiveViewOf = ({ liveView, close }: { liveView: LiveViewKey; close: () => v
         keyboardButton: keyboardButton.current,
       },
       view,
+      {
+        get: () => registry.get(desktopAtom),
+        subscribe: (listener) => registry.subscribe(desktopAtom, listener),
+      },
+      { touch },
     );
 
     screen.current = made;
@@ -371,11 +364,7 @@ const LiveViewOf = ({ liveView, close }: { liveView: LiveViewKey; close: () => v
       made.dispose();
       screen.current = null;
     };
-  }, [view]);
-
-  useEffect(() => {
-    screen.current?.setDesktop(desktop);
-  }, [desktop, view]);
+  }, [view, registry, desktopAtom, touch]);
 
   const local =
     "absolute z-20 rounded-md border-2 border-ring bg-background text-base text-foreground";
@@ -401,7 +390,7 @@ const LiveViewOf = ({ liveView, close }: { liveView: LiveViewKey; close: () => v
             desktop ? "overflow-auto" : "overflow-hidden",
           )}
         >
-          <canvas ref={canvas} className="block touch-none select-none" />
+          <canvas ref={canvas} className="mx-auto block touch-none select-none" />
         </div>
         {/* What the phone's keyboard types into: invisible, and 16 px so iOS does not zoom on focus. */}
         <textarea
@@ -469,5 +458,11 @@ export const LiveViewPane = ({ argument, close }: PaneProps) => {
 
   if (argument === undefined) return null;
 
-  return <LiveViewOf liveView={liveViewKey(sessionId, argument)} close={close} />;
+  return (
+    <DesktopLayout.Provider>
+      <Failing.Provider>
+        <LiveViewOf liveView={liveViewKey(sessionId, argument)} close={close} />
+      </Failing.Provider>
+    </DesktopLayout.Provider>
+  );
 };
