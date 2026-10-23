@@ -1,5 +1,5 @@
 ---
-status: accepted, supersedes ADR-0006
+status: superseded by ADR-0016 (each Workspace has its own clones and Container, made from an Environment; worktrees and the shared Machine are gone)
 ---
 
 # Workspaces are git worktrees on a shared Machine
