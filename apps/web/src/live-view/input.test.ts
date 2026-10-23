@@ -115,6 +115,23 @@ describe("touch input to CDP", () => {
     expect(input.held(1)).toEqual([]);
   });
 
+  it("measures the move that cancels a long press on the screen, not in the tab", () => {
+    const input = new PointerInput();
+
+    // A frame drawn at a third of the tab's size: 5 screen px are 15 in the tab.
+    input.down(at(10, 20, 0, { page: { x: 30, y: 60 } }));
+    input.move(at(15, 20, 100, { page: { x: 45, y: 60 } }));
+
+    expect(input.held(1)).not.toEqual([]);
+
+    const moved = new PointerInput();
+
+    moved.down(at(10, 20, 0, { page: { x: 10, y: 20 } }));
+    moved.move(at(22, 20, 100, { page: { x: 12, y: 20 } }));
+
+    expect(moved.held(1)).toEqual([]);
+  });
+
   it("sends every finger of a multi-touch gesture, and says it was one", () => {
     const input = new PointerInput();
 

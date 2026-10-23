@@ -82,10 +82,11 @@ interface Tracked {
   selecting: boolean;
 }
 
-/** A press that may become a long press. */
+/** A press that may become a long press: where it is in the tab, and on the screen. */
 interface Press {
   readonly pointerId: number;
   readonly at: Point;
+  readonly from: Point;
   selecting: boolean;
 }
 
@@ -176,7 +177,12 @@ export class PointerInput {
     commands.push(touchEvent("touchStart", this.points()));
 
     if (this.touches.size === 1) {
-      this.press = { pointerId: sample.pointerId, at: sample.page, selecting: false };
+      this.press = {
+        pointerId: sample.pointerId,
+        at: sample.page,
+        from: sample.client,
+        selecting: false,
+      };
     }
 
     return commands;
@@ -208,8 +214,9 @@ export class PointerInput {
       this.gesture.moved = Math.max(this.gesture.moved, distance(sample.client, this.gesture.from));
     }
 
+    // In screen px, as a tap is: a zoomed-out frame must not make a small move a long one.
     if (this.press !== undefined && !this.press.selecting) {
-      if (distance(sample.page, this.press.at) > TAP_SLOP) this.press = undefined;
+      if (distance(sample.client, this.press.from) > TAP_SLOP) this.press = undefined;
     }
 
     if (sample.time - this.lastMove < MOVE_INTERVAL_MS) return [];
