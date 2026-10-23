@@ -175,6 +175,17 @@ export const make = Effect.fnUntraced(function* (
   /** Windows whose connection closed: left out of later readings, which may list them a moment longer. */
   const gone = new Set<string>();
 
+  /** Connections closed on purpose (a window no longer shown, a dead socket), whose close says nothing of the page. */
+  const dropped = new WeakSet<CdpPage>();
+
+  /** Whether a check on return is running: `visibilitychange` and `pageshow` both come back. */
+  let checking = false;
+
+  const drop = (page: CdpPage) => {
+    dropped.add(page);
+    page.close();
+  };
+
   const update = (change: Partial<LiveViewState>) =>
     Effect.suspend(() => {
       current = { ...current, ...change };
@@ -202,7 +213,7 @@ export const make = Effect.fnUntraced(function* (
     tab = null;
     shown = null;
 
-    for (const page of open) page.close();
+    for (const page of open) drop(page);
   };
 
   const end = Effect.suspend(() => {
@@ -281,7 +292,7 @@ export const make = Effect.fnUntraced(function* (
       if (previous !== null && previous !== page) {
         previous.send("Page.stopScreencast");
 
-        if (previous !== tab) previous.close();
+        if (previous !== tab) drop(previous);
       }
 
       shown = page;
@@ -317,7 +328,7 @@ export const make = Effect.fnUntraced(function* (
       run(
         page.closed.pipe(
           Effect.andThen(() => {
-            if (isOver() || page === tab) return Effect.void;
+            if (isOver() || page === tab || dropped.has(page)) return Effect.void;
 
             gone.add(page.targetId);
 
@@ -384,7 +395,9 @@ export const make = Effect.fnUntraced(function* (
       });
       run(
         page.closed.pipe(
-          Effect.andThen(() => (isOver() || tab !== page ? Effect.void : reconnect)),
+          Effect.andThen(() =>
+            isOver() || tab !== page || dropped.has(page) ? Effect.void : reconnect,
+          ),
         ),
       );
 
@@ -402,7 +415,7 @@ export const make = Effect.fnUntraced(function* (
 
       // The handoff ended while this connected.
       if (isOver()) {
-        page.close();
+        drop(page);
 
         return;
       }
@@ -547,7 +560,14 @@ export const make = Effect.fnUntraced(function* (
         }
       }),
     returned: Effect.gen(function* () {
-      if (isOver()) return;
+      if (isOver() || checking) return;
+
+      checking = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          checking = false;
+        }),
+      );
 
       if (current.status === "lost") {
         yield* reconnect;
@@ -566,13 +586,12 @@ export const make = Effect.fnUntraced(function* (
         tab = null;
         shown = null;
 
-        for (const page of dead) page.close();
+        for (const page of dead) drop(page);
 
+        // A new connection is sized and shown as the first was.
         yield* reconnect;
-
-        if (viewport !== null && shown !== null) yield* applyViewport(shown);
       }
-    }),
+    }).pipe(Effect.scoped),
     retry: Effect.suspend(() => (current.status === "lost" ? reconnect : Effect.void)),
     verify: Effect.suspend(() => (isOver() ? Effect.void : Effect.ignore(links))),
     finish: (success, reason) =>

@@ -344,10 +344,13 @@ describe("a Live View's connection", () => {
         });
         killAll();
 
+        // `visibilitychange` and `pageshow` both come back: one check, one reconnect.
         const returned = yield* Effect.forkChild(view.returned);
+        const again = yield* Effect.forkChild(view.returned);
 
         yield* TestClock.adjust(RETURN_PING_MS);
         yield* Fiber.join(returned);
+        yield* Fiber.join(again);
 
         expect(mints()).toBe(2);
         expect(to("T").map((page) => page.url)).toEqual([link("T", 1), link("T", 2)]);
@@ -437,9 +440,15 @@ describe("a Live View's connection", () => {
       yield* view.show("T");
 
       expect(state().strip?.shown).toBe("T");
-      // The window's connection closes when it is not shown; the tab's stays.
+      // The window's connection closes when it is not shown; the tab's stays, and the window stays in the strip.
       expect(to("W")[0]?.readyState).toBe(3);
       expect(to("T")[0]?.readyState).toBe(1);
+      expect(state().strip?.windows).toEqual([{ targetId: "W", openerId: "T", title: "Pop-up" }]);
+
+      yield* view.show("W");
+
+      expect(state().strip?.shown).toBe("W");
+      expect(to("W")[1]?.readyState).toBe(1);
     }).pipe(Effect.scoped),
   );
 

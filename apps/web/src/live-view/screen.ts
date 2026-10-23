@@ -877,8 +877,13 @@ export class LiveViewScreen {
 
   /** Write `text` to the clipboard inside the gesture: a `ClipboardItem` whose data is a promise, as iOS wants. */
   private copy(text: Promise<string>): Promise<void> {
-    if ("ClipboardItem" in window && "write" in navigator.clipboard) {
-      return navigator.clipboard
+    // Undefined outside a secure context.
+    const clipboard: Clipboard | undefined = navigator.clipboard;
+
+    if (clipboard === undefined) return text.then(() => undefined);
+
+    if ("ClipboardItem" in window) {
+      return clipboard
         .write([
           new ClipboardItem({
             "text/plain": text.then((value) => new Blob([value], { type: "text/plain" })),
@@ -887,7 +892,7 @@ export class LiveViewScreen {
         .catch(() => undefined);
     }
 
-    return text.then((value) => navigator.clipboard?.writeText(value)).catch(() => undefined);
+    return text.then((value) => clipboard.writeText(value)).catch(() => undefined);
   }
 
   /** Type `text` into the field the menu was for (focused, caret at its end, if it was not). */
@@ -1003,7 +1008,9 @@ export class LiveViewScreen {
       this.hideMenu();
 
       // Read inside the tap; iOS may show its own Paste bubble first, or refuse.
-      const read = navigator.clipboard?.readText?.();
+      // Undefined outside a secure context.
+      const clipboard: Clipboard | undefined = navigator.clipboard;
+      const read = clipboard?.readText();
 
       if (read === undefined) {
         this.showPasteBox();
