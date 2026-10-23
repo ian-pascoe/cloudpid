@@ -4,14 +4,27 @@
 import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { outgoingMessage } from "./chat/attachments.ts";
+import {
+  type AttachmentsState,
+  draftAttachmentsProgramAtom,
+  draftWaitingFor,
+  sentAttachments,
+  uploadsSettled,
+} from "./chat/attachments-state.ts";
 import { type DraftInput, draftPlace, draftSendable } from "./draft.ts";
 import { environmentListAtom } from "./environments-state.ts";
 import { changing, RegistryClient } from "./registry.ts";
 import { pathAtom, sessionPath } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { sessionClientAtom } from "./session/atoms.ts";
+import type { OutgoingMessage } from "./session/state.ts";
 
 /** What is typed in the draft. The page has one. */
 export const draftTextAtom = Atom.make("");
@@ -53,31 +66,89 @@ export const draftEnvironmentAtom = Atom.writable(
   },
 );
 
+/** A first message waiting for its Session to take it. */
+export interface FirstMessage {
+  /** What the owner typed. */
+  readonly text: string;
+  /** What is sent when Attachments came with it: the text, their paths and the pictures (`outgoingMessage`). */
+  readonly message?: OutgoingMessage;
+  /** The files of those Attachments, which the Session's composer attaches again should the Session refuse it. */
+  readonly files?: readonly File[];
+}
+
 /**
  * The first messages waiting for their Session to take them, by Session id. The draft puts one here once the Session is
- * registered; `drainFirstMessageAtom` sends it, and takes it out once the Session answered.
+ * registered and the draft's Attachments are uploaded to it; `drainFirstMessageAtom` sends it, and takes it out once
+ * the Session answered.
  */
-export const pendingFirstMessagesAtom = Atom.make<Readonly<Record<string, string>>>({}).pipe(
+export const pendingFirstMessagesAtom = Atom.make<Readonly<Record<string, FirstMessage>>>({}).pipe(
   Atom.keepAlive,
 );
 
+/** Why the draft's Attachments did not all upload to the Session it made. */
+const unsentReason = (state: AttachmentsState): string => {
+  const which = pipe(
+    state.items,
+    Arr.filter((item) => item.status === "failed"),
+    Arr.map((item) => (item.error === undefined ? item.name : `${item.name} (${item.error})`)),
+    Arr.join(", "),
+  );
+
+  return `The session was made, but not every attachment uploaded: ${which}. Send the message again.`;
+};
+
 /**
- * Register the Session the draft describes and open it. Once it is registered the first message is put in
- * `pendingFirstMessagesAtom`, the draft empties, and the page moves to the Session. A refusal fails with the Registry's
- * message and leaves the draft as it was.
+ * Register the Session the draft describes and open it. With Attachments, they upload to the Session once it is
+ * registered, while the draft shows their progress. Then the first message is put in `pendingFirstMessagesAtom`, the
+ * draft empties, and the page moves to the Session. When an Attachment does not upload, the Session opens all the
+ * same, with the text and the files back in its composer and why under it (`refusedFirstMessagesAtom`). A refusal of
+ * the Registry fails with its message and leaves the draft as it was.
  */
 export const sendDraftAtom = appRuntime.fn((input: DraftInput, get) =>
   Effect.gen(function* () {
-    if (!draftSendable(input)) return yield* Effect.die("The draft cannot be sent");
+    const attachments = yield* get.result(draftAttachmentsProgramAtom);
+    const before = yield* SubscriptionRef.get(attachments.state);
+    const attached = before.items.length > 0;
+
+    if (!draftSendable(input, attached) || draftWaitingFor(before) !== null) {
+      return yield* Effect.die("The draft cannot be sent");
+    }
 
     const created = yield* RegistryClient.use((registry) =>
       registry("createSession", draftPlace(input)),
     );
 
-    get.set(pendingFirstMessagesAtom, {
-      ...get(pendingFirstMessagesAtom),
-      [created.id]: input.text.trim(),
-    });
+    const text = input.text.trim();
+    let first: FirstMessage | null = { text };
+
+    if (attached) {
+      yield* attachments.upload(created.id);
+
+      const settled = yield* SubscriptionRef.changes(attachments.state).pipe(
+        Stream.filter(uploadsSettled),
+        Stream.runHead,
+        Effect.map(Option.getOrElse(() => before)),
+      );
+
+      const sent = sentAttachments(settled);
+      const files = Arr.map(settled.items, (item) => item.file);
+
+      if (sent === undefined) {
+        first = null;
+        get.set(refusedFirstMessagesAtom, {
+          ...get(refusedFirstMessagesAtom),
+          [created.id]: { text, reason: unsentReason(settled), files },
+        });
+      } else first = { text, message: outgoingMessage(text, sent), files };
+
+      // The next draft starts with no Attachments, and uploads to its own Session.
+      get.refresh(draftAttachmentsProgramAtom);
+    }
+
+    if (first !== null) {
+      get.set(pendingFirstMessagesAtom, { ...get(pendingFirstMessagesAtom), [created.id]: first });
+    }
+
     get.set(draftTextAtom, "");
     get.set(draftBaseAtom, "");
     get.set(draftBranchAtom, "");
@@ -95,6 +166,8 @@ const firstMessageRequestId = (sessionId: string): string => `first-message:${se
 export interface RefusedFirstMessage {
   readonly text: string;
   readonly reason: string;
+  /** The files attached to it, which the composer attaches again. */
+  readonly files?: readonly File[];
 }
 
 /**
@@ -116,9 +189,11 @@ export const drainFirstMessageAtom = Atom.family((sessionId: string) =>
   appRuntime.atom((get) =>
     get.result(sessionClientAtom(sessionId)).pipe(
       Effect.flatMap((client) => {
-        const text = get.once(pendingFirstMessagesAtom)[sessionId];
+        const first = get.once(pendingFirstMessagesAtom)[sessionId];
 
-        if (text === undefined) return Effect.void;
+        if (first === undefined) return Effect.void;
+
+        const { text, message = text, files } = first;
 
         const answered = (reason: string | null) =>
           Effect.sync(() => {
@@ -129,13 +204,13 @@ export const drainFirstMessageAtom = Atom.family((sessionId: string) =>
             if (reason !== null) {
               get.set(refusedFirstMessagesAtom, {
                 ...get.once(refusedFirstMessagesAtom),
-                [sessionId]: { text, reason },
+                [sessionId]: files === undefined ? { text, reason } : { text, reason, files },
               });
             }
           });
 
         return client
-          .submitAndAwait(text, "followUp", undefined, firstMessageRequestId(sessionId))
+          .submitAndAwait(message, "followUp", undefined, firstMessageRequestId(sessionId))
           .pipe(
             Effect.matchEffect({
               onSuccess: () => answered(null),

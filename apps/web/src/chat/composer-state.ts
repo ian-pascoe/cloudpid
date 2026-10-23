@@ -12,6 +12,7 @@ import { replying } from "../calls.ts";
 import { refusedFirstMessagesAtom } from "../draft-state.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
+import { addAttachmentsAtom } from "./attachments-state.ts";
 import { askCatalogAtom } from "./catalog.ts";
 import { detectTrigger, type Trigger } from "./completion.ts";
 import type { ConversationKey } from "./conversation.ts";
@@ -249,6 +250,9 @@ export const composerState = (source: ComposerSource): ComposerState => {
 
     const { sessionId } = source.key;
 
+    // Where a refused first message's files go back to.
+    get.mount(addAttachmentsAtom(source.key));
+
     get.subscribe(
       refusedFirstMessagesAtom,
       (refused) => {
@@ -262,6 +266,10 @@ export const composerState = (source: ComposerSource): ComposerState => {
           get.set(refusedFirstMessagesAtom, others);
           source.setText(since.trim() === "" ? message.text : `${message.text}\n\n${since}`);
           get.set(note, { tone: "error", text: message.reason });
+
+          if (message.files !== undefined && message.files.length > 0) {
+            get.set(addAttachmentsAtom(source.key), message.files);
+          }
         });
       },
       { immediate: true },

@@ -2,12 +2,14 @@
 // once it is attached, one at a time in the order they came, with its progress; removing one before it is sent stops
 // its upload or deletes the stored file; and the pictures among them are fitted, while the owner writes, into what one
 // message may hold (`image-budget.ts`), so each tile says before sending whether its image goes inline. Kept while a
-// composer of the conversation reads them: when it goes, the uploads in progress stop, and what was stored stays.
+// composer of the conversation reads them: when it goes, the uploads in progress stop, and what was stored stays. The
+// draft of a new Session has Attachments of its own, which upload once Send has made the Session.
 
 // @effect-diagnostics preferEffectArray:off -- the bookkeeping of one composer's uploads: native arrays and sets mutated in place, one synchronous step at a time.
 
 import { MAX_ATTACHMENT_BYTES, type StoredAttachment, type WhenBusy } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -23,6 +25,7 @@ import { replying } from "../calls.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
 import {
+  formatSize,
   isPictureType,
   outgoingMessage,
   requestedName,
@@ -33,7 +36,11 @@ import { type Fit, fitImages, UNPREPARED } from "./image-budget.ts";
 import { ImageEncoder } from "./image-encode.ts";
 import { type UploadError, Uploads } from "./uploads.ts";
 
-export type AttachmentStatus = "uploading" | "uploaded" | "failed";
+/**
+ * `queued` until its upload starts (it waits for the one before it, or, in the draft, for the Session to be made), then
+ * `uploading`, and `uploaded` or `failed`.
+ */
+export type AttachmentStatus = "queued" | "uploading" | "uploaded" | "failed";
 
 /** One file attached to the message being written. */
 export interface AttachmentItem {
@@ -78,11 +85,33 @@ export const waitingFor = (state: AttachmentsState): string | null => {
     return "Remove the attachments that did not upload, then send.";
   }
 
-  if (state.items.some((item) => item.status === "uploading")) {
+  if (state.items.some((item) => item.status === "queued" || item.status === "uploading")) {
     return "Waiting for the attachments to upload.";
   }
 
-  return state.fitted === picturesOf(state.items) ? null : "Preparing the images for the model.";
+  return fittedAll(state) ? null : "Preparing the images for the model.";
+};
+
+/** Whether every picture has been fitted: none is being prepared for the model. */
+const fittedAll = (state: AttachmentsState): boolean => state.fitted === picturesOf(state.items);
+
+/**
+ * Why the draft cannot be sent with its Attachments yet, or null. The draft uploads them once the Session is made, so
+ * only one that cannot upload, or a picture still being prepared, holds it.
+ */
+export const draftWaitingFor = (state: AttachmentsState): string | null => {
+  if (state.items.some((item) => item.status === "failed")) {
+    return "Remove the attachments that cannot be sent, then send.";
+  }
+
+  return fittedAll(state) ? null : "Preparing the images for the model.";
+};
+
+/** Whether every upload has ended, and every picture is fitted or one upload failed: nothing more will change. */
+export const uploadsSettled = (state: AttachmentsState): boolean => {
+  const waiting = waitingFor(state);
+
+  return waiting === null || state.items.some((item) => item.status === "failed");
 };
 
 /** The Attachments as the message sends them; undefined while `waitingFor` says why not. */
@@ -128,11 +157,15 @@ const UNREADABLE = "This browser cannot read it; it goes as a file only.";
 
 const TOO_BIG = "Too big to attach.";
 
+const TOO_BIG_TO_UPLOAD = `An attachment is at most ${formatSize(MAX_ATTACHMENT_BYTES)}.`;
+
 /**
- * The Attachments of a composer writing to Session `sessionId`, as long as the scope is open. Closing it stops the
- * upload in progress and lets go of what the page kept of each file; what was stored stays, as a sent file does.
+ * The Attachments of a composer writing to the Session `place` gives, as long as the scope is open. Each upload waits
+ * for `place`, so the draft, whose Session is not made yet, attaches files that upload once it is. Closing the scope
+ * stops the upload in progress and lets go of what the page kept of each file; what was stored stays, as a sent file
+ * does.
  */
-export const makeAttachments = Effect.fnUntraced(function* (sessionId: string) {
+export const makeAttachments = Effect.fnUntraced(function* (place: Effect.Effect<string>) {
   const uploads = yield* Uploads;
   const images = yield* ImageEncoder;
   const state = yield* SubscriptionRef.make(EMPTY);
@@ -225,6 +258,13 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: string) {
     Effect.gen(function* () {
       if (!current.items.some((candidate) => candidate.id === item.id)) return;
 
+      const sessionId = yield* place;
+
+      // Removed while it waited for the Session.
+      if (!current.items.some((candidate) => candidate.id === item.id)) return;
+
+      yield* update(item.id, { status: "uploading" });
+
       const fiber = yield* uploads
         .upload(sessionId, item.name, item.file, (progress) => {
           background(update(item.id, { progress }));
@@ -262,6 +302,8 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: string) {
       for (const file of files) {
         const name = requestedName(file.name, taken);
         const picture = isPictureType(file.type);
+        // One the Workspace would refuse fails at once, without waiting for its turn.
+        const tooBig = file.size > MAX_ATTACHMENT_BYTES;
 
         ids += 1;
         taken.push(name);
@@ -271,15 +313,20 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: string) {
           name,
           picture,
           preview: picture ? URL.createObjectURL(file) : undefined,
-          status: "uploading",
+          status: tooBig ? "failed" : "queued",
           progress: 0,
           stored: undefined,
-          error: undefined,
+          error: tooBig ? TOO_BIG_TO_UPLOAD : undefined,
         });
       }
 
       return step((before) => ({ ...before, items: [...before.items, ...added] })).pipe(
-        Effect.andThen(Queue.offerAll(waiting, added)),
+        Effect.andThen(
+          Queue.offerAll(
+            waiting,
+            added.filter((item) => item.status === "queued"),
+          ),
+        ),
         Effect.asVoid,
       );
     });
@@ -292,17 +339,21 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: string) {
 
       const active = uploading?.id === id ? uploading.fiber : undefined;
 
+      // A stored file was stored in the Session `place` gave, so it gives it at once.
+      const removeStored = (name: string) =>
+        place.pipe(Effect.flatMap((sessionId) => uploads.remove(sessionId, name)));
+
       // An upload that ended before the stop could reach it stored the file: it is deleted once its name is known.
       // The deletion goes on after the composer does.
       const deleted =
         active === undefined
           ? item.stored === undefined
             ? Effect.void
-            : uploads.remove(sessionId, item.stored.name)
+            : removeStored(item.stored.name)
           : Fiber.interrupt(active).pipe(
               Effect.andThen(Fiber.await(active)),
               Effect.flatMap((exit) =>
-                Exit.isSuccess(exit) ? uploads.remove(sessionId, exit.value.name) : Effect.void,
+                Exit.isSuccess(exit) ? removeStored(exit.value.name) : Effect.void,
               ),
             );
 
@@ -340,7 +391,7 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: string) {
 
 /** The conversation's Attachments, while a composer of it reads them. */
 const attachmentsProgramAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.atom(makeAttachments(key.sessionId)),
+  appRuntime.atom(makeAttachments(Effect.succeed(key.sessionId))),
 );
 
 const attachmentsRefAtom = Atom.family((key: ConversationKey) =>
@@ -422,4 +473,48 @@ export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
     ),
     { concurrent: true },
   ),
+);
+
+/**
+ * The draft's Attachments: they are fitted as they are added, as a Session's composer's are, but upload only once
+ * `upload` names the Session the draft made. Kept while the draft reads them; a sent draft starts a new set.
+ */
+export const draftAttachmentsProgramAtom = appRuntime.atom(
+  Effect.gen(function* () {
+    const session = yield* Deferred.make<string>();
+    const made = Deferred.await(session);
+    const attachments = yield* makeAttachments(made);
+
+    return {
+      ...attachments,
+      upload: (sessionId: string) => Deferred.succeed(session, sessionId),
+    };
+  }),
+);
+
+const draftAttachmentsRefAtom = appRuntime.subscriptionRef((get) =>
+  get.result(draftAttachmentsProgramAtom).pipe(Effect.map((attachments) => attachments.state)),
+);
+
+/** The draft's Attachments, as its tiles show them. */
+export const draftAttachmentsAtom = Atom.map(draftAttachmentsRefAtom, (result) =>
+  AsyncResult.getOrElse(result, () => EMPTY),
+);
+
+/** Attach `files` to the draft. */
+export const addDraftAttachmentsAtom = appRuntime.fn(
+  (files: readonly File[], get) =>
+    get
+      .result(draftAttachmentsProgramAtom)
+      .pipe(Effect.flatMap((attachments) => attachments.add(files))),
+  { concurrent: true },
+);
+
+/** Take an Attachment off the draft, by its ID. */
+export const removeDraftAttachmentAtom = appRuntime.fn(
+  (id: string, get) =>
+    get
+      .result(draftAttachmentsProgramAtom)
+      .pipe(Effect.flatMap((attachments) => attachments.remove(id))),
+  { concurrent: true },
 );

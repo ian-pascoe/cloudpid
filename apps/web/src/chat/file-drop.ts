@@ -31,9 +31,18 @@ export const useFileDropZone = (
   zone: RefObject<HTMLElement | null> | undefined,
   key: ConversationKey,
 ): void => {
-  const setActive = useAtomSet(fileDragAtom(key));
-  const attach = useAtomSet(addAttachmentsAtom(key));
+  useFileDrop(zone, useAtomSet(addAttachmentsAtom(key)), useAtomSet(fileDragAtom(key)));
+};
 
+/**
+ * Listen for files dragged over `zone` while mounted: `setActive` hears whether a drag that carries files is over it,
+ * and `attach` gets the files dropped.
+ */
+export const useFileDrop = (
+  zone: RefObject<HTMLElement | null> | undefined,
+  attach: (files: File[]) => void,
+  setActive: (active: boolean) => void,
+): void => {
   useEffect(() => {
     const element = zone?.current;
 
