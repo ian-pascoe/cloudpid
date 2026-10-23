@@ -103,6 +103,38 @@
         opacity: 0.9;
         outline: 3px solid #f38020;
       }
+      #edit-menu {
+        position: absolute;
+        display: none;
+        z-index: 6;
+        background: #1c1c1e;
+        border-radius: 9px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
+        white-space: nowrap;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        touch-action: none;
+      }
+      #edit-menu button {
+        background: none;
+        color: #fff;
+        border: 0;
+        border-left: 1px solid #48484a;
+        border-radius: 0;
+        margin: 0;
+        padding: 10px 14px;
+        font:
+          15px system-ui,
+          sans-serif;
+      }
+      #edit-menu button:first-child {
+        border-left: 0;
+      }
+      #edit-menu button.down {
+        background: #48484a;
+      }
       button.attn {
         background: #f38020;
         color: #000;
@@ -163,6 +195,7 @@
       ></textarea>
       <select id="pick-select" class="picker"></select>
       <input id="pick-input" class="picker" />
+      <div id="edit-menu" role="menu"></div>
       <div>
         <button class="phone" id="vcopy">Copy (11)</button>
         <button id="vsel">Read tab selection</button>
@@ -181,6 +214,12 @@
         rows="2"
         style="width: 95%; font-size: 16px"
         placeholder="11: after Copy, long-press here and Paste to verify"
+      ></textarea>
+      <textarea
+        id="pastebox"
+        rows="1"
+        style="width: 95%; font-size: 16px"
+        placeholder="Paste fallback: long-press here and Paste; the text goes to the tab's field"
       ></textarea>
     </div>
 
@@ -1434,6 +1473,7 @@
           scheduleRefresh("frame");
           // An open local picker no longer covers its element once the tab scrolls.
           if (view.picker !== undefined) closePicker("tab scrolled");
+          if (view.menu !== undefined) hideMenu("tab scrolled");
         }
         await new Promise((resolve) => {
           image.onload = resolve;
@@ -1709,6 +1749,7 @@
       $("vopen").onclick = () => openViewer("open");
       $("vclose").onclick = async () => {
         view.open = false;
+        hideMenu("viewer closed");
         clearInterval(view.timer);
         if (view.cdp?.alive) {
           await view.cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
@@ -1738,6 +1779,8 @@
         if (!view.cdp?.alive) return;
         // The frame's preventDefault keeps an open local picker focused: close it here instead.
         if (event.isPrimary && view.picker !== undefined) closePicker("frame touched");
+        menuSeq++;
+        if (view.menu !== undefined) hideMenu("frame touched");
         canvas.setPointerCapture(event.pointerId);
         log(
           "ptr",
@@ -1925,6 +1968,26 @@
           point,
         };
         view.stats.decisions.push(decision);
+        // The edit menu: a double tap selects a word; a long press, or a long-press selection, shows what applies.
+        if (kind === "tap") {
+          const now = performance.now();
+          const previous = view.lastTap;
+          view.lastTap = { at: now, point };
+          if (
+            previous !== undefined &&
+            now - previous.at < 450 &&
+            Math.hypot(point.x - previous.point.x, point.y - previous.point.y) < 25
+          ) {
+            view.lastTap = undefined;
+            decision.double = true;
+            doubleTap(point);
+          }
+        } else {
+          view.lastTap = undefined;
+          if (kind === "long press") showMenuAt(point, "long press", { caret: true });
+          // The mouse release that ends the selection is sent after this.
+          if (kind === "select") setTimeout(() => showMenuAt(point, "long-press selection"), 200);
+        }
         if (kind !== "tap") {
           decision.action = "none";
           log(
@@ -2108,7 +2171,10 @@
         // Exactly over the element (a list box too), so a tap beside it still reaches the frame.
         local.style.height = `${Math.max(32, Math.round(item.h * zoom))}px`;
         local.style.display = "block";
-        view.picker = { item, local, openedAt: Date.now() };
+        const picker = { item, local, openedAt: Date.now() };
+        picker.committed = JSON.stringify(pickerChoice(picker));
+        local.picker = picker;
+        view.picker = picker;
         local.focus({ preventScroll: true });
         let opened = `focus (focused=${document.activeElement === local})`;
         try {
@@ -2130,7 +2196,6 @@
       const SET_PICKER = `((index, choice) => {
         const el = (window[Symbol.for("liveview.pickers")] || [])[index];
         if (!el || !el.isConnected) return { error: "element gone" };
-        el.focus({ preventScroll: true });
         if (el.tagName === "SELECT") {
           const want = new Set(choice.indexes);
           [...el.options].forEach((option, i) => { if (want.has(i) || el.multiple) option.selected = want.has(i); });
@@ -2141,13 +2206,24 @@
         el.dispatchEvent(new Event("change", { bubbles: true }));
         return { value: el.value, selected: el.tagName === "SELECT" ? [...el.selectedOptions].map((o) => o.text) : undefined };
       })`;
-      async function commitPicker(reason) {
-        const picker = view.picker;
-        if (picker === undefined || !view.cdp?.alive) return;
-        const choice =
-          picker.item.type === "select"
-            ? { indexes: [...picker.local.selectedOptions].map((o) => Number(o.value)) }
-            : { value: picker.local.value };
+      // What the local control holds now, as written to the tab.
+      function pickerChoice(picker) {
+        return picker.item.type === "select"
+          ? { indexes: [...picker.local.selectedOptions].map((o) => Number(o.value)) }
+          : { value: picker.local.value };
+      }
+      // Writes the local control's choice to the tab if it differs from the last one written. iOS fires input, change
+      // and blur in different orders per control (and a date wheel may change the value only as it closes), so every
+      // one of them calls this, and the picker it belongs to is kept even after the control has closed.
+      async function commitPicker(picker, reason) {
+        const choice = pickerChoice(picker);
+        const key = JSON.stringify(choice);
+        log(
+          "pick",
+          `${reason} on ${picker.local.id}: ${key}${key === picker.committed ? " (unchanged)" : ""}`,
+        );
+        if (key === picker.committed || !view.cdp?.alive) return;
+        picker.committed = key;
         try {
           const reply = await evalIn(
             view.cdp,
@@ -2155,12 +2231,12 @@
           );
           log(
             "pick",
-            `${reason}: ${picker.item.tag}#${picker.item.id} <- ${JSON.stringify(choice)}; tab now ${JSON.stringify(reply)}`,
+            `${reason}: ${picker.item.tag}#${picker.item.id} <- ${key}; tab now ${JSON.stringify(reply)}`,
           );
           result(
             `picker ${picker.item.id || picker.item.type}`,
             reply.error ? "fail" : "info",
-            `${JSON.stringify(choice)} -> tab ${JSON.stringify(reply)}`,
+            `${reason}: ${key} -> tab ${JSON.stringify(reply)}`,
           );
         } catch (error) {
           log("pick", `${reason}: writing to the tab failed: ${error.message}`);
@@ -2171,27 +2247,405 @@
         const picker = view.picker;
         if (picker === undefined) return;
         view.picker = undefined;
+        commitPicker(picker, `close (${why})`);
         picker.local.style.display = "none";
         if (document.activeElement === picker.local) picker.local.blur();
         log("pick", `local ${picker.local.id} closed (${why})`);
       }
       for (const id of ["pick-select", "pick-input"]) {
         const local = $(id);
-        local.addEventListener("change", () => {
-          const picker = view.picker;
-          if (picker?.local !== local) return;
-          commitPicker("change");
-          // A single choice is done; a multiple select, a date or a colour can still change, until it closes.
-          if (local === $("pick-select") && !local.multiple) closePicker("chosen");
-        });
-        local.addEventListener("blur", () => {
-          log("pick", `${id} blur`);
-          setTimeout(() => {
-            if (document.activeElement !== local && view.picker?.local === local) {
-              closePicker("blurred");
+        for (const type of ["input", "change"]) {
+          local.addEventListener(type, () => {
+            const picker = local.picker;
+            if (picker === undefined) return;
+            commitPicker(picker, type);
+            // A single choice is done; a multiple select, a date or a colour can still change, until it closes.
+            if (
+              type === "change" &&
+              view.picker === picker &&
+              local === $("pick-select") &&
+              !local.multiple
+            ) {
+              closePicker("chosen");
             }
+          });
+        }
+        local.addEventListener("blur", () => {
+          const picker = local.picker;
+          if (picker === undefined) return;
+          commitPicker(picker, "blur");
+          // Some pickers set the value just after the blur.
+          setTimeout(() => {
+            if (local.picker === picker) commitPicker(picker, "after blur");
+            if (document.activeElement !== local && view.picker === picker) closePicker("blurred");
           }, 400);
         });
+      }
+      // ---- edit menu ---------------------------------------------------------------------------
+      // The frame is a picture and the typing textarea is invisible, so iOS has nothing to show its own edit menu for.
+      // This one shows after a gesture that leaves a selection in the tab (a double tap, a long-press selection) and
+      // after a double tap or a long press in a field, placed above the selection (below it if there is no room).
+      //
+      // The tab's side: the element under a point (through open shadow roots and same-origin iframes), the field or
+      // contenteditable it belongs to (kept in the tab as the target of Paste and Select All), and the selection with
+      // its rect in the tab's viewport: a field's selected text with the field's rect, or the document's (or the
+      // iframe's) selection with its range's rect.
+      const MENU_PROBE = `((x, y) => {
+        const TEXT = new Set(["text", "email", "number", "tel", "url", "search", "password"]);
+        const isField = (el) => !!el && ((el.tagName === "INPUT" && TEXT.has(el.type)) || el.tagName === "TEXTAREA") && !el.disabled && !el.readOnly;
+        const editRoot = (el) => {
+          if (!el || el.nodeType !== 1) return null;
+          if (isField(el)) return el;
+          const label = el.closest("label");
+          if (label && isField(label.control)) return label.control;
+          if (el.isContentEditable) { let root = el; while (root.parentElement && root.parentElement.isContentEditable) root = root.parentElement; return root; }
+          return null;
+        };
+        let doc = document, dx = 0, dy = 0, el = document.elementFromPoint(x, y);
+        for (let depth = 0; el && depth < 10; depth++) {
+          if (el.shadowRoot) { const inner = el.shadowRoot.elementFromPoint(x - dx, y - dy); if (inner && inner !== el) { el = inner; continue; } }
+          if (el.tagName === "IFRAME") {
+            let inner = null;
+            try { const d = el.contentDocument; if (d) { const r = el.getBoundingClientRect(); dx += r.left + el.clientLeft; dy += r.top + el.clientTop; doc = d; inner = d.elementFromPoint(x - dx, y - dy); } } catch {}
+            if (inner) { el = inner; continue; }
+          }
+          break;
+        }
+        const frames = [{ doc, dx, dy }];
+        let active = document.activeElement, adx = 0, ady = 0, adoc = document;
+        for (let depth = 0; active && depth < 10; depth++) {
+          let inner = null;
+          try {
+            if (active.shadowRoot && active.shadowRoot.activeElement) inner = active.shadowRoot.activeElement;
+            else if (active.tagName === "IFRAME" && active.contentDocument) { const r = active.getBoundingClientRect(); adx += r.left + active.clientLeft; ady += r.top + active.clientTop; adoc = active.contentDocument; inner = adoc.activeElement; }
+          } catch {}
+          if (!inner || inner === active) break;
+          active = inner;
+        }
+        frames.push({ doc: adoc, dx: adx, dy: ady }, { doc: document, dx: 0, dy: 0 });
+        const box = (r, ox, oy) => ({ x: Math.round(r.left + ox), y: Math.round(r.top + oy), w: Math.round(r.width), h: Math.round(r.height) });
+        let target = editRoot(el), text = "", rect = null, source = "";
+        if (isField(active) && typeof active.selectionStart === "number" && active.selectionStart !== active.selectionEnd) {
+          text = active.value.slice(active.selectionStart, active.selectionEnd);
+          rect = box(active.getBoundingClientRect(), adx, ady);
+          source = "field";
+          target = active;
+        } else {
+          for (const f of frames) {
+            const s = f.doc.getSelection && f.doc.getSelection();
+            if (!s || s.isCollapsed || s.rangeCount === 0 || !String(s).trim()) continue;
+            const range = s.getRangeAt(0);
+            text = String(s);
+            rect = box(range.getBoundingClientRect(), f.dx, f.dy);
+            source = f.doc === document ? "document" : "iframe";
+            const anchor = s.anchorNode && (s.anchorNode.nodeType === 1 ? s.anchorNode : s.anchorNode.parentElement);
+            const root = editRoot(anchor);
+            if (root) target = root;
+            else if (target && !target.contains(anchor)) target = null;
+            break;
+          }
+        }
+        window[Symbol.for("liveview.editTarget")] = target;
+        const tr = target ? target.getBoundingClientRect() : null;
+        return {
+          at: el ? el.tagName + (el.id ? "#" + el.id : "") : "none",
+          target: target ? target.tagName + (target.id ? "#" + target.id : "") : null,
+          targetRect: tr ? box(tr, target.ownerDocument === doc ? dx : adx, target.ownerDocument === doc ? dy : ady) : null,
+          focused: !!target && target === active,
+          editableSelection: !!target && !!text,
+          text, rect, source,
+        };
+      })`;
+      // Focus the target unless it already is, with the caret at its end.
+      const EDIT_FOCUS = `(() => {
+        const t = window[Symbol.for("liveview.editTarget")];
+        if (!t || !t.isConnected) return { error: "no target" };
+        let active = document.activeElement;
+        for (let depth = 0; active && depth < 10; depth++) {
+          let inner = null;
+          try { inner = active.shadowRoot ? active.shadowRoot.activeElement : active.contentDocument ? active.contentDocument.activeElement : null; } catch {}
+          if (!inner || inner === active) break;
+          active = inner;
+        }
+        if (active === t) return { focused: "already" };
+        t.focus({ preventScroll: true });
+        if (typeof t.setSelectionRange === "function") { const n = t.value.length; try { t.setSelectionRange(n, n); } catch {} }
+        else { const r = t.ownerDocument.createRange(); r.selectNodeContents(t); r.collapse(false); const s = t.ownerDocument.getSelection(); s.removeAllRanges(); s.addRange(r); }
+        return { focused: "now" };
+      })()`;
+      const EDIT_SELECT_ALL = `(() => {
+        const t = window[Symbol.for("liveview.editTarget")];
+        if (!t || !t.isConnected) return { error: "no target" };
+        t.focus({ preventScroll: true });
+        if (typeof t.select === "function") t.select();
+        else { const r = t.ownerDocument.createRange(); r.selectNodeContents(t); const s = t.ownerDocument.getSelection(); s.removeAllRanges(); s.addRange(r); }
+        return { selected: typeof t.select === "function" ? t.value.length : String(t.ownerDocument.getSelection()).length };
+      })()`;
+      // Whether a double tap at the point should select a word: text or a field under it, not a control.
+      const WORD_AT = `((x, y) => {
+        let el = document.elementFromPoint(x, y), doc = document, dx = 0, dy = 0;
+        for (let depth = 0; el && depth < 10; depth++) {
+          if (el.shadowRoot) { const inner = el.shadowRoot.elementFromPoint(x - dx, y - dy); if (inner && inner !== el) { el = inner; continue; } }
+          if (el.tagName === "IFRAME") { let inner = null; try { const d = el.contentDocument; const r = el.getBoundingClientRect(); dx += r.left + el.clientLeft; dy += r.top + el.clientTop; doc = d; inner = d.elementFromPoint(x - dx, y - dy); } catch {} if (inner) { el = inner; continue; } }
+          break;
+        }
+        if (!el) return { word: false, why: "nothing" };
+        const TEXT = new Set(["text", "email", "number", "tel", "url", "search", "password"]);
+        if ((el.tagName === "INPUT" && TEXT.has(el.type)) || el.tagName === "TEXTAREA" || el.isContentEditable) return { word: true, why: "field " + el.tagName };
+        if (el.closest("a, button, select, input, label, summary, [role=button], [onclick]")) return { word: false, why: "control " + el.tagName };
+        const range = doc.caretRangeFromPoint && doc.caretRangeFromPoint(x - dx, y - dy);
+        const node = range && range.startContainer;
+        if (!node || node.nodeType !== 3 || !node.textContent.trim()) return { word: false, why: "no text" };
+        return { word: true, why: "text in " + el.tagName };
+      })`;
+      const menu = $("edit-menu");
+      // Bumped by every touch on the frame, so a probe that answers after the next gesture began is dropped.
+      let menuSeq = 0;
+      function hideMenu(why) {
+        if (view.menu === undefined) return;
+        view.menu = undefined;
+        menu.style.display = "none";
+        log("menu", `hidden (${why})`);
+      }
+      // After a gesture: ask the tab what is selected at the point, and show the items that apply.
+      async function showMenuAt(point, why, { caret = false } = {}) {
+        if (!view.cdp?.alive) return;
+        const seq = menuSeq;
+        let info;
+        try {
+          info = await evalIn(view.cdp, `${MENU_PROBE}(${point.x}, ${point.y})`);
+        } catch (error) {
+          log("menu", `${why}: probe failed: ${error.message}`);
+          return;
+        }
+        if (seq !== menuSeq) return;
+        const items = [];
+        if (info.text) items.push("Copy");
+        if (info.editableSelection) items.push("Cut");
+        if (info.target) items.push("Paste", "Select All");
+        const summary = `${why} at ${point.x},${point.y} on ${info.at}: target ${info.target ?? "none"}${info.focused ? " (focused)" : ""}, selection ${JSON.stringify(info.text.slice(0, 80))}${info.source ? ` (${info.source})` : ""}`;
+        // A long press or a double tap shows the menu in a field; anything else only for a selection.
+        if (items.length === 0 || (!info.text && !caret && why !== "double tap")) {
+          log("menu", `${summary} -> no menu`);
+          hideMenu("nothing to show");
+          return;
+        }
+        const anchor = info.rect ?? { x: point.x, y: point.y, w: 0, h: 0 };
+        menu.replaceChildren(
+          ...items.map((name) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = name;
+            button.dataset.action = name;
+            return button;
+          }),
+        );
+        view.menu = { items, info, point, anchor, why, shownAt: Date.now() };
+        placeMenu(anchor);
+        log(
+          "menu",
+          `${summary} -> [${items.join(", ")}] at ${view.menu.place.x},${view.menu.place.y} (${view.menu.place.side} the ${info.rect ? "selection" : "point"})`,
+        );
+      }
+      // Above the anchor (tab viewport px) if it fits in the frame, else below; clamped to the frame.
+      function placeMenu(anchor) {
+        const screen = canvas.getBoundingClientRect();
+        const box = $("viewer").getBoundingClientRect();
+        const zoom = screen.width / (view.meta?.deviceWidth ?? screen.width);
+        const offsetTop = view.meta?.offsetTop ?? 0;
+        menu.style.display = "flex";
+        const width = menu.offsetWidth;
+        const height = menu.offsetHeight;
+        const frameTop = screen.top - box.top;
+        const frameBottom = frameTop + screen.height;
+        const frameLeft = screen.left - box.left;
+        const top = frameTop + (anchor.y + offsetTop) * zoom;
+        const bottom = top + anchor.h * zoom;
+        const centre = frameLeft + (anchor.x + anchor.w / 2) * zoom;
+        const gap = 10;
+        let side = "above";
+        let y = top - height - gap;
+        if (y < frameTop) {
+          side = "below";
+          y = bottom + gap;
+        }
+        y = Math.max(frameTop, Math.min(y, frameBottom - height));
+        const x = Math.max(
+          frameLeft + 4,
+          Math.min(centre - width / 2, frameLeft + screen.width - width - 4),
+        );
+        menu.style.left = `${Math.round(x)}px`;
+        menu.style.top = `${Math.round(y)}px`;
+        view.menu.place = { x: Math.round(x), y: Math.round(y), width, height, side };
+      }
+      // The selection's text, read again when the item is tapped; the probe's text if that fails.
+      function readSelection(info, point) {
+        return evalIn(view.cdp, `${MENU_PROBE}(${point.x}, ${point.y})`).then(
+          (fresh) => fresh.text || info.text,
+          () => info.text,
+        );
+      }
+      // Copy inside the tap: a ClipboardItem whose data is a promise, so iOS takes the write as the gesture's.
+      function copyToClipboard(textPromise, label) {
+        const started = performance.now();
+        let write;
+        let path;
+        if (typeof ClipboardItem === "function" && navigator.clipboard?.write) {
+          path = "ClipboardItem(promise)";
+          write = navigator.clipboard.write([
+            new ClipboardItem({
+              "text/plain": textPromise.then((text) => new Blob([text], { type: "text/plain" })),
+            }),
+          ]);
+        } else if (navigator.clipboard?.writeText) {
+          path = "writeText after the read";
+          write = textPromise.then((text) => navigator.clipboard.writeText(text));
+        } else {
+          write = Promise.reject(new Error("no clipboard API"));
+        }
+        return Promise.all([write, textPromise]).then(
+          ([, text]) => {
+            view.copied = text;
+            log(
+              "menu",
+              `${label}: ${path} resolved in ${Math.round(performance.now() - started)} ms with ${JSON.stringify(text.slice(0, 80))}`,
+            );
+            result("edit menu " + label, "info", `${path}: ${JSON.stringify(text.slice(0, 80))}`);
+            return text;
+          },
+          (error) => {
+            log("menu", `${label}: ${path} failed: ${error.name} ${error.message}`);
+            result("edit menu " + label, "fail", `${path}: ${error.name} ${error.message}`);
+            throw error;
+          },
+        );
+      }
+      function insertIntoTab(text, path) {
+        return evalIn(view.cdp, EDIT_FOCUS).then((focus) => {
+          if (focus.error) throw new Error(focus.error);
+          view.cdp.send("Input.insertText", { text }, 5000, true).catch(() => {});
+          resetInputSentinel("paste");
+          scheduleRefresh("paste");
+          log(
+            "menu",
+            `Paste via ${path}: ${text.length} chars into the target (${focus.focused} focused)`,
+          );
+          result("edit menu Paste", "info", `${path}: ${JSON.stringify(text.slice(0, 80))}`);
+        });
+      }
+      function pasteFallback(why) {
+        log("menu", `Paste: ${why}; showing the paste box`);
+        result("edit menu Paste", "info", `${why} -> paste box`);
+        const box = $("pastebox");
+        box.value = "";
+        box.scrollIntoView({ block: "center" });
+        box.focus({ preventScroll: true });
+        box.style.outline = "3px solid #f38020";
+      }
+      $("pastebox").addEventListener("input", () => {
+        const box = $("pastebox");
+        const text = box.value;
+        if (!text || !view.cdp?.alive) return;
+        box.value = "";
+        box.style.outline = "";
+        box.blur();
+        insertIntoTab(text, "paste box").catch((error) =>
+          log("menu", `paste box: ${error.message}`),
+        );
+      });
+      function runMenuAction(action) {
+        const current = view.menu;
+        if (current === undefined || !view.cdp?.alive) return;
+        const { info, point } = current;
+        log("menu", `${action} tapped (keyboard textarea focused=${kbdFocused()})`);
+        if (action === "Copy") {
+          copyToClipboard(readSelection(info, point), "Copy").catch(() => {});
+          hideMenu("copied");
+        } else if (action === "Cut") {
+          const text = readSelection(info, point);
+          copyToClipboard(text, "Cut").catch(() => {});
+          text.then(() => {
+            pressKey("Backspace", "Backspace", 8);
+            resetInputSentinel("cut");
+            scheduleRefresh("cut");
+          });
+          hideMenu("cut");
+        } else if (action === "Paste") {
+          hideMenu("paste");
+          if (!navigator.clipboard?.readText) {
+            pasteFallback("no clipboard.readText");
+            return;
+          }
+          navigator.clipboard.readText().then(
+            (text) =>
+              text
+                ? insertIntoTab(text, "clipboard.readText").catch((error) =>
+                    log("menu", `Paste: ${error.message}`),
+                  )
+                : log("menu", "Paste: the clipboard is empty"),
+            (error) => pasteFallback(`clipboard.readText rejected: ${error.name} ${error.message}`),
+          );
+        } else if (action === "Select All") {
+          evalIn(view.cdp, EDIT_SELECT_ALL).then(
+            (reply) => {
+              log("menu", `Select All: ${JSON.stringify(reply)}`);
+              resetInputSentinel("select all");
+              showMenuAt(point, "select all", { caret: true });
+            },
+            (error) => log("menu", `Select All failed: ${error.message}`),
+          );
+        }
+      }
+      // Touching the menu must not move focus (the keyboard stays as it was) or reach the frame; an item acts on
+      // pointerup, which for a touch is inside the gesture iOS needs for the clipboard.
+      menu.addEventListener("touchstart", (event) => event.preventDefault(), { passive: false });
+      menu.addEventListener("mousedown", (event) => event.preventDefault());
+      menu.addEventListener("contextmenu", (event) => event.preventDefault());
+      menu.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const button = event.target.closest("button");
+        menu.pressed = button ?? null;
+        button?.classList.add("down");
+      });
+      menu.addEventListener("pointerup", (event) => {
+        event.preventDefault();
+        const button = event.target.closest("button");
+        const pressed = menu.pressed;
+        menu.pressed = null;
+        pressed?.classList.remove("down");
+        // A touch's pointerup targets where it began: check that it ended on the same item.
+        const under = document.elementFromPoint(event.clientX, event.clientY)?.closest("button");
+        if (pressed && button === pressed && under === pressed)
+          runMenuAction(pressed.dataset.action);
+      });
+      menu.addEventListener("pointercancel", () => {
+        menu.pressed?.classList.remove("down");
+        menu.pressed = null;
+      });
+      // A double tap: the tab selects the word under it as for a mouse double-click, then the menu shows.
+      async function doubleTap(point) {
+        if (!view.cdp?.alive) return;
+        const seq = menuSeq;
+        let word;
+        try {
+          word = await evalIn(view.cdp, `${WORD_AT}(${point.x}, ${point.y})`);
+        } catch (error) {
+          log("menu", `double tap: probe failed: ${error.message}`);
+          return;
+        }
+        if (seq !== menuSeq) return;
+        if (!word.word) {
+          log("menu", `double tap at ${point.x},${point.y}: ${word.why} -> no word selection`);
+          return;
+        }
+        const send = (params) =>
+          view.cdp.send("Input.dispatchMouseEvent", { ...point, button: "left", ...params });
+        await send({ type: "mousePressed", clickCount: 2 });
+        await send({ type: "mouseReleased", clickCount: 2 });
+        log("menu", `double tap at ${point.x},${point.y}: ${word.why} -> mouse double press`);
+        await sleep(120);
+        if (seq === menuSeq) showMenuAt(point, "double tap");
       }
       // ---- typing through the hidden textarea ---------------------------------------------------
       // Ported from Kernel's live view (kernel-images, commit 2c3fabc9a04a9f445870f183e21e3475104cb8cc,
@@ -2279,6 +2733,7 @@
       });
       kbd.addEventListener("input", (event) => {
         if (!view.cdp?.alive) return;
+        hideMenu("typing");
         scheduleRefresh("input");
         const kept = editTyped(kbd.value);
         if ((!typed.keep || !kept) && !typed.composing) resetInputSentinel();

@@ -238,6 +238,74 @@ Playwright `keys.mjs` passed 24/24 on Chromium (Pixel 7, touch through CDP) and 
 
 `kbd.mjs` still passes (Chromium 26/26, WebKit 19/19).
 
+## iPhone, third pass (Backspace and pickers)
+
+- Backspace works, also in an empty field.
+- Autocorrect works: `Teh` became `The` as two Backspaces and `he`.
+- The selects (single, 50 options, multiple) open the iOS picker on the first tap, and the choice reaches the tab
+  with its events.
+- Date, time and colour: the local control was focused and `showPicker()` called, then it blurred 2 to 3 s later
+  without a `change`. It is not known whether the iOS pickers opened.
+- The tab offers no Copy or Paste: iOS has nothing to show its edit menu for, since the frame is a picture and the
+  textarea is invisible.
+
+## Picker values captured on input, change, blur and close (fourth version)
+
+The change handler used to ignore events once the control had closed. The blur closed it 400 ms later, so a value
+that iOS set at or after the blur was dropped. Now each open keeps its own picker. `input`, `change`, `blur`, 400 ms
+after the blur, and closing all compare the control's value with the last one written, and write it if it differs.
+Each is logged as `phone:pick <event> on pick-input: <value> (unchanged)`. The tab's element is no longer focused when
+a value is written: focusing it scrolled the tab, which closed the local control.
+
+Playwright (`menu.mjs`, both engines) passes for a value set with only `input` (date), only `change` (time) and only
+`blur` (colour). On Chromium a blur with its own time popup open fired no `blur`, so time is checked with `change`.
+Not yet tried on the iPhone.
+
+## Our own edit menu (fourth version)
+
+An iOS-style bar (Copy, Cut, Paste, Select All) over the frame:
+
+- **When:** after a double tap (the tab gets a mouse double press, which selects the word, for text or a field only,
+  not a control), after a long-press selection (mouse-select mode, with or without a drag), and after a long press in
+  a field even with nothing selected (Paste, Select All). The tab answers with the selection and its rect (a field's
+  selected text and its rect, or the range's rect) through shadow roots and same-origin iframes.
+- **Where:** above the selection, below it if there is no room, clamped to the frame. It hides on the next touch on
+  the frame, a scroll of the tab, or typing.
+- **Items:**
+  - Copy writes a `ClipboardItem` whose data is a promise of the tab's selection, inside the tap.
+  - Cut copies, then sends Backspace.
+  - Paste calls `navigator.clipboard.readText()` inside the tap, focuses the target field in the tab (caret at its end
+    if it was not focused) and sends `Input.insertText`. If the read is refused, a visible paste box takes a native
+    paste and sends that instead. The log says which path was used.
+  - Select All selects the field's contents in the tab and shows the menu again.
+- **The keyboard:** the menu prevents the default of `touchstart`, `mousedown` and `pointerdown`, so it neither blurs
+  the typing textarea nor opens the keyboard. Its items act on `pointerup`, which for a touch counts as a user gesture.
+
+Playwright `menu.mjs`: Chromium 18/18 (Pixel 7, CDP touch, clipboard permission granted), WebKit 15/15 (iPhone 15,
+without long press, which Playwright's WebKit touchscreen cannot do, and without a real clipboard read):
+
+- A double tap on text selects the word, and the menu shows Copy only, above the word and inside the frame.
+- Copy leaves the word on the clipboard, and the menu hides.
+- A touch elsewhere hides the menu.
+- A double tap in a focused field selects a word and shows Copy, Cut, Paste and Select All, with the keyboard kept.
+- Select All selects `hello world` and shows the menu again.
+- Cut leaves `hello world` on the clipboard and empties the field.
+- Typing hides the menu.
+- A selection at the top of the frame puts the menu below it.
+- Chromium only:
+  - A long press in an empty field shows Paste and Select All, and Paste puts the clipboard text in the field.
+  - A long-press selection with a drag shows Copy.
+
+`keys.mjs` (Chromium 24/24) and `kbd.mjs` (Chromium 26/26, WebKit 19/19) still pass. The WebKit `keys.mjs` run of
+this version stopped on a closed page after 23 passes; it was not repeated before the wrap-up.
+
+Not verified on the iPhone:
+
+- whether the menu's Copy and Paste work under iOS's clipboard rules, including the Paste permission bubble;
+- the paste box fallback;
+- whether a double tap and a long press on iOS reach the viewer as two taps and a long press;
+- what the date, time and colour pickers send.
+
 ## Pending on a real device
 
 - iPhone Safari and the installed PWA: 1, 9, 11, 12, and touch input generally.
