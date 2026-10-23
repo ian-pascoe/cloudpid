@@ -1,4 +1,5 @@
 import type { Harness } from "@cloudpid/effect-durable";
+import { AgentsMd } from "@cloudpid/extensions/agents-md";
 import {
   Browser,
   type BrowserHost,
@@ -33,7 +34,9 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * whose list is a conversation document that a hook puts back in front of the model after a Handoff or compaction; and the secret tools
  * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
  * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query); the `skills` section, which lists
- * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); and `browser`, which drives the
+ * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); the `project_context`
+ * section and the wraps of `read`, `edit` and `write` that put the Workspace's `AGENTS.md` files in front of the model
+ * (`@cloudpid/extensions/agents-md`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
  * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
  * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
@@ -67,6 +70,8 @@ export const sessionExtensions: Effect.Effect<
   Todo,
   Browser,
   Skills,
+  // Before the secrets extension, whose wraps then run first: a path's Secret references are resolved when it looks.
+  AgentsMd,
   ContainerTools,
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),

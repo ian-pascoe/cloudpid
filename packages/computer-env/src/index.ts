@@ -13,4 +13,11 @@ export { ComputerFiles } from "./files.ts";
 
 export { ensureDirectory, READERS_DIR, type ReadEnv, WorkspaceEnvHost } from "./host.ts";
 
-export type { EnvRequest, EnvResponse, HostOperation, WirePrompt, WireSkill } from "./wire.ts";
+export type {
+  EnvRequest,
+  EnvResponse,
+  HostOperation,
+  WireInstructionFile,
+  WirePrompt,
+  WireSkill,
+} from "./wire.ts";

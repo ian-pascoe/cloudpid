@@ -24,6 +24,11 @@ export interface ComputerEnvHost {
   skills(cwd: string): Promise<object>;
   /** The Prompt templates of `cwd` (an array of `WirePrompt`), found next to the files: one RPC call. */
   prompts(cwd: string): Promise<object>;
+  /**
+   * The project instructions for the files of `directory` (an array of `WireInstructionFile`), found next to the files:
+   * one RPC call.
+   */
+  instructions(directory: string): Promise<object>;
 }
 
 /** The value an operation's successful answer holds. */

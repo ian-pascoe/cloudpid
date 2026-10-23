@@ -10,6 +10,7 @@ import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { secretReference } from "@cloudpid/extensions/secrets/core";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { discoverSkills } from "@cloudpid/extensions/skills-discovery";
+import { discoverInstructions } from "@cloudpid/extensions/agents-md-discovery";
 import { discoverPrompts } from "@cloudpid/extensions/prompt-templates";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
@@ -312,11 +313,54 @@ const countingEnv = (workspace: DurableObjectStub<TestWorkspace>, cwd: string) =
 
       return workspace.prompts(at);
     },
+    instructions: (directory: string) => {
+      calls.push("instructions");
+
+      return workspace.instructions(directory);
+    },
     __getWorkspaceStub: () => workspace.__getWorkspaceStub(),
   };
 
   return { calls, env: new ComputerExecutionEnv({ workspace: counted, id: "computer:test", cwd }) };
 };
+
+describe("project instructions on the Workspace DO", () => {
+  it("answers a lookup in one RPC call and finds what a walk of the files does", async () => {
+    const workspace = env.WORKSPACES.getByName("instructions-discovery");
+    const { calls, env: executionEnv } = countingEnv(workspace, "/workspace/repo");
+
+    getOrThrow(await executionEnv.writeFile("/workspace/repo/AGENTS.md", "Repo rules.", context));
+    getOrThrow(
+      await executionEnv.writeFile("/workspace/repo/packages/app/CLAUDE.md", "App rules.", context),
+    );
+
+    calls.length = 0;
+
+    const found = await executionEnv.discoverInstructions(
+      "/workspace/repo/packages/app/src",
+      context,
+    );
+
+    expect(calls).toEqual(["instructions"]);
+    expect(found).toEqual([
+      { path: "/workspace/repo/AGENTS.md", directory: "/workspace/repo", content: "Repo rules." },
+      {
+        path: "/workspace/repo/packages/app/CLAUDE.md",
+        directory: "/workspace/repo/packages/app",
+        content: "App rules.",
+      },
+    ]);
+
+    const walked = await Effect.runPromise(
+      discoverInstructions(
+        { readTextFile: (path, at) => executionEnv.readTextFile(path, at) },
+        "/workspace/repo/packages/app/src",
+      ),
+    );
+
+    expect(found).toEqual(walked);
+  });
+});
 
 describe("skill discovery on the Workspace DO", () => {
   it("answers a request in one RPC call, however many skills the repo holds, and finds what a walk of the files does", async () => {
