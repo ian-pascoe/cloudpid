@@ -1,3 +1,5 @@
+// @effect-diagnostics preferEffectArray:off -- touch points over native arrays.
+
 import { describe, expect, it } from "vitest";
 import { keyPress, MODIFIER } from "./cdp.ts";
 import { keyAction, PointerInput, type KeySample, type PointerSample } from "./input.ts";

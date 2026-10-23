@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- a few dozen rects hit-tested at each tap, over native arrays.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a few dozen rects hit-tested at each tap, over native arrays, and plain functions rather than combinators.
 
 // The field map (`docs/spec.md` → Browser, #154): where the tab's editable elements are, so the Pane can decide at the
 // end of a tap, inside the gesture iOS needs to open its keyboard, whether the tap landed in a field and which keyboard

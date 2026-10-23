@@ -1,3 +1,5 @@
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- Kernel's code as it was: plain functions over native arrays.
+
 // Ported from Kernel's live view: kernel/kernel-images at commit 2c3fabc9a04a9f445870f183e21e3475104cb8cc
 // (https://github.com/kernel/kernel-images), `images/chromium-headful/client/src/utils/typed-text.ts` (`TypedText`) and
 // `utils/text-input.ts` (`textDiff`), with the sentinel of `components/video.vue` (`INPUT_SENTINEL`).

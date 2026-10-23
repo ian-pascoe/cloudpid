@@ -1,3 +1,5 @@
+// @effect-diagnostics preferEffectArray:off -- windows over native arrays, as the code under test keeps them.
+
 import { describe, expect, it } from "vitest";
 import { selectWindow, stripOf, windowClosed, type WindowStrip } from "./windows.ts";
 

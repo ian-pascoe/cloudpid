@@ -1,3 +1,5 @@
+// @effect-diagnostics missingPipeableSignature:off -- plain functions of sizes and points.
+
 // The tab's viewport while the Live View shows it (#154), and points between the screen and the tab. The tab is sized
 // to the Pane (`Emulation.setDeviceMetricsOverride`), mobile with touch emulation on a touch screen, so a site lays out
 // for the owner's screen; the last device to resize wins. The Desktop layout gives a phone a 1280-wide desktop instead,

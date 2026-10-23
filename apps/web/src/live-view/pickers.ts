@@ -1,3 +1,5 @@
+// @effect-diagnostics missingPipeableSignature:off -- a plain constructor of a script.
+
 // Native pickers in the Live View (#154). Headless Chrome draws a `<select>`'s list and the date, time and colour
 // pickers outside the screencast, where the owner cannot see them. So a tap on one is withheld from the tab, and a local
 // control of the same kind opens over the spot instead, inside the gesture (iOS opened its picker on the first tap for

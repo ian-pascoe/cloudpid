@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- four menu items over native arrays.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- four menu items over native arrays, and plain functions rather than combinators.
 
 // The Live View's edit menu (#154). The frame is a picture and the typing textarea is invisible, so iOS has nothing to
 // show its own edit menu for. This one, iOS-style, shows after a double tap on text or in a field (the tab gets a mouse

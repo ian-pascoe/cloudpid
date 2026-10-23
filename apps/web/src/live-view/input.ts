@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- the fingers on the screen, a few at most, in a native map and arrays.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- the fingers on the screen, a few at most, in a native map and arrays, and plain functions rather than combinators.
 
 // The owner's pointer and keys, as CDP input for the tab (#154). Touches go as `Input.dispatchTouchEvent`, so the tab
 // scrolls and taps as it would under a finger; a mouse goes as `Input.dispatchMouseEvent`, as the hosted Live View

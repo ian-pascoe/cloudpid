@@ -1,3 +1,5 @@
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain constructors of CDP commands over native arrays.
+
 // The CDP commands the Live View sends a page for the owner's input, as plain data: the input modules make them and the
 // connection sends them, so what a touch or a key turns into is testable without a socket.
 

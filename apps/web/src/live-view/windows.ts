@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- a handful of windows over native arrays.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a handful of windows over native arrays, and plain functions rather than combinators.
 
 // The window strip of a Live View (#154): the pop-ups and new tabs the handed-over tab opened, directly or through one
 // another, as a small strip inside the Pane rather than Pane tabs of their own. One page is shown at a time: the
