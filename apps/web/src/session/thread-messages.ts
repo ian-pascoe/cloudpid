@@ -288,8 +288,8 @@ const withRunning = (turn: Turn, view: SessionView): Turn => {
 };
 
 /**
- * The thread of `view`: user messages, notices as system messages, and one assistant message per turn holding thinking,
- * text, and tool calls.
+ * The thread of `view`, its earlier messages first: user messages, notices as system messages, and one assistant
+ * message per turn holding thinking, text, and tool calls.
  * The message being streamed is part of the last turn, and the last turn is running while the run is. The messages
  * before the last turn are the same objects from one view to the next, so a long transcript costs only its last
  * turn when a token arrives.
@@ -327,7 +327,8 @@ export const toThreadMessages = (view: SessionView): ThreadMessageLike[] => {
     thread.push(message);
   };
 
-  for (const message of view.messages) {
+  // The earlier Context Windows' messages come first: the thread is the whole History the view holds.
+  for (const message of [...view.earlier, ...view.messages]) {
     if (message.role === "user" || message.role === "notice") {
       // A notice starts a turn too: what the agent does after a Handoff or a Rollover request answers it.
       endTurn();

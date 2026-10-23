@@ -16,7 +16,9 @@ import {
   EMPTY_VIEW,
   FileMatches,
   HEARTBEAT,
+  HistoryPage,
   reduceEvents,
+  withEarlier,
   SESSION_DELETED_CLOSE_CODE,
   ServerMessageJson,
   type ClientMessage,
@@ -203,6 +205,15 @@ export interface SessionClient {
     args: string,
     conversationId?: number,
   ) => Effect.Effect<CommandOutcome, SessionCommandError>;
+  /**
+   * Load the page of History before entry `before` of the root conversation, or of watched subagent conversation
+   * `conversationId`, into its view's `earlier` messages: done once it is there, or once a snapshot made it moot. Fails
+   * as `catalog` does.
+   */
+  readonly loadEarlier: (
+    before: number,
+    conversationId?: number,
+  ) => Effect.Effect<void, SessionCommandError>;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -267,6 +278,8 @@ const decodeCatalog = Schema.decodeUnknownOption(Catalog);
 const decodeFileMatches = Schema.decodeUnknownOption(FileMatches);
 
 const decodeOutcome = Schema.decodeUnknownOption(CommandOutcome);
+
+const decodeHistoryPage = Schema.decodeUnknownOption(HistoryPage);
 
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
@@ -1165,6 +1178,34 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         },
         decodeOutcome,
         true,
+      ),
+    loadEarlier: (before, conversationId) =>
+      request((id) => {
+        const message: Types.Mutable<Extract<ClientMessage, { type: "history" }>> = {
+          type: "history",
+          id,
+          before,
+        };
+
+        addressTo(message, conversationId);
+
+        return message;
+      }, decodeHistoryPage).pipe(
+        Effect.map((page) => {
+          // A view whose snapshot moved on since it asked keeps what it has: `withEarlier` checks `before`.
+          if (isRoot(conversationId) || conversationId === undefined) {
+            update({ view: withEarlier(current.view, before, page) });
+
+            return;
+          }
+
+          const thread = threadWatches.get(conversationId);
+
+          if (thread === undefined) return;
+
+          thread.view = withEarlier(thread.view, before, page);
+          update({}, conversationId);
+        }),
       ),
   };
 

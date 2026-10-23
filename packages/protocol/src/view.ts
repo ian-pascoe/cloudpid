@@ -22,7 +22,9 @@
 // `const` arrow functions, imports end in `.ts`, `blockPart` guards an undefined first part (`noUncheckedIndexedAccess`),
 // the view keeps the inbox's items (`inbox`) instead of their count (`queued`), tool events of nested calls are left
 // out of the running tools and kept in `nestedTools` instead, with their output and how they ended (the example lists
-// them among the running tools like any other call), and the view also follows the agent's thinking level (`thinkingLevel`). Formatted for this repository.
+// them among the running tools like any other call), the view also follows the agent's thinking level (`thinkingLevel`),
+// and it keeps the messages of earlier Context Windows (`earlier`, `before`, `withEarlier`) where the example's dropped
+// them at a reset. Formatted for this repository.
 
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
 
@@ -74,7 +76,18 @@ export type QueuedInput = SnapshotEvent["inbox"][number];
 
 /** Everything a UI shows for one conversation, derived from pi's agent events by `reduceView`. */
 export type SessionView = {
+  /** The messages of the active Context Window, as a snapshot holds them. */
   readonly messages: readonly TranscriptMessage[];
+  /**
+   * Messages of earlier Context Windows, oldest first, all before `messages`: those the view saw before a Rollover or a
+   * compaction moved them out of the context, and the History loaded with `withEarlier`.
+   */
+  readonly earlier: readonly TranscriptMessage[];
+  /**
+   * The entry the History that is not in `earlier` or `messages` ends before: what to ask `history` for next. Null when
+   * the view holds the whole History.
+   */
+  readonly before: number | null;
   /** The assistant message being streamed, or null. */
   readonly live: TranscriptMessage | null;
   readonly running: boolean;
@@ -94,6 +107,8 @@ export type SessionView = {
 /** The view before any event. */
 export const EMPTY_VIEW: SessionView = {
   messages: [],
+  earlier: [],
+  before: null,
   live: null,
   running: false,
   tools: [],
@@ -107,17 +122,71 @@ export const EMPTY_VIEW: SessionView = {
 
 const LIVE_ID = "live";
 
+/** The entry ID of a committed message: every message but the live one is named by its entry's. */
+const entryIdOf = (message: TranscriptMessage): number => Number(message.id);
+
 const append = (view: SessionView, entry: EntryRecord): SessionView => {
   const message = projectEntry(entry);
+  const known = view.messages.some((shown) => shown.id === String(entry.id));
 
-  if (message === undefined) return view;
+  if (known) return view;
 
-  // A reset starts a new context; the snapshot shows only the active one.
-  if (entry.kind === "pi.reset") return { ...view, messages: [message] };
+  // A head marker (a Handoff's reset, a compaction) starts a new Context Window at its head, as a snapshot then shows
+  // it: the marker, then what it keeps. What came before moves to `earlier`, still shown.
+  const head = entry.head;
 
-  if (view.messages.some((known) => known.id === message.id)) return view;
+  if (head !== undefined) {
+    return {
+      ...view,
+      earlier: [...view.earlier, ...view.messages.filter((shown) => entryIdOf(shown) < head)],
+      messages: [
+        ...(message === undefined ? [] : [message]),
+        ...view.messages.filter((shown) => entryIdOf(shown) >= head),
+      ],
+    };
+  }
 
-  return { ...view, messages: [...view.messages, message] };
+  return message === undefined ? view : { ...view, messages: [...view.messages, message] };
+};
+
+/**
+ * What a snapshot whose first entry is `first` keeps of `view`'s earlier messages. A snapshot starts with its Context
+ * Window's head marker, if it has one, and the History before the marker's head is not in it. When `view` saw that
+ * marker, it holds that History from `view.before` on, without a gap, and keeps it; otherwise none is loaded. Without a
+ * marker the snapshot is the whole History.
+ */
+const earlierFor = (
+  view: SessionView,
+  first: EntryRecord | undefined,
+): Pick<SessionView, "earlier" | "before"> => {
+  const head = first?.head;
+
+  if (first === undefined || head === undefined) return { earlier: [], before: null };
+
+  const marker = String(first.id);
+  const seen = [...view.earlier, ...view.messages];
+
+  if (!seen.some((message) => message.id === marker)) return { earlier: [], before: head };
+
+  return { earlier: seen.filter((message) => entryIdOf(message) < head), before: view.before };
+};
+
+/**
+ * `view` with `page`, the answer to `history` for the entries before `before`, in front of its earlier messages. A page
+ * for another `before` than the view's (a snapshot replaced it meanwhile, or the page was already added) changes
+ * nothing.
+ */
+export const withEarlier = (
+  view: SessionView,
+  before: number,
+  page: { readonly entries: readonly EntryRecord[]; readonly before: number | null },
+): SessionView => {
+  if (view.before !== before) return view;
+
+  const loaded = projectEntries(page.entries).filter((message) => entryIdOf(message) < before);
+  const next = page.before !== null && page.before < before ? page.before : null;
+
+  return { ...view, earlier: [...loaded, ...view.earlier], before: next };
 };
 
 const blockPart = (block: AssistantMessage["content"][number]): TranscriptPart | undefined =>
@@ -273,6 +342,7 @@ export const reduceView = (view: SessionView, event: AgentEvent): SessionView =>
 
       return {
         messages: projectEntries(event.entries),
+        ...earlierFor(view, event.entries[0]),
         live: partial === undefined ? null : projectMessage(partial, LIVE_ID),
         running: event.run !== undefined,
         tools: event.tools

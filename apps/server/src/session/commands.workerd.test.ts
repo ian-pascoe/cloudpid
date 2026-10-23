@@ -3,6 +3,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import * as Arr from "effect/Array";
 import { describe, expect, it, vi } from "vitest";
 import { type ConversationId, sessionCommandsFor } from "@cloudpid/protocol";
 import type { TestRegistry } from "../registry/store.fixture.ts";
@@ -121,6 +122,51 @@ describe("the Session's Slash commands", () => {
 
     expect(order.every((at) => at !== -1)).toBe(true);
     expect(order).toEqual(order.toSorted((a, b) => a - b));
+  });
+
+  it("answer history with what a snapshot leaves out after a compaction", async () => {
+    const stub = await compacting();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["First answer.", "The summary.", "Later answer."]);
+      await instance.prompt({ requestId: "one", text: "First" });
+      await instance.command("compact", "");
+    });
+
+    await settles(async () => {
+      const kinds = await runInDurableObject(stub, async (instance: TestSession) =>
+        (await instance.rootEntries()).map((entry) => entry.kind),
+      );
+
+      expect(kinds).toContain("pi.compaction");
+    });
+
+    const answer = await runInDurableObject(stub, async (instance: TestSession) => {
+      await instance.prompt({ requestId: "two", text: "Later" });
+
+      const snapshot = await instance.snapshot();
+      const marker = snapshot.entries[0];
+
+      if (marker?.head === undefined) throw new Error("The snapshot has no head marker");
+
+      const shown = new Set<number>(Arr.map(snapshot.entries, (entry) => entry.id));
+      const page = await instance.history(marker.head);
+
+      return {
+        marker: marker.kind,
+        kinds: Arr.map(page.entries, (entry) => entry.kind),
+        overlaps: Arr.some(page.entries, (entry) => shown.has(entry.id)),
+        first: page.entries[0]?.model?.[0],
+        before: page.before,
+      };
+    });
+
+    expect(answer.marker).toBe("pi.compaction");
+    // Everything before the window, oldest first, none of it in the snapshot, and nothing left before it.
+    expect(answer.first).toMatchObject({ role: "user", content: "First" });
+    expect(answer.overlaps).toBe(false);
+    expect(answer.kinds).not.toContain("pi.system");
+    expect(answer.before).toBeNull();
   });
 
   it("export the whole History as Markdown with /export", async () => {

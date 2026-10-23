@@ -1027,9 +1027,32 @@ describe("owner commands addressed to a conversation", () => {
 
     client.send({ type: "submit", id: "submit", conversationId: stranger, input: "hi" });
     client.send({ type: "abort", id: "abort", conversationId: stranger });
+    client.send({ type: "history", id: "history", conversationId: stranger, before: 10 });
 
     expect(await client.answer("submit")).toMatchObject({ type: "error", id: "submit" });
     expect(await client.answer("abort")).toMatchObject({ type: "error", id: "abort" });
+    expect(await client.answer("history")).toMatchObject({ type: "error", id: "history" });
+  });
+});
+
+describe("history", () => {
+  it("answers the root's entries before the one asked for, oldest first", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+
+    await client.root();
+    client.send({ type: "submit", id: "submit", input: "hi", requestId: "turn-1" });
+    await submitted(client, "submit");
+    await idle(stub);
+    client.send({ type: "history", id: "history", before: 1_000_000 });
+
+    const answer = await client.answer("history");
+
+    expect(answer).toMatchObject({
+      type: "result",
+      id: "history",
+      result: { before: null, entries: [{ kind: "pi.user" }, { kind: "pi.assistant" }] },
+    });
   });
 });
 

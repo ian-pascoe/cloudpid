@@ -4,7 +4,7 @@ import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { projectEntries } from "./transcript.ts";
 import { skillBlock } from "./user-entry.ts";
-import { EMPTY_VIEW, reduceEvents, reduceView, type SessionView } from "./view.ts";
+import { EMPTY_VIEW, reduceEvents, reduceView, type SessionView, withEarlier } from "./view.ts";
 
 /** The parts of pi's shapes a fixture sets. */
 type FixtureValue =
@@ -603,6 +603,85 @@ describe("the session view", () => {
       );
 
       expect(view.messages.map((message) => message.role)).toEqual(["notice", "user"]);
+      expect(view.earlier.map((message) => message.id)).toEqual(["1"]);
+      expect(view.before).toBeNull();
+    });
+  });
+
+  describe("earlier Context Windows", () => {
+    const reset = (id: number) =>
+      asEntry({
+        id,
+        conversationId: 1,
+        kind: "pi.reset",
+        head: id,
+        model: [{ role: "user", content: "handoff", timestamp: id }],
+      });
+
+    const compaction = (id: number, head: number) =>
+      asEntry({
+        id,
+        conversationId: 1,
+        kind: "pi.compaction",
+        head,
+        model: [{ role: "user", content: "summary", timestamp: id }],
+      });
+
+    const ids = (messages: SessionView["messages"]) => messages.map((message) => message.id);
+
+    it("moves what a compaction leaves out to earlier, and shows it as a snapshot would", () => {
+      const live = fold(
+        snapshot({ entries: [user(1, "a"), user(2, "b"), user(3, "c")] }),
+        asEvent({ type: "entry_appended", entry: compaction(4, 3) }),
+      );
+
+      expect(ids(live.earlier)).toEqual(["1", "2"]);
+      expect(ids(live.messages)).toEqual(["4", "3"]);
+      expect(live.before).toBeNull();
+
+      const reloaded = fold(snapshot({ entries: [compaction(4, 3), user(3, "c")] }));
+
+      expect(reloaded.messages).toEqual(live.messages);
+      expect(reloaded.earlier).toEqual([]);
+      expect(reloaded.before).toBe(3);
+    });
+
+    it("keeps the earlier messages through a snapshot of a Context Window it saw start", () => {
+      const live = fold(
+        snapshot({ entries: [user(1, "old")] }),
+        asEvent({ type: "entry_appended", entry: reset(2) }),
+        asEvent({ type: "entry_appended", entry: user(3, "new") }),
+      );
+
+      const rewatched = reduceView(live, snapshot({ entries: [reset(2), user(3, "new")] }));
+
+      expect(ids(rewatched.earlier)).toEqual(["1"]);
+      expect(ids(rewatched.messages)).toEqual(["2", "3"]);
+      expect(rewatched.before).toBeNull();
+    });
+
+    it("starts over from the marker's head when a snapshot's Context Window began out of sight", () => {
+      const live = fold(snapshot({ entries: [user(1, "old")] }));
+      const rewatched = reduceView(live, snapshot({ entries: [reset(5), user(6, "new")] }));
+
+      expect(rewatched.earlier).toEqual([]);
+      expect(rewatched.before).toBe(5);
+    });
+
+    it("adds a page of History in front, and only for the entries it was asked for", () => {
+      const view = fold(snapshot({ entries: [reset(5), user(6, "new")] }));
+      const page = { entries: [user(3, "three"), reset(4)], before: 3 };
+      const loaded = withEarlier(view, 5, page);
+
+      expect(ids(loaded.earlier)).toEqual(["3", "4"]);
+      expect(loaded.before).toBe(3);
+      // The same page again, or one for another `before`, is not added twice.
+      expect(withEarlier(loaded, 5, page)).toBe(loaded);
+
+      const rest = withEarlier(loaded, 3, { entries: [user(1, "one")], before: null });
+
+      expect(ids(rest.earlier)).toEqual(["1", "3", "4"]);
+      expect(rest.before).toBeNull();
     });
   });
 });

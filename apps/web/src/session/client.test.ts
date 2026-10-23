@@ -1486,6 +1486,59 @@ describe("the catalog and Slash commands", () => {
     }),
   );
 
+  it.effect(
+    "loads a page of earlier History into the view of the conversation it was asked for",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        const reset = (conversationId: number, id: number) => ({
+          ...threadEntry(conversationId, id, "handoff"),
+          kind: "pi.reset",
+          head: id,
+        });
+
+        yield* watching(latest(), { entries: [reset(1, 5), entry(6, "new")] });
+        yield* watchThread(client, 2);
+        yield* watchingThread(latest(), 2, { entries: [reset(2, 9)] });
+
+        expect(state().view.before).toBe(5);
+
+        const root = yield* asking(client.loadEarlier(5));
+        const child = yield* asking(client.loadEarlier(9, 2));
+
+        const [rootAsk, childAsk] = latest()
+          .commands()
+          .filter((command) => command.type === "history");
+
+        expect(rootAsk).toEqual({ type: "history", id: rootAsk?.id, before: 5 });
+        expect(childAsk).toEqual({
+          type: "history",
+          id: childAsk?.id,
+          before: 9,
+          conversationId: 2,
+        });
+
+        yield* latest().say({
+          type: "result",
+          id: rootAsk?.id,
+          result: { entries: [entry(3, "old")], before: 3 },
+        });
+        yield* latest().say({
+          type: "result",
+          id: childAsk?.id,
+          result: { entries: [threadEntry(2, 8, "child")], before: null },
+        });
+        yield* Fiber.join(root);
+        yield* Fiber.join(child);
+
+        expect(state().view.earlier.map((message) => message.id)).toEqual(["3"]);
+        expect(state().view.before).toBe(3);
+        expect(state().threads["2"]?.view.earlier.map((message) => message.id)).toEqual(["8"]);
+        expect(state().threads["2"]?.view.before).toBeNull();
+      }),
+  );
+
   it.effect("runs a command and resolves with what it did, or rejects with why it could not", () =>
     Effect.gen(function* () {
       const { client, latest, state } = yield* setup();

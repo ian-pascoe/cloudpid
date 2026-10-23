@@ -1,4 +1,5 @@
 import { EMPTY_VIEW, type SessionView, type TranscriptMessage } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import { shownSkills, toThreadMessages } from "./thread-messages.ts";
 
@@ -62,6 +63,25 @@ describe("the thread messages of a view", () => {
         status: { type: "complete", reason: "stop" },
       },
     ]);
+  });
+
+  it("shows the earlier Context Windows first, a turn split across them made whole", () => {
+    const messages = toThreadMessages(
+      view({
+        earlier: [
+          user("1", "roll"),
+          assistant("2", [{ type: "tool-call", id: "c1", name: "roll_dice", arguments: {} }]),
+        ],
+        messages: [
+          result("c1", "4"),
+          { id: "4", role: "notice", title: "Handoff", parts: [], timestamp: 4 },
+          user("5", "again"),
+        ],
+      }),
+    );
+
+    expect(Arr.map(messages, (message) => message.id)).toEqual(["1", "1:reply", "4", "5"]);
+    expect(messages[1]?.content).toMatchObject([{ type: "tool-call", result: "4" }]);
   });
 
   it("keeps the Skills the Session expanded into a user message, for its disclosures", () => {

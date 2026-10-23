@@ -19,7 +19,13 @@ import {
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
-import type { Catalog, CommandOutcome, ConversationId, FileMatches } from "@cloudpid/protocol";
+import type {
+  Catalog,
+  CommandOutcome,
+  ConversationId,
+  FileMatches,
+  HistoryPage,
+} from "@cloudpid/protocol";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -513,6 +519,11 @@ export class TestSession extends DurableObject {
   /** What the composer's `@` menu offers for `query`. */
   files(query: string): Promise<FileMatches> {
     return this.#runtime.runPromise(this.#host.files({ query }));
+  }
+
+  /** A page of the root conversation's History before entry `before`, as a client's `history` gets it. */
+  history(before: number): Promise<HistoryPage> {
+    return this.#runtime.runPromise(this.#host.history({ before }));
   }
 
   /** Run the Session's Slash command `name`: what it did, or why it could not. */
