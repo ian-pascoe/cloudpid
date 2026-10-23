@@ -76,32 +76,38 @@ export type BuildState = {
 type BuildSettings = Pick<ContainerSettings, "variables" | "setupScript" | "ignore">;
 
 /**
- * The key of the Build `repos`, `settings` and `image` make: a digest of what a Build depends on, so a Build of another
- * key is not current. That is the Repos (names and addresses, in any order), the variables, the Environment's Setup
- * Script and the Container-only paths (a launch starts only from a Build with its own), and the image; not the size, the
- * idle time or the Start Script, which a Build does not use. A Repo's default branch moving is the daily look's to find
- * (`BuildRequest.check`), not the key's.
+ * The key of the Build `repos`, `settings`, `image` and `secrets` make: a digest of what a Build depends on, so a Build
+ * of another key is not current. That is the Repos (names and addresses, in any order), the variables, the
+ * Environment's Setup Script and the Container-only paths (a launch starts only from a Build with its own), the image,
+ * and the keyed digest of the Secrets that reach the Build (`secrets`, which the Registry makes: never a value; with
+ * none, the key is what it was before Secrets reached Builds); not the size, the idle time or the Start Script, which
+ * a Build does not use. A Repo's default branch moving is the daily look's to find (`BuildRequest.check`), not the key's.
  */
 export const buildKey = async ({
   repos,
   settings,
   image,
+  secrets = null,
 }: {
   readonly repos: ReadonlyArray<BuildRepo>;
   readonly settings: BuildSettings;
   readonly image: string | undefined;
+  readonly secrets?: string | null | undefined;
 }): Promise<string> => {
   const byFirst = (left: readonly [string, string], right: readonly [string, string]) =>
     left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0;
 
-  const canonical = JSON.stringify({
+  const keyed = {
     version: 1,
     image: image ?? null,
     repos: repos.map((repo): readonly [string, string] => [repo.name, repo.url]).sort(byFirst),
     variables: Object.entries(settings.variables).sort(byFirst),
     setupScript: settings.setupScript,
     ignore: settings.ignore,
-  });
+  };
+
+  // The Secrets' digest only where Secrets reach the Build, so the keys of Builds without any stay what they were.
+  const canonical = JSON.stringify(secrets === null ? keyed : { ...keyed, secrets });
 
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
 

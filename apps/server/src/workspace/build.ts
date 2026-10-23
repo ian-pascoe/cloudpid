@@ -7,9 +7,11 @@
 // Script out: no service runs in a Build), starts the Container (its bootstrap installs the Toolchains), clones each Repo
 // into a scratch directory outside `/workspace`, installs their Toolchains, runs the Environment's Setup Script, then each
 // Repo's, records each Repo's commit, stops what the scripts left running, deletes the clones and every Setup Script
-// record, snapshots the Container (after the scan for the token) and stops it. The last good Build is kept with the
-// state of the one in progress or the last failure; a Build that fails keeps the last good one.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// record, snapshots the Container (after the scan for the token and the Environment's Secrets) and stops it. The
+// Setup Scripts get the Environment's Secrets marked for the Build, as `$PI_SECRET_<NAME>` (the name a Session's
+// commands get them under), in their environment only. The last good Build is kept with the state of the one in
+// progress or the last failure; a Build that fails keeps the last good one.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import {
   containerOverridesFrom,
   type ContainerSettings,
@@ -31,8 +33,10 @@ import {
   SETUP_TIMEOUT_SECONDS,
   setupScriptRunIfDue,
 } from "@cloudpid/sandbox-image/toolchains";
+import { type KeptSecret, secretEnvName } from "@cloudpid/extensions/secrets/core";
 import type * as Schema from "effect/Schema";
 import type { BuildRequest, BuildState, EnvironmentBuild } from "./build-record.ts";
+import type { HeldSecrets } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
 import { CLONE_TIMEOUT_SECONDS, type ScriptRun } from "./prepare.ts";
 
@@ -64,8 +68,14 @@ export type BuildRunnerDeps = {
   readonly image: () => string | undefined;
   /** Keep `overrides` as the object's Container settings, which its Container's launch and bootstrap use. */
   readonly handOver: (overrides: Schema.Json) => Promise<void>;
-  /** Run a bash script on the object's own Container (starting it, and its bootstrap, first). */
-  readonly run: (script: string, timeoutSeconds: number) => Promise<ScriptRun>;
+  /** Run a bash script on the object's own Container (starting it, and its bootstrap, first), with `env` beside its own. */
+  readonly run: (
+    script: string,
+    timeoutSeconds: number,
+    env?: Readonly<Record<string, string>>,
+  ) => Promise<ScriptRun>;
+  /** The Environment's kept Secrets the object was handed with the request, or why it cannot show them. */
+  readonly secrets: () => Promise<HeldSecrets>;
   /** Snapshot the running Container, after the scan for the token: the Build's snapshot, or why there is none. */
   readonly snapshot: () => Promise<
     | {
@@ -80,7 +90,7 @@ export type BuildRunnerDeps = {
   readonly stop: () => Promise<void>;
   /** The idle stop: it holds the Container while a Build runs. */
   readonly idle: Pick<IdleStop, "begin" | "end">;
-  /** `text` with the GitHub token taken out. */
+  /** `text` with the GitHub token and the Environment's Secrets taken out. */
   readonly redact: (text: string) => string;
   /** A fresh id for a request, which tags the processes its scripts start. */
   readonly newId: () => string;
@@ -96,11 +106,25 @@ const NOTHING: StoredBuilds = { last: null, progress: null, attemptedAt: null, p
 
 /**
  * The Container settings a Build's object runs with: the Environment's, but for its Setup Script, which the Build runs
- * itself in its scratch root, and its Start Script, since no service runs in a Build. This is where what reaches a
- * Build's commands is decided (the variables): the Secrets marked for Builds join them here (phase E of ADR-0016).
+ * itself in its scratch root, and its Start Script, since no service runs in a Build. Its commands get the variables;
+ * the Secrets do not join them here, since the settings are stored in the clear: `buildSecretEnvironment`.
  */
 export const buildContainerSettings = (settings: ContainerSettings): Schema.Json =>
   containerOverridesFrom({ ...settings, setupScript: "", startScript: "" });
+
+/**
+ * What a Build's Setup Scripts get of the Environment's Secrets, in their environment and nowhere else: those marked
+ * for the Build, each as `$PI_SECRET_<NAME>`, the variable a Session's commands get it as. Every Workspace started
+ * from the Build shares its Snapshot, so the others never reach it.
+ */
+export const buildSecretEnvironment = (
+  secrets: ReadonlyArray<KeptSecret>,
+): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    secrets.flatMap((secret) =>
+      secret.build ? [[secretEnvName(secret.name), secret.value] as const] : [],
+    ),
+  );
 
 export class BuildRunner {
   readonly #deps: BuildRunnerDeps;
@@ -218,9 +242,14 @@ export class BuildRunner {
     });
   }
 
-  /** Run step `what`: `script` on the Container, which must exit 0. Its output when it did. */
-  async #step(what: string, script: string, timeoutSeconds: number): Promise<string> {
-    const ran = await this.#deps.run(script, timeoutSeconds);
+  /** Run step `what`: `script` on the Container, with `env` beside its own, which must exit 0. Its output when it did. */
+  async #step(
+    what: string,
+    script: string,
+    timeoutSeconds: number,
+    env?: Readonly<Record<string, string>>,
+  ): Promise<string> {
+    const ran = await this.#deps.run(script, timeoutSeconds, env);
 
     if (ran.exitCode === 0) return ran.output;
 
@@ -274,6 +303,13 @@ export class BuildRunner {
       if (request.check === true && (await this.#unchanged(request, last))) {
         outcome = { kind: "unchanged" };
       } else {
+        // The snapshot is searched for every one of them, so a Build that cannot show them is not made.
+        const held = await deps.secrets();
+
+        if (!held.ok) throw new Error(held.reason);
+
+        const secretEnv = buildSecretEnvironment(held.secrets);
+
         await this.#mark(request, "building");
         await this.#step(
           "Cloning the repos failed",
@@ -286,6 +322,7 @@ export class BuildRunner {
             "The environment's Setup Script failed",
             `${prelude}${environmentSetupScriptRun(settings.setupScript, BUILD_ROOT)}`,
             SETUP_TIMEOUT_SECONDS + 120,
+            secretEnv,
           );
         }
 
@@ -294,6 +331,7 @@ export class BuildRunner {
             `The Setup Script ${repo.name}/${SETUP_SCRIPT} failed`,
             `${prelude}${setupScriptRunIfDue(`${BUILD_ROOT}/${repo.name}`, SETUP_STATE_DIRECTORY, SETUP_TIMEOUT_SECONDS, BUILD_ROOT)}`,
             SETUP_TIMEOUT_SECONDS + 120,
+            secretEnv,
           );
         }
 

@@ -1,9 +1,16 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 // The workerd test Durable Object that hosts a `RegistryStore` over its SQLite storage, as the Registry DO does.
-import type { PushSubscription } from "@cloudpid/protocol";
+import {
+  type KeptSecret,
+  openKeptVault,
+  type SealedValue,
+} from "@cloudpid/extensions/secrets/core";
+import type { EnvironmentSecretRecord, PushSubscription } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import { keepSecret, openEnvironmentSecrets, type SecretWrite } from "./environment-secrets.ts";
 import type * as Schema from "effect/Schema";
 import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
 import {
@@ -15,6 +22,8 @@ import {
   openRegistryStore,
   type RegistryStore,
   type RepoChange,
+  type SecretPut,
+  type StoredEnvironmentSecret,
   type SessionRecord,
   type SessionRefusal,
   type SessionStatus,
@@ -157,6 +166,56 @@ export class TestRegistry extends DurableObject {
 
   forgetLegacy(object: LegacyObject): void {
     this.#store.forgetLegacy(object);
+  }
+
+  listEnvironmentSecrets(): EnvironmentSecretRecord[] {
+    return this.#store.listEnvironmentSecrets();
+  }
+
+  getEnvironmentSecrets(environment: string): StoredEnvironmentSecret[] {
+    return this.#store.getEnvironmentSecrets(environment);
+  }
+
+  putEnvironmentSecret(
+    input: { environment: string | null; name: string; sealed: SealedValue; build?: boolean },
+    now: number,
+  ): SecretPut {
+    return this.#store.putEnvironmentSecret(input, now);
+  }
+
+  setEnvironmentSecretBuild(
+    environment: string | null,
+    name: string,
+    build: boolean,
+    now: number,
+  ): EnvironmentSecretRecord | null {
+    return this.#store.setEnvironmentSecretBuild(environment, name, build, now);
+  }
+
+  deleteEnvironmentSecret(environment: string | null, name: string): boolean {
+    return this.#store.deleteEnvironmentSecret(environment, name);
+  }
+
+  /** Keep a Secret as the Registry DO does, sealed under `master` (`keepSecret`). */
+  keepSecret(
+    master: string,
+    input: { environment: string | null; name: string; value: string; build?: boolean },
+    now: number,
+  ): Promise<SecretWrite> {
+    return Effect.runPromise(
+      Effect.flatMap(openKeptVault(master, "registry"), (vault) =>
+        keepSecret(this.#store, vault, input, now),
+      ),
+    );
+  }
+
+  /** What `environment` uses, opened under `master`, as the Registry DO hands it (`openEnvironmentSecrets`). */
+  openSecrets(master: string, environment: string): Promise<ReadonlyArray<KeptSecret>> {
+    return Effect.runPromise(
+      Effect.flatMap(openKeptVault(master, "registry"), (vault) =>
+        openEnvironmentSecrets(this.#store, vault, environment),
+      ),
+    );
   }
 
   getDocument(name: string): string | null {

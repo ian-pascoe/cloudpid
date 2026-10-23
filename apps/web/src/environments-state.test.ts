@@ -10,6 +10,7 @@ import {
   EnvironmentError,
   type ContainerSettingsState,
   type EnvironmentRecord,
+  type EnvironmentSecretRecord,
   type SessionRecord,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
@@ -25,6 +26,14 @@ import {
   addRepoAtom,
   addRepoSourceAtom,
   createEnvironmentAtom,
+  deleteSecretAtom,
+  environmentSecretsAtom,
+  environmentSecretsErrorAtom,
+  saveSecretAtom,
+  secretBuildAtom,
+  secretDialogAtom,
+  secretDraftAtom,
+  secretsInAtom,
   deleteEnvironmentAtom,
   deleteTypedAtom,
   buildsAtom,
@@ -45,6 +54,7 @@ import {
   workspaceListAtom,
   workspacesAtom,
 } from "./environments-state.ts";
+import { EMPTY_SECRET_DRAFT, EVERY_ENVIRONMENT } from "./environments.ts";
 
 const environment = (
   id: string,
@@ -977,6 +987,179 @@ describe("an Environment's Build", () => {
         "There is nothing to build.",
       );
       registry.dispose();
+    }),
+  );
+});
+
+describe("the kept Secrets", () => {
+  /** A Registry keeping Secrets in memory, and what it was asked to keep. */
+  const keeping = () => {
+    const records: EnvironmentSecretRecord[] = [
+      { environment: "work", name: "NPM_KEY", build: true, updatedAt: 1 },
+      { environment: null, name: "SHARED", build: false, updatedAt: 1 },
+    ];
+
+    const values: Array<{
+      environment: string | null;
+      name: string;
+      value: string;
+      build?: boolean;
+    }> = [];
+
+    const registry = registryWith({
+      listEnvironmentSecrets: () => Effect.sync(() => [...records]),
+      setEnvironmentSecret: (payload) =>
+        payload.value === "refused"
+          ? refused("At most 100 Secrets are kept for every environment: delete one first")
+          : Effect.sync(() => {
+              values.push({ ...payload });
+
+              const index = records.findIndex(
+                (known) => known.environment === payload.environment && known.name === payload.name,
+              );
+
+              const record = {
+                environment: payload.environment,
+                name: payload.name,
+                build: payload.build ?? records[index]?.build ?? false,
+                updatedAt: 2,
+              };
+
+              if (index === -1) records.push(record);
+              else records[index] = record;
+
+              return record;
+            }),
+      setEnvironmentSecretBuild: ({ environment: scope, name, build }) =>
+        Effect.sync(() => {
+          const index = records.findIndex(
+            (known) => known.environment === scope && known.name === name,
+          );
+
+          const record = { ...records[index]!, build };
+
+          records[index] = record;
+
+          return record;
+        }),
+      deleteEnvironmentSecret: ({ environment: scope, name }) =>
+        name === "STUCK"
+          ? refused("No Secret STUCK is kept for every environment")
+          : Effect.sync(() => {
+              records.splice(
+                records.findIndex((known) => known.environment === scope && known.name === name),
+                1,
+              );
+            }),
+      listBuilds: () => Effect.succeed([]),
+    });
+
+    return { registry, records, values };
+  };
+
+  it.effect("are listed by section: an Environment's, and those for every Environment", () =>
+    Effect.gen(function* () {
+      const { registry } = keeping();
+
+      registry.mount(secretsInAtom("work"));
+      registry.mount(secretsInAtom(EVERY_ENVIRONMENT));
+      yield* settled(registry, environmentSecretsAtom);
+
+      expect(registry.get(secretsInAtom("work"))?.map((record) => record.name)).toEqual([
+        "NPM_KEY",
+      ]);
+      expect(registry.get(secretsInAtom(EVERY_ENVIRONMENT))?.map((record) => record.name)).toEqual([
+        "SHARED",
+      ]);
+      expect(registry.get(environmentSecretsErrorAtom)).toBeNull();
+    }),
+  );
+
+  it.effect(
+    "keeps a new one for every Environment, then empties the form so the value is held nowhere",
+    () =>
+      Effect.gen(function* () {
+        const { registry, values } = keeping();
+        const draft = { name: "API_KEY", value: "sk-live-0123", build: true };
+
+        registry.mount(secretsInAtom(EVERY_ENVIRONMENT));
+        registry.mount(secretDraftAtom(EVERY_ENVIRONMENT));
+        registry.set(secretDraftAtom(EVERY_ENVIRONMENT), draft);
+        registry.set(saveSecretAtom(EVERY_ENVIRONMENT), draft);
+
+        expect(
+          AsyncResult.getOrThrow(yield* settled(registry, saveSecretAtom(EVERY_ENVIRONMENT))),
+        ).toMatchObject({ environment: null, name: "API_KEY", build: true });
+        expect(values).toEqual([
+          { environment: null, name: "API_KEY", value: "sk-live-0123", build: true },
+        ]);
+        expect(registry.get(secretDraftAtom(EVERY_ENVIRONMENT))).toEqual(EMPTY_SECRET_DRAFT);
+      }),
+  );
+
+  it.effect("replaces the value of one kept under the name, leaving its build flag as it is", () =>
+    Effect.gen(function* () {
+      const { registry, values } = keeping();
+
+      registry.mount(secretsInAtom("work"));
+      yield* settled(registry, environmentSecretsAtom);
+      registry.set(saveSecretAtom("work"), { name: "NPM_KEY", value: "npm_new", build: false });
+      yield* settled(registry, saveSecretAtom("work"));
+
+      expect(values).toEqual([{ environment: "work", name: "NPM_KEY", value: "npm_new" }]);
+      expect(registry.get(secretsInAtom("work"))?.[0]?.build).toBe(true);
+    }),
+  );
+
+  it.effect(
+    "keeps what was typed when the Registry refuses it, and says why without the value",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = keeping();
+        const draft = { name: "API_KEY", value: "refused", build: false };
+
+        registry.mount(secretDraftAtom("work"));
+        registry.set(secretDraftAtom("work"), draft);
+        registry.set(saveSecretAtom("work"), draft);
+
+        const problem = settledFailureOf(yield* settled(registry, saveSecretAtom("work")));
+
+        expect(problem).toMatch(/At most 100/);
+        expect(registry.get(secretDraftAtom("work"))).toEqual(draft);
+      }),
+  );
+
+  it.effect("switches whether one reaches the Build", () =>
+    Effect.gen(function* () {
+      const { registry, records } = keeping();
+
+      registry.mount(secretsInAtom("work"));
+      registry.set(secretBuildAtom("work"), { name: "NPM_KEY", build: false });
+      yield* settled(registry, secretBuildAtom("work"));
+
+      expect(records[0]?.build).toBe(false);
+    }),
+  );
+
+  it.effect("deletes one and closes its dialog; a refusal keeps it open and says why", () =>
+    Effect.gen(function* () {
+      const { registry, records } = keeping();
+
+      registry.mount(secretDialogAtom(EVERY_ENVIRONMENT));
+      registry.set(secretDialogAtom(EVERY_ENVIRONMENT), "SHARED");
+      registry.set(deleteSecretAtom(EVERY_ENVIRONMENT), "SHARED");
+      yield* settled(registry, deleteSecretAtom(EVERY_ENVIRONMENT));
+
+      expect(records.map((record) => record.name)).toEqual(["NPM_KEY"]);
+      expect(registry.get(secretDialogAtom(EVERY_ENVIRONMENT))).toBeNull();
+
+      registry.set(secretDialogAtom(EVERY_ENVIRONMENT), "STUCK");
+      registry.set(deleteSecretAtom(EVERY_ENVIRONMENT), "STUCK");
+
+      expect(
+        settledFailureOf(yield* settled(registry, deleteSecretAtom(EVERY_ENVIRONMENT))),
+      ).toMatch(/No Secret STUCK/);
+      expect(registry.get(secretDialogAtom(EVERY_ENVIRONMENT))).toBe("STUCK");
     }),
   );
 });

@@ -9,9 +9,18 @@ import {
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import type { SessionRecord } from "@cloudpid/protocol";
+import type { EnvironmentSecretRecord, SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  EMPTY_SECRET_DRAFT,
+  EVERY_ENVIRONMENT,
+  inheritedSecrets,
+  secretDraftProblems,
+  secretDraftReady,
+  secretScopeOf,
+  secretsIn,
+  secretVariable,
+  secretWrite,
   buildLine,
   deleteConfirmed,
   environmentNameProblem,
@@ -301,5 +310,72 @@ describe("buildLine", () => {
     ).toBe(
       "Build failed 1 hour ago: exit 1: npm ERR!. Meanwhile new workspaces start from the build of yesterday",
     );
+  });
+});
+
+describe("an Environment's Secrets", () => {
+  const kept = (
+    environment: string | null,
+    name: string,
+    build = false,
+  ): EnvironmentSecretRecord => ({ environment, name, build, updatedAt: 1 });
+
+  const records = [
+    kept("work", "NPM_KEY", true),
+    kept(null, "SHARED", false),
+    kept("work", "API_KEY"),
+    kept(null, "API_KEY", true),
+    kept("other", "DB_URL"),
+  ];
+
+  it("are listed by section, by name, those for every Environment under their own key", () => {
+    expect(secretsIn(records, "work").map((record) => record.name)).toEqual(["API_KEY", "NPM_KEY"]);
+    expect(secretsIn(records, EVERY_ENVIRONMENT).map((record) => record.name)).toEqual([
+      "API_KEY",
+      "SHARED",
+    ]);
+    expect(secretScopeOf(EVERY_ENVIRONMENT)).toBeNull();
+    expect(secretScopeOf("work")).toBe("work");
+  });
+
+  it("include those kept for every Environment, but where the Environment keeps its own of the name", () => {
+    expect(inheritedSecrets(records, "work").map((record) => record.name)).toEqual(["SHARED"]);
+    expect(inheritedSecrets(records, "other").map((record) => record.name)).toEqual([
+      "API_KEY",
+      "SHARED",
+    ]);
+  });
+
+  it("are typed with the server's rules, shown only once something is typed, never quoting the value", () => {
+    expect(secretDraftProblems(EMPTY_SECRET_DRAFT)).toEqual({ name: null, value: null });
+    expect(secretDraftReady(EMPTY_SECRET_DRAFT)).toBe(false);
+
+    const bad = secretDraftProblems({ name: "api-key", value: "a\0b", build: false });
+
+    expect(bad.name).toMatch(/uppercase/);
+    expect(bad.value).toMatch(/NUL/);
+    expect(bad.value).not.toContain("a\0b");
+    expect(secretDraftReady({ name: "API_KEY", value: "sk-live", build: false })).toBe(true);
+    expect(
+      secretDraftProblems({ name: "API_KEY", value: "x".repeat(33 * 1024), build: false }).value,
+    ).toMatch(/KiB/);
+  });
+
+  it("are added with the form's build flag, and replaced keeping theirs", () => {
+    const draft = { name: "NPM_KEY", value: "npm_new", build: false };
+
+    expect(secretWrite(draft, secretsIn(records, "work"))).toEqual({
+      name: "NPM_KEY",
+      value: "npm_new",
+    });
+    expect(secretWrite({ ...draft, build: true }, secretsIn(records, "other"))).toEqual({
+      name: "NPM_KEY",
+      value: "npm_new",
+      build: true,
+    });
+  });
+
+  it("reach a Build's scripts as the variable a Session's commands get them as", () => {
+    expect(secretVariable("NPM_KEY")).toBe("PI_SECRET" + "_NPM_KEY");
   });
 });

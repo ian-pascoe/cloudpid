@@ -1,7 +1,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT, SPARE_BRANCH } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, MAX_ENVIRONMENT_SECRETS, SPARE_BRANCH } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
@@ -1043,6 +1043,138 @@ describe("the Registry store", () => {
       instance.forgetLegacy({ kind: "machine", id: "default" });
 
       expect(instance.takeLegacy(10, 9_000, 100)).toEqual([]);
+    });
+  });
+
+  describe("kept Secrets", () => {
+    const MASTER = "test-master-key-0123456789abcdef0123456789";
+    const VALUE = "sk-live-0123456789abcdef";
+
+    it("keeps each value sealed in SQLite, and lists names, scopes, flags and times only", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid");
+      expect(
+        await registry.keepSecret(
+          MASTER,
+          { environment: "0000abcd", name: "API_KEY", value: VALUE },
+          5,
+        ),
+      ).toMatchObject({ status: "saved" });
+      await registry.keepSecret(
+        MASTER,
+        { environment: null, name: "NPM_TOKEN", value: "npm_0123456789", build: true },
+        6,
+      );
+
+      expect(await registry.listEnvironmentSecrets()).toEqual([
+        { environment: null, name: "NPM_TOKEN", build: true, updatedAt: 6 },
+        { environment: "0000abcd", name: "API_KEY", build: false, updatedAt: 5 },
+      ]);
+      expect(await registry.openSecrets(MASTER, "0000abcd")).toEqual([
+        { name: "API_KEY", value: VALUE, scope: "environment", build: false },
+        { name: "NPM_TOKEN", value: "npm_0123456789", scope: "every", build: true },
+      ]);
+
+      await runInDurableObject(registry, (_instance: TestRegistry, state) => {
+        const rows = JSON.stringify(
+          state.storage.sql.exec("SELECT * FROM environment_secrets").toArray(),
+        );
+
+        expect(rows).not.toContain(VALUE);
+        expect(rows).not.toContain("npm_0123456789");
+      });
+    });
+
+    it("does not open a row moved to another scope or name", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid");
+      await environmentWith(registry, "0000beef", "Other");
+      await registry.keepSecret(
+        MASTER,
+        { environment: "0000abcd", name: "API_KEY", value: VALUE },
+        5,
+      );
+
+      await runInDurableObject(registry, (_instance: TestRegistry, state) => {
+        state.storage.sql.exec(
+          "UPDATE environment_secrets SET scope = '0000beef', name = 'OTHER_KEY'",
+        );
+      });
+
+      expect(await registry.listEnvironmentSecrets()).toEqual([
+        { environment: "0000beef", name: "OTHER_KEY", build: false, updatedAt: 5 },
+      ]);
+      expect(await registry.openSecrets(MASTER, "0000beef")).toEqual([]);
+    });
+
+    it("replaces a value keeping its flag, sets the flag, and deletes", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid");
+      await registry.keepSecret(
+        MASTER,
+        { environment: "0000abcd", name: "API_KEY", value: VALUE, build: true },
+        5,
+      );
+      await registry.keepSecret(
+        MASTER,
+        { environment: "0000abcd", name: "API_KEY", value: "sk-live-rotated-0123" },
+        7,
+      );
+
+      expect(await registry.openSecrets(MASTER, "0000abcd")).toEqual([
+        { name: "API_KEY", value: "sk-live-rotated-0123", scope: "environment", build: true },
+      ]);
+      expect(await registry.setEnvironmentSecretBuild("0000abcd", "API_KEY", false, 8)).toEqual({
+        environment: "0000abcd",
+        name: "API_KEY",
+        build: false,
+        updatedAt: 8,
+      });
+      expect(await registry.setEnvironmentSecretBuild(null, "API_KEY", true, 9)).toBeNull();
+      expect(await registry.deleteEnvironmentSecret(null, "API_KEY")).toBe(false);
+      expect(await registry.deleteEnvironmentSecret("0000abcd", "API_KEY")).toBe(true);
+      expect(await registry.listEnvironmentSecrets()).toEqual([]);
+    });
+
+    it("refuses an Environment that does not exist, and a scope that is full", async () => {
+      const registry = fresh();
+      const sealed = { version: 1 as const, iv: "aXY=", ciphertext: "Y2lwaGVy" };
+
+      expect(
+        await registry.putEnvironmentSecret({ environment: "0000dead", name: "A", sealed }, 1),
+      ).toBe("missing");
+
+      for (let index = 0; index < MAX_ENVIRONMENT_SECRETS; index++) {
+        await registry.putEnvironmentSecret({ environment: null, name: `S${index}`, sealed }, 1);
+      }
+
+      expect(
+        await registry.putEnvironmentSecret({ environment: null, name: "ONE_MORE", sealed }, 1),
+      ).toBe("full");
+      // Replacing one that is kept is not adding one.
+      expect(
+        await registry.putEnvironmentSecret({ environment: null, name: "S0", sealed }, 2),
+      ).toMatchObject({ name: "S0", updatedAt: 2 });
+    });
+
+    it("deletes an Environment's Secrets with it, and keeps those for every Environment", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid");
+      await registry.keepSecret(
+        MASTER,
+        { environment: "0000abcd", name: "API_KEY", value: VALUE },
+        5,
+      );
+      await registry.keepSecret(MASTER, { environment: null, name: "SHARED", value: VALUE }, 5);
+
+      expect(await registry.deleteEnvironment("0000abcd")).toBe("deleted");
+      expect(await registry.listEnvironmentSecrets()).toEqual([
+        { environment: null, name: "SHARED", build: false, updatedAt: 5 },
+      ]);
     });
   });
 

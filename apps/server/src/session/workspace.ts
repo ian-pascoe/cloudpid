@@ -29,6 +29,7 @@ export type WorkspaceNamespace = {
       | "updateContainerSettings"
       | "environmentBuild"
       | "updateEnvironmentBuild"
+      | "updateEnvironmentSecrets"
     >;
 };
 

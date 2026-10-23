@@ -7,6 +7,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
+import { KEPT_REFRESH_MS, KEPT_RETRY_MS, type KeptSecret } from "./kept.ts";
 import { secretReference } from "./references.ts";
 import {
   SECRET_LIFETIME_MS,
@@ -41,6 +42,7 @@ const open = (
   storage: SecretStorage,
   master = MASTER,
   notify?: (ask: SecretAsk) => Effect.Effect<void>,
+  kept?: Effect.Effect<ReadonlyArray<KeptSecret>, unknown>,
 ) =>
   Effect.gen(function* () {
     const announced: (readonly SecretAsk[])[] = [];
@@ -60,6 +62,7 @@ const open = (
           Effect.sync(() => {
             asked.push(ask);
           }).pipe(Effect.andThen(notify?.(ask) ?? Effect.void)),
+        kept: kept ?? Effect.succeed([]),
       }),
     );
 
@@ -354,5 +357,128 @@ describe("Secrets", () => {
       const messages = [userMessage("hello")];
 
       expect(yield* secrets.scrub(messages)).toBe(messages);
+    }));
+});
+
+describe("Secrets kept for the Environment", () => {
+  const KEPT_VALUE = "postgres://user:kept-password-123@db";
+
+  const kept = (value = KEPT_VALUE, scope: KeptSecret["scope"] = "environment"): KeptSecret => ({
+    name: "DATABASE_URL",
+    value,
+    scope,
+    build: false,
+  });
+
+  /** What the Registry answers, which a test changes, and how often it was asked. */
+  const registry = (initial: ReadonlyArray<KeptSecret>) => {
+    const state = { secrets: initial, fail: false, asked: 0 };
+
+    const load = Effect.suspend(() => {
+      state.asked++;
+
+      return state.fail ? Effect.fail("unreachable") : Effect.succeed(state.secrets);
+    });
+
+    return { state, load };
+  };
+
+  test("are held in memory only, resolved, given to commands and redacted", () =>
+    Effect.gen(function* () {
+      const { storage, dump } = memoryStorage();
+      const { load } = registry([kept()]);
+      const { secrets } = yield* open(storage, MASTER, undefined, load);
+
+      expect(yield* secrets.resolve("DATABASE_URL")).toBe(KEPT_VALUE);
+      expect(yield* secrets.environment).toEqual({ ["PI_SECRET_" + "DATABASE_URL"]: KEPT_VALUE });
+      expect(yield* secrets.held).toEqual([{ name: "DATABASE_URL", kept: "environment" }]);
+      expect(secrets.redact(`url=${KEPT_VALUE}`)).toBe(`url=${secretReference("DATABASE_URL")}`);
+      expect(dump()).not.toContain("kept-password-123");
+    }));
+
+  test("are loaded by the first provider request, so what it carries is scrubbed", () =>
+    Effect.gen(function* () {
+      const { load, state } = registry([kept()]);
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load);
+
+      expect(state.asked).toBe(0);
+      expect(yield* secrets.scrub([userMessage(`see ${KEPT_VALUE}`)])).toEqual([
+        userMessage(`see ${secretReference("DATABASE_URL")}`),
+      ]);
+      expect(state.asked).toBe(1);
+    }));
+
+  test("lose to a Secret of the same name the owner entered in this Session", () =>
+    Effect.gen(function* () {
+      const { load } = registry([{ ...kept(), name: "API_KEY" }]);
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load);
+      const asking = yield* Effect.forkChild(secrets.ask(ASK));
+
+      yield* Effect.yieldNow;
+      yield* secrets.answer("7", { API_KEY: VALUE });
+      yield* Fiber.join(asking);
+
+      expect(yield* secrets.resolve("API_KEY")).toBe(VALUE);
+      expect(yield* secrets.environment).toEqual({ ["PI_SECRET_" + "API_KEY"]: VALUE });
+      expect(yield* secrets.held).toEqual([{ name: "API_KEY", expiresAt: SECRET_LIFETIME_MS }]);
+
+      // Forgetting the asked one leaves the kept one in use.
+      expect(yield* secrets.forget(["API_KEY"])).toEqual([
+        { name: "API_KEY", forgotten: true, kept: "environment" },
+      ]);
+      expect(yield* secrets.resolve("API_KEY")).toBe(KEPT_VALUE);
+    }));
+
+  test("cannot be forgotten in a Session", () =>
+    Effect.gen(function* () {
+      const { load } = registry([kept(KEPT_VALUE, "every")]);
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load);
+
+      expect(yield* secrets.forget(["DATABASE_URL"])).toEqual([
+        { name: "DATABASE_URL", forgotten: false, kept: "every" },
+      ]);
+      expect(yield* secrets.resolve("DATABASE_URL")).toBe(KEPT_VALUE);
+    }));
+
+  test("follow the Registry after the refresh: a changed value is used and a deleted one is no longer held", () =>
+    Effect.gen(function* () {
+      const { load, state } = registry([kept()]);
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load);
+
+      expect(yield* secrets.resolve("DATABASE_URL")).toBe(KEPT_VALUE);
+
+      state.secrets = [kept("postgres://user:rotated-password-456@db")];
+      expect(yield* secrets.resolve("DATABASE_URL")).toBe(KEPT_VALUE);
+
+      yield* TestClock.adjust(KEPT_REFRESH_MS);
+      expect(yield* secrets.resolve("DATABASE_URL")).toBe(
+        "postgres://user:rotated-password-456@db",
+      );
+
+      state.secrets = [];
+      yield* TestClock.adjust(KEPT_REFRESH_MS);
+      expect(yield* secrets.resolve("DATABASE_URL")).toBeUndefined();
+      expect(yield* secrets.environment).toEqual({});
+      // What was held in this instance stays redacted.
+      expect(secrets.redact(KEPT_VALUE)).toBe(secretReference("DATABASE_URL"));
+    }));
+
+  test("keep what was held when the Registry cannot be reached, and ask again soon", () =>
+    Effect.gen(function* () {
+      const { load, state } = registry([kept()]);
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load);
+
+      expect(yield* secrets.resolve("DATABASE_URL")).toBe(KEPT_VALUE);
+
+      state.fail = true;
+      yield* TestClock.adjust(KEPT_REFRESH_MS);
+      expect(yield* secrets.resolve("DATABASE_URL")).toBe(KEPT_VALUE);
+      expect(state.asked).toBe(2);
+
+      state.fail = false;
+      state.secrets = [];
+      yield* TestClock.adjust(KEPT_RETRY_MS);
+      expect(yield* secrets.resolve("DATABASE_URL")).toBeUndefined();
+      expect(state.asked).toBe(3);
     }));
 });

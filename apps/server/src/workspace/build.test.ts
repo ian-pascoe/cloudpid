@@ -1,7 +1,9 @@
 // An Environment's Build (docs/spec.md → Builds): the Build's object, its Container a fake shell that answers each step's
 // script, its storage and alarm in memory. The scripts themselves run for real in `@cloudpid/sandbox-image`'s tests.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off newPromise:off
+import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import { describe, expect, it, vi } from "vitest";
+import type { HeldSecrets } from "./environment-secrets.ts";
 import { type BuildRequest, buildKey, type EnvironmentBuild } from "./build-record.ts";
 import { BUILD_ATTEMPTS, BUILD_REFRESH_MS, BuildRunner, type StoredBuilds } from "./build.ts";
 import type { ScriptRun } from "./prepare.ts";
@@ -52,6 +54,10 @@ type Fake = {
   handedOver: unknown[];
   steps: string[];
   scripts: string[];
+  /** The environment each step ran with, beside the Container's own. */
+  envs: Array<Readonly<Record<string, string>> | undefined>;
+  /** The Environment's Secrets the object holds. */
+  held: HeldSecrets;
   /** Holds the clone until it resolves. */
   gate: Promise<void> | undefined;
   /** What a step answers, by step; anything else exits 0. */
@@ -80,6 +86,8 @@ const open = (enabled = true) => {
     handedOver: [],
     steps: [],
     scripts: [],
+    envs: [],
+    held: { ok: true, secrets: [] },
     gate: undefined,
     answers: {},
     snapshot: {
@@ -110,11 +118,13 @@ const open = (enabled = true) => {
       handOver: async (overrides) => {
         fake.handedOver.push(overrides);
       },
-      run: async (script) => {
+      secrets: async () => fake.held,
+      run: async (script, _timeout, env) => {
         const step = stepOf(script);
 
         fake.steps.push(step);
         fake.scripts.push(script);
+        fake.envs.push(env);
 
         if (step === "clone") await fake.gate;
 
@@ -221,6 +231,54 @@ describe("a Build", () => {
     });
     expect(fake.holds).toBe(0);
     expect(await builds.isBuild()).toBe(true);
+  });
+
+  it("gives the Setup Scripts the Secrets marked for the Build, as their Session references, and no step the others", async () => {
+    const { fake, builds, build } = open();
+
+    const secret = (name: string, value: string, flag: boolean): KeptSecret => ({
+      name,
+      value,
+      scope: "environment",
+      build: flag,
+    });
+
+    fake.answers = GOOD_COMMITS;
+    fake.held = {
+      ok: true,
+      secrets: [
+        secret("NPM_TOKEN", "npm_0123456789", true),
+        secret("API_KEY", "sk-live-0123", false),
+      ],
+    };
+    await builds.request(request());
+    await build();
+
+    const byStep = Object.fromEntries(fake.steps.map((step, index) => [step, fake.envs[index]]));
+    const forBuild = { ["PI_SECRET_" + "NPM_TOKEN"]: "npm_0123456789" };
+
+    expect(byStep["environment-setup"]).toEqual(forBuild);
+    expect(byStep["setup:app"]).toEqual(forBuild);
+    expect(byStep["clone"]).toBeUndefined();
+    expect(byStep["commits"]).toBeUndefined();
+    expect(JSON.stringify(fake.envs)).not.toContain("sk-live-0123");
+    // Not in a script's text, nor anything the object stores.
+    expect(fake.scripts.join("\n")).not.toContain("npm_0123456789");
+    expect(JSON.stringify(fake.stored)).not.toContain("npm_0123456789");
+  });
+
+  it("fails, keeping the last good one, while the object cannot show the Environment's Secrets", async () => {
+    const { fake, builds, build } = open();
+
+    fake.held = { ok: false, reason: "the Environment's Secrets NPM_TOKEN are not held here" };
+    await builds.request(request());
+    await build();
+
+    expect(fake.steps).toEqual(["stop"]);
+    expect((await builds.state()).progress).toMatchObject({
+      status: "failed",
+      reason: "the Environment's Secrets NPM_TOKEN are not held here",
+    });
   });
 
   it("fails at once where the Container takes no snapshots (alchemy dev)", async () => {
@@ -465,6 +523,17 @@ describe("a Build's key", () => {
 
     for (const other of others) expect(other).not.toBe(base);
     expect(new Set(others).size).toBe(others.length);
+  });
+
+  it("changes with the digest of the Secrets a Build gets, and is the one it was without any", async () => {
+    const base = await key();
+
+    expect(await key({ secrets: null })).toBe(base);
+
+    const withSecrets = await key({ secrets: "a".repeat(64) });
+
+    expect(withSecrets).not.toBe(base);
+    expect(await key({ secrets: "b".repeat(64) })).not.toBe(withSecrets);
   });
 
   it("does not change with what a Build does not use: the size, the idle time, the Start Script", async () => {

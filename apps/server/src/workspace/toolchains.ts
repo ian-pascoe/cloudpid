@@ -15,14 +15,16 @@
 //   Environment's, then each repo's `.agents/start.sh`, at every Container start, each bounded by 5 minutes and
 //   reported like a Setup Script.
 // - Every command's environment carries the Environment's variables, under mise's settings and the GitHub token
-//   (`toolchainEnv`), under what the caller passes, and the token is taken out of what a command prints. The variables
-//   and the Environment's scripts are read once per Container start, at its bootstrap.
+//   (`toolchainEnv`), under what the caller passes, and the token and the Environment's kept Secrets are taken out of
+//   what a command prints (a Secret as its reference). The variables and the Environment's scripts are read once per
+//   Container start, at its bootstrap.
 //
 // The token is bound to the Workspaces Worker as a secret. It reaches the Container only in a process's environment:
 // no file holds it, and nothing here logs it.
 // @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalTimers:off preferEffectArray:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import type { ContainerSettings } from "@cloudpid/config";
+import { type KeptSecret, secretReference } from "@cloudpid/extensions/secrets/core";
 import { inBash, quote } from "@cloudpid/computer-env/shell";
 import {
   BOOTSTRAP_CHANGED,
@@ -46,7 +48,7 @@ import {
   WORKSPACE_ROOT,
 } from "@cloudpid/sandbox-image/toolchains";
 import type { IdleStop } from "./idle.ts";
-import { Redactor } from "./redact.ts";
+import { type Redaction, Redactor } from "./redact.ts";
 
 type Shell = BackendHandle["rpc"]["shell"];
 
@@ -93,6 +95,16 @@ export type ToolchainOptions = {
    */
   readonly settings?:
     | (() => Promise<Pick<ContainerSettings, "variables" | "setupScript" | "startScript">>)
+    | undefined;
+  /**
+   * The Environment's kept Secrets the Workspace holds, taken out of what commands print as the token is: `read` at
+   * each command's start, `known` (what is in memory) for the reports of the bootstrap and its scripts.
+   */
+  readonly secrets?:
+    | {
+        readonly read: () => Promise<ReadonlyArray<KeptSecret>>;
+        readonly known: () => ReadonlyArray<KeptSecret>;
+      }
     | undefined;
   /** The identity of commits the agent makes, where the Container has no other; unset parts take the bootstrap's own. */
   readonly git: { readonly name?: string | undefined; readonly email?: string | undefined };
@@ -176,9 +188,31 @@ export class ToolchainBackend implements WorkspaceBackend {
     return githubToken === undefined || githubToken === "" ? undefined : githubToken;
   }
 
+  /** What to take out of output: the token (as `***`) and each kept Secret (as its reference). */
+  #redactions(secrets: ReadonlyArray<KeptSecret>): Redaction[] {
+    const token = this.#secret;
+
+    return [
+      ...(token === undefined ? [] : [{ value: token, mask: "***" }]),
+      ...secrets.map((kept) => ({ value: kept.value, mask: secretReference(kept.name) })),
+    ];
+  }
+
+  /** The kept Secrets the Workspace holds now; what is in memory when they cannot be read. Never throws. */
+  async #heldSecrets(): Promise<ReadonlyArray<KeptSecret>> {
+    const secrets = this.#options.secrets;
+
+    if (secrets === undefined) return [];
+
+    try {
+      return await secrets.read();
+    } catch {
+      return secrets.known();
+    }
+  }
+
   #rpc(handle: BackendHandle): BackendHandle["rpc"] {
     const shell = handle.rpc.shell;
-    const secret = this.#secret;
 
     const ready = new Bootstrap(
       () => this.#bootstrap(shell),
@@ -215,12 +249,15 @@ export class ToolchainBackend implements WorkspaceBackend {
         const source =
           note === undefined ? input.source : `printf '%s\\n' ${quote(note)} >&2\n${input.source}`;
 
+        const redactions = this.#redactions(await this.#heldSecrets());
+
         return withRedactedOutput(
           await shell.exec({ ...input, source, env: { ...this.#env, ...input.env } }),
-          secret,
+          redactions,
         );
       },
-      getExec: async (input) => withRedactedOutput(await shell.getExec(input), secret),
+      getExec: async (input) =>
+        withRedactedOutput(await shell.getExec(input), this.#redactions(await this.#heldSecrets())),
       killExec: (input) => {
         if (waiting.has(input.id)) {
           killed.add(input.id);
@@ -270,28 +307,38 @@ export class ToolchainBackend implements WorkspaceBackend {
     }
   }
 
-  /** `text` without the token. */
+  /** `text` without the token and the kept Secrets this instance knows. */
   #redact(text: string): string {
-    const secret = this.#secret;
+    return this.#redactions(this.#options.secrets?.known() ?? []).reduce(
+      (redacted, { value, mask }) => (value === "" ? redacted : redacted.replaceAll(value, mask)),
+      text,
+    );
+  }
 
-    return secret === undefined ? text : text.replaceAll(secret, "***");
+  /** The length of the longest secret taken out of output, for what may be cut through one. */
+  get #longest(): number {
+    return Math.max(
+      this.#secret?.length ?? 0,
+      ...(this.#options.secrets?.known() ?? []).map((kept) => kept.value.length),
+    );
   }
 
   /**
-   * How much of an exec's output to keep for its report: the reported length and a token's, so that a token cut by the
-   * start of what is kept can be dropped whole (`#tail`).
+   * How much of an exec's output to keep for its report: the reported length and the longest secret's, so that a secret
+   * cut by the start of what is kept can be dropped whole (`#tail`).
    */
   get #kept(): number {
-    return REPORTED_OUTPUT + (this.#secret?.length ?? 0);
+    return REPORTED_OUTPUT + this.#longest;
   }
 
   /**
-   * The end of an exec's output to report, kept with `#kept`: without the token, then, if the output was `cut`, without
-   * its first token's length of characters (where the rest of a token cut by the start may be), then cut to length.
+   * The end of an exec's output to report, kept with `#kept`: without the secrets, then, if the output was `cut`,
+   * without the longest secret's length of characters (where the rest of one cut by the start may be), then cut to
+   * length.
    */
   #tail({ output, cut }: Ran): string {
     const redacted = this.#redact(output);
-    const whole = cut ? redacted.slice(this.#secret?.length ?? 0) : redacted;
+    const whole = cut ? redacted.slice(this.#longest) : redacted;
 
     return whole.slice(-REPORTED_OUTPUT).trim();
   }
@@ -811,13 +858,13 @@ const stoppedBeforeStart = (id: string): Execution => ({
 });
 
 /**
- * `execution` with `secret` taken out of its output. What it holds back at the end of a stream (the start of the
- * secret, which turned out not to be one) comes out just before the exit. Without a secret it is `execution` itself.
+ * `execution` with `secrets` taken out of its output. What it holds back at the end of a stream (the start of a
+ * secret, which turned out not to be one) comes out just before the exit. Without secrets it is `execution` itself.
  */
-const withRedactedOutput = (execution: Execution, secret: string | undefined): Execution => {
-  if (secret === undefined) return execution;
+const withRedactedOutput = (execution: Execution, secrets: ReadonlyArray<Redaction>): Execution => {
+  if (secrets.length === 0) return execution;
 
-  const redactors = { stdout: new Redactor(secret), stderr: new Redactor(secret) };
+  const redactors = { stdout: new Redactor(secrets), stderr: new Redactor(secrets) };
   let last: { id: string; seq: number } | undefined;
 
   const release = (controller: TransformStreamDefaultController<ExecEvent>) => {

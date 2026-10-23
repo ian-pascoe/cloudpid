@@ -3,6 +3,7 @@
 // saved disk when the owner restarts the Container, and asks the object of a spare Workspace it registered to prepare
 // itself, and asks an Environment's Build object for a Build.
 
+import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import type { BuildRequest, BuildState } from "./build-record.ts";
 import type { WorkspaceSetup } from "./prepare.ts";
 
@@ -17,10 +18,16 @@ export type LifecycleHost = {
   reset(): Promise<void>;
   /** Stop the Container and forget the snapshot, so the next command starts one from the image. */
   restartContainer(): Promise<void>;
-  /** Prepare the object as its Environment's spare Workspace, on its own time: the call answers at once. */
+  /**
+   * Prepare the object as its Environment's spare Workspace, on its own time: the call answers at once. The set-up's
+   * Secrets are kept sealed apart from it.
+   */
   prepareSpare(setup: WorkspaceSetup): Promise<void>;
-  /** Make the object's Environment's Build of `request` (a Build object), on its own time: the call answers at once. */
-  startBuild(request: BuildRequest): Promise<BuildState>;
+  /**
+   * Make the object's Environment's Build of `request` (a Build object), on its own time: the call answers at once.
+   * `secrets` are the Environment's, kept sealed apart from the request.
+   */
+  startBuild(request: BuildRequest, secrets: ReadonlyArray<KeptSecret>): Promise<BuildState>;
   /** The Build object's Builds, and the image a launch would run now. */
   buildState(): Promise<BuildState>;
 };
@@ -34,7 +41,11 @@ export type WorkspaceObjects = {
   /** Ask object `name` to prepare itself as a spare Workspace with `setup` (`LifecycleHost.prepareSpare`). */
   readonly prepareSpare: (name: string, setup: WorkspaceSetup) => Promise<void>;
   /** Ask Build object `name` (`buildObjectName`) for a Build of `request` (`LifecycleHost.startBuild`). */
-  readonly startBuild: (name: string, request: BuildRequest) => Promise<BuildState>;
+  readonly startBuild: (
+    name: string,
+    request: BuildRequest,
+    secrets: ReadonlyArray<KeptSecret>,
+  ) => Promise<BuildState>;
   /** Build object `name`'s Builds (`LifecycleHost.buildState`). */
   readonly buildState: (name: string) => Promise<BuildState>;
 };
@@ -56,7 +67,7 @@ export const workspaceObjectsRemote = (namespace: {
     },
     restartContainer: (name) => namespace.getByName(name).restartContainer(),
     prepareSpare: (name, setup) => namespace.getByName(name).prepareSpare(setup),
-    startBuild: (name, request) => namespace.getByName(name).startBuild(request),
+    startBuild: (name, request, secrets) => namespace.getByName(name).startBuild(request, secrets),
     buildState: (name) => namespace.getByName(name).buildState(),
   };
 };

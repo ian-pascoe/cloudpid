@@ -5,6 +5,7 @@ import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
+import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
@@ -31,6 +32,9 @@ export type TitleSource = typeof TitleSource.Type;
 
 /** An Environment's id: what its Workspaces and Sessions are bound to. New ones get eight hex digits. */
 export const EnvironmentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
+
+/** Where a Secret is kept (`docs/spec.md` → Secrets): an Environment's id, or null for every Environment. */
+export const SecretScope = Schema.NullOr(EnvironmentId);
 
 /**
  * The Environment a Session is made in when it names none: it is there from the start, has no Repos until the owner
@@ -379,6 +383,43 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("updateEnvironmentSettings", {
     payload: { environment: EnvironmentId, overrides: Schema.Json },
     success: ContainerSettingsState,
+    error: EnvironmentError,
+  }),
+  /**
+   * Every Secret kept for an Environment or for every Environment (`docs/spec.md` → Secrets): names, scopes, build
+   * flags and times, never a value.
+   */
+  Rpc.make("listEnvironmentSecrets", { success: Schema.Array(EnvironmentSecretRecord) }),
+  /**
+   * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The
+   * value is sealed in the Registry and never comes back. `build` says whether it reaches the Environment's Build;
+   * left out, a new Secret does not, and a replaced one keeps its flag. A value that is empty, holds a NUL or is over
+   * `MAX_ENVIRONMENT_SECRET_BYTES`, an Environment that does not exist, or a scope already holding
+   * `MAX_ENVIRONMENT_SECRETS` fails with an `EnvironmentError`. A Session takes it at its first use of Secrets 30 s or
+   * more after it last asked, and hands it to its Workspace first.
+   */
+  Rpc.make("setEnvironmentSecret", {
+    payload: {
+      environment: SecretScope,
+      name: SecretName,
+      value: Schema.String,
+      build: Schema.optionalKey(Schema.Boolean),
+    },
+    success: EnvironmentSecretRecord,
+    error: EnvironmentError,
+  }),
+  /** Say whether a kept Secret reaches the Environment's Build (each Environment's, for one kept for every Environment). */
+  Rpc.make("setEnvironmentSecretBuild", {
+    payload: { environment: SecretScope, name: SecretName, build: Schema.Boolean },
+    success: EnvironmentSecretRecord,
+    error: EnvironmentError,
+  }),
+  /**
+   * Delete a kept Secret. A Session stops using it when it next asks (as for a new value); what a command already wrote
+   * stays where it is.
+   */
+  Rpc.make("deleteEnvironmentSecret", {
+    payload: { environment: SecretScope, name: SecretName },
     error: EnvironmentError,
   }),
   /** Where each Environment's Build stands (`docs/spec.md` → Builds). */

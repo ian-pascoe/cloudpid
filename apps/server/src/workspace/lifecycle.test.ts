@@ -93,7 +93,7 @@ describe("workspaceObjectsRemote", () => {
     const calls: string[] = [];
     const { asked, remote } = namespace(host(calls));
 
-    await remote.startBuild("build:5a5a5a5a", { key: "k", repos: [], settings: {} });
+    await remote.startBuild("build:5a5a5a5a", { key: "k", repos: [], settings: {} }, []);
     await remote.buildState("build:5a5a5a5a");
 
     expect(asked).toEqual(["build:5a5a5a5a", "build:5a5a5a5a"]);

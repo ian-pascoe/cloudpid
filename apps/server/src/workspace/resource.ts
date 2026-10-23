@@ -28,6 +28,9 @@ export const DEFAULT_GIT_NAME = "cloudpid";
  * - `CLOUDPID_GITHUB_TOKEN` is a deploy-time secret (`Config.Redacted`, bound as a Worker secret): the Container's
  *   commands get it as `GH_TOKEN` and `GITHUB_TOKEN` so the agent can clone, commit and push with real git and gh
  *   (docs/spec.md → Git).
+ * - `SECRETS_ENCRYPTION_KEY` is the deploy-time master key (`Config.Redacted`, bound as a Worker secret) the Workspace
+ *   DO seals its copy of the Environment's kept Secrets under, as the Session DOs and the Registry seal theirs
+ *   (docs/spec.md → Secrets).
  * - `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` set who those commits are by (the owner's email by default).
  * - Under `alchemy dev` the Container runs in local Docker without `/dev/fuse`, where computerd's userspace shim
  *   cannot keep paths container-local: the Workspace DO is told not to ask for it (`CONTAINER_FUSE`).
@@ -46,6 +49,7 @@ export const Workspaces = Effect.gen(function* () {
       }),
       LOADER: Cloudflare.WorkerLoader(),
       CLOUDPID_GITHUB_TOKEN: Config.Redacted("CLOUDPID_GITHUB_TOKEN"),
+      SECRETS_ENCRYPTION_KEY: Config.Redacted("SECRETS_ENCRYPTION_KEY"),
       CLOUDPID_GIT_NAME: Config.String("CLOUDPID_GIT_NAME").pipe(
         Config.withDefault(DEFAULT_GIT_NAME),
       ),

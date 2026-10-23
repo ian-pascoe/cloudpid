@@ -1,8 +1,13 @@
-// @effect-diagnostics asyncFunction:off globalDate:off
+// @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
+import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
+  type EnvironmentSecretRecord,
+  MAX_ENVIRONMENT_SECRETS,
+  secretNameProblem,
+  secretValueProblem,
   RegistryRpcs,
   RPC_PATH,
   SessionActionError,
@@ -60,6 +65,35 @@ const fakeRegistries = () => {
   const pushes = new Set<string>();
   /** The Registry methods called, in order. */
   const calls: string[] = [];
+  /** The kept Secrets, values included, as the Registry DO would open them. */
+  const keptSecrets: Array<EnvironmentSecretRecord & { readonly value: string }> = [];
+
+  /** What `environment` uses: its own over those kept for every Environment, by name. */
+  const keptFor = (environment: string): ReadonlyArray<KeptSecret> => {
+    const byName = new Map<string, KeptSecret>();
+
+    for (const scope of [null, environment]) {
+      for (const kept of Arr.filter(keptSecrets, (item) => item.environment === scope)) {
+        byName.set(kept.name, {
+          name: kept.name,
+          value: kept.value,
+          scope: scope === null ? "every" : "environment",
+          build: kept.build,
+        });
+      }
+    }
+
+    return [...byName.values()].toSorted((a, b) => a.name.localeCompare(b.name));
+  };
+
+  /** A stand-in for the Registry's keyed digest of the Secrets a Build gets: null when none does. */
+  const buildDigestOf = (environment: string) => {
+    const pairs = Arr.filter(keptFor(environment), (kept) => kept.build).map(
+      (kept) => `${kept.name}=${kept.value.length}:${kept.value.charCodeAt(0)}`,
+    );
+
+    return pairs.length === 0 ? null : `digest(${pairs.join(",")})`;
+  };
 
   /** Replace the first of `list` that `matches` with what `change` makes of it; the changed one, or null. */
   const replace = <A>(list: A[], matches: (item: A) => boolean, change: (item: A) => A) =>
@@ -139,6 +173,10 @@ const fakeRegistries = () => {
   /** What each Environment's Build object holds, by object name (`build:<id>`), and what each was last asked for. */
   const buildObjects = new Map<string, BuildState>();
   const buildRequests = new Map<string, BuildRequest>();
+  /** The Secrets each Build object was last handed with a request. */
+  const buildSecrets = new Map<string, ReadonlyArray<KeptSecret>>();
+  /** The Secrets each spare's object was handed with its set-up. */
+  const spareSecrets = new Map<string, ReadonlyArray<KeptSecret> | undefined>();
   /** What the Registry recorded of each Environment's Build. */
   const buildRecords = new Map<string, BuildRecord>();
   const NO_BUILD: BuildRecord = { build: null, status: null };
@@ -155,10 +193,12 @@ const fakeRegistries = () => {
 
       return buildStateOf(name);
     },
-    startBuild: async (name, request) => {
+    startBuild: async (name, request, secrets) => {
       calls.push(`startBuild:${name}${request.check === true ? ":check" : ""}`);
 
       if (workspaceFails !== undefined) throw new Error(workspaceFails);
+
+      buildSecrets.set(name, secrets);
 
       const state: BuildState = {
         ...buildStateOf(name),
@@ -182,7 +222,11 @@ const fakeRegistries = () => {
       return result;
     },
     restartContainer: (name) => workspaceCall("restartContainer", name),
-    prepareSpare: (name) => workspaceCall("prepareSpare", name),
+    prepareSpare: (name, setup) => {
+      spareSecrets.set(name, setup.secrets);
+
+      return workspaceCall("prepareSpare", name);
+    },
   };
 
   /** Each Environment's spare Workspace: its id, and the addresses of the Repos it was made with. */
@@ -432,6 +476,7 @@ const fakeRegistries = () => {
           repos: [],
           settings: overridesOf.get(environment) ?? {},
           build: buildRecords.get(environment)?.build ?? null,
+          secrets: keptFor(environment),
         };
       }),
     listWorkspaces: () => Effect.sync(() => [...workspaces]),
@@ -441,8 +486,13 @@ const fakeRegistries = () => {
 
         const stale: string[] = [];
 
-        const made: Array<WorkspaceSetup & { settings: Schema.Json; build: BuildRecord["build"] }> =
-          [];
+        const made: Array<
+          WorkspaceSetup & {
+            settings: Schema.Json;
+            build: BuildRecord["build"];
+            secrets: ReadonlyArray<KeptSecret>;
+          }
+        > = [];
 
         for (const environment of named ?? Arr.map(environments, (item) => item.id)) {
           const found = Arr.findFirst(environments, (item) => item.id === environment);
@@ -469,6 +519,7 @@ const fakeRegistries = () => {
             repos: found.value.repos,
             settings: overridesOf.get(environment) ?? {},
             build: buildRecords.get(environment)?.build ?? null,
+            secrets: keptFor(environment),
           });
         }
 
@@ -485,6 +536,7 @@ const fakeRegistries = () => {
             repos: item.repos,
             settings: overridesOf.get(item.id) ?? {},
             recorded: buildRecords.get(item.id) ?? NO_BUILD,
+            secrets: buildDigestOf(item.id),
           }),
         );
       }),
@@ -499,6 +551,88 @@ const fakeRegistries = () => {
           environment: item.id,
           build: buildView(buildRecords.get(item.id) ?? NO_BUILD),
         })),
+      ),
+    listEnvironmentSecrets: () =>
+      Effect.sync(() => {
+        calls.push("listEnvironmentSecrets");
+
+        return Arr.map(keptSecrets, ({ value: _value, ...record }) => record);
+      }),
+    setEnvironmentSecret: ({ environment, name, value, build }) =>
+      Effect.sync(() => {
+        calls.push(`setEnvironmentSecret:${environment ?? "*"}:${name}`);
+
+        const problem = secretNameProblem(name) ?? secretValueProblem(value);
+
+        if (problem !== undefined) return { status: "rejected" as const, message: problem };
+
+        if (environment !== null && !Arr.some(environments, (item) => item.id === environment)) {
+          return { status: "missing" as const };
+        }
+
+        const known = Arr.findFirst(
+          keptSecrets,
+          (item) => item.environment === environment && item.name === name,
+        );
+
+        if (
+          Option.isNone(known) &&
+          Arr.filter(keptSecrets, (item) => item.environment === environment).length >=
+            MAX_ENVIRONMENT_SECRETS
+        ) {
+          return { status: "full" as const };
+        }
+
+        const record = {
+          environment,
+          name,
+          build:
+            build ?? Option.match(known, { onNone: () => false, onSome: (item) => item.build }),
+          updatedAt: 9,
+        };
+
+        remove(keptSecrets, (item) => item.environment === environment && item.name === name);
+        keptSecrets.push({ ...record, value });
+
+        return { status: "saved" as const, record };
+      }),
+    setEnvironmentSecretBuild: ({ environment, name, build }) =>
+      Effect.sync(() => {
+        calls.push(`setEnvironmentSecretBuild:${environment ?? "*"}:${name}`);
+
+        const changed = replace(
+          keptSecrets,
+          (item) => item.environment === environment && item.name === name,
+          (item) => ({ ...item, build }),
+        );
+
+        if (changed === null) return null;
+
+        const { value: _value, ...record } = changed;
+
+        return record;
+      }),
+    deleteEnvironmentSecret: ({ environment, name }) =>
+      Effect.sync(() => {
+        calls.push(`deleteEnvironmentSecret:${environment ?? "*"}:${name}`);
+
+        return remove(
+          keptSecrets,
+          (item) => item.environment === environment && item.name === name,
+        );
+      }),
+    environmentSecrets: ({ environment }) =>
+      Effect.sync(() => {
+        calls.push(`environmentSecrets:${environment}`);
+
+        return keptFor(environment);
+      }),
+    sessionSecrets: ({ session }) =>
+      Effect.sync(() =>
+        Option.match(
+          Arr.findFirst(sessions, (item) => item.id === session),
+          { onNone: () => [], onSome: (item) => keptFor(item.environment) },
+        ),
       ),
     getSpare: ({ environment }) => Effect.sync(() => spares.get(environment)?.id ?? null),
     forgetSpare: ({ id }) =>
@@ -631,6 +765,9 @@ const fakeRegistries = () => {
     buildObjects,
     buildRequests,
     buildRecords,
+    buildSecrets,
+    spareSecrets,
+    keptSecrets,
     overridesOf,
   };
 };
@@ -2313,4 +2450,182 @@ it("refuses a Rebuild of an Environment that does not exist, or has nothing to b
 
   expect(unreachable).toBeInstanceOf(EnvironmentError);
   expect(unreachable.message).toContain("unreachable");
+});
+
+it("hands a spare's object its Environment's Secrets with the set-up", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) =>
+    registry.setEnvironmentSecret({ environment, name: "API_KEY", value: "sk-live-0123456789" }),
+  );
+  await fake.runBackground();
+
+  const spare = `ws:${fake.spares.get(environment)?.id}`;
+
+  expect(fake.spareSecrets.get(spare)).toEqual([
+    { name: "API_KEY", value: "sk-live-0123456789", scope: "environment", build: false },
+  ]);
+});
+
+it("keeps Secrets for an Environment and for every Environment, and never answers a value", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+  const value = "sk-live-0123456789abcdef";
+
+  const saved = await call(fake, (registry) =>
+    registry.setEnvironmentSecret({ environment, name: "API_KEY", value }),
+  );
+
+  const shared = await call(fake, (registry) =>
+    registry.setEnvironmentSecret({
+      environment: null,
+      name: "NPM_TOKEN",
+      value: "npm_0123456789",
+      build: true,
+    }),
+  );
+
+  const listed = await call(fake, (registry) => registry.listEnvironmentSecrets());
+
+  expect(saved).toEqual({ environment, name: "API_KEY", build: false, updatedAt: 9 });
+  expect(shared).toMatchObject({ environment: null, name: "NPM_TOKEN", build: true });
+  expect(listed).toEqual([saved, shared]);
+  expect(JSON.stringify([saved, shared, listed])).not.toContain(value);
+  expect(JSON.stringify(listed)).not.toContain("npm_0123456789");
+});
+
+it("refuses a malformed Secret, one of an Environment that does not exist, and one past the bound, saying why", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  const refused = (payload: { environment: string | null; name: string; value: string }) =>
+    call(fake, (registry) => Effect.flip(registry.setEnvironmentSecret(payload)));
+
+  expect((await refused({ environment, name: "API_KEY", value: "" })).message).toBe(
+    "A Secret needs a value",
+  );
+  expect((await refused({ environment: "0000beef", name: "API_KEY", value: "x" })).message).toBe(
+    'Environment "0000beef" does not exist',
+  );
+
+  for (let index = 0; index < MAX_ENVIRONMENT_SECRETS; index++) {
+    fake.keptSecrets.push({
+      environment,
+      name: `S${index}`,
+      build: false,
+      updatedAt: 1,
+      value: "v",
+    });
+  }
+
+  expect((await refused({ environment, name: "ONE_MORE", value: "x" })).message).toContain(
+    `At most ${MAX_ENVIRONMENT_SECRETS} Secrets`,
+  );
+
+  // A name the shared schema refuses never reaches the Registry.
+  const { calls } = await callRaw("setEnvironmentSecret", {
+    environment,
+    name: "api_key",
+    value: "x",
+  });
+
+  expect(calls).toEqual([]);
+});
+
+it("sets a Secret's build flag and deletes it, and says when there is no such Secret", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) =>
+    registry.setEnvironmentSecret({ environment, name: "API_KEY", value: "sk-live-0123456789" }),
+  );
+
+  expect(
+    await call(fake, (registry) =>
+      registry.setEnvironmentSecretBuild({ environment, name: "API_KEY", build: true }),
+    ),
+  ).toMatchObject({ name: "API_KEY", build: true });
+
+  // Replacing the value keeps the flag.
+  expect(
+    await call(fake, (registry) =>
+      registry.setEnvironmentSecret({ environment, name: "API_KEY", value: "sk-live-rotated" }),
+    ),
+  ).toMatchObject({ build: true });
+
+  await call(fake, (registry) =>
+    registry.deleteEnvironmentSecret({ environment, name: "API_KEY" }),
+  );
+
+  expect(await call(fake, (registry) => registry.listEnvironmentSecrets())).toEqual([]);
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.deleteEnvironmentSecret({ environment: null, name: "API_KEY" })),
+  );
+
+  expect(missing.message).toBe("No Secret API_KEY is kept for every environment");
+});
+
+it("hands a Build the Environment's Secrets, and builds again when a Secret for the Build changes", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  await call(fake, (registry) =>
+    registry.setEnvironmentSecret({ environment, name: "API_KEY", value: "sk-live-0123456789" }),
+  );
+  await fake.runBackground();
+
+  const name = `build:${environment}`;
+  const first = fake.buildRequests.get(name)?.key;
+
+  // Every Secret reaches the Build object, for its scan; the build flag says which its scripts get.
+  expect(fake.buildSecrets.get(name)).toEqual([
+    { name: "API_KEY", value: "sk-live-0123456789", scope: "environment", build: false },
+  ]);
+  // Its key holds no value.
+  expect(JSON.stringify(fake.buildRequests.get(name))).not.toContain("sk-live-0123456789");
+
+  // The Build object answers that the Build of that key is done.
+  const done = (key: string | undefined) => {
+    const good = {
+      key: key ?? "",
+      snapshot: { id: "snap-1", size: 1 },
+      image: "img-1",
+      ignore: null,
+      commits: {},
+      finishedAt: Date.now(),
+    };
+
+    fake.buildObjects.set(name, {
+      image: "img-1",
+      last: good,
+      progress: null,
+      attemptedAt: Date.now(),
+    });
+  };
+
+  done(first);
+  fake.calls.length = 0;
+  await call(fake, (registry) =>
+    registry.setEnvironmentSecretBuild({ environment, name: "API_KEY", build: true }),
+  );
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`startBuild:${name}`);
+
+  const second = fake.buildRequests.get(name)?.key;
+
+  expect(second).not.toBe(first);
+
+  done(second);
+  fake.calls.length = 0;
+  await call(fake, (registry) =>
+    registry.setEnvironmentSecret({ environment, name: "API_KEY", value: "sk-live-rotated-999" }),
+  );
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`startBuild:${name}`);
+  expect(fake.buildRequests.get(name)?.key).not.toBe(second);
 });

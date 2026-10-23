@@ -24,6 +24,11 @@ export type BuildWork = {
   /** The Environment's Container settings overrides. */
   readonly settings: Schema.Json;
   readonly recorded: BuildRecord;
+  /**
+   * A keyed digest of the Secrets that reach the Build (`buildSecretsDigest`), null when none does: their values are
+   * asked for only when a Build is (`environmentSecrets`).
+   */
+  readonly secrets: string | null;
 };
 
 /** How long after the last Build or look the next look at the Repos' default branches is due (or a failed Build retried). */
@@ -115,19 +120,24 @@ export const buildUpkeep = (
       const wanted = work.repos.length > 0 || settings.setupScript !== "";
 
       const key = wanted
-        ? yield* Effect.promise(() => buildKey({ repos: work.repos, settings, image: state.image }))
+        ? yield* Effect.promise(() =>
+            buildKey({ repos: work.repos, settings, image: state.image, secrets: work.secrets }),
+          )
         : null;
 
       const asked = buildDue({ key, state, now: yield* Clock.currentTimeMillis, force });
 
       if (asked !== undefined && key !== null) {
+        // The values only now, for the Build object: those for the Build reach its scripts, and every one is searched
+        // for before its snapshot. They are never in the request it stores.
+        const secrets = yield* registry.environmentSecrets({ environment: work.environment });
+
         state = yield* Effect.promise(() =>
-          workspaces.startBuild(name, {
-            key,
-            repos: work.repos,
-            settings: work.settings,
-            check: asked === "check",
-          }),
+          workspaces.startBuild(
+            name,
+            { key, repos: work.repos, settings: work.settings, check: asked === "check" },
+            secrets,
+          ),
         );
       }
 

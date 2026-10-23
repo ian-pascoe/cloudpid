@@ -1,6 +1,9 @@
+import type { SealedValue } from "@cloudpid/extensions/secrets/core";
 import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentRepo,
+  type EnvironmentSecretRecord,
+  MAX_ENVIRONMENT_SECRETS,
   type PushSubscription,
   SPARE_BRANCH,
   TitleSource,
@@ -122,6 +125,15 @@ export type BuildRecord = {
   readonly status: BuildProgress | null;
 };
 
+/** A kept Secret's sealed value with what it is kept as (`docs/spec.md` → Secrets): the Registry DO opens it. */
+export type StoredEnvironmentSecret = EnvironmentSecretRecord & { readonly sealed: SealedValue };
+
+/** How keeping a Secret went: its record, or its Environment does not exist, or its scope holds as many as it may. */
+export type SecretPut = EnvironmentSecretRecord | "missing" | "full";
+
+/** The scope column of the Secrets kept for every Environment; no Environment id can be it. */
+export const EVERY_ENVIRONMENT_SCOPE = "*";
+
 /** Something left from before Environments (ADR-0016) whose Durable Object is still to be wiped. */
 export type LegacyObject = { readonly kind: "session" | "machine"; readonly id: string };
 
@@ -211,6 +223,32 @@ export type RegistryStore = {
   readonly takeLegacy: (limit: number, now: number, leaseMs: number) => LegacyObject[];
   /** Forget a legacy object once it is wiped. */
   readonly forgetLegacy: (object: LegacyObject) => void;
+  /** Every kept Secret, without its value: those for every Environment first, then by Environment, each by name. */
+  readonly listEnvironmentSecrets: () => EnvironmentSecretRecord[];
+  /** The sealed Secrets `environment` uses: those kept for every Environment, and its own. */
+  readonly getEnvironmentSecrets: (environment: string) => StoredEnvironmentSecret[];
+  /**
+   * Keep a sealed value under `name` for `environment` (null: every Environment), replacing the one kept there; `build`
+   * left out keeps a replaced one's flag (false for a new one).
+   */
+  readonly putEnvironmentSecret: (
+    input: {
+      readonly environment: string | null;
+      readonly name: string;
+      readonly sealed: SealedValue;
+      readonly build?: boolean | undefined;
+    },
+    now: number,
+  ) => SecretPut;
+  /** Set whether a kept Secret reaches the Build; null when none is kept under that scope and name. */
+  readonly setEnvironmentSecretBuild: (
+    environment: string | null,
+    name: string,
+    build: boolean,
+    now: number,
+  ) => EnvironmentSecretRecord | null;
+  /** Delete a kept Secret; says whether one was kept. */
+  readonly deleteEnvironmentSecret: (environment: string | null, name: string) => boolean;
   /** The JSON text of the document called `name`, or null. Documents hold the Registry's own settings. */
   readonly getDocument: (name: string) => string | null;
   /** Save a document, replacing the one with its name. */
@@ -264,6 +302,27 @@ type WorkspaceRow = {
 };
 
 type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
+
+type EnvironmentSecretRow = {
+  /** An Environment's id, or `EVERY_ENVIRONMENT_SCOPE`. */
+  scope: string;
+  name: string;
+  /** Base64: the AES-GCM nonce and ciphertext of the value (`SealedValue`). */
+  iv: string;
+  ciphertext: string;
+  /** 1 when it reaches the Environment's Build. */
+  build: number;
+  updated_at: number;
+};
+
+const scopeOf = (environment: string | null): string => environment ?? EVERY_ENVIRONMENT_SCOPE;
+
+const toSecretRecord = (row: EnvironmentSecretRow): EnvironmentSecretRecord => ({
+  environment: row.scope === EVERY_ENVIRONMENT_SCOPE ? null : row.scope,
+  name: row.name,
+  build: row.build === 1,
+  updatedAt: row.updated_at,
+});
 
 const isStatus = Schema.is(SessionStatus);
 
@@ -520,6 +579,19 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE environments ADD COLUMN build TEXT");
     sql.exec("ALTER TABLE environments ADD COLUMN build_status TEXT");
+  },
+  // 14: the Secrets kept for an Environment, or for every Environment (`*`), each value sealed by the Registry DO
+  // under a key bound to its scope and name (docs/spec.md → Secrets). None before.
+  (sql) => {
+    sql.exec(`CREATE TABLE environment_secrets (
+      scope TEXT NOT NULL,
+      name TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      build INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (scope, name)
+    ) STRICT`);
   },
 ];
 
@@ -780,6 +852,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       }
 
       sql.exec("DELETE FROM environments WHERE id = ?", id);
+      // Its Secrets go with it; those kept for every Environment stay.
+      sql.exec("DELETE FROM environment_secrets WHERE scope = ?", id);
 
       return "deleted";
     },
@@ -971,6 +1045,92 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     forgetLegacy: ({ kind, id }) => {
       sql.exec("DELETE FROM legacy WHERE kind = ? AND id = ?", kind, id);
     },
+
+    listEnvironmentSecrets: () =>
+      Arr.map(
+        sql
+          .exec<EnvironmentSecretRow>(
+            "SELECT * FROM environment_secrets ORDER BY scope != ?, scope, name",
+            EVERY_ENVIRONMENT_SCOPE,
+          )
+          .toArray(),
+        toSecretRecord,
+      ),
+
+    getEnvironmentSecrets: (environment) =>
+      Arr.map(
+        sql
+          .exec<EnvironmentSecretRow>(
+            "SELECT * FROM environment_secrets WHERE scope IN (?, ?) ORDER BY scope != ?, name",
+            EVERY_ENVIRONMENT_SCOPE,
+            environment,
+            EVERY_ENVIRONMENT_SCOPE,
+          )
+          .toArray(),
+        (row) => ({
+          ...toSecretRecord(row),
+          sealed: { version: 1, iv: row.iv, ciphertext: row.ciphertext },
+        }),
+      ),
+
+    putEnvironmentSecret: ({ environment, name, sealed, build }, now) =>
+      storage.transactionSync((): SecretPut => {
+        if (environment !== null && getEnvironment(environment) === null) return "missing";
+
+        const scope = scopeOf(environment);
+
+        const [known] = sql
+          .exec<EnvironmentSecretRow>(
+            "SELECT * FROM environment_secrets WHERE scope = ? AND name = ?",
+            scope,
+            name,
+          )
+          .toArray();
+
+        if (known === undefined) {
+          const [count] = sql
+            .exec<{ count: number }>(
+              "SELECT COUNT(*) AS count FROM environment_secrets WHERE scope = ?",
+              scope,
+            )
+            .toArray();
+
+          if ((count?.count ?? 0) >= MAX_ENVIRONMENT_SECRETS) return "full";
+        }
+
+        const flag = build ?? known?.build === 1;
+
+        sql.exec(
+          "INSERT OR REPLACE INTO environment_secrets (scope, name, iv, ciphertext, build, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+          scope,
+          name,
+          sealed.iv,
+          sealed.ciphertext,
+          flag ? 1 : 0,
+          now,
+        );
+
+        return { environment, name, build: flag, updatedAt: now };
+      }),
+
+    setEnvironmentSecretBuild: (environment, name, build, now) => {
+      const written = sql.exec(
+        "UPDATE environment_secrets SET build = ?, updated_at = ? WHERE scope = ? AND name = ?",
+        build ? 1 : 0,
+        now,
+        scopeOf(environment),
+        name,
+      ).rowsWritten;
+
+      return written > 0 ? { environment, name, build, updatedAt: now } : null;
+    },
+
+    deleteEnvironmentSecret: (environment, name) =>
+      sql.exec(
+        "DELETE FROM environment_secrets WHERE scope = ? AND name = ?",
+        scopeOf(environment),
+        name,
+      ).rowsWritten > 0,
 
     getDocument: (name) => {
       const [row] = sql

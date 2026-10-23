@@ -39,7 +39,14 @@ import {
   secretEnvName,
   secretReference,
 } from "./references.ts";
-import { type AskOutcome, type SecretAsk, Secrets, type SecretsService } from "./store.ts";
+import type { KeptScope } from "./kept.ts";
+import {
+  type AskOutcome,
+  type ForgetOutcome,
+  type SecretAsk,
+  Secrets,
+  type SecretsService,
+} from "./store.ts";
 
 export const extensionName = "secrets";
 
@@ -56,7 +63,7 @@ const ESCAPE_HINT =
 export const SECRET_GUIDELINES = [
   "When a task needs a Secret such as an API key or password, call secret_ask instead of asking the user to paste it into the conversation; the user enters it in a masked form, and its value never reaches you.",
   `Use a held Secret as $${secretEnvName("NAME")} in bash commands, which keeps it off the command line, and as ${secretReference("NAME")} in other tool arguments. Tool output shows ${secretReference("NAME")} where a value was redacted.`,
-  "Secrets expire 15 minutes after the user enters them; call secret_ask again for one that expired, and secret_forget for one no longer needed.",
+  "Secrets expire 15 minutes after the user enters them; call secret_ask again for one that expired, and secret_forget for one no longer needed. Secrets the user keeps for the Environment do not expire and cannot be forgotten; secret_list shows them.",
 ];
 
 const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));
@@ -197,6 +204,10 @@ const withSecrets =
     execute: async (args, api, context) => {
       // SAFETY: the Harness validated the arguments against the tool's parameters: they are JSON.
       const json = args as JsonValue;
+
+      // The kept Secrets first, so the output is redacted of them also when nothing references them.
+      await run(secrets.refresh);
+
       const resolved = await run(resolveAll(secrets, [...referencedSecretNames(json)]));
 
       if ("reason" in resolved) throw new Error(resolved.reason);
@@ -287,6 +298,20 @@ const askLine = (outcome: AskOutcome): string => {
   }
 };
 
+/** Where a kept Secret is kept, as `secret_list` says it. */
+const keptWhere = (scope: KeptScope): string =>
+  scope === "environment" ? "kept for this Environment" : "kept for every Environment";
+
+/** What `secret_forget` says of one name. */
+const forgetLine = ({ name, forgotten, kept }: ForgetOutcome): string => {
+  if (kept === undefined)
+    return forgotten ? `${name}: forgotten.` : `${name}: not held by this Session.`;
+
+  return forgotten
+    ? `${name}: forgotten; the Secret ${keptWhere(kept)} under this name is used from now on.`
+    : `${name}: ${keptWhere(kept)}, which a Session cannot forget; the user removes it on the Environments page.`;
+};
+
 /** A tool result of `lines`, with `secrets` as its details; never a value. */
 const result = (
   lines: ReadonlyArray<string>,
@@ -357,7 +382,8 @@ export const secretsExtension = (
 
     const list = yield* defineEffectTool({
       name: "secret_list",
-      description: "List the Secrets this Session holds and when each expires; never their values.",
+      description:
+        "List the Secrets this Session holds: those the user entered, with when each expires, and those kept for the Environment; never their values.",
       parameters: ListParameters,
       replay: "safe",
       execute: ({ query }) =>
@@ -377,15 +403,25 @@ export const secretsExtension = (
           return result(
             held.map(
               (secret) =>
-                `${secret.name}: held until ${iso(secret.expiresAt)}. Use $${secretEnvName(secret.name)} or ${secretReference(secret.name)}.`,
+                `${secret.name}: ${secret.kept === undefined ? `held until ${iso(secret.expiresAt)}` : keptWhere(secret.kept)}. Use $${secretEnvName(secret.name)} or ${secretReference(secret.name)}.`,
             ),
-            held.map((secret) => ({
-              name: secret.name,
-              status: "held",
-              env: secretEnvName(secret.name),
-              reference: secretReference(secret.name),
-              expires_at: iso(secret.expiresAt),
-            })),
+            held.map((secret) =>
+              secret.kept === undefined
+                ? {
+                    name: secret.name,
+                    status: "held",
+                    env: secretEnvName(secret.name),
+                    reference: secretReference(secret.name),
+                    expires_at: iso(secret.expiresAt),
+                  }
+                : {
+                    name: secret.name,
+                    status: "kept",
+                    scope: secret.kept,
+                    env: secretEnvName(secret.name),
+                    reference: secretReference(secret.name),
+                  },
+            ),
           );
         }),
     });
@@ -398,13 +434,12 @@ export const secretsExtension = (
       execute: ({ names }) =>
         Effect.map(secrets.forget(names), (forgotten) =>
           result(
-            forgotten.map(({ name, forgotten: was }) =>
-              was ? `${name}: forgotten.` : `${name}: not held by this Session.`,
+            forgotten.map(forgetLine),
+            forgotten.map(({ name, forgotten: was, kept }) =>
+              kept === undefined
+                ? { name, status: was ? "forgotten" : "not_held" }
+                : { name, status: was ? "forgotten" : "kept", scope: kept },
             ),
-            forgotten.map(({ name, forgotten: was }) => ({
-              name,
-              status: was ? "forgotten" : "not_held",
-            })),
           ),
         ),
     });
@@ -413,6 +448,9 @@ export const secretsExtension = (
       beforeTool: (call) =>
         Effect.gen(function* () {
           if (SECRET_TOOLS.has(call.name)) return undefined;
+
+          // So the call's result is redacted of the kept Secrets (`afterTool`) also when it references none.
+          yield* secrets.refresh;
 
           const names = [...referencedSecretNames(call.arguments)];
 

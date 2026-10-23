@@ -1,6 +1,6 @@
 // The Environment list, what the owner does to an Environment in it (create, edit, delete, add and remove Repos, make
-// its Build again) and to its Workspaces (remove, restart the Container), and the state of the Environments page's forms
-// and dialogs.
+// its Build again, keep Secrets for it) and to its Workspaces (remove, restart the Container), the Secrets kept for
+// every Environment, and the state of the Environments page's forms and dialogs.
 
 import {
   containerOverridesFrom,
@@ -14,7 +14,14 @@ import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as Record from "effect/Record";
-import { variablesText } from "./environments.ts";
+import {
+  EMPTY_SECRET_DRAFT,
+  type SecretDraft,
+  secretScopeOf,
+  secretsIn,
+  secretWrite,
+  variablesText,
+} from "./environments.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
 import { visibleTickAtom } from "./sessions.ts";
@@ -331,5 +338,89 @@ export const environmentDraftAtom = Atom.family((id: string) =>
     (ctx, draft: EnvironmentDraft) => {
       ctx.setSelf(draft);
     },
+  ),
+);
+
+/**
+ * Every kept Secret, of every Environment and for every Environment: names, scopes and build flags, never a value. A
+ * section of the page is keyed by the Environment's id, or by `EVERY_ENVIRONMENT`.
+ */
+export const environmentSecretsAtom = RegistryClient.query("listEnvironmentSecrets", undefined, {
+  reactivityKeys: ["environment-secrets"],
+});
+
+/** Why the Secrets could not load, or null. */
+export const environmentSecretsErrorAtom = Atom.map(environmentSecretsAtom, failureOf);
+
+/** The Secrets kept in section `key`, by name, as of the last answer; null until the first. */
+export const secretsInAtom = Atom.family((key: string) =>
+  Atom.map(environmentSecretsAtom, (result) =>
+    result.pipe(
+      AsyncResult.value,
+      Option.map((records) => secretsIn(records, key)),
+      Option.getOrNull,
+    ),
+  ),
+);
+
+/** What is typed in section `key`'s form. The value stays here only until it is saved. */
+export const secretDraftAtom = Atom.family((_key: string) =>
+  Atom.make<SecretDraft>(EMPTY_SECRET_DRAFT),
+);
+
+/**
+ * Keep the form's Secret in section `key`, or replace the value of the one kept under its name (`secretWrite`). Once
+ * it is kept, the form empties, so the value is held nowhere in the page; a refusal keeps what was typed and says why.
+ * A Build that takes Secrets is made again, so the Builds are asked again too.
+ */
+export const saveSecretAtom = Atom.family((key: string) =>
+  appRuntime.fn(
+    (draft: SecretDraft, get) =>
+      RegistryClient.use((registry) =>
+        registry("setEnvironmentSecret", {
+          environment: secretScopeOf(key),
+          ...secretWrite(draft, get(secretsInAtom(key)) ?? []),
+        }),
+      ).pipe(
+        changing(["environment-secrets", "builds"]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(secretDraftAtom(key), EMPTY_SECRET_DRAFT);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** Say whether Secret `name` of section `key` reaches the Build. */
+export const secretBuildAtom = Atom.family((key: string) =>
+  appRuntime.fn(
+    ({ name, build }: { readonly name: string; readonly build: boolean }) =>
+      RegistryClient.use((registry) =>
+        registry("setEnvironmentSecretBuild", { environment: secretScopeOf(key), name, build }),
+      ).pipe(changing(["environment-secrets", "builds"])),
+    { concurrent: true },
+  ),
+);
+
+/** The Secret of section `key` whose Delete dialog is open, by name: null when none is. */
+export const secretDialogAtom = Atom.family((_key: string) => Atom.make<string | null>(null));
+
+/** Delete Secret `name` of section `key`. Once it is deleted, its dialog closes. */
+export const deleteSecretAtom = Atom.family((key: string) =>
+  appRuntime.fn(
+    (name: string, get) =>
+      RegistryClient.use((registry) =>
+        registry("deleteEnvironmentSecret", { environment: secretScopeOf(key), name }),
+      ).pipe(
+        changing(["environment-secrets", "builds"]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(secretDialogAtom(key), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
   ),
 );

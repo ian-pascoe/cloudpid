@@ -5,6 +5,7 @@ import type { Context } from "@earendil-works/chord";
 import { ExecutionError, err, ok, type Shell } from "@earendil-works/pi-durable/env";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import type { EnvironmentBuild } from "./build-record.ts";
 import {
   CLONE_TIMEOUT_SECONDS,
@@ -40,6 +41,8 @@ const host = (
   const scripts: Array<{ script: string; timeoutSeconds: number }> = [];
   const warnings: string[] = [];
   const written: Schema.Json[] = [];
+  /** Each set of Secrets handed to the object, with how many scripts had run by then. */
+  const secrets: Array<{ handed: ReadonlyArray<KeptSecret>; scriptsBefore: number }> = [];
 
   /** The Build the object holds, and what was written in its place, with what had happened by then. */
   const builds: HeldBuilds = {
@@ -100,6 +103,13 @@ const host = (
             return Promise.resolve();
           },
         },
+        secrets: {
+          write: (handed) => {
+            secrets.push({ handed, scriptsBefore: scripts.length });
+
+            return Promise.resolve();
+          },
+        },
         warn: (message) => {
           warnings.push(message);
         },
@@ -113,6 +123,7 @@ const host = (
     warnings,
     written,
     builds,
+    secrets,
     scriptsBeforeBuild: () => scriptsBeforeBuild,
     refuseSettings: () => {
       refuse = true;
@@ -123,6 +134,24 @@ const host = (
 const cloned = ["/workspace/app/.git", "/workspace/api/.git"];
 
 describe("readying a Workspace", () => {
+  it("hands the object its Environment's Secrets before any script runs, and none when the set-up has none", async () => {
+    const kept: KeptSecret = {
+      name: "API_KEY",
+      value: "sk-live-0123456789",
+      scope: "environment",
+      build: false,
+    };
+
+    const { prepare, secrets } = host([]);
+
+    await prepare({ ...setup, secrets: [kept] });
+    expect(secrets).toEqual([{ handed: [kept], scriptsBefore: 0 }]);
+
+    // A spare's stored set-up holds none: what the object holds stays.
+    await prepare(setup);
+    expect(secrets).toHaveLength(1);
+  });
+
   it("starts no Container when its files have every clone", async () => {
     const { prepare, scripts } = host(cloned);
 

@@ -2,6 +2,7 @@
 // bootstrap that runs before the first command of each Container start, and the environment every command gets. The
 // Container is a fake backend whose shell records what it is asked and answers from a script.
 // @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
+import { secretReference } from "@cloudpid/extensions/secrets/core";
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import {
@@ -620,6 +621,27 @@ describe("a command's output", () => {
     expect(seen.stdout).toBe("GH_TOKEN=***\ndone\n");
     expect(seen.stderr).toBe("***!");
     expect(seen.exits).toBe(1);
+  });
+
+  it("has the Environment's Secrets taken out too, each as its reference", async () => {
+    const kept = {
+      name: "API_KEY",
+      value: "sk-live-0123456789",
+      scope: "environment" as const,
+      build: false,
+    };
+
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? {} : { stdout: ["KEY=sk-live-01", "23456789 token=ghp_secret\n"] },
+    );
+
+    const handle = await open(container, {
+      secrets: { read: async () => [kept], known: () => [kept] },
+    }).toolchains.connect(host);
+
+    const seen = await output(await handle.rpc.shell.exec({ source: "env" }));
+
+    expect(seen.stdout).toBe(`KEY=${secretReference("API_KEY")} token=***\n`);
   });
 
   it("gets what was held back at the end before the exit", async () => {

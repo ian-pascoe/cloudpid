@@ -209,7 +209,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
     Effect.provide(
       SessionLive.pipe(
         Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
-        Layer.provideMerge(RegistryLive.pipe(Layer.provide(PushConfigLive))),
+        Layer.provideMerge(
+          RegistryLive.pipe(Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive))),
+        ),
       ),
     ),
   ),

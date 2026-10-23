@@ -2,6 +2,7 @@ import { SettingsError } from "@cloudpid/config";
 import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
+  MAX_ENVIRONMENT_SECRETS,
   NEW_WORKSPACE,
   parseRepoSource,
   RegistryRpcs,
@@ -325,6 +326,25 @@ export const serveRegistryRpc = <R = never>(
       }
     };
 
+    /** Where a Secret is kept, in words. */
+    const scopeWords = (environment: string | null) =>
+      environment === null ? "every environment" : `environment "${environment}"`;
+
+    /**
+     * After a kept Secret changed: the Builds it may reach are looked at again (their key covers the Secrets a Build
+     * gets), each Environment's for one kept for every Environment.
+     */
+    const secretChanged = (environment: string | null) =>
+      environment === null
+        ? registry
+            .listEnvironments()
+            .pipe(
+              Effect.flatMap((all) =>
+                Effect.forEach(all, (item) => background(builds.of(item.id)), { discard: true }),
+              ),
+            )
+        : background(builds.of(environment));
+
     /** Why the Registry did not create a Session, for the owner. */
     const refused = (refusal: SessionRefusal, environment: string, branch: string | undefined) => {
       switch (refusal.refused) {
@@ -539,6 +559,42 @@ export const serveRegistryRpc = <R = never>(
         knownEnvironment(environment).pipe(
           Effect.andThen(builds.rebuild(environment).pipe(Effect.mapError(failed))),
         ),
+      listEnvironmentSecrets: () => registry.listEnvironmentSecrets(),
+      setEnvironmentSecret: ({ environment, name, value, build }) =>
+        registry.setEnvironmentSecret({ environment, name, value, build }).pipe(
+          Effect.flatMap((written) => {
+            switch (written.status) {
+              case "saved":
+                return secretChanged(environment).pipe(Effect.as(written.record));
+              // Says what is wrong with the name or the value, never the value itself.
+              case "rejected":
+                return failed(written.message);
+              case "missing":
+                return failed(`Environment "${environment ?? ""}" does not exist`);
+              case "full":
+                return failed(
+                  `At most ${MAX_ENVIRONMENT_SECRETS} Secrets are kept for ${scopeWords(environment)}: delete one first`,
+                );
+            }
+          }),
+        ),
+      setEnvironmentSecretBuild: ({ environment, name, build }) =>
+        registry.setEnvironmentSecretBuild({ environment, name, build }).pipe(
+          Effect.filterOrFail(Predicate.isNotNull, () =>
+            failed(`No Secret ${name} is kept for ${scopeWords(environment)}`),
+          ),
+          Effect.tap(() => secretChanged(environment)),
+        ),
+      deleteEnvironmentSecret: ({ environment, name }) =>
+        registry
+          .deleteEnvironmentSecret({ environment, name })
+          .pipe(
+            Effect.flatMap((deleted) =>
+              deleted
+                ? secretChanged(environment)
+                : failed(`No Secret ${name} is kept for ${scopeWords(environment)}`),
+            ),
+          ),
       listWorkspaces: () => registry.listWorkspaces(),
       removeWorkspace: ({ id }) => knownWorkspace(id).pipe(Effect.flatMap(removeWorkspace)),
       restartContainer: ({ workspace }) =>

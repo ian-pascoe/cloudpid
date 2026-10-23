@@ -1,12 +1,10 @@
-// Takes a secret out of a command's output (docs/spec.md → Git): `env`, `printenv`, `set -x` or `gh auth status
-// --show-token` would otherwise put the GitHub token into the Session's history and send it to the model provider.
-// It catches accidents, not exfiltration: a command that encodes the token gets past it.
-// @effect-diagnostics preferEffectArray:off
+// Takes secrets out of a command's output (docs/spec.md → Git, Secrets): `env`, `printenv`, `set -x` or `gh auth status
+// --show-token` would otherwise put the GitHub token, or a Secret kept for the Environment, into the Session's history
+// and send it to the model provider. It catches accidents, not exfiltration: a command that encodes one gets past it.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
+import { type KeptSecret, secretReference } from "@cloudpid/extensions/secrets/core";
 
 const encoder = new TextEncoder();
-
-/** What a secret is replaced with. */
-const MASK = encoder.encode("***");
 
 /** Where `needle` first occurs in `haystack` at or after `from`, or -1. */
 const indexOf = (haystack: Uint8Array, needle: Uint8Array, from: number): number => {
@@ -21,17 +19,45 @@ const indexOf = (haystack: Uint8Array, needle: Uint8Array, from: number): number
   return -1;
 };
 
+/** A secret to take out of output, and what replaces it. */
+export type Redaction = { readonly value: string; readonly mask: string };
+
 /**
- * Replaces a secret in a byte stream, one chunk at a time. Bytes that could be the start of the secret are held back
- * until the next chunk shows whether they are, so a secret split across chunks is still caught; `flush` releases
- * what is held when the stream ends. Operating on bytes leaves other output, binary included, as it was.
+ * Replaces secrets in a byte stream, one chunk at a time, each by its own mask, one after the other. Bytes that could be the start of a secret are held back until the next chunk shows
+ * whether they are, so a secret split across chunks is still caught; `flush` releases what is held when the stream
+ * ends. Operating on bytes leaves other output, binary included, as it was.
  */
 export class Redactor {
+  readonly #stages: ReadonlyArray<OneRedactor>;
+
+  constructor(secrets: ReadonlyArray<Redaction>) {
+    this.#stages = secrets.flatMap((secret) =>
+      secret.value === "" ? [] : [new OneRedactor(secret.value, secret.mask)],
+    );
+  }
+
+  push(chunk: Uint8Array): Uint8Array {
+    return this.#stages.reduce((bytes, stage) => stage.push(bytes), chunk);
+  }
+
+  flush(): Uint8Array {
+    let carry: Uint8Array = new Uint8Array(0);
+
+    for (const stage of this.#stages) carry = concat([stage.push(carry), stage.flush()]);
+
+    return carry;
+  }
+}
+
+/** `Redactor` for one secret. */
+class OneRedactor {
   readonly #secret: Uint8Array;
+  readonly #mask: Uint8Array;
   #held: Uint8Array = new Uint8Array(0);
 
-  constructor(secret: string) {
+  constructor(secret: string, mask: string) {
     this.#secret = encoder.encode(secret);
+    this.#mask = encoder.encode(mask);
   }
 
   push(chunk: Uint8Array): Uint8Array {
@@ -48,7 +74,7 @@ export class Redactor {
       at >= 0;
       at = indexOf(bytes, this.#secret, start)
     ) {
-      out.push(bytes.subarray(start, at), MASK);
+      out.push(bytes.subarray(start, at), this.#mask);
       start = at + this.#secret.length;
     }
 
@@ -94,4 +120,19 @@ const concat = (parts: readonly Uint8Array[]): Uint8Array => {
   }
 
   return out;
+};
+
+/** `text` without the GitHub token (as `***`) and without each of `secrets` (as its Secret Reference). */
+export const redactText = (
+  text: string,
+  token: string | undefined,
+  secrets: ReadonlyArray<KeptSecret>,
+): string => {
+  const tokenless = token === undefined || token === "" ? text : text.replaceAll(token, "***");
+
+  return secrets.reduce(
+    (redacted, kept) =>
+      kept.value === "" ? redacted : redacted.replaceAll(kept.value, secretReference(kept.name)),
+    tokenless,
+  );
 };

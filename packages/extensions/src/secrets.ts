@@ -18,8 +18,11 @@ export {
   SECRET_NAME_PATTERN,
 } from "./secrets/references.ts";
 
+export { KEPT_REFRESH_MS, type KeptScope, type KeptSecret } from "./secrets/kept.ts";
+
 export {
   type AskOutcome,
+  type ForgetOutcome,
   type HeldSecret,
   SECRET_LIFETIME_MS,
   SecretAsk,
@@ -32,9 +35,13 @@ export {
 } from "./secrets/store.ts";
 
 export {
+  type KeptBinding,
+  type KeptVault,
   MIN_MASTER_KEY_LENGTH,
+  openKeptVault,
   openVault,
   SealedSecret,
+  SealedValue,
   type SecretVault,
   SecretVaultError,
 } from "./secrets/vault.ts";

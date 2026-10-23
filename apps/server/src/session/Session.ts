@@ -288,6 +288,30 @@ export const SessionLive = Session.make(
           sockets: state.raw,
           // A request waits for the owner, who may not have the page open: push it.
           notify: notifyOwner,
+          // Its Environment's kept Secrets, opened by the Registry, held in memory and asked for again now and then. A
+          // Session the Registry does not list has none. Each set is handed to the Workspace before the Session uses
+          // it, so no value reaches the Container that the scan before a snapshot does not search for; a set the
+          // Workspace did not take is not used (the Session keeps the one it held, and asks again soon).
+          kept:
+            name === undefined
+              ? Effect.succeed([])
+              : registries
+                  .getByName(REGISTRY_NAME)
+                  .sessionSecrets({ session: name })
+                  .pipe(
+                    Effect.tap((kept) =>
+                      // @effect-diagnostics-next-line asyncFunction:off
+                      Effect.tryPromise(async () => {
+                        const { workspace: id } = await placement();
+
+                        if (id !== null) {
+                          await workspaces
+                            .getByName(workspaceObjectName(id))
+                            .updateEnvironmentSecrets(kept);
+                        }
+                      }),
+                    ),
+                  ),
         });
 
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed with their Live View link.

@@ -3,7 +3,7 @@
 // object schedules itself (ADR-0004; `durable_object` scheduling). It is a plain class rather than an alchemy
 // Effect DO: computer reaches it through `__getWorkspaceStub()` with raw Workers RPC (its Worker Shell calls back into
 // it through `WorkspaceServiceProxy`), which alchemy's Effect bridge would wrap in its own envelopes.
-// @effect-diagnostics asyncFunction:off globalDate:off globalConsole:off cryptoRandomUUID:off
+// @effect-diagnostics asyncFunction:off globalDate:off globalConsole:off cryptoRandomUUID:off preferEffectArray:off
 import {
   noopObserver,
   Workspace as ComputerWorkspace,
@@ -19,6 +19,8 @@ import {
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import jq from "@cloudflare/computer/shell/jq";
 import { EXIT_REPORT_HOST } from "@cloudpid/sandbox-image/supervisor";
+import { type KeptSecret, type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
+import { redactText } from "./redact.ts";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
   type ComputerWorkspaceStub,
@@ -30,7 +32,9 @@ import {
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import { DurableObject } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
+import { type WorkspaceSecrets, workspaceSecretsStore } from "./environment-secrets.ts";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
@@ -74,6 +78,12 @@ export type WorkspaceEnv = {
    * `CLOUDPID_GITHUB_TOKEN`). Absent or empty, commands run without one.
    */
   readonly CLOUDPID_GITHUB_TOKEN?: string;
+  /**
+   * The master key the Environment's kept Secrets are sealed under in this object's storage (a deploy-time secret,
+   * `SECRETS_ENCRYPTION_KEY`, as the Session DOs and the Registry have). Absent, they are held in memory only, and a
+   * snapshot after an eviction is refused until a readying hands them again.
+   */
+  readonly SECRETS_ENCRYPTION_KEY?: string;
   /** The identity of the agent's commits where the Container has no other (`CLOUDPID_GIT_NAME`, `CLOUDPID_GIT_EMAIL`). */
   readonly CLOUDPID_GIT_NAME?: string;
   readonly CLOUDPID_GIT_EMAIL?: string;
@@ -133,6 +143,8 @@ export class Workspace extends ContainerHost {
   readonly #builds: BuildRunner;
   readonly #earlyStart: ContainerEarlyStart;
   readonly #spare: SparePreparation;
+  /** The Environment's kept Secrets, as last handed over: sealed in storage, searched for before each snapshot. */
+  readonly #environmentSecrets: WorkspaceSecrets;
   readonly #sql: SqlStorage;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
@@ -144,10 +156,32 @@ export class Workspace extends ContainerHost {
     this.#environmentBuild = workspaceBuildStore(ctx.storage);
     this.#sql = ctx.storage.sql;
 
+    let vault: Promise<KeptVault> | undefined;
+
+    const environmentSecrets = (this.#environmentSecrets = workspaceSecretsStore({
+      storage: ctx.storage,
+      // Derived for the Workspaces, once, and bound to this object's id with each Secret's name.
+      vault: () =>
+        (vault ??= Effect.runPromise(
+          openKeptVault(env.SECRETS_ENCRYPTION_KEY ?? "", "workspace"),
+        ).catch((cause: unknown) => {
+          vault = undefined;
+
+          throw cause;
+        })),
+      owner: ctx.id.toString(),
+    }));
+
+    /** `text` with the GitHub token and the kept Secrets this instance holds taken out. */
+    const redact = (text: string) =>
+      redactText(text, env.CLOUDPID_GITHUB_TOKEN, environmentSecrets.known());
+
     const snapshots = (this.#snapshots = new ContainerSnapshots({
       // The local Container has no real mount, and no snapshots.
       enabled: env.CONTAINER_FUSE !== "false",
       secret: env.CLOUDPID_GITHUB_TOKEN,
+      // The Environment's kept Secrets too: a Workspace that cannot show them takes no snapshot.
+      secrets: () => environmentSecrets.read(),
       timeoutMs: SNAPSHOT_TIMEOUT_MS,
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
       running: () => ctx.container?.running === true,
@@ -156,10 +190,10 @@ export class Workspace extends ContainerHost {
 
         return ctx.container.snapshotContainer({ name });
       },
-      scan: (secret) => {
+      scan: (patterns) => {
         if (ctx.container === undefined) return Promise.reject(new Error("no Container"));
 
-        return scanContainerDisk(ctx.container, secret, SCAN_TIMEOUT_MS);
+        return scanContainerDisk(ctx.container, patterns, SCAN_TIMEOUT_MS);
       },
       load: () => ctx.storage.get<SnapshotRecord>(SNAPSHOT_KEY),
       save: (record) => ctx.storage.put(SNAPSHOT_KEY, record),
@@ -249,6 +283,15 @@ export class Workspace extends ContainerHost {
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       githubToken: env.CLOUDPID_GITHUB_TOKEN,
+      // Taken out of output as the token is, each as its Secret Reference.
+      secrets: {
+        read: async () => {
+          const held = await environmentSecrets.read();
+
+          return held.ok ? held.secrets : environmentSecrets.known();
+        },
+        known: () => environmentSecrets.known(),
+      },
       // The variables and the Environment's scripts of each Container start are the Workspace's settings at its bootstrap.
       settings: async () => (await this.#settings.read()).settings,
       // Once the bootstrap has installed something (a Toolchain, a Setup Script's work) in a Container that started from
@@ -343,18 +386,15 @@ export class Workspace extends ContainerHost {
 
         if (!written.ok) throw new Error(`The Build refused the settings: ${written.message}`);
       },
-      run: (script, timeoutSeconds) =>
-        this.#ownHost(`computer:build:${ctx.id.toString()}`).run(script, timeoutSeconds),
+      run: (script, timeoutSeconds, scriptEnv) =>
+        this.#ownHost(`computer:build:${ctx.id.toString()}`).run(script, timeoutSeconds, scriptEnv),
+      secrets: () => environmentSecrets.read(),
       snapshot: () => launch.captureBuild(),
       stop: async () => {
         if (ctx.container?.running === true) await ctx.container.destroy();
       },
       idle: this.#idle,
-      redact: (text) => {
-        const token = env.CLOUDPID_GITHUB_TOKEN;
-
-        return token === undefined || token === "" ? text : text.replaceAll(token, "***");
-      },
+      redact,
       newId: () => crypto.randomUUID(),
       now: () => Date.now(),
       info: (message) => console.info(message),
@@ -400,6 +440,7 @@ export class Workspace extends ContainerHost {
         read: () => this.#environmentBuild.read(),
         write: (build) => this.#environmentBuild.write(build),
       },
+      { write: (secrets) => this.#environmentSecrets.replace(secrets) },
       (message) => console.warn(message),
     );
   }
@@ -483,10 +524,38 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s): it is
-   * kept and begun at the alarm, so this answers at once, with the state then (`BuildRunner`).
+   * `text`, a report of this object's Container (`ContainerExitReports`), with the GitHub token and the Environment's
+   * kept Secrets taken out; null when the copy of them does not open, so it cannot be shown free of them. Not a use of
+   * the Workspace: a spare's preparation goes on.
    */
-  startBuild(request: BuildRequest): Promise<BuildState> {
+  async redactExitReport(text: string): Promise<string | null> {
+    const held = await this.#environmentSecrets.read();
+
+    return held.ok ? redactText(text, this.env.CLOUDPID_GITHUB_TOKEN, held.secrets) : null;
+  }
+
+  /**
+   * Keep `secrets` as the Environment's kept Secrets (sealed), which a Session hands over when it readies the Workspace
+   * (`prepare.ts`), with the settings: they are searched for before each snapshot and taken out of output.
+   */
+  updateEnvironmentSecrets(secrets: ReadonlyArray<KeptSecret>): Promise<void> {
+    this.#spare.noteUse();
+
+    return this.#environmentSecrets.replace(secrets);
+  }
+
+  /**
+   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s): it is
+   * kept and begun at the alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
+   * Environment's, are kept sealed apart from the request: those for the Build reach its Setup Scripts, and every one is
+   * searched for before its snapshot.
+   */
+  async startBuild(
+    request: BuildRequest,
+    secrets: ReadonlyArray<KeptSecret> = [],
+  ): Promise<BuildState> {
+    await this.#environmentSecrets.replace(secrets);
+
     return this.#builds.request(request);
   }
 
@@ -546,8 +615,13 @@ export class Workspace extends ContainerHost {
    * Prepare this Workspace as its Environment's spare (docs/spec.md → Spare Workspace): `setup` is kept and the work
    * starts at the alarm, so this answers at once (`SparePreparation`).
    */
-  prepareSpare(setup: WorkspaceSetup): Promise<void> {
-    return this.#spare.request(setup);
+  async prepareSpare(setup: WorkspaceSetup): Promise<void> {
+    // The Secrets are kept sealed, never with the set-up the preparation stores.
+    const { secrets, ...stored } = setup;
+
+    if (secrets !== undefined) await this.#environmentSecrets.replace(secrets);
+
+    return this.#spare.request(stored);
   }
 
   /**

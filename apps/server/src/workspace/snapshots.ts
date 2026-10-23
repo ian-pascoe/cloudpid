@@ -11,12 +11,15 @@
 // - It is tied to the Container-only paths (computer's `ignore`) the Container launched with, the same way: computerd's
 //   store and the disk's copies of those paths are laid out for them, so a launch with others starts from the image.
 // - A snapshot lives 30 days from its creation or latest restore, so one that is near that is not restored.
-// - The disk is searched for the GitHub token before a snapshot (`scanContainerDisk`: everything but the pseudo file
-//   systems, the Workspace mount and pnpm's stores, for the token and its common base64 forms), and a snapshot that
-//   cannot be shown clean is not taken. The bootstrap keeps the token off disk (git reads it from the environment), so
-//   this is for what a command wrote; a token encoded some other way is not found.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off missingPipeableSignature:off
+// - The disk is searched for the GitHub token and the Environment's kept Secrets before a snapshot
+//   (`scanContainerDisk`: everything but the pseudo file systems, the Workspace mount and pnpm's stores, for each as it
+//   is and in base64: `scanPatterns`), and a snapshot that cannot be shown clean is not taken, nor one of a Workspace
+//   that cannot show which Secrets to search for. The bootstrap keeps the token off disk (git reads it from the
+//   environment), so this is for what a command wrote; a value encoded some other way is not found.
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off
+import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import { PNPM_STORE_DIRECTORY_NAME } from "@cloudpid/sandbox-image/toolchains";
+import type { HeldSecrets } from "./environment-secrets.ts";
 
 /**
  * How long a snapshot, its scan included, may take before it is given up on, after the install and on idle stop alike.
@@ -54,8 +57,13 @@ export type SnapshotRecord = {
 export type ContainerSnapshotDeps = {
   /** Off where the Container is not the real thing (`alchemy dev`), which has no snapshots. */
   readonly enabled: boolean;
-  /** The GitHub token commands run with, to keep off the snapshot; none means nothing to scan for. */
+  /** The GitHub token commands run with, to keep off the snapshot; none means no token to scan for. */
   readonly secret: string | undefined;
+  /**
+   * The Environment's kept Secrets the Workspace holds, to keep off the snapshot too; when it cannot show them, no
+   * snapshot is taken. Without it, there are none.
+   */
+  readonly secrets?: (() => Promise<HeldSecrets>) | undefined;
   /** How long a snapshot, its scan included, may take before it is given up on (`SNAPSHOT_TIMEOUT_MS`). */
   readonly timeoutMs: number;
   /** The reference of the image a Container launched now would run. */
@@ -63,8 +71,8 @@ export type ContainerSnapshotDeps = {
   readonly running: () => boolean;
   /** The platform's `snapshotContainer`. */
   readonly snapshot: (name: string) => Promise<{ readonly id: string; readonly size: number }>;
-  /** The paths on the Container's disk whose content holds `secret`, in a few encodings. */
-  readonly scan: (secret: string) => Promise<ReadonlyArray<string>>;
+  /** The paths on the Container's disk whose content holds any of `patterns` (`scanPatterns`). */
+  readonly scan: (patterns: ReadonlyArray<string>) => Promise<ReadonlyArray<string>>;
   readonly load: () => Promise<SnapshotRecord | undefined>;
   readonly save: (record: SnapshotRecord) => Promise<void>;
   readonly clear: () => Promise<void>;
@@ -179,13 +187,24 @@ export class ContainerSnapshots {
 
     try {
       const taken = await this.#within(async () => {
-        if (deps.secret !== undefined && deps.secret !== "") {
-          const leaks = await deps.scan(deps.secret);
+        const held = (await deps.secrets?.()) ?? { ok: true, secrets: [] };
+
+        if (!held.ok) return { leaked: true, reason: held.reason } as const;
+
+        const patterns = scanPatterns(deps.secret, held.secrets);
+
+        if (patterns.length > 0) {
+          const leaks = await deps.scan(patterns);
 
           if (leaks.length > 0) {
+            const what =
+              held.secrets.length === 0
+                ? "the GitHub token is"
+                : "the GitHub token or a Secret kept for the Environment is";
+
             return {
               leaked: true,
-              reason: `the GitHub token is in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}`,
+              reason: `${what} in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}`,
             } as const;
           }
         }
@@ -280,7 +299,8 @@ export const samePaths = (
     : a.length === b.length && a.every((pattern, index) => pattern === b[index]);
 
 /**
- * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` (one per line), anywhere on the Container's
+ * Lists the files that hold any of the patterns in `CLOUDPID_SCAN_SECRET` and the variables named after it
+ * (`CLOUDPID_SCAN_SECRET_1`, …: one per line, split so no variable is near the kernel's limit on one), anywhere on the Container's
  * disk except the pseudo file systems (`/proc`, `/sys`, `/dev`, `/run`) and the Workspace mount (`/workspace`, whose
  * files are searched in computerd's store); the directories given as arguments instead, if any (for the tests).
  *
@@ -294,6 +314,9 @@ export const samePaths = (
  * The patterns reach grep as a pattern file on its standard input, read from the environment, so they are in no command
  * line.
  */
+/** The variable the patterns reach grep in, and the prefix of those that carry the rest. */
+const SCAN_VARIABLE = "CLOUDPID_SCAN_SECRET";
+
 const SCAN_SCRIPT = [
   'if [ "$#" -eq 0 ]; then',
   "  for d in /*; do",
@@ -302,7 +325,7 @@ const SCAN_SCRIPT = [
   '    [ -d "$d" ] && set -- "$@" "$d"',
   "  done",
   "fi",
-  `printf '%s\\n' "$CLOUDPID_SCAN_SECRET" | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@"`,
+  `for name in "\${!${SCAN_VARIABLE}@}"; do printf '%s\\n' "\${!name}"; done | grep -rlF --exclude-dir=${PNPM_STORE_DIRECTORY_NAME} --exclude-dir=.pnpm -f - -- "$@"`,
 ].join("\n");
 
 /** What the scan needs of the platform's `ctx.container`. */
@@ -327,20 +350,110 @@ export const secretForms = (secret: string): ReadonlyArray<string> => [
 ];
 
 /**
- * The files on the Container's disk whose content holds `secret` (`secretForms`), found by a process of its own in the
- * Container (`ctx.container.exec`), so it needs no connection to computerd, which the idle stop's alarm may not have.
- * Rejects when the search could not be run to the end, or took longer than `timeoutMs` (the process is then killed): a
- * disk that could not be searched is not shown to be clean.
+ * A kept Secret shorter than this is not searched for: it would be found by chance in unrelated files, and keep every
+ * snapshot from being taken (the redaction's own bound, `MIN_ENCODED_REDACTION_LENGTH`).
+ */
+export const MIN_SCANNED_LENGTH = 8;
+
+/** The longest pattern searched for one form of a Secret: a part of it, which every file holding it holds. */
+export const SCANNED_EXCERPT_LENGTH = 256;
+
+/** At most `SCANNED_EXCERPT_LENGTH` characters from the middle of `text`, whole code points. */
+const excerpt = (text: string): string => {
+  const points = Array.from(text);
+
+  if (points.length <= SCANNED_EXCERPT_LENGTH) return text;
+
+  const start = Math.floor((points.length - SCANNED_EXCERPT_LENGTH) / 2);
+
+  return points.slice(start, start + SCANNED_EXCERPT_LENGTH).join("");
+};
+
+/** Base64 of `text`'s UTF-8 bytes. */
+const base64 = (text: string): string => {
+  let binary = "";
+
+  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+
+  return btoa(binary);
+};
+
+/**
+ * What the scan before a snapshot searches for (one line each, as `grep -F` takes them): the GitHub token in its forms
+ * (`secretForms`), and each kept Secret as it is and as base64 of its UTF-8, each cut to a part of its middle when
+ * long. A Secret of several lines is searched for by its longest line (a key's body, not a header any file can hold),
+ * which every file holding the whole value holds. A Secret shorter than `MIN_SCANNED_LENGTH` is not searched for.
+ */
+export const scanPatterns = (
+  token: string | undefined,
+  secrets: ReadonlyArray<KeptSecret>,
+): string[] => {
+  const patterns = token === undefined || token === "" ? [] : [...secretForms(token)];
+
+  for (const { value } of secrets) {
+    if (value.length < MIN_SCANNED_LENGTH) continue;
+
+    const longest = value
+      .split(/\r?\n/)
+      .reduce((best, line) => (line.length > best.length ? line : best), "");
+
+    for (const form of [excerpt(longest), excerpt(base64(value))]) {
+      if (form.length >= MIN_SCANNED_LENGTH && !patterns.includes(form)) patterns.push(form);
+    }
+  }
+
+  return patterns;
+};
+
+/** How much of the patterns one variable carries: well under Linux's 128 KiB for one environment string. */
+const SCAN_VARIABLE_BYTES = 64 * 1024;
+
+/** `patterns`, one per line, split over as many variables as their size needs. */
+const scanEnvironment = (patterns: ReadonlyArray<string>): Record<string, string> => {
+  const chunks: string[][] = [[]];
+  let size = 0;
+
+  for (const pattern of patterns) {
+    const bytes = new TextEncoder().encode(pattern).length + 1;
+    const current = chunks.at(-1) ?? [];
+
+    if (size + bytes > SCAN_VARIABLE_BYTES && current.length > 0) {
+      chunks.push([pattern]);
+      size = bytes;
+    } else {
+      current.push(pattern);
+      size += bytes;
+    }
+  }
+
+  return Object.fromEntries(
+    chunks.map((chunk, index) => [
+      index === 0 ? SCAN_VARIABLE : `${SCAN_VARIABLE}_${index}`,
+      chunk.join("\n"),
+    ]),
+  );
+};
+
+/**
+ * The files on the Container's disk whose content holds any of `patterns` (`scanPatterns`), found by a process of its
+ * own in the Container (`ctx.container.exec`), so it needs no connection to computerd, which the idle stop's alarm may
+ * not have. Rejects when the search could not be run to the end, or took longer than `timeoutMs` (the process is then
+ * killed): a disk that could not be searched is not shown to be clean. No patterns, nothing to search for.
  */
 export const scanContainerDisk = async (
   container: ContainerExec,
-  secret: string,
+  patterns: ReadonlyArray<string>,
   timeoutMs = 30_000,
 ): Promise<ReadonlyArray<string>> => {
+  // An empty pattern would match every file.
+  const searched = patterns.filter((pattern) => pattern !== "");
+
+  if (searched.length === 0) return [];
+
   const controller = new AbortController();
 
   const process = await container.exec(["bash", "-c", SCAN_SCRIPT], {
-    env: { CLOUDPID_SCAN_SECRET: secretForms(secret).join("\n") },
+    env: scanEnvironment(searched),
     signal: controller.signal,
   });
 
@@ -350,7 +463,7 @@ export const scanContainerDisk = async (
     timer = setTimeout(() => {
       // Only while it runs: the signal of a process that has exited raises an error in the Durable Object.
       controller.abort();
-      reject(new Error(`the scan for the token did not finish in ${timeoutMs / 1000} s`));
+      reject(new Error(`the scan for Secrets did not finish in ${timeoutMs / 1000} s`));
     }, timeoutMs);
   });
 
@@ -359,7 +472,7 @@ export const scanContainerDisk = async (
   });
 
   // grep: 0 a file matched, 1 none did, 2 or more it could not read something.
-  if (exitCode > 1) throw new Error(`the scan for the token ended with exit status ${exitCode}`);
+  if (exitCode > 1) throw new Error(`the scan for Secrets ended with exit status ${exitCode}`);
 
   return new TextDecoder()
     .decode(stdout)

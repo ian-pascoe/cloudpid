@@ -7,6 +7,7 @@ import {
 } from "@cloudflare/computer/backends/container";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
+import { secretReference } from "@cloudpid/extensions/secrets/core";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { discoverSkills } from "@cloudpid/extensions/skills-discovery";
 import { discoverPrompts } from "@cloudpid/extensions/prompt-templates";
@@ -640,5 +641,46 @@ describe("a spare Workspace preparing itself", () => {
     expect((await workspace.containerSettings()).overrides).toEqual({ idleMinutes: 30 });
     expect((await workspace.liveStubs()).container).toBe(3);
     expect(await preparation()).toBeUndefined();
+  });
+});
+
+describe("an exit report on the Workspace DO", () => {
+  const kept = {
+    name: "API_KEY",
+    value: "sk-live-0123456789abcdef",
+    scope: "environment" as const,
+    build: false,
+  };
+
+  it("has the Environment's Secrets taken out with the copy the DO keeps sealed, after an eviction too", async () => {
+    const workspace = env.WORKSPACES.getByName("exit-report-redaction");
+
+    await workspace.updateEnvironmentSecrets([kept]);
+
+    expect(await workspace.redactExitReport(`Error: bad key ${kept.value}`)).toBe(
+      `Error: bad key ${secretReference("API_KEY")}`,
+    );
+
+    await evictDurableObject(workspace);
+
+    const redacted = await workspace.redactExitReport(`Error: bad key ${kept.value}`);
+
+    expect(redacted).toBe(`Error: bad key ${secretReference("API_KEY")}`);
+  });
+
+  it("is not answered while the copy does not open: the report cannot be shown free of them", async () => {
+    const workspace = env.WORKSPACES.getByName("exit-report-unopened");
+
+    await workspace.updateEnvironmentSecrets([kept]);
+    await runInDurableObject(workspace, async (_instance, state) => {
+      // As a copy sealed under another key reads: a Secret whose value does not open.
+      await state.storage.put("cloudpid:environment-secrets", {
+        version: 1,
+        secrets: [{ name: "API_KEY", scope: "environment", build: false, sealed: null }],
+      });
+    });
+    await evictDurableObject(workspace);
+
+    expect(await workspace.redactExitReport(`Error: bad key ${kept.value}`)).toBeNull();
   });
 });

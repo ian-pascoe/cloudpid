@@ -5,13 +5,20 @@
 // An ask is durable: it is stored until the owner answers or its call is cancelled, and the answer is stored with the
 // Secrets it provided, so a call that an eviction cut off finds the answer when it reruns, and an owner who answers
 // while no call waits still has the answer kept.
+//
+// The Secrets kept for the Session's Environment (or for every Environment) are held beside them, in memory only: they
+// are asked for (`SecretsOptions.kept`) when first needed and again once `KEPT_REFRESH_MS` has passed, so a change on
+// the Environments page applies soon. An asked Secret of the same name wins, and a kept one cannot be forgotten here.
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import { KEPT_REFRESH_MS, KEPT_RETRY_MS, type KeptScope, type KeptSecret } from "./kept.ts";
 import { type RedactionStream, Redactions } from "./redaction.ts";
 import { secretEnvName } from "./references.ts";
 import type { SealedSecret, SecretVault, SecretVaultError } from "./vault.ts";
@@ -44,8 +51,18 @@ export type AskOutcome =
   | { readonly name: string; readonly status: "provided"; readonly expiresAt: number }
   | { readonly name: string; readonly status: "skipped" | "cancelled" };
 
-/** A Secret this Session holds, without its value. */
-export type HeldSecret = { readonly name: string; readonly expiresAt: number };
+/** A Secret this Session holds, without its value: one the owner entered, until it expires, or one kept for it. */
+export type HeldSecret =
+  | { readonly name: string; readonly expiresAt: number; readonly kept?: undefined }
+  | { readonly name: string; readonly kept: KeptScope; readonly expiresAt?: undefined };
+
+/** What `forget` did with a name: whether an entered Secret was forgotten, and where a kept one of that name is kept. */
+export type ForgetOutcome = {
+  readonly name: string;
+  readonly forgotten: boolean;
+  /** Set when a kept Secret has the name: it stays held, as only the Environments page removes it. */
+  readonly kept?: KeptScope;
+};
 
 /** An ask could not be answered or completed. */
 export class SecretsError extends Schema.TaggedError<
@@ -54,16 +71,19 @@ export class SecretsError extends Schema.TaggedError<
 >()("SecretsError", { message: Schema.String }) {}
 
 export type SecretsService = {
-  /** The Secrets held now, by name. */
+  /** The Secrets held now, by name: an entered one over a kept one of the same name. */
   readonly held: Effect.Effect<ReadonlyArray<HeldSecret>>;
-  /** The value held under `name`, unless its lifetime has passed. */
+  /** The value held under `name`: entered (unless its lifetime has passed) or else kept. */
   readonly resolve: (name: string) => Effect.Effect<string | undefined>;
   /** Every held Secret as the environment variable commands get it under. */
   readonly environment: Effect.Effect<Readonly<Record<string, string>>>;
-  /** Forget `names` now; says of each whether it was held. */
-  readonly forget: (
-    names: ReadonlyArray<string>,
-  ) => Effect.Effect<ReadonlyArray<{ readonly name: string; readonly forgotten: boolean }>>;
+  /** Forget the entered Secrets `names` now; says of each whether it was held, and whether a kept one has the name. */
+  readonly forget: (names: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<ForgetOutcome>>;
+  /**
+   * Ask for the kept Secrets if they are due, so `redact` and `stream` cover them: run before a tool whose output they
+   * redact. `held`, `resolve`, `environment`, `forget` and `scrub` do it themselves.
+   */
+  readonly refresh: Effect.Effect<void>;
   /** Delete the ciphertext of every Secret whose lifetime has passed. */
   readonly sweep: Effect.Effect<void>;
   /** When the next held Secret expires, if any is held. */
@@ -148,6 +168,12 @@ export type SecretsOptions = {
    * background, so the ask neither waits for it nor is held up by it; it must not fail.
    */
   readonly asked?: (ask: SecretAsk) => Effect.Effect<void>;
+  /**
+   * The Secrets kept for the Session's Environment and for every Environment, with their values: asked for when first
+   * needed and once `KEPT_REFRESH_MS` has passed since. A failure keeps what was held, and asks again after
+   * `KEPT_RETRY_MS`. Without it, none are held.
+   */
+  readonly kept?: Effect.Effect<ReadonlyArray<KeptSecret>, unknown> | undefined;
 };
 
 const fromVault = Effect.mapError((error: SecretVaultError) =>
@@ -160,11 +186,17 @@ const makeSecrets = ({
   vault,
   announce,
   asked,
+  kept,
 }: SecretsOptions): Effect.Effect<SecretsService, SecretsError> =>
   Effect.gen(function* () {
     const redactions = new Redactions();
     /** Opened values, by name. */
     const values = new Map<string, { readonly value: string; readonly expiresAt: number }>();
+    /** The kept Secrets, by name, as last handed; in memory only. */
+    let keptSecrets = new Map<string, KeptSecret>();
+    /** When the kept Secrets are next asked for; 0 until they first are. */
+    let keptDueAt = 0;
+    const keptLock = yield* Semaphore.make(1);
     /** Calls waiting for an answer, by ask. */
     const waiters = new Map<string, Deferred.Deferred<void>>();
     /** How each message was first sent by this instance, by digest; `null` when it was sent unchanged. */
@@ -219,6 +251,38 @@ const makeSecrets = ({
     const live = Effect.map(now, (time) =>
       Arr.filter([...values], ([, secret]) => secret.expiresAt > time),
     );
+
+    /** Ask for the kept Secrets again if they are due; one caller at a time, so a burst of calls asks once. */
+    const refreshKept: Effect.Effect<ReadonlyMap<string, KeptSecret>> =
+      kept === undefined
+        ? Effect.sync(() => keptSecrets)
+        : Semaphore.withPermit(
+            keptLock,
+            Effect.gen(function* () {
+              const time = yield* now;
+
+              if (time < keptDueAt) return keptSecrets;
+
+              const loaded = yield* Effect.result(kept);
+
+              if (Result.isFailure(loaded)) {
+                keptDueAt = time + KEPT_RETRY_MS;
+                yield* Effect.logWarning(
+                  "The Secrets kept for the Environment could not be read; those held are kept",
+                  loaded.failure,
+                );
+
+                return keptSecrets;
+              }
+
+              keptSecrets = new Map(loaded.success.map((secret) => [secret.name, secret]));
+              keptDueAt = time + KEPT_REFRESH_MS;
+
+              for (const secret of loaded.success) redactions.hold(secret.name, secret.value);
+
+              return keptSecrets;
+            }),
+          );
 
     /** The stored answer to ask `id`, taken out of storage. */
     const takeAnswer = (id: string): ReadonlyArray<AskOutcome> | undefined => {
@@ -329,6 +393,9 @@ const makeSecrets = ({
 
     const scrub = <M>(messages: ReadonlyArray<M>) =>
       Effect.gen(function* () {
+        // A Run's first request asks for the kept Secrets, so a value that reached the conversation is scrubbed.
+        yield* refreshKept;
+
         if (redactions.generation === 0 && storage.get<boolean>(SCRUBBED_KEY) !== true) {
           return messages;
         }
@@ -366,29 +433,48 @@ const makeSecrets = ({
       });
 
     return {
-      held: Effect.map(live, (secrets) =>
-        secrets
-          .toSorted(([a], [b]) => a.localeCompare(b))
-          .map(([name, secret]) => ({ name, expiresAt: secret.expiresAt })),
-      ),
+      held: Effect.zipWith(live, refreshKept, (secrets, keptByName) => {
+        const entered = new Set(secrets.map(([name]) => name));
+
+        const all: HeldSecret[] = [
+          ...secrets.map(([name, secret]) => ({ name, expiresAt: secret.expiresAt })),
+          ...Arr.filter([...keptByName.values()], (secret) => !entered.has(secret.name)).map(
+            (secret) => ({ name: secret.name, kept: secret.scope }),
+          ),
+        ];
+
+        return all.toSorted((a, b) => a.name.localeCompare(b.name));
+      }),
       resolve: (name) =>
-        Effect.map(now, (time) => {
+        Effect.zipWith(now, refreshKept, (time, keptByName) => {
           const secret = values.get(name);
 
-          return secret !== undefined && secret.expiresAt > time ? secret.value : undefined;
+          return secret !== undefined && secret.expiresAt > time
+            ? secret.value
+            : keptByName.get(name)?.value;
         }),
-      environment: Effect.map(live, (secrets) =>
-        Object.fromEntries(secrets.map(([name, secret]) => [secretEnvName(name), secret.value])),
+      environment: Effect.zipWith(live, refreshKept, (secrets, keptByName) =>
+        Object.fromEntries([
+          ...[...keptByName.values()].map((secret) => [secretEnvName(secret.name), secret.value]),
+          ...secrets.map(([name, secret]) => [secretEnvName(name), secret.value]),
+        ]),
       ),
       forget: (names) =>
-        Effect.map(live, (secrets) => {
+        Effect.zipWith(live, refreshKept, (secrets, keptByName) => {
           const held = new Set(secrets.map(([name]) => name));
 
           for (const name of names) values.delete(name);
           deleteSealed(names);
 
-          return names.map((name) => ({ name, forgotten: held.has(name) }));
+          return names.map((name): ForgetOutcome => {
+            const scope = keptByName.get(name)?.scope;
+
+            return scope === undefined
+              ? { name, forgotten: held.has(name) }
+              : { name, forgotten: held.has(name), kept: scope };
+          });
         }),
+      refresh: Effect.asVoid(refreshKept),
       sweep: Effect.map(now, (time) => {
         const expired = Object.values(sealed())
           .filter((record) => record.expiresAt <= time)

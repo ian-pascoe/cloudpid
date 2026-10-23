@@ -1,7 +1,9 @@
 // The Session's Secrets (`docs/spec.md` → Secrets): values the owner enters in a masked form on a client, encrypted in
 // this object's storage under a key derived from the deployment's `SECRETS_ENCRYPTION_KEY`, and the requests for them
-// sent to every client over the Session socket.
+// sent to every client over the Session socket; and the Secrets kept for its Environment, which the Registry opens and
+// hands over Durable Object RPC, held in memory only.
 import {
+  type KeptSecret,
   openVault,
   type Secrets,
   type SecretsError,
@@ -40,6 +42,8 @@ export type SessionSecretsOptions = {
   readonly sockets: Pick<SocketState, "getWebSockets">;
   /** Tell the owner, by Web Push, that a request is waiting for them. Leave it out to tell nobody. */
   readonly notify?: (event: PushEvent) => Effect.Effect<void>;
+  /** The Secrets kept for the Session's Environment, from the Registry (`sessionSecrets`). Leave it out for none. */
+  readonly kept?: Effect.Effect<ReadonlyArray<KeptSecret>, unknown>;
 };
 
 /** The Session's `Secrets`; build it once per instance, as it opens every Secret still held. */
@@ -59,6 +63,7 @@ export const sessionSecretsLayer = (
           options.notify === undefined
             ? Effect.void
             : options.notify({ kind: "input", names: ask.names, reason: ask.reason }),
+        kept: options.kept,
       }),
     ),
   );

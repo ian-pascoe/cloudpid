@@ -3,8 +3,11 @@
 import {
   type BuildView,
   branchProblem,
+  type EnvironmentSecretRecord,
   MAX_ENVIRONMENT_NAME_LENGTH,
   parseRepoSource,
+  secretNameProblem,
+  secretValueProblem,
   type SessionRecord,
 } from "@cloudpid/protocol";
 import {
@@ -230,3 +233,84 @@ export const buildLine = (build: BuildView, now: number): string => {
       return `Build failed ${relativeTime(build.at, now)}: ${build.reason}. Meanwhile ${meanwhile(build.lastGoodAt)}`;
   }
 };
+
+/**
+ * The key of the Secrets kept for every Environment among the page's Secrets sections, which an Environment's id is
+ * not (ids are hexadecimal, or `default`).
+ */
+export const EVERY_ENVIRONMENT = "*";
+
+/** The scope the Registry takes for Secrets section `key`: the Environment's id, or null for every Environment. */
+export const secretScopeOf = (key: string): string | null =>
+  key === EVERY_ENVIRONMENT ? null : key;
+
+/** The Secrets of `records` kept in section `key` (an Environment's id, or `EVERY_ENVIRONMENT`), by name. */
+export const secretsIn = (
+  records: readonly EnvironmentSecretRecord[],
+  key: string,
+): readonly EnvironmentSecretRecord[] =>
+  records
+    .filter((record) => (record.environment ?? EVERY_ENVIRONMENT) === key)
+    .toSorted((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+
+/**
+ * The Secrets kept for every Environment that Environment `environment` gets, by name: those it keeps none of the same
+ * name of, since its own wins.
+ */
+export const inheritedSecrets = (
+  records: readonly EnvironmentSecretRecord[],
+  environment: string,
+): readonly EnvironmentSecretRecord[] => {
+  const own = new Set(secretsIn(records, environment).map((record) => record.name));
+
+  return secretsIn(records, EVERY_ENVIRONMENT).filter((record) => !own.has(record.name));
+};
+
+/** What is typed in a Secrets section's form: a name, a value, and whether a new Secret reaches the Build. */
+export interface SecretDraft {
+  readonly name: string;
+  readonly value: string;
+  readonly build: boolean;
+}
+
+/** A Secrets section's form with nothing typed. */
+export const EMPTY_SECRET_DRAFT: SecretDraft = { name: "", value: "", build: false };
+
+/** What is wrong with each field of a Secrets section's form; null where nothing is. */
+export interface SecretDraftProblems {
+  readonly name: string | null;
+  readonly value: string | null;
+}
+
+/**
+ * Why the form's name and value cannot be saved, each null when it can or nothing is typed in it yet: the server's
+ * rules, so a mistake shows as it is typed. A value's problem never quotes it.
+ */
+export const secretDraftProblems = (draft: SecretDraft): SecretDraftProblems => ({
+  name: draft.name === "" ? null : (secretNameProblem(draft.name) ?? null),
+  value: draft.value === "" ? null : (secretValueProblem(draft.value) ?? null),
+});
+
+/** Whether the form can be saved: a name and a value, neither with a problem. */
+export const secretDraftReady = (draft: SecretDraft): boolean => {
+  const problems = secretDraftProblems(draft);
+
+  return (
+    draft.name !== "" && draft.value !== "" && problems.name === null && problems.value === null
+  );
+};
+
+/**
+ * What the Registry is asked to keep from the form, given the Secrets the section keeps: a new one with the form's
+ * build flag; the value of one kept under that name replaced, its flag left as it is (it has a switch of its own).
+ */
+export const secretWrite = (
+  draft: SecretDraft,
+  kept: readonly EnvironmentSecretRecord[],
+): { readonly name: string; readonly value: string; readonly build?: boolean } =>
+  kept.some((record) => record.name === draft.name)
+    ? { name: draft.name, value: draft.value }
+    : { name: draft.name, value: draft.value, build: draft.build };
+
+/** The variable a Build's scripts and a Session's commands get Secret `name` as. */
+export const secretVariable = (name: string): string => `PI_SECRET_${name}`;

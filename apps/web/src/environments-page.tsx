@@ -4,7 +4,9 @@ import { INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
 import {
   DEFAULT_ENVIRONMENT,
   MAX_ENVIRONMENT_NAME_LENGTH,
+  MAX_SECRET_NAME_LENGTH,
   type EnvironmentRecord,
+  type EnvironmentSecretRecord,
   type SessionRecord,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
@@ -13,7 +15,16 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { ArrowLeft, GitBranch, GitFork, Pencil, Play, RotateCw, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  GitBranch,
+  GitFork,
+  KeyRound,
+  Pencil,
+  Play,
+  RotateCw,
+  Trash2,
+} from "lucide-react";
 import {
   useAtom,
   useAtomMount,
@@ -37,8 +48,16 @@ import {
   addRepoSourceAtom,
   createEnvironmentAtom,
   deleteEnvironmentAtom,
+  deleteSecretAtom,
   deleteTypedAtom,
   environmentBuildAtom,
+  environmentSecretsAtom,
+  environmentSecretsErrorAtom,
+  saveSecretAtom,
+  secretBuildAtom,
+  secretDialogAtom,
+  secretDraftAtom,
+  secretsInAtom,
   environmentDialogAtom,
   environmentDraftAtom,
   environmentListAtom,
@@ -57,6 +76,11 @@ import {
 import {
   buildLine,
   deleteConfirmed,
+  EVERY_ENVIRONMENT,
+  inheritedSecrets,
+  secretDraftProblems,
+  secretDraftReady,
+  secretVariable,
   environmentNameProblem,
   idleMinutesProblem,
   ignorePatternsFrom,
@@ -159,6 +183,292 @@ const AddRepoForm = ({ id }: { id: string }) => {
         Nothing is cloned now. Workspaces made after this clone it.
       </p>
     </form>
+  );
+};
+
+/**
+ * The form of a Secrets section: a name and a value, kept by the Registry, which never shows the value again. The
+ * value's field hides what is typed where the browser can, and holds several lines, for a key file. A name the section
+ * keeps already replaces that Secret's value.
+ */
+const SecretForm = ({ sectionKey }: { sectionKey: string }) => {
+  const [draft, setDraft] = useAtom(secretDraftAtom(sectionKey));
+  const [saved, save] = useAtom(saveSecretAtom(sectionKey));
+  const kept = useAtomValue(secretsInAtom(sectionKey)) ?? [];
+  const problems = secretDraftProblems(draft);
+  const replacing = kept.some((record) => record.name === draft.name);
+  const busy = saved.waiting;
+  const error = settledFailureOf(saved);
+  const nameId = `secret-name-${sectionKey}`;
+  const valueId = `secret-value-${sectionKey}`;
+  const buildId = `secret-build-${sectionKey}`;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!secretDraftReady(draft) || busy) return;
+
+    save(draft);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-2">
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor={nameId} className="text-sm font-medium">
+          {replacing ? "Replace a secret" : "Add a secret"}
+        </label>
+        <Input
+          id={nameId}
+          value={draft.name}
+          maxLength={MAX_SECRET_NAME_LENGTH}
+          onChange={(event) => {
+            setDraft({ ...draft, name: event.target.value.toUpperCase() });
+          }}
+          placeholder="NAME"
+          autoCapitalize="characters"
+          autoComplete="off"
+          spellCheck={false}
+          data-1p-ignore
+          disabled={busy}
+          aria-invalid={problems.name !== null}
+          className="font-mono"
+        />
+        {problems.name !== null && <p className="text-xs text-destructive">{problems.name}</p>}
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor={valueId} className="sr-only">
+          Value
+        </label>
+        <textarea
+          id={valueId}
+          rows={2}
+          value={draft.value}
+          placeholder="Value"
+          spellCheck={false}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="none"
+          data-1p-ignore
+          disabled={busy}
+          onChange={(event) => {
+            setDraft({ ...draft, value: event.target.value });
+          }}
+          aria-invalid={problems.value !== null}
+          className={`${CODE_FIELD} [-webkit-text-security:disc]`}
+        />
+        {problems.value !== null && <p className="text-xs text-destructive">{problems.value}</p>}
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        {replacing ? (
+          <p className="text-xs text-muted-foreground">
+            Replaces the value kept under this name. Its build setting stays.
+          </p>
+        ) : (
+          <label htmlFor={buildId} className="flex items-center gap-2 text-xs">
+            <input
+              id={buildId}
+              type="checkbox"
+              checked={draft.build}
+              disabled={busy}
+              onChange={(event) => {
+                setDraft({ ...draft, build: event.target.checked });
+              }}
+            />
+            Give it to the build's setup scripts too
+          </label>
+        )}
+        <Button type="submit" variant="outline" disabled={busy || !secretDraftReady(draft)}>
+          <KeyRound />
+          {busy ? "Saving…" : replacing ? "Replace" : "Add"}
+        </Button>
+      </div>
+      {error !== null && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+};
+
+/** Confirm deleting Secret `name` of a Secrets section, after saying what stays where it was. */
+const DeleteSecretDialog = ({ sectionKey, name }: { sectionKey: string; name: string }) => {
+  const [deleted, remove] = useAtom(deleteSecretAtom(sectionKey));
+  const setDialog = useAtomSet(secretDialogAtom(sectionKey));
+  const busy = deleted.waiting;
+  const problem = settledFailureOf(deleted);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (busy) return;
+
+    remove(name);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <p className="text-sm">
+        Sessions stop getting it within a minute, and the next build runs without it. What a command
+        or a model already did with it stays as it is: revoke it where it was issued if it may have
+        leaked.
+      </p>
+      <DialogProblem problem={problem} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy}>
+          {busy ? "Deleting…" : "Delete secret"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/** A kept Secret in a Secrets section: its name, whether it reaches the Build, and its actions. */
+const SecretRow = ({
+  sectionKey,
+  record,
+  onReplace,
+  onDelete,
+}: {
+  sectionKey: string;
+  record: EnvironmentSecretRecord;
+  onReplace: () => void;
+  onDelete: () => void;
+}) => {
+  const [switched, setBuild] = useAtom(secretBuildAtom(sectionKey));
+  const buildId = `secret-${sectionKey}-${record.name}-build`;
+
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate font-mono text-sm">{record.name}</span>
+        <span className="truncate text-xs text-muted-foreground">
+          {record.build
+            ? `Sessions, and the build's setup scripts as $${secretVariable(record.name)}`
+            : "Sessions only"}
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-1">
+        <label htmlFor={buildId} className="flex items-center gap-1.5 text-xs">
+          <input
+            id={buildId}
+            type="checkbox"
+            checked={record.build}
+            disabled={switched.waiting}
+            onChange={(event) => {
+              setBuild({ name: record.name, build: event.target.checked });
+            }}
+          />
+          Build
+        </label>
+        <Button type="button" size="sm" variant="ghost" onClick={onReplace}>
+          Replace
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-8"
+          aria-label={`Delete ${record.name}`}
+          title={`Delete ${record.name}`}
+          onClick={onDelete}
+        >
+          <Trash2 />
+        </Button>
+      </span>
+    </li>
+  );
+};
+
+/**
+ * The Secrets kept in section `sectionKey` (an Environment's id, or `EVERY_ENVIRONMENT`), with the form that keeps
+ * another. An Environment's section names the Secrets it gets from every Environment, and which of its own win.
+ */
+const SecretsSection = ({
+  sectionKey,
+  title,
+  empty,
+}: {
+  sectionKey: string;
+  title: string;
+  empty: string;
+}) => {
+  const kept = useAtomValue(secretsInAtom(sectionKey));
+  const all = useAtomValue(environmentSecretsAtom).pipe(AsyncResult.value, Option.getOrNull);
+  const loadError = useAtomValue(environmentSecretsErrorAtom);
+  const [draft, setDraft] = useAtom(secretDraftAtom(sectionKey));
+  const [deleting, setDeleting] = useAtom(secretDialogAtom(sectionKey));
+  const deleted = useAtomValue(deleteSecretAtom(sectionKey));
+  const forgetDelete = useAtomSet(deleteSecretAtom(sectionKey));
+  const switched = useAtomValue(secretBuildAtom(sectionKey));
+
+  const inherited =
+    sectionKey === EVERY_ENVIRONMENT || all === null ? [] : inheritedSecrets(all, sectionKey);
+
+  const switchError = settledFailureOf(switched);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+      {kept === null ? (
+        loadError === null && <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : kept.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {kept.map((record) => (
+            <SecretRow
+              key={record.name}
+              sectionKey={sectionKey}
+              record={record}
+              onReplace={() => {
+                setDraft({ ...draft, name: record.name, value: "" });
+              }}
+              onDelete={() => {
+                forgetDelete(Atom.Reset);
+                setDeleting(record.name);
+              }}
+            />
+          ))}
+        </ul>
+      )}
+      {inherited.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Also from every environment:{" "}
+          <span className="font-mono">{inherited.map((record) => record.name).join(", ")}</span>
+        </p>
+      )}
+      {loadError !== null && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {loadError}
+        </p>
+      )}
+      {switchError !== null && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {switchError}
+        </p>
+      )}
+      <SecretForm sectionKey={sectionKey} />
+      <Dialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+        }}
+        dismissible={!deleted.waiting}
+        title={`Delete ${deleting ?? ""}?`}
+      >
+        {deleting !== null && <DeleteSecretDialog sectionKey={sectionKey} name={deleting} />}
+      </Dialog>
+    </div>
   );
 };
 
@@ -1028,6 +1338,7 @@ const EnvironmentCard = ({
           {reposError}
         </p>
       )}
+      <SecretsSection sectionKey={id} title="Secrets" empty="None kept for this environment." />
       <BuildStatus id={id} />
       <div className="flex flex-col gap-2">
         <h3 className="text-xs font-medium text-muted-foreground">Workspaces</h3>
@@ -1151,6 +1462,22 @@ export const EnvironmentsPage = () => {
           own, and its own container, so sessions working at once do not step on each other.
         </p>
         <NewEnvironmentForm names={(environments ?? []).map((known) => known.name)} />
+        <section
+          aria-label="Secrets for every environment"
+          className="flex flex-col gap-2 rounded-lg border p-4"
+        >
+          <p className="text-xs text-muted-foreground">
+            A secret kept here or on an environment is used by reference in that environment's
+            sessions, as one the agent asked for is, but never expires. Its value is not shown
+            again, and is taken out of command output and of what the model is sent. An
+            environment's own secret of the same name wins.
+          </p>
+          <SecretsSection
+            sectionKey={EVERY_ENVIRONMENT}
+            title="Secrets for every environment"
+            empty="None kept for every environment."
+          />
+        </section>
         {(error ?? sessionsError) !== null && (
           <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
             {error ?? sessionsError}

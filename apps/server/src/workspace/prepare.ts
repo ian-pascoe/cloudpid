@@ -23,6 +23,7 @@ import {
 } from "@cloudpid/sandbox-image/workspaces";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
+import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import type { Shell } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
@@ -42,6 +43,11 @@ export type WorkspaceSetup = WorkspaceClones & {
    * for none yet. Absent, the Workspace keeps the one it holds.
    */
   readonly build?: EnvironmentBuild | null | undefined;
+  /**
+   * The Environment's kept Secrets, opened by the Registry, which the Workspace keeps sealed to search its snapshots for
+   * and take out of output. Absent (a spare's stored set-up), it keeps those it holds. Never stored with the set-up.
+   */
+  readonly secrets?: ReadonlyArray<KeptSecret> | undefined;
 };
 
 /** How long cloning a Workspace's Repos may take, in seconds: full clones of big repos, after a cold start. */
@@ -57,8 +63,12 @@ export type ScriptRun = { readonly exitCode: number | null; readonly output: str
 export type PreparationHost = {
   /** The text of the Workspace's file at `path`, or null when its files do not have it. */
   readonly readText: (path: string) => Promise<string | null>;
-  /** Run a bash script on the Container, in `/workspace`. */
-  readonly run: (script: string, timeoutSeconds: number) => Promise<ScriptRun>;
+  /** Run a bash script on the Container, in `/workspace`, with `env` beside the Container's own. */
+  readonly run: (
+    script: string,
+    timeoutSeconds: number,
+    env?: Readonly<Record<string, string>>,
+  ) => Promise<ScriptRun>;
   /** The Container settings the Workspace's Durable Object holds, and a write of new ones. */
   readonly settings: {
     readonly read: () => Promise<WorkspaceSettingsAnswer>;
@@ -68,6 +78,10 @@ export type PreparationHost = {
   readonly build: {
     readonly read: () => Promise<EnvironmentBuild | null>;
     readonly write: (build: EnvironmentBuild | null) => Promise<void>;
+  };
+  /** Hand the Workspace's Durable Object its Environment's Secrets, in place of those it holds. */
+  readonly secrets: {
+    readonly write: (secrets: ReadonlyArray<KeptSecret>) => Promise<void>;
   };
   readonly warn: (message: string) => void;
 };
@@ -108,9 +122,12 @@ const sameBuild = (left: EnvironmentBuild | null, right: EnvironmentBuild | null
  * the script runs again at the next Container start.
  */
 export const prepareWorkspace = async (
-  { readText, run, settings, build, warn }: PreparationHost,
+  { readText, run, settings, build, secrets, warn }: PreparationHost,
   setup: WorkspaceSetup,
 ): Promise<void> => {
+  // First, so the snapshot of any Container this readying starts is searched for them.
+  if (setup.secrets !== undefined) await secrets.write(setup.secrets);
+
   const held = await settings.read();
 
   if (!sameOverrides(held.overrides, setup.settings)) {
@@ -182,6 +199,7 @@ export const runScript = async (
   shell: Pick<Shell, "exec">,
   script: string,
   timeoutSeconds: number,
+  env: Readonly<Record<string, string>> = {},
 ): Promise<ScriptRun> => {
   let output = "";
 
@@ -190,6 +208,8 @@ export const runScript = async (
     {
       cwd: WORKSPACE_ROOT,
       timeout: timeoutSeconds,
+      // Beside the Container's own (`toolchainEnv`), which the Container's backend puts under it.
+      env: { ...env },
       onOutput: (text) => {
         output = (output + text).slice(-REPORTED_OUTPUT * 2);
       },
@@ -226,6 +246,7 @@ export const preparationHost = (
   id: string,
   settings: PreparationHost["settings"],
   build: PreparationHost["build"],
+  secrets: PreparationHost["secrets"],
   warn: (message: string) => void,
 ): PreparationHost => {
   const env = async () => {
@@ -244,17 +265,18 @@ export const preparationHost = (
 
       throw read.error;
     },
-    run: async (script, timeoutSeconds) => {
+    run: async (script, timeoutSeconds, scriptEnv) => {
       const container = (await env()).onBackend("container");
 
       try {
-        return await runScript(container, script, timeoutSeconds);
+        return await runScript(container, script, timeoutSeconds, scriptEnv);
       } finally {
         await container.cleanup(BACKGROUND_CONTEXT);
       }
     },
     settings,
     build,
+    secrets,
     warn,
   };
 };
@@ -278,6 +300,9 @@ export const workspacePreparation =
         {
           read: () => namespace.getByName(objectName).environmentBuild(),
           write: (build) => namespace.getByName(objectName).updateEnvironmentBuild(build),
+        },
+        {
+          write: (secrets) => namespace.getByName(objectName).updateEnvironmentSecrets(secrets),
         },
         warn,
       ),
