@@ -1,5 +1,6 @@
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { SPARE_BRANCH } from "@cloudpid/protocol";
 import type { Context } from "@earendil-works/chord";
 import { ExecutionError, err, ok, type Shell } from "@earendil-works/pi-durable/env";
 import type * as Schema from "effect/Schema";
@@ -23,13 +24,14 @@ const setup: WorkspaceSetup = {
 };
 
 /**
- * A Workspace whose files hold `present`, whose Container answers each script in turn from `answers`, and whose object
- * holds the settings `held`.
+ * A Workspace whose files hold the clones `present` (their `.git`), each on its branch in `heads` or else on the
+ * Workspace's, whose Container answers each script in turn from `answers`, and whose object holds the settings `held`.
  */
 const host = (
   present: readonly string[],
   answers: readonly ScriptRun[] = [],
   held: Schema.Json = {},
+  heads: Readonly<Record<string, string>> = {},
 ) => {
   const scripts: Array<{ script: string; timeoutSeconds: number }> = [];
   const warnings: string[] = [];
@@ -40,7 +42,15 @@ const host = (
   const prepare = (with_: WorkspaceSetup = setup) =>
     prepareWorkspace(
       {
-        exists: (path) => Promise.resolve(present.includes(path)),
+        readText: (path) => {
+          const clone = path.replace(/\/\.git\/HEAD$/, "");
+
+          return Promise.resolve(
+            path.endsWith("/.git/HEAD") && present.includes(`${clone}/.git`)
+              ? `ref: refs/heads/${heads[clone] ?? with_.branch}\n`
+              : null,
+          );
+        },
         run: (script, timeoutSeconds) => {
           scripts.push({ script, timeoutSeconds });
 
@@ -112,6 +122,28 @@ describe("readying a Workspace", () => {
     expect(scripts[2]?.timeoutSeconds).toBeGreaterThan(5 * 60);
   });
 
+  it("switches the clones still on the spare's branch, then runs each one's Setup Script if due and its Start Script", async () => {
+    const { prepare, scripts } = host(cloned, [], {}, { "/workspace/app": SPARE_BRANCH });
+
+    await prepare();
+
+    expect(scripts).toHaveLength(3);
+    expect(scripts[0]?.script).toContain("clone_or_report 'app' 'https://github.com/acme/app.git'");
+    expect(scripts[0]?.script).not.toContain("clone_or_report 'api'");
+    expect(scripts[0]?.script).toContain(`spare='${SPARE_BRANCH}'`);
+    expect(scripts[1]?.script).toContain("/workspace/app/.agents/setup.sh");
+    expect(scripts[2]?.script).toContain("/workspace/app/.agents/start.sh");
+  });
+
+  it("leaves a spare's own clones on its branch, starting no Container", async () => {
+    const heads = { "/workspace/app": SPARE_BRANCH, "/workspace/api": SPARE_BRANCH };
+    const { prepare, scripts } = host(cloned, [], {}, heads);
+
+    await prepare({ ...setup, branch: SPARE_BRANCH });
+
+    expect(scripts).toEqual([]);
+  });
+
   it("starts a new branch from the base it is given", async () => {
     const { prepare, scripts } = host([]);
 
@@ -127,7 +159,7 @@ describe("readying a Workspace", () => {
     );
 
     await expect(prepare()).rejects.toThrow(
-      "The Workspace's repos could not all be cloned on branch cloudpid/1a2b3c4d (exit 1): fatal: repository",
+      "The Workspace's repos could not all be cloned on, or switched to, branch cloudpid/1a2b3c4d (exit 1): fatal: repository",
     );
     expect(scripts).toHaveLength(5);
   });

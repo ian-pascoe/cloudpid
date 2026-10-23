@@ -3,7 +3,7 @@
 // The draft composer's pure parts: what is typed and chosen, whether it can be sent, and what `createSession` is told.
 
 import * as Arr from "effect/Array";
-import { NEW_WORKSPACE, type WorkspaceRecord } from "@cloudpid/protocol";
+import { NEW_WORKSPACE, ownBranchProblem, type WorkspaceRecord } from "@cloudpid/protocol";
 import { optionalBranchProblem } from "./environments.ts";
 import type { SessionPlace } from "./sessions.ts";
 
@@ -35,7 +35,7 @@ export const effectiveWorkspace = (
 
 /** Why the branch name field cannot be used, or null; only a new Workspace has one. */
 export const draftBranchProblem = (input: DraftInput): string | null =>
-  input.workspace === NEW_WORKSPACE ? optionalBranchProblem(input.branch) : null;
+  input.workspace === NEW_WORKSPACE ? optionalBranchProblem(input.branch, ownBranchProblem) : null;
 
 /** Why the base branch field cannot be used, or null; only a new Workspace has one. */
 export const draftBaseProblem = (input: DraftInput): string | null =>

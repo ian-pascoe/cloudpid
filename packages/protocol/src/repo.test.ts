@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   branchProblem,
   isWorkspaceId,
+  ownBranchProblem,
   parseRepoSource,
   REPO_NAME,
   workspaceDirectory,
@@ -144,5 +145,17 @@ describe("branchProblem", () => {
     ["x".repeat(201), "too long"],
   ])("refuses %s (%s)", (name) => {
     expect(branchProblem(name)).toBeTypeOf("string");
+  });
+});
+
+describe("ownBranchProblem", () => {
+  it("refuses the spare Workspace's placeholder branch, a name git would take", () => {
+    expect(ownBranchProblem("cloudpid/spare")).toContain("spare");
+    expect(branchProblem("cloudpid/spare")).toBeUndefined();
+  });
+
+  it("takes what branchProblem takes, and refuses what it refuses", () => {
+    expect(ownBranchProblem("cloudpid/1a2b3c4d")).toBeUndefined();
+    expect(ownBranchProblem("a..b")).toBe(branchProblem("a..b"));
   });
 });

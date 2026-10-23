@@ -17,6 +17,7 @@ import {
   type SessionRecord,
   type SessionRefusal,
   type SessionStatus,
+  type SpareUpkeep,
   type StoredWorkspaceChoice,
   type WorkspaceRecord,
   type WorkspaceSetup,
@@ -120,6 +121,21 @@ export class TestRegistry extends DurableObject {
 
   deleteWorkspace(id: string): Deletion {
     return this.#store.deleteWorkspace(id);
+  }
+
+  /** `RegistryStore.upkeepSpares`, drawing fresh ids from `ids` in order (a function cannot cross RPC). */
+  upkeepSpares(environments: string[] | undefined, ids: string[], now: number): SpareUpkeep {
+    const left = [...ids];
+
+    return this.#store.upkeepSpares(environments, () => left.shift() ?? "ffffffff", now);
+  }
+
+  getSpare(environment: string): string | null {
+    return this.#store.getSpare(environment);
+  }
+
+  forgetSpare(id: string): boolean {
+    return this.#store.forgetSpare(id);
   }
 
   takeLegacy(limit: number, now: number, leaseMs: number): LegacyObject[] {

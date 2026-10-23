@@ -1,7 +1,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, SPARE_BRANCH } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
@@ -724,6 +724,213 @@ describe("the Registry store", () => {
     ]);
   });
 
+  describe("spare Workspaces", () => {
+    it("makes one spare per Environment on the placeholder branch, with its Repos, and lists it nowhere", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+
+      expect(await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000)).toEqual({
+        stale: [],
+        made: [
+          {
+            id: "5a5a5a5a",
+            environment: "0000abcd",
+            branch: SPARE_BRANCH,
+            base: null,
+            repos: [{ name: "app", url: "https://github.com/o/app.git" }],
+          },
+        ],
+      });
+      // An Environment that has its spare gets no other.
+      expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 2_000)).toEqual({
+        stale: [],
+        made: [],
+      });
+      expect(await registry.getSpare("0000abcd")).toBe("5a5a5a5a");
+      expect(await registry.listWorkspaces()).toEqual([]);
+      expect(await registry.getWorkspace("5a5a5a5a")).toBeNull();
+      // No Session can name it.
+      expect(
+        await registry.createSession(
+          { id: "s-1", title: null, workspace: existing("5a5a5a5a") },
+          3_000,
+        ),
+      ).toEqual({ refused: "no-workspace" });
+    });
+
+    it("keeps every Environment's spare when none is named, and draws again an id that is taken", async () => {
+      const registry = fresh();
+
+      await registry.createEnvironment("0000abcd", "Cloudpid", 1_000);
+      await registry.createSession(
+        { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d") },
+        1_000,
+      );
+
+      const work = await registry.upkeepSpares(
+        undefined,
+        ["1a2b3c4d", "00000001", "00000002"],
+        2_000,
+      );
+
+      // Newest first: the default Environment was made by the migration, at the real time.
+      expect(Arr.map(work.made, (made) => [made.environment, made.id])).toEqual([
+        [DEFAULT_ENVIRONMENT, "00000001"],
+        ["0000abcd", "00000002"],
+      ]);
+      // An Environment that is not there gets none.
+      expect(await registry.upkeepSpares(["ghost"], ["00000003"], 3_000)).toEqual({
+        stale: [],
+        made: [],
+      });
+    });
+
+    it("gives a new Workspace the Environment's spare, on cloudpid/<its id> or the owner's branch, from the base", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+
+      const created = await registry.createSession(
+        {
+          id: "s-1",
+          title: null,
+          workspace: {
+            kind: "new",
+            id: "1a2b3c4d",
+            environment: "0000abcd",
+            branch: null,
+            base: "dev",
+          },
+        },
+        2_000,
+      );
+
+      expect(created).toMatchObject({ workspace: "5a5a5a5a", environment: "0000abcd" });
+      expect(await registry.listWorkspaces()).toEqual([
+        {
+          id: "5a5a5a5a",
+          environment: "0000abcd",
+          branch: "cloudpid/5a5a5a5a",
+          base: "dev",
+          repos: ["app"],
+          directory: "/workspace/app",
+          createdAt: 2_000,
+        },
+      ]);
+      expect(await registry.getSpare("0000abcd")).toBeNull();
+
+      // The next spare is taken on the branch the owner names.
+      await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 3_000);
+      expect(
+        await registry.createSession(
+          { id: "s-2", title: null, workspace: newWorkspace("2b3c4d5e", "feature", "0000abcd") },
+          4_000,
+        ),
+      ).toMatchObject({ workspace: "6b6b6b6b" });
+      expect(await registry.getWorkspace("6b6b6b6b")).toMatchObject({ branch: "feature" });
+    });
+
+    it("makes a new Workspace on cloudpid/<its id> when there is no spare", async () => {
+      const registry = fresh();
+
+      await registry.createSession(
+        {
+          id: "s-1",
+          title: null,
+          workspace: {
+            kind: "new",
+            id: "1a2b3c4d",
+            environment: DEFAULT_ENVIRONMENT,
+            branch: null,
+            base: null,
+          },
+        },
+        1_000,
+      );
+
+      expect(await registry.getWorkspace("1a2b3c4d")).toMatchObject({
+        branch: "cloudpid/1a2b3c4d",
+      });
+    });
+
+    it("keeps the spare when the branch asked for is another Workspace's", async () => {
+      const registry = fresh();
+
+      await registry.createSession(
+        { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d", "feature") },
+        1_000,
+      );
+      await registry.upkeepSpares([DEFAULT_ENVIRONMENT], ["5a5a5a5a"], 2_000);
+
+      expect(
+        await registry.createSession(
+          { id: "s-2", title: null, workspace: newWorkspace("2b3c4d5e", "feature") },
+          3_000,
+        ),
+      ).toEqual({ refused: "branch-taken", workspace: "1a2b3c4d" });
+      expect(await registry.getSpare(DEFAULT_ENVIRONMENT)).toBe("5a5a5a5a");
+    });
+
+    it("does not take a spare whose Repos are no longer the Environment's, and reports it stale until it is forgotten", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+      await registry.addRepo("0000abcd", { name: "api", url: "https://github.com/o/api.git" });
+
+      expect(
+        await registry.createSession(
+          { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d", "b", "0000abcd") },
+          2_000,
+        ),
+      ).toMatchObject({ workspace: "1a2b3c4d" });
+      expect(await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 3_000)).toEqual({
+        stale: ["5a5a5a5a"],
+        made: [],
+      });
+
+      expect(await registry.forgetSpare("5a5a5a5a")).toBe(true);
+      // A Workspace that is no spare is not forgotten so.
+      expect(await registry.forgetSpare("1a2b3c4d")).toBe(false);
+      expect(await registry.getWorkspace("1a2b3c4d")).not.toBeNull();
+
+      const again = await registry.upkeepSpares(["0000abcd"], ["6b6b6b6b"], 4_000);
+
+      expect(Arr.map(again.made, (made) => Arr.map(made.repos, (repo) => repo.name))).toEqual([
+        ["app", "api"],
+      ]);
+    });
+
+    it("takes a spare whose Repos are the Environment's in another order", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid", ["app", "api"]);
+      await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+      await registry.removeRepo("0000abcd", "app");
+      await registry.addRepo("0000abcd", { name: "app", url: "https://github.com/o/app.git" });
+
+      expect(
+        await registry.createSession(
+          { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d", "b", "0000abcd") },
+          2_000,
+        ),
+      ).toMatchObject({ workspace: "5a5a5a5a" });
+    });
+
+    it("keeps an Environment with a spare from being deleted until the spare is forgotten", async () => {
+      const registry = fresh();
+
+      await registry.createEnvironment("0000abcd", "Cloudpid", 1_000);
+      await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 1_000);
+
+      expect(await registry.deleteEnvironment("0000abcd")).toBe("in-use");
+      await registry.forgetSpare("5a5a5a5a");
+      expect(await registry.deleteEnvironment("0000abcd")).toBe("deleted");
+    });
+  });
+
   it("leases legacy objects to one caller at a time, Sessions before Machines", async () => {
     await runInDurableObject(fresh(), (instance: TestRegistry, state) => {
       const { sql } = state.storage;
@@ -820,6 +1027,32 @@ describe("the Registry store", () => {
       ).toMatchObject({ id: "new" });
       // Opening again changes nothing.
       expect(openRegistryStore(storage).listSessions()).toHaveLength(1);
+    });
+  });
+
+  it("keeps the Workspaces of a Registry at version 11 as Sessions' Workspaces, none of them spare", async () => {
+    await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+      const { storage } = state;
+      const { sql } = storage;
+
+      // Start over at version 11, the release before spares.
+      for (const { name } of sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
+        )
+        .toArray()) {
+        sql.exec(`DROP TABLE "${name}"`);
+      }
+
+      migrate(storage, MIGRATIONS.slice(0, 11));
+      sql.exec(
+        "INSERT INTO workspaces (id, environment, branch, base, repos, created_at) VALUES ('1a2b3c4d', 'default', 'feature', NULL, '[]', 5)",
+      );
+
+      const store = openRegistryStore(storage);
+
+      expect(Arr.map(store.listWorkspaces(), (workspace) => workspace.id)).toEqual(["1a2b3c4d"]);
+      expect(store.getSpare(DEFAULT_ENVIRONMENT)).toBeNull();
     });
   });
 

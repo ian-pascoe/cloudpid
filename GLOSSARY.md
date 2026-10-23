@@ -118,6 +118,10 @@ _Avoid_: Project, repository directory
 One working copy of an Environment that Sessions bind to: its own clones of the Environment's Repos on a branch of its own, and a Container of its own. A new Session gets a new Workspace unless it is started in one that exists.
 _Avoid_: Machine, worktree, checkout, sandbox, environment (for the working copy)
 
+**Spare Workspace**:
+The one Workspace each Environment keeps made ahead (cloned, set up, its Container snapshotted and stopped) and bound to no Session, so the next new Session takes it instead of waiting for a Workspace to be made. Another is made once it is taken, or once the Environment's Repos change.
+_Avoid_: Pool, warm Workspace, standby
+
 **Build**:
 An Environment's prepared starting point for its Workspaces' Containers: a Snapshot with its Toolchains installed and what its Setup Scripts download (packages, images) already there. It is made again when the Environment changes or a default branch moves, and the last good one stays in use while a new one fails.
 _Avoid_: Image, template, cache

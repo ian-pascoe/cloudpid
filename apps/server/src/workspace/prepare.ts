@@ -1,12 +1,14 @@
 // A Workspace's set-up (docs/spec.md → Workspaces, ADR-0016): when a Session first works in it, and at most once a
 // minute after, the Session readies its Workspace: the Environment's Container settings are handed to the Workspace's
 // Durable Object (its Worker cannot reach the Registry), and each Repo the Workspace's files lack is cloned on its
-// Container, on the Workspace's branch, then its Setup Script and its Start Script run. The scripts are
-// `@cloudpid/sandbox-image/workspaces`'; this runs them, and asks the Workspace's files first, so a Workspace whose
-// clones are there costs no Container.
+// Container, on the Workspace's branch, then its Setup Script and its Start Script run. A clone made while the Workspace
+// was its Environment's spare is on `SPARE_BRANCH` until then, and is switched to the Workspace's branch. A spare
+// Workspace's Durable Object readies itself the same way (`spare.ts`). The scripts are
+// `@cloudpid/sandbox-image/workspaces`'; this runs them, and reads the Workspace's files first, so a Workspace whose
+// clones are there, on its branch, costs no Container.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off
 import { ContainerSettings, resolveContainerSettingsLeniently } from "@cloudpid/config";
-import { repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
+import { repoDirectory, SPARE_BRANCH, WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
 import {
   SETUP_SCRIPT,
   SETUP_TIMEOUT_SECONDS,
@@ -20,6 +22,7 @@ import {
   type WorkspaceClones,
 } from "@cloudpid/sandbox-image/workspaces";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { Shell } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
@@ -43,8 +46,8 @@ export type ScriptRun = { readonly exitCode: number | null; readonly output: str
 
 /** What readying one Workspace needs: its files, its Container, its settings, and somewhere to say what went wrong. */
 export type PreparationHost = {
-  /** Whether the Workspace's files have `path`. */
-  readonly exists: (path: string) => Promise<boolean>;
+  /** The text of the Workspace's file at `path`, or null when its files do not have it. */
+  readonly readText: (path: string) => Promise<string | null>;
   /** Run a bash script on the Container, in `/workspace`. */
   readonly run: (script: string, timeoutSeconds: number) => Promise<ScriptRun>;
   /** The Container settings the Workspace's Durable Object holds, and a write of new ones. */
@@ -72,16 +75,21 @@ const sameOverrides = (left: Schema.Json, right: Schema.Json): boolean =>
     resolveContainerSettingsLeniently(right).settings,
   );
 
+/** What a clone's `.git/HEAD` holds while it is on the spare Workspace's placeholder branch. */
+const SPARE_HEAD = `ref: refs/heads/${SPARE_BRANCH}`;
+
 /**
  * Ready the Workspace `host` reaches with `setup`: its Durable Object gets the Environment's Container settings when
- * they differ from what it holds, and each Repo its files lack is cloned on the Container, then has its Setup Script
- * run if it is due, and its Start Script (the Container is running already, so its bootstrap did not see the clone).
- * Rejects with git's output when a Repo could not be cloned (the others still are); a settings write the Workspace
+ * they differ from what it holds, and each Repo its files lack is cloned on the Container, and each clone whose
+ * `.git/HEAD` is on `SPARE_BRANCH` (the Workspace was a spare) switched to the Workspace's branch; then each of those
+ * has its Setup Script run if it is due (a switch that moved the commit makes it due), and its Start Script if it is
+ * flagged (the Container is running already, so its bootstrap did not see the clone, or saw the spare's). Rejects with
+ * git's output when a Repo could not be cloned or switched (the others still are); a settings write the Workspace
  * refuses, or a Setup or Start Script that fails, is only reported (`warn`): the Workspace is there to work in, and
  * the script runs again at the next Container start.
  */
 export const prepareWorkspace = async (
-  { exists, run, settings, warn }: PreparationHost,
+  { readText, run, settings, warn }: PreparationHost,
   setup: WorkspaceSetup,
 ): Promise<void> => {
   const held = await settings.read();
@@ -92,11 +100,16 @@ export const prepareWorkspace = async (
     if (!written.ok) warn(`The Workspace refused its Environment's settings: ${written.message}`);
   }
 
+  // A clone that is there has a `.git/HEAD`; the spare's own clones stay on its branch.
   const missing = Arr.filter(
     await Promise.all(
-      Arr.map(setup.repos, async (repo) =>
-        (await exists(`${repoDirectory(repo.name)}/.git`)) ? undefined : repo,
-      ),
+      Arr.map(setup.repos, async (repo) => {
+        const head = await readText(`${repoDirectory(repo.name)}/.git/HEAD`);
+
+        return head === null || (setup.branch !== SPARE_BRANCH && head.trim() === SPARE_HEAD)
+          ? repo
+          : undefined;
+      }),
     ),
     (repo) => repo !== undefined,
   );
@@ -104,7 +117,12 @@ export const prepareWorkspace = async (
   if (missing.length === 0) return;
 
   const cloned = await run(
-    prepareWorkspaceScript({ repos: missing, branch: setup.branch, base: setup.base }),
+    prepareWorkspaceScript({
+      repos: missing,
+      branch: setup.branch,
+      base: setup.base,
+      spare: SPARE_BRANCH,
+    }),
     CLONE_TIMEOUT_SECONDS,
   );
 
@@ -130,7 +148,7 @@ export const prepareWorkspace = async (
 
   if (cloned.exitCode !== 0) {
     throw failure(
-      `The Workspace's repos could not all be cloned on branch ${setup.branch}`,
+      `The Workspace's repos could not all be cloned on, or switched to, branch ${setup.branch}`,
       cloned,
     );
   }
@@ -170,47 +188,50 @@ export const runScript = async (
 };
 
 /**
- * Whether `cause` says a path is not there (or is not a directory). The Workspace DO's error reaches here over RPC,
- * which may keep only its message, so the POSIX code is read from the error and, failing that, from the message.
- */
-export const isMissing = (cause: unknown): boolean => {
-  if (!(cause instanceof Error)) return false;
-
-  const code = "code" in cause ? String(cause.code) : "";
-
-  return (
-    code === "ENOENT" ||
-    code === "ENOTDIR" ||
-    /\b(ENOENT|ENOTDIR)\b|no such file/i.test(cause.message)
-  );
-};
-
-/**
  * `@cloudpid/computer-env` loads on first use. `@cloudflare/computer` imports `cloudflare:workers`, which Node cannot
  * load, and the deploy loads the Server's module graph, this file included, in Node.
  */
 export const computer = () => import("@cloudpid/computer-env");
 
-/** The Container's shell of the Workspace whose object is `objectName`, for one call, cleaned up after it. */
-export const onContainer = async <A>(
-  namespace: WorkspaceNamespace,
-  objectName: string,
-  run: (shell: Pick<Shell, "exec">) => Promise<A>,
-): Promise<A> => {
-  const { ComputerExecutionEnv } = await computer();
+/**
+ * The `PreparationHost` of the Workspace whose Durable Object `workspace` reaches (a stub, or the object itself), whose
+ * environment is `id`: its files read through `ComputerExecutionEnv`, each script run on its Container in a call of
+ * its own, cleaned up after it.
+ */
+export const preparationHost = (
+  workspace: ComputerWorkspaceStub,
+  id: string,
+  settings: PreparationHost["settings"],
+  warn: (message: string) => void,
+): PreparationHost => {
+  const env = async () => {
+    const { ComputerExecutionEnv } = await computer();
 
-  const container = new ComputerExecutionEnv({
-    workspace: namespace.getByName(objectName),
-    // The id the Session's environment has, so both see the same files.
-    id: `computer:${objectName}`,
-    cwd: WORKSPACE_ROOT,
-  }).onBackend("container");
+    return new ComputerExecutionEnv({ workspace, id, cwd: WORKSPACE_ROOT });
+  };
 
-  try {
-    return await run(container);
-  } finally {
-    await container.cleanup(BACKGROUND_CONTEXT);
-  }
+  return {
+    readText: async (path) => {
+      const read = await (await env()).readTextFile(path, BACKGROUND_CONTEXT);
+
+      if (read.ok) return read.value;
+
+      if (read.error.code === "not_found" || read.error.code === "not_directory") return null;
+
+      throw read.error;
+    },
+    run: async (script, timeoutSeconds) => {
+      const container = (await env()).onBackend("container");
+
+      try {
+        return await runScript(container, script, timeoutSeconds);
+      } finally {
+        await container.cleanup(BACKGROUND_CONTEXT);
+      }
+    },
+    settings,
+    warn,
+  };
 };
 
 /**
@@ -221,30 +242,15 @@ export const workspacePreparation =
   (namespace: WorkspaceNamespace, warn: (message: string) => void) =>
   (objectName: string, setup: WorkspaceSetup): Promise<void> =>
     prepareWorkspace(
-      {
-        exists: async (path) => {
-          const { ComputerFiles } = await computer();
-          const slash = path.lastIndexOf("/");
-
-          try {
-            const entries = await new ComputerFiles(namespace.getByName(objectName)).readdir(
-              path.slice(0, slash),
-            );
-
-            return Arr.some(entries, (entry) => entry.name === path.slice(slash + 1));
-          } catch (cause) {
-            if (isMissing(cause)) return false;
-
-            throw cause;
-          }
-        },
-        run: (script, timeoutSeconds) =>
-          onContainer(namespace, objectName, (shell) => runScript(shell, script, timeoutSeconds)),
-        settings: {
+      preparationHost(
+        namespace.getByName(objectName),
+        // The id the Session's environment has, so both see the same files.
+        `computer:${objectName}`,
+        {
           read: () => namespace.getByName(objectName).containerSettings(),
           write: (overrides) => namespace.getByName(objectName).updateContainerSettings(overrides),
         },
         warn,
-      },
+      ),
       setup,
     );

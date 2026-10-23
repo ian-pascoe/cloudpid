@@ -94,12 +94,16 @@ export const deleteConfirmed = (expected: string, typed: string): boolean =>
 
 /**
  * Why `text` cannot be a branch the owner may leave empty (the draft's base and branch name), or null when it can: empty
- * means the default, and anything else follows the server's rules (`branchProblem`).
+ * means the default, and anything else follows the server's rules (`branchProblem`, or `ownBranchProblem` for the
+ * branch the new Workspace is on).
  */
-export const optionalBranchProblem = (text: string): string | null => {
+export const optionalBranchProblem = (
+  text: string,
+  problem: (name: string) => string | undefined = branchProblem,
+): string | null => {
   const name = text.trim();
 
-  return name === "" ? null : (branchProblem(name) ?? null);
+  return name === "" ? null : (problem(name) ?? null);
 };
 
 /** Why `text` cannot be added as a Repo, or null when it can: the same rules as the server's, so a mistake shows as it is typed. */

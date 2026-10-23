@@ -15,7 +15,12 @@ import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
-import { legacyCleanup, serveRegistryRpc, type SessionObjects } from "./registry/rpc.ts";
+import {
+  legacyCleanup,
+  serveRegistryRpc,
+  type SessionObjects,
+  spareUpkeep,
+} from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
 import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { serveAttachment } from "./serve-attachment.ts";
@@ -138,7 +143,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
     const registries = yield* Registry;
     // The raw environment: the Workspace DO's own stub, as the Session DOs take it.
     const worker = yield* Cloudflare.WorkerEnvironment;
-    // What runs after an answer: the wipe of what is left from before Environments.
+    // What runs after an answer: the wipe of what is left from before Environments, and the spares' upkeep.
     const execution = yield* Cloudflare.WorkerExecutionContext;
 
     // SAFETY: the Server Worker binds the Workspace DO namespace as `WORKSPACES` (above), a raw namespace; Attachments
@@ -167,6 +172,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
 
     // Built once per isolate, so a cleanup that found nothing left is not asked again.
     const legacy = legacyCleanup(registries, { sessions: sessionObjects, workspaces });
+    // Built once per isolate too: the upkeep of every spare stops once a run finds nothing to do.
+    const spares = spareUpkeep(registries, { workspaces });
 
     return {
       fetch: Effect.gen(function* () {
@@ -186,6 +193,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
             workspaces,
             sessions: sessionObjects,
             legacy,
+            spares,
             background: (effect) => execution.waitUntil(effect),
           });
 

@@ -12,7 +12,7 @@ import { discoverSkills } from "@cloudpid/extensions/skills-discovery";
 import { discoverPrompts } from "@cloudpid/extensions/prompt-templates";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
@@ -602,5 +602,42 @@ describe("restarting a Workspace's Container", () => {
         state.storage.get("cloudpid:container-snapshot"),
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("a spare Workspace preparing itself", () => {
+  /** Wait for `done` to hold, as work the alarm started goes on after it. */
+  const until = async (done: () => Promise<boolean>) => {
+    for (let tries = 0; tries < 200 && !(await done()); tries++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  };
+
+  it("readies itself at its alarm, over its own files and Container", async () => {
+    const workspace = env.WORKSPACES.getByName("spare-prepares");
+
+    await workspace.prepareSpare({
+      repos: [{ name: "app", url: "https://github.com/acme/app.git" }],
+      branch: "cloudpid/spare",
+      base: null,
+      settings: { idleMinutes: 30 },
+    });
+
+    // The alarm is due at once; it may have fired already.
+    await runDurableObjectAlarm(workspace);
+
+    const preparation = () =>
+      runInDurableObject(workspace, (_instance, state) =>
+        state.storage.get("cloudpid:spare-preparation"),
+      );
+
+    await until(async () => (await preparation()) === undefined);
+
+    // The settings were handed over, and the clone found missing (its `.git/HEAD` read from the files) was asked of
+    // the Container, with its Setup and Start Scripts; this one has no Container, so the readying failed, and the
+    // request is forgotten, leaving the spare to the Session that takes it.
+    expect((await workspace.containerSettings()).overrides).toEqual({ idleMinutes: 30 });
+    expect((await workspace.liveStubs()).container).toBe(3);
+    expect(await preparation()).toBeUndefined();
   });
 });

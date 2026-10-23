@@ -66,6 +66,11 @@ describe("whether a draft can be sent", () => {
     expect(draftBranchProblem(draft({ branch: "feature/x" }))).toBeNull();
   });
 
+  it("refuses the spare Workspace's placeholder as the branch, not as the base", () => {
+    expect(draftBranchProblem(draft({ branch: "cloudpid/spare" }))).not.toBeNull();
+    expect(draftBaseProblem(draft({ base: "cloudpid/spare" }))).toBeNull();
+  });
+
   it("ignores the branch and base fields of an existing Workspace", () => {
     expect(draftSendable(draft({ workspace: "0a1b2c3d", branch: "a..b" }))).toBe(true);
   });

@@ -20,6 +20,9 @@ const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): Lifecycl
   restartContainer: async () => {
     calls.push("restartContainer");
   },
+  prepareSpare: async (setup) => {
+    calls.push(`prepareSpare:${setup.branch}`);
+  },
   ...overrides,
 });
 
@@ -74,5 +77,20 @@ describe("workspaceObjectsRemote", () => {
     await remote.restartContainer("cloudpid");
 
     expect(calls).toEqual(["restartContainer"]);
+  });
+
+  it("asks the object to prepare itself as a spare, with what it is told", async () => {
+    const calls: string[] = [];
+    const { asked, remote } = namespace(host(calls));
+
+    await remote.prepareSpare("ws:5a5a5a5a", {
+      repos: [],
+      branch: "cloudpid/spare",
+      base: null,
+      settings: {},
+    });
+
+    expect(calls).toEqual(["prepareSpare:cloudpid/spare"]);
+    expect(asked).toEqual(["ws:5a5a5a5a"]);
   });
 });

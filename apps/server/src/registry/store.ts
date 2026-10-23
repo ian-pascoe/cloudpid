@@ -2,11 +2,13 @@ import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentRepo,
   type PushSubscription,
+  SPARE_BRANCH,
   TitleSource,
   workspaceDirectory,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
 
@@ -69,14 +71,17 @@ export type WorkspaceSetup = {
   readonly repos: ReadonlyArray<EnvironmentRepo>;
 };
 
-/** A Session's Workspace, as `createSession` is told it: one that exists, or a new one of an Environment. */
+/**
+ * A Session's Workspace, as `createSession` is told it: one that exists, or a new one of an Environment, under `id`
+ * unless the Environment's spare is taken. A null `branch` is `cloudpid/<id>` of the Workspace it gets.
+ */
 export type StoredWorkspaceChoice =
   | { readonly kind: "existing"; readonly id: string }
   | {
       readonly kind: "new";
       readonly id: string;
       readonly environment: string;
-      readonly branch: string;
+      readonly branch: string | null;
       readonly base: string | null;
     };
 
@@ -98,13 +103,23 @@ export type EnvironmentNaming =
 /** How changing an Environment's Repos went. */
 export type RepoChange = "changed" | "missing" | "taken" | "absent";
 
+/**
+ * What keeps Environments' spare Workspaces current: the stale spares (whose Repos are no longer their Environment's) to
+ * remove, by id, and the spares registered now, for their Durable Objects to prepare.
+ */
+export type SpareUpkeep = {
+  readonly stale: ReadonlyArray<string>;
+  readonly made: ReadonlyArray<WorkspaceSetup>;
+};
+
 /** Something left from before Environments (ADR-0016) whose Durable Object is still to be wiped. */
 export type LegacyObject = { readonly kind: "session" | "machine"; readonly id: string };
 
 export type RegistryStore = {
   /**
-   * Register a Session, idle, in a Workspace that exists, or in a new one registered with it, in the same transaction.
-   * A refusal says why and registers nothing.
+   * Register a Session, idle, in a Workspace that exists, or in a new one, in the same transaction: the Environment's
+   * spare when its Repos are the Environment's (it stops being spare and gets the branch and base), else one registered
+   * under the id given. A refusal says why and registers nothing.
    */
   readonly createSession: (
     input: {
@@ -151,14 +166,28 @@ export type RegistryStore = {
   readonly getEnvironmentSettings: (environment: string) => Schema.Json | null;
   /** Save an Environment's Container settings overrides; says whether it is registered. */
   readonly putEnvironmentSettings: (environment: string, overrides: Schema.Json) => boolean;
-  /** The Workspace registered under `id`, or null. */
+  /** The Workspace registered under `id`, or null; a spare is not one until it is taken. */
   readonly getWorkspace: (id: string) => WorkspaceRecord | null;
   /** What Workspace `id` sets itself up with, or null when it is not registered. */
   readonly getWorkspaceSetup: (id: string) => WorkspaceSetup | null;
-  /** Every Workspace, newest first. */
+  /** Every Workspace but the spares, newest first. */
   readonly listWorkspaces: () => WorkspaceRecord[];
   /** Forget a Workspace's record, only while no Session is bound to it. */
   readonly deleteWorkspace: (id: string) => Deletion;
+  /**
+   * Keep a spare for each of `environments` that exists (every one when undefined), in one transaction: an Environment
+   * whose spare is stale has it listed, to remove, and one with none gets one registered, under an id from `newId` that
+   * no Workspace has, on `SPARE_BRANCH` with the Environment's Repos.
+   */
+  readonly upkeepSpares: (
+    environments: ReadonlyArray<string> | undefined,
+    newId: () => string,
+    now: number,
+  ) => SpareUpkeep;
+  /** The id of an Environment's spare, current or stale, or null. */
+  readonly getSpare: (environment: string) => string | null;
+  /** Forget a spare's record, only while it is a spare; says whether it was. */
+  readonly forgetSpare: (id: string) => boolean;
   /**
    * Up to `limit` of the objects left from before Environments that no caller took in the last `leaseMs`, each taken
    * from `now`, so two callers do not wipe the same one at once.
@@ -210,6 +239,8 @@ type WorkspaceRow = {
   /** JSON: `EnvironmentRepo[]`, as the Environment had them when the Workspace was made. */
   repos: string;
   created_at: number;
+  /** 1 while it is its Environment's spare, made ahead and not yet taken; 0 once it is a Session's. */
+  spare: number;
 };
 
 type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
@@ -262,6 +293,25 @@ const toEnvironment = (row: EnvironmentRow): EnvironmentRecord => ({
   createdAt: row.created_at,
 });
 
+/** Repos in the order of their directory names. */
+const byName = Order.mapInput(Order.String, (repo: EnvironmentRepo) => repo.name);
+
+/** Whether two lists of Repos have the same names and addresses, in any order. */
+const sameRepos = (
+  left: ReadonlyArray<EnvironmentRepo>,
+  right: ReadonlyArray<EnvironmentRepo>,
+): boolean => {
+  const others = Arr.sort(right, byName);
+
+  return (
+    left.length === right.length &&
+    Arr.every(
+      Arr.sort(left, byName),
+      (repo, index) => repo.name === others[index]?.name && repo.url === others[index]?.url,
+    )
+  );
+};
+
 const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => {
   const repos = Arr.map(decodeRepos(row.repos), (repo) => repo.name);
 
@@ -288,7 +338,7 @@ const LEGACY_DEFAULT_MACHINE = "default";
 
 /**
  * The schema, one step per version, applied in order: version N is in place once step N has run. Steps only add
- * (tables, nullable columns, rows), but for step 11, the cutover to Environments, and a step is never edited once
+ * (tables, nullable or defaulted columns, rows), but for step 11, the cutover to Environments, and a step is never edited once
  * released: add the next one. Each step and its version record run in one transaction, so a step that fails partway
  * leaves no trace and is retried whole.
  */
@@ -427,6 +477,11 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
       DEFAULT_ENVIRONMENT,
     );
   },
+  // 12: spare Workspaces (ADR-0016), one per Environment, made ahead of the Session that takes one. Every Workspace
+  // stored before is a Session's.
+  (sql) => {
+    sql.exec("ALTER TABLE workspaces ADD COLUMN spare INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -476,8 +531,25 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     );
   };
 
+  /** Workspace `id`'s row, a spare's too. */
   const getWorkspaceRow = (id: string): WorkspaceRow | undefined =>
     sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE id = ?", id).toArray()[0];
+
+  const getSpareRow = (environment: string): WorkspaceRow | undefined =>
+    sql
+      .exec<WorkspaceRow>(
+        "SELECT * FROM workspaces WHERE environment = ? AND spare = 1",
+        environment,
+      )
+      .toArray()[0];
+
+  const toSetup = (row: WorkspaceRow): WorkspaceSetup => ({
+    id: row.id,
+    environment: row.environment,
+    branch: row.branch,
+    base: row.base,
+    repos: decodeRepos(row.repos),
+  });
 
   const getSession = (id: string): SessionRecord | null => {
     const [row] = sql.exec<SessionRow>("SELECT * FROM sessions WHERE id = ?", id).toArray();
@@ -495,10 +567,13 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         const choice = input.workspace;
         let environment: string;
 
+        let workspace = choice.id;
+
         if (choice.kind === "existing") {
           const known = getWorkspaceRow(choice.id);
 
-          if (known === undefined) return { refused: "no-workspace" };
+          // A spare is no Workspace a Session can name.
+          if (known === undefined || known.spare === 1) return { refused: "no-workspace" };
 
           environment = known.environment;
         } else {
@@ -506,26 +581,49 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
           if (made === null) return { refused: "no-environment" };
 
+          // The spare is taken only while it holds the Environment's Repos; a stale one is left to be removed.
+          const spare = getSpareRow(made.id);
+
+          const taking =
+            spare !== undefined && sameRepos(decodeRepos(spare.repos), made.repos)
+              ? spare
+              : undefined;
+
+          workspace = taking?.id ?? choice.id;
+
+          const branch = choice.branch ?? `cloudpid/${workspace}`;
+
           const [taken] = sql
             .exec<{ id: string }>(
               "SELECT id FROM workspaces WHERE environment = ? AND branch = ?",
               choice.environment,
-              choice.branch,
+              branch,
             )
             .toArray();
 
           if (taken !== undefined) return { refused: "branch-taken", workspace: taken.id };
 
           environment = made.id;
-          sql.exec(
-            "INSERT INTO workspaces (id, environment, branch, base, repos, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            choice.id,
-            environment,
-            choice.branch,
-            choice.base,
-            JSON.stringify(made.repos),
-            now,
-          );
+
+          if (taking === undefined) {
+            sql.exec(
+              "INSERT INTO workspaces (id, environment, branch, base, repos, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+              workspace,
+              environment,
+              branch,
+              choice.base,
+              JSON.stringify(made.repos),
+              now,
+            );
+          } else {
+            sql.exec(
+              "UPDATE workspaces SET spare = 0, branch = ?, base = ?, created_at = ? WHERE id = ?",
+              branch,
+              choice.base,
+              now,
+              workspace,
+            );
+          }
         }
 
         sql.exec(
@@ -534,7 +632,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           input.title,
           input.title === null ? null : "owner",
           environment,
-          choice.id,
+          workspace,
           now,
           now,
         );
@@ -544,7 +642,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           title: input.title,
           titleSource: input.title === null ? null : "owner",
           environment,
-          workspace: choice.id,
+          workspace,
           status: "idle",
           createdAt: now,
           updatedAt: now,
@@ -695,28 +793,78 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     getWorkspace: (id) => {
       const row = getWorkspaceRow(id);
 
-      return row === undefined ? null : toWorkspace(row);
+      return row === undefined || row.spare === 1 ? null : toWorkspace(row);
     },
 
     getWorkspaceSetup: (id) => {
       const row = getWorkspaceRow(id);
 
-      return row === undefined
-        ? null
-        : {
-            id: row.id,
-            environment: row.environment,
-            branch: row.branch,
-            base: row.base,
-            repos: decodeRepos(row.repos),
-          };
+      return row === undefined ? null : toSetup(row);
     },
 
     listWorkspaces: () =>
       Arr.map(
-        sql.exec<WorkspaceRow>("SELECT * FROM workspaces ORDER BY created_at DESC, id").toArray(),
+        sql
+          .exec<WorkspaceRow>(
+            "SELECT * FROM workspaces WHERE spare = 0 ORDER BY created_at DESC, id",
+          )
+          .toArray(),
         toWorkspace,
       ),
+
+    upkeepSpares: (environments, newId, now) =>
+      storage.transactionSync((): SpareUpkeep => {
+        const stale: string[] = [];
+        const made: WorkspaceSetup[] = [];
+
+        const kept = Arr.filter(
+          Arr.map(
+            sql
+              .exec<EnvironmentRow>("SELECT * FROM environments ORDER BY created_at DESC, id")
+              .toArray(),
+            toEnvironment,
+          ),
+          (environment) => environments === undefined || environments.includes(environment.id),
+        );
+
+        for (const environment of kept) {
+          const spare = getSpareRow(environment.id);
+
+          if (spare !== undefined) {
+            if (!sameRepos(decodeRepos(spare.repos), environment.repos)) stale.push(spare.id);
+
+            continue;
+          }
+
+          // Eight hex digits rarely collide; one that does is drawn again.
+          let id = newId();
+
+          while (getWorkspaceRow(id) !== undefined) id = newId();
+
+          sql.exec(
+            "INSERT INTO workspaces (id, environment, branch, base, repos, created_at, spare) VALUES (?, ?, ?, NULL, ?, ?, 1)",
+            id,
+            environment.id,
+            SPARE_BRANCH,
+            JSON.stringify(environment.repos),
+            now,
+          );
+          made.push({
+            id,
+            environment: environment.id,
+            branch: SPARE_BRANCH,
+            base: null,
+            repos: environment.repos,
+          });
+        }
+
+        return { stale, made };
+      }),
+
+    getSpare: (environment) => getSpareRow(environment)?.id ?? null,
+
+    forgetSpare: (id) =>
+      sql.exec("DELETE FROM workspaces WHERE id = ? AND spare = 1", id).rowsWritten > 0,
 
     deleteWorkspace: (id) => {
       if (getWorkspaceRow(id) === undefined) return "missing";

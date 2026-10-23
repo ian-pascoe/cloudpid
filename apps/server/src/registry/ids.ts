@@ -30,10 +30,11 @@ export const newSessionId: Effect.Effect<string> = Clock.currentTimeMillis.pipe(
   }),
 );
 
+/** Eight random lowercase hex digits (`WorkspaceId`), for the store's own draws (`RegistryStore.upkeepSpares`). */
+export const shortId = (): string => hex(crypto.getRandomValues(new Uint8Array(4)));
+
 /** A new Workspace or Environment ID: eight random lowercase hex digits (`WorkspaceId`). */
-export const newShortId: Effect.Effect<string> = Effect.sync(() =>
-  hex(crypto.getRandomValues(new Uint8Array(4))),
-);
+export const newShortId: Effect.Effect<string> = Effect.sync(shortId);
 
 /** A new Workspace ID (`WorkspaceId`). */
 export const newWorkspaceId: Effect.Effect<string> = newShortId;

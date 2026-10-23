@@ -21,6 +21,7 @@ import jq from "@cloudflare/computer/shell/jq";
 import { EXIT_REPORT_HOST } from "@cloudpid/sandbox-image/supervisor";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
+  type ComputerWorkspaceStub,
   type EnvRequest,
   type EnvResponse,
   type HostOperation,
@@ -37,6 +38,7 @@ import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
+import { prepareWorkspace, preparationHost, type WorkspaceSetup } from "./prepare.ts";
 import {
   type WorkspaceSettingsAnswer,
   workspaceSettingsStore,
@@ -44,6 +46,7 @@ import {
 } from "./settings.ts";
 import { discoverWorkspacePrompts, discoverWorkspaceSkills, keepPriorSkills } from "./skills.ts";
 import { ContainerEarlyStart } from "./early-start.ts";
+import { SparePreparation, type SpareRequest } from "./spare.ts";
 import {
   ContainerSnapshots,
   SNAPSHOT_TIMEOUT_MS,
@@ -87,6 +90,12 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
+/** Where a spare Workspace's preparation is kept until it is done (`SparePreparation`). */
+const SPARE_KEY = "cloudpid:spare-preparation";
+
+/** How long the command that starts a spare's Container, so its bootstrap runs, may take, in seconds. */
+const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
+
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
 
@@ -107,6 +116,7 @@ export class Workspace extends ContainerHost {
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
   readonly #earlyStart: ContainerEarlyStart;
+  readonly #spare: SparePreparation;
   readonly #sql: SqlStorage;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
@@ -170,7 +180,8 @@ export class Workspace extends ContainerHost {
       now: () => Date.now(),
       load: () => ctx.storage.get<number>(LAST_USE_KEY),
       save: (at) => ctx.storage.put(LAST_USE_KEY, at),
-      setAlarm: (at) => ctx.storage.setAlarm(at),
+      // The one alarm is shared with the spare's preparation, which the idle stop does not put off.
+      setAlarm: async (at) => ctx.storage.setAlarm(await this.#spare.alarmAt(at)),
       // The disk is snapshotted while the Container is idle, so the next launch restores the Toolchains. A command that
       // arrives meanwhile keeps the Container (`IdleStop`).
       snapshot: async () => {
@@ -270,8 +281,55 @@ export class Workspace extends ContainerHost {
       warn: (message) => console.warn(message),
     });
 
+    // A spare Workspace readies itself over its own Container, on the alarm (`prepareSpare`).
+    this.#spare = new SparePreparation({
+      load: () => ctx.storage.get<SpareRequest>(SPARE_KEY),
+      save: (request) => ctx.storage.put(SPARE_KEY, request),
+      clear: async () => {
+        await ctx.storage.delete(SPARE_KEY);
+      },
+      wake: async (at) => {
+        const set = await ctx.storage.getAlarm();
+
+        if (set === null || set > at) await ctx.storage.setAlarm(at);
+      },
+      prepare: (setup) => this.#prepareSpare(setup),
+      idle: this.#idle,
+      now: () => Date.now(),
+      info: (message) => console.info(message),
+      warn: (message) => console.warn(message),
+    });
+
     this.#host = new WorkspaceEnvHost(this.#workspace);
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
+  }
+
+  /**
+   * Ready this Workspace with `setup` as a Session would (`prepareWorkspace`), over this object's own files and
+   * Container, then run a command on the Container so its bootstrap (Toolchains, the Environment's Setup Script) has run
+   * even for a Workspace of no Repos, whose readying starts no Container.
+   */
+  async #prepareSpare(setup: WorkspaceSetup): Promise<void> {
+    // The preparation reaches this object through a handle of its own, so its calls are not taken for a Session's.
+    const own: ComputerWorkspaceStub = {
+      fileOperation: (request) => this.#fileOperation(request),
+      __getWorkspaceStub: () => this.#getWorkspaceStub(),
+      skills: async () => [],
+      prompts: async () => [],
+    };
+
+    const host = preparationHost(
+      own,
+      `computer:spare:${this.ctx.id.toString()}`,
+      { read: () => this.#settings.read(), write: (overrides) => this.#settings.write(overrides) },
+      (message) => console.warn(message),
+    );
+
+    await prepareWorkspace(host, setup);
+
+    const booted = await host.run(":", SPARE_BOOTSTRAP_TIMEOUT_SECONDS);
+
+    if (booted.exitCode !== 0) throw new Error(`The Container did not start: ${booted.output}`);
   }
 
   /**
@@ -319,6 +377,8 @@ export class Workspace extends ContainerHost {
    * Scripts): its Environment's, as last handed over.
    */
   containerSettings(): Promise<WorkspaceSettingsAnswer> {
+    this.#spare.noteUse();
+
     return this.#settings.read();
   }
 
@@ -328,6 +388,8 @@ export class Workspace extends ContainerHost {
    * are refused and nothing is saved. A Container that runs keeps the settings it launched with.
    */
   updateContainerSettings(overrides: Schema.Json): Promise<WriteAnswer> {
+    this.#spare.noteUse();
+
     return this.#settings.write(overrides);
   }
 
@@ -371,15 +433,25 @@ export class Workspace extends ContainerHost {
    * Container for the idle stop.
    */
   startContainerEarly(): void {
+    this.#spare.noteUse();
     // Not awaited: the start goes on after this call has answered. Nothing needs to hold the object for it
     // (`ctx.waitUntil` has no effect in a Durable Object): one is evicted only after tens of seconds without a request,
     // and once computer has connected, its connection to computerd keeps the object in memory, as for a command.
     void this.#earlyStart.start();
   }
 
-  /** The idle stop's alarm. */
-  alarm(): Promise<void> {
-    return this.#idle.alarm();
+  /**
+   * Prepare this Workspace as its Environment's spare (docs/spec.md → Spare Workspace): `setup` is kept and the work
+   * starts at the alarm, so this answers at once (`SparePreparation`).
+   */
+  prepareSpare(setup: WorkspaceSetup): Promise<void> {
+    return this.#spare.request(setup);
+  }
+
+  /** The alarm, shared: a spare's preparation that waits for it begins, then the idle stop checks on the Container. */
+  async alarm(): Promise<void> {
+    await this.#spare.alarm();
+    await this.#idle.alarm();
   }
 
   /** The Container's egress: computerd dials back here, and `WorkspaceProxy` forwards its WebSocket upgrade. */
@@ -439,6 +511,7 @@ export class Workspace extends ContainerHost {
    * bundle and parsed once per version, and only the repo's own are read.
    */
   async skills(cwd: string): Promise<ReadonlyArray<Skill>> {
+    this.#spare.noteUse();
     await this.#ready();
 
     return discoverWorkspaceSkills(this.#host.readEnv(cwd), BUNDLED_SKILLS);
@@ -449,20 +522,33 @@ export class Workspace extends ContainerHost {
    * up to the Workspace root, nearest first, walked next to the files as skills are.
    */
   async prompts(cwd: string): Promise<ReadonlyArray<PromptTemplate>> {
+    this.#spare.noteUse();
     await this.#ready();
 
     return discoverWorkspacePrompts(this.#host.readEnv(cwd));
   }
 
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */
-  async __getWorkspaceStub(): Promise<WorkspaceStub> {
+  __getWorkspaceStub(): Promise<WorkspaceStub> {
+    this.#spare.noteUse();
+
+    return this.#getWorkspaceStub();
+  }
+
+  async #getWorkspaceStub(): Promise<WorkspaceStub> {
     await this.#ready();
 
     return this.workspaceStub(this.#workspace);
   }
 
   /** One of `ComputerExecutionEnv`'s file operations, answered as plain data. */
-  async fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+  fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+    this.#spare.noteUse();
+
+    return this.#fileOperation(request);
+  }
+
+  async #fileOperation(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
     // The bundled skills are copied into the files the first time the mounts are indexed, which `#ready()` does once.
     await this.#ready();
 

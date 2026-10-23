@@ -79,6 +79,19 @@ export const branchProblem = (name: string): string | undefined => {
 /** A branch a new Workspace may be on or made from, as a payload carries it: one `branchProblem` finds nothing wrong with. */
 export const BranchName = Schema.String.check(Schema.makeFilter(branchProblem));
 
+/**
+ * The placeholder branch of an Environment's spare Workspace (ADR-0016), made ahead of the Session that takes it: its
+ * clones are on it until then, and the Workspace that takes it switches them to its own branch.
+ */
+export const SPARE_BRANCH = "cloudpid/spare";
+
+/** Why `name` cannot be the branch the owner names for a new Workspace: `branchProblem`'s, or it is `SPARE_BRANCH`. */
+export const ownBranchProblem = (name: string): string | undefined =>
+  branchProblem(name) ??
+  (name === SPARE_BRANCH
+    ? `${SPARE_BRANCH} is kept for spare workspaces: name another`
+    : undefined);
+
 /** The longest repo address a person may enter. */
 export const MAX_REPO_SOURCE_LENGTH = 300;
 

@@ -1,6 +1,7 @@
 // A Workspace's clones on its Container (docs/spec.md → Workspaces, ADR-0016): one full clone of each of its
-// Environment's Repos at `<root>/<repo>`, all on the Workspace's branch, made when a Session first works in it. These are
-// bash scripts the Container runs, with real git.
+// Environment's Repos at `<root>/<repo>`, all on the Workspace's branch, made when a Session first works in it, or ahead
+// of it on a spare Workspace's placeholder branch and switched when a Session takes the spare. These are bash scripts the
+// Container runs, with real git.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import {
   HAS_MISE_CONFIG,
@@ -21,6 +22,12 @@ export type WorkspaceClones = {
   readonly repos: ReadonlyArray<WorkspaceRepo>;
   readonly branch: string;
   readonly base: string | null;
+  /**
+   * The placeholder branch of a spare Workspace (`SPARE_BRANCH` in `@cloudpid/protocol`): a clone found on it, made
+   * while the Workspace was a spare, is switched to `branch` when that is another. Absent, clones that are there are left
+   * alone.
+   */
+  readonly spare?: string | undefined;
 };
 
 /**
@@ -49,21 +56,80 @@ const startDueDirectory = (root: string): string => `/tmp/cloudpid-start-due${ro
  * runs in each new clone that declares Toolchains, since the bootstrap ran before it was there, and the clone is flagged
  * for its Start Script (`repoStartScript`). A Repo that fails is
  * reported and the others are still made; the script exits 1 when any failed.
+ *
+ * A clone that is there on `clones.spare` (made while the Workspace was a spare) is switched to the branch instead,
+ * under its own lock too, so a Setup or Start Script of the spare's that still runs is waited for: `origin` is fetched,
+ * the branch is checked out as a clone's would be, and the spare's branch is deleted. When that moved the commit, the
+ * clone's Setup Script record is removed (`state`), so it is due again, and the clone is flagged for its Start Script
+ * and gets `mise install`, as a new clone does.
  */
 export const prepareWorkspaceScript = (
   clones: WorkspaceClones,
   root: string = WORKSPACE_ROOT,
   /** The transports git may use (`GIT_ALLOW_PROTOCOL`), whatever a URL or a redirect asks for. */
   protocols: string = "https",
+  state: string = SETUP_STATE_DIRECTORY,
 ): string => `set -u -o pipefail
 export SKIP_REFERENCE_REPOS=1 GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=${shellQuote(protocols)}
 root=${shellQuote(root)}
 branch=${shellQuote(clones.branch)}
 base=${shellQuote(clones.base ?? "")}
+spare=${shellQuote(clones.spare ?? "")}
+state=${shellQuote(state)}
 start_due=${shellQuote(startDueDirectory(root))}
 ${locked("workspace")}
 ${HAS_MISE_CONFIG}
 nohooks() { git -c core.hooksPath=/dev/null "$@"; }
+
+# on_spare <dir>: whether the clone at <dir> is on the spare's branch, to switch to $branch.
+on_spare() {
+  [ -n "$spare" ] && [ "$branch" != "$spare" ] &&
+    [ "$(git -C "$1" symbolic-ref --quiet HEAD 2>/dev/null)" = "refs/heads/$spare" ]
+}
+
+# switch_from_spare <name>: the clone at $root/<name>, on the spare's branch, put on $branch. A subshell, so the
+# clone's lock goes with it.
+switch_from_spare() (
+  dir="$root/$1"
+  if command -v flock >/dev/null 2>&1; then
+    exec 8>"/tmp/cloudpid-setup-$1.lock"
+    flock 8
+  fi
+  before=$(git -C "$dir" rev-parse --quiet --verify HEAD 2>/dev/null || echo none)
+  nohooks -C "$dir" fetch --quiet origin || exit 1
+  start="" track=--no-track
+  if git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    start="origin/$branch" track=--track
+  elif [ -n "$base" ]; then
+    if ! git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$base"; then
+      echo "cloudpid: $dir's origin has no branch $base to start $branch from" >&2
+      exit 1
+    fi
+    start="origin/$base"
+  else
+    start=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || start=""
+  fi
+  if [ -z "$start" ]; then
+    # A Repo with no commits yet: the branch is born with the first.
+    git -C "$dir" symbolic-ref HEAD "refs/heads/$branch" || exit 1
+  else
+    # What the spare's Setup Script changed in tracked files is kept when it can be, and given up when it is in the way.
+    nohooks -C "$dir" checkout --quiet "$track" -b "$branch" "$start" 2>/dev/null ||
+      nohooks -C "$dir" checkout --quiet --force "$track" -B "$branch" "$start" || exit 1
+  fi
+  if git -C "$dir" show-ref --verify --quiet "refs/heads/$spare"; then
+    git -C "$dir" branch --quiet -D -- "$spare" || exit 1
+  fi
+  if [ "$(git -C "$dir" rev-parse --quiet --verify HEAD 2>/dev/null || echo none)" != "$before" ]; then
+    # The spare was set up for another commit: its Setup Script is due again, and its Start Script runs once more.
+    rm -f -- "$state/$1"
+    mkdir -p -- "$start_due" && : > "$start_due/$1"
+    if has_mise_config "$dir"; then
+      (cd "$dir" && mise install) || echo "cloudpid: mise install failed in $dir; it runs again at the next Container start" >&2
+    fi
+  fi
+  exit 0
+)
 
 # clone <name> <url>: the Repo's clone at $root/<name>, on $branch.
 clone() {
@@ -100,6 +166,12 @@ clone() {
 
 status=0
 clone_or_report() {
+  if [ -e "$root/$1/.git" ] && on_spare "$root/$1"; then
+    switch_from_spare "$1" && return 0
+    echo "cloudpid: could not switch $root/$1 from $spare to $branch" >&2
+    status=1
+    return 0
+  fi
   clone "$@" && return 0
   rm -rf -- "$root/.cloudpid-clone-$1"
   echo "cloudpid: could not clone $2 into $root/$1" >&2

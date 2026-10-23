@@ -1,4 +1,5 @@
 import * as Cloudflare from "alchemy/Cloudflare";
+import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -7,7 +8,7 @@ import type { PushState, PushSubscription } from "@cloudpid/protocol";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
-import { newEnvironmentId, newSessionId, newWorkspaceId } from "./ids.ts";
+import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
 import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
 import {
   readEnvironmentSettings,
@@ -24,6 +25,7 @@ import {
   type SessionRecord,
   type SessionRefusal,
   type SessionStatus,
+  type SpareUpkeep,
   type WorkspaceRecord,
   type WorkspaceSetup,
 } from "./store.ts";
@@ -41,6 +43,15 @@ export type WorkspaceChoice =
       readonly base?: string | undefined;
     };
 
+/** What a Workspace's Durable Object sets itself up with, with its Environment's Container settings overrides. */
+export type WorkspaceSetupWithSettings = WorkspaceSetup & { readonly settings: Schema.Json };
+
+/** `SpareUpkeep`, each spare made with the Container settings it is prepared with. */
+export type SpareWork = {
+  readonly stale: SpareUpkeep["stale"];
+  readonly made: ReadonlyArray<WorkspaceSetupWithSettings>;
+};
+
 /** How saving an Environment's Container settings went. */
 export type EnvironmentSettingsUpdate =
   | { readonly status: "saved"; readonly state: EnvironmentSettingsState }
@@ -50,8 +61,9 @@ export type EnvironmentSettingsUpdate =
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
   /**
-   * Register a new Session, idle, under a fresh UUIDv7, in a Workspace that exists, or in a new one of an Environment,
-   * registered with it under a fresh id, on `branch` (default `cloudpid/<id>`) from `base`. A refusal says why.
+   * Register a new Session, idle, under a fresh UUIDv7, in a Workspace that exists, or in a new one of an Environment:
+   * its spare when that is current, else one registered with it under a fresh id; on `branch` (default
+   * `cloudpid/<id>`) from `base`. A refusal says why.
    */
   readonly createSession: (input: {
     readonly title?: string | undefined;
@@ -131,11 +143,23 @@ export type RegistryMethods = {
    */
   readonly getWorkspaceSetup: (input: {
     readonly id: string;
-  }) => Effect.Effect<(WorkspaceSetup & { readonly settings: Schema.Json }) | null>;
+  }) => Effect.Effect<WorkspaceSetupWithSettings | null>;
   /** Every Workspace, newest first. */
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
   /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
   readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<Deletion>;
+  /**
+   * What keeps the spare Workspace of each of `environments` (every Environment when undefined) current, in one call:
+   * the stale spares to remove (their objects, then `forgetSpare`), and the spares registered now, each with what its
+   * object prepares itself with. Nothing to do is two empty lists.
+   */
+  readonly upkeepSpares: (input: {
+    readonly environments?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<SpareWork>;
+  /** The id of an Environment's spare Workspace, current or stale, or null. */
+  readonly getSpare: (input: { readonly environment: string }) => Effect.Effect<string | null>;
+  /** Forget a spare's record once its object is wiped; one taken meanwhile is a Session's and is kept. */
+  readonly forgetSpare: (input: { readonly id: string }) => Effect.Effect<boolean>;
   /** Take up to `limit` objects left from before Environments to wipe, each for a few minutes (`LEGACY_LEASE_MS`). */
   readonly takeLegacy: (input: {
     readonly limit: number;
@@ -185,6 +209,14 @@ export const RegistryLive = Registry.make(
         const store = openRegistryStore(state.raw.storage);
         const notify = pushNotifier({ store, vapid: push.vapid });
 
+        /** A Workspace's set-up with its Environment's Container settings overrides. */
+        const withSettings = (setup: WorkspaceSetup): WorkspaceSetupWithSettings => {
+          // Only the overrides that still resolve reach the Workspace, which checks them again.
+          const overrides = store.getEnvironmentSettings(setup.environment) ?? {};
+
+          return { ...setup, settings: readEnvironmentSettings(overrides).overrides };
+        };
+
         return {
           createSession: ({ title, workspace }) =>
             Effect.gen(function* () {
@@ -195,10 +227,12 @@ export const RegistryLive = Registry.make(
                 return store.createSession({ id, title: title ?? null, workspace }, now);
               }
 
-              // Eight hex digits rarely collide; one that does is drawn again.
+              // Eight hex digits rarely collide; one that does (a spare's too, which only its set-up shows) is drawn again.
               let workspaceId = yield* newWorkspaceId;
 
-              while (store.getWorkspace(workspaceId) !== null) workspaceId = yield* newWorkspaceId;
+              while (store.getWorkspaceSetup(workspaceId) !== null) {
+                workspaceId = yield* newWorkspaceId;
+              }
 
               return store.createSession(
                 {
@@ -208,7 +242,7 @@ export const RegistryLive = Registry.make(
                     kind: "new",
                     id: workspaceId,
                     environment: workspace.environment,
-                    branch: workspace.branch ?? `cloudpid/${workspaceId}`,
+                    branch: workspace.branch ?? null,
                     base: workspace.base ?? null,
                   },
                 },
@@ -268,15 +302,20 @@ export const RegistryLive = Registry.make(
             Effect.sync(() => {
               const setup = store.getWorkspaceSetup(id);
 
-              if (setup === null) return null;
-
-              // Only the overrides that still resolve reach the Workspace, which checks them again.
-              const overrides = store.getEnvironmentSettings(setup.environment) ?? {};
-
-              return { ...setup, settings: readEnvironmentSettings(overrides).overrides };
+              return setup === null ? null : withSettings(setup);
             }),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
           deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
+          upkeepSpares: ({ environments }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now): SpareWork => {
+                const { stale, made } = store.upkeepSpares(environments, shortId, now);
+
+                return { stale, made: Arr.map(made, withSettings) };
+              }),
+            ),
+          getSpare: ({ environment }) => Effect.sync(() => store.getSpare(environment)),
+          forgetSpare: ({ id }) => Effect.sync(() => store.forgetSpare(id)),
           takeLegacy: ({ limit }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => store.takeLegacy(limit, now, LEGACY_LEASE_MS)),

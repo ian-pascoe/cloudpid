@@ -7,6 +7,7 @@ import {
   RegistryRpcs,
   SessionActionError,
   SessionNotFound,
+  SPARE_BRANCH,
 } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Arr from "effect/Array";
@@ -44,6 +45,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly sessions: SessionObjects;
   /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
   readonly legacy: Effect.Effect<void>;
+  /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
+  readonly spares: Spares;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
@@ -91,6 +94,85 @@ export const legacyCleanup = (
   });
 };
 
+/** The upkeep of the Environments' spare Workspaces (`spareUpkeep`). Neither ever fails: what goes wrong is logged. */
+export type Spares = {
+  /** Keep every Environment's spare current. Once a run finds nothing to do, this isolate does no more. */
+  readonly all: Effect.Effect<void>;
+  /** Keep `environment`'s spare current, as after a Session took it or its Repos changed. */
+  readonly of: (environment: string) => Effect.Effect<void>;
+};
+
+/**
+ * The upkeep of the Environments' spare Workspaces (ADR-0016): one Registry call says what to do (`upkeepSpares`), a
+ * stale spare's object is wiped and then its record forgotten, and each spare registered is asked to prepare itself
+ * (`prepareSpare`), which its object does on its own time: the answer comes at once. A spare removed leaves its
+ * Environment without one, so the call is made once more to register the next. What fails is logged and left: a stale
+ * spare is tried again at the next upkeep, and a spare not prepared is readied by the Session that takes it.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const spareUpkeep = (
+  registries: Cloudflare.DurableObject<Registry>,
+  { workspaces }: Pick<RegistryRpcObjects, "workspaces">,
+): Spares => {
+  /** Keep the spares of `environments` (all when undefined) current; whether there was anything to do. */
+  const keep = (environments: ReadonlyArray<string> | undefined) =>
+    Effect.gen(function* () {
+      const registry = registries.getByName(REGISTRY_NAME);
+      let busy = false;
+
+      for (let round = 1; round <= 2; round++) {
+        const work = yield* registry.upkeepSpares({ environments });
+
+        if (work.stale.length === 0 && work.made.length === 0) return busy;
+
+        busy = true;
+
+        let removed = 0;
+
+        for (const id of work.stale) {
+          yield* Effect.promise(() => workspaces.destroy(workspaceObjectName(id))).pipe(
+            Effect.andThen(registry.forgetSpare({ id })),
+            Effect.map(() => {
+              removed++;
+            }),
+            Effect.catchCause((cause) =>
+              Effect.logWarning(`Could not remove the stale spare workspace ${id}`, cause),
+            ),
+          );
+        }
+
+        for (const setup of work.made) {
+          yield* Effect.promise(() =>
+            workspaces.prepareSpare(workspaceObjectName(setup.id), setup),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(`Could not ask the spare workspace ${setup.id} to prepare`, cause),
+            ),
+          );
+        }
+
+        if (removed === 0) return busy;
+      }
+
+      return busy;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("The upkeep of the spare workspaces failed", cause).pipe(Effect.as(true)),
+      ),
+    );
+
+  let settled = false;
+
+  return {
+    all: Effect.gen(function* () {
+      if (settled) return;
+
+      if (!(yield* keep(undefined))) settled = true;
+    }),
+    of: (environment) => Effect.asVoid(keep([environment])),
+  };
+};
+
 /** How many times a deletion sweeps the Sessions it takes before it gives up on ones that keep starting. */
 const SWEEP_ROUNDS = 3;
 
@@ -112,7 +194,7 @@ const reason = (cause: Cause.Cause<unknown>): string => {
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const serveRegistryRpc = <R = never>(
   registries: Cloudflare.DurableObject<Registry>,
-  { workspaces, sessions, legacy, background }: RegistryRpcObjects<R>,
+  { workspaces, sessions, legacy, spares, background }: RegistryRpcObjects<R>,
 ) =>
   Effect.gen(function* () {
     const registry = registries.getByName(REGISTRY_NAME);
@@ -209,6 +291,19 @@ export const serveRegistryRpc = <R = never>(
         },
       );
 
+    /** Remove an Environment's spare Workspace, if it has one: its object, then its record. */
+    const removeSpare = (environment: string) =>
+      Effect.gen(function* () {
+        const spare = yield* registry.getSpare({ environment });
+
+        if (spare === null) return;
+
+        yield* inWorkspace("Could not delete the spare workspace", () =>
+          workspaces.destroy(workspaceObjectName(spare)),
+        );
+        yield* registry.forgetSpare({ id: spare });
+      });
+
     /** The Environment a naming gave, or why there is none. */
     const named = (naming: EnvironmentNaming, name: string, id?: string) => {
       switch (naming.status) {
@@ -238,8 +333,10 @@ export const serveRegistryRpc = <R = never>(
     const handlers = RegistryRpcs.toLayer({
       listSessions: () =>
         registry.listSessions().pipe(
-          // What is left from before Environments is wiped behind the Session list the web app polls.
+          // What is left from before Environments is wiped behind the Session list the web app polls, and the spares
+          // are made where there are none (a fresh deploy, an upkeep that failed).
           Effect.tap(() => background(legacy)),
+          Effect.tap(() => background(spares.all)),
         ),
       createSession: ({ title, environment, workspace, branch, base }) =>
         Effect.gen(function* () {
@@ -269,6 +366,12 @@ export const serveRegistryRpc = <R = never>(
               : created;
           }
 
+          if (branch === SPARE_BRANCH) {
+            return yield* failed(
+              `Branch ${SPARE_BRANCH} is kept for spare workspaces: name another`,
+            );
+          }
+
           const made = environment ?? DEFAULT_ENVIRONMENT;
 
           const created = yield* registry.createSession({
@@ -276,7 +379,12 @@ export const serveRegistryRpc = <R = never>(
             workspace: { kind: "new", environment: made, branch, base },
           });
 
-          return "refused" in created ? yield* refused(created, made, branch) : created;
+          if ("refused" in created) return yield* refused(created, made, branch);
+
+          // The Session took the Environment's spare or made a Workspace: either way, the next one is made ahead.
+          yield* background(spares.of(made));
+
+          return created;
         }),
       renameSession: ({ id, title }) =>
         registry
@@ -297,7 +405,10 @@ export const serveRegistryRpc = <R = never>(
       deleteSession: ({ id }) => known(id).pipe(Effect.flatMap(deleteSession)),
       listEnvironments: () => registry.listEnvironments(),
       createEnvironment: ({ name }) =>
-        registry.createEnvironment({ name }).pipe(Effect.flatMap((naming) => named(naming, name))),
+        registry.createEnvironment({ name }).pipe(
+          Effect.flatMap((naming) => named(naming, name)),
+          Effect.tap((environment) => background(spares.of(environment.id))),
+        ),
       renameEnvironment: ({ environment, name }) =>
         registry
           .renameEnvironment({ id: environment, name })
@@ -325,6 +436,12 @@ export const serveRegistryRpc = <R = never>(
               );
             }
 
+            yield* removeSpare(environment).pipe(
+              Effect.mapError((error) =>
+                failed(`${error.message}. The environment and its remaining workspaces are kept.`),
+              ),
+            );
+
             // The record goes only once no Workspace is made from it.
             if ((yield* registry.deleteEnvironment({ id: environment })) !== "in-use") return;
 
@@ -347,6 +464,9 @@ export const serveRegistryRpc = <R = never>(
 
           switch (added) {
             case "changed":
+              // The spare holds the Repos it was made with: one made before is stale now.
+              yield* background(spares.of(environment));
+
               return repo;
             case "taken":
               return yield* failed(`The environment already has a repo in ${repo}: name this one`);
@@ -359,7 +479,7 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((removed) => {
             switch (removed) {
               case "changed":
-                return Effect.void;
+                return background(spares.of(environment));
               case "absent":
                 return failed(`The environment has no repo "${repo}"`);
               default:

@@ -359,3 +359,185 @@ describe("a clone's Start Script", () => {
     expect(runs()).toBe("");
   });
 });
+
+describe("taking a spare Workspace's clones", () => {
+  const SPARE = "cloudpid/spare";
+
+  /** A Workspace whose clones were made as a spare's, on `SPARE`, then the readying of the Workspace that took it. */
+  const spare = () => {
+    const workspace = container();
+    const { root, state, app, api, sh } = workspace;
+
+    const take = (clones: Partial<WorkspaceClones> = {}) =>
+      sh(
+        prepareWorkspaceScript(
+          {
+            repos: [
+              { name: "app", url: app.origin },
+              { name: "api", url: api.origin },
+            ],
+            branch: "cloudpid/1a2b3c4d",
+            base: null,
+            spare: SPARE,
+            ...clones,
+          },
+          root,
+          "file",
+          state,
+        ),
+      );
+
+    const made = take({ branch: SPARE });
+
+    if (made.status !== 0) throw new Error(made.stderr);
+
+    // The spare's Start Scripts ran when it was prepared.
+    sh(`rm -rf /tmp/cloudpid-start-due${root}`);
+
+    const startDue = (name: string) => existsSync(`/tmp/cloudpid-start-due${root}/${name}`);
+
+    return { ...workspace, take, startDue };
+  };
+
+  /** Push a commit of `file` to `branch` of the remote whose work tree is `work`. */
+  const pushCommit = (
+    git: (args: string, cwd: string) => string,
+    work: string,
+    branch: string,
+    file: string,
+  ) => {
+    git(`checkout -q -B ${branch}`, work);
+    writeFileSync(join(work, file), `${file}\n`);
+    git(`add ${file}`, work);
+    git(`commit -q -m ${file}`, work);
+    git(`push -q origin ${branch}`, work);
+  };
+
+  it("switches each clone to the Workspace's branch, made from the default branch, and drops the spare's", () => {
+    const { root, git, take } = spare();
+
+    const taken = take();
+
+    expect(taken.status, taken.stderr).toBe(0);
+
+    for (const name of ["app", "api"]) {
+      const dir = join(root, name);
+
+      expect(git("branch --show-current", dir)).toBe("cloudpid/1a2b3c4d");
+      expect(upstreamOf(dir, git)).toBe("");
+      expect(git(`branch --list ${SPARE}`, dir)).toBe("");
+    }
+  });
+
+  it("fetches first, so a branch pushed since is checked out and tracked, and a new base is found", () => {
+    const { root, app, api, git, take } = spare();
+
+    pushCommit(git, app.work, "feature", "feature.txt");
+    pushCommit(git, api.work, "release", "release.txt");
+
+    const taken = take({ branch: "feature", base: "release" });
+
+    expect(taken.status, taken.stderr).toBe(0);
+    expect(existsSync(join(root, "app", "feature.txt"))).toBe(true);
+    expect(upstreamOf(join(root, "app"), git)).toBe("origin/feature");
+    expect(existsSync(join(root, "api", "release.txt"))).toBe(true);
+    expect(git("branch --show-current", join(root, "api"))).toBe("feature");
+    expect(upstreamOf(join(root, "api"), git)).toBe("");
+  });
+
+  it("marks a clone whose commit moved for its Setup Script and its Start Script", () => {
+    const { root, state, app, git, take, startDue } = spare();
+
+    writeFileSync(setupRecord("app", state), "hash\n");
+    writeFileSync(setupRecord("api", state), "hash\n");
+    pushCommit(git, app.work, "main", "later.txt");
+
+    const taken = take();
+
+    expect(taken.status, taken.stderr).toBe(0);
+    expect(existsSync(join(root, "app", "later.txt"))).toBe(true);
+    expect(existsSync(setupRecord("app", state))).toBe(false);
+    expect(startDue("app")).toBe(true);
+    // The other's commit did not move: its Setup Script is done and its services run.
+    expect(existsSync(setupRecord("api", state))).toBe(true);
+    expect(startDue("api")).toBe(false);
+  });
+
+  it("keeps what the spare's Setup Script changed when the commit did not move", () => {
+    const { root, take } = spare();
+
+    writeFileSync(join(root, "app", "README.md"), "installed\n");
+
+    expect(take().status).toBe(0);
+    expect(readFileSync(join(root, "app", "README.md"), "utf8")).toBe("installed\n");
+  });
+
+  it("fails a clone whose base the remote does not have, and still switches the others", () => {
+    const { root, api, git, take } = spare();
+
+    pushCommit(git, api.work, "release", "release.txt");
+
+    const taken = take({ base: "release" });
+
+    expect(taken.status).toBe(1);
+    expect(taken.stderr).toContain("has no branch release");
+    expect(git("branch --show-current", join(root, "app"))).toBe(SPARE);
+    expect(git("branch --show-current", join(root, "api"))).toBe("cloudpid/1a2b3c4d");
+  });
+
+  it("leaves the spare's own clones on its branch when it is readied again", () => {
+    const { root, git, take } = spare();
+
+    expect(take({ branch: SPARE }).status).toBe(0);
+    expect(git("branch --show-current", join(root, "app"))).toBe(SPARE);
+  });
+
+  it("puts a clone of an empty repo on the Workspace's branch, still unborn", () => {
+    const { base, root, state, git, sh } = container();
+    const empty = join(base, "empty.git");
+
+    git(`init -q --bare -b main ${empty}`, base);
+
+    const clones = (branch: string): WorkspaceClones => ({
+      repos: [{ name: "empty", url: empty }],
+      branch,
+      base: null,
+      spare: SPARE,
+    });
+
+    sh(prepareWorkspaceScript(clones(SPARE), root, "file", state));
+
+    const taken = sh(prepareWorkspaceScript(clones("cloudpid/1a2b3c4d"), root, "file", state));
+
+    expect(taken.status, taken.stderr).toBe(0);
+    expect(git("symbolic-ref --short HEAD", join(root, "empty"))).toBe("cloudpid/1a2b3c4d");
+  });
+
+  it("ends on the Workspace's branch when it is taken while the spare is still cloning", async () => {
+    const { root, state, app, api, git, start } = container();
+
+    const script = (branch: string) =>
+      prepareWorkspaceScript(
+        {
+          repos: [
+            { name: "app", url: app.origin },
+            { name: "api", url: api.origin },
+          ],
+          branch,
+          base: null,
+          spare: SPARE,
+        },
+        root,
+        "file",
+        state,
+      );
+
+    expect(await Promise.all([start(script(SPARE)), start(script("cloudpid/1a2b3c4d"))])).toEqual([
+      0, 0,
+    ]);
+
+    // Whichever ran first, the second found the clones there: on the Workspace's branch, or on the spare's to switch.
+    expect(git("branch --show-current", join(root, "app"))).toBe("cloudpid/1a2b3c4d");
+    expect(git("branch --show-current", join(root, "api"))).toBe("cloudpid/1a2b3c4d");
+  });
+});
