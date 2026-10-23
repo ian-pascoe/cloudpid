@@ -605,6 +605,30 @@ describe("restarting a Workspace's Container", () => {
       ),
     ).toBeUndefined();
   });
+
+  it("keeps the snapshot when the agent stops the Container, and says none was running", async () => {
+    const workspace = env.WORKSPACES.getByName("agent-restarts");
+    const snapshot = { id: "snap-2", size: 1, takenAt: 1, refreshedAt: 1 };
+
+    await runInDurableObject(workspace, async (_instance, state) => {
+      await state.storage.put("cloudpid:container-snapshot", snapshot);
+    });
+
+    // The test Worker runs no Container.
+    expect(await workspace.stopContainer({ forgetSnapshot: false })).toEqual({ wasRunning: false });
+    expect(
+      await runInDurableObject(workspace, (_instance, state) =>
+        state.storage.get("cloudpid:container-snapshot"),
+      ),
+    ).toEqual(snapshot);
+
+    expect(await workspace.stopContainer({ forgetSnapshot: true })).toEqual({ wasRunning: false });
+    expect(
+      await runInDurableObject(workspace, (_instance, state) =>
+        state.storage.get("cloudpid:container-snapshot"),
+      ),
+    ).toBeUndefined();
+  });
 });
 
 describe("a spare Workspace preparing itself", () => {
