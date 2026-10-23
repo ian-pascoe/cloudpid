@@ -220,7 +220,7 @@ export const HistoryRequest = Schema.Struct({
 /**
  * Mint Live View links for the Browser Handoff `requestId` names (a `BrowserHandoffRequest`'s `id`): the owner's Live View
  * Pane opening, reconnecting, or following a window. Answered with `LiveViewLinks`, to the asking client only; fails
- * with "the handoff is over" once it has ended.
+ * with `LIVE_VIEW_HANDOFF_OVER` ("the handoff is over") once it has ended.
  */
 export const LiveViewRequest = Schema.Struct({
   type: Schema.Literal("live_view"),
@@ -533,6 +533,8 @@ export const LiveViewTarget = Schema.Struct({
   link: Schema.String,
 });
 
+export type LiveViewTarget = typeof LiveViewTarget.Type;
+
 /** A window the handed-over tab opened (a pop-up or new tab), directly or through another such window. */
 export const LiveViewWindow = Schema.Struct({
   targetId: Schema.String,
@@ -541,6 +543,8 @@ export const LiveViewWindow = Schema.Struct({
   title: Schema.String,
   link: Schema.String,
 });
+
+export type LiveViewWindow = typeof LiveViewWindow.Type;
 
 /** The answer to `live_view`: fresh links to the handed-over tab and to each window it opened that is still open. */
 export const LiveViewLinks = Schema.Struct({

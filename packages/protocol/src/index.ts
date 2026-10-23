@@ -3,6 +3,8 @@ export * from "./attachments.ts";
 
 export * from "./environment-secrets.ts";
 
+export * from "./live-view.ts";
+
 export * from "./ranking.ts";
 
 export * from "./registry.ts";
