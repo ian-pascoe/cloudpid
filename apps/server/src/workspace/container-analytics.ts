@@ -6,8 +6,19 @@
 import type { ContainerUsageSums } from "@cloudpid/config";
 import * as Schema from "effect/Schema";
 
-/** The label every Container of a Workspace is launched with, and the key analytics are filtered by. */
-export const WORKSPACE_LABEL = "cloudpid-workspace";
+/**
+ * The label every Container of a Workspace is launched with, and the key analytics are filtered by. workerd refuses a
+ * launch whose label names are over 16 bytes (`CONTAINER_LABEL_LIMITS`).
+ */
+export const WORKSPACE_LABEL = "cloudpid-ws";
+
+/** workerd's limits on a Container's labels (`requireValidLabels`, `src/workerd/api/container.c++`). */
+export const CONTAINER_LABEL_LIMITS = { count: 10, nameBytes: 16, valueBytes: 64 } as const;
+
+/** The labels the Containers of the Workspace `workspace` (its Durable Object's id) are launched with. */
+export const workspaceLabels = (workspace: string) => ({
+  [WORKSPACE_LABEL]: workspace,
+});
 
 /** A span of time, epoch milliseconds, `to` excluded. */
 export type AnalyticsWindow = { readonly from: number; readonly to: number };

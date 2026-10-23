@@ -175,13 +175,13 @@ const open = (
 
 describe("a launch", () => {
   it("carries the Workspace's labels, on a start and on computer's restart", async () => {
-    const { state, container } = open({}, { "cloudpid-workspace": "abc" });
+    const { state, container } = open({}, { "cloudpid-ws": "abc" });
 
     await container.start({ ...SPEC, labels: { other: "1" } });
     await container.restart(SPEC);
 
-    expect(state.starts[0]?.labels).toEqual({ other: "1", "cloudpid-workspace": "abc" });
-    expect(state.restarts[0]?.labels).toEqual({ "cloudpid-workspace": "abc" });
+    expect(state.starts[0]?.labels).toEqual({ other: "1", "cloudpid-ws": "abc" });
+    expect(state.restarts[0]?.labels).toEqual({ "cloudpid-ws": "abc" });
   });
 
   it("adds no labels when the Workspace has none", async () => {

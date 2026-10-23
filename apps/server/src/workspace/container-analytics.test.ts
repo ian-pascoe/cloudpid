@@ -1,6 +1,13 @@
 // @effect-diagnostics asyncFunction:off
+import * as Record from "effect/Record";
 import { describe, expect, it } from "vitest";
-import { containerAnalytics, usageQuery, WORKSPACE_LABEL } from "./container-analytics.ts";
+import {
+  CONTAINER_LABEL_LIMITS,
+  containerAnalytics,
+  usageQuery,
+  WORKSPACE_LABEL,
+  workspaceLabels,
+} from "./container-analytics.ts";
 
 const FROM = Date.UTC(2026, 9, 20, 12, 0, 0);
 const TO = Date.UTC(2026, 9, 20, 13, 0, 0);
@@ -17,6 +24,23 @@ const answering = (text: string, status = 200) => {
 
   return { requests, send };
 };
+
+const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
+
+describe("workspaceLabels", () => {
+  // workerd refuses to start a Container whose labels break these, so a launch would fail.
+  it("keep within workerd's limits for a Durable Object id", () => {
+    const labels = Record.toEntries(workspaceLabels("f".repeat(64)));
+
+    expect(labels.length).toBeLessThanOrEqual(CONTAINER_LABEL_LIMITS.count);
+
+    for (const [name, value] of labels) {
+      expect(bytes(name)).toBeGreaterThan(0);
+      expect(bytes(name)).toBeLessThanOrEqual(CONTAINER_LABEL_LIMITS.nameBytes);
+      expect(bytes(value)).toBeLessThanOrEqual(CONTAINER_LABEL_LIMITS.valueBytes);
+    }
+  });
+});
 
 describe("usageQuery", () => {
   it("asks for each window's sums of the Containers with the Workspace's label", () => {

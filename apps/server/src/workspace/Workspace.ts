@@ -40,7 +40,7 @@ import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import { IdleStop } from "./idle.ts";
-import { containerAnalytics, WORKSPACE_LABEL } from "./container-analytics.ts";
+import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type ContainerUsageRecord } from "./container-usage.ts";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
@@ -246,7 +246,7 @@ export class Workspace extends ContainerHost {
       warn: (message) => console.warn(message),
       info: (message) => console.info(message),
       // Cloudflare's usage analytics find the Workspace's Containers by this label.
-      labels: { [WORKSPACE_LABEL]: ctx.id.toString() },
+      labels: workspaceLabels(ctx.id.toString()),
     });
 
     const analytics =
