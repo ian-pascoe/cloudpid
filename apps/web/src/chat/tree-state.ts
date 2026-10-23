@@ -20,7 +20,7 @@ const treeStaleAtom = Atom.family((sessionId: string) =>
   Atom.map(
     sessionStateAtom(sessionId),
     (state) =>
-      `${state.treeVersion}|${state.branch}|${state.view.messages.length}|${state.view.running}|${state.status}`,
+      `${state.treeVersion}|${state.activeBranch}|${state.view.messages.length}|${state.view.running}|${state.status}`,
   ),
 );
 
@@ -34,7 +34,7 @@ export const sessionTreeAtom = Atom.family((sessionId: string) =>
 );
 
 /**
- * Text for a Session's root composer, by Session id: the owner's message a Branch or a Fork was made before. The
+ * Text for a Session's root composer, by Session id: the owner's message the active branch moved to before, or a Fork was made before. The
  * composer takes it, before what was typed, as it opens or at once if it is open.
  */
 export const composerPrefillAtom = Atom.make<Readonly<Record<string, string>>>({}).pipe(
@@ -61,17 +61,17 @@ export interface TreePoint {
 }
 
 /** Where to move the active branch, with what summary of the branch left. */
-export interface BranchMove extends TreePoint {
+export interface TreeMove extends TreePoint {
   readonly summary?: BranchSummaryRequest | undefined;
 }
 
 /**
- * Move Session `sessionId`'s active branch (`/tree`, Branch); an owner's message it was moved before goes back in the
+ * Move Session `sessionId`'s active branch (`/tree`, the Branch button); an owner's message it was moved before goes back in the
  * composer. Fails with why the Session refused it.
  */
-export const branchAtom = Atom.family((sessionId: string) =>
+export const navigateAtom = Atom.family((sessionId: string) =>
   appRuntime.fn(
-    replying(({ entryId, position, summary }: BranchMove, get: Atom.FnContext) =>
+    replying(({ entryId, position, summary }: TreeMove, get: Atom.FnContext) =>
       get.result(sessionClientAtom(sessionId)).pipe(
         Effect.flatMap((client) => client.navigate(entryId, position, summary)),
         Effect.tap((navigated) =>
@@ -157,3 +157,6 @@ export const pendingMoveAtom = Atom.make<PendingMove | null>(null);
 
 /** A Fork or Clone in a new Workspace waiting for the owner to name its branch, or null. */
 export const pendingForkAtom = Atom.make<Omit<ForkRequest, "newWorkspace" | "branch"> | null>(null);
+
+/** Whether a Fork or Clone is being made: the Registry answers once the new Session is filled, so one at a time. */
+export const forkingAtom = Atom.make(false);

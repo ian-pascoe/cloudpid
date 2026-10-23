@@ -89,7 +89,7 @@ nohooks() { git -c core.hooksPath=/dev/null "$@"; }
 # (carryWorkspaceScript), applied to the work tree at <dir>, then taken off the remote. Left there when they do not
 # apply, for the owner to take by hand.
 apply_carry() {
-  carry="refs/cloudpid/carry/$branch"
+  carry="${carryRef("$branch")}"
   found=$(git -C "$1" ls-remote origin "$carry") || return 1
   [ -n "$found" ] || return 0
   nohooks -C "$1" fetch --quiet origin "$carry" || return 1

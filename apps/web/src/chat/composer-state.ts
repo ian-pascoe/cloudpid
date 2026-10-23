@@ -146,8 +146,8 @@ export interface ComposerState {
    * While mounted, the `@` menu's query goes to the conversation's file search, and a menu that lists the catalog asks
    * for it as it opens (the catalog asks again only once it is stale). The root's composer takes back its Session's
    * first message when the Session refused it (`refusedFirstMessagesAtom`), before what was typed since, with why as
-   * the note, as a refused message with Attachments comes back; and the owner's message a Branch or a Fork was made
-   * before (`composerPrefillAtom`).
+   * the note, as a refused message with Attachments comes back; and the owner's message the active branch moved to
+   * before, or a Fork was made before (`composerPrefillAtom`).
    */
   readonly effects: Atom.Atom<void>;
 }
@@ -277,7 +277,7 @@ export const composerState = (source: ComposerSource): ComposerState => {
       { immediate: true },
     );
 
-    // The owner's message a Branch or a Fork was made before, ahead of what was typed.
+    // The owner's message the active branch moved to before, or a Fork was made before, ahead of what was typed.
     get.subscribe(
       composerPrefillAtom,
       (prefills) => {

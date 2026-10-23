@@ -121,10 +121,10 @@ const LiveSession = ({
 
   return (
     <ShownSession.Provider value={sessionId}>
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
-          <AssistantRuntimeProvider runtime={runtime}>
-            <TreeBarScope.Provider value={{ archived: archived !== undefined }}>
+      <TreeBarScope.Provider value={{ archived: archived !== undefined }}>
+        <div className="flex min-h-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <AssistantRuntimeProvider runtime={runtime}>
               <Thread
                 title={title}
                 subtitle={origin}
@@ -153,18 +153,18 @@ const LiveSession = ({
                 actions={
                   <>
                     <UsageBadge />
-                    <TreePaneToggle />
+                    {archived === undefined && <TreePaneToggle />}
                     <TasksPaneToggle />
                     {menu}
                   </>
                 }
               />
-            </TreeBarScope.Provider>
-          </AssistantRuntimeProvider>
+            </AssistantRuntimeProvider>
+          </div>
+          <PaneArea />
+          <TreeDialogs />
         </div>
-        <PaneArea />
-        <TreeDialogs />
-      </div>
+      </TreeBarScope.Provider>
     </ShownSession.Provider>
   );
 };

@@ -10,6 +10,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { liveCalls, type NestedCall, settledCalls } from "../chat/nested-calls.ts";
 import { type StartedSubagent, startedSubagent } from "../chat/subagent.ts";
+import { entryIdOf } from "./tree.ts";
 
 type ContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
@@ -279,7 +280,7 @@ const toAssistant = (turn: Turn): ThreadMessageLike => {
 export const answerOf = (custom: MessageCustom | undefined): number | undefined => {
   const answer = custom?.["answer"];
 
-  return Predicate.isString(answer) && /^\d+$/u.test(answer) ? Number(answer) : undefined;
+  return Predicate.isString(answer) ? entryIdOf(answer) : undefined;
 };
 
 /** The last turn: its tool calls without a result are running, and may have streamed output. */

@@ -132,6 +132,21 @@ export const branchThrough = (tree: SessionTree, id: number): number | undefined
   return best?.conversationId;
 };
 
+/** The pi entry ID a transcript message's ID names, or undefined for a message of no entry (one being streamed). */
+export const entryIdOf = (messageId: string): number | undefined =>
+  /^\d+$/u.test(messageId) ? Number(messageId) : undefined;
+
+/** The last answer that ends a Run on the active branch's path: the one whose bar offers Clone rather than Fork. */
+export const latestAnswer = (tree: SessionTree): number | undefined => {
+  const nodes = byId(tree);
+
+  return pathTo(tree, tree.leaf).findLast((id) => {
+    const node = nodes.get(id);
+
+    return node?.role === "assistant" && node.final;
+  });
+};
+
 /** The owner's messages on the active branch's path, oldest first: what `/fork` picks from. */
 export const ownerMessages = (tree: SessionTree): TreeNode[] => {
   const nodes = byId(tree);

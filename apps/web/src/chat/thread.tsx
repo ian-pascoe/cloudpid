@@ -7,12 +7,11 @@ import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
 import { MAX_TITLE_LENGTH, type SessionView, type TreeNode } from "@cloudpid/protocol";
-import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { panesAtom } from "../panes-state.ts";
 import { TREE_PANE } from "../panes.ts";
 import { ownerMessages } from "../session/tree.ts";
-import { useFork } from "./session-tree.tsx";
-import { sessionTreeAtom, type TreePoint } from "./tree-state.ts";
+import { useFork, useTree } from "./session-tree.tsx";
+import type { TreePoint } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
@@ -457,10 +456,7 @@ export const Thread = ({
   // A file dropped anywhere on the thread attaches to its composer.
   const dropZone = useRef<HTMLDivElement>(null);
 
-  const tree = useAtomValue(sessionTreeAtom(sessionId), (result) =>
-    AsyncResult.getOrElse(result, () => null),
-  );
-
+  const tree = useTree(sessionId);
   const actOnPanes = useAtomSet(panesAtom);
   const fork = useFork();
 

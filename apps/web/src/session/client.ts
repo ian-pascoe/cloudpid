@@ -497,7 +497,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "taskGraph"
         | "usage"
         | "todos"
-        | "branch"
+        | "activeBranch"
         | "treeVersion"
         | "copying"
       >
@@ -692,7 +692,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         root = message.root;
         update({
-          branch: root,
+          activeBranch: root,
           copying: message.copying === true,
           treeVersion: moved ? current.treeVersion + 1 : current.treeVersion,
         });
@@ -716,7 +716,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           watch();
         }
 
-        update({ branch: root, treeVersion: current.treeVersion + 1 });
+        update({ activeBranch: root, treeVersion: current.treeVersion + 1 });
 
         return;
       case "task_graph":

@@ -1601,7 +1601,7 @@ describe("a Session's tree", () => {
 
         yield* watching(latest());
 
-        expect(state()).toMatchObject({ branch: 1, treeVersion: 0, copying: false });
+        expect(state()).toMatchObject({ activeBranch: 1, treeVersion: 0, copying: false });
 
         latest().sent.length = 0;
         yield* latest().say({ type: "active_branch", conversationId: 7 });
@@ -1610,7 +1610,7 @@ describe("a Session's tree", () => {
 
         expect(unwatch).toMatchObject({ type: "unwatch", conversationId: 1 });
         expect(watch).toMatchObject({ type: "watch", conversationId: 7 });
-        expect(state()).toMatchObject({ branch: 7, treeVersion: 1 });
+        expect(state()).toMatchObject({ activeBranch: 7, treeVersion: 1 });
 
         // The new branch's events are the root view's; the old one's are not.
         yield* latest().say({ type: "result", id: watch?.id, result: null });

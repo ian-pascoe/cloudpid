@@ -315,8 +315,9 @@ const SettingsForm = ({
       </Section>
       <Section title="Session tree">
         <p className="text-sm text-muted-foreground">
-          Going to another point of a session's tree (<code>/tree</code>, Branch) asks whether to
-          carry a summary of the branch left, which is a model request on the session's usage.
+          Going to another point of a session's tree (<code>/tree</code>, the Branch button) asks
+          whether to carry a summary of the branch left, which is a model request on the session's
+          usage.
         </p>
         <label className="flex items-center gap-2 text-sm">
           <input

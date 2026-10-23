@@ -1,7 +1,16 @@
 // @effect-diagnostics preferEffectArray:off -- test code over native arrays.
 import type { SessionTree, TreeNode } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { branchThrough, ownerMessages, pathTo, shows, siblingsOf, treeRows } from "./tree.ts";
+import {
+  branchThrough,
+  entryIdOf,
+  latestAnswer,
+  ownerMessages,
+  pathTo,
+  shows,
+  siblingsOf,
+  treeRows,
+} from "./tree.ts";
 
 const node = (
   id: number,
@@ -118,5 +127,20 @@ describe("the Session tree's paths", () => {
 
   it("lists the owner's messages on the active branch's path", () => {
     expect(ownerMessages(tree).map((each) => each.id)).toEqual([1, 8]);
+  });
+
+  it("finds the active branch's latest answer, past a notice after it", () => {
+    expect(latestAnswer(tree)).toBe(9);
+    expect(
+      latestAnswer({ ...tree, nodes: [...tree.nodes, node(10, 9, 7, "notice")], leaf: 10 }),
+    ).toBe(9);
+    expect(latestAnswer({ ...tree, leaf: 8 })).toBe(4);
+  });
+});
+
+describe("a transcript message's entry", () => {
+  it("is the pi entry ID it names, and none for a message being streamed", () => {
+    expect(entryIdOf("42")).toBe(42);
+    expect(entryIdOf("streaming-1")).toBeUndefined();
   });
 });

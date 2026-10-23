@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- plain arrays of fixtures.
 import type { AgentState, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import { copiedDraft, copyAgent, exportPage, MAX_EXPORT_BYTES } from "./fork.ts";
+import { copiedDraft, copyAgent, exportPage, MAX_COPY_PAGE_SIZE } from "./fork.ts";
 
 type FixtureValue =
   | string
@@ -31,14 +31,14 @@ describe("a page of the entries a Fork copies", () => {
   });
 
   it("stops before the entry that does not fit, but always holds one", () => {
-    const big = (id: number) => entry(id, "z".repeat(MAX_EXPORT_BYTES / 2));
+    const big = (id: number) => entry(id, "z".repeat(MAX_COPY_PAGE_SIZE / 2));
 
     const page = exportPage([big(1), big(2), big(3)], false);
 
     expect(page.entries.map((each) => each.id)).toEqual([1]);
     expect(page.next).toBe(1);
 
-    const huge = exportPage([entry(1, "z".repeat(MAX_EXPORT_BYTES + 1))], false);
+    const huge = exportPage([entry(1, "z".repeat(MAX_COPY_PAGE_SIZE + 1))], false);
 
     expect(huge.entries).toHaveLength(1);
     expect(huge.next).toBeNull();

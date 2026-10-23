@@ -125,11 +125,13 @@ export const branchText = (entries: ReadonlyArray<EntryRecord>): string => {
 
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     const part = parts[index] ?? "";
+    // Each part after the first is joined with a blank line.
+    const cost = part.length + (kept.length === 0 ? 0 : 2);
 
-    if (size + part.length > MAX_BRANCH_TEXT) break;
+    if (size + cost > MAX_BRANCH_TEXT) break;
 
     kept.unshift(part);
-    size += part.length + 2;
+    size += cost;
   }
 
   return kept.join("\n\n");

@@ -407,20 +407,21 @@ export const serveRegistryRpc = <R = never>(
         yield* sessions.importStart(target);
 
         const through = plan.through;
-        let after: number | null = null;
 
-        while (through !== null) {
-          const page: ExportPage = yield* sessions.exportEntries(source, {
-            conversationId: plan.conversationId,
-            through,
-            after,
-          });
+        // A Fork before the Session's first message copies no entry.
+        if (through !== null) {
+          let after: number | null = null;
 
-          yield* sessions.importEntries(target, page.entries);
+          do {
+            const page: ExportPage = yield* sessions.exportEntries(source, {
+              conversationId: plan.conversationId,
+              through,
+              after,
+            });
 
-          if (page.next === null) break;
-
-          after = page.next;
+            yield* sessions.importEntries(target, page.entries);
+            after = page.next;
+          } while (after !== null);
         }
 
         yield* sessions.importFinish(target, plan);

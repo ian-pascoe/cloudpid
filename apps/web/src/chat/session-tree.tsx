@@ -34,6 +34,8 @@ import { exitFailure, messageOf } from "../registry.ts";
 import { sessionStateAtom, sessionStatusAtom, sessionViewAtom } from "../session/atoms.ts";
 import {
   branchThrough,
+  entryIdOf,
+  latestAnswer,
   siblingsOf,
   TREE_FILTERS,
   type TreeFilter,
@@ -41,8 +43,9 @@ import {
 } from "../session/tree.ts";
 import { useShownSessionId } from "./conversation.ts";
 import {
-  branchAtom,
+  forkingAtom,
   forkSessionAtom,
+  navigateAtom,
   pendingForkAtom,
   pendingMoveAtom,
   sessionTreeAtom,
@@ -59,8 +62,10 @@ export const TreeBarScope = createContext<{ readonly archived: boolean } | null>
 
 const WHILE_BUSY = "Wait for the run to end, or stop it, to move to another branch.";
 
+const ARCHIVED = "Unarchive the session to move to another branch.";
+
 /** The Session tree as of its last answer, or null until it comes. */
-const useTree = (sessionId: string): SessionTree | null =>
+export const useTree = (sessionId: string): SessionTree | null =>
   useAtomValue(sessionTreeAtom(sessionId), (result) => AsyncResult.getOrElse(result, () => null));
 
 /** Whether the active branch is busy: a Run in progress, so it cannot be left. */
@@ -75,7 +80,7 @@ export const useMove = (): ((point: TreePoint) => void) => {
   const sessionId = useShownSessionId();
   const skip = useAtomValue(skipSummaryPromptAtom);
   const setPending = useAtomSet(pendingMoveAtom);
-  const branch = useCall(branchAtom(sessionId));
+  const navigate = useCall(navigateAtom(sessionId));
   const show = useShowFailure();
 
   return (point) => {
@@ -86,7 +91,7 @@ export const useMove = (): ((point: TreePoint) => void) => {
     }
 
     show(null);
-    void branch(point).then((exit) => {
+    void navigate(point).then((exit) => {
       show(exitFailure(exit));
     });
   };
@@ -97,9 +102,12 @@ export const useFork = (): ((point: TreePoint | undefined, newWorkspace: boolean
   const sessionId = useShownSessionId();
   const fork = useCall(forkSessionAtom);
   const setPending = useAtomSet(pendingForkAtom);
+  const [forking, setForking] = useAtom(forkingAtom);
   const show = useShowFailure();
 
   return (point, newWorkspace) => {
+    if (forking) return;
+
     if (newWorkspace) {
       setPending({ source: sessionId, point });
 
@@ -107,7 +115,9 @@ export const useFork = (): ((point: TreePoint | undefined, newWorkspace: boolean
     }
 
     show(null);
+    setForking(true);
     void fork({ source: sessionId, point }).then((exit) => {
+      setForking(false);
       show(exitFailure(exit));
     });
   };
@@ -115,8 +125,10 @@ export const useFork = (): ((point: TreePoint | undefined, newWorkspace: boolean
 
 /** The ‹ n/m › between a node's sibling branches: each lands on the branch through it that was active last. */
 const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
+  const scope = use(TreeBarScope);
   const sessionId = useShownSessionId();
-  const busy = useBusy(sessionId);
+  // An archived Session stays where it is: it only forks and clones.
+  const busy = useBusy(sessionId) || scope?.archived === true;
   const switchBranch = useCall(switchBranchAtom(sessionId));
   const show = useShowFailure();
   const place = siblingsOf(tree, id);
@@ -136,7 +148,7 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
     });
   };
 
-  const title = busy ? WHILE_BUSY : undefined;
+  const title = scope?.archived === true ? ARCHIVED : busy ? WHILE_BUSY : undefined;
 
   return (
     <span className="inline-flex items-center text-xs text-muted-foreground tabular-nums">
@@ -152,7 +164,7 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
       >
         <ChevronLeft className="size-3.5" aria-hidden />
       </button>
-      <span aria-label={`Branch ${index + 1} of ${siblings.length}`}>
+      <span aria-label={`Session branch ${index + 1} of ${siblings.length}`}>
         {index + 1}/{siblings.length}
       </span>
       <button
@@ -186,6 +198,7 @@ const Bar = ({ id, owner }: { id: number; owner: boolean }) => {
   const tree = useTree(sessionId);
   const busy = useBusy(sessionId);
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+  const forking = useAtomValue(forkingAtom);
   const move = useMove();
   const fork = useFork();
 
@@ -201,7 +214,7 @@ const Bar = ({ id, owner }: { id: number; owner: boolean }) => {
     return null;
   }
 
-  const latest = !owner && tree.leaf === id;
+  const latest = !owner && latestAnswer(tree) === id;
   const point: TreePoint = { entryId: id, position: owner ? "before" : "at" };
   const forkWord = latest ? "Clone" : "Fork";
   const forkPoint = latest ? undefined : point;
@@ -235,15 +248,17 @@ const Bar = ({ id, owner }: { id: number; owner: boolean }) => {
         <button
           type="button"
           className={barButton}
-          disabled={refusedWhileRunning}
+          disabled={refusedWhileRunning || forking}
           title={
             refusedWhileRunning
               ? "Wait for the run to end, or stop it, to clone the session."
-              : clone
-                ? "Clone: a new session with this conversation, in this workspace"
-                : owner
-                  ? "Fork: a new session from before this message, in this workspace"
-                  : "Fork: a new session through this answer, in this workspace"
+              : forking
+                ? "Making the new session…"
+                : clone
+                  ? "Clone: a new session with this conversation, in this workspace"
+                  : owner
+                    ? "Fork: a new session from before this message, in this workspace"
+                    : "Fork: a new session through this answer, in this workspace"
           }
           onClick={() => {
             fork(forkPoint, false);
@@ -259,7 +274,7 @@ const Bar = ({ id, owner }: { id: number; owner: boolean }) => {
           className="size-7"
         >
           <MenuItem
-            disabled={busy}
+            disabled={busy || forking}
             title={busy ? "Wait for the run to end, or stop it, to carry the files." : undefined}
             onSelect={() => {
               fork(forkPoint, true);
@@ -275,8 +290,11 @@ const Bar = ({ id, owner }: { id: number; owner: boolean }) => {
 };
 
 /** The bar under an owner's message: its id is its pi entry's. */
-export const OwnerMessageBar = ({ messageId }: { messageId: string }) =>
-  /^\d+$/u.test(messageId) ? <Bar id={Number(messageId)} owner /> : null;
+export const OwnerMessageBar = ({ messageId }: { messageId: string }) => {
+  const id = entryIdOf(messageId);
+
+  return id === undefined ? null : <Bar id={id} owner />;
+};
 
 /** The bar under an answer, given the entry it ended with. */
 export const AnswerBar = ({ answer }: { answer: number | undefined }) =>
@@ -287,10 +305,11 @@ export const NoticeChevrons = ({ messageId }: { messageId: string }) => {
   const scope = use(TreeBarScope);
   const sessionId = useShownSessionId();
   const tree = useTree(sessionId);
+  const id = entryIdOf(messageId);
 
-  if (scope === null || tree === null || !/^\d+$/u.test(messageId)) return null;
+  if (scope === null || tree === null || id === undefined) return null;
 
-  return <Chevrons tree={tree} id={Number(messageId)} />;
+  return <Chevrons tree={tree} id={id} />;
 };
 
 /** The filter the Session tree Pane shows with. */
@@ -315,7 +334,8 @@ const TreeList = () => {
   const sessionId = useShownSessionId();
   const result = useAtomValue(sessionTreeAtom(sessionId));
   const [filter, setFilter] = useAtom(PaneFilter.use());
-  const busy = useBusy(sessionId);
+  const archived = use(TreeBarScope)?.archived === true;
+  const busy = useBusy(sessionId) || archived;
   const move = useMove();
   const tree = AsyncResult.getOrElse(result, () => null);
 
@@ -351,7 +371,9 @@ const TreeList = () => {
           ))}
         </NativeSelect>
       </label>
-      {busy && <p className="mb-2 text-xs text-muted-foreground">{WHILE_BUSY}</p>}
+      {busy && (
+        <p className="mb-2 text-xs text-muted-foreground">{archived ? ARCHIVED : WHILE_BUSY}</p>
+      )}
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nothing yet: send a message to start.</p>
       ) : (
@@ -371,7 +393,12 @@ const TreeList = () => {
                       : "Continue from here"
                   }
                   onClick={() => {
-                    move({ entryId: node.id, position: node.role === "user" ? "before" : "at" });
+                    const position = node.role === "user" ? "before" : "at";
+
+                    // Just after the last node is where the active branch already is.
+                    if (leaf && position === "at") return;
+
+                    move({ entryId: node.id, position });
                   }}
                   className={cn(
                     "flex w-full min-w-0 items-baseline gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent disabled:pointer-events-none",
@@ -442,7 +469,7 @@ const SummaryForm = ScopedAtom.make(() =>
 const SummaryChoices = ({ close }: { close: () => void }) => {
   const pending = useAtomValue(pendingMoveAtom);
   const [{ focus, running, failure }, setForm] = useAtom(SummaryForm.use());
-  const branch = useCall(branchAtom(pending?.sessionId ?? ""));
+  const navigate = useCall(navigateAtom(pending?.sessionId ?? ""));
 
   if (pending === null) return null;
 
@@ -452,13 +479,15 @@ const SummaryChoices = ({ close }: { close: () => void }) => {
 
   const go = (summary: { readonly instructions?: string } | undefined) => {
     setForm({ focus, running: true, failure: null });
-    void branch({ entryId: pending.entryId, position: pending.position, summary }).then((exit) => {
-      const why = exitFailure(exit);
+    void navigate({ entryId: pending.entryId, position: pending.position, summary }).then(
+      (exit) => {
+        const why = exitFailure(exit);
 
-      setForm({ focus, running: false, failure: why });
+        setForm({ focus, running: false, failure: why });
 
-      if (why === null) close();
-    });
+        if (why === null) close();
+      },
+    );
   };
 
   return (
@@ -591,7 +620,7 @@ const ForkFields = ({ close }: { close: () => void }) => {
       }}
     >
       <label className="flex flex-col gap-1.5 text-sm">
-        Branch
+        Git branch
         <Input
           autoFocus
           value={branch}

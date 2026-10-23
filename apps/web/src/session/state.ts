@@ -107,13 +107,13 @@ export interface SessionState {
   readonly taskGraph: TaskGraphSummary | null;
   /** What the Session has spent and its spend limit, as of the last message; null until it sends one. */
   readonly usage: SessionUsage | null;
-  /** The root conversation's Todo List, as of the last one the Session sent; empty until it sends one. */
+  /** The active branch's Todo List, as of the last one the Session sent; empty until it sends one. */
   readonly todos: readonly TodoTask[];
   /**
    * The active Session branch's conversation (GLOSSARY.md → Session branch), the one the root view shows; null until the
    * Session says.
    */
-  readonly branch: number | null;
+  readonly activeBranch: number | null;
   /** How many times the active branch changed, or a branch was made, since the client started: a tree shown is stale. */
   readonly treeVersion: number;
   /** Whether the Session is still being filled from the one it is a Fork or Clone of: it takes no message until done. */
@@ -135,7 +135,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   taskGraph: null,
   usage: null,
   todos: [],
-  branch: null,
+  activeBranch: null,
   treeVersion: 0,
   copying: false,
 };

@@ -17,7 +17,7 @@ import type {
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 /** About the most one page of copied entries holds, in UTF-16 code units of their JSON: well under an RPC's 32 MiB. */
-export const MAX_EXPORT_BYTES = 8 * 1024 * 1024;
+export const MAX_COPY_PAGE_SIZE = 8 * 1024 * 1024;
 
 /** The most entries one page reads. */
 export const EXPORT_PAGE_ENTRIES = 200;
@@ -47,7 +47,7 @@ export type ExportPage = {
 };
 
 /**
- * `entries` cut to a page: as many as fit in `MAX_EXPORT_BYTES` (always one), and where the next page starts, or null
+ * `entries` cut to a page: as many as fit in `MAX_COPY_PAGE_SIZE` (always one), and where the next page starts, or null
  * when they are all of what is left (`more` false) and all fit.
  */
 export const exportPage = (entries: ReadonlyArray<EntryRecord>, more: boolean): ExportPage => {
@@ -55,12 +55,12 @@ export const exportPage = (entries: ReadonlyArray<EntryRecord>, more: boolean): 
   let size = 0;
 
   for (const entry of entries) {
-    const bytes = JSON.stringify(entry).length;
+    const length = JSON.stringify(entry).length;
 
-    if (kept.length > 0 && size + bytes > MAX_EXPORT_BYTES) break;
+    if (kept.length > 0 && size + length > MAX_COPY_PAGE_SIZE) break;
 
     kept.push(entry);
-    size += bytes;
+    size += length;
   }
 
   const last = kept.at(-1);

@@ -308,9 +308,9 @@ export type SessionHostOptions<R = never> = {
   readonly expandTimeout?: Duration.Input;
 };
 
-/** User input for the root conversation, or for the conversation of one of its subagents. */
+/** User input for the active branch, or for the conversation of one of its subagents. */
 export type Prompt = {
-  /** The conversation to submit to: the root by default, or a live subagent's; anything else fails. */
+  /** The conversation to submit to: the active branch's by default, or a live subagent's; anything else fails. */
   readonly conversationId?: ConversationId;
   /** Submitting the same `requestId` again finds the first submission. */
   readonly requestId?: string;
@@ -324,7 +324,7 @@ export type SlashCommand = {
   /** Its name, without the `/`. */
   readonly name: string;
   readonly args: string;
-  /** The conversation it is for: the root by default, or a live subagent's. */
+  /** The conversation it is for: the active branch's by default, or a live subagent's. */
   readonly conversationId?: ConversationId;
 };
 
@@ -332,7 +332,7 @@ export type SlashCommand = {
 export type FileSearch = {
   /** What follows the `@`. */
   readonly query: string;
-  /** The conversation whose directory to search: the root by default, or a live subagent's. */
+  /** The conversation whose directory to search: the active branch's by default, or a live subagent's. */
   readonly conversationId?: ConversationId;
 };
 
@@ -340,13 +340,13 @@ export type FileSearch = {
 export type HistoryRequest = {
   /** The entry the page ends before. */
   readonly before: number;
-  /** The conversation: the root by default, or a live subagent's. */
+  /** The conversation: the active branch's by default, or a live subagent's. */
   readonly conversationId?: ConversationId;
 };
 
 /** What an abort reaches. */
 export type AbortOptions = {
-  /** The conversation to abort: the root by default. */
+  /** The conversation to abort: the active branch's by default. */
   readonly conversationId?: ConversationId;
   /** Also stop every subagent below it, and drop the reports they held. */
   readonly subagents?: boolean;
@@ -397,7 +397,7 @@ export class SessionError extends Schema.TaggedError<
 }) {}
 
 export type SessionHostService = {
-  /** Durably admit `prompt` to its conversation (the root's by default) and return its submission ID. */
+  /** Durably admit `prompt` to its conversation (the active branch's by default) and return its submission ID. */
   readonly submit: (prompt: Prompt) => Effect.Effect<number, SessionError>;
   /** Submit `prompt` and wait for its answer. */
   readonly prompt: (prompt: Prompt) => Effect.Effect<Answer, SessionError>;
@@ -435,19 +435,19 @@ export type SessionHostService = {
   /** Take the agent and documents the plan carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
   /**
-   * Pick the root conversation's model and thinking level, from its next request on: a field left out stays as it is,
-   * and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
+   * Pick the root agent's model and thinking level (the active branch's), from its next request on: a field left out
+   * stays as it is, and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
    */
   readonly configure: (change: AgentChange) => Effect.Effect<void, SessionError>;
   /**
-   * Read the settings now and bring the root's agent to the default in force, unless the Session picked its own, so
+   * Read the settings now and bring the active branch's agent to the default in force, unless the Session picked its own, so
    * what a client is shown is what the next request runs on.
    */
   readonly sync: Effect.Effect<void, SessionError>;
   /** Which of its model and thinking level the Session picked itself; the rest follows the default. */
   readonly picks: Effect.Effect<Picks>;
   /**
-   * Abort the work of the root conversation, or of the subagent's that `conversationId` names (anything else fails),
+   * Abort the work of the active branch, or of the conversation `conversationId` names (anything else fails),
    * and withdraw its queued input, once it is idle. Subagents below it keep working unless `subagents` is true.
    */
   readonly abort: (options?: AbortOptions) => Effect.Effect<void, SessionError>;
@@ -481,7 +481,7 @@ export type SessionHostService = {
     conversationId: ConversationId,
   ) => Stream.Stream<ReadonlyArray<TodoTask>, SessionError>;
   /**
-   * What the composer of the root conversation, or of the subagent's that `conversationId` names, offers: the Session's
+   * What the composer of the active branch, or of the subagent's that `conversationId` names, offers: the Session's
    * Slash commands, and the Prompt templates and Skills of the conversation's directory, nearest first.
    */
   readonly catalog: (conversationId?: ConversationId) => Effect.Effect<Catalog, SessionError>;
@@ -494,7 +494,7 @@ export type SessionHostService = {
    */
   readonly files: (search: FileSearch) => Effect.Effect<FileMatches, SessionError>;
   /**
-   * A page of the History of the root conversation, or of the subagent's that `conversationId` names, before entry
+   * A page of the History of the active branch, or of the conversation `conversationId` names, before entry
    * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
    */
   readonly history: (request: HistoryRequest) => Effect.Effect<HistoryPage, SessionError>;
@@ -1959,10 +1959,6 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         }),
       );
 
-      const left = Option.getOrUndefined(
-        Arr.findFirst(branches, (branch) => branch.id === current.id),
-      );
-
       const abandoned =
         request.summary === undefined ? [] : abandonedEntries(branches, current.id, point);
 
@@ -2007,10 +2003,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             await tx.appendEntry(id, {
               kind: BRANCH_SUMMARY_KIND,
               model: [summaryMessage(summary, now)],
-              data: {
-                notice: "Branch summary",
-                from: left === undefined ? null : tipOf(left),
-              },
+              data: { notice: "Branch summary" },
             });
           }
 
@@ -2065,16 +2058,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Effect.gen(function* () {
       const conversation = yield* active;
 
-      if (request.idle) {
-        const live = yield* attempt("snapshot", () =>
-          harness.harness.snapshot(LiveDoc, conversation.id, context),
-        );
+      // A Clone, or a Fork that carries the files, takes the branch as it stands: not while it is about to change.
+      const busy = request.idle ? yield* busyReason(conversation) : undefined;
 
-        if (live?.run !== undefined) {
-          return yield* refuse(
-            "The session's Run is in progress: stop it or wait for it to end first.",
-          );
-        }
+      if (busy !== undefined) {
+        return yield* refuse(
+          `The session cannot be copied while ${busy}: stop it or wait for it to end.`,
+        );
       }
 
       /** The newest entries of the active branch's path at or before `max`. */
