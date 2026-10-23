@@ -229,9 +229,17 @@ describe("the draft's Attachments", () => {
     registry.mount(pathAtom);
     registry.mount(pendingFirstMessagesAtom);
     registry.mount(refusedFirstMessagesAtom);
-    registry.mount(draftAttachmentsAtom);
-    registry.mount(addDraftAttachmentsAtom);
-    registry.mount(sendDraftAtom);
+
+    // What the draft page reads, and lets go of when the owner leaves it.
+    const page = [
+      registry.mount(draftAttachmentsAtom),
+      registry.mount(addDraftAttachmentsAtom),
+      registry.mount(sendDraftAtom),
+    ];
+
+    const leave = Effect.sync(() => {
+      for (const unmount of page) unmount();
+    }).pipe(Effect.andThen(settle));
 
     const add = (...files: File[]) =>
       Effect.sync(() => {
@@ -241,7 +249,7 @@ describe("the draft's Attachments", () => {
     const summary = () =>
       registry.get(draftAttachmentsAtom).items.map((item) => `${item.name} ${item.status}`);
 
-    return { registry, uploads, told, add, summary };
+    return { registry, uploads, told, add, summary, leave };
   };
 
   const file = (name: string) => new File(["x"], name, { type: "text/plain" });
@@ -306,27 +314,59 @@ describe("the draft's Attachments", () => {
     }),
   );
 
-  it.effect("go back to the Session's composer with the text when one does not upload", () =>
-    Effect.gen(function* () {
-      const { registry, uploads, add } = attaching();
-      const notes = file("notes.txt");
+  it.effect(
+    "wait for every upload, delete the ones that did, and go back to the Session's composer when one did not",
+    () =>
+      Effect.gen(function* () {
+        const { registry, uploads, add } = attaching();
+        const notes = file("notes.txt");
+        const plan = file("plan.md");
+        const todo = file("todo.txt");
 
-      yield* add(notes);
+        yield* add(notes, plan, todo);
+        registry.set(sendDraftAtom, draft({ text: "Read this" }));
+        yield* settle;
+        yield* uploads.started[0]!.finish();
+        yield* uploads.started[1]!.fail("The upload failed (500).");
+
+        // The last one still uploads: nothing is decided yet.
+        expect(registry.get(sendDraftAtom).waiting).toBe(true);
+
+        yield* uploads.started[2]!.finish();
+        yield* settled(registry, sendDraftAtom);
+
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({});
+        expect(registry.get(refusedFirstMessagesAtom)).toEqual({
+          s1: {
+            text: "Read this",
+            reason:
+              "The session was made, but not every attachment uploaded: plan.md (The upload failed (500).). Send the message again.",
+            files: [notes, plan, todo],
+          },
+        });
+        // The message is not sent, so the files that went up are not left behind.
+        expect(uploads.removed).toEqual(["s1/notes.txt", "s1/todo.txt"]);
+        expect(registry.get(pathAtom)).toBe("/sessions/s1");
+      }),
+  );
+
+  it.effect("go on uploading when the page is left, and leave the owner where they went", () =>
+    Effect.gen(function* () {
+      const { registry, uploads, add, leave } = attaching();
+
+      yield* add(file("notes.txt"));
       registry.set(sendDraftAtom, draft({ text: "Read this" }));
       yield* settle;
-      yield* uploads.started[0]!.fail("The upload failed (500).");
+      // The owner opens another Session while it uploads; nothing reads the draft any more.
+      registry.set(pathAtom, "/sessions/other");
+      yield* leave;
+      yield* uploads.started[0]!.finish();
       yield* settled(registry, sendDraftAtom);
 
-      expect(registry.get(pendingFirstMessagesAtom)).toEqual({});
-      expect(registry.get(refusedFirstMessagesAtom)).toEqual({
-        s1: {
-          text: "Read this",
-          reason:
-            "The session was made, but not every attachment uploaded: notes.txt (The upload failed (500).). Send the message again.",
-          files: [notes],
-        },
+      expect(registry.get(pendingFirstMessagesAtom)).toMatchObject({
+        s1: { text: "Read this" },
       });
-      expect(registry.get(pathAtom)).toBe("/sessions/s1");
+      expect(registry.get(pathAtom)).toBe("/sessions/other");
     }),
   );
 });

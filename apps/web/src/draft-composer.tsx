@@ -60,7 +60,10 @@ const draftDragAtom = Atom.make(false);
 
 /** A quiet control in the strip under the box: an icon and a value, which opens a menu or a small form. */
 const chip =
-  "touch-target inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5 [&_svg]:shrink-0";
+  "touch-target inline-flex h-8 min-w-0 shrink items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-expanded:bg-accent aria-expanded:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5 [&_svg]:shrink-0";
+
+/** The width of the pickers' panels: never wider than a 320 px screen leaves room for. */
+const panelWidth = "w-[min(20rem,calc(100vw-1rem))]";
 
 /** An Environment's Repos, by name, for the line under its name. */
 const reposOf = (environment: Pick<EnvironmentRecord, "repos">): string =>
@@ -92,7 +95,7 @@ const EnvironmentPicker = ({
     disabled={disabled}
     icon={<span className="truncate">{name}</span>}
     className="size-auto max-w-full gap-1 rounded-sm px-0 text-[length:inherit] font-medium text-foreground underline decoration-foreground/30 decoration-dotted underline-offset-[6px] hover:bg-transparent hover:text-foreground hover:decoration-foreground hover:decoration-solid aria-expanded:decoration-foreground aria-expanded:decoration-solid focus-visible:outline-2 focus-visible:outline-ring"
-    menuClassName="w-72 text-left"
+    menuClassName={cn(panelWidth, "text-left")}
   >
     <MenuLabel>Environments</MenuLabel>
     {(environments ?? []).map((known) => (
@@ -106,7 +109,14 @@ const EnvironmentPicker = ({
         <FolderGit2 className="mt-0.5 self-start text-muted-foreground" aria-hidden />
         <span className="flex min-w-0 flex-col">
           <span className="truncate">{known.name}</span>
-          <span className="truncate text-xs text-muted-foreground">{reposOf(known)}</span>
+          <span
+            className={cn(
+              "truncate text-xs text-muted-foreground",
+              known.repos.length > 0 && "font-mono",
+            )}
+          >
+            {reposOf(known)}
+          </span>
         </span>
       </MenuItem>
     ))}
@@ -153,8 +163,8 @@ const WorkspacePicker = ({
           <ChevronDown className="opacity-60" aria-hidden />
         </>
       }
-      className={cn(chip, "size-auto h-7 justify-start")}
-      menuClassName="w-80"
+      className={cn(chip, "size-auto h-8 justify-start")}
+      menuClassName={panelWidth}
     >
       <MenuItem
         checked={picked === undefined}
@@ -195,27 +205,70 @@ const WorkspacePicker = ({
   );
 };
 
+/** A branch field of the draft: what is typed, why it cannot be used (or null), and how to change it. */
+interface BranchInput {
+  readonly value: string;
+  readonly problem: string | null;
+  readonly onChange: (value: string) => void;
+}
+
+/** One field of the branch form: its label, the field in mono, and under it why it is wrong or what empty means. */
+const BranchField = ({
+  label,
+  field,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  field: BranchInput;
+  placeholder: string;
+  hint: string;
+}) => {
+  const id = useId();
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={id} className="text-xs font-medium">
+        {label}
+      </label>
+      <Input
+        id={id}
+        value={field.value}
+        onChange={(event) => {
+          field.onChange(event.target.value);
+        }}
+        placeholder={placeholder}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        aria-invalid={field.problem !== null}
+        aria-describedby={`${id}-note`}
+        className="font-mono aria-invalid:border-destructive"
+      />
+      <p
+        id={`${id}-note`}
+        className={cn(
+          "text-xs",
+          field.problem === null ? "text-muted-foreground" : "text-destructive",
+        )}
+      >
+        {field.problem ?? hint}
+      </p>
+    </div>
+  );
+};
+
 /** A new Workspace's branch and the branch it starts from, as a chip that opens a small form of both. */
 const BranchPicker = ({
   branch,
   base,
-  branchProblem,
-  baseProblem,
   disabled,
-  onBranch,
-  onBase,
 }: {
-  branch: string;
-  base: string;
-  branchProblem: string | null;
-  baseProblem: string | null;
+  branch: BranchInput;
+  base: BranchInput;
   disabled: boolean;
-  onBranch: (branch: string) => void;
-  onBase: (base: string) => void;
 }) => {
-  const branchId = useId();
-  const baseId = useId();
-  const invalid = branchProblem !== null || baseProblem !== null;
+  const invalid = branch.problem !== null || base.problem !== null;
 
   return (
     <Popover
@@ -226,74 +279,30 @@ const BranchPicker = ({
       trigger={
         <>
           {invalid ? <AlertCircle aria-hidden /> : <GitBranch aria-hidden />}
-          <span className="truncate font-mono">{branch.trim() || "cloudpid/<id>"}</span>
+          <span className="truncate font-mono">{branch.value.trim() || "cloudpid/<id>"}</span>
           <span className="hidden shrink-0 sm:inline">from</span>
           <span className="hidden truncate font-mono sm:inline">
-            {base.trim() || "default branch"}
+            {base.value.trim() || "default branch"}
           </span>
           <ChevronDown className="opacity-60" aria-hidden />
         </>
       }
       className={cn(chip, invalid && "text-destructive hover:text-destructive")}
-      panelClassName="w-80 p-3"
+      panelClassName={cn(panelWidth, "p-3")}
     >
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor={branchId} className="text-xs font-medium">
-            Branch
-          </label>
-          <Input
-            id={branchId}
-            value={branch}
-            onChange={(event) => {
-              onBranch(event.target.value);
-            }}
-            placeholder="cloudpid/<id>"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            aria-invalid={branchProblem !== null}
-            aria-describedby={`${branchId}-note`}
-            className="h-8 font-mono text-xs aria-invalid:border-destructive"
-          />
-          <p
-            id={`${branchId}-note`}
-            className={cn(
-              "text-xs",
-              branchProblem === null ? "text-muted-foreground" : "text-destructive",
-            )}
-          >
-            {branchProblem ?? "The workspace's own branch. Leave it empty for cloudpid/<id>."}
-          </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor={baseId} className="text-xs font-medium">
-            Start from
-          </label>
-          <Input
-            id={baseId}
-            value={base}
-            onChange={(event) => {
-              onBase(event.target.value);
-            }}
-            placeholder="default branch"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            aria-invalid={baseProblem !== null}
-            aria-describedby={`${baseId}-note`}
-            className="h-8 font-mono text-xs aria-invalid:border-destructive"
-          />
-          <p
-            id={`${baseId}-note`}
-            className={cn(
-              "text-xs",
-              baseProblem === null ? "text-muted-foreground" : "text-destructive",
-            )}
-          >
-            {baseProblem ?? "Each repo's default branch when left empty."}
-          </p>
-        </div>
+        <BranchField
+          label="Branch"
+          field={branch}
+          placeholder="cloudpid/<id>"
+          hint="The workspace's own branch. Leave it empty for cloudpid/<id>."
+        />
+        <BranchField
+          label="Start from"
+          field={base}
+          placeholder="default branch"
+          hint="Each repo's default branch when left empty."
+        />
       </div>
     </Popover>
   );
@@ -325,12 +334,20 @@ export const DraftComposer = () => {
   const picker = useRef<HTMLInputElement>(null);
   const noteId = useId();
 
-  useFileDrop(page, addAttachments, setDragging);
-
   const workspaces = (allWorkspaces ?? []).filter((known) => known.environment === environment);
   const workspace = effectiveWorkspace(picked, workspaces);
   const input: DraftInput = { text, environment, workspace, branch, base };
   const sending = sent.waiting;
+
+  // A file dropped while the draft is sent would miss its message.
+  useFileDrop(
+    page,
+    (files) => {
+      if (!sending) addAttachments(files);
+    },
+    setDragging,
+  );
+
   const branchProblem = draftBranchProblem(input);
   const baseProblem = draftBaseProblem(input);
   const attached = attachments.items.length > 0;
@@ -394,7 +411,7 @@ export const DraftComposer = () => {
       </div>
       <div className="m-auto flex w-full max-w-3xl flex-col gap-8 px-4 pt-6 pb-[12vh]">
         <div className="flex flex-col items-center gap-3 text-center">
-          <h1 className="flex max-w-full flex-wrap items-baseline justify-center gap-x-2.5 gap-y-1 text-2xl font-normal tracking-tight sm:text-3xl">
+          <h1 className="flex max-w-full flex-wrap items-baseline justify-center gap-x-2.5 gap-y-1 text-2xl font-normal tracking-tight">
             <span>What should we work on in</span>
             <span className="flex min-w-0 max-w-full items-baseline">
               <EnvironmentPicker
@@ -411,7 +428,7 @@ export const DraftComposer = () => {
         <form onSubmit={submit} className="relative flex flex-col">
           <div
             className={cn(
-              "relative z-10 flex flex-col rounded-2xl border bg-background shadow-[0_12px_32px_-16px_rgb(0_0_0/0.25)] transition-colors focus-within:border-ring/60 dark:shadow-[0_14px_32px_-18px_rgb(0_0_0/0.75)]",
+              "relative z-10 flex flex-col rounded-lg border bg-background transition-colors focus-within:border-ring",
               dragging && "border-ring bg-muted",
             )}
           >
@@ -456,21 +473,11 @@ export const DraftComposer = () => {
                 onClick={() => {
                   picker.current?.click();
                 }}
-                className="touch-target inline-flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4"
+                className="touch-target inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4"
               >
                 <Paperclip aria-hidden />
               </button>
-              <p
-                id={noteId}
-                role="status"
-                title={status ?? undefined}
-                className={cn(
-                  "min-w-0 flex-1 truncate px-1 text-xs",
-                  fieldProblem === null ? "text-muted-foreground" : "text-destructive",
-                )}
-              >
-                {status}
-              </p>
+              <span className="flex-1" />
               <button
                 type="submit"
                 disabled={!sendable}
@@ -480,14 +487,14 @@ export const DraftComposer = () => {
                 className="touch-target inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4"
               >
                 {sending ? (
-                  <Loader2 className="animate-spin" aria-hidden />
+                  <Loader2 className="motion-safe:animate-spin" aria-hidden />
                 ) : (
                   <ArrowUp aria-hidden />
                 )}
               </button>
             </div>
           </div>
-          <div className="relative mx-3 -mt-3 flex min-w-0 items-center gap-1 rounded-b-xl border border-t-0 bg-muted/60 px-1.5 pt-4 pb-1 sm:mx-5">
+          <div className="relative mx-3 -mt-3 flex min-w-0 items-center gap-1 rounded-b-lg border border-t-0 bg-muted/60 px-1.5 pt-4 pb-1 sm:mx-5">
             <WorkspacePicker
               workspace={workspace}
               workspaces={workspaces}
@@ -496,21 +503,31 @@ export const DraftComposer = () => {
             />
             {workspace === NEW_WORKSPACE && (
               <BranchPicker
-                branch={branch}
-                base={base}
-                branchProblem={branchProblem}
-                baseProblem={baseProblem}
+                branch={{ value: branch, problem: branchProblem, onChange: setBranch }}
+                base={{ value: base, problem: baseProblem, onChange: setBase }}
                 disabled={sending}
-                onBranch={setBranch}
-                onBase={setBase}
               />
             )}
           </div>
         </form>
-        {problem !== null && (
-          <p role="alert" className="-mt-4 px-1 text-sm whitespace-pre-wrap text-destructive">
-            {problem}
-          </p>
+        {/* Under the box: why Send waits, in Faded Ink, or what is wrong, in Brick Red. */}
+        {(status !== null || problem !== null) && (
+          <div className="-mt-6 flex flex-col gap-1 px-1 text-xs">
+            {status !== null && (
+              <p
+                id={noteId}
+                role={fieldProblem === null ? "status" : "alert"}
+                className={fieldProblem === null ? "text-muted-foreground" : "text-destructive"}
+              >
+                {status}
+              </p>
+            )}
+            {problem !== null && (
+              <p role="alert" className="whitespace-pre-wrap text-destructive">
+                {problem}
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -5,10 +5,8 @@ import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
-import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { outgoingMessage } from "./chat/attachments.ts";
 import {
@@ -16,27 +14,29 @@ import {
   draftAttachmentsProgramAtom,
   draftWaitingFor,
   sentAttachments,
-  uploadsSettled,
 } from "./chat/attachments-state.ts";
 import { type DraftInput, draftPlace, draftSendable } from "./draft.ts";
 import { environmentListAtom } from "./environments-state.ts";
 import { changing, RegistryClient } from "./registry.ts";
-import { pathAtom, sessionPath } from "./router.ts";
+import { isDraftPath, pathAtom, sessionPath } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { sessionClientAtom } from "./session/atoms.ts";
 import type { OutgoingMessage } from "./session/state.ts";
 
+// The draft's fields are kept while the app is open, as its Attachments are (`draftAttachmentsProgramAtom`), so a
+// draft left for another page is there on coming back, and a send under way goes on.
+
 /** What is typed in the draft. The page has one. */
-export const draftTextAtom = Atom.make("");
+export const draftTextAtom = Atom.make("").pipe(Atom.keepAlive);
 
 /** The Workspace picked in the draft: `NEW_WORKSPACE`, or the id of one of the chosen Environment. */
-export const draftWorkspaceAtom = Atom.make<string>(NEW_WORKSPACE);
+export const draftWorkspaceAtom = Atom.make<string>(NEW_WORKSPACE).pipe(Atom.keepAlive);
 
 /** What is typed as a new Workspace's base branch; empty for the default branch. */
-export const draftBaseAtom = Atom.make("");
+export const draftBaseAtom = Atom.make("").pipe(Atom.keepAlive);
 
 /** What is typed as a new Workspace's branch name; empty for `cloudpid/<id>`. */
-export const draftBranchAtom = Atom.make("");
+export const draftBranchAtom = Atom.make("").pipe(Atom.keepAlive);
 
 /** The Environment last chosen on this device (in the runtime's key-value store). */
 const lastEnvironmentAtom = Atom.kvs({
@@ -100,64 +100,66 @@ const unsentReason = (state: AttachmentsState): string => {
 /**
  * Register the Session the draft describes and open it. With Attachments, they upload to the Session once it is
  * registered, while the draft shows their progress. Then the first message is put in `pendingFirstMessagesAtom`, the
- * draft empties, and the page moves to the Session. When an Attachment does not upload, the Session opens all the
- * same, with the text and the files back in its composer and why under it (`refusedFirstMessagesAtom`). A refusal of
- * the Registry fails with its message and leaves the draft as it was.
+ * draft empties, and the page moves to the Session, unless the owner went to another page meanwhile (the send goes
+ * on: it is kept alive). When an Attachment does not upload, the Session opens all the same, with the text and the
+ * files back in its composer and why under it (`refusedFirstMessagesAtom`). A refusal of the Registry fails with its
+ * message and leaves the draft as it was.
  */
-export const sendDraftAtom = appRuntime.fn((input: DraftInput, get) =>
-  Effect.gen(function* () {
-    const attachments = yield* get.result(draftAttachmentsProgramAtom);
-    const before = yield* SubscriptionRef.get(attachments.state);
-    const attached = before.items.length > 0;
+export const sendDraftAtom = appRuntime
+  .fn((input: DraftInput, get) =>
+    Effect.gen(function* () {
+      const attachments = yield* get.result(draftAttachmentsProgramAtom);
+      const before = yield* SubscriptionRef.get(attachments.state);
+      const attached = before.items.length > 0;
 
-    if (!draftSendable(input, attached) || draftWaitingFor(before) !== null) {
-      return yield* Effect.die("The draft cannot be sent");
-    }
+      if (!draftSendable(input, attached) || draftWaitingFor(before) !== null) {
+        return yield* Effect.die("The draft cannot be sent");
+      }
 
-    const created = yield* RegistryClient.use((registry) =>
-      registry("createSession", draftPlace(input)),
-    );
-
-    const text = input.text.trim();
-    let first: FirstMessage | null = { text };
-
-    if (attached) {
-      yield* attachments.upload(created.id);
-
-      const settled = yield* SubscriptionRef.changes(attachments.state).pipe(
-        Stream.filter(uploadsSettled),
-        Stream.runHead,
-        Effect.map(Option.getOrElse(() => before)),
+      const created = yield* RegistryClient.use((registry) =>
+        registry("createSession", draftPlace(input)),
       );
 
-      const sent = sentAttachments(settled);
-      const files = Arr.map(settled.items, (item) => item.file);
+      const text = input.text.trim();
+      let first: FirstMessage | null = { text };
 
-      if (sent === undefined) {
-        first = null;
-        get.set(refusedFirstMessagesAtom, {
-          ...get(refusedFirstMessagesAtom),
-          [created.id]: { text, reason: unsentReason(settled), files },
+      if (attached) {
+        const settled = yield* attachments.uploadTo(created.id);
+        const sent = sentAttachments(settled);
+        const files = Arr.map(settled.items, (item) => item.file);
+
+        if (sent === undefined) {
+          first = null;
+          get.set(refusedFirstMessagesAtom, {
+            ...get(refusedFirstMessagesAtom),
+            [created.id]: { text, reason: unsentReason(settled), files },
+          });
+        } else first = { text, message: outgoingMessage(text, sent), files };
+
+        // The next draft starts with no Attachments, and uploads to its own Session.
+        get.refresh(draftAttachmentsProgramAtom);
+      }
+
+      if (first !== null) {
+        get.set(pendingFirstMessagesAtom, {
+          ...get(pendingFirstMessagesAtom),
+          [created.id]: first,
         });
-      } else first = { text, message: outgoingMessage(text, sent), files };
+      }
 
-      // The next draft starts with no Attachments, and uploads to its own Session.
-      get.refresh(draftAttachmentsProgramAtom);
-    }
+      get.set(draftTextAtom, "");
+      get.set(draftBaseAtom, "");
+      get.set(draftBranchAtom, "");
+      get.set(draftWorkspaceAtom, NEW_WORKSPACE);
+      // Uploads take a while: a page the owner moved to since keeps them.
+      const path = get(pathAtom);
 
-    if (first !== null) {
-      get.set(pendingFirstMessagesAtom, { ...get(pendingFirstMessagesAtom), [created.id]: first });
-    }
+      if (path === "/" || isDraftPath(path)) get.set(pathAtom, sessionPath(created.id));
 
-    get.set(draftTextAtom, "");
-    get.set(draftBaseAtom, "");
-    get.set(draftBranchAtom, "");
-    get.set(draftWorkspaceAtom, NEW_WORKSPACE);
-    get.set(pathAtom, sessionPath(created.id));
-
-    return created;
-  }).pipe(changing(["sessions", "workspaces"])),
-);
+      return created;
+    }).pipe(changing(["sessions", "workspaces"])),
+  )
+  .pipe(Atom.keepAlive);
 
 /** The request ID Session `sessionId`'s first message is submitted under, the same on every client, so it is taken once. */
 const firstMessageRequestId = (sessionId: string): string => `first-message:${sessionId}`;

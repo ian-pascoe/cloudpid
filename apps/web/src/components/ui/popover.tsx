@@ -48,9 +48,9 @@ export const useAnchoredPopover = (
   onOpen: (panel: HTMLElement) => void,
 ): void => {
   // The latest `onOpen`, read when the panel opens, so the listeners are added once.
-  const opened = useRef(onOpen);
+  const onOpenRef = useRef(onOpen);
 
-  opened.current = onOpen;
+  onOpenRef.current = onOpen;
 
   useEffect(() => {
     const element = panel.current;
@@ -65,7 +65,7 @@ export const useAnchoredPopover = (
       if (!open || trigger.current === null) return;
 
       place(element, trigger.current, align);
-      opened.current(element);
+      onOpenRef.current(element);
     };
 
     const follow = () => {
@@ -90,9 +90,9 @@ export const useAnchoredPopover = (
   }, [trigger, panel, align]);
 };
 
-/** The panel of a popover: a bordered, shadowed surface in the top layer. */
+/** The panel of a popover: a bordered 10 px surface in the top layer, with the small shadow of what waits on the owner. */
 export const popoverPanel =
-  "fixed m-0 rounded-xl border bg-background p-1 text-foreground shadow-lg shadow-black/5 dark:shadow-black/40";
+  "fixed m-0 rounded-lg border bg-background p-1 text-foreground shadow-sm";
 
 /** What can take the focus inside a panel, in order. */
 const FOCUSABLE =

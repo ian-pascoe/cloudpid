@@ -18,7 +18,9 @@ import * as FiberSet from "effect/FiberSet";
 import * as Queue from "effect/Queue";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { messageOf } from "../registry.ts";
 import { replying } from "../calls.ts";
@@ -81,16 +83,20 @@ const picturesOf = (items: readonly AttachmentItem[]): string =>
  * fitted.
  */
 export const waitingFor = (state: AttachmentsState): string | null => {
-  if (state.items.some((item) => item.status === "failed")) {
-    return "Remove the attachments that did not upload, then send.";
-  }
+  if (anyFailed(state)) return "Remove the attachments that did not upload, then send.";
 
-  if (state.items.some((item) => item.status === "queued" || item.status === "uploading")) {
-    return "Waiting for the attachments to upload.";
-  }
+  if (anyUnsettled(state)) return "Waiting for the attachments to upload.";
 
   return fittedAll(state) ? null : "Preparing the images for the model.";
 };
+
+/** Whether one Attachment did not upload, or cannot. */
+const anyFailed = (state: AttachmentsState): boolean =>
+  state.items.some((item) => item.status === "failed");
+
+/** Whether an upload has not ended: one waits for its turn or goes on. */
+const anyUnsettled = (state: AttachmentsState): boolean =>
+  state.items.some((item) => item.status === "queued" || item.status === "uploading");
 
 /** Whether every picture has been fitted: none is being prepared for the model. */
 const fittedAll = (state: AttachmentsState): boolean => state.fitted === picturesOf(state.items);
@@ -100,19 +106,14 @@ const fittedAll = (state: AttachmentsState): boolean => state.fitted === picture
  * only one that cannot upload, or a picture still being prepared, holds it.
  */
 export const draftWaitingFor = (state: AttachmentsState): string | null => {
-  if (state.items.some((item) => item.status === "failed")) {
-    return "Remove the attachments that cannot be sent, then send.";
-  }
+  if (anyFailed(state)) return "Remove the attachments that cannot be sent, then send.";
 
   return fittedAll(state) ? null : "Preparing the images for the model.";
 };
 
-/** Whether every upload has ended, and every picture is fitted or one upload failed: nothing more will change. */
-export const uploadsSettled = (state: AttachmentsState): boolean => {
-  const waiting = waitingFor(state);
-
-  return waiting === null || state.items.some((item) => item.status === "failed");
-};
+/** Whether every upload has ended, and every picture is fitted unless one failed: nothing more will change. */
+const uploadsSettled = (state: AttachmentsState): boolean =>
+  !anyUnsettled(state) && (fittedAll(state) || anyFailed(state));
 
 /** The Attachments as the message sends them; undefined while `waitingFor` says why not. */
 export const sentAttachments = (state: AttachmentsState): readonly SentAttachment[] | undefined => {
@@ -160,12 +161,12 @@ const TOO_BIG = "Too big to attach.";
 const TOO_BIG_TO_UPLOAD = `An attachment is at most ${formatSize(MAX_ATTACHMENT_BYTES)}.`;
 
 /**
- * The Attachments of a composer writing to the Session `place` gives, as long as the scope is open. Each upload waits
- * for `place`, so the draft, whose Session is not made yet, attaches files that upload once it is. Closing the scope
+ * The Attachments of a composer writing to the Session `sessionId` gives, as long as the scope is open. Each upload
+ * waits for it, so the draft, whose Session is not made yet, attaches files that upload once it is. Closing the scope
  * stops the upload in progress and lets go of what the page kept of each file; what was stored stays, as a sent file
  * does.
  */
-export const makeAttachments = Effect.fnUntraced(function* (place: Effect.Effect<string>) {
+export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Effect<string>) {
   const uploads = yield* Uploads;
   const images = yield* ImageEncoder;
   const state = yield* SubscriptionRef.make(EMPTY);
@@ -258,7 +259,7 @@ export const makeAttachments = Effect.fnUntraced(function* (place: Effect.Effect
     Effect.gen(function* () {
       if (!current.items.some((candidate) => candidate.id === item.id)) return;
 
-      const sessionId = yield* place;
+      const session = yield* sessionId;
 
       // Removed while it waited for the Session.
       if (!current.items.some((candidate) => candidate.id === item.id)) return;
@@ -266,7 +267,7 @@ export const makeAttachments = Effect.fnUntraced(function* (place: Effect.Effect
       yield* update(item.id, { status: "uploading" });
 
       const fiber = yield* uploads
-        .upload(sessionId, item.name, item.file, (progress) => {
+        .upload(session, item.name, item.file, (progress) => {
           background(update(item.id, { progress }));
         })
         .pipe(Effect.forkChild);
@@ -339,9 +340,9 @@ export const makeAttachments = Effect.fnUntraced(function* (place: Effect.Effect
 
       const active = uploading?.id === id ? uploading.fiber : undefined;
 
-      // A stored file was stored in the Session `place` gave, so it gives it at once.
+      // A stored file was stored in the Session `sessionId` gave, so it gives it at once.
       const removeStored = (name: string) =>
-        place.pipe(Effect.flatMap((sessionId) => uploads.remove(sessionId, name)));
+        sessionId.pipe(Effect.flatMap((session) => uploads.remove(session, name)));
 
       // An upload that ended before the stop could reach it stored the file: it is deleted once its name is known.
       // The deletion goes on after the composer does.
@@ -477,20 +478,46 @@ export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
 
 /**
  * The draft's Attachments: they are fitted as they are added, as a Session's composer's are, but upload only once
- * `upload` names the Session the draft made. Kept while the draft reads them; a sent draft starts a new set.
+ * `uploadTo` names the Session the draft made. Kept alive, so a send goes on when the page is left; a sent draft
+ * starts a new set (`sendDraftAtom` refreshes it).
  */
-export const draftAttachmentsProgramAtom = appRuntime.atom(
-  Effect.gen(function* () {
-    const session = yield* Deferred.make<string>();
-    const made = Deferred.await(session);
-    const attachments = yield* makeAttachments(made);
+export const draftAttachmentsProgramAtom = appRuntime
+  .atom(
+    Effect.gen(function* () {
+      const session = yield* Deferred.make<string>();
+      const made = Deferred.await(session);
+      const attachments = yield* makeAttachments(made);
 
-    return {
-      ...attachments,
-      upload: (sessionId: string) => Deferred.succeed(session, sessionId),
-    };
-  }),
-);
+      /**
+       * Upload them to Session `sessionId`, one at a time, and give how they ended once every upload has. When one did
+       * not upload, the files that did are deleted, since their message is not sent: the Session's composer attaches
+       * them all again.
+       */
+      const uploadTo = (sessionId: string): Effect.Effect<AttachmentsState> =>
+        Deferred.succeed(session, sessionId).pipe(
+          Effect.andThen(
+            SubscriptionRef.changes(attachments.state).pipe(
+              Stream.filter(uploadsSettled),
+              Stream.runHead,
+            ),
+          ),
+          // The state ends only with the scope, which interrupts this first.
+          Effect.flatMap(Option.match({ onNone: () => Effect.interrupt, onSome: Effect.succeed })),
+          Effect.tap((settled) =>
+            anyFailed(settled)
+              ? Effect.forEach(
+                  settled.items.filter((item) => item.status === "uploaded"),
+                  (item) => attachments.remove(item.id),
+                  { discard: true },
+                )
+              : Effect.void,
+          ),
+        );
+
+      return { ...attachments, uploadTo };
+    }),
+  )
+  .pipe(Atom.keepAlive);
 
 const draftAttachmentsRefAtom = appRuntime.subscriptionRef((get) =>
   get.result(draftAttachmentsProgramAtom).pipe(Effect.map((attachments) => attachments.state)),

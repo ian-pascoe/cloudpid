@@ -188,6 +188,7 @@ A single cool, blue-slate family, light or dark by the system setting, with thre
 ### Hierarchy
 
 - **Headline** (600, 18 px, 1.55): the title of a page (Workspaces, Settings) and of an empty state.
+- **Draft question** (400, 24 px, tight tracking): the one larger line in the app, the draft page's "What should we work on in …?", whose last words are the Environment picker.
 - **Title** (600, 14 px): the Session header, a Workspace card's name, a section heading in the sidebar and cards.
 - **Body** (400, 15 px, 1.55): the transcript's prose and the base of the page. Markdown headings in it step up only to 16–18 px semibold.
 - **Body small** (400, 14 px): all interface text: buttons, list items, form text, cards.
@@ -238,7 +239,7 @@ Quiet and exact.
 - **Style:** 36 px high, Input Line border, page-colored fill, 8 px radius, 12 px padding, 14 px text; mono for identifier fields (slug, repo source).
 - **Focus:** a 2 px Signal Blue ring.
 - **Error:** `aria-invalid` and a 12 px Brick Red line under the field.
-- **Select:** the platform's native `select`, styled the same, because it is the right picker on a phone. In the composer's toolbar a select is a chip instead (see Composer), still a native `select` underneath.
+- **Select:** the platform's native `select`, styled the same, because it is the right picker on a phone. In the composer's toolbar a select is a chip instead (see Composer), still a native `select` underneath. The draft page's pickers are the exception (see Draft page): each choice there needs a second line (an Environment's Repos, what a new Workspace is), which a native option cannot show, so they are Menus.
 
 ### Cards / Containers
 
@@ -254,7 +255,15 @@ The sidebar: a "Sessions" title and a "New session" outline button on one row, t
 
 ### Menu
 
-A ghost 32 px "⋯" trigger (`aria-haspopup="menu"`) opening the platform's popover (`popover`, top layer, light dismiss): a bordered 10 px panel at least 176 px wide, 4 px padding, `shadow-sm`, placed under the trigger's right edge and flipped to stay on screen. Items are 14 px with a 16 px icon, Tinted Wash on hover and focus, and the focus outline drawn inside the item; a destructive item is Brick Red with a 10% Brick Red wash, and ends in "…" when a confirm follows. Opening focuses the first item; arrows, Home and End move; Escape closes and gives focus back to the trigger. In the Session list the trigger sits on the row's right, shown on hover, focus or while open, and always on a touch screen (`pointer: coarse`).
+A ghost 32 px "⋯" trigger (`aria-haspopup="menu"`) opening the platform's popover (`popover`, top layer, light dismiss): a bordered 10 px panel at least 176 px wide, 4 px padding, `shadow-sm`, placed under the trigger's right edge (or its left edge or middle, for a picker) and flipped to stay on screen. Items are 14 px with a 16 px icon, Tinted Wash on hover and focus, and the focus outline drawn inside the item; a destructive item is Brick Red with a 10% Brick Red wash, and ends in "…" when a confirm follows. A picker's items are radio items (`menuitemradio`) with a 16 px check on the chosen one, under 12 px Faded Ink group labels and between hairline separators. Opening focuses the chosen item, else the first; arrows, Home and End move; Escape closes and gives focus back to the trigger. In the Session list the trigger sits on the row's right, shown on hover, focus or while open, and always on a touch screen (`pointer: coarse`).
+
+### Popover
+
+A small form beside a control, such as the draft's branch fields: the trigger opens the same panel as a Menu (`role="dialog"`, 10 px, `shadow-sm`, light dismiss) holding labelled fields. Opening focuses the first field; Return in a field or Escape closes it and gives focus back to the trigger.
+
+### Draft page
+
+The page a new Session starts from, centred in the main column (a back arrow above it on a phone): the Draft question, with the Environment picker as its last words (the name in Ink with a dotted underline that turns solid on hover and while open, opening a Menu of the Environments, each with its Repos in 12 px mono, and _Manage environments_). Under it the Composer's box, the same 10 px bordered box with no shadow, holding the Attachment tiles, the input and a row of Attach (left) and Send (right). Tucked under the box, inset 12–20 px, a strip on a 60% Tinted Wash, its bottom corners rounded: 32 px chips in 12 px Faded Ink for the Workspace (a Menu: _New workspace_ with a line on what it is, then the Environment's Workspaces by branch in mono with their age) and, for a new Workspace, its branch (the branch and the branch it starts from in mono, opening a Popover of both fields; an invalid one turns the chip Brick Red with an alert icon). Under the strip, in 12 px, why Send waits (Faded Ink) or what is wrong (Brick Red). A file dropped anywhere on the page attaches, as on a thread.
 
 ### Dialog
 
