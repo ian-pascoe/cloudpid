@@ -2,7 +2,7 @@
 // the command needs something it does not have. The table is the heuristic's contract, one row per decision.
 // @effect-diagnostics preferEffectArray:off
 import { describe, expect, it } from "vitest";
-import { inLinkedWorktree, routeCommand } from "./bash-routing.ts";
+import { routeCommand } from "./bash-routing.ts";
 import type { BashBackend } from "./coding-tools.ts";
 
 type Row = readonly [command: string, because: string];
@@ -278,34 +278,10 @@ describe("routeCommand", () => {
     expect(routeCommand("grep -rn TODO src").reason).not.toBe("");
   });
 
-  it("runs git in the Container in a linked worktree, whose objects the Worker Shell's git cannot find", () => {
-    const route = routeCommand("git status", { gitOnWorker: false });
-
-    expect(route.backend).toBe<BashBackend>("container");
-    expect(route.reason).toMatch(/worktree/);
-    expect(routeCommand("cat a.txt | grep x", { gitOnWorker: false }).backend).toBe("worker");
-    expect(routeCommand("f() { git status; }; f", { gitOnWorker: false }).backend).toBe(
-      "container",
-    );
-  });
-
   it("does not depend on how long the command is", () => {
     const long = `${Array.from({ length: 500 }, () => "echo hi").join("\n")}\nnode x`;
 
     expect(routeCommand(long).backend).toBe("container");
     expect(routeCommand(long.replace("node x", "cat x")).backend).toBe("worker");
-  });
-});
-
-describe("inLinkedWorktree", () => {
-  it("is true for a command that runs in a Workspace's worktree or names one", () => {
-    expect(inLinkedWorktree("/workspace/.worktrees/app/1a2b3c4d", "git status")).toBe(true);
-    expect(inLinkedWorktree("/workspace/.worktrees/app/1a2b3c4d/src", "git log")).toBe(true);
-    expect(inLinkedWorktree("/workspace", "git -C .worktrees/app/1a2b3c4d status")).toBe(true);
-  });
-
-  it("is false in a repo's main checkout and at the root", () => {
-    expect(inLinkedWorktree("/workspace/app", "git status")).toBe(false);
-    expect(inLinkedWorktree("/workspace", "git status")).toBe(false);
   });
 });

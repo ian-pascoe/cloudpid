@@ -151,7 +151,7 @@ describe("containerOverridesFrom", () => {
     ).toEqual({
       instance: "standard-4",
     });
-    // standard-2 was the default: a Machine that picks it now keeps it as an override.
+    // standard-2 was the default: an Environment that picks it now keeps it as an override.
     expect(
       containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-2" }),
     ).toEqual({

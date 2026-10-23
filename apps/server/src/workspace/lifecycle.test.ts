@@ -1,4 +1,4 @@
-// Deleting or resetting a Workspace's object from the main Worker: wipe, then reset in a call of its own.
+// Removing a Workspace's object from the main Worker: wipe, then reset in a call of its own.
 // @effect-diagnostics asyncFunction:off
 import { describe, expect, it } from "vitest";
 import {
@@ -11,9 +11,6 @@ import {
 const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): LifecycleHost => ({
   destroy: async () => {
     calls.push("destroy");
-  },
-  clear: async () => {
-    calls.push("clear");
   },
   reset: async () => {
     calls.push("reset");
@@ -68,32 +65,6 @@ describe("workspaceObjectsRemote", () => {
     await expect(remote.destroy("cloudpid")).rejects.toThrow("storage unavailable");
 
     expect(calls).toEqual(["destroy"]);
-  });
-
-  it("clears the object but its settings, then resets it, as a deletion does", async () => {
-    const calls: string[] = [];
-    const { remote } = namespace(host(calls));
-
-    await expect(remote.clear("cloudpid")).resolves.toBeUndefined();
-
-    expect(calls).toEqual(["clear", "reset"]);
-  });
-
-  it("does not reset an object whose clear failed", async () => {
-    const calls: string[] = [];
-
-    const { remote } = namespace(
-      host(calls, {
-        clear: async () => {
-          calls.push("clear");
-          throw new Error("storage unavailable");
-        },
-      }),
-    );
-
-    await expect(remote.clear("cloudpid")).rejects.toThrow("storage unavailable");
-
-    expect(calls).toEqual(["clear"]);
   });
 
   it("restarts the Container without wiping or resetting the object", async () => {

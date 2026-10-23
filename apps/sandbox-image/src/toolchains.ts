@@ -30,12 +30,10 @@ export const PNPM_STORE_DIRECTORY_NAME = ".pnpm-store";
 export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/node_modules",
   "**/.venv",
-  // Cargo's target directory, in a repo (`/<repo>/target`), in a Workspace's worktree of one
-  // (`/.worktrees/<repo>/<id>/target`: `WORKTREES_DIRECTORY`) or at the Machine's root. Not at any depth: a source
+  // Cargo's target directory, in a repo (`/<repo>/target`) or at the Workspace's root. Not at any depth: a source
   // directory called `target` is not a build directory.
   "/target",
   "/*/target",
-  "/.worktrees/*/*/target",
   "**/.cache",
   // pnpm's content-addressed store. The Container's global pnpm configuration puts it on the Container's disk
   // (`PNPM_STORE_DIRECTORY_NAME` under the home directory), but with the home directory on the Container's disk and the
@@ -63,8 +61,7 @@ export const TOOLCHAIN_IGNORE: readonly string[] = [
   "**/.nox",
   "**/.direnv",
   // More caches that regenerate and no repo commits: Cloudflare's wrangler, Astro, Angular, Expo, Nx, Docusaurus, nyc,
-  // Hypothesis, Dart and Zig and Haskell's stack. Not `.alchemy` (it can hold real deploy state) or `.worktrees` (it
-  // holds uncommitted work).
+  // Hypothesis, Dart and Zig and Haskell's stack. Not `.alchemy` (it can hold real deploy state).
   "**/.wrangler",
   "**/.astro",
   "**/.angular",
@@ -218,6 +215,17 @@ const pnpmConfigSteps = PNPM_GLOBAL_CONFIG.map(
     `has_pnpm_setting '${key}|${kebab(key)}' || add_pnpm_setting "${key}: ${value.replaceAll('"', '\\"')}"`,
 ).join("\n");
 
+/** The bash function `has_mise_config <dir>`: whether `dir` has a file mise reads a Toolchain declaration from. */
+export const HAS_MISE_CONFIG = `# Every file mise reads a Toolchain declaration from (mise.<env>.toml aside).
+has_mise_config() {
+  for file in mise.toml .mise.toml mise.local.toml .mise.local.toml .config/mise.toml .config/mise/config.toml .mise/config.toml mise/config.toml .tool-versions; do
+    [ -e "$1/$file" ] && return 0
+  done
+
+  return 1
+}
+`;
+
 /**
  * The bash script that makes a freshly started Container ready for commands, run once per Container start before the
  * first command (`apps/server/src/workspace/toolchains.ts`). It
@@ -260,14 +268,7 @@ for dir in ${readOnlyDirectories.map(shellQuote).join(" ")}; do
   fi
 done
 
-# Every file mise reads a Toolchain declaration from (mise.<env>.toml aside).
-has_mise_config() {
-  for file in mise.toml .mise.toml mise.local.toml .mise.local.toml .config/mise.toml .config/mise/config.toml .mise/config.toml mise/config.toml .tool-versions; do
-    [ -e "$1/$file" ] && return 0
-  done
-
-  return 1
-}
+${HAS_MISE_CONFIG}
 
 if ! has_mise_config "$root"; then
   cat > mise.toml <<'CLOUDPID_BASE_MISE_TOML'
@@ -292,7 +293,7 @@ if [ -f mise.toml ] && { [ ! -e mise.lock ] || [ mise.toml -nt mise.lock ]; }; t
   note_failure $?
 fi
 
-for dir in "$root" "$root"/*/ "$root"/${WORKTREES_DIRECTORY}/*/*/; do
+for dir in "$root" "$root"/*/; do
   dir=\${dir%/}
   if has_mise_config "$dir"; then
     (cd "$dir" && mise install)
@@ -333,32 +334,13 @@ export const SETUP_SCRIPT = ".agents/setup.sh";
  */
 export const SETUP_STATE_DIRECTORY = "/var/lib/cloudpid/setup";
 
-/**
- * The directory below the Machine's root, `/workspace`, that holds the Workspaces' own worktrees: `<root>/.worktrees/<repo>/<id>`
- * (`worktreeDirectory` in `@cloudpid/protocol`, which a test keeps equal). Hidden, so it is never taken for a repo.
- */
-export const WORKTREES_DIRECTORY = ".worktrees";
-
-/**
- * Where the Container records the Setup Script that last succeeded in a repo's main checkout or a Workspace's worktree,
- * by its record name (`setupRecordName`), not a path.
- */
+/** Where the Container records the Setup Script that last succeeded in a repo, by its record name (`setupRecordName`). */
 export const setupRecord = (name: string, state: string = SETUP_STATE_DIRECTORY): string =>
   `${state}/${name}`;
 
-/**
- * The name the Setup Script of `directory` is recorded under: the repo's name for its main checkout (`<root>/<repo>`),
- * and `<repo>@<id>` for a Workspace's worktree (`<root>/.worktrees/<repo>/<id>`), so each is prepared on its own. A repo
- * name never holds an `@`.
- */
+/** The name the Setup Script of `directory` (`<root>/<repo>`) is recorded under: the repo's name. */
 export const setupRecordName = (directory: string, root: string = WORKSPACE_ROOT): string => {
   const relative = directory.startsWith(`${root}/`) ? directory.slice(root.length + 1) : directory;
-
-  if (relative.startsWith(`${WORKTREES_DIRECTORY}/`)) {
-    const [repo = "", id = ""] = relative.slice(WORKTREES_DIRECTORY.length + 1).split("/");
-
-    return `${repo}@${id}`;
-  }
 
   return relative.slice(relative.lastIndexOf("/") + 1);
 };
@@ -385,8 +367,8 @@ const sha256 = (file: string): string => `sha256sum < ${file} | cut -d' ' -f1`;
 
 /**
  * The bash script that prints, one per line, the directories whose Setup Script is due: each repo directly below `root`
- * and each Workspace's worktree (`<root>/.worktrees/<repo>/<id>`), repos first, with a `SETUP_SCRIPT` file whose content
- * differs from the last one that succeeded there (`setupRecord`). One that never ran its script is due.
+ * with a `SETUP_SCRIPT` file whose content differs from the last one that succeeded there (`setupRecord`). One that
+ * never ran its script is due.
  */
 export const pendingSetupScripts = (
   root: string = WORKSPACE_ROOT,
@@ -395,16 +377,12 @@ export const pendingSetupScripts = (
 set -u -o pipefail
 state=${shellQuote(state)}
 root=${shellQuote(root)}
-for dir in "$root"/*/ "$root"/${WORKTREES_DIRECTORY}/*/*/; do
+for dir in "$root"/*/; do
   dir=\${dir%/}
   [ -f "$dir"/${SETUP_SCRIPT} ] || continue
   hash=$(${sha256(`"$dir"/${SETUP_SCRIPT}`)}) || continue
-  # setupRecordName's: the repo's name, or <repo>@<id> for a worktree.
-  relative=\${dir#"$root"/}
-  case $relative in
-    ${WORKTREES_DIRECTORY}/*) relative=\${relative#${WORKTREES_DIRECTORY}/}; name=\${relative%%/*}@\${relative#*/} ;;
-    *) name=$relative ;;
-  esac
+  # setupRecordName's: the repo's name.
+  name=\${dir#"$root"/}
   [ "$(cat "$state/$name" 2>/dev/null)" = "$hash" ] && continue
   printf '%s\\n' "$dir"
 done
@@ -442,7 +420,7 @@ exit "$status"
 
 /**
  * `setupScriptRun`, only when the Setup Script of `directory` is due: there is one, and it is not the one that last
- * succeeded there. It exits 0 without running anything otherwise. For a worktree made after the Container started,
+ * succeeded there. It exits 0 without running anything otherwise. For a repo cloned after the Container started,
  * which the bootstrap did not see.
  */
 export const setupScriptRunIfDue = (

@@ -5,8 +5,7 @@ import {
   isWorkspaceId,
   parseRepoSource,
   REPO_NAME,
-  WORKTREES_DIRECTORY,
-  worktreeDirectory,
+  workspaceDirectory,
 } from "./repo.ts";
 
 const parsed = (input: string) => {
@@ -101,12 +100,11 @@ describe("REPO_NAME", () => {
   });
 });
 
-describe("worktreeDirectory", () => {
-  it("is the Workspace's own directory below the Machine's hidden worktrees directory", () => {
-    expect(worktreeDirectory("app", "1a2b3c4d")).toBe(
-      `/workspace/${WORKTREES_DIRECTORY}/app/1a2b3c4d`,
-    );
-    expect(WORKTREES_DIRECTORY.startsWith(".")).toBe(true);
+describe("workspaceDirectory", () => {
+  it("is the one repo's clone, or the root when there are none or several", () => {
+    expect(workspaceDirectory(["app"])).toBe("/workspace/app");
+    expect(workspaceDirectory([])).toBe("/workspace");
+    expect(workspaceDirectory(["app", "api"])).toBe("/workspace");
   });
 });
 

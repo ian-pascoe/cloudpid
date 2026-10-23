@@ -32,18 +32,21 @@ export type AttachmentFiles = {
  */
 const computer = () => import("@cloudpid/computer-env");
 
-/** The files of Workspace `slug`, through its Workspace DO's file operations, as the Session's environment reaches them. */
+/**
+ * The files of the Workspace whose Durable Object is `objectName` (`workspaceObjectName`), through its file operations,
+ * as the Session's environment reaches them.
+ */
 export const workspaceAttachmentFiles = (
   namespace: WorkspaceNamespace,
-  slug: string,
+  objectName: string,
 ): AttachmentFiles => {
   const env = async () => {
     const { ComputerExecutionEnv } = await computer();
 
     // The id the Session's environment has, so both see the same files.
     return new ComputerExecutionEnv({
-      workspace: namespace.getByName(slug),
-      id: `computer:${slug}`,
+      workspace: namespace.getByName(objectName),
+      id: `computer:${objectName}`,
       cwd: "/workspace",
     });
   };

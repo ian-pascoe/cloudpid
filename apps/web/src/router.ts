@@ -121,11 +121,17 @@ export const SETTINGS_PATH = "/settings";
 /** Whether a page path shows the settings. */
 export const isSettingsPath = (path: string): boolean => /^\/settings\/?$/.test(path);
 
-/** The Machines page: create Machines, clone repos into them, and start Sessions in them. */
-export const MACHINES_PATH = "/machines";
+/** The Environments page: make Environments, add Repos to them, and manage their Workspaces. */
+export const ENVIRONMENTS_PATH = "/environments";
 
-/** Whether a page path shows the Machines. */
-export const isMachinesPath = (path: string): boolean => /^\/machines\/?$/.test(path);
+/** Whether a page path shows the Environments. */
+export const isEnvironmentsPath = (path: string): boolean => /^\/environments\/?$/.test(path);
+
+/** The draft page: write the first message of a new Session, and choose where it works. */
+export const DRAFT_PATH = "/new";
+
+/** Whether a page path shows the draft. */
+export const isDraftPath = (path: string): boolean => /^\/new\/?$/.test(path);
 
 /** The Session a page path shows, if any. */
 export const sessionIdOf = (path: string): string | undefined => {
@@ -137,7 +143,8 @@ export const sessionIdOf = (path: string): string | undefined => {
 /** What a page path shows. */
 export type Page =
   | { readonly kind: "settings" }
-  | { readonly kind: "machines" }
+  | { readonly kind: "environments" }
+  | { readonly kind: "draft" }
   | { readonly kind: "session"; readonly sessionId: string }
   | { readonly kind: "empty" };
 
@@ -145,7 +152,9 @@ export type Page =
 export const pageOf = (path: string): Page => {
   if (isSettingsPath(path)) return { kind: "settings" };
 
-  if (isMachinesPath(path)) return { kind: "machines" };
+  if (isEnvironmentsPath(path)) return { kind: "environments" };
+
+  if (isDraftPath(path)) return { kind: "draft" };
 
   const sessionId = sessionIdOf(path);
 

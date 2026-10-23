@@ -15,7 +15,7 @@ import {
   createSessionAtom,
   deleteSessionAtom,
   newSessionPlace,
-  placeLabel,
+  workspaceLabel,
   sameWorkspacePlace,
   renameSessionAtom,
   sessionsAtom,
@@ -26,9 +26,8 @@ const session = (id: string, title: string | null = null): SessionRecord => ({
   id,
   title,
   titleSource: title === null ? null : "owner",
-  machine: "default",
-  repo: null,
-  workspace: null,
+  environment: "default",
+  workspace: "0a1b2c3d",
   status: "idle",
   createdAt: 1,
   updatedAt: 1,
@@ -46,9 +45,9 @@ const listed = (list: SessionRecord[]) => {
 
         return [...list];
       }),
-    createSession: ({ machine }) =>
+    createSession: ({ environment }) =>
       Effect.sync(() => {
-        const created = { ...session(`new-${list.length}`), machine: machine ?? "default" };
+        const created = { ...session(`new-${list.length}`), environment: environment ?? "default" };
 
         list.unshift(created);
 
@@ -98,49 +97,29 @@ const listed = (list: SessionRecord[]) => {
 };
 
 describe("where a new Session starts", () => {
-  it("starts in a new Workspace of the shown Session's repo, or at its Machine's root", () => {
-    expect(newSessionPlace({ ...session("a"), machine: "work", repo: "cloudpid" })).toEqual({
-      machine: "work",
-      repo: "cloudpid",
+  it("starts in a new Workspace of the shown Session's Environment", () => {
+    expect(newSessionPlace({ ...session("a"), environment: "work" })).toEqual({
+      environment: "work",
       workspace: "new",
     });
-    expect(newSessionPlace({ ...session("a"), machine: "work" })).toEqual({ machine: "work" });
   });
 
-  it("starts at the default Machine's root when no Session is shown", () => {
-    expect(newSessionPlace(undefined)).toEqual({ machine: "default" });
+  it("starts in a new Workspace of the default Environment when no Session is shown", () => {
+    expect(newSessionPlace(undefined)).toEqual({ environment: "default", workspace: "new" });
   });
 
   it("starts in the shown Session's own Workspace when asked to share it", () => {
-    const inRepo = { ...session("a"), machine: "work", repo: "cloudpid" };
-
-    expect(sameWorkspacePlace({ ...inRepo, workspace: "0a1b2c3d" })).toEqual({
-      machine: "work",
-      repo: "cloudpid",
+    expect(sameWorkspacePlace({ ...session("a"), workspace: "0a1b2c3d" })).toEqual({
       workspace: "0a1b2c3d",
     });
-    expect(sameWorkspacePlace(inRepo)).toEqual({ machine: "work", repo: "cloudpid" });
-    expect(sameWorkspacePlace({ ...session("a"), machine: "work" })).toEqual({ machine: "work" });
   });
 
-  it("is named by the Machine's name, the repo and the Workspace, or the slug when the name is not known", () => {
-    const names = { work: "Work" };
+  it("names a Workspace by its branch, or by its id when the branch is not known", () => {
     const branches = { "0a1b2c3d": "fix/build" };
 
-    expect(placeLabel({ machine: "work", repo: "cloudpid", workspace: "new" }, names)).toBe(
-      "Work · cloudpid · new workspace",
-    );
-    expect(placeLabel({ machine: "work", repo: "cloudpid" }, names)).toBe(
-      "Work · cloudpid · main checkout",
-    );
-    expect(
-      placeLabel({ machine: "work", repo: "cloudpid", workspace: "0a1b2c3d" }, names, branches),
-    ).toBe("Work · cloudpid · fix/build");
-    expect(placeLabel({ machine: "work", repo: "cloudpid", workspace: "ffffffff" }, names)).toBe(
-      "Work · cloudpid · workspace ffffffff",
-    );
-    expect(placeLabel({ machine: "work" }, names)).toBe("Work");
-    expect(placeLabel({ machine: "gone" }, names)).toBe("gone");
+    expect(workspaceLabel("new", branches)).toBe("New workspace");
+    expect(workspaceLabel("0a1b2c3d", branches)).toBe("fix/build");
+    expect(workspaceLabel("ffffffff", branches)).toBe("ffffffff");
   });
 });
 
@@ -178,11 +157,11 @@ describe("the Session list", () => {
       const { registry } = listed([session("a")]);
 
       yield* settled(registry, sessionsAtom);
-      registry.set(createSessionAtom, callOf({ machine: "work" }));
+      registry.set(createSessionAtom, callOf({ environment: "work" }));
 
       const created = yield* settled(registry, createSessionAtom);
 
-      expect(AsyncResult.getOrThrow(created).machine).toBe("work");
+      expect(AsyncResult.getOrThrow(created).environment).toBe("work");
       expect(ids(yield* settled(registry, sessionsAtom))).toEqual(["new-1", "a"]);
     }),
   );

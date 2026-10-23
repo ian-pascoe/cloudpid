@@ -1,8 +1,8 @@
-// A Machine's own settings (`docs/spec.md` → Container and Toolchains → Size and idle): the Container's instance
-// size, how long it may sit unused before the Machine stops it, and the paths it keeps to itself on top of the
-// built-in ones. Like the global settings, every field has a
-// decoding default, so decoding the saved overrides gives the resolved settings and the schema's `Encoded` side is the
-// overrides' shape. They live in the Workspace DO, which reads them at each Container launch.
+// An Environment's Container settings (`docs/spec.md` → Container and Toolchains → Size and idle): the Container's
+// instance size, how long it may sit unused before its Workspace stops it, and the paths it keeps to itself on top of
+// the built-in ones. Like the global settings, every field has a decoding default, so decoding the saved overrides gives
+// the resolved settings and the schema's `Encoded` side is the overrides' shape. The Registry keeps them per
+// Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -12,8 +12,8 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 
 /**
- * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in a Machine's
- * settings. Cloudflare's named instance types are stored under their own names; the others are custom sizes
+ * The sizes a Container may start on under the `durable_object` scheduling policy, as the names kept in an
+ * Environment's settings. Cloudflare's named instance types are stored under their own names; the others are custom sizes
  * (`{ vcpu, memoryMib, diskMb }` in `ctx.container.start`), stored as `custom-<vCPU>` and mapped to their resources by
  * `containerInstance` at each launch. A stored name never changes meaning, so a new custom size gets a new name.
  * Smallest first.
@@ -82,7 +82,7 @@ const IdleMinutes = Schema.Int.check(
   Schema.isLessThanOrEqualTo(MAX_IDLE_MINUTES),
 );
 
-/** The most extra Container-only paths a Machine may have. */
+/** The most extra Container-only paths an Environment may have. */
 export const MAX_IGNORE_PATTERNS = 50;
 
 /** The longest extra Container-only path. */
@@ -129,7 +129,7 @@ export const ignorePatternProblem = (pattern: string): string | undefined => {
   }
 
   if (Arr.every(parts, (part) => part === "**" || part === "*")) {
-    return "would keep the whole Machine on the Container";
+    return "would keep the whole Workspace on the Container";
   }
 
   return undefined;
@@ -149,7 +149,7 @@ export const ContainerSettings = Schema.Struct({
   /** Minutes without a command on the Container before it is stopped (a disk snapshot is taken first). */
   idleMinutes: IdleMinutes.pipe(Schema.withDecodingDefaultKey(Effect.succeed(5))),
   /**
-   * Paths the Container keeps to itself, out of the Machine, after the built-in ones (`TOOLCHAIN_IGNORE`), as
+   * Paths the Container keeps to itself, out of the Workspace's Durable Object, after the built-in ones (`TOOLCHAIN_IGNORE`), as
    * computer's `ignore` patterns: the last one that matches a path wins, so `!` keeps a built-in one synced.
    */
   ignore: Schema.Array(IgnorePattern)

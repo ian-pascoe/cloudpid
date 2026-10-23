@@ -10,11 +10,13 @@ import {
   searchAtom,
   sessionIdAtom,
   isSettingsPath,
-  isMachinesPath,
+  isEnvironmentsPath,
+  isDraftPath,
   SETTINGS_PATH,
   sessionIdOf,
   sessionPath,
-  MACHINES_PATH,
+  ENVIRONMENTS_PATH,
+  DRAFT_PATH,
   withPaneParams,
 } from "./router.ts";
 
@@ -43,14 +45,26 @@ describe("the settings path", () => {
   });
 });
 
-describe("the Machines path", () => {
-  it("shows the Machines, and no Session or settings", () => {
-    expect(isMachinesPath(MACHINES_PATH)).toBe(true);
-    expect(isMachinesPath("/machines/")).toBe(true);
-    expect(isMachinesPath("/machines/x")).toBe(false);
-    expect(isMachinesPath("/sessions/machines")).toBe(false);
-    expect(sessionIdOf(MACHINES_PATH)).toBeUndefined();
-    expect(isSettingsPath(MACHINES_PATH)).toBe(false);
+describe("the Environments path", () => {
+  it("shows the Environments, and no Session or settings", () => {
+    expect(isEnvironmentsPath(ENVIRONMENTS_PATH)).toBe(true);
+    expect(isEnvironmentsPath("/environments/")).toBe(true);
+    expect(isEnvironmentsPath("/environments/x")).toBe(false);
+    expect(isEnvironmentsPath("/sessions/environments")).toBe(false);
+    expect(sessionIdOf(ENVIRONMENTS_PATH)).toBeUndefined();
+    expect(isSettingsPath(ENVIRONMENTS_PATH)).toBe(false);
+  });
+});
+
+describe("the draft path", () => {
+  it("shows the draft, and no Session, settings or Environments", () => {
+    expect(isDraftPath(DRAFT_PATH)).toBe(true);
+    expect(isDraftPath("/new/")).toBe(true);
+    expect(isDraftPath("/new/x")).toBe(false);
+    expect(isDraftPath("/sessions/new")).toBe(false);
+    expect(sessionIdOf(DRAFT_PATH)).toBeUndefined();
+    expect(isSettingsPath(DRAFT_PATH)).toBe(false);
+    expect(isEnvironmentsPath(DRAFT_PATH)).toBe(false);
   });
 });
 
@@ -78,9 +92,13 @@ describe("the page's path", () => {
     browser.forward();
     expect(registry.get(pageAtom)).toEqual({ kind: "settings" });
 
-    registry.set(pathAtom, MACHINES_PATH);
-    expect(registry.get(pageAtom)).toEqual({ kind: "machines" });
+    registry.set(pathAtom, ENVIRONMENTS_PATH);
+    expect(registry.get(pageAtom)).toEqual({ kind: "environments" });
 
+    registry.set(pathAtom, DRAFT_PATH);
+    expect(registry.get(pageAtom)).toEqual({ kind: "draft" });
+
+    browser.back();
     browser.back();
     browser.back();
     browser.back();

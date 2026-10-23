@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a short list of keys over native arrays, and plain helpers.
 
-// Which Machine groups of the Session list are collapsed: a view preference kept per device in `localStorage`.
+// Which Environment groups of the Session list are collapsed: a view preference kept per device in `localStorage`.
 
 import type { SessionRecord } from "@cloudpid/protocol";
 import * as Atom from "effect/reactivity/Atom";
@@ -11,12 +11,13 @@ import { currentSessionAtom } from "./sessions.ts";
 /** The part of the Session list a group is in: its archived Sessions are grouped apart. */
 export type ListSection = "active" | "archived";
 
-/** A group of the Session list: the Sessions of Machine `machine` in `section`. */
-export const groupKey = (section: ListSection, machine: string): string => `${section}:${machine}`;
+/** A group of the Session list: the Sessions of Environment `environment` in `section`. */
+export const groupKey = (section: ListSection, environment: string): string =>
+  `${section}:${environment}`;
 
 /** The group Session `session` is listed in. */
 const groupOf = (session: SessionRecord): string =>
-  groupKey(session.archivedAt === null ? "active" : "archived", session.machine);
+  groupKey(session.archivedAt === null ? "active" : "archived", session.environment);
 
 /** The groups collapsed on this device (in the runtime's key-value store); every other group is expanded. */
 const collapsedGroupsAtom = Atom.kvs({

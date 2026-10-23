@@ -25,7 +25,7 @@ export interface FakeUpload {
   readonly name: string;
   /** Report the share of it sent, as the browser does. */
   readonly progress: (fraction: number) => Effect.Effect<void>;
-  /** The Machine stored it, under its own name or `stored`'s. */
+  /** The Workspace stored it, under its own name or `stored`'s. */
   readonly finish: (stored?: StoredAttachment) => Effect.Effect<void>;
   /** `finish`, without letting the composer hear of it yet. */
   readonly complete: Effect.Effect<void>;

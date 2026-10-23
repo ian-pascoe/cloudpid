@@ -1,10 +1,12 @@
 import {
-  DEFAULT_MACHINE,
+  DEFAULT_ENVIRONMENT,
+  type EnvironmentRepo,
   type PushSubscription,
   TitleSource,
-  worktreeDirectory,
+  workspaceDirectory,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
 
@@ -21,12 +23,10 @@ export type SessionRecord = {
   readonly title: string | null;
   /** Who set the title: null while there is none. A title the owner set is never replaced; a generated one is set once. */
   readonly titleSource: TitleSource | null;
-  /** The slug of the Machine the Session works on, fixed when it is created. */
-  readonly machine: string;
-  /** The repo directory below `/workspace` that is the Session's `cwd`, fixed when it is created; null for the root. */
-  readonly repo: string | null;
-  /** The Workspace of its own the Session works in (a worktree of `repo`), fixed when it is created; null for none. */
-  readonly workspace: string | null;
+  /** The Environment its Workspace was made from, fixed when it is created. */
+  readonly environment: string;
+  /** The Workspace it works in, fixed when it is created. */
+  readonly workspace: string;
   readonly status: SessionStatus;
   readonly createdAt: number;
   /** When the Session was created or its status last changed. */
@@ -35,60 +35,85 @@ export type SessionRecord = {
   readonly archivedAt: number | null;
 };
 
-/** A Machine as the Registry lists it. */
-export type MachineRecord = {
-  /** Its fixed identifier: the Workspace DO's name, and what its Sessions are bound to. */
-  readonly slug: string;
-  /** The owner's label for it, unique among Machines whatever the case. It starts as the slug. */
+/** An Environment as the Registry lists it (ADR-0016). */
+export type EnvironmentRecord = {
+  readonly id: string;
+  /** The owner's label for it, unique among Environments whatever the case. */
   readonly name: string;
+  /** Its Repos, in the order they were added. */
+  readonly repos: ReadonlyArray<EnvironmentRepo>;
   readonly createdAt: number;
 };
 
-/** A Workspace of its own (ADR-0015): a worktree of a repo on a Machine, on one branch. */
+/** A Workspace (ADR-0016): a working copy of an Environment, with clones of its own on one branch. */
 export type WorkspaceRecord = {
-  /** Eight lowercase hex digits, also its worktree's directory name. */
+  /** Eight lowercase hex digits. */
   readonly id: string;
-  readonly machine: string;
-  readonly repo: string;
+  readonly environment: string;
   readonly branch: string;
-  /** Its worktree: `worktreeDirectory(repo, id)`. */
+  /** The branch its own was made from; null for each Repo's default branch. */
+  readonly base: string | null;
+  /** The Repos it holds, by directory name: the Environment's when it was made. */
+  readonly repos: ReadonlyArray<string>;
+  /** Where its Sessions work: `workspaceDirectory(repos)`. */
   readonly directory: string;
   readonly createdAt: number;
 };
 
-/** A Session's Workspace of its own, as `createSession` is told it: one that exists, or a new one. */
+/** What a Workspace's Durable Object is told to set itself up with: its Repos' addresses, its branch and its base. */
+export type WorkspaceSetup = {
+  readonly id: string;
+  readonly environment: string;
+  readonly branch: string;
+  readonly base: string | null;
+  readonly repos: ReadonlyArray<EnvironmentRepo>;
+};
+
+/** A Session's Workspace, as `createSession` is told it: one that exists, or a new one of an Environment. */
 export type StoredWorkspaceChoice =
   | { readonly kind: "existing"; readonly id: string }
-  | { readonly kind: "new"; readonly id: string; readonly branch: string };
+  | {
+      readonly kind: "new";
+      readonly id: string;
+      readonly environment: string;
+      readonly branch: string;
+      readonly base: string | null;
+    };
 
-/** What became of a Workspace's record: deleted, not registered, or kept because a Session is still bound to it. */
-export type WorkspaceDeletion = "deleted" | "missing" | "in-use";
+/** Why the store refused to create a Session: what it names is not there, or the branch is another Workspace's. */
+export type SessionRefusal =
+  | { readonly refused: "no-environment" }
+  | { readonly refused: "no-workspace" }
+  | { readonly refused: "branch-taken"; readonly workspace: string };
 
-/** How renaming a Machine went. */
-export type MachineRename =
-  | { readonly status: "renamed"; readonly machine: MachineRecord }
+/** What became of a record: deleted, not registered, or kept because something is still bound to it. */
+export type Deletion = "deleted" | "missing" | "in-use";
+
+/** How naming an Environment went. */
+export type EnvironmentNaming =
+  | { readonly status: "named"; readonly environment: EnvironmentRecord }
   | { readonly status: "missing" }
   | { readonly status: "taken" };
 
-/** What became of a Machine's record: deleted, not registered, or kept because a Session is still bound to it. */
-export type MachineDeletion = "deleted" | "missing" | "in-use";
+/** How changing an Environment's Repos went. */
+export type RepoChange = "changed" | "missing" | "taken" | "absent";
+
+/** Something left from before Environments (ADR-0016) whose Durable Object is still to be wiped. */
+export type LegacyObject = { readonly kind: "session" | "machine"; readonly id: string };
 
 export type RegistryStore = {
-  /** Register a Session, idle, bound to `machine` (default `DEFAULT_MACHINE`), which is registered too. */
+  /**
+   * Register a Session, idle, in a Workspace that exists, or in a new one registered with it, in the same transaction.
+   * A refusal says why and registers nothing.
+   */
   readonly createSession: (
     input: {
       readonly id: string;
       readonly title: string | null;
-      readonly machine?: string | undefined;
-      readonly repo?: string | undefined;
-      /**
-       * The Session's Workspace of its own: one that exists (of `machine` and `repo`, or it throws), or a new one to
-       * register with it, in the same transaction. Without it the Session works in the repo's main checkout.
-       */
-      readonly workspace?: StoredWorkspaceChoice | undefined;
+      readonly workspace: StoredWorkspaceChoice;
     },
     now: number,
-  ) => SessionRecord;
+  ) => SessionRecord | SessionRefusal;
   /** The Session registered under `id`, or null. */
   readonly getSession: (id: string) => SessionRecord | null;
   /** Every Session, newest first. */
@@ -108,29 +133,39 @@ export type RegistryStore = {
   readonly unarchiveSession: (id: string) => SessionRecord | null;
   /** Forget a Session; says whether it was registered. */
   readonly deleteSession: (id: string) => boolean;
-  /**
-   * Register a Machine by slug, named after it; one that is already registered keeps its record. When another
-   * Machine already has that name, the new one is named `<slug> 2` (or 3, …).
-   */
-  readonly createMachine: (slug: string, now: number) => MachineRecord;
-  /** The Machine registered under `slug`, or null. */
-  readonly getMachine: (slug: string) => MachineRecord | null;
-  readonly listMachines: () => MachineRecord[];
-  /** Give a Machine a new name, which no other Machine may have in any case. */
-  readonly renameMachine: (slug: string, name: string) => MachineRename;
-  /** Forget a Machine's record and its Workspaces', only while no Session is bound to it (they are never touched). */
-  readonly deleteMachine: (slug: string) => MachineDeletion;
+  /** Register an Environment, with no Repos and no settings overrides, unless another has the name in any case. */
+  readonly createEnvironment: (id: string, name: string, now: number) => EnvironmentNaming;
+  /** The Environment registered under `id`, or null. */
+  readonly getEnvironment: (id: string) => EnvironmentRecord | null;
+  /** Every Environment, newest first. */
+  readonly listEnvironments: () => EnvironmentRecord[];
+  /** Give an Environment a new name, which no other may have in any case. */
+  readonly renameEnvironment: (id: string, name: string) => EnvironmentNaming;
+  /** Forget an Environment, only while no Workspace is made from it. */
+  readonly deleteEnvironment: (id: string) => Deletion;
+  /** Add a Repo to an Environment; `taken` when it has one with that directory name. */
+  readonly addRepo: (environment: string, repo: EnvironmentRepo) => RepoChange;
+  /** Take a Repo out of an Environment; `absent` when it has none of that name. */
+  readonly removeRepo: (environment: string, name: string) => RepoChange;
+  /** The Container settings overrides saved for an Environment, or null when it is not registered. */
+  readonly getEnvironmentSettings: (environment: string) => Schema.Json | null;
+  /** Save an Environment's Container settings overrides; says whether it is registered. */
+  readonly putEnvironmentSettings: (environment: string, overrides: Schema.Json) => boolean;
   /** The Workspace registered under `id`, or null. */
   readonly getWorkspace: (id: string) => WorkspaceRecord | null;
+  /** What Workspace `id` sets itself up with, or null when it is not registered. */
+  readonly getWorkspaceSetup: (id: string) => WorkspaceSetup | null;
   /** Every Workspace, newest first. */
   readonly listWorkspaces: () => WorkspaceRecord[];
   /** Forget a Workspace's record, only while no Session is bound to it. */
-  readonly deleteWorkspace: (id: string) => WorkspaceDeletion;
+  readonly deleteWorkspace: (id: string) => Deletion;
   /**
-   * Forget the records of the Workspaces of Machine `machine` (of its repo `repo` only, when given) that no Session is
-   * bound to, once their worktrees are gone with the Machine's files or the repo.
+   * Up to `limit` of the objects left from before Environments that no caller took in the last `leaseMs`, each taken
+   * from `now`, so two callers do not wipe the same one at once.
    */
-  readonly deleteWorkspacesOf: (machine: string, repo?: string) => void;
+  readonly takeLegacy: (limit: number, now: number, leaseMs: number) => LegacyObject[];
+  /** Forget a legacy object once it is wiped. */
+  readonly forgetLegacy: (object: LegacyObject) => void;
   /** The JSON text of the document called `name`, or null. Documents hold the Registry's own settings. */
   readonly getDocument: (name: string) => string | null;
   /** Save a document, replacing the one with its name. */
@@ -149,29 +184,31 @@ type SessionRow = {
   id: string;
   title: string | null;
   title_source: string | null;
-  /** Null for a Session stored before Sessions had Machines. */
-  workspace: string | null;
-  /** Null for the Machine root, and for a Session stored before Sessions had repos. */
-  repo: string | null;
-  /** The Session's Workspace of its own; null for none, and for a Session stored before Workspaces had worktrees. */
-  worktree: string | null;
+  environment: string;
+  workspace: string;
   status: string;
   created_at: number;
   updated_at: number;
   archived_at: number | null;
 };
 
-/** `name` is null only between migration 8's two statements. */
-// The `workspaces` table and the `sessions.workspace` column predate the rename of Workspaces to Machines. Their
-// names are kept (migrations are released and immutable); `SessionRow.workspace` is the machine's slug.
-type MachineRow = { slug: string; name: string | null; created_at: number };
+type EnvironmentRow = {
+  id: string;
+  name: string;
+  /** JSON: `EnvironmentRepo[]`. */
+  repos: string;
+  /** JSON: the Container settings overrides. */
+  settings: string;
+  created_at: number;
+};
 
-/** A Workspace of its own. The table is named for the worktree it is, since `workspaces` holds the Machines. */
 type WorkspaceRow = {
   id: string;
-  machine: string;
-  repo: string;
+  environment: string;
   branch: string;
+  base: string | null;
+  /** JSON: `EnvironmentRepo[]`, as the Environment had them when the Workspace was made. */
+  repos: string;
   created_at: number;
 };
 
@@ -199,33 +236,45 @@ const checkedTitleSource = (source: string | null): TitleSource | null => {
   return source;
 };
 
+// @effect-diagnostics-next-line schemaSync:off -- the store is synchronous, as SQLite in a Durable Object is, and only reads what it wrote.
+const decodeRepos = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ name: Schema.String, url: Schema.String }))),
+);
+
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
+
 const toSession = (row: SessionRow): SessionRecord => ({
   id: row.id,
   title: row.title,
   titleSource: checkedTitleSource(row.title_source),
-  machine: row.workspace ?? DEFAULT_MACHINE,
-  repo: row.repo,
-  workspace: row.worktree ?? null,
+  environment: row.environment,
+  workspace: row.workspace,
   status: checkedStatus(row.status),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   archivedAt: row.archived_at,
 });
 
-const toMachine = (row: MachineRow): MachineRecord => ({
-  slug: row.slug,
-  name: row.name ?? row.slug,
+const toEnvironment = (row: EnvironmentRow): EnvironmentRecord => ({
+  id: row.id,
+  name: row.name,
+  repos: decodeRepos(row.repos),
   createdAt: row.created_at,
 });
 
-const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => ({
-  id: row.id,
-  machine: row.machine,
-  repo: row.repo,
-  branch: row.branch,
-  directory: worktreeDirectory(row.repo, row.id),
-  createdAt: row.created_at,
-});
+const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => {
+  const repos = Arr.map(decodeRepos(row.repos), (repo) => repo.name);
+
+  return {
+    id: row.id,
+    environment: row.environment,
+    branch: row.branch,
+    base: row.base,
+    repos,
+    directory: workspaceDirectory(repos),
+    createdAt: row.created_at,
+  };
+};
 
 /** The part of a Durable Object's storage the store uses: its SQLite database, and transactions over it. */
 export type RegistryStorage = {
@@ -234,10 +283,14 @@ export type RegistryStorage = {
   readonly transactionSync: <T>(closure: () => T) => T;
 };
 
+/** The default Machine before Environments (ADR-0016), which migration 3 listed. */
+const LEGACY_DEFAULT_MACHINE = "default";
+
 /**
  * The schema, one step per version, applied in order: version N is in place once step N has run. Steps only add
- * (tables, nullable columns, rows), and a step is never edited once released: add the next one. Each step and its
- * version record run in one transaction, so a step that fails partway leaves no trace and is retried whole.
+ * (tables, nullable columns, rows), but for step 11, the cutover to Environments, and a step is never edited once
+ * released: add the next one. Each step and its version record run in one transaction, so a step that fails partway
+ * leaves no trace and is retried whole.
  */
 export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   // 1: the first deployed schema, whose stores recorded no version.
@@ -266,7 +319,7 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec(
       `INSERT OR IGNORE INTO workspaces (slug, created_at)
        VALUES (?, CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
-      DEFAULT_MACHINE,
+      LEGACY_DEFAULT_MACHINE,
     );
   },
   // 4: documents by name, which hold the settings overrides.
@@ -322,6 +375,58 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     );
     sql.exec("ALTER TABLE sessions ADD COLUMN worktree TEXT");
   },
+  // 11: Environments, and a Container per Workspace (ADR-0016). Machines and their Sessions are reset rather than
+  // migrated, so this step is the one that drops: the old tables go, and what their rows named is kept in `legacy`
+  // until its Durable Object is wiped. The `default` Environment is there from the start.
+  (sql) => {
+    sql.exec(`CREATE TABLE legacy (
+      kind TEXT NOT NULL,
+      id TEXT NOT NULL,
+      taken_at INTEGER,
+      PRIMARY KEY (kind, id)
+    ) STRICT`);
+    sql.exec("INSERT INTO legacy (kind, id) SELECT 'session', id FROM sessions");
+    sql.exec("INSERT INTO legacy (kind, id) SELECT 'machine', slug FROM workspaces");
+    sql.exec("DROP TABLE sessions");
+    sql.exec("DROP TABLE workspaces");
+    sql.exec("DROP TABLE worktrees");
+    sql.exec(`CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT,
+      title_source TEXT,
+      environment TEXT NOT NULL,
+      workspace TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER
+    ) STRICT`);
+    sql.exec("CREATE INDEX sessions_by_created ON sessions (created_at DESC, id DESC)");
+    sql.exec("CREATE INDEX sessions_by_workspace ON sessions (workspace)");
+    sql.exec(`CREATE TABLE environments (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      repos TEXT NOT NULL,
+      settings TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    ) STRICT`);
+    sql.exec("CREATE UNIQUE INDEX environments_by_name ON environments (name COLLATE NOCASE)");
+    sql.exec(`CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      base TEXT,
+      repos TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    ) STRICT`);
+    // Two Workspaces of an Environment on one branch would push over each other.
+    sql.exec("CREATE UNIQUE INDEX workspaces_by_branch ON workspaces (environment, branch)");
+    sql.exec(
+      `INSERT INTO environments (id, name, repos, settings, created_at)
+       VALUES (?, 'Default', '[]', '{}', CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
+      DEFAULT_ENVIRONMENT,
+    );
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -352,50 +457,27 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
   const { sql } = storage;
 
-  const getMachine = (slug: string): MachineRecord | null => {
-    const [row] = sql.exec<MachineRow>("SELECT * FROM workspaces WHERE slug = ?", slug).toArray();
+  const getEnvironment = (id: string): EnvironmentRecord | null => {
+    const [row] = sql.exec<EnvironmentRow>("SELECT * FROM environments WHERE id = ?", id).toArray();
 
-    return row === undefined ? null : toMachine(row);
+    return row === undefined ? null : toEnvironment(row);
   };
 
   /**
-   * Whether a Machine other than `slug` is named `name`, whatever the case. The names are compared here, folded as
+   * Whether an Environment other than `id` is named `name`, whatever the case. The names are compared here, folded as
    * the web app folds them (`toLowerCase`), since the index's `NOCASE` folds only ASCII letters; there are few.
    */
-  const nameTaken = (name: string, slug: string): boolean => {
+  const nameTaken = (name: string, id: string): boolean => {
     const folded = name.toLowerCase();
 
     return Arr.some(
-      sql
-        .exec<{ name: string | null }>("SELECT name FROM workspaces WHERE slug != ?", slug)
-        .toArray(),
-      (row) => row.name?.toLowerCase() === folded,
+      sql.exec<{ name: string }>("SELECT name FROM environments WHERE id != ?", id).toArray(),
+      (row) => row.name.toLowerCase() === folded,
     );
   };
 
-  const createMachine = (slug: string, now: number): MachineRecord => {
-    const known = getMachine(slug);
-
-    if (known !== null) return known;
-
-    let name = slug;
-
-    for (let suffix = 2; nameTaken(name, slug); suffix++) name = `${slug} ${suffix}`;
-
-    sql.exec("INSERT INTO workspaces (slug, name, created_at) VALUES (?, ?, ?)", slug, name, now);
-
-    return { slug, name, createdAt: now };
-  };
-
-  const getWorkspace = (id: string): WorkspaceRecord | null => {
-    const [row] = sql.exec<WorkspaceRow>("SELECT * FROM worktrees WHERE id = ?", id).toArray();
-
-    return row === undefined ? null : toWorkspace(row);
-  };
-
-  /** Whether a Session is bound to Workspace `id`. */
-  const workspaceInUse = (id: string): boolean =>
-    sql.exec("SELECT 1 FROM sessions WHERE worktree = ? LIMIT 1", id).toArray().length > 0;
+  const getWorkspaceRow = (id: string): WorkspaceRow | undefined =>
+    sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE id = ?", id).toArray()[0];
 
   const getSession = (id: string): SessionRecord | null => {
     const [row] = sql.exec<SessionRow>("SELECT * FROM sessions WHERE id = ?", id).toArray();
@@ -403,63 +485,72 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     return row === undefined ? null : toSession(row);
   };
 
+  const writeRepos = (environment: string, repos: ReadonlyArray<EnvironmentRepo>) => {
+    sql.exec("UPDATE environments SET repos = ? WHERE id = ?", JSON.stringify(repos), environment);
+  };
+
   return {
-    createSession: (input, now) => {
-      const machine = input.machine ?? DEFAULT_MACHINE;
-      const repo = input.repo ?? null;
-      const workspace = input.workspace;
-      const worktree = workspace?.id ?? null;
+    createSession: (input, now) =>
+      storage.transactionSync((): SessionRecord | SessionRefusal => {
+        const choice = input.workspace;
+        let environment: string;
 
-      storage.transactionSync(() => {
-        createMachine(machine, now);
+        if (choice.kind === "existing") {
+          const known = getWorkspaceRow(choice.id);
 
-        if (workspace?.kind === "existing") {
-          const known = getWorkspace(workspace.id);
+          if (known === undefined) return { refused: "no-workspace" };
 
-          if (known === null || known.machine !== machine || known.repo !== repo) {
-            throw new Error(`No Workspace ${workspace.id} of ${repo} on Machine ${machine}`);
-          }
-        }
+          environment = known.environment;
+        } else {
+          const made = getEnvironment(choice.environment);
 
-        if (workspace?.kind === "new") {
-          if (repo === null) throw new Error("A Workspace of its own needs a repo");
+          if (made === null) return { refused: "no-environment" };
 
+          const [taken] = sql
+            .exec<{ id: string }>(
+              "SELECT id FROM workspaces WHERE environment = ? AND branch = ?",
+              choice.environment,
+              choice.branch,
+            )
+            .toArray();
+
+          if (taken !== undefined) return { refused: "branch-taken", workspace: taken.id };
+
+          environment = made.id;
           sql.exec(
-            "INSERT INTO worktrees (id, machine, repo, branch, created_at) VALUES (?, ?, ?, ?, ?)",
-            workspace.id,
-            machine,
-            repo,
-            workspace.branch,
+            "INSERT INTO workspaces (id, environment, branch, base, repos, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            choice.id,
+            environment,
+            choice.branch,
+            choice.base,
+            JSON.stringify(made.repos),
             now,
           );
         }
 
         sql.exec(
-          "INSERT INTO sessions (id, title, title_source, workspace, repo, worktree, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)",
+          "INSERT INTO sessions (id, title, title_source, environment, workspace, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)",
           input.id,
           input.title,
           input.title === null ? null : "owner",
-          machine,
-          repo,
-          worktree,
+          environment,
+          choice.id,
           now,
           now,
         );
-      });
 
-      return {
-        id: input.id,
-        title: input.title,
-        titleSource: input.title === null ? null : "owner",
-        machine,
-        repo,
-        workspace: worktree,
-        status: "idle",
-        createdAt: now,
-        updatedAt: now,
-        archivedAt: null,
-      };
-    },
+        return {
+          id: input.id,
+          title: input.title,
+          titleSource: input.title === null ? null : "owner",
+          environment,
+          workspace: choice.id,
+          status: "idle",
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+        };
+      }),
 
     getSession,
 
@@ -507,69 +598,162 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         id,
       ).rowsWritten > 0,
 
-    createMachine,
+    createEnvironment: (id, name, now) => {
+      if (nameTaken(name, id) || getEnvironment(id) !== null) return { status: "taken" };
 
-    getMachine,
+      sql.exec(
+        "INSERT INTO environments (id, name, repos, settings, created_at) VALUES (?, ?, '[]', '{}', ?)",
+        id,
+        name,
+        now,
+      );
 
-    listMachines: () =>
+      return { status: "named", environment: { id, name, repos: [], createdAt: now } };
+    },
+
+    getEnvironment,
+
+    listEnvironments: () =>
       Arr.map(
-        sql.exec<MachineRow>("SELECT * FROM workspaces ORDER BY created_at DESC, slug").toArray(),
-        toMachine,
+        sql
+          .exec<EnvironmentRow>("SELECT * FROM environments ORDER BY created_at DESC, id")
+          .toArray(),
+        toEnvironment,
       ),
 
-    renameMachine: (slug, name) => {
-      const known = getMachine(slug);
+    renameEnvironment: (id, name) => {
+      const known = getEnvironment(id);
 
       if (known === null) return { status: "missing" };
 
-      if (nameTaken(name, slug)) return { status: "taken" };
+      if (nameTaken(name, id)) return { status: "taken" };
 
-      sql.exec("UPDATE workspaces SET name = ? WHERE slug = ?", name, slug);
+      sql.exec("UPDATE environments SET name = ? WHERE id = ?", name, id);
 
-      return { status: "renamed", machine: { ...known, name } };
+      return { status: "named", environment: { ...known, name } };
     },
 
-    deleteMachine: (slug) => {
-      if (getMachine(slug) === null) return "missing";
+    deleteEnvironment: (id) => {
+      if (getEnvironment(id) === null) return "missing";
 
       if (
-        sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", slug).toArray().length > 0
+        sql.exec("SELECT 1 FROM workspaces WHERE environment = ? LIMIT 1", id).toArray().length > 0
       ) {
         return "in-use";
       }
 
-      // Its Workspaces' worktrees went with its files.
-      sql.exec("DELETE FROM worktrees WHERE machine = ?", slug);
-      sql.exec("DELETE FROM workspaces WHERE slug = ?", slug);
+      sql.exec("DELETE FROM environments WHERE id = ?", id);
 
       return "deleted";
     },
 
-    getWorkspace,
+    addRepo: (environment, repo) =>
+      storage.transactionSync((): RepoChange => {
+        const known = getEnvironment(environment);
+
+        if (known === null) return "missing";
+
+        if (Arr.some(known.repos, (held) => held.name === repo.name)) return "taken";
+
+        writeRepos(environment, [...known.repos, { name: repo.name, url: repo.url }]);
+
+        return "changed";
+      }),
+
+    removeRepo: (environment, name) =>
+      storage.transactionSync((): RepoChange => {
+        const known = getEnvironment(environment);
+
+        if (known === null) return "missing";
+
+        if (!Arr.some(known.repos, (held) => held.name === name)) return "absent";
+
+        writeRepos(
+          environment,
+          Arr.filter(known.repos, (held) => held.name !== name),
+        );
+
+        return "changed";
+      }),
+
+    getEnvironmentSettings: (environment) => {
+      const [row] = sql
+        .exec<{ settings: string }>("SELECT settings FROM environments WHERE id = ?", environment)
+        .toArray();
+
+      // Text that is not JSON (never written so) reads as no overrides.
+      return row === undefined ? null : Option.getOrElse(decodeJson(row.settings), () => ({}));
+    },
+
+    putEnvironmentSettings: (environment, overrides) =>
+      sql.exec(
+        "UPDATE environments SET settings = ? WHERE id = ?",
+        JSON.stringify(overrides),
+        environment,
+      ).rowsWritten > 0,
+
+    getWorkspace: (id) => {
+      const row = getWorkspaceRow(id);
+
+      return row === undefined ? null : toWorkspace(row);
+    },
+
+    getWorkspaceSetup: (id) => {
+      const row = getWorkspaceRow(id);
+
+      return row === undefined
+        ? null
+        : {
+            id: row.id,
+            environment: row.environment,
+            branch: row.branch,
+            base: row.base,
+            repos: decodeRepos(row.repos),
+          };
+    },
 
     listWorkspaces: () =>
       Arr.map(
-        sql.exec<WorkspaceRow>("SELECT * FROM worktrees ORDER BY created_at DESC, id").toArray(),
+        sql.exec<WorkspaceRow>("SELECT * FROM workspaces ORDER BY created_at DESC, id").toArray(),
         toWorkspace,
       ),
 
     deleteWorkspace: (id) => {
-      if (getWorkspace(id) === null) return "missing";
+      if (getWorkspaceRow(id) === undefined) return "missing";
 
-      if (workspaceInUse(id)) return "in-use";
+      if (sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", id).toArray().length > 0) {
+        return "in-use";
+      }
 
-      sql.exec("DELETE FROM worktrees WHERE id = ?", id);
+      sql.exec("DELETE FROM workspaces WHERE id = ?", id);
 
       return "deleted";
     },
 
-    deleteWorkspacesOf: (machine, repo) => {
-      sql.exec(
-        "DELETE FROM worktrees WHERE machine = ? AND (? IS NULL OR repo = ?) AND id NOT IN (SELECT worktree FROM sessions WHERE worktree IS NOT NULL)",
-        machine,
-        repo ?? null,
-        repo ?? null,
-      );
+    takeLegacy: (limit, now, leaseMs) =>
+      storage.transactionSync(() => {
+        const taken = sql
+          .exec<LegacyObject>(
+            "SELECT kind, id FROM legacy WHERE taken_at IS NULL OR taken_at <= ? ORDER BY kind DESC, id LIMIT ?",
+            now - leaseMs,
+            limit,
+          )
+          .toArray();
+
+        for (const object of taken) {
+          sql.exec(
+            "UPDATE legacy SET taken_at = ? WHERE kind = ? AND id = ?",
+            now,
+            object.kind,
+            object.id,
+          );
+        }
+
+        return Arr.map(taken, ({ kind, id }) => ({ kind, id }));
+      }),
+
+    forgetLegacy: ({ kind, id }) => {
+      sql.exec("DELETE FROM legacy WHERE kind = ? AND id = ?", kind, id);
     },
 
     getDocument: (name) => {

@@ -311,13 +311,14 @@ export class Workspace extends ContainerHost {
     );
   }
 
-  /** The Workspace's own settings in force (Container size, idle time and Container-only paths), for the UI: `getMachineSettings`. */
+  /** The Container settings the Workspace holds (size, idle time and Container-only paths): its Environment's, as last handed over. */
   containerSettings(): Promise<WorkspaceSettingsAnswer> {
     return this.#settings.read();
   }
 
   /**
-   * Replace the saved overrides of the Workspace's settings: `updateMachineSettings`. Overrides that do not resolve
+   * Replace the saved overrides of the Workspace's Container settings with its Environment's, which a Session hands over
+   * when it readies the Workspace (`prepare.ts`): this Worker cannot reach the Registry. Overrides that do not resolve
    * are refused and nothing is saved. A Container that runs keeps the settings it launched with.
    */
   updateContainerSettings(overrides: Schema.Json): Promise<WriteAnswer> {
@@ -337,17 +338,6 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Reset the Workspace to a fresh start (`LifecycleHost.clear`, for `resetMachine`): as `destroy`, but its own
-   * settings (Container size, idle time and Container-only paths) are put back after the wipe. The caller resets the instance with `reset`.
-   */
-  async clear(): Promise<void> {
-    const settings = await this.#settings.saved();
-
-    await this.destroy();
-    await this.#settings.restore(settings);
-  }
-
-  /**
    * Stop the Container and forget its snapshot (`LifecycleHost.restartContainer`), so the next command starts one from
    * the image, installs the Toolchains again and snapshots it. The files are the Workspace's and stay; what only the
    * Container's disk held is gone. Commands running in the Container end. The idle alarm finds no Container to stop.
@@ -360,7 +350,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Reset the object (`ctx.abort`) after `destroy` or `clear` has answered, so the next call to this slug opens an empty Workspace
+   * Reset the object (`ctx.abort`) after `destroy` has answered, so the next call to this name opens an empty Workspace
    * instead of an instance over the wiped storage. The call always fails with `WORKSPACE_DELETED_REASON`, as an abort
    * fails the call that makes it. A reset from a timer in `destroy` raced the reply and failed the deletion.
    */

@@ -1,28 +1,25 @@
 import { SettingsError } from "@cloudpid/config";
 import {
-  DEFAULT_MACHINE,
+  DEFAULT_ENVIRONMENT,
+  EnvironmentError,
   NEW_WORKSPACE,
   parseRepoSource,
   RegistryRpcs,
   SessionActionError,
   SessionNotFound,
-  MachineError,
 } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
+import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
-import type { Repos } from "../workspace/repos.ts";
-import type { Worktrees } from "../workspace/worktrees.ts";
-import type { WorkspaceSettingsRemote } from "../workspace/settings.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
-import type { SessionRecord } from "./store.ts";
+import type { EnvironmentNaming, SessionRecord, SessionRefusal, WorkspaceRecord } from "./store.ts";
 import { SettingsUpdate } from "./settings.ts";
 
 /**
@@ -36,18 +33,62 @@ export type SessionObjects = {
   readonly destroy: (id: string) => Effect.Effect<void>;
 };
 
-/** What the endpoint reaches besides the Registry: the objects behind the Machines and the Sessions. */
-export type RegistryRpcObjects = {
-  /** Lists the repos of a Machine, clones into one and removes one. */
-  readonly repos: Repos;
-  /** Reads and saves a Machine's Container settings (size, idle time, Container-only paths). */
-  readonly machineSettings: WorkspaceSettingsRemote;
-  /** Wipes a Machine's object when it is deleted or reset, and restarts its Container. */
-  readonly machines: WorkspaceObjects;
+/**
+ * What the endpoint reaches besides the Registry: the objects behind the Workspaces and the Sessions, and a way to run
+ * work after the answer, which needs `R` of the request.
+ */
+export type RegistryRpcObjects<R = never> = {
+  /** Wipes a Workspace's object when it is removed, and restarts its Container, by object name. */
+  readonly workspaces: WorkspaceObjects;
   /** Stops a Session when it is archived, and wipes it when it is deleted. */
   readonly sessions: SessionObjects;
-  /** Removes a Workspace's worktree, and releases it with the Workspace's last Session. */
-  readonly worktrees: Worktrees;
+  /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
+  readonly legacy: Effect.Effect<void>;
+  /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
+  readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
+};
+
+/** How many legacy objects one cleanup wipes. */
+const LEGACY_BATCH = 10;
+
+/**
+ * The wipe of what the Registry kept from before Environments (ADR-0016): the Session DOs and Machine Workspace DOs
+ * that migration 11 forgot, a batch per run, until none is left. An object that cannot be wiped is logged and taken
+ * again once its lease runs out. Once a run finds nothing it does no more in this isolate, so later runs cost nothing.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const legacyCleanup = (
+  registries: Cloudflare.DurableObject<Registry>,
+  { sessions, workspaces }: Pick<RegistryRpcObjects, "sessions" | "workspaces">,
+): Effect.Effect<void> => {
+  let cleared = false;
+
+  return Effect.gen(function* () {
+    if (cleared) return;
+
+    const registry = registries.getByName(REGISTRY_NAME);
+    const taken = yield* registry.takeLegacy({ limit: LEGACY_BATCH });
+
+    if (taken.length === 0) {
+      cleared = true;
+
+      return;
+    }
+
+    for (const object of taken) {
+      const wipe =
+        object.kind === "session"
+          ? sessions.destroy(object.id)
+          : Effect.promise(() => workspaces.destroy(object.id));
+
+      yield* wipe.pipe(
+        Effect.andThen(registry.forgetLegacy(object)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning(`Could not wipe the legacy ${object.kind} ${object.id}`, cause),
+        ),
+      );
+    }
+  });
 };
 
 /** How many times a deletion sweeps the Sessions it takes before it gives up on ones that keep starting. */
@@ -65,18 +106,18 @@ const reason = (cause: Cause.Cause<unknown>): string => {
 
 /**
  * The main Worker's `RegistryRpcs` endpoint (`docs/spec.md` → Client and protocol): Effect RPC over HTTP with JSON
- * serialization, answered by the Registry DO, except for what needs a Machine's or a Session's own object
+ * serialization, answered by the Registry DO, except for what needs a Workspace's or a Session's own object
  * (`RegistryRpcObjects`). It is reachable only through the Access gate in front of the Worker.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
-export const serveRegistryRpc = (
+export const serveRegistryRpc = <R = never>(
   registries: Cloudflare.DurableObject<Registry>,
-  { repos, machineSettings, machines, sessions, worktrees }: RegistryRpcObjects,
+  { workspaces, sessions, legacy, background }: RegistryRpcObjects<R>,
 ) =>
   Effect.gen(function* () {
     const registry = registries.getByName(REGISTRY_NAME);
 
-    const failed = (message: string) => MachineError.make({ message });
+    const failed = (message: string) => EnvironmentError.make({ message });
 
     const notFound = (id: string) => SessionNotFound.make({ message: `No session "${id}"` });
 
@@ -101,26 +142,28 @@ export const serveRegistryRpc = (
         Effect.asVoid,
       );
 
-    /** A Machine call that rejects, as the typed failure a client shows. */
-    const inMachine = <A>(what: string, call: () => Promise<A>) =>
+    /** A Workspace call that rejects, as the typed failure a client shows. */
+    const inWorkspace = <A>(what: string, call: () => Promise<A>) =>
       Effect.tryPromise({
         try: call,
         catch: (cause) => failed(`${what}: ${reason(Cause.fail(cause))}`),
       });
 
-    /** Fails unless the Registry lists the Machine: a setting must not wake, or leave state in, an object nobody made. */
-    const registered = (slug: string) =>
-      Effect.gen(function* () {
-        const known = yield* registry.listMachines();
+    /** The Environment registered under `id`, or an `EnvironmentError`. */
+    const knownEnvironment = (id: string) =>
+      registry
+        .getEnvironment({ id })
+        .pipe(
+          Effect.filterOrFail(Predicate.isNotNull, () =>
+            failed(`Environment "${id}" does not exist`),
+          ),
+        );
 
-        if (!Arr.some(known, (machine) => machine.slug === slug)) {
-          return yield* failed(`Machine "${slug}" does not exist: create it first`);
-        }
-      });
-
-    /** Whether no Session is bound where `bound` says, once the Registry is asked again. */
-    const noneBound = (bound: (session: SessionRecord) => boolean) =>
-      registry.listSessions().pipe(Effect.map((listed) => !Arr.some(listed, bound)));
+    /** The Workspace registered under `id`, or an `EnvironmentError`. */
+    const knownWorkspace = (id: string) =>
+      registry
+        .getWorkspace({ id })
+        .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(`No workspace "${id}"`)));
 
     /**
      * Delete every Session `bound` picks (archived ones too), then `wipe` what they worked on, until `settled` says no
@@ -129,8 +172,8 @@ export const serveRegistryRpc = (
      */
     const sweep = (
       bound: (session: SessionRecord) => boolean,
-      wipe: Effect.Effect<void, MachineError>,
-      settled: Effect.Effect<boolean>,
+      wipe: Effect.Effect<void, EnvironmentError>,
+      settled: Effect.Effect<boolean, EnvironmentError>,
       words: SweepWords,
     ) =>
       Effect.gen(function* () {
@@ -149,108 +192,91 @@ export const serveRegistryRpc = (
         }
       });
 
-    /** The Workspace registered under `id`, or a `MachineError`. */
-    const knownWorkspace = (id: string) =>
-      registry
-        .getWorkspace({ id })
-        .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(`No workspace "${id}"`)));
-
-    /**
-     * Once Session `session` is deleted, release its Workspace of its own if no other Session (archived ones included)
-     * is bound to it: the worktree goes, with its record, unless it holds uncommitted changes, which keep both for the
-     * owner to look at or remove. Its branch stays. Never fails: the deletion is done, and a Workspace kept is listed.
-     */
-    const releaseWorkspaceOf = (session: SessionRecord) =>
-      Effect.gen(function* () {
-        const id = session.workspace;
-
-        if (id === null || !(yield* noneBound((other) => other.workspace === id))) return;
-
-        const workspace = yield* registry.getWorkspace({ id });
-
-        if (workspace === null) return;
-
-        const released = yield* Effect.tryPromise(() =>
-          worktrees.on(workspace.machine).release(workspace),
-        );
-
-        if (released) yield* registry.deleteWorkspace({ id });
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning(`Could not release the workspace of session ${session.id}`, cause),
+    /** Remove a Workspace: its Sessions, then its object (files, Container, settings), then its record. */
+    const removeWorkspace = (workspace: WorkspaceRecord) =>
+      // The record goes only once none is bound, so no Session is left in a Workspace that is gone.
+      sweep(
+        (session) => session.workspace === workspace.id,
+        inWorkspace("Could not delete the workspace's files", () =>
+          workspaces.destroy(workspaceObjectName(workspace.id)),
         ),
+        registry
+          .deleteWorkspace({ id: workspace.id })
+          .pipe(Effect.map((deleted) => deleted !== "in-use")),
+        {
+          kept: "The workspace and its remaining sessions are kept.",
+          busy: "Sessions kept starting in the workspace while it was removed: try again",
+        },
       );
 
+    /** The Environment a naming gave, or why there is none. */
+    const named = (naming: EnvironmentNaming, name: string, id?: string) => {
+      switch (naming.status) {
+        case "named":
+          return Effect.succeed(naming.environment);
+        case "taken":
+          return failed(`Another environment is already named "${name}"`);
+        case "missing":
+          return failed(`Environment "${id ?? name}" does not exist`);
+      }
+    };
+
+    /** Why the Registry did not create a Session, for the owner. */
+    const refused = (refusal: SessionRefusal, environment: string, branch: string | undefined) => {
+      switch (refusal.refused) {
+        case "no-environment":
+          return failed(`Environment "${environment}" does not exist`);
+        case "no-workspace":
+          return failed("That workspace does not exist any more");
+        case "branch-taken":
+          return failed(
+            `Workspace "${refusal.workspace}" is already on branch ${branch ?? ""}: start a session in it instead`,
+          );
+      }
+    };
+
     const handlers = RegistryRpcs.toLayer({
-      listSessions: () => registry.listSessions(),
-      createSession: ({ title, machine, repo, workspace, branch }) =>
+      listSessions: () =>
+        registry.listSessions().pipe(
+          // What is left from before Environments is wiped behind the Session list the web app polls.
+          Effect.tap(() => background(legacy)),
+        ),
+      createSession: ({ title, environment, workspace, branch, base }) =>
         Effect.gen(function* () {
-          if (branch !== undefined && workspace !== NEW_WORKSPACE) {
-            return yield* failed("A branch is only for a new workspace");
+          const existing = workspace !== undefined && workspace !== NEW_WORKSPACE;
+
+          if (existing && (branch !== undefined || base !== undefined)) {
+            return yield* failed("A branch and a base are only for a new workspace");
           }
 
-          // A Workspace that exists brings its Machine and repo; the Session cannot name others.
-          if (workspace !== undefined && workspace !== NEW_WORKSPACE) {
+          if (existing) {
+            // A Workspace that exists brings its Environment; the Session cannot name another.
             const known = yield* knownWorkspace(workspace);
 
-            if (
-              (machine !== undefined && machine !== known.machine) ||
-              (repo !== undefined && repo !== known.repo)
-            ) {
+            if (environment !== undefined && environment !== known.environment) {
               return yield* failed(
-                `Workspace "${workspace}" is in ${known.repo} on machine "${known.machine}"`,
+                `Workspace "${workspace}" is in environment "${known.environment}"`,
               );
             }
 
-            return yield* registry.createSession({
+            const created = yield* registry.createSession({
               title,
-              machine: known.machine,
-              repo: known.repo,
               workspace: { kind: "existing", id: workspace },
             });
+
+            return "refused" in created
+              ? yield* refused(created, known.environment, undefined)
+              : created;
           }
 
-          const slug = machine ?? DEFAULT_MACHINE;
+          const made = environment ?? DEFAULT_ENVIRONMENT;
 
-          if (workspace === NEW_WORKSPACE && repo === undefined) {
-            return yield* failed("A new workspace needs a repo");
-          }
-
-          // The Session works in this directory: it must be a repo the Machine holds, not a name that merely parses.
-          if (repo !== undefined) {
-            const held = yield* inMachine("Could not list the Machine's repos", () =>
-              repos.list(slug),
-            );
-
-            if (!held.includes(repo)) {
-              return yield* failed(`Machine "${slug}" has no repo "${repo}"`);
-            }
-          }
-
-          if (workspace !== NEW_WORKSPACE) {
-            return yield* registry.createSession({ title, machine, repo });
-          }
-
-          // git checks a branch out in one worktree at a time.
-          if (branch !== undefined) {
-            const taken = Arr.findFirst(
-              yield* registry.listWorkspaces(),
-              (other) => other.machine === slug && other.repo === repo && other.branch === branch,
-            );
-
-            if (Option.isSome(taken)) {
-              return yield* failed(
-                `Workspace "${taken.value.id}" is already on branch ${branch}: start a session in it instead`,
-              );
-            }
-          }
-
-          return yield* registry.createSession({
+          const created = yield* registry.createSession({
             title,
-            machine,
-            repo,
-            workspace: { kind: "new", branch },
+            workspace: { kind: "new", environment: made, branch, base },
           });
+
+          return "refused" in created ? yield* refused(created, made, branch) : created;
         }),
       renameSession: ({ id, title }) =>
         registry
@@ -267,159 +293,112 @@ export const serveRegistryRpc = (
         registry
           .unarchiveSession({ id })
           .pipe(Effect.filterOrFail(Predicate.isNotNull, () => notFound(id))),
-      deleteSession: ({ id }) =>
-        known(id).pipe(
-          Effect.flatMap((session) =>
-            deleteSession(session).pipe(Effect.andThen(releaseWorkspaceOf(session))),
-          ),
-        ),
-      listMachines: () => registry.listMachines(),
-      createMachine: ({ slug }) => registry.createMachine({ slug }),
-      renameMachine: ({ machine, name }) =>
-        registry.renameMachine({ slug: machine, name }).pipe(
-          Effect.flatMap((renamed) => {
-            switch (renamed.status) {
-              case "renamed":
-                return Effect.succeed(renamed.machine);
-              case "taken":
-                return failed(`Another machine is already named "${name}"`);
-              case "missing":
-                return failed(`Machine "${machine}" does not exist`);
-            }
-          }),
-        ),
-      deleteMachine: ({ machine }) =>
+      // The Workspace stays, with what the Session left in it, until the owner removes it.
+      deleteSession: ({ id }) => known(id).pipe(Effect.flatMap(deleteSession)),
+      listEnvironments: () => registry.listEnvironments(),
+      createEnvironment: ({ name }) =>
+        registry.createEnvironment({ name }).pipe(Effect.flatMap((naming) => named(naming, name))),
+      renameEnvironment: ({ environment, name }) =>
+        registry
+          .renameEnvironment({ id: environment, name })
+          .pipe(Effect.flatMap((naming) => named(naming, name, environment))),
+      deleteEnvironment: ({ environment }) =>
         Effect.gen(function* () {
-          // `New session` always has a Machine to start in.
-          if (machine === DEFAULT_MACHINE) {
-            return yield* failed("The default machine cannot be deleted");
+          // A new Session always has an Environment to start in.
+          if (environment === DEFAULT_ENVIRONMENT) {
+            return yield* failed("The default environment cannot be deleted");
           }
 
-          yield* registered(machine);
+          yield* knownEnvironment(environment);
 
-          // The record goes only once none is bound, so no Session is left on a Machine that is gone.
-          yield* sweep(
-            (session) => session.machine === machine,
-            inMachine("Could not delete the machine's files", () => machines.destroy(machine)),
-            registry
-              .deleteMachine({ slug: machine })
-              .pipe(Effect.map((deleted) => deleted !== "in-use")),
-            {
-              kept: "The machine and its remaining sessions are kept.",
-              busy: "Sessions kept starting in the machine while it was deleted: try again",
-            },
-          );
-        }),
-      resetMachine: ({ machine }) =>
-        Effect.gen(function* () {
-          yield* registered(machine);
+          for (let round = 1; ; round++) {
+            const made = Arr.filter(
+              yield* registry.listWorkspaces(),
+              (workspace) => workspace.environment === environment,
+            );
 
-          const bound = (session: SessionRecord) => session.machine === machine;
+            for (const workspace of made) {
+              yield* removeWorkspace(workspace).pipe(
+                Effect.mapError((error) =>
+                  failed(`${error.message} The environment and its remaining workspaces are kept.`),
+                ),
+              );
+            }
 
-          // The record, name and Container settings stay; a Session bound to it would work on files that are gone.
-          yield* sweep(
-            bound,
-            inMachine("Could not reset the machine's files", () => machines.clear(machine)),
-            noneBound(bound),
-            {
-              kept: "The machine's files and its remaining sessions are kept.",
-              busy: "Sessions kept starting in the machine while it was reset: try again",
-            },
-          );
-          // Their worktrees went with the files.
-          yield* registry.deleteWorkspacesOf({ machine });
+            // The record goes only once no Workspace is made from it.
+            if ((yield* registry.deleteEnvironment({ id: environment })) !== "in-use") return;
+
+            if (round === SWEEP_ROUNDS) {
+              return yield* failed(
+                "Workspaces kept being made in the environment while it was deleted: try again",
+              );
+            }
+          }
         }),
-      restartContainer: ({ machine }) =>
-        Effect.gen(function* () {
-          yield* registered(machine);
-          yield* inMachine("Could not restart the Container", () =>
-            machines.restartContainer(machine),
-          );
-        }),
-      listRepos: ({ machine }) =>
-        inMachine("Could not list the Machine's repos", () => repos.list(machine)),
-      cloneRepo: ({ machine, source, name }) =>
+      addRepo: ({ environment, source, name }) =>
         Effect.gen(function* () {
           const found = yield* Effect.fromResult(parseRepoSource(source)).pipe(
             Effect.mapError(failed),
           );
 
           // The owner's own name for the directory, if any, over the repo's.
-          const repo = { url: found.url, name: name ?? found.name };
+          const repo = name ?? found.name;
+          const added = yield* registry.addRepo({ environment, name: repo, url: found.url });
 
-          // A new slug is registered, as when a Session is created in it.
-          yield* registry.createMachine({ slug: machine });
-          yield* inMachine("Clone failed", () => repos.clone(machine, repo));
-
-          return repo.name;
-        }),
-      removeRepo: ({ machine, repo }) =>
-        Effect.gen(function* () {
-          yield* registered(machine);
-
-          const bound = (session: SessionRecord) =>
-            session.machine === machine && session.repo === repo;
-
-          const held = yield* inMachine("Could not list the Machine's repos", () =>
-            repos.list(machine),
-          );
-
-          // A repo that is gone with Sessions still bound to it can be removed, which deletes them.
-          if (!held.includes(repo) && (yield* noneBound(bound))) {
-            return yield* failed(`Machine "${machine}" has no repo "${repo}"`);
+          switch (added) {
+            case "changed":
+              return repo;
+            case "taken":
+              return yield* failed(`The environment already has a repo in ${repo}: name this one`);
+            default:
+              return yield* failed(`Environment "${environment}" does not exist`);
           }
-
-          yield* sweep(
-            bound,
-            inMachine("Could not remove the repo", () => repos.remove(machine, repo)),
-            noneBound(bound),
-            {
-              kept: "The repo and its remaining sessions are kept.",
-              busy: "Sessions kept starting in the repo while it was removed: try again",
-            },
-          );
-          // Their worktrees went with the repo.
-          yield* registry.deleteWorkspacesOf({ machine, repo });
         }),
-      listWorkspaces: () => registry.listWorkspaces(),
-      removeWorkspace: ({ id }) =>
-        Effect.gen(function* () {
-          const workspace = yield* knownWorkspace(id);
-
-          yield* registered(workspace.machine);
-
-          // The record goes only once none is bound, so no Session is left on a worktree that is gone.
-          yield* sweep(
-            (session) => session.workspace === id,
-            inMachine("Could not remove the workspace's worktree", () =>
-              worktrees.on(workspace.machine).remove(workspace),
+      removeRepo: ({ environment, repo }) =>
+        registry.removeRepo({ environment, name: repo }).pipe(
+          Effect.flatMap((removed) => {
+            switch (removed) {
+              case "changed":
+                return Effect.void;
+              case "absent":
+                return failed(`The environment has no repo "${repo}"`);
+              default:
+                return failed(`Environment "${environment}" does not exist`);
+            }
+          }),
+        ),
+      getEnvironmentSettings: ({ environment }) =>
+        registry
+          .getEnvironmentSettings({ environment })
+          .pipe(
+            Effect.filterOrFail(Predicate.isNotNull, () =>
+              failed(`Environment "${environment}" does not exist`),
             ),
-            registry.deleteWorkspace({ id }).pipe(Effect.map((deleted) => deleted !== "in-use")),
-            {
-              kept: "The workspace and its remaining sessions are kept.",
-              busy: "Sessions kept starting in the workspace while it was removed: try again",
-            },
-          );
-        }),
-      getMachineSettings: ({ machine }) =>
-        Effect.gen(function* () {
-          yield* registered(machine);
-
-          return yield* inMachine("Could not read the Machine's settings", () =>
-            machineSettings.read(machine),
-          );
-        }),
-      updateMachineSettings: ({ machine, overrides }) =>
-        Effect.gen(function* () {
-          yield* registered(machine);
-
-          const answer = yield* inMachine("Could not save the Machine's settings", () =>
-            machineSettings.write(machine, overrides),
-          );
-
-          // Overrides that do not resolve say why, one problem per line, and nothing was saved.
-          return answer.ok ? answer.state : yield* failed(answer.message);
-        }),
+          ),
+      updateEnvironmentSettings: ({ environment, overrides }) =>
+        registry.updateEnvironmentSettings({ environment, overrides }).pipe(
+          Effect.flatMap((update) => {
+            switch (update.status) {
+              case "saved":
+                return Effect.succeed(update.state);
+              // Overrides that do not resolve say why, one problem per line, and nothing was saved.
+              case "rejected":
+                return failed(update.message);
+              case "missing":
+                return failed(`Environment "${environment}" does not exist`);
+            }
+          }),
+        ),
+      listWorkspaces: () => registry.listWorkspaces(),
+      removeWorkspace: ({ id }) => knownWorkspace(id).pipe(Effect.flatMap(removeWorkspace)),
+      restartContainer: ({ workspace }) =>
+        knownWorkspace(workspace).pipe(
+          Effect.andThen(
+            inWorkspace("Could not restart the Container", () =>
+              workspaces.restartContainer(workspaceObjectName(workspace)),
+            ),
+          ),
+        ),
       getSettings: () => registry.getSettings(),
       getPush: ({ endpoint }) => registry.getPush({ endpoint }),
       subscribePush: ({ subscription }) => registry.subscribePush({ subscription }),

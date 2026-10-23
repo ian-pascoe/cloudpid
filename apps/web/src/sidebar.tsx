@@ -1,67 +1,28 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- a list's relative times are read against the wall clock as it renders, and its rows are JSX lists over native arrays.
 
-import { NEW_WORKSPACE, type SessionRecord } from "@cloudpid/protocol";
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
-import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
-import * as Option from "effect/Option";
-import * as AsyncResult from "effect/reactivity/AsyncResult";
-import * as Atom from "effect/reactivity/Atom";
-import {
-  ChevronDown,
-  ChevronRight,
-  FolderGit2,
-  GitBranch,
-  GitFork,
-  Plus,
-  Settings as SettingsIcon,
-  X,
-} from "lucide-react";
+import type { SessionRecord } from "@cloudpid/protocol";
+import { useAtom, useAtomValue } from "@effect/atom-react";
+import { ChevronRight, FolderGit2, Plus, Settings as SettingsIcon, X } from "lucide-react";
 import { useId } from "react";
 import { Button } from "./components/ui/button.tsx";
-import { Menu, MenuItem } from "./components/ui/menu.tsx";
-import { callOf } from "./calls.ts";
 import { relativeTime } from "./format.ts";
 import { cn } from "./lib/utils.ts";
-import { navigate, SETTINGS_PATH, sessionPath, MACHINES_PATH } from "./router.ts";
+import { DRAFT_PATH, ENVIRONMENTS_PATH, navigate, SETTINGS_PATH, sessionPath } from "./router.ts";
 import { listProblemAtom, noticeAtom } from "./app-state.ts";
 import { groupCollapsedAtom, groupKey, type ListSection } from "./collapsed-groups.ts";
-import { failureOf } from "./registry.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { type SessionActions, SessionMenu } from "./session-menu.tsx";
-import {
-  createSessionAtom,
-  currentSessionAtom,
-  type PlaceInMachine,
-  newSessionPlace,
-  placeLabel,
-  sessionListAtom,
-  sessionsErrorAtom,
-} from "./sessions.ts";
-import {
-  reposAtom,
-  machineListAtom,
-  machineNamesAtom,
-  machinesErrorAtom,
-  workspaceBranchesAtom,
-  workspaceListAtom,
-} from "./machines-state.ts";
-import { groupByMachine, splitArchived, type MachineGroup } from "./machines.ts";
+import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
+import { environmentNamesAtom, workspaceBranchesAtom } from "./environments-state.ts";
+import { groupByEnvironment, splitArchived, type EnvironmentGroup } from "./environments.ts";
 
 export const sessionTitle = (session: SessionRecord): string => session.title ?? "Untitled session";
 
-/** Where a Session works, as its list item says: its repo, and its Workspace's branch when it has one of its own. */
+/** Where a Session works, as its list item says: its Workspace's branch, once the Workspaces are listed. */
 const SessionPlaceNote = ({ session }: { session: SessionRecord }) => {
-  const branches = useAtomValue(workspaceBranchesAtom);
+  const branch = useAtomValue(workspaceBranchesAtom)[session.workspace];
 
-  if (session.repo === null) return null;
-
-  const branch = session.workspace === null ? undefined : branches[session.workspace];
-
-  return (
-    <span className="truncate font-mono">
-      {branch === undefined ? session.repo : `${session.repo} · ${branch}`}
-    </span>
-  );
+  return branch === undefined ? null : <span className="truncate font-mono">{branch}</span>;
 };
 
 export const SessionLink = ({
@@ -112,19 +73,19 @@ export const SessionLink = ({
 const SessionItem = ({
   session,
   active,
-  machineName,
+  environmentName,
   actions,
 }: {
   session: SessionRecord;
   active: boolean;
-  machineName: string;
+  environmentName: string;
   actions: SessionActions;
 }) => (
   <li className="group relative">
     <SessionLink session={session} active={active} className="pr-10" />
     <SessionMenu
       session={session}
-      machineName={machineName}
+      environmentName={environmentName}
       actions={actions}
       className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 group-has-[:popover-open]:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
     />
@@ -132,7 +93,7 @@ const SessionItem = ({
 );
 
 /**
- * A Machine's Sessions under a header that collapses them, kept per device. The header counts them and, collapsed,
+ * An Environment's Sessions under a header that collapses them, kept per device. The header counts them and, collapsed,
  * shows whether one is running.
  */
 const SessionGroup = ({
@@ -141,12 +102,15 @@ const SessionGroup = ({
   activeId,
   actions,
 }: {
-  group: MachineGroup;
+  group: EnvironmentGroup;
   section: ListSection;
   activeId: string | undefined;
   actions: SessionActions;
 }) => {
-  const [collapsed, setCollapsed] = useAtom(groupCollapsedAtom(groupKey(section, group.machine)));
+  const [collapsed, setCollapsed] = useAtom(
+    groupCollapsedAtom(groupKey(section, group.environment)),
+  );
+
   const listId = useId();
   const count = group.sessions.length;
   const showsRunning = collapsed && group.running;
@@ -188,7 +152,7 @@ const SessionGroup = ({
               key={session.id}
               session={session}
               active={session.id === activeId}
-              machineName={group.name}
+              environmentName={group.name}
               actions={actions}
             />
           ))}
@@ -198,14 +162,14 @@ const SessionGroup = ({
   );
 };
 
-/** Sessions grouped under their Machine's name, each group collapsible. */
+/** Sessions grouped under their Environment's name, each group collapsible. */
 const SessionGroups = ({
   groups,
   section,
   activeId,
   actions,
 }: {
-  groups: readonly MachineGroup[];
+  groups: readonly EnvironmentGroup[];
   section: ListSection;
   activeId: string | undefined;
   actions: SessionActions;
@@ -213,7 +177,7 @@ const SessionGroups = ({
   <div className="flex flex-col gap-3">
     {groups.map((group) => (
       <SessionGroup
-        key={group.machine}
+        key={group.environment}
         group={group}
         section={section}
         activeId={activeId}
@@ -223,185 +187,47 @@ const SessionGroups = ({
   </div>
 );
 
-/** A note in the New session menu, such as why a list is not there. */
-const MenuNote = ({ children, indented = false }: { children: string; indented?: boolean }) => (
-  <p
-    role="none"
-    className={cn("py-1 text-xs text-muted-foreground", indented ? "pr-2.5 pl-8" : "px-2.5")}
+/** The New session button: it opens the draft, where the owner chooses the Environment and the Workspace. */
+const NewSessionButton = () => (
+  <Button
+    size="sm"
+    variant="outline"
+    onClick={() => {
+      navigate(DRAFT_PATH);
+    }}
   >
-    {children}
-  </p>
+    <Plus />
+    New session
+  </Button>
 );
-
-/**
- * The repos of Machine `machine` in the New session menu: each starts a Session in a new Workspace of its own, and
- * below it in the repo's main checkout or in one of its Workspaces that exist, to share its files.
- */
-const RepoItems = ({
-  machine,
-  disabled,
-  start,
-}: {
-  machine: string;
-  disabled: boolean;
-  start: (place: PlaceInMachine) => void;
-}) => {
-  const listed = useAtomValue(reposAtom(machine));
-  const workspaces = useAtomValue(workspaceListAtom) ?? [];
-  const repos = listed.pipe(AsyncResult.value, Option.getOrNull);
-
-  if (repos === null)
-    return (
-      <MenuNote indented>
-        {AsyncResult.isFailure(listed) ? "Couldn't list repos" : "Loading repos…"}
-      </MenuNote>
-    );
-
-  return repos.map((repo) => (
-    <div key={repo} role="group" aria-label={repo}>
-      <MenuItem
-        disabled={disabled}
-        onSelect={() => {
-          start({ machine, repo, workspace: NEW_WORKSPACE });
-        }}
-        className="pl-8 text-xs"
-      >
-        <GitBranch aria-hidden />
-        <span className="truncate font-mono">{repo}</span>
-        <span className="ml-auto shrink-0 text-muted-foreground">new workspace</span>
-      </MenuItem>
-      <MenuItem
-        disabled={disabled}
-        onSelect={() => {
-          start({ machine, repo });
-        }}
-        className="pl-12 text-xs text-muted-foreground"
-      >
-        <span className="truncate">main checkout</span>
-      </MenuItem>
-      {workspaces
-        .filter((workspace) => workspace.machine === machine && workspace.repo === repo)
-        .map((workspace) => (
-          <MenuItem
-            key={workspace.id}
-            disabled={disabled}
-            onSelect={() => {
-              start({ machine, repo, workspace: workspace.id });
-            }}
-            className="pl-12 text-xs"
-          >
-            <GitFork aria-hidden />
-            <span className="truncate font-mono">{workspace.branch}</span>
-          </MenuItem>
-        ))}
-    </div>
-  ));
-};
-
-/** Whether the New session menu is open: its repos are asked for only then. */
-const PlacesOpen = ScopedAtom.make(() => Atom.make(false));
-
-/**
- * The New session button: its main part starts a Session where the shown Session works, in a new Workspace of its repo
- * (the default Machine's root when none is shown); its chevron opens a menu of every Machine, each with its repos and
- * their Workspaces, to start one anywhere.
- */
-const NewSessionButton = () => {
-  const shown = useAtomValue(currentSessionAtom);
-  const names = useAtomValue(machineNamesAtom);
-  const branches = useAtomValue(workspaceBranchesAtom);
-  const machines = useAtomValue(machineListAtom);
-  const machinesError = useAtomValue(machinesErrorAtom);
-  const created = useAtomValue(createSessionAtom);
-  const createSession = useAtomSet(createSessionAtom);
-  const [open, setOpen] = useAtom(PlacesOpen.use());
-  const place = newSessionPlace(shown);
-  const label = `New session in ${placeLabel(place, names, branches)}`;
-  const creating = created.waiting;
-
-  const start = (where: PlaceInMachine) => {
-    createSession(callOf(where));
-  };
-
-  return (
-    <div className="flex items-center">
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={creating}
-        title={label}
-        aria-label={label}
-        onClick={() => {
-          start(place);
-        }}
-        className="rounded-r-none"
-      >
-        <Plus />
-        New session
-      </Button>
-      <Menu
-        label="New session in…"
-        title="Choose where the session starts"
-        icon={<ChevronDown className="size-4" aria-hidden />}
-        disabled={creating}
-        onOpenChange={setOpen}
-        className="rounded-l-none border border-l-0 border-input text-foreground"
-      >
-        {machines === null ? (
-          <MenuNote>{machinesError ?? "Loading…"}</MenuNote>
-        ) : (
-          machines.map((machine) => (
-            <div key={machine.slug} role="group" aria-label={machine.name}>
-              <MenuItem
-                disabled={creating}
-                onSelect={() => {
-                  start({ machine: machine.slug });
-                }}
-              >
-                <FolderGit2 aria-hidden />
-                <span className="truncate">{machine.name}</span>
-              </MenuItem>
-              {open && <RepoItems machine={machine.slug} disabled={creating} start={start} />}
-            </div>
-          ))
-        )}
-      </Menu>
-    </div>
-  );
-};
 
 export const Sidebar = ({
   activeId,
   settingsActive,
-  machinesActive,
+  environmentsActive,
   className,
 }: {
   activeId: string | undefined;
   settingsActive: boolean;
-  machinesActive: boolean;
+  environmentsActive: boolean;
   className?: string;
 }) => {
   const sessions = useAtomValue(sessionListAtom);
   const [notice, setNotice] = useAtom(noticeAtom);
   const listError = useAtomValue(sessionsErrorAtom);
-  const names = useAtomValue(machineNamesAtom);
-  // Why the last new Session could not be created, here or by the composer's `/new`.
-  const created = useAtomValue(createSessionAtom);
-  const createError = failureOf(created);
+  const names = useAtomValue(environmentNamesAtom);
   // An archive or unarchive from an item's menu that failed: shown with the list's own error.
   const problem = useAtomValue(listProblemAtom);
   const actions = useSessionActions(listProblemAtom);
 
   const { active, archived } = splitArchived(sessions ?? []);
-  const error = problem ?? createError ?? listError;
+  const error = problem ?? listError;
 
   return (
     <nav aria-label="Sessions" className={cn("flex w-full flex-col border-r md:w-72", className)}>
       <div className="flex items-center justify-between gap-2 p-3">
         <h1 className="text-sm font-semibold">Sessions</h1>
-        <PlacesOpen.Provider>
-          <NewSessionButton />
-        </PlacesOpen.Provider>
+        <NewSessionButton />
       </div>
       {notice !== null && (
         <div
@@ -437,7 +263,7 @@ export const Sidebar = ({
               </p>
             ) : (
               <SessionGroups
-                groups={groupByMachine(active, names)}
+                groups={groupByEnvironment(active, names)}
                 section="active"
                 activeId={activeId}
                 actions={actions}
@@ -457,7 +283,7 @@ export const Sidebar = ({
                 </summary>
                 <div className="mt-2">
                   <SessionGroups
-                    groups={groupByMachine(archived, names)}
+                    groups={groupByEnvironment(archived, names)}
                     section="archived"
                     activeId={activeId}
                     actions={actions}
@@ -470,21 +296,21 @@ export const Sidebar = ({
       </div>
       <div className="flex flex-col gap-0.5 border-t p-2">
         <a
-          href={MACHINES_PATH}
-          aria-current={machinesActive ? "page" : undefined}
+          href={ENVIRONMENTS_PATH}
+          aria-current={environmentsActive ? "page" : undefined}
           onClick={(event) => {
             if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
 
             event.preventDefault();
-            navigate(MACHINES_PATH);
+            navigate(ENVIRONMENTS_PATH);
           }}
           className={cn(
             "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
-            machinesActive && "bg-accent text-accent-foreground",
+            environmentsActive && "bg-accent text-accent-foreground",
           )}
         >
           <FolderGit2 className="size-4" aria-hidden />
-          Machines
+          Environments
         </a>
         <a
           href={SETTINGS_PATH}

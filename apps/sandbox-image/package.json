@@ -7,7 +7,7 @@
     ".": "./src/index.ts",
     "./toolchains": "./src/toolchains.ts",
     "./supervisor": "./src/supervisor.ts",
-    "./worktrees": "./src/worktrees.ts"
+    "./workspaces": "./src/workspaces.ts"
   },
   "scripts": {
     "typecheck": "tsc",

@@ -18,3 +18,9 @@ export const SKILLS_MOUNT = "/workspace/.agents/skills";
  * `ctx.container.images` (alchemy names each Container's image by its id).
  */
 export const WORKSPACE_CONTAINER = "WorkspaceContainer";
+
+/**
+ * The name of Workspace `id`'s Durable Object (ADR-0016): one object, with its Container, per Workspace. The colon keeps
+ * it apart from the slugs the Machines' objects were named by before Environments, which are wiped at the cutover.
+ */
+export const workspaceObjectName = (id: string): string => `ws:${id}`;

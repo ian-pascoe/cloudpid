@@ -2,7 +2,7 @@
 
 // The Session list and what the owner does to a Session in it: create, rename, archive, unarchive, delete.
 
-import { DEFAULT_MACHINE, NEW_WORKSPACE, type SessionRecord } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE, type SessionRecord } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -43,64 +43,36 @@ export const sessionListAtom = Atom.map(sessionsAtom, (result) =>
 export const sessionsErrorAtom = Atom.map(sessionsAtom, failureOf);
 
 /**
- * Where a new Session works: a Workspace of repo `repo` of Machine `machine` (`NEW_WORKSPACE` for a new one of its
- * own, the id of one that exists, or none for the repo's main checkout), or the Machine's root without a repo; the
- * default Machine's root when nothing is named.
+ * Where a new Session works, as `createSession` is told: an Environment (the default one when nothing is named), and
+ * `NEW_WORKSPACE` for a new Workspace of its own or the id of one that exists. A new Workspace may be given its branch
+ * and the branch it starts from.
  */
 export type SessionPlace = {
-  readonly machine?: string;
-  readonly repo?: string;
+  readonly environment?: string;
   readonly workspace?: string;
+  readonly branch?: string;
+  readonly base?: string;
 };
-
-/** A place that names its Machine. */
-export type PlaceInMachine = SessionPlace & { readonly machine: string };
 
 /**
- * Where the New session button starts one, as the composer's `/new` does: in a new Workspace of the shown Session's
- * repo, so it works on its own branch (ADR-0015), or at its Machine's root when it has no repo; at the default
- * Machine's root when none is shown.
+ * Where the composer's `/new` starts a Session: in a new Workspace of the shown Session's Environment, or of the default
+ * Environment when none is shown.
  */
-export const newSessionPlace = (shown: SessionRecord | undefined): PlaceInMachine =>
-  shown === undefined
-    ? { machine: DEFAULT_MACHINE }
-    : shown.repo === null
-      ? { machine: shown.machine }
-      : { machine: shown.machine, repo: shown.repo, workspace: NEW_WORKSPACE };
+export const newSessionPlace = (shown: SessionRecord | undefined): SessionPlace => ({
+  environment: shown?.environment ?? DEFAULT_ENVIRONMENT,
+  workspace: NEW_WORKSPACE,
+});
 
-/** Where a Session that shares `session`'s Workspace starts: its worktree, its main checkout, or its Machine's root. */
-export const sameWorkspacePlace = (session: SessionRecord): PlaceInMachine => {
-  if (session.repo === null) return { machine: session.machine };
+/** Where a Session that shares `session`'s Workspace starts: in that Workspace. */
+export const sameWorkspacePlace = (session: SessionRecord): SessionPlace => ({
+  workspace: session.workspace,
+});
 
-  return session.workspace === null
-    ? { machine: session.machine, repo: session.repo }
-    : { machine: session.machine, repo: session.repo, workspace: session.workspace };
-};
-
-/** A Workspace as the owner reads it: new, its branch (`branches`, by id), or the repo's main checkout. */
+/** A Workspace as the owner reads it: new, or its branch (`branches`, by id). */
 export const workspaceLabel = (
-  workspace: string | undefined,
+  workspace: string,
   branches: Readonly<Record<string, string>> = {},
-): string => {
-  if (workspace === undefined) return "main checkout";
-
-  if (workspace === NEW_WORKSPACE) return "new workspace";
-
-  return branches[workspace] ?? `workspace ${workspace}`;
-};
-
-/** A place as the owner reads it: the Machine's name (its slug when not known), then the repo and its Workspace. */
-export const placeLabel = (
-  place: PlaceInMachine,
-  names: Readonly<Record<string, string>>,
-  branches: Readonly<Record<string, string>> = {},
-): string => {
-  const machine = names[place.machine] ?? place.machine;
-
-  return place.repo === undefined
-    ? machine
-    : `${machine} · ${place.repo} · ${workspaceLabel(place.workspace, branches)}`;
-};
+): string => (workspace === NEW_WORKSPACE ? "New workspace" : (branches[workspace] ?? workspace));
 
 /** Register a new Session, idle, and open it; the list asks again. */
 export const createSessionAtom = appRuntime.fn(
@@ -149,8 +121,7 @@ export const unarchiveSessionAtom = appRuntime.fn(
 );
 
 /**
- * Delete Session `id` for good; the files it wrote in its Machine stay, but for a worktree of its Workspace's own it
- * was the last Session in, which goes unless it holds uncommitted changes. Once it is gone its page is left, saying so;
+ * Delete Session `id` for good; its Workspace stays, with the files the Session wrote. Once it is gone its page is left, saying so;
  * its socket's close, which can come first, is then no news. Each Session has its own, so one's delete does not show on
  * another's dialog.
  */

@@ -1,10 +1,10 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over native arrays, not combinators.
 
 import {
-  MAX_MACHINE_NAME_LENGTH,
+  branchProblem,
+  MAX_ENVIRONMENT_NAME_LENGTH,
   parseRepoSource,
   type SessionRecord,
-  MachineSlug,
 } from "@cloudpid/protocol";
 import {
   DEFAULT_CONTAINER_SETTINGS,
@@ -15,13 +15,12 @@ import {
   MAX_IGNORE_PATTERNS,
 } from "@cloudpid/config";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 
-/** A Machine's Sessions, newest first. */
-export type MachineGroup = {
-  /** The Machine's slug. */
-  readonly machine: string;
-  /** The Machine's name, or its slug when it is not known. */
+/** An Environment's Sessions, newest first. */
+export type EnvironmentGroup = {
+  /** The Environment's id. */
+  readonly environment: string;
+  /** The Environment's name, or its id when it is not known. */
   readonly name: string;
   readonly sessions: readonly SessionRecord[];
   /** Whether any of them is running, so a collapsed group still shows it. */
@@ -29,25 +28,25 @@ export type MachineGroup = {
 };
 
 /**
- * `sessions` (newest first) grouped by the Machine they work on: the Machine of the newest Session first, the
- * Sessions of each in the order given. `names` maps a slug to the Machine's name.
+ * `sessions` (newest first) grouped by the Environment they were made in: the Environment of the newest Session first,
+ * the Sessions of each in the order given. `names` maps an id to the Environment's name.
  */
-export const groupByMachine = (
+export const groupByEnvironment = (
   sessions: readonly SessionRecord[],
   names: Readonly<Record<string, string>> = {},
-): readonly MachineGroup[] => {
+): readonly EnvironmentGroup[] => {
   const groups = new Map<string, SessionRecord[]>();
 
   for (const session of sessions) {
-    const group = groups.get(session.machine);
+    const group = groups.get(session.environment);
 
-    if (group === undefined) groups.set(session.machine, [session]);
+    if (group === undefined) groups.set(session.environment, [session]);
     else group.push(session);
   }
 
-  return [...groups].map(([machine, grouped]) => ({
-    machine,
-    name: names[machine] ?? machine,
+  return [...groups].map(([environment, grouped]) => ({
+    environment,
+    name: names[environment] ?? environment,
     sessions: grouped,
     running: grouped.some((session) => session.status === "running"),
   }));
@@ -66,36 +65,39 @@ export const splitArchived = (sessions: readonly SessionRecord[]): SplitSessions
 });
 
 /**
- * Why `text` cannot be a Machine's name, or null when it can: trimmed, not empty, at most 80 characters, and no name
- * in `others` (the other Machines') whatever the case. The server checks the same.
+ * Why `text` cannot be an Environment's name, or null when it can: trimmed, not empty, at most 80 characters, and no
+ * name in `others` (the other Environments') whatever the case. The server checks the same.
  */
-export const machineNameProblem = (text: string, others: readonly string[]): string | null => {
+export const environmentNameProblem = (text: string, others: readonly string[]): string | null => {
   const name = text.trim();
 
-  if (name === "") return "Give the machine a name";
+  if (name === "") return "Give the environment a name";
 
-  if (name.length > MAX_MACHINE_NAME_LENGTH)
-    return `Use at most ${MAX_MACHINE_NAME_LENGTH} characters`;
+  if (name.length > MAX_ENVIRONMENT_NAME_LENGTH)
+    return `Use at most ${MAX_ENVIRONMENT_NAME_LENGTH} characters`;
 
   const lower = name.toLowerCase();
 
   return others.some((other) => other.toLowerCase() === lower)
-    ? "Another machine is already named that"
+    ? "Another environment is already named that"
     : null;
 };
 
-/** Whether the owner typed the Machine's slug to confirm deleting it. */
-export const deleteConfirmed = (slug: string, typed: string): boolean => typed.trim() === slug;
+/** Whether the owner typed `expected` (an Environment's name, a branch) to confirm a removal. */
+export const deleteConfirmed = (expected: string, typed: string): boolean =>
+  typed.trim() === expected;
 
-const isSlug = Schema.is(MachineSlug);
+/**
+ * Why `text` cannot be a branch the owner may leave empty (the draft's base and branch name), or null when it can: empty
+ * means the default, and anything else follows the server's rules (`branchProblem`).
+ */
+export const optionalBranchProblem = (text: string): string | null => {
+  const name = text.trim();
 
-/** Why `text` cannot be a Machine slug, or null when it can. */
-export const slugProblem = (text: string): string | null =>
-  isSlug(text)
-    ? null
-    : "Use lowercase letters, digits and dashes, starting with a letter or digit (up to 63)";
+  return name === "" ? null : (branchProblem(name) ?? null);
+};
 
-/** Why `text` cannot be cloned, or null when it can: the same rules as the server's, so a mistake shows as it is typed. */
+/** Why `text` cannot be added as a Repo, or null when it can: the same rules as the server's, so a mistake shows as it is typed. */
 export const sourceProblem = (text: string): string | null => {
   const parsed = parseRepoSource(text);
 
@@ -126,7 +128,7 @@ export const ignorePatternsFrom = (text: string): readonly string[] =>
     .filter((line) => line !== "");
 
 /**
- * Why `text` cannot be a Machine's extra Container-only paths, or null when it can: the server's rules
+ * Why `text` cannot be an Environment's extra Container-only paths, or null when it can: the server's rules
  * (`ignorePatternProblem`), with the first pattern that breaks them.
  */
 export const ignoreProblem = (text: string): string | null => {

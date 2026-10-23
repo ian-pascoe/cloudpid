@@ -6,14 +6,15 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { answerAttachment, type AttachmentFiles } from "./attachments.ts";
 import { REGISTRY_NAME, type Registry } from "./registry/Registry.ts";
 import type { AttachmentRoute } from "./routes.ts";
+import { workspaceObjectName } from "./workspace/binding.ts";
 
 /**
- * Serve `route` for a Session the Registry knows, in the Workspace it is bound to (`filesFor(slug)`); one it does not
+ * Serve `route` for a Session the Registry knows, in the Workspace it is bound to (`filesFor(objectName)`); one it does not
  * know answers 404, so an upload never lands for a Session nobody lists.
  */
 export const serveAttachment = Effect.fn("serveAttachment")(function* (
   registries: Cloudflare.DurableObject<Registry>,
-  filesFor: (slug: string) => AttachmentFiles,
+  filesFor: (objectName: string) => AttachmentFiles,
   route: AttachmentRoute,
 ) {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -27,7 +28,7 @@ export const serveAttachment = Effect.fn("serveAttachment")(function* (
   const web = yield* Effect.orDie(HttpServerRequest.toWeb(request));
 
   const response = yield* Effect.promise(() =>
-    answerAttachment(web, route, filesFor(session.machine)),
+    answerAttachment(web, route, filesFor(workspaceObjectName(session.workspace))),
   );
 
   return HttpServerResponse.fromWeb(response);

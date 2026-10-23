@@ -7,6 +7,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { REQUEST_COST, type TestSession } from "./host.fixture.ts";
 
+/** A new Workspace of the default Environment, as `createSession` makes one. */
+const NEW_IN_DEFAULT = {
+  kind: "new",
+  id: "0a1b2c3d",
+  environment: "default",
+  branch: "cloudpid/0a1b2c3d",
+  base: null,
+} as const;
+
 declare global {
   namespace Cloudflare {
     /** The bindings `vitest.config.ts` gives the test Worker. */
@@ -48,7 +57,7 @@ const registered = async (prefix = "session") => {
   const registry = env.REGISTRIES.getByName(registryName);
   const stub = env.SESSIONS.getByName(sessionId);
 
-  await registry.createSession({ id: sessionId, title: null }, 1);
+  await registry.createSession({ id: sessionId, title: null, workspace: NEW_IN_DEFAULT }, 1);
   await runInDurableObject(stub, (instance: TestSession) => instance.reportTo(registryName));
 
   const status = async () => (await registry.listSessions())[0]?.status;

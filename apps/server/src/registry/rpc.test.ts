@@ -1,16 +1,13 @@
 // @effect-diagnostics asyncFunction:off
+import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
 import {
-  DEFAULT_SETTINGS,
-  DEFAULT_CONTAINER_SETTINGS,
-  SettingsError,
-  type ContainerSettings,
-} from "@cloudpid/config";
-import {
+  DEFAULT_ENVIRONMENT,
+  EnvironmentError,
   RegistryRpcs,
   RPC_PATH,
   SessionActionError,
   SessionNotFound,
-  MachineError,
+  workspaceDirectory,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -19,6 +16,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
@@ -26,41 +24,38 @@ import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { expect, it } from "vitest";
 import { isRegistryRpc } from "../routes.ts";
-import type { WorkspaceChoice } from "./Registry.ts";
-import { serveRegistryRpc, type SessionObjects } from "./rpc.ts";
-import { SettingsUpdate } from "./settings.ts";
-import type { Repos } from "../workspace/repos.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
-import type { WorkspaceSettingsRemote } from "../workspace/settings.ts";
-import type { Worktree, Worktrees } from "../workspace/worktrees.ts";
-import type { SessionRecord, MachineRecord, WorkspaceRecord } from "./store.ts";
-
-/** The overrides the fake saved, as the fields of the settings they replace. */
-// SAFETY: the tests only save overrides of the settings' own shape.
-const asSettings = (overrides: Schema.Json) => overrides as Partial<ContainerSettings>;
+import type { RegistryMethods } from "./Registry.ts";
+import { legacyCleanup, serveRegistryRpc, type SessionObjects } from "./rpc.ts";
+import { SettingsUpdate } from "./settings.ts";
+import type {
+  EnvironmentNaming,
+  EnvironmentRecord,
+  LegacyObject,
+  RepoChange,
+  SessionRecord,
+  SessionRefusal,
+  WorkspaceRecord,
+} from "./store.ts";
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
   const sessions: SessionRecord[] = [];
   const workspaces: WorkspaceRecord[] = [];
-  const machines: MachineRecord[] = [{ slug: "default", name: "default", createdAt: 0 }];
+
+  const environments: EnvironmentRecord[] = [
+    { id: DEFAULT_ENVIRONMENT, name: "Default", repos: [], createdAt: 0 },
+  ];
+  /** The Container settings overrides saved per Environment. */
+
+  const overridesOf = new Map<string, Schema.Json>();
+  /** What is left from before Environments, to wipe. */
+  const legacyObjects: LegacyObject[] = [];
   const names: string[] = [];
   /** The endpoints of the Web Push subscriptions kept. */
   const pushes = new Set<string>();
   /** The Registry methods called, in order. */
   const calls: string[] = [];
-
-  const registerWorkspace = (slug: string): MachineRecord =>
-    Option.getOrElse(
-      Arr.findFirst(machines, (machine) => machine.slug === slug),
-      () => {
-        const record: MachineRecord = { slug, name: slug, createdAt: 1 };
-
-        machines.push(record);
-
-        return record;
-      },
-    );
 
   /** Replace the first of `list` that `matches` with what `change` makes of it; the changed one, or null. */
   const replace = <A>(list: A[], matches: (item: A) => boolean, change: (item: A) => A) =>
@@ -97,122 +92,139 @@ const fakeRegistries = () => {
       );
     });
 
+  /** Whether `name` is another Environment's, whatever the case. */
+  const nameTaken = (name: string, id: string) =>
+    Arr.some(
+      environments,
+      (other) => other.id !== id && other.name.toLowerCase() === name.toLowerCase(),
+    );
+
   /** The Sessions whose object fails every call, with the message it fails with. */
   const brokenSessions = new Map<string, string>();
 
+  /** An object that throws, or cannot be reached, is a defect of the call. */
+  const sessionCall = (call: string, id: string) =>
+    Effect.suspend(() => {
+      calls.push(`${call}:${id}`);
+
+      const broken = brokenSessions.get(id);
+
+      return broken === undefined ? Effect.void : Effect.die(new Error(broken));
+    });
+
   /** The objects behind the Sessions: what was asked of each, in `calls`. */
   const sessionObjects: SessionObjects = {
-    stop: (id) =>
-      Effect.suspend(() => {
-        calls.push(`stop:${id}`);
-
-        const broken = brokenSessions.get(id);
-
-        // An object that throws, or cannot be reached, is a defect of the call.
-        return broken === undefined ? Effect.void : Effect.die(new Error(broken));
-      }),
-    destroy: (id) =>
-      Effect.suspend(() => {
-        calls.push(`destroy:${id}`);
-
-        const broken = brokenSessions.get(id);
-
-        // An object that throws, or cannot be reached, is a defect of the call.
-        return broken === undefined ? Effect.void : Effect.die(new Error(broken));
-      }),
+    stop: (id) => sessionCall("stop", id),
+    destroy: (id) => sessionCall("destroy", id),
   };
 
-  /** Runs once, the next time a Machine's object is wiped: what happens meanwhile. */
-  let duringDestroy: (() => void) | undefined;
+  /** Runs the next times a Workspace's object is wiped: what happens meanwhile. */
+  let duringDestroy: Array<() => void> = [];
 
-  /** The objects behind the Machines. */
-  const workspaceObjects: WorkspaceObjects = {
-    destroy: (slug) => {
-      calls.push(`destroyWorkspace:${slug}`);
-      duringDestroy?.();
-      duringDestroy = undefined;
-
-      return Promise.resolve();
-    },
-    clear: (slug) => {
-      calls.push(`clearWorkspace:${slug}`);
-      duringDestroy?.();
-      duringDestroy = undefined;
-      held.delete(slug);
-
-      return Promise.resolve();
-    },
-    restartContainer: (slug) => {
-      calls.push(`restartContainer:${slug}`);
-
-      return workspaceFails === undefined
-        ? Promise.resolve()
-        : Promise.reject(new Error(workspaceFails));
-    },
-  };
-
-  /** Why the next Machine object call fails, if it does. */
+  /** Why the Workspace objects' calls fail, if they do. */
   let workspaceFails: string | undefined;
 
+  const workspaceCall = (call: string, name: string) => {
+    calls.push(`${call}:${name}`);
+
+    return workspaceFails === undefined
+      ? Promise.resolve()
+      : Promise.reject(new Error(workspaceFails));
+  };
+
+  /** The objects behind the Workspaces, by object name. */
+  const workspaceObjects: WorkspaceObjects = {
+    destroy: (name) => {
+      const result = workspaceCall("destroyWorkspace", name);
+
+      duringDestroy.shift()?.();
+
+      return result;
+    },
+    restartContainer: (name) => workspaceCall("restartContainer", name),
+  };
+
+  /** Runs once, when the next Registry `createSession` is called: what happens just before it is answered. */
+  let beforeCreate: (() => void) | undefined;
+
+  /** The work the endpoint handed to `background`, not yet run. */
+  const queued: Array<Effect.Effect<void>> = [];
+
   const registry = {
-    createSession: ({
-      title,
-      machine,
-      repo,
-      workspace,
-    }: {
-      title?: string | undefined;
-      machine?: string;
-      repo?: string;
-      workspace?: WorkspaceChoice;
-    }) =>
-      Effect.sync(() => {
+    createSession: ({ title, workspace }) =>
+      Effect.sync((): SessionRecord | SessionRefusal => {
         calls.push("createSession");
-        registerWorkspace(machine ?? "default");
+        beforeCreate?.();
+        beforeCreate = undefined;
 
-        let workspaceId = workspace?.kind === "existing" ? workspace.id : null;
+        let record: WorkspaceRecord | undefined;
 
-        if (workspace?.kind === "new") {
-          workspaceId = String(workspaces.length + 1).padStart(8, "0");
-          workspaces.unshift({
-            id: workspaceId,
-            machine: machine ?? "default",
-            repo: repo ?? "",
-            branch: workspace.branch ?? `cloudpid/${workspaceId}`,
-            directory: `/workspace/.worktrees/${repo}/${workspaceId}`,
+        if (workspace.kind === "existing") {
+          record = Arr.findFirst(workspaces, (held) => held.id === workspace.id).pipe(
+            Option.getOrUndefined,
+          );
+
+          if (record === undefined) return { refused: "no-workspace" };
+        } else {
+          const environment = Arr.findFirst(
+            environments,
+            (held) => held.id === workspace.environment,
+          );
+
+          if (Option.isNone(environment)) return { refused: "no-environment" };
+
+          const id = String(workspaces.length + 1).padStart(8, "0");
+          const branch = workspace.branch ?? `cloudpid/${id}`;
+
+          const taken = Arr.findFirst(
+            workspaces,
+            (held) => held.environment === workspace.environment && held.branch === branch,
+          );
+
+          if (Option.isSome(taken)) return { refused: "branch-taken", workspace: taken.value.id };
+
+          const repoNames = Arr.map(environment.value.repos, (repo) => repo.name);
+
+          record = {
+            id,
+            environment: workspace.environment,
+            branch,
+            base: workspace.base ?? null,
+            repos: repoNames,
+            directory: workspaceDirectory(repoNames),
             createdAt: 1,
-          });
+          };
+          workspaces.unshift(record);
         }
 
-        const record: SessionRecord = {
+        const created: SessionRecord = {
           id: `session-${sessions.length + 1}`,
           title: title ?? null,
           titleSource: title === undefined ? null : "owner",
-          machine: machine ?? "default",
-          repo: repo ?? null,
-          workspace: workspaceId,
+          environment: record.environment,
+          workspace: record.id,
           status: "idle",
           createdAt: 1,
           updatedAt: 1,
           archivedAt: null,
         };
 
-        sessions.unshift(record);
+        sessions.unshift(created);
 
-        return record;
+        return created;
       }),
     listSessions: () => Effect.sync(() => [...sessions]),
-    getSession: ({ id }: { id: string }) =>
+    getSession: ({ id }) =>
       Effect.sync(() => Option.getOrNull(Arr.findFirst(sessions, (session) => session.id === id))),
-    archiveSession: ({ id }: { id: string }) => setArchived(id, 7, "archiveSession"),
-    unarchiveSession: ({ id }: { id: string }) => setArchived(id, null, "unarchiveSession"),
-    deleteSession: ({ id }: { id: string }) =>
+    archiveSession: ({ id }) => setArchived(id, 7, "archiveSession"),
+    unarchiveSession: ({ id }) => setArchived(id, null, "unarchiveSession"),
+    deleteSession: ({ id }) =>
       Effect.sync(() => {
         calls.push(`deleteSession:${id}`);
 
         return remove(sessions, (session) => session.id === id);
       }),
-    renameSession: ({ id, title }: { id: string; title: string }) =>
+    renameSession: ({ id, title }) =>
       Effect.sync(() => {
         calls.push("renameSession");
 
@@ -226,50 +238,151 @@ const fakeRegistries = () => {
 
         return renamed;
       }),
-    createMachine: ({ slug }: { slug: string }) =>
-      Effect.sync(() => {
-        calls.push("createMachine");
+    setSessionStatus: () => Effect.void,
+    setGeneratedTitle: () => Effect.succeed(false),
+    createEnvironment: ({ name }) =>
+      Effect.sync((): EnvironmentNaming => {
+        calls.push("createEnvironment");
 
-        return registerWorkspace(slug);
+        if (nameTaken(name, "")) return { status: "taken" };
+
+        const environment: EnvironmentRecord = {
+          id: String(environments.length).padStart(8, "0"),
+          name,
+          repos: [],
+          createdAt: environments.length,
+        };
+
+        environments.unshift(environment);
+
+        return { status: "named", environment };
       }),
-    listMachines: () => Effect.sync(() => [...machines]),
-    renameMachine: ({ slug, name }: { slug: string; name: string }) =>
-      Effect.sync(() => {
-        calls.push("renameMachine");
+    getEnvironment: ({ id }) =>
+      Effect.sync(() => Option.getOrNull(Arr.findFirst(environments, (item) => item.id === id))),
+    listEnvironments: () => Effect.sync(() => [...environments]),
+    renameEnvironment: ({ id, name }) =>
+      Effect.sync((): EnvironmentNaming => {
+        calls.push("renameEnvironment");
 
-        const taken = Arr.some(
-          machines,
-          (other) => other.slug !== slug && other.name.toLowerCase() === name.toLowerCase(),
-        );
-
-        if (taken) return { status: "taken" as const };
+        if (nameTaken(name, id)) return { status: "taken" };
 
         const renamed = replace(
-          machines,
-          (machine) => machine.slug === slug,
-          (machine): MachineRecord => ({ ...machine, name }),
+          environments,
+          (item) => item.id === id,
+          (item): EnvironmentRecord => ({ ...item, name }),
         );
 
-        return renamed === null
-          ? { status: "missing" as const }
-          : { status: "renamed" as const, machine: renamed };
+        return renamed === null ? { status: "missing" } : { status: "named", environment: renamed };
       }),
-    deleteMachine: ({ slug }: { slug: string }) =>
+    deleteEnvironment: ({ id }) =>
       Effect.sync(() => {
-        calls.push(`deleteMachine:${slug}`);
+        calls.push(`deleteEnvironment:${id}`);
 
-        if (Arr.some(sessions, (session) => session.machine === slug)) return "in-use" as const;
+        if (Arr.some(workspaces, (workspace) => workspace.environment === id)) {
+          return "in-use" as const;
+        }
 
-        return remove(machines, (machine) => machine.slug === slug)
+        return remove(environments, (item) => item.id === id)
           ? ("deleted" as const)
           : ("missing" as const);
       }),
-    getWorkspace: ({ id }: { id: string }) =>
+    addRepo: ({ environment, name, url }) =>
+      Effect.sync((): RepoChange => {
+        calls.push("addRepo");
+
+        const found = Arr.findFirst(environments, (item) => item.id === environment);
+
+        if (Option.isNone(found)) return "missing";
+
+        if (Arr.some(found.value.repos, (repo) => repo.name === name)) return "taken";
+
+        replace(
+          environments,
+          (item) => item.id === environment,
+          (item): EnvironmentRecord => ({ ...item, repos: [...item.repos, { name, url }] }),
+        );
+
+        return "changed";
+      }),
+    removeRepo: ({ environment, name }) =>
+      Effect.sync((): RepoChange => {
+        calls.push("removeRepo");
+
+        const found = Arr.findFirst(environments, (item) => item.id === environment);
+
+        if (Option.isNone(found)) return "missing";
+
+        if (!Arr.some(found.value.repos, (repo) => repo.name === name)) return "absent";
+
+        replace(
+          environments,
+          (item) => item.id === environment,
+          (item): EnvironmentRecord => ({
+            ...item,
+            repos: Arr.filter(item.repos, (repo) => repo.name !== name),
+          }),
+        );
+
+        return "changed";
+      }),
+    getEnvironmentSettings: ({ environment }) =>
+      Effect.sync(() => {
+        if (!Arr.some(environments, (item) => item.id === environment)) return null;
+
+        const overrides = overridesOf.get(environment) ?? {};
+
+        return {
+          // SAFETY: the tests only save overrides of the settings' own shape.
+          settings: { ...DEFAULT_CONTAINER_SETTINGS, ...(overrides as object) },
+          overrides,
+        };
+      }),
+    updateEnvironmentSettings: ({ environment, overrides }) =>
+      Effect.sync(() => {
+        calls.push("updateEnvironmentSettings");
+
+        if (!Arr.some(environments, (item) => item.id === environment)) {
+          return { status: "missing" as const };
+        }
+
+        if (overrides === null) {
+          return { status: "rejected" as const, message: "idleMinutes: Expected a number" };
+        }
+
+        overridesOf.set(environment, overrides);
+
+        return {
+          status: "saved" as const,
+          // SAFETY: the tests only save overrides of the settings' own shape.
+          state: {
+            settings: { ...DEFAULT_CONTAINER_SETTINGS, ...(overrides as object) },
+            overrides,
+          },
+        };
+      }),
+    getWorkspace: ({ id }) =>
       Effect.sync(() =>
         Option.getOrNull(Arr.findFirst(workspaces, (workspace) => workspace.id === id)),
       ),
+    getWorkspaceSetup: ({ id }) =>
+      Effect.sync(() => {
+        const found = Arr.findFirst(workspaces, (workspace) => workspace.id === id);
+
+        if (Option.isNone(found)) return null;
+
+        const { environment, branch, base } = found.value;
+
+        return {
+          id,
+          environment,
+          branch,
+          base,
+          repos: [],
+          settings: overridesOf.get(environment) ?? {},
+        };
+      }),
     listWorkspaces: () => Effect.sync(() => [...workspaces]),
-    deleteWorkspace: ({ id }: { id: string }) =>
+    deleteWorkspace: ({ id }) =>
       Effect.sync(() => {
         calls.push(`deleteWorkspace:${id}`);
 
@@ -279,19 +392,16 @@ const fakeRegistries = () => {
           ? ("deleted" as const)
           : ("missing" as const);
       }),
-    deleteWorkspacesOf: ({ machine, repo }: { machine: string; repo?: string | undefined }) =>
+    takeLegacy: ({ limit }) =>
       Effect.sync(() => {
-        calls.push(`deleteWorkspacesOf:${machine}${repo === undefined ? "" : `/${repo}`}`);
+        calls.push("takeLegacy");
 
-        const kept = Arr.filter(
-          workspaces,
-          (workspace) =>
-            workspace.machine !== machine ||
-            (repo !== undefined && workspace.repo !== repo) ||
-            Arr.some(sessions, (session) => session.workspace === workspace.id),
-        );
-
-        workspaces.splice(0, workspaces.length, ...kept);
+        return legacyObjects.slice(0, limit);
+      }),
+    forgetLegacy: (object) =>
+      Effect.sync(() => {
+        calls.push(`forgetLegacy:${object.kind}:${object.id}`);
+        remove(legacyObjects, (held) => held.kind === object.kind && held.id === object.id);
       }),
     getSettings: () =>
       Effect.sync(() => {
@@ -299,23 +409,24 @@ const fakeRegistries = () => {
 
         return { settings: DEFAULT_SETTINGS, overrides: {} };
       }),
-    getPush: ({ endpoint }: { endpoint?: string | undefined }) =>
+    getPush: ({ endpoint }) =>
       Effect.sync(() => {
         calls.push("getPush");
 
         return { publicKey: "PUBLIC", subscribed: endpoint !== undefined && pushes.has(endpoint) };
       }),
-    subscribePush: ({ subscription }: { subscription: { endpoint: string } }) =>
+    subscribePush: ({ subscription }) =>
       Effect.sync(() => {
         calls.push("subscribePush");
         pushes.add(subscription.endpoint);
       }),
-    unsubscribePush: ({ endpoint }: { endpoint: string }) =>
+    unsubscribePush: ({ endpoint }) =>
       Effect.sync(() => {
         calls.push("unsubscribePush");
         pushes.delete(endpoint);
       }),
-    updateSettings: ({ overrides }: { overrides: Schema.Json }) =>
+    notify: () => Effect.void,
+    updateSettings: ({ overrides }) =>
       Effect.sync(() => {
         calls.push("updateSettings");
 
@@ -328,129 +439,48 @@ const fakeRegistries = () => {
               },
             });
       }),
-  };
-
-  /** The Machines' repos: what `list` answers per slug, and the clones asked for. */
-  const held = new Map<string, string[]>([["cloudpid", ["pi"]]]);
-  const clones: Array<{ slug: string; url: string; name: string }> = [];
-  let cloneFails: string | undefined;
-
-  const repos: Repos = {
-    list: (slug) => {
-      calls.push("list");
-
-      return Promise.resolve(held.get(slug) ?? []);
-    },
-    remove: (slug, name) => {
-      calls.push(`removeRepo:${slug}/${name}`);
-      duringDestroy?.();
-      duringDestroy = undefined;
-
-      if (workspaceFails !== undefined) return Promise.reject(new Error(workspaceFails));
-
-      held.set(
-        slug,
-        Arr.filter(held.get(slug) ?? [], (repo) => repo !== name),
-      );
-
-      return Promise.resolve();
-    },
-    clone: (slug, { url, name }) => {
-      calls.push("clone");
-
-      if (cloneFails !== undefined) return Promise.reject(new Error(cloneFails));
-
-      clones.push({ slug, url, name });
-      held.set(slug, [...(held.get(slug) ?? []), name]);
-
-      return Promise.resolve();
-    },
-  };
-
-  /** The Machines' own settings: the overrides saved per slug. */
-  const saved = new Map<string, Schema.Json>();
-
-  const machineSettings: WorkspaceSettingsRemote = {
-    read: (slug) => {
-      calls.push("readWorkspaceSettings");
-
-      const overrides = saved.get(slug) ?? {};
-
-      return Promise.resolve({
-        settings: { ...DEFAULT_CONTAINER_SETTINGS, ...asSettings(overrides) },
-        overrides,
-      });
-    },
-    write: (slug, overrides) => {
-      calls.push("writeWorkspaceSettings");
-
-      if (overrides === null)
-        return Promise.resolve({ ok: false, message: "instance: Expected a string" });
-
-      saved.set(slug, overrides);
-
-      return Promise.resolve({
-        ok: true,
-        state: { settings: { ...DEFAULT_CONTAINER_SETTINGS, ...asSettings(overrides) }, overrides },
-      });
-    },
-  };
-
-  /** Whether a released worktree holds uncommitted changes, and so is kept; why worktree calls fail, if they do. */
-  let worktreeDirty = false;
-  let worktreeFails: string | undefined;
-
-  const worktreeCall = (call: string, worktree: Worktree) => {
-    calls.push(`${call}:${worktree.id}`);
-
-    return worktreeFails === undefined
-      ? Promise.resolve()
-      : Promise.reject(new Error(worktreeFails));
-  };
-
-  const worktrees: Worktrees = {
-    on: () => ({
-      prepare: (worktree) => worktreeCall("prepareWorktree", worktree),
-      remove: (worktree) => worktreeCall("removeWorktree", worktree),
-      release: (worktree) => worktreeCall("releaseWorktree", worktree).then(() => !worktreeDirty),
-    }),
-  };
+  } satisfies RegistryMethods;
 
   return {
     names,
     calls,
-    repos,
-    worktrees,
+    sessions,
     workspaces,
-    /** Make released worktrees hold uncommitted changes. */
-    dirtyWorktrees: () => {
-      worktreeDirty = true;
-    },
-    failWorktrees: (message: string) => {
-      worktreeFails = message;
-    },
+    environments,
     sessionObjects,
     workspaceObjects,
     breakSession: (id: string, message: string) => {
       brokenSessions.set(id, message);
     },
-    /** Register `session` while the next Machine object is wiped, as a client starting one then would. */
-    startDuringDestroy: (session: SessionRecord) => {
-      duringDestroy = () => {
-        sessions.push(session);
-      };
+    /** Register the Session `make` gives while each of the next `times` Workspace objects is wiped, as a client starting one then would. */
+    startDuringDestroy: (make: () => SessionRecord, times = 1) => {
+      duringDestroy = Arr.makeBy(times, () => () => {
+        sessions.push(make());
+      });
     },
-    machineSettings,
-    saved,
-    clones,
-    failClones: (message: string) => {
-      cloneFails = message;
+    /** Run `change` as the next `createSession` reaches the Registry, before it looks at what it is asked for. */
+    beforeCreate: (change: () => void) => {
+      beforeCreate = change;
     },
-    /** Fail the Machine object's calls that can fail (the repo removal, the Container restart) with `message`. */
+    /** Fail the Workspace objects' calls with `message`. */
     failWorkspace: (message: string) => {
       workspaceFails = message;
     },
-    held,
+    /** The objects left from before Environments. */
+    legacyObjects,
+    /** What `legacy` ran: the cleanup the endpoint starts after a Session list. */
+    legacy: Effect.sync(() => {
+      calls.push("legacy");
+    }),
+    /** The work handed to `background` is run when the test says so. */
+    background: (effect: Effect.Effect<void>) =>
+      Effect.sync(() => {
+        queued.push(effect);
+      }),
+    /** Run the work handed to `background` so far. */
+    runBackground: async () => {
+      for (const effect of queued.splice(0)) await Effect.runPromise(effect);
+    },
     // SAFETY: the endpoint only calls `getByName` on the namespace, and the result only through the methods above.
     registries: {
       getByName: (name: string) => {
@@ -476,11 +506,10 @@ const worker =
     if (!isRegistryRpc(request)) return Promise.resolve(new Response(null, { status: 404 }));
 
     return serveRegistryRpc(fake.registries, {
-      repos: fake.repos,
-      machineSettings: fake.machineSettings,
+      workspaces: fake.workspaceObjects,
       sessions: fake.sessionObjects,
-      machines: fake.workspaceObjects,
-      worktrees: fake.worktrees,
+      legacy: fake.legacy,
+      background: fake.background,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
       Effect.map(HttpServerResponse.toWeb),
@@ -581,22 +610,6 @@ it("rejects a new title that is blank or longer than 200 characters, before it r
   }
 });
 
-it("binds a created Session to the Machine it names, and rejects a slug that is not one", async () => {
-  const fake = fakeRegistries();
-
-  const created = await withClient(
-    Effect.flatMap(Registry, (registry) => registry.createSession({ machine: "cloudpid" })),
-    fake,
-  );
-
-  expect(created.machine).toBe("cloudpid");
-
-  const { text, calls } = await callRaw("createSession", { machine: "Not A Slug" });
-
-  expect(text).toContain('"Failure"');
-  expect(calls).toEqual([]);
-});
-
 it("trims a title on the server", async () => {
   const { text } = await callRaw("createSession", { title: "  Fix the build \n" });
 
@@ -613,30 +626,6 @@ it("rejects a title that is blank or longer than 200 characters, before it reach
 
   expect((await callRaw("createSession", { title: "a".repeat(200) })).calls).toEqual([
     "createSession",
-  ]);
-});
-
-it("rejects a Machine slug that is not lowercase letters, digits and dashes, before it reaches the Registry", async () => {
-  const { text, calls } = await callRaw("createMachine", { slug: "Not A Slug" });
-
-  expect(text).toContain('"Failure"');
-  expect(calls).toEqual([]);
-});
-
-it("creates and lists Machines", async () => {
-  const machines = await withClient(
-    Effect.gen(function* () {
-      const registry = yield* Registry;
-
-      yield* registry.createMachine({ slug: "cloudpid" });
-
-      return yield* registry.listMachines();
-    }),
-  );
-
-  expect(machines).toEqual([
-    { slug: "default", name: "default", createdAt: 0 },
-    { slug: "cloudpid", name: "cloudpid", createdAt: 1 },
   ]);
 });
 
@@ -691,55 +680,6 @@ it("rejects a subscription that is not at a known push service over https, befor
   }
 });
 
-it("binds a Session to a repo its Machine holds", async () => {
-  const fake = fakeRegistries();
-
-  const created = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      registry.createSession({ machine: "cloudpid", repo: "pi" }),
-    ),
-    fake,
-  );
-
-  expect(created).toMatchObject({ machine: "cloudpid", repo: "pi" });
-  expect(fake.calls).toEqual(["list", "createSession"]);
-});
-
-it("refuses a Session on a repo its Machine does not hold, before it is registered", async () => {
-  const fake = fakeRegistries();
-
-  const error = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      Effect.flip(registry.createSession({ machine: "cloudpid", repo: "ghost" })),
-    ),
-    fake,
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toBe('Machine "cloudpid" has no repo "ghost"');
-  expect(fake.calls).toEqual(["list"]);
-});
-
-it("checks a repo against the default Machine when the Session names none", async () => {
-  const fake = fakeRegistries();
-
-  const error = await withClient(
-    Effect.flatMap(Registry, (registry) => Effect.flip(registry.createSession({ repo: "pi" }))),
-    fake,
-  );
-
-  expect(error.message).toBe('Machine "default" has no repo "pi"');
-});
-
-it("rejects a repo name that is a path or an option, before it reaches the Machine", async () => {
-  for (const repo of ["..", "../x", "a/b", "-x", ".git", "a b"]) {
-    const { text, calls } = await callRaw("createSession", { machine: "cloudpid", repo });
-
-    expect(text).toContain('"Failure"');
-    expect(calls).toEqual([]);
-  }
-});
-
 it("accepts the endpoints the browsers' push services give out", async () => {
   for (const endpoint of [
     "https://fcm.googleapis.com/fcm/send/abc",
@@ -753,175 +693,6 @@ it("accepts the endpoints the browsers' push services give out", async () => {
 
     expect(calls, endpoint).toEqual(["subscribePush"]);
   }
-});
-
-it("reads a Machine's own settings from its object, not the Registry", async () => {
-  const fake = fakeRegistries();
-
-  const state = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      registry
-        .createMachine({ slug: "cloudpid" })
-        .pipe(Effect.andThen(registry.getMachineSettings({ machine: "cloudpid" }))),
-    ),
-    fake,
-  );
-
-  expect(state.settings).toEqual(DEFAULT_CONTAINER_SETTINGS);
-  expect(fake.calls).toEqual(["createMachine", "readWorkspaceSettings"]);
-});
-
-it("saves a Machine's settings in its object and answers the state in force", async () => {
-  const fake = fakeRegistries();
-
-  const state = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      registry.createMachine({ slug: "cloudpid" }).pipe(
-        Effect.andThen(
-          registry.updateMachineSettings({
-            machine: "cloudpid",
-            overrides: { instance: "standard-4", idleMinutes: 5 },
-          }),
-        ),
-      ),
-    ),
-    fake,
-  );
-
-  expect(state.settings).toEqual({ instance: "standard-4", idleMinutes: 5, ignore: [] });
-  expect(fake.saved.get("cloudpid")).toEqual({ instance: "standard-4", idleMinutes: 5 });
-});
-
-it("answers overrides a Machine refuses as a MachineError with its message", async () => {
-  const error = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      registry
-        .createMachine({ slug: "cloudpid" })
-        .pipe(
-          Effect.andThen(registry.updateMachineSettings({ machine: "cloudpid", overrides: null })),
-        ),
-    ).pipe(Effect.flip),
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toBe("instance: Expected a string");
-});
-
-it("refuses the settings of a Machine the Registry does not list, and touches no object", async () => {
-  const fake = fakeRegistries();
-
-  const error = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      Effect.flip(
-        registry.updateMachineSettings({ machine: "typo", overrides: { idleMinutes: 5 } }),
-      ),
-    ),
-    fake,
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toContain("typo");
-  expect(fake.saved.size).toBe(0);
-  expect(fake.calls).not.toContain("writeWorkspaceSettings");
-
-  const read = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      Effect.flip(registry.getMachineSettings({ machine: "typo" })),
-    ),
-    fake,
-  );
-
-  expect(read.message).toContain("typo");
-  expect(fake.calls).not.toContain("readWorkspaceSettings");
-});
-
-it("lists the repos of a Machine", async () => {
-  const repos = await withClient(
-    Effect.flatMap(Registry, (registry) => registry.listRepos({ machine: "cloudpid" })),
-  );
-
-  expect(repos).toEqual(["pi"]);
-});
-
-it("clones a repo into a Machine, registering it, under the name the repo has", async () => {
-  const fake = fakeRegistries();
-
-  const name = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      registry.cloneRepo({ machine: "fresh", source: "octocat/Hello-World" }),
-    ),
-    fake,
-  );
-
-  expect(name).toBe("Hello-World");
-  expect(fake.calls).toEqual(["createMachine", "clone"]);
-  expect(fake.clones).toEqual([
-    { slug: "fresh", url: "https://github.com/octocat/Hello-World.git", name: "Hello-World" },
-  ]);
-});
-
-it("clones into the directory the owner names", async () => {
-  const fake = fakeRegistries();
-
-  const name = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      registry.cloneRepo({
-        machine: "cloudpid",
-        source: "https://github.com/octocat/Hello-World",
-        name: "hello",
-      }),
-    ),
-    fake,
-  );
-
-  expect(name).toBe("hello");
-  expect(fake.clones).toMatchObject([
-    { url: "https://github.com/octocat/Hello-World", name: "hello" },
-  ]);
-});
-
-it("refuses a clone source that is not a plain repo address, before it reaches the Machine", async () => {
-  const fake = fakeRegistries();
-
-  const error = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      Effect.flip(registry.cloneRepo({ machine: "cloudpid", source: "file:///etc" })),
-    ),
-    fake,
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toContain("https");
-  expect(fake.calls).toEqual([]);
-
-  for (const name of ["..", "a/b", "-x"]) {
-    const { text, calls } = await callRaw("cloneRepo", {
-      machine: "cloudpid",
-      source: "octocat/Hello-World",
-      name,
-    });
-
-    expect(text).toContain('"Failure"');
-    expect(calls).toEqual([]);
-  }
-});
-
-it("fails a clone that does not finish with git's message", async () => {
-  const fake = fakeRegistries();
-
-  fake.failClones("git clone failed (exit 128): fatal: repository not found");
-
-  const error = await withClient(
-    Effect.flatMap(Registry, (registry) =>
-      Effect.flip(registry.cloneRepo({ machine: "cloudpid", source: "octocat/missing" })),
-    ),
-    fake,
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toBe(
-    "Clone failed: git clone failed (exit 128): fatal: repository not found",
-  );
 });
 
 it("reads the settings from the singleton Registry", async () => {
@@ -974,13 +745,867 @@ const call = <A, E>(
   use: (registry: Registry["Service"]) => Effect.Effect<A, E>,
 ) => withClient(Effect.flatMap(Registry, use), fake);
 
-/** The calls that reached a Session's or a Machine's object, or forgot or archived one, in order. */
+/** The calls that reached a Session's or a Workspace's object, or forgot or archived a record, in order. */
 const lifecycle = (fake: ReturnType<typeof fakeRegistries>) =>
   Arr.filter(fake.calls, (name) =>
-    /^(stop|destroy|destroyWorkspace|clearWorkspace|restartContainer|removeRepo|deleteSession|deleteMachine):|^(archive|unarchive)Session$/.test(
+    /^(stop|destroy|destroyWorkspace|restartContainer|deleteSession|deleteWorkspace|deleteEnvironment):|^(archive|unarchive)Session$/.test(
       name,
     ),
   );
+
+/** Make an Environment named `name`; its id. */
+const makeEnvironment = (fake: ReturnType<typeof fakeRegistries>, name: string) =>
+  call(fake, (registry) => registry.createEnvironment({ name })).then((made) => made.id);
+
+it("creates a Session in a new Workspace of the default Environment, on its own branch", async () => {
+  const fake = fakeRegistries();
+
+  const created = await call(fake, (registry) => registry.createSession({}));
+  const [workspace] = await call(fake, (registry) => registry.listWorkspaces());
+
+  expect(created).toMatchObject({ environment: DEFAULT_ENVIRONMENT, workspace: "00000001" });
+  expect(workspace).toEqual({
+    id: "00000001",
+    environment: DEFAULT_ENVIRONMENT,
+    branch: "cloudpid/00000001",
+    base: null,
+    repos: [],
+    directory: "/workspace",
+    createdAt: 1,
+  });
+});
+
+it("makes a new Workspace of the Environment, branch and base the Session names", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "ian-pascoe/cloudpid" }));
+
+  const created = await call(fake, (registry) =>
+    registry.createSession({ environment, workspace: "new", branch: "feature/x", base: "dev" }),
+  );
+
+  expect(created).toMatchObject({ environment, workspace: "00000001" });
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toMatchObject([
+    {
+      environment,
+      branch: "feature/x",
+      base: "dev",
+      repos: ["cloudpid"],
+      directory: "/workspace/cloudpid",
+    },
+  ]);
+});
+
+it("makes every new Session a Workspace of its own", async () => {
+  const fake = fakeRegistries();
+
+  const first = await call(fake, (registry) => registry.createSession({}));
+  const second = await call(fake, (registry) => registry.createSession({}));
+
+  expect(second.workspace).not.toBe(first.workspace);
+  expect(fake.workspaces).toHaveLength(2);
+});
+
+it("creates a Session in a Workspace that exists, which brings its Environment", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+  const first = await call(fake, (registry) => registry.createSession({ environment }));
+
+  const second = await call(fake, (registry) =>
+    registry.createSession({ workspace: first.workspace }),
+  );
+
+  const third = await call(fake, (registry) =>
+    registry.createSession({ workspace: first.workspace, environment }),
+  );
+
+  expect(second).toMatchObject({ environment, workspace: first.workspace });
+  expect(third).toMatchObject({ environment, workspace: first.workspace });
+  expect(fake.workspaces).toHaveLength(1);
+});
+
+it("refuses a Session in a Workspace of another Environment than the one it names", async () => {
+  const fake = fakeRegistries();
+  const first = await call(fake, (registry) => registry.createSession({}));
+  const other = await makeEnvironment(fake, "Other");
+
+  fake.calls.length = 0;
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.createSession({ workspace: first.workspace, environment: other })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe(
+    `Workspace "${first.workspace}" is in environment "${DEFAULT_ENVIRONMENT}"`,
+  );
+  expect(fake.calls).toEqual([]);
+});
+
+it("refuses a branch or a base for a Workspace that exists, before it reaches the Registry", async () => {
+  const fake = fakeRegistries();
+  const first = await call(fake, (registry) => registry.createSession({}));
+
+  fake.calls.length = 0;
+
+  for (const extra of [{ branch: "x" }, { base: "main" }]) {
+    const error = await call(fake, (registry) =>
+      Effect.flip(registry.createSession({ workspace: first.workspace, ...extra })),
+    );
+
+    expect(error).toBeInstanceOf(EnvironmentError);
+    expect(error.message).toBe("A branch and a base are only for a new workspace");
+  }
+
+  expect(fake.calls).toEqual([]);
+});
+
+it("refuses a Session in a Workspace the Registry does not list", async () => {
+  const fake = fakeRegistries();
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.createSession({ workspace: "deadbeef" })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe('No workspace "deadbeef"');
+  expect(fake.calls).toEqual([]);
+});
+
+it("says so when the Workspace is removed just before the Session is registered in it", async () => {
+  const fake = fakeRegistries();
+  const first = await call(fake, (registry) => registry.createSession({}));
+
+  fake.beforeCreate(() => {
+    fake.workspaces.length = 0;
+  });
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.createSession({ workspace: first.workspace })),
+  );
+
+  expect(error.message).toBe("That workspace does not exist any more");
+});
+
+it("refuses a Session in an Environment the Registry does not list", async () => {
+  const fake = fakeRegistries();
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.createSession({ environment: "0000beef" })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe('Environment "0000beef" does not exist');
+  expect(fake.workspaces).toEqual([]);
+});
+
+it("refuses a new Workspace on a branch another Workspace of the Environment is on, naming it", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.createSession({ branch: "feature" }));
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.createSession({ branch: "feature" })),
+  );
+
+  expect(error.message).toBe(
+    'Workspace "00000001" is already on branch feature: start a session in it instead',
+  );
+  expect(fake.workspaces).toHaveLength(1);
+  expect(fake.sessions).toHaveLength(1);
+});
+
+it("rejects an Environment, Workspace or branch that is not one, before it reaches the Registry", async () => {
+  for (const payload of [
+    { environment: "Not An Id" },
+    { workspace: "Not-An-Id" },
+    { workspace: "123" },
+    { branch: "a..b" },
+    { branch: "-x" },
+    { base: "HEAD" },
+  ]) {
+    const { text, calls } = await callRaw("createSession", payload);
+
+    expect(text, JSON.stringify(payload)).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+});
+
+it("deletes a Session without touching its Workspace", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`, `deleteSession:${session.id}`]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toMatchObject([
+    { id: session.workspace },
+  ]);
+});
+
+it("lists the default Environment, and the ones created, newest first", async () => {
+  const fake = fakeRegistries();
+
+  const made = await call(fake, (registry) => registry.createEnvironment({ name: "Cloudpid" }));
+  const listed = await call(fake, (registry) => registry.listEnvironments());
+
+  expect(made).toEqual({ id: "00000001", name: "Cloudpid", repos: [], createdAt: 1 });
+  expect(Arr.map(listed, (environment) => environment.id)).toEqual([
+    "00000001",
+    DEFAULT_ENVIRONMENT,
+  ]);
+});
+
+it("trims an Environment name on the server, and rejects one that is blank or too long", async () => {
+  const { text } = await callRaw("createEnvironment", { name: "  Cloudpid \n" });
+
+  expect(JSON.parse(text)).toMatchObject([{ exit: { value: { name: "Cloudpid" } } }]);
+
+  for (const name of ["   ", "a".repeat(81)]) {
+    const rejected = await callRaw("createEnvironment", { name });
+
+    expect(rejected.text).toContain('"Failure"');
+    expect(rejected.calls).toEqual([]);
+  }
+});
+
+it("refuses an Environment name another has in any case", async () => {
+  const fake = fakeRegistries();
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.createEnvironment({ name: "DEFAULT" })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe('Another environment is already named "DEFAULT"');
+});
+
+it("renames an Environment, and refuses a name another has or an Environment that is not listed", async () => {
+  const fake = fakeRegistries();
+  const id = await makeEnvironment(fake, "Cloudpid");
+
+  const renamed = await call(fake, (registry) =>
+    registry.renameEnvironment({ environment: id, name: "Pi" }),
+  );
+
+  const taken = await call(fake, (registry) =>
+    Effect.flip(registry.renameEnvironment({ environment: id, name: "default" })),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.renameEnvironment({ environment: "0000beef", name: "Anything" })),
+  );
+
+  expect(renamed).toMatchObject({ id, name: "Pi" });
+  expect(taken.message).toBe('Another environment is already named "default"');
+  expect(missing).toBeInstanceOf(EnvironmentError);
+  expect(missing.message).toBe('Environment "0000beef" does not exist');
+});
+
+it("deletes an Environment: every Workspace made from it, with its Sessions (archived too), then its record", async () => {
+  const fake = fakeRegistries();
+  const id = await makeEnvironment(fake, "Cloudpid");
+  const elsewhere = await call(fake, (registry) => registry.createSession({}));
+  const first = await call(fake, (registry) => registry.createSession({ environment: id }));
+  const second = await call(fake, (registry) => registry.createSession({ environment: id }));
+
+  const sharing = await call(fake, (registry) =>
+    registry.createSession({ workspace: first.workspace }),
+  );
+
+  await call(fake, (registry) => registry.archiveSession({ id: sharing.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteEnvironment({ environment: id }));
+
+  // Newest Workspace first; in each, its Sessions newest first, then its object, then its record.
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${second.id}`,
+    `deleteSession:${second.id}`,
+    `destroyWorkspace:ws:${second.workspace}`,
+    `deleteWorkspace:${second.workspace}`,
+    `destroy:${sharing.id}`,
+    `deleteSession:${sharing.id}`,
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    `destroyWorkspace:ws:${first.workspace}`,
+    `deleteWorkspace:${first.workspace}`,
+    `deleteEnvironment:${id}`,
+  ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
+  expect(Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.id)).toEqual([
+    elsewhere.workspace,
+  ]);
+  expect(
+    Arr.map(await call(fake, (registry) => registry.listEnvironments()), (item) => item.id),
+  ).toEqual([DEFAULT_ENVIRONMENT]);
+});
+
+it("deletes an Environment with no Workspaces without waking an object", async () => {
+  const fake = fakeRegistries();
+  const id = await makeEnvironment(fake, "Empty");
+
+  await call(fake, (registry) => registry.deleteEnvironment({ environment: id }));
+
+  expect(lifecycle(fake)).toEqual([`deleteEnvironment:${id}`]);
+});
+
+it("refuses to delete the default Environment, and touches nothing", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.createSession({}));
+  fake.calls.length = 0;
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.deleteEnvironment({ environment: DEFAULT_ENVIRONMENT })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe("The default environment cannot be deleted");
+  expect(fake.calls).toEqual([]);
+});
+
+it("refuses to delete an Environment the Registry does not list, and touches no object", async () => {
+  const fake = fakeRegistries();
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.deleteEnvironment({ environment: "0000beef" })),
+  );
+
+  expect(error.message).toBe('Environment "0000beef" does not exist');
+  expect(lifecycle(fake)).toEqual([]);
+});
+
+it("stops an Environment delete at a Session that cannot be wiped, keeping what is left listed", async () => {
+  const fake = fakeRegistries();
+  const id = await makeEnvironment(fake, "Cloudpid");
+  const session = await call(fake, (registry) => registry.createSession({ environment: id }));
+
+  fake.breakSession(session.id, "storage error");
+  fake.calls.length = 0;
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.deleteEnvironment({ environment: id })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toContain("storage error");
+  expect(error.message).toContain("The environment and its remaining workspaces are kept.");
+  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`]);
+  expect(fake.environments).toHaveLength(2);
+  expect(fake.workspaces).toHaveLength(1);
+});
+
+it("removes a Workspace: every Session in it, archived ones too, then its object, then its record", async () => {
+  const fake = fakeRegistries();
+  const elsewhere = await call(fake, (registry) => registry.createSession({}));
+  const first = await call(fake, (registry) => registry.createSession({}));
+
+  const second = await call(fake, (registry) =>
+    registry.createSession({ workspace: first.workspace }),
+  );
+
+  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeWorkspace({ id: first.workspace }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${second.id}`,
+    `deleteSession:${second.id}`,
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    `destroyWorkspace:ws:${first.workspace}`,
+    `deleteWorkspace:${first.workspace}`,
+  ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
+  expect(Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.id)).toEqual([
+    elsewhere.workspace,
+  ]);
+});
+
+it("removes a Workspace that has no Sessions left", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeWorkspace({ id: session.workspace }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroyWorkspace:ws:${session.workspace}`,
+    `deleteWorkspace:${session.workspace}`,
+  ]);
+  expect(fake.workspaces).toEqual([]);
+});
+
+it("deletes a Session started in a Workspace while it was removed, before its record goes", async () => {
+  const fake = fakeRegistries();
+  const first = await call(fake, (registry) => registry.createSession({}));
+
+  fake.startDuringDestroy(() => ({ ...first, id: "late" }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeWorkspace({ id: first.workspace }));
+
+  const object = `destroyWorkspace:ws:${first.workspace}`;
+  const record = `deleteWorkspace:${first.workspace}`;
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${first.id}`,
+    `deleteSession:${first.id}`,
+    object,
+    record,
+    "destroy:late",
+    "deleteSession:late",
+    object,
+    record,
+  ]);
+  expect(fake.sessions).toEqual([]);
+  expect(fake.workspaces).toEqual([]);
+});
+
+it("gives up on a Workspace Sessions keep starting in, keeping it listed", async () => {
+  const fake = fakeRegistries();
+  const first = await call(fake, (registry) => registry.createSession({}));
+  let started = 0;
+
+  fake.startDuringDestroy(() => ({ ...first, id: `late-${started++}` }), 10);
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.removeWorkspace({ id: first.workspace })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toContain("kept starting");
+  expect(fake.workspaces).toHaveLength(1);
+});
+
+it("stops a Workspace removal at a Session that cannot be wiped, before its files", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.breakSession(session.id, "storage error");
+  fake.calls.length = 0;
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.removeWorkspace({ id: session.workspace })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toContain("storage error");
+  expect(error.message).toContain("The workspace and its remaining sessions are kept.");
+  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`]);
+  expect(fake.sessions).toHaveLength(1);
+  expect(fake.workspaces).toHaveLength(1);
+});
+
+it("keeps a Workspace record whose object could not be wiped, with its Sessions already gone", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.failWorkspace("storage error");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.removeWorkspace({ id: session.workspace })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe("Could not delete the workspace's files: storage error");
+  expect(fake.sessions).toEqual([]);
+  expect(fake.workspaces).toHaveLength(1);
+});
+
+it("refuses to remove or restart a Workspace the Registry does not list, and touches no object", async () => {
+  const fake = fakeRegistries();
+
+  const removal = await call(fake, (registry) =>
+    Effect.flip(registry.removeWorkspace({ id: "deadbeef" })),
+  );
+
+  const restart = await call(fake, (registry) =>
+    Effect.flip(registry.restartContainer({ workspace: "deadbeef" })),
+  );
+
+  expect(removal).toBeInstanceOf(EnvironmentError);
+  expect(removal.message).toBe('No workspace "deadbeef"');
+  expect(restart.message).toBe('No workspace "deadbeef"');
+  expect(lifecycle(fake)).toEqual([]);
+});
+
+it("restarts a Workspace's Container by its object's name, keeping its Sessions", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.restartContainer({ workspace: session.workspace }));
+
+  expect(lifecycle(fake)).toEqual([`restartContainer:ws:${session.workspace}`]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
+});
+
+it("fails a Container restart the Workspace could not do with its message", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.failWorkspace("container is gone");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.restartContainer({ workspace: session.workspace })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe("Could not restart the Container: container is gone");
+});
+
+it("adds a Repo to an Environment from owner/repo, answering the directory it is cloned into", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  const name = await call(fake, (registry) =>
+    registry.addRepo({ environment, source: "ian-pascoe/cloudpid" }),
+  );
+
+  const url = await call(fake, (registry) =>
+    registry.addRepo({ environment, source: "https://example.com/team/lib.git" }),
+  );
+
+  expect(name).toBe("cloudpid");
+  expect(url).toBe("lib");
+  expect(fake.environments[0]?.repos).toEqual([
+    { name: "cloudpid", url: "https://github.com/ian-pascoe/cloudpid.git" },
+    { name: "lib", url: "https://example.com/team/lib.git" },
+  ]);
+});
+
+it("adds a Repo under the directory name the owner gives it", async () => {
+  const fake = fakeRegistries();
+
+  const name = await call(fake, (registry) =>
+    registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/app", name: "frontend" }),
+  );
+
+  expect(name).toBe("frontend");
+  expect(fake.environments[0]?.repos).toEqual([
+    { name: "frontend", url: "https://github.com/o/app.git" },
+  ]);
+});
+
+it("refuses a Repo whose directory name the Environment has, asking for another", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/app" }),
+  );
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "p/app" })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe("The environment already has a repo in app: name this one");
+  expect(fake.environments[0]?.repos).toHaveLength(1);
+
+  // The owner's own name gets round it.
+  await call(fake, (registry) =>
+    registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "p/app", name: "app-2" }),
+  );
+  expect(fake.environments[0]?.repos).toHaveLength(2);
+});
+
+it("refuses a source that is not a plain repo address before it reaches the Registry", async () => {
+  const fake = fakeRegistries();
+
+  for (const source of [
+    "",
+    "not a repo",
+    "file:///etc/passwd",
+    "ssh://git@github.com/o/r",
+    "https://user:pw@github.com/o/r",
+    "https://localhost/o/r",
+    "--upload-pack=x",
+  ]) {
+    const error = await call(fake, (registry) =>
+      Effect.flip(registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source })),
+    );
+
+    expect(error, source).toBeInstanceOf(EnvironmentError);
+  }
+
+  expect(fake.calls).toEqual([]);
+});
+
+it("refuses a Repo for an Environment the Registry does not list", async () => {
+  const error = await call(fakeRegistries(), (registry) =>
+    Effect.flip(registry.addRepo({ environment: "0000beef", source: "o/app" })),
+  );
+
+  expect(error.message).toBe('Environment "0000beef" does not exist');
+});
+
+it("rejects a directory name that is a path or an option, before it reaches the Registry", async () => {
+  for (const name of ["..", "../x", "a/b", "-x", ".git", "a b"]) {
+    const { text, calls } = await callRaw("addRepo", {
+      environment: DEFAULT_ENVIRONMENT,
+      source: "o/app",
+      name,
+    });
+
+    expect(text, name).toContain('"Failure"');
+    expect(calls).toEqual([]);
+  }
+
+  const removal = await callRaw("removeRepo", { environment: DEFAULT_ENVIRONMENT, repo: "../x" });
+
+  expect(removal.text).toContain('"Failure"');
+  expect(removal.calls).toEqual([]);
+});
+
+it("removes a Repo from an Environment, keeping the others", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) =>
+    registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/app" }),
+  );
+  await call(fake, (registry) =>
+    registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/pi" }),
+  );
+  await call(fake, (registry) =>
+    registry.removeRepo({ environment: DEFAULT_ENVIRONMENT, repo: "app" }),
+  );
+
+  expect(Arr.map(fake.environments[0]?.repos ?? [], (repo) => repo.name)).toEqual(["pi"]);
+});
+
+it("refuses to remove a Repo the Environment does not have, or of an Environment not listed", async () => {
+  const fake = fakeRegistries();
+
+  const absent = await call(fake, (registry) =>
+    Effect.flip(registry.removeRepo({ environment: DEFAULT_ENVIRONMENT, repo: "ghost" })),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.removeRepo({ environment: "0000beef", repo: "ghost" })),
+  );
+
+  expect(absent).toBeInstanceOf(EnvironmentError);
+  expect(absent.message).toBe('The environment has no repo "ghost"');
+  expect(missing.message).toBe('Environment "0000beef" does not exist');
+});
+
+it("reads an Environment's Container settings from the Registry", async () => {
+  const fake = fakeRegistries();
+
+  const state = await call(fake, (registry) =>
+    registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
+  );
+
+  expect(state).toEqual({ settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} });
+  expect(fake.names).toEqual(["registry"]);
+});
+
+it("saves an Environment's Container overrides and answers the settings in force", async () => {
+  const fake = fakeRegistries();
+
+  const saved = await call(fake, (registry) =>
+    registry.updateEnvironmentSettings({
+      environment: DEFAULT_ENVIRONMENT,
+      overrides: { idleMinutes: 30 },
+    }),
+  );
+
+  const read = await call(fake, (registry) =>
+    registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
+  );
+
+  expect(saved).toMatchObject({ settings: { idleMinutes: 30 }, overrides: { idleMinutes: 30 } });
+  expect(read).toEqual(saved);
+});
+
+it("fails overrides the Registry rejects with its readable message, saving nothing", async () => {
+  const fake = fakeRegistries();
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(
+      registry.updateEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT, overrides: null }),
+    ),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe("idleMinutes: Expected a number");
+  expect(
+    await call(fake, (registry) =>
+      registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
+    ),
+  ).toMatchObject({ overrides: {} });
+});
+
+it("refuses the settings of an Environment the Registry does not list", async () => {
+  const fake = fakeRegistries();
+
+  for (const attempt of [
+    (registry: Registry["Service"]) =>
+      Effect.flip(registry.getEnvironmentSettings({ environment: "0000beef" })),
+    (registry: Registry["Service"]) =>
+      Effect.flip(registry.updateEnvironmentSettings({ environment: "0000beef", overrides: {} })),
+  ]) {
+    const error = await call(fake, attempt);
+
+    expect(error).toBeInstanceOf(EnvironmentError);
+    expect(error.message).toBe('Environment "0000beef" does not exist');
+  }
+});
+
+it("lists Workspaces of every Environment, newest first", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.createSession({}));
+  await call(fake, (registry) => registry.createSession({ environment }));
+
+  expect(
+    Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.environment),
+  ).toEqual([environment, DEFAULT_ENVIRONMENT]);
+});
+
+it("starts the legacy cleanup behind a Session list, after the answer", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
+  // Handed to the background, not run before the answer.
+  expect(fake.calls).not.toContain("legacy");
+
+  await fake.runBackground();
+
+  expect(fake.calls).toContain("legacy");
+});
+
+it("starts the legacy cleanup with no other call", async () => {
+  const fake = fakeRegistries();
+
+  await call(fake, (registry) => registry.listEnvironments());
+  await call(fake, (registry) => registry.listWorkspaces());
+  await fake.runBackground();
+
+  expect(fake.calls).not.toContain("legacy");
+});
+
+/** Run `legacyCleanup` over the fake once, with the levels and messages it logged. */
+const cleanup = async (fake: ReturnType<typeof fakeRegistries>) => {
+  const logged: string[] = [];
+
+  const collector = Logger.make((options) => {
+    logged.push(`${options.logLevel}: ${String(Arr.ensure(options.message)[0])}`);
+  });
+
+  await Effect.runPromise(
+    legacyCleanup(fake.registries, {
+      sessions: fake.sessionObjects,
+      workspaces: fake.workspaceObjects,
+    }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([collector]))),
+  );
+
+  return logged;
+};
+
+it("wipes what is left from before Environments: Session objects and Machines' Workspace objects, forgetting each", async () => {
+  const fake = fakeRegistries();
+
+  fake.legacyObjects.push(
+    { kind: "session", id: "old-1" },
+    { kind: "machine", id: "cloudpid" },
+    { kind: "session", id: "old-2" },
+  );
+
+  expect(await cleanup(fake)).toEqual([]);
+
+  expect(fake.calls).toEqual([
+    "takeLegacy",
+    "destroy:old-1",
+    "forgetLegacy:session:old-1",
+    // A Machine's object is named by its slug alone, not `ws:<id>`.
+    "destroyWorkspace:cloudpid",
+    "forgetLegacy:machine:cloudpid",
+    "destroy:old-2",
+    "forgetLegacy:session:old-2",
+  ]);
+  expect(fake.legacyObjects).toEqual([]);
+});
+
+it("logs an object it could not wipe and keeps it, going on with the rest", async () => {
+  const fake = fakeRegistries();
+
+  fake.legacyObjects.push(
+    { kind: "session", id: "stuck" },
+    { kind: "session", id: "fine" },
+    { kind: "machine", id: "default" },
+  );
+  fake.breakSession("stuck", "unreachable");
+
+  const logged = await cleanup(fake);
+
+  expect(logged).toEqual(["Warn: Could not wipe the legacy session stuck"]);
+  expect(fake.legacyObjects).toEqual([{ kind: "session", id: "stuck" }]);
+  expect(fake.calls).toContain("forgetLegacy:session:fine");
+  expect(fake.calls).toContain("forgetLegacy:machine:default");
+  expect(fake.calls).not.toContain("forgetLegacy:session:stuck");
+});
+
+it("keeps a Machine's object it could not wipe", async () => {
+  const fake = fakeRegistries();
+
+  fake.legacyObjects.push({ kind: "machine", id: "cloudpid" });
+  fake.failWorkspace("storage error");
+
+  const logged = await cleanup(fake);
+
+  expect(logged).toEqual(["Warn: Could not wipe the legacy machine cloudpid"]);
+  expect(fake.legacyObjects).toEqual([{ kind: "machine", id: "cloudpid" }]);
+});
+
+it("wipes a batch of ten at a time", async () => {
+  const fake = fakeRegistries();
+
+  fake.legacyObjects.push(
+    ...Arr.makeBy(12, (index): LegacyObject => ({ kind: "session", id: `old-${index}` })),
+  );
+
+  await cleanup(fake);
+
+  expect(fake.legacyObjects).toEqual([
+    { kind: "session", id: "old-10" },
+    { kind: "session", id: "old-11" },
+  ]);
+});
+
+it("does nothing more in this isolate once a run found nothing left", async () => {
+  const fake = fakeRegistries();
+
+  const wipe = legacyCleanup(fake.registries, {
+    sessions: fake.sessionObjects,
+    workspaces: fake.workspaceObjects,
+  });
+
+  await Effect.runPromise(wipe);
+  await Effect.runPromise(wipe);
+
+  // The second run did not ask the Registry.
+  expect(fake.calls).toEqual(["takeLegacy"]);
+
+  fake.calls.length = 0;
+  fake.legacyObjects.push({ kind: "session", id: "late" });
+  await Effect.runPromise(wipe);
+
+  expect(fake.calls).toEqual([]);
+  expect(fake.legacyObjects).toHaveLength(1);
+});
 
 it("archives a Session after stopping everything it runs, and unarchives it", async () => {
   const fake = fakeRegistries();
@@ -1053,604 +1678,4 @@ it("keeps a Session listed when its object could not be wiped, to try again", as
   expect(error).toBeInstanceOf(SessionActionError);
   expect(error.message).toContain("storage error");
   expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
-});
-
-it("renames a Machine, keeping its slug, and refuses a name another Machine has in any case", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) => registry.createMachine({ slug: "cloudpid" }));
-  await call(fake, (registry) => registry.createMachine({ slug: "pi" }));
-
-  const renamed = await call(fake, (registry) =>
-    registry.renameMachine({ machine: "cloudpid", name: "Pi on Cloudflare" }),
-  );
-
-  expect(renamed).toEqual({ slug: "cloudpid", name: "Pi on Cloudflare", createdAt: 1 });
-
-  const taken = await call(fake, (registry) =>
-    Effect.flip(registry.renameMachine({ machine: "pi", name: "pi on cloudflare" })),
-  );
-
-  expect(taken).toBeInstanceOf(MachineError);
-  expect(taken.message).toContain("pi on cloudflare");
-
-  const missing = await call(fake, (registry) =>
-    Effect.flip(registry.renameMachine({ machine: "ghost", name: "Anything" })),
-  );
-
-  expect(missing.message).toContain("ghost");
-});
-
-it("rejects a Machine name that is blank or longer than 80 characters, before it reaches the Registry", async () => {
-  for (const name of ["   ", "a".repeat(81)]) {
-    const { text, calls } = await callRaw("renameMachine", { machine: "default", name });
-
-    expect(text).toContain('"Failure"');
-    expect(calls).toEqual([]);
-  }
-});
-
-it("deletes a Machine: every Session bound to it, archived ones too, then its object, then its record", async () => {
-  const fake = fakeRegistries();
-  const elsewhere = await call(fake, (registry) => registry.createSession({}));
-  const first = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-  const second = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.deleteMachine({ machine: "cloudpid" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${second.id}`,
-    `deleteSession:${second.id}`,
-    `destroy:${first.id}`,
-    `deleteSession:${first.id}`,
-    "destroyWorkspace:cloudpid",
-    "deleteMachine:cloudpid",
-  ]);
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
-  expect(
-    Arr.map(await call(fake, (registry) => registry.listMachines()), (machine) => machine.slug),
-  ).toEqual(["default"]);
-});
-
-it("deletes a Session started in a Machine while it was being deleted, before its record goes", async () => {
-  const fake = fakeRegistries();
-  const first = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  fake.startDuringDestroy({ ...first, id: "late" });
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.deleteMachine({ machine: "cloudpid" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${first.id}`,
-    `deleteSession:${first.id}`,
-    "destroyWorkspace:cloudpid",
-    "deleteMachine:cloudpid",
-    "destroy:late",
-    "deleteSession:late",
-    "destroyWorkspace:cloudpid",
-    "deleteMachine:cloudpid",
-  ]);
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
-});
-
-it("refuses to delete the default Machine, and touches nothing", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) => registry.createSession({}));
-  fake.calls.length = 0;
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.deleteMachine({ machine: "default" })),
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toContain("default");
-  expect(lifecycle(fake)).toEqual([]);
-});
-
-it("refuses to delete a Machine the Registry does not list, and touches no object", async () => {
-  const fake = fakeRegistries();
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.deleteMachine({ machine: "typo" })),
-  );
-
-  expect(error.message).toContain("typo");
-  expect(lifecycle(fake)).toEqual([]);
-});
-
-it("stops a Machine delete at a Session that cannot be wiped, keeping the Machine listed", async () => {
-  const fake = fakeRegistries();
-  const session = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  fake.breakSession(session.id, "storage error");
-  fake.calls.length = 0;
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.deleteMachine({ machine: "cloudpid" })),
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toContain("storage error");
-  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`]);
-  expect(
-    Arr.map(await call(fake, (registry) => registry.listMachines()), (machine) => machine.slug),
-  ).toContain("cloudpid");
-});
-
-it("resets a Machine: every Session bound to it, archived ones too, then its object but its settings, keeping its record", async () => {
-  const fake = fakeRegistries();
-  const elsewhere = await call(fake, (registry) => registry.createSession({}));
-  const first = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  const second = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi" }),
-  );
-
-  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.resetMachine({ machine: "cloudpid" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${second.id}`,
-    `deleteSession:${second.id}`,
-    `destroy:${first.id}`,
-    `deleteSession:${first.id}`,
-    "clearWorkspace:cloudpid",
-  ]);
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
-  expect(
-    Arr.map(await call(fake, (registry) => registry.listMachines()), (machine) => machine.slug),
-  ).toEqual(["default", "cloudpid"]);
-});
-
-it("resets the default Machine too", async () => {
-  const fake = fakeRegistries();
-  const session = await call(fake, (registry) => registry.createSession({}));
-
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.resetMachine({ machine: "default" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${session.id}`,
-    `deleteSession:${session.id}`,
-    "clearWorkspace:default",
-  ]);
-});
-
-it("deletes a Session started in a Machine while it was reset, and wipes the files again", async () => {
-  const fake = fakeRegistries();
-  const first = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  fake.startDuringDestroy({ ...first, id: "late" });
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.resetMachine({ machine: "cloudpid" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${first.id}`,
-    `deleteSession:${first.id}`,
-    "clearWorkspace:cloudpid",
-    "destroy:late",
-    "deleteSession:late",
-    "clearWorkspace:cloudpid",
-  ]);
-});
-
-it("stops a Machine reset at a Session that cannot be wiped, before its files", async () => {
-  const fake = fakeRegistries();
-  const session = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  fake.breakSession(session.id, "storage error");
-  fake.calls.length = 0;
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.resetMachine({ machine: "cloudpid" })),
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toContain("storage error");
-  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`]);
-});
-
-it("refuses to reset or restart a Machine the Registry does not list, and touches no object", async () => {
-  const fake = fakeRegistries();
-
-  const reset = await call(fake, (registry) =>
-    Effect.flip(registry.resetMachine({ machine: "typo" })),
-  );
-
-  const restart = await call(fake, (registry) =>
-    Effect.flip(registry.restartContainer({ machine: "typo" })),
-  );
-
-  expect(reset.message).toContain("typo");
-  expect(restart.message).toContain("typo");
-  expect(lifecycle(fake)).toEqual([]);
-});
-
-it("restarts a Machine's Container, keeping its Sessions", async () => {
-  const fake = fakeRegistries();
-  const session = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.restartContainer({ machine: "cloudpid" }));
-
-  expect(lifecycle(fake)).toEqual(["restartContainer:cloudpid"]);
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([session]);
-});
-
-it("fails a Container restart the Machine could not do with its message", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) => registry.createMachine({ slug: "cloudpid" }));
-  fake.failWorkspace("no Container");
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.restartContainer({ machine: "cloudpid" })),
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toBe("Could not restart the Container: no Container");
-});
-
-it("removes a repo: every Session bound to it, archived ones too, then its directory; other Sessions stay", async () => {
-  const fake = fakeRegistries();
-  const atRoot = await call(fake, (registry) => registry.createSession({ machine: "cloudpid" }));
-
-  const first = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi" }),
-  );
-
-  const second = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi" }),
-  );
-
-  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.removeRepo({ machine: "cloudpid", repo: "pi" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${second.id}`,
-    `deleteSession:${second.id}`,
-    `destroy:${first.id}`,
-    `deleteSession:${first.id}`,
-    "removeRepo:cloudpid/pi",
-  ]);
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([atRoot]);
-  expect(await call(fake, (registry) => registry.listRepos({ machine: "cloudpid" }))).toEqual([]);
-});
-
-it("deletes a Session started in a repo while it was removed, and removes the directory again", async () => {
-  const fake = fakeRegistries();
-
-  const first = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi" }),
-  );
-
-  fake.startDuringDestroy({ ...first, id: "late" });
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.removeRepo({ machine: "cloudpid", repo: "pi" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${first.id}`,
-    `deleteSession:${first.id}`,
-    "removeRepo:cloudpid/pi",
-    "destroy:late",
-    "deleteSession:late",
-    "removeRepo:cloudpid/pi",
-  ]);
-});
-
-it("removes a repo that is gone but still has Sessions bound to it", async () => {
-  const fake = fakeRegistries();
-
-  const session = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi" }),
-  );
-
-  fake.held.set("cloudpid", []);
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.removeRepo({ machine: "cloudpid", repo: "pi" }));
-
-  expect(lifecycle(fake)).toEqual([
-    `destroy:${session.id}`,
-    `deleteSession:${session.id}`,
-    "removeRepo:cloudpid/pi",
-  ]);
-});
-
-it("refuses to remove a repo the Machine neither holds nor has Sessions in, or of a Machine it does not list", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) => registry.createMachine({ slug: "cloudpid" }));
-
-  const missing = await call(fake, (registry) =>
-    Effect.flip(registry.removeRepo({ machine: "cloudpid", repo: "ghost" })),
-  );
-
-  const unlisted = await call(fake, (registry) =>
-    Effect.flip(registry.removeRepo({ machine: "typo", repo: "pi" })),
-  );
-
-  expect(missing.message).toBe('Machine "cloudpid" has no repo "ghost"');
-  expect(unlisted.message).toContain("typo");
-  expect(lifecycle(fake)).toEqual([]);
-});
-
-it("rejects a repo to remove that is a path or an option, before it reaches the Machine", async () => {
-  for (const repo of ["..", "a/b", "-rf"]) {
-    const { text, calls } = await callRaw("removeRepo", { machine: "cloudpid", repo });
-
-    expect(text).toContain('"Failure"');
-    expect(calls).toEqual([]);
-  }
-});
-
-it("fails a removal that did not finish with its message, keeping the repo", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) => registry.createMachine({ slug: "cloudpid" }));
-  fake.failWorkspace("rm failed (exit 1): Permission denied");
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.removeRepo({ machine: "cloudpid", repo: "pi" })),
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toBe("Could not remove the repo: rm failed (exit 1): Permission denied");
-  expect(await call(fake, (registry) => registry.listRepos({ machine: "cloudpid" }))).toEqual([
-    "pi",
-  ]);
-});
-
-/** The calls that reached a worktree, or forgot a Session or a Workspace, in order. */
-const worktreeCalls = (fake: ReturnType<typeof fakeRegistries>) =>
-  Arr.filter(fake.calls, (name) =>
-    /^(prepareWorktree|removeWorktree|releaseWorktree|deleteWorkspace|deleteSession|destroy):/.test(
-      name,
-    ),
-  );
-
-it("creates a Session in a new Workspace of a repo the Machine holds, on its own branch", async () => {
-  const fake = fakeRegistries();
-
-  const session = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-  );
-
-  expect(session).toMatchObject({ machine: "cloudpid", repo: "pi", workspace: "00000001" });
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([
-    {
-      id: "00000001",
-      machine: "cloudpid",
-      repo: "pi",
-      branch: "cloudpid/00000001",
-      directory: "/workspace/.worktrees/pi/00000001",
-      createdAt: 1,
-    },
-  ]);
-  // The worktree is made when the Session first works in it, not now.
-  expect(worktreeCalls(fake)).toEqual([]);
-});
-
-it("creates a new Workspace on the branch the owner names, unless another Workspace of the repo is on it", async () => {
-  const fake = fakeRegistries();
-
-  const session = await call(fake, (registry) =>
-    registry.createSession({
-      machine: "cloudpid",
-      repo: "pi",
-      workspace: "new",
-      branch: "fix/build",
-    }),
-  );
-
-  const [workspace] = await call(fake, (registry) => registry.listWorkspaces());
-
-  expect(workspace).toMatchObject({ id: session.workspace, branch: "fix/build" });
-
-  const taken = await call(fake, (registry) =>
-    Effect.flip(
-      registry.createSession({
-        machine: "cloudpid",
-        repo: "pi",
-        workspace: "new",
-        branch: "fix/build",
-      }),
-    ),
-  );
-
-  expect(taken).toBeInstanceOf(MachineError);
-  expect(taken.message).toContain(String(session.workspace));
-  expect(await call(fake, (registry) => registry.listSessions())).toHaveLength(1);
-});
-
-it("refuses a branch without a new Workspace, and a new Workspace without a repo or of a repo the Machine lacks", async () => {
-  const fake = fakeRegistries();
-
-  for (const input of [
-    { machine: "cloudpid", repo: "pi", branch: "fix/build" },
-    { machine: "cloudpid", workspace: "new" as const },
-    { machine: "cloudpid", repo: "ghost", workspace: "new" as const },
-  ]) {
-    const error = await call(fake, (registry) => Effect.flip(registry.createSession(input)));
-
-    expect(error).toBeInstanceOf(MachineError);
-  }
-
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
-});
-
-it("rejects a branch git would not take, before it reaches the Registry", async () => {
-  for (const branch of ["-x", "a..b", "has space", "end.lock"]) {
-    const { text, calls } = await callRaw("createSession", {
-      machine: "cloudpid",
-      repo: "pi",
-      workspace: "new",
-      branch,
-    });
-
-    expect(text).toContain('"Failure"');
-    expect(calls).toEqual([]);
-  }
-});
-
-it("creates a Session in a Workspace that exists, which brings its Machine and repo", async () => {
-  const fake = fakeRegistries();
-
-  const first = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-  );
-
-  const id = String(first.workspace);
-
-  const second = await call(fake, (registry) => registry.createSession({ workspace: id }));
-
-  expect(second).toMatchObject({ machine: "cloudpid", repo: "pi", workspace: id });
-
-  const elsewhere = await call(fake, (registry) =>
-    Effect.flip(registry.createSession({ machine: "default", workspace: id })),
-  );
-
-  const unknown = await call(fake, (registry) =>
-    Effect.flip(registry.createSession({ workspace: "deadbeef" })),
-  );
-
-  expect(elsewhere.message).toContain("cloudpid");
-  expect(unknown.message).toContain("deadbeef");
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toHaveLength(1);
-});
-
-it("releases a Workspace with the last Session bound to it, archived ones included", async () => {
-  const fake = fakeRegistries();
-
-  const first = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-  );
-
-  const id = String(first.workspace);
-  const second = await call(fake, (registry) => registry.createSession({ workspace: id }));
-
-  await call(fake, (registry) => registry.archiveSession({ id: second.id }));
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.deleteSession({ id: first.id }));
-  expect(worktreeCalls(fake)).toEqual([`destroy:${first.id}`, `deleteSession:${first.id}`]);
-
-  fake.calls.length = 0;
-  await call(fake, (registry) => registry.deleteSession({ id: second.id }));
-
-  expect(worktreeCalls(fake)).toEqual([
-    `destroy:${second.id}`,
-    `deleteSession:${second.id}`,
-    `releaseWorktree:${id}`,
-    `deleteWorkspace:${id}`,
-  ]);
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
-});
-
-it("keeps a Workspace whose worktree holds uncommitted changes, or could not be released, once its last Session is deleted", async () => {
-  for (const spoil of [
-    (fake: ReturnType<typeof fakeRegistries>) => fake.dirtyWorktrees(),
-    (fake: ReturnType<typeof fakeRegistries>) => fake.failWorktrees("no Container"),
-  ]) {
-    const fake = fakeRegistries();
-
-    const session = await call(fake, (registry) =>
-      registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-    );
-
-    spoil(fake);
-
-    // The Session's deletion is done either way.
-    await call(fake, (registry) => registry.deleteSession({ id: session.id }));
-
-    expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
-    expect(await call(fake, (registry) => registry.listWorkspaces())).toHaveLength(1);
-  }
-});
-
-it("removes a Workspace: every Session bound to it, archived ones too, then its worktree, then its record", async () => {
-  const fake = fakeRegistries();
-
-  const inMain = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi" }),
-  );
-
-  const first = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-  );
-
-  const id = String(first.workspace);
-  const second = await call(fake, (registry) => registry.createSession({ workspace: id }));
-
-  await call(fake, (registry) => registry.archiveSession({ id: first.id }));
-  fake.calls.length = 0;
-
-  await call(fake, (registry) => registry.removeWorkspace({ id }));
-
-  expect(worktreeCalls(fake)).toEqual([
-    `destroy:${second.id}`,
-    `deleteSession:${second.id}`,
-    `destroy:${first.id}`,
-    `deleteSession:${first.id}`,
-    `removeWorktree:${id}`,
-    `deleteWorkspace:${id}`,
-  ]);
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([inMain]);
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
-});
-
-it("keeps a Workspace whose worktree could not be removed, and refuses one the Registry does not know", async () => {
-  const fake = fakeRegistries();
-
-  const session = await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-  );
-
-  fake.failWorktrees("rm failed");
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.removeWorkspace({ id: String(session.workspace) })),
-  );
-
-  const unknown = await call(fake, (registry) =>
-    Effect.flip(registry.removeWorkspace({ id: "deadbeef" })),
-  );
-
-  expect(error).toBeInstanceOf(MachineError);
-  expect(error.message).toContain("rm failed");
-  expect(unknown.message).toContain("deadbeef");
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toHaveLength(1);
-});
-
-it("forgets the Workspaces of a repo once it is removed, and of a Machine once it is reset", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-  );
-
-  await call(fake, (registry) => registry.removeRepo({ machine: "cloudpid", repo: "pi" }));
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
-
-  fake.held.set("cloudpid", ["pi"]);
-  await call(fake, (registry) =>
-    registry.createSession({ machine: "cloudpid", repo: "pi", workspace: "new" }),
-  );
-
-  await call(fake, (registry) => registry.resetMachine({ machine: "cloudpid" }));
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toEqual([]);
 });

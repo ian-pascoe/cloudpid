@@ -22,7 +22,7 @@ import {
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { inLinkedWorktree, routeCommand } from "./bash-routing.ts";
+import { routeCommand } from "./bash-routing.ts";
 import { Images, type ImagesService, readTool } from "./images.ts";
 
 /** Where a `bash` command can run: the Worker Shell (`worker`) or the Container (`container`). */
@@ -41,7 +41,7 @@ const base = createBashTool();
 
 const backendDescription = [
   "Commands run on one of two backends that share the same files in /workspace. Routing is automatic: the command's programs decide, and an explicit `backend` overrides it.",
-  "- worker: a shell inside a Worker (just-bash). It starts instantly and runs text and file commands: cat, grep, rg, sed, awk, jq, find, sort, head, tar, ls and the like, with pipes, redirects, and globs, plus a read-only git: `git status` (one `XY path` line per changed file, `?` for untracked, nothing when clean; the staged column can be wrong, so use `git status --short` on the container after a `git add`), `git log --oneline`, `git rev-parse HEAD`, `git branch`, `git ls-files` (except in a Workspace's own worktree under /workspace/.worktrees, where git always runs on the container). It has no network and cannot run native (ELF) binaries, so no node, npm, python, compilers, test runners, curl, or gh.",
+  "- worker: a shell inside a Worker (just-bash). It starts instantly and runs text and file commands: cat, grep, rg, sed, awk, jq, find, sort, head, tar, ls and the like, with pipes, redirects, and globs, plus a read-only git: `git status` (one `XY path` line per changed file, `?` for untracked, nothing when clean; the staged column can be wrong, so use `git status --short` on the container after a `git add`), `git log --oneline`, `git rev-parse HEAD`, `git branch`, `git ls-files`. It has no network and cannot run native (ELF) binaries, so no node, npm, python, compilers, test runners, curl, or gh.",
   "- container: a real Linux container (Debian) with network access. It runs anything that needs a real binary: npm, node, python, test runners, compilers, package managers, gh, mise toolchains, all other git (diff, show, add, commit, branch changes, clone, push, pull; the GitHub token is set), and scripts (./script.sh). The first command takes several seconds to start it.",
   'Without `backend`, a command goes to the Container when it uses any program the worker lacks (or one you cannot tell, like a script path or `$CMD`) and to the worker otherwise. Set `backend` to override: `"container"` for a command that failed on the worker with "command not found" or an unsupported feature, `"worker"` to force the fast shell.',
 ].join("\n");
@@ -65,11 +65,7 @@ const bash: ToolRegistration<typeof parameters> = defineTool({
   parameters,
   async execute({ backend, ...args }, api, context) {
     if (hasBackends(api.env)) {
-      const chosen =
-        backend ??
-        routeCommand(args.command, {
-          gitOnWorker: !inLinkedWorktree(api.env.cwd, args.command),
-        }).backend;
+      const chosen = backend ?? routeCommand(args.command).backend;
 
       return base.execute(args, { ...api, env: api.env.onBackend(chosen) }, context);
     }

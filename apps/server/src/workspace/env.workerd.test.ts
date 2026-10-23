@@ -567,45 +567,6 @@ describe("deleting a Workspace", () => {
   });
 });
 
-describe("resetting a Workspace", () => {
-  it("wipes its files but keeps its settings", async () => {
-    const workspace = env.WORKSPACES.getByName("reset-me");
-
-    const executionEnv = new ComputerExecutionEnv({
-      workspace,
-      id: "computer:test",
-      cwd: "/workspace",
-    });
-
-    getOrThrow(await executionEnv.createDir("/workspace/repo", { recursive: true }, context));
-    getOrThrow(await executionEnv.writeFile("/workspace/repo/notes.md", "kept?", context));
-    expect(
-      await workspace.updateContainerSettings({ instance: "standard-3", idleMinutes: 10 }),
-    ).toMatchObject({ ok: true });
-
-    // As the main Worker resets it: the clear, then the reset in a call of its own.
-    await workspaceObjectsRemote(env.WORKSPACES).clear("reset-me");
-
-    const again = env.WORKSPACES.getByName("reset-me");
-
-    const after = new ComputerExecutionEnv({
-      workspace: again,
-      id: "computer:test",
-      cwd: "/workspace",
-    });
-
-    const read = await after.readTextFile("/workspace/repo/notes.md", context);
-
-    expect(read.ok ? read.value : read.error.code).toBe("not_found");
-    expect(await again.containerSettings()).toEqual({
-      settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-3", idleMinutes: 10 },
-      overrides: { instance: "standard-3", idleMinutes: 10 },
-    });
-    // The bundled skills are mounted again in the fresh Workspace.
-    expect((await after.discoverSkills(context)).map((skill) => skill.name)).toContain("tdd");
-  });
-});
-
 describe("restarting a Workspace's Container", () => {
   it("forgets the snapshot and keeps the files and settings", async () => {
     const workspace = env.WORKSPACES.getByName("restart-me");

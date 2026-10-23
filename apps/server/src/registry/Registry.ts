@@ -7,40 +7,56 @@ import type { PushState, PushSubscription } from "@cloudpid/protocol";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
-import { newSessionId, newWorkspaceId } from "./ids.ts";
+import { newEnvironmentId, newSessionId, newWorkspaceId } from "./ids.ts";
 import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
 import {
+  readEnvironmentSettings,
+  type EnvironmentSettingsState,
+  writeEnvironmentSettings,
+} from "./environment-settings.ts";
+import {
+  type Deletion,
+  type EnvironmentNaming,
+  type EnvironmentRecord,
+  type LegacyObject,
   openRegistryStore,
+  type RepoChange,
   type SessionRecord,
+  type SessionRefusal,
   type SessionStatus,
-  type MachineRecord,
-  type MachineDeletion,
-  type MachineRename,
-  type WorkspaceDeletion,
   type WorkspaceRecord,
+  type WorkspaceSetup,
 } from "./store.ts";
 
 /** The Registry is a singleton: every caller addresses the object with this name. */
 export const REGISTRY_NAME = "registry";
 
-/** A new Session's Workspace of its own: one that exists, or a new one, on `branch` if given. */
+/** A new Session's Workspace: one that exists, or a new one of `environment`, on `branch` if given, from `base`. */
 export type WorkspaceChoice =
   | { readonly kind: "existing"; readonly id: string }
-  | { readonly kind: "new"; readonly branch?: string | undefined };
+  | {
+      readonly kind: "new";
+      readonly environment: string;
+      readonly branch?: string | undefined;
+      readonly base?: string | undefined;
+    };
+
+/** How saving an Environment's Container settings went. */
+export type EnvironmentSettingsUpdate =
+  | { readonly status: "saved"; readonly state: EnvironmentSettingsState }
+  | { readonly status: "rejected"; readonly message: string }
+  | { readonly status: "missing" };
 
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
   /**
-   * Register a new Session, idle, under a fresh UUIDv7, bound to `machine` (default `DEFAULT_MACHINE`). `workspace` is
-   * a Workspace of `repo` it works in, or a new one to register with it, under a fresh id, on `branch` (default
-   * `cloudpid/<id>`).
+   * Register a new Session, idle, under a fresh UUIDv7, in a Workspace that exists, or in a new one of an Environment,
+   * registered with it under a fresh id, on `branch` (default `cloudpid/<id>`) from `base`. A refusal says why.
    */
   readonly createSession: (input: {
     readonly title?: string | undefined;
-    readonly machine?: string | undefined;
-    readonly repo?: string | undefined;
-    readonly workspace?: WorkspaceChoice | undefined;
-  }) => Effect.Effect<SessionRecord>;
+    readonly workspace: WorkspaceChoice;
+  }) => Effect.Effect<SessionRecord | SessionRefusal>;
   /** The Session registered under `id`, or null. */
   readonly getSession: (input: { readonly id: string }) => Effect.Effect<SessionRecord | null>;
   /** Every Session, newest first. */
@@ -71,27 +87,61 @@ export type RegistryMethods = {
   }) => Effect.Effect<SessionRecord | null>;
   /** Forget a Session, once its object is wiped; says whether it was registered. */
   readonly deleteSession: (input: { readonly id: string }) => Effect.Effect<boolean>;
-  /** Register a Machine by slug, named after it; one already registered keeps its record. */
-  readonly createMachine: (input: { readonly slug: string }) => Effect.Effect<MachineRecord>;
-  readonly listMachines: () => Effect.Effect<ReadonlyArray<MachineRecord>>;
-  /** Give a Machine a new name, which no other Machine may have in any case. */
-  readonly renameMachine: (input: {
-    readonly slug: string;
+  /** Register an Environment under a fresh id, unless another has the name in any case. */
+  readonly createEnvironment: (input: {
     readonly name: string;
-  }) => Effect.Effect<MachineRename>;
-  /** Forget a Machine once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
-  readonly deleteMachine: (input: { readonly slug: string }) => Effect.Effect<MachineDeletion>;
+  }) => Effect.Effect<EnvironmentNaming>;
+  /** The Environment registered under `id`, or null. */
+  readonly getEnvironment: (input: {
+    readonly id: string;
+  }) => Effect.Effect<EnvironmentRecord | null>;
+  readonly listEnvironments: () => Effect.Effect<ReadonlyArray<EnvironmentRecord>>;
+  /** Give an Environment a new name, which no other may have in any case. */
+  readonly renameEnvironment: (input: {
+    readonly id: string;
+    readonly name: string;
+  }) => Effect.Effect<EnvironmentNaming>;
+  /** Forget an Environment once its Workspaces are removed; kept while one is made from it. */
+  readonly deleteEnvironment: (input: { readonly id: string }) => Effect.Effect<Deletion>;
+  /** Add a Repo to an Environment, for the Workspaces made from then on. */
+  readonly addRepo: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly url: string;
+  }) => Effect.Effect<RepoChange>;
+  /** Take a Repo out of an Environment. */
+  readonly removeRepo: (input: {
+    readonly environment: string;
+    readonly name: string;
+  }) => Effect.Effect<RepoChange>;
+  /** An Environment's Container settings in force and their overrides, or null when it is not registered. */
+  readonly getEnvironmentSettings: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<EnvironmentSettingsState | null>;
+  /** Save an Environment's Container settings overrides if they resolve; otherwise say why not, and save nothing. */
+  readonly updateEnvironmentSettings: (input: {
+    readonly environment: string;
+    readonly overrides: Schema.Json;
+  }) => Effect.Effect<EnvironmentSettingsUpdate>;
   /** The Workspace registered under `id`, or null. */
   readonly getWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceRecord | null>;
-  /** Every Workspace of its own, newest first. */
+  /**
+   * What a Session's Workspace sets itself up with (its Repos, branch and base) and the Container settings in force
+   * for its Environment, or null when the Workspace is not registered.
+   */
+  readonly getWorkspaceSetup: (input: {
+    readonly id: string;
+  }) => Effect.Effect<(WorkspaceSetup & { readonly settings: Schema.Json }) | null>;
+  /** Every Workspace, newest first. */
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
-  /** Forget a Workspace once its Sessions are deleted and its worktree removed; kept while a Session is bound to it. */
-  readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceDeletion>;
-  /** Forget the Workspaces of a Machine (or of one of its repos) no Session is bound to, once their files are gone. */
-  readonly deleteWorkspacesOf: (input: {
-    readonly machine: string;
-    readonly repo?: string | undefined;
-  }) => Effect.Effect<void>;
+  /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
+  readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<Deletion>;
+  /** Take up to `limit` objects left from before Environments to wipe, each for a few minutes (`LEGACY_LEASE_MS`). */
+  readonly takeLegacy: (input: {
+    readonly limit: number;
+  }) => Effect.Effect<ReadonlyArray<LegacyObject>>;
+  /** Forget a legacy object once its Durable Object is wiped. */
+  readonly forgetLegacy: (input: LegacyObject) => Effect.Effect<void>;
   /** The settings in force and the overrides saved over the defaults. */
   readonly getSettings: () => Effect.Effect<SettingsState>;
   /** Save `overrides` in place of the saved ones if they resolve; otherwise say why not, and save nothing. */
@@ -119,8 +169,11 @@ export type RegistryMethods = {
   }) => Effect.Effect<void>;
 };
 
+/** How long a legacy object taken to be wiped is left to its taker before another may take it. */
+export const LEGACY_LEASE_MS = 5 * 60_000;
+
 /**
- * The index of Sessions and Machines (`docs/spec.md` → Durable Objects), over this object's SQLite storage.
+ * The index of Sessions, Environments and Workspaces (`docs/spec.md` → Durable Objects), over this object's SQLite storage.
  * The class name is the Durable Object class name in every stage's migrations, so it cannot be renamed once deployed.
  */
 export class Registry extends Cloudflare.DurableObject<Registry, RegistryMethods>()("Registry") {}
@@ -133,16 +186,13 @@ export const RegistryLive = Registry.make(
         const notify = pushNotifier({ store, vapid: push.vapid });
 
         return {
-          createSession: ({ title, machine, repo, workspace }) =>
+          createSession: ({ title, workspace }) =>
             Effect.gen(function* () {
               const id = yield* newSessionId;
               const now = yield* Clock.currentTimeMillis;
 
-              if (workspace?.kind !== "new") {
-                return store.createSession(
-                  { id, title: title ?? null, machine, repo, workspace },
-                  now,
-                );
+              if (workspace.kind === "existing") {
+                return store.createSession({ id, title: title ?? null, workspace }, now);
               }
 
               // Eight hex digits rarely collide; one that does is drawn again.
@@ -154,12 +204,12 @@ export const RegistryLive = Registry.make(
                 {
                   id,
                   title: title ?? null,
-                  machine,
-                  repo,
                   workspace: {
                     kind: "new",
                     id: workspaceId,
+                    environment: workspace.environment,
                     branch: workspace.branch ?? `cloudpid/${workspaceId}`,
+                    base: workspace.base ?? null,
                   },
                 },
                 now,
@@ -178,16 +228,60 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(Effect.map((now) => store.archiveSession(id, now))),
           unarchiveSession: ({ id }) => Effect.sync(() => store.unarchiveSession(id)),
           deleteSession: ({ id }) => Effect.sync(() => store.deleteSession(id)),
-          createMachine: ({ slug }) =>
-            Clock.currentTimeMillis.pipe(Effect.map((now) => store.createMachine(slug, now))),
-          listMachines: () => Effect.sync(() => store.listMachines()),
-          renameMachine: ({ slug, name }) => Effect.sync(() => store.renameMachine(slug, name)),
-          deleteMachine: ({ slug }) => Effect.sync(() => store.deleteMachine(slug)),
+          createEnvironment: ({ name }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              let id = yield* newEnvironmentId;
+
+              while (store.getEnvironment(id) !== null) id = yield* newEnvironmentId;
+
+              return store.createEnvironment(id, name, now);
+            }),
+          getEnvironment: ({ id }) => Effect.sync(() => store.getEnvironment(id)),
+          listEnvironments: () => Effect.sync(() => store.listEnvironments()),
+          renameEnvironment: ({ id, name }) => Effect.sync(() => store.renameEnvironment(id, name)),
+          deleteEnvironment: ({ id }) => Effect.sync(() => store.deleteEnvironment(id)),
+          addRepo: ({ environment, name, url }) =>
+            Effect.sync(() => store.addRepo(environment, { name, url })),
+          removeRepo: ({ environment, name }) =>
+            Effect.sync(() => store.removeRepo(environment, name)),
+          getEnvironmentSettings: ({ environment }) =>
+            Effect.sync(() => {
+              const overrides = store.getEnvironmentSettings(environment);
+
+              return overrides === null ? null : readEnvironmentSettings(overrides);
+            }),
+          updateEnvironmentSettings: ({ environment, overrides }) =>
+            Effect.sync((): EnvironmentSettingsUpdate => {
+              if (store.getEnvironment(environment) === null) return { status: "missing" };
+
+              const saved = writeEnvironmentSettings(overrides);
+
+              if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
+
+              store.putEnvironmentSettings(environment, saved.success.overrides);
+
+              return { status: "saved", state: saved.success };
+            }),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
+          getWorkspaceSetup: ({ id }) =>
+            Effect.sync(() => {
+              const setup = store.getWorkspaceSetup(id);
+
+              if (setup === null) return null;
+
+              // Only the overrides that still resolve reach the Workspace, which checks them again.
+              const overrides = store.getEnvironmentSettings(setup.environment) ?? {};
+
+              return { ...setup, settings: readEnvironmentSettings(overrides).overrides };
+            }),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
           deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
-          deleteWorkspacesOf: ({ machine, repo }) =>
-            Effect.sync(() => store.deleteWorkspacesOf(machine, repo)),
+          takeLegacy: ({ limit }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => store.takeLegacy(limit, now, LEGACY_LEASE_MS)),
+            ),
+          forgetLegacy: (object) => Effect.sync(() => store.forgetLegacy(object)),
           getSettings: () => Effect.sync(() => readSettings(store)),
           updateSettings: ({ overrides }) =>
             Clock.currentTimeMillis.pipe(

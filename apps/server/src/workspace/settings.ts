@@ -1,8 +1,7 @@
-// A Workspace's own settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Size and
-// idle). They live here, not in the Registry: the Workspace DO reads them when it launches its Container, and its
-// Worker (`Workspaces`) deploys before the main Worker that hosts the Registry, so it cannot reach the Registry. The
-// UI reads and writes them through `RegistryRpcs` (`getMachineSettings`/`updateMachineSettings`), which the main
-// Worker answers from this object.
+// A Workspace's Container settings, kept in its Durable Object's storage (docs/spec.md → Container and Toolchains → Size
+// and idle). They are its Environment's, which the Registry keeps: a Session hands them over when it readies the
+// Workspace (`prepare.ts`), since the Workspace DO reads them when it launches its Container, and its Worker
+// (`Workspaces`) deploys before the main Worker that hosts the Registry, so it cannot reach the Registry.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import {
   resolveContainerSettings,
@@ -57,33 +56,5 @@ export const workspaceSettingsStore = (storage: SettingsStorage) => {
     return { ok: true, state: { settings: resolved.success, overrides: kept } };
   };
 
-  /** The overrides as stored, to put back once the rest of the storage is wiped (`Workspace.clear`). */
-  const saved = () => storage.get<Schema.Json>(SETTINGS_KEY);
-
-  /** Put back what `saved` answered; nothing saved stays nothing. */
-  const restore = async (overrides: Schema.Json | undefined): Promise<void> => {
-    if (overrides !== undefined) await storage.put(SETTINGS_KEY, overrides);
-  };
-
-  return { read, write, saved, restore };
+  return { read, write };
 };
-
-/** The Workspaces' settings, as the main Worker reaches them: asked of each Workspace's Durable Object. */
-export type WorkspaceSettingsRemote = {
-  readonly read: (slug: string) => Promise<WorkspaceSettingsAnswer>;
-  readonly write: (slug: string, overrides: Schema.Json) => Promise<WriteAnswer>;
-};
-
-/** What the Workspace DO answers for the settings: `containerSettings` and `updateContainerSettings`. */
-type SettingsHost = {
-  containerSettings(): Promise<WorkspaceSettingsAnswer>;
-  updateContainerSettings(overrides: Schema.Json): Promise<WriteAnswer>;
-};
-
-/** The settings of the Workspace DOs `namespace` holds. */
-export const workspaceSettingsRemote = (namespace: {
-  getByName(slug: string): SettingsHost;
-}): WorkspaceSettingsRemote => ({
-  read: (slug) => namespace.getByName(slug).containerSettings(),
-  write: (slug, overrides) => namespace.getByName(slug).updateContainerSettings(overrides),
-});

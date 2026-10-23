@@ -247,7 +247,7 @@ export type SessionHostOptions<R = never> = {
   readonly env?: HarnessOptions["env"];
   /**
    * Builds a conversation's environment for the composer's lookups (its catalog and `@` menu), which only read files
-   * and must not wait for what `env` waits for, such as the Session's worktree being made. Defaults to `env`.
+   * and must not wait for what `env` waits for, such as the Session's Workspace being readied. Defaults to `env`.
    */
   readonly lookupEnv?: HarnessOptions["env"];
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */

@@ -27,10 +27,10 @@ const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
  */
 const DeleteSessionDialog = ({
   session,
-  machineName,
+  environmentName,
 }: {
   session: SessionRecord;
-  machineName: string;
+  environmentName: string;
 }) => {
   const [open, setOpen] = useAtom(DeleteOpen.use());
   const [deleted, remove] = useAtom(deleteSessionAtom(session.id));
@@ -52,10 +52,8 @@ const DeleteSessionDialog = ({
         <>
           <span className="font-medium text-foreground">{sessionTitle(session)}</span> and its
           conversation, subagents and history are deleted for good. Files it wrote in the{" "}
-          <span className="font-medium text-foreground">{machineName}</span> machine stay
-          {session.workspace === null
-            ? "."
-            : ", but for its workspace's worktree when no other session is in it: that goes unless it holds uncommitted changes, and its branch stays."}
+          <span className="font-medium text-foreground">{environmentName}</span> environment's
+          workspace stay until the workspace is removed.
           {session.status === "running" && " It is running: everything it runs stops first."}
         </>
       }
@@ -79,12 +77,12 @@ const DeleteSessionDialog = ({
 
 const Actions = ({
   session,
-  machineName,
+  environmentName,
   actions,
   className,
 }: {
   session: SessionRecord;
-  machineName: string;
+  environmentName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => {
@@ -96,7 +94,7 @@ const Actions = ({
   return (
     <>
       <Menu label={`Actions for ${sessionTitle(session)}`} className={className}>
-        {session.repo !== null && !archived && (
+        {!archived && (
           <MenuItem
             onSelect={() => {
               void actions.create(sameWorkspacePlace(session));
@@ -136,7 +134,7 @@ const Actions = ({
           Delete…
         </MenuItem>
       </Menu>
-      <DeleteSessionDialog session={session} machineName={machineName} />
+      <DeleteSessionDialog session={session} environmentName={environmentName} />
     </>
   );
 };
@@ -148,7 +146,7 @@ const Actions = ({
  */
 export const SessionMenu = (props: {
   session: SessionRecord;
-  machineName: string;
+  environmentName: string;
   actions: SessionActions;
   className?: string | undefined;
 }) => (

@@ -8,6 +8,15 @@ import { type ConversationId, sessionCommandsFor } from "@cloudpid/protocol";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
+/** A new Workspace of the default Environment, as `createSession` makes one. */
+const NEW_IN_DEFAULT = {
+  kind: "new",
+  id: "0a1b2c3d",
+  environment: "default",
+  branch: "cloudpid/0a1b2c3d",
+  base: null,
+} as const;
+
 declare global {
   namespace Cloudflare {
     /** The bindings `vitest.config.ts` gives the test Worker. */
@@ -28,7 +37,7 @@ const compacting = async () => {
   const registry = env.REGISTRIES.getByName(`commands-registry-${counter}`);
   const stub = env.SESSIONS.getByName(id);
 
-  await registry.createSession({ id, title: null }, 1);
+  await registry.createSession({ id, title: null, workspace: NEW_IN_DEFAULT }, 1);
   await registry.updateSettings({ compaction: { keepRecentTokens: 1 } }, 1);
   await runInDurableObject(stub, (instance: TestSession) =>
     instance.reportTo(`commands-registry-${counter}`),

@@ -1,5 +1,4 @@
 // @effect-diagnostics asyncFunction:off
-import { DEFAULT_MACHINE } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Logger from "effect/Logger";
@@ -7,14 +6,15 @@ import { describe, expect, it } from "vitest";
 import {
   cachedPlacement,
   earlyStartOnSubmit,
-  lookupDirectory,
   type Placement,
-  placementDirectory,
   readyPlacement,
-  WORKTREE_CHECKED_FOR,
+  WORKSPACE_CHECKED_FOR,
+  workspacePlacement,
 } from "./workspace.ts";
 
-const ROOT_OF_DEFAULT: Placement = { machine: DEFAULT_MACHINE, repo: null, worktree: null };
+const UNLISTED: Placement = { workspace: null, object: "ws:unlisted", directory: "/workspace" };
+
+const IN_PI = workspacePlacement("0a1b2c3d", "/workspace/pi");
 
 /** A `cachedPlacement` over an in-memory cache, and the names its lookup was asked for. */
 const setup = (
@@ -42,48 +42,43 @@ const setup = (
 };
 
 describe("cachedPlacement", () => {
-  it("asks the Registry once for a listed Session, and keeps the Workspace and the repo", async () => {
-    const acme: Placement = { machine: "acme", repo: "pi", worktree: null };
-    const { placement, asked, kept } = setup("s1", () => Promise.resolve(acme));
+  it("asks the Registry once for a listed Session, and keeps its Workspace and directory", async () => {
+    const { placement, asked, kept } = setup("s1", () => Promise.resolve(IN_PI));
 
-    expect(await placement()).toEqual(acme);
-    expect(await placement()).toEqual(acme);
+    expect(await placement()).toEqual(IN_PI);
+    expect(await placement()).toEqual(IN_PI);
     expect(asked).toEqual(["s1"]);
-    expect(kept()).toEqual(acme);
+    expect(kept()).toEqual(IN_PI);
   });
 
   it("answers from what is kept without asking", async () => {
-    const acme: Placement = { machine: "acme", repo: null, worktree: null };
-
     const { placement, asked } = setup(
       "s1",
-      () => Promise.resolve({ machine: "other", repo: null, worktree: null }),
-      acme,
+      () => Promise.resolve(workspacePlacement("ffffffff", "/workspace")),
+      IN_PI,
     );
 
-    expect(await placement()).toEqual(acme);
+    expect(await placement()).toEqual(IN_PI);
     expect(asked).toEqual([]);
   });
 
-  it("works at the root of the default Workspace for a Session the Registry does not list, and asks again", async () => {
+  it("works at the root of a Workspace of its own for a Session the Registry does not list, and asks again", async () => {
     let answer: Placement | null = null;
     const { placement, asked, kept } = setup("s1", () => Promise.resolve(answer));
 
-    expect(await placement()).toEqual(ROOT_OF_DEFAULT);
+    expect(await placement()).toEqual(UNLISTED);
     expect(kept()).toBeUndefined();
 
-    answer = { machine: "acme", repo: "pi", worktree: null };
+    answer = IN_PI;
 
-    expect(await placement()).toEqual({ machine: "acme", repo: "pi", worktree: null });
+    expect(await placement()).toEqual(IN_PI);
     expect(asked).toEqual(["s1", "s1"]);
   });
 
-  it("works at the root of the default Workspace for a Session whose name is unknown, without asking", async () => {
-    const { placement, asked, kept } = setup(undefined, () =>
-      Promise.resolve({ machine: "acme", repo: null, worktree: null }),
-    );
+  it("works at the root for a Session whose name is unknown, without asking", async () => {
+    const { placement, asked, kept } = setup(undefined, () => Promise.resolve(IN_PI));
 
-    expect(await placement()).toEqual(ROOT_OF_DEFAULT);
+    expect(await placement()).toEqual(UNLISTED);
     expect(asked).toEqual([]);
     expect(kept()).toBeUndefined();
   });
@@ -92,9 +87,7 @@ describe("cachedPlacement", () => {
     let fail = true;
 
     const { placement, asked, kept } = setup("s1", () =>
-      fail
-        ? Promise.reject(new Error("registry down"))
-        : Promise.resolve({ machine: "acme", repo: null, worktree: null }),
+      fail ? Promise.reject(new Error("registry down")) : Promise.resolve(IN_PI),
     );
 
     await expect(placement()).rejects.toThrow("registry down");
@@ -102,73 +95,31 @@ describe("cachedPlacement", () => {
 
     fail = false;
 
-    expect(await placement()).toEqual({ machine: "acme", repo: null, worktree: null });
+    expect(await placement()).toEqual(IN_PI);
     expect(asked).toEqual(["s1", "s1"]);
   });
 });
 
-describe("placementDirectory", () => {
-  it("is the Session's worktree, else its repo's main checkout, else the Machine's root", () => {
-    const worktree = { id: "0a1b2c3d", branch: "cloudpid/0a1b2c3d" };
-
-    expect(placementDirectory({ machine: "acme", repo: "pi", worktree })).toBe(
-      "/workspace/.worktrees/pi/0a1b2c3d",
-    );
-    expect(placementDirectory({ machine: "acme", repo: "pi", worktree: null })).toBe(
-      "/workspace/pi",
-    );
-    expect(placementDirectory(ROOT_OF_DEFAULT)).toBe("/workspace");
-  });
-});
-
-describe("lookupDirectory", () => {
-  const worktree = { id: "0a1b2c3d", branch: "cloudpid/0a1b2c3d" };
-
-  it("is the Session's worktree once it is made, and its repo's main checkout until then", async () => {
-    const asked: string[] = [];
-
-    const made = (answer: boolean) => (directory: string) => {
-      asked.push(directory);
-
-      return Promise.resolve(answer);
-    };
-
-    const placed: Placement = { machine: "acme", repo: "pi", worktree };
-
-    expect(await lookupDirectory(placed, made(true))).toBe("/workspace/.worktrees/pi/0a1b2c3d");
-    expect(await lookupDirectory(placed, made(false))).toBe("/workspace/pi");
-    expect(asked).toEqual([
-      "/workspace/.worktrees/pi/0a1b2c3d",
-      "/workspace/.worktrees/pi/0a1b2c3d",
-    ]);
-  });
-
-  it("asks nothing of a Session without a worktree", async () => {
-    const made = () => Promise.reject(new Error("not asked"));
-
-    expect(await lookupDirectory({ machine: "acme", repo: "pi", worktree: null }, made)).toBe(
-      "/workspace/pi",
-    );
-    expect(await lookupDirectory(ROOT_OF_DEFAULT, made)).toBe("/workspace");
+describe("workspacePlacement", () => {
+  it("works in the Workspace's own object", () => {
+    expect(IN_PI).toEqual({
+      workspace: "0a1b2c3d",
+      object: "ws:0a1b2c3d",
+      directory: "/workspace/pi",
+    });
   });
 });
 
 describe("readyPlacement", () => {
-  const IN_WORKTREE: Placement = {
-    machine: "acme",
-    repo: "pi",
-    worktree: { id: "0a1b2c3d", branch: "fix/build" },
-  };
-
-  /** A `readyPlacement` of `placed` over a fake clock: the worktrees it prepared, and how to move the clock. */
+  /** A `readyPlacement` of `placed` over a fake clock: the Workspaces it readied, and how to move the clock. */
   const setup = (placed: Placement, prepare: () => Promise<void> = () => Promise.resolve()) => {
     let time = 1_000;
     const prepared: string[] = [];
 
     const ready = readyPlacement({
       placement: () => Promise.resolve(placed),
-      prepare: (machine, worktree) => {
-        prepared.push(`${machine}:${worktree.repo}/${worktree.id}@${worktree.branch}`);
+      prepare: (workspace) => {
+        prepared.push(workspace);
 
         return prepare();
       },
@@ -184,22 +135,20 @@ describe("readyPlacement", () => {
     };
   };
 
-  it("prepares no worktree for a Session in a main checkout or at the root", async () => {
-    for (const placed of [ROOT_OF_DEFAULT, { machine: "acme", repo: "pi", worktree: null }]) {
-      const { ready, prepared } = setup(placed);
+  it("readies nothing for a Session nobody lists", async () => {
+    const { ready, prepared } = setup(UNLISTED);
 
-      expect(await ready()).toEqual(placed);
-      expect(prepared).toEqual([]);
-    }
+    expect(await ready()).toEqual(UNLISTED);
+    expect(prepared).toEqual([]);
   });
 
-  it("prepares the worktree once for callers at once, and again once the check is old", async () => {
-    const { ready, prepared, advance } = setup(IN_WORKTREE);
+  it("readies the Workspace once for callers at once, and again once the check is old", async () => {
+    const { ready, prepared, advance } = setup(IN_PI);
 
-    expect(await Promise.all([ready(), ready()])).toEqual([IN_WORKTREE, IN_WORKTREE]);
-    expect(prepared).toEqual(["acme:pi/0a1b2c3d@fix/build"]);
+    expect(await Promise.all([ready(), ready()])).toEqual([IN_PI, IN_PI]);
+    expect(prepared).toEqual(["0a1b2c3d"]);
 
-    advance(WORKTREE_CHECKED_FOR - 1);
+    advance(WORKSPACE_CHECKED_FOR - 1);
     await ready();
     expect(prepared).toHaveLength(1);
 
@@ -208,18 +157,18 @@ describe("readyPlacement", () => {
     expect(prepared).toHaveLength(2);
   });
 
-  it("fails while the worktree cannot be made, and tries again at the next call", async () => {
+  it("fails while the Workspace cannot be readied, and tries again at the next call", async () => {
     let fail = true;
 
-    const { ready, prepared } = setup(IN_WORKTREE, () =>
-      fail ? Promise.reject(new Error("fatal: invalid reference")) : Promise.resolve(),
+    const { ready, prepared } = setup(IN_PI, () =>
+      fail ? Promise.reject(new Error("fatal: repository not found")) : Promise.resolve(),
     );
 
-    await expect(ready()).rejects.toThrow("invalid reference");
+    await expect(ready()).rejects.toThrow("repository not found");
 
     fail = false;
 
-    expect(await ready()).toEqual(IN_WORKTREE);
+    expect(await ready()).toEqual(IN_PI);
     expect(prepared).toHaveLength(2);
   });
 });

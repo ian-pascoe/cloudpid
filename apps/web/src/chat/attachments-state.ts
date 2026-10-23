@@ -48,7 +48,7 @@ export interface AttachmentItem {
   readonly status: AttachmentStatus;
   /** The share of it uploaded, 0–1. */
   readonly progress: number;
-  /** Where the Machine stored it, once uploaded. */
+  /** Where the Workspace stored it, once uploaded. */
   readonly stored: StoredAttachment | undefined;
   /** Why it did not upload. */
   readonly error: string | undefined;
@@ -110,7 +110,7 @@ export const sentAttachments = (state: AttachmentsState): readonly SentAttachmen
 export interface Held {
   /** The Session refused the message: put them back, before any attached since. */
   readonly restore: Effect.Effect<void>;
-  /** The Session took it: forget them (their files stay in the Machine). */
+  /** The Session took it: forget them (their files stay in the Workspace). */
   readonly release: Effect.Effect<void>;
 }
 

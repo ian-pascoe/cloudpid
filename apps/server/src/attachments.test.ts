@@ -177,13 +177,13 @@ describe("serveAttachment", () => {
 
   const serve = async (sessionId: string) => {
     const workspace = memory();
-    const slugs: string[] = [];
+    const objects: string[] = [];
 
     // SAFETY: `serveAttachment` calls only `getByName`, and on its result only `getSession`.
     const registries = {
       getByName: () => ({
         getSession: ({ id }: { id: string }) =>
-          Effect.succeed(id === known ? { id, machine: "cloudpid" } : null),
+          Effect.succeed(id === known ? { id, workspace: "0a1b2c3d" } : null),
       }),
     } as never;
 
@@ -200,8 +200,8 @@ describe("serveAttachment", () => {
 
     const response = await serveAttachment(
       registries,
-      (slug) => {
-        slugs.push(slug);
+      (object) => {
+        objects.push(object);
 
         return workspace.api;
       },
@@ -211,7 +211,7 @@ describe("serveAttachment", () => {
     return {
       status: response.status,
       body: await HttpServerResponse.toWeb(response).text(),
-      slugs,
+      objects,
       stored: [...workspace.files.keys()],
     };
   };
@@ -220,7 +220,7 @@ describe("serveAttachment", () => {
     expect(await serve(known)).toEqual({
       status: 201,
       body: JSON.stringify({ name: "a.txt", path: `${uploads}/a.txt` }),
-      slugs: ["cloudpid"],
+      objects: ["ws:0a1b2c3d"],
       stored: [`${uploads}/a.txt`],
     });
   });
@@ -228,6 +228,6 @@ describe("serveAttachment", () => {
   it("answers 404 for a Session the Registry does not know, and touches no Workspace", async () => {
     const unknown = "0190f0a8-1b2c-7d3e-8f40-000000000000";
 
-    expect(await serve(unknown)).toMatchObject({ status: 404, slugs: [], stored: [] });
+    expect(await serve(unknown)).toMatchObject({ status: 404, objects: [], stored: [] });
   });
 });

@@ -5,69 +5,66 @@ import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   deleteConfirmed,
-  groupByMachine,
+  environmentNameProblem,
+  groupByEnvironment,
   idleMinutesProblem,
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
-  slugProblem,
+  optionalBranchProblem,
   sourceProblem,
   splitArchived,
-  machineNameProblem,
-} from "./machines.ts";
+} from "./environments.ts";
 
-const session = (id: string, machine: string, repo: string | null = null): SessionRecord => ({
+const session = (id: string, environment: string, workspace = "0a1b2c3d"): SessionRecord => ({
   id,
   title: null,
   titleSource: null,
-  machine,
-  repo,
-  workspace: null,
+  environment,
+  workspace,
   status: "idle",
   createdAt: 1,
   updatedAt: 1,
   archivedAt: null,
 });
 
-describe("groupByMachine", () => {
-  it("groups Sessions by Machine, the newest Session's Machine first", () => {
-    const groups = groupByMachine([
+describe("groupByEnvironment", () => {
+  it("groups Sessions by Environment, the newest Session's Environment first", () => {
+    const groups = groupByEnvironment([
       session("c", "pi"),
-      session("b", "cloudpid", "web"),
-      session("a", "pi", "docs"),
+      session("b", "cloudpid", "deadbeef"),
+      session("a", "pi", "cafebabe"),
     ]);
 
-    expect(groups.map((group) => [group.machine, group.sessions.map((s) => s.id)])).toEqual([
+    expect(groups.map((group) => [group.environment, group.sessions.map((s) => s.id)])).toEqual([
       ["pi", ["c", "a"]],
       ["cloudpid", ["b"]],
     ]);
   });
 
   it("says whether any of a group's Sessions is running", () => {
-    const groups = groupByMachine([
+    const groups = groupByEnvironment([
       { ...session("c", "pi"), status: "running" },
       session("b", "cloudpid"),
       session("a", "pi"),
     ]);
 
-    expect(groups.map((group) => [group.machine, group.running])).toEqual([
+    expect(groups.map((group) => [group.environment, group.running])).toEqual([
       ["pi", true],
       ["cloudpid", false],
     ]);
   });
 
   it("is empty without Sessions", () => {
-    expect(groupByMachine([])).toEqual([]);
+    expect(groupByEnvironment([])).toEqual([]);
   });
-});
 
-describe("groupByMachine with names", () => {
-  it("labels each group with its Machine's name, and with the slug for a Machine it does not know", () => {
-    const groups = groupByMachine([session("a", "pi"), session("b", "gone")], {
+  it("labels each group with its Environment's name, and with the id for one it does not know", () => {
+    const groups = groupByEnvironment([session("a", "pi"), session("b", "gone")], {
       pi: "Pi on Cloudflare",
     });
 
-    expect(groups.map((group) => [group.machine, group.name])).toEqual([
+    expect(groups.map((group) => [group.environment, group.name])).toEqual([
       ["pi", "Pi on Cloudflare"],
       ["gone", "gone"],
     ]);
@@ -89,36 +86,41 @@ describe("splitArchived", () => {
   });
 });
 
-describe("machineNameProblem", () => {
-  it("accepts a name another Machine does not have, in any case, and says what is wrong otherwise", () => {
+describe("environmentNameProblem", () => {
+  it("accepts a name another Environment does not have, in any case, and says what is wrong otherwise", () => {
     const others = ["Pi on Cloudflare"];
 
-    expect(machineNameProblem("  Docs ", others)).toBeNull();
-    expect(machineNameProblem("   ", others)).toBe("Give the machine a name");
-    expect(machineNameProblem("a".repeat(81), others)).toBe("Use at most 80 characters");
-    expect(machineNameProblem("pi on cloudflare", others)).toBe(
-      "Another machine is already named that",
+    expect(environmentNameProblem("  Docs ", others)).toBeNull();
+    expect(environmentNameProblem("   ", others)).toBe("Give the environment a name");
+    expect(environmentNameProblem("a".repeat(81), others)).toBe("Use at most 80 characters");
+    expect(environmentNameProblem("pi on cloudflare", others)).toBe(
+      "Another environment is already named that",
     );
   });
 });
 
 describe("deleteConfirmed", () => {
-  it("holds only when the slug is typed exactly", () => {
+  it("holds only when the name is typed exactly", () => {
     expect(deleteConfirmed("cloudpid", "cloudpid")).toBe(true);
     expect(deleteConfirmed("cloudpid", " cloudpid ")).toBe(true);
     expect(deleteConfirmed("cloudpid", "CloudPid")).toBe(false);
     expect(deleteConfirmed("cloudpid", "")).toBe(false);
+    expect(deleteConfirmed("cloudpid/1a2b3c4d", "cloudpid/1a2b3c4d")).toBe(true);
   });
 });
 
-describe("slugProblem", () => {
-  it("accepts a slug and says what is wrong with anything else", () => {
-    expect(slugProblem("cloudpid")).toBeNull();
-    expect(slugProblem("my-repo-2")).toBeNull();
-    expect(slugProblem("")).not.toBeNull();
-    expect(slugProblem("Has Space")).not.toBeNull();
-    expect(slugProblem("-lead")).not.toBeNull();
-    expect(slugProblem("a/b")).not.toBeNull();
+describe("optionalBranchProblem", () => {
+  it("accepts nothing, which means the default, and a branch the server accepts", () => {
+    expect(optionalBranchProblem("")).toBeNull();
+    expect(optionalBranchProblem("  ")).toBeNull();
+    expect(optionalBranchProblem("feature/login")).toBeNull();
+  });
+
+  it("says what is wrong with anything else", () => {
+    expect(optionalBranchProblem("a..b")).not.toBeNull();
+    expect(optionalBranchProblem("-x")).not.toBeNull();
+    expect(optionalBranchProblem("has space")).not.toBeNull();
+    expect(optionalBranchProblem("HEAD")).not.toBeNull();
   });
 });
 
@@ -175,7 +177,7 @@ describe("ignoreProblem", () => {
     expect(ignoreProblem("/a/{b,c}")).not.toBeNull();
   });
 
-  it("refuses more patterns than a Machine may have", () => {
+  it("refuses more patterns than an Environment may have", () => {
     const many = Array.from({ length: MAX_IGNORE_PATTERNS + 1 }, (_, i) => `/data-${i}`);
 
     expect(ignoreProblem(many.join("\n"))).toContain(String(MAX_IGNORE_PATTERNS));
