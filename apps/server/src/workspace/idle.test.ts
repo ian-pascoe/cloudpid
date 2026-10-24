@@ -93,7 +93,7 @@ describe("IdleStop", () => {
   it("does not stop a Container whose own idle time is longer than the default it was armed with", async () => {
     const { state, idle, setIdle, fire } = open(5 * MINUTE);
 
-    // The first use comes before the launch is recorded, so it sees the 5-minute default.
+    // The first use comes before the launch is recorded, so it sees the default (5 minutes here).
     await idle.touch();
 
     const lastUse = state.now;

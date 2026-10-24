@@ -201,8 +201,17 @@ describe("a launch", () => {
     expect(state.starts[0]?.env).toEqual(SPEC.env);
   });
 
-  it("starts a Workspace with no saved settings on the 2 vCPU / 6 GiB custom size, as resources", async () => {
+  it("starts a Workspace with no saved settings on the 1 vCPU / 3 GiB custom size, as resources", async () => {
     const { state, container } = open();
+
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.instance).toEqual({ vcpu: 1, memoryMib: 3072, diskMb: 12_000 });
+    expect(state.record?.instance).toBe("custom-1");
+  });
+
+  it("keeps a Workspace that saved custom-2, the former default, on it, as resources", async () => {
+    const { state, container } = open({ instance: "custom-2" });
 
     await container.start(SPEC);
 
@@ -250,7 +259,7 @@ describe("a launch", () => {
     await container.start(SPEC);
 
     expect(state.starts[0]?.containerSnapshot).toEqual({ id: "snap-from-standard-2" });
-    expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
+    expect(state.starts[0]?.instance).toEqual({ vcpu: 1, memoryMib: 3072, diskMb: 12_000 });
     expect(state.record?.restoredFrom).toBe("snap-from-standard-2");
   });
 

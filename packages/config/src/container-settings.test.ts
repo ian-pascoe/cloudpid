@@ -2,6 +2,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { INSTANCE_RESOURCES } from "./container-pricing.ts";
 import {
   containerInstance,
   DEFAULT_CONTAINER_SETTINGS,
@@ -40,10 +41,10 @@ const rejected = (overrides: Schema.Json): string => {
 };
 
 describe("the defaults", () => {
-  it("are the 2 vCPU / 6 GiB custom size and a 5-minute idle stop, as the spec says", () => {
+  it("are the 1 vCPU / 3 GiB custom size and a 2-minute idle stop, as the spec says", () => {
     expect(DEFAULT_CONTAINER_SETTINGS).toEqual({
-      instance: "custom-2",
-      idleMinutes: 5,
+      instance: "custom-1",
+      idleMinutes: 2,
       ignore: [],
       variables: {},
       setupScript: "",
@@ -64,12 +65,25 @@ describe("containerInstance", () => {
     }
   });
 
+  it("maps custom-1 to 1 vCPU, 3 GiB memory and 12 GB disk", () => {
+    expect(containerInstance("custom-1")).toEqual({ vcpu: 1, memoryMib: 3072, diskMb: 12_000 });
+  });
+
   it("maps custom-2 to 2 vCPU, 6 GiB memory and 12 GB disk", () => {
     expect(containerInstance("custom-2")).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
   });
 
+  it("gives every custom size at least the 3 GiB of memory per vCPU Cloudflare requires", () => {
+    for (const type of INSTANCE_TYPES) {
+      const { vcpu, memoryMib } = INSTANCE_RESOURCES[type];
+
+      if (type.startsWith("custom-")) expect(memoryMib).toBeGreaterThanOrEqual(vcpu * 3072);
+    }
+  });
+
   it("describes every instance type", () => {
     for (const type of INSTANCE_TYPES) expect(INSTANCE_DESCRIPTIONS[type]).not.toBe("");
+    expect(INSTANCE_DESCRIPTIONS["custom-1"]).toBe("1 vCPU, 3 GiB memory, 12 GB disk");
     expect(INSTANCE_DESCRIPTIONS["custom-2"]).toBe("2 vCPU, 6 GiB memory, 12 GB disk");
   });
 });
@@ -78,12 +92,12 @@ describe("resolveContainerSettings", () => {
   it("gives each override over the default, and leaves the rest", () => {
     expect(resolved({ instance: "basic" })).toEqual({
       instance: "basic",
-      idleMinutes: 5,
+      idleMinutes: 2,
       ignore: [],
       ...NONE,
     });
     expect(resolved({ idleMinutes: 90 })).toEqual({
-      instance: "custom-2",
+      instance: "custom-1",
       idleMinutes: 90,
       ignore: [],
       ...NONE,
@@ -298,7 +312,7 @@ describe("resolveContainerSettingsLeniently", () => {
       idleMinutes: 30,
     });
 
-    expect(settings).toEqual({ instance: "custom-2", idleMinutes: 30, ignore: [], ...NONE });
+    expect(settings).toEqual({ instance: "custom-1", idleMinutes: 30, ignore: [], ...NONE });
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("instance");
   });

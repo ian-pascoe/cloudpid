@@ -174,7 +174,8 @@ describe("repoNameProblem", () => {
 
 describe("instanceLabel", () => {
   it("names the size and what it offers, and marks the default one", () => {
-    expect(instanceLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
+    expect(instanceLabel("custom-1")).toBe("custom-1: 1 vCPU, 3 GiB memory, 12 GB disk (default)");
+    expect(instanceLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk");
     expect(instanceLabel("standard-2")).toBe("standard-2: 1 vCPU, 6 GiB memory, 12 GB disk");
   });
 
