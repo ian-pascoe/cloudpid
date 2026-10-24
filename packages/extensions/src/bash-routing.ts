@@ -2,7 +2,9 @@
 // the command needs something the Worker Shell does not have, and then the Container. The Container is the costly
 // backend, so the Worker Shell gets every command it can run: a program neither list below holds is asked of the Worker
 // Shell itself (`resolveRoute`), and a command that writes no file is run again on the Container when the Worker Shell
-// turns out not to run it (`workerShellCannot`). A command that is not understood goes to the Container.
+// turns out not to run it (`workerShellCannot`). A command that is not understood goes to the Container. So does one
+// that names a Container-only path, which only the Container has (`commandPaths`, then the Workspace DO's answer), and
+// one that writes no file runs again there when the Worker Shell did not find such a path (`missingPaths`).
 //
 // The command is read the way bash reads it (quotes, pipelines and lists, subshells, substitutions, heredocs, `case`),
 // so a program named inside a string or a heredoc body does not count and one inside `$(…)` does. Every simple command
@@ -120,7 +122,28 @@ type Word = {
   readonly quoted: boolean;
   /** It starts `NAME=`, as a variable assignment does. */
   readonly assignment: boolean;
+  /** It starts with an unquoted `~`, which the shell expands to a home directory. */
+  readonly tilde: boolean;
 };
+
+/**
+ * A simple command as the paths it names see it: its words, the files its redirects name, the subshell it runs in, and
+ * whether a `cd` in it lasts past it.
+ */
+type SimpleCommand = {
+  /** The program; undefined for the list of a `for` loop, whose words are its `args`. */
+  readonly head: Word | undefined;
+  readonly args: readonly Word[];
+  /** The targets of its file redirects (`< in`, `> out`): not heredocs, here-strings or file descriptors. */
+  readonly redirects: readonly Word[];
+  /** The subshells it is in, outermost first (`( … )`, `$( … )`, a heredoc body): one id each. */
+  readonly scope: readonly number[];
+  /** In a pipeline or the background: it runs in a subshell of its own, so its `cd` changes nothing after it. */
+  readonly piped: boolean;
+};
+
+/** What the readers of one command share: the simple commands read so far, and the next subshell id. */
+type Shared = { readonly records: SimpleCommand[]; ids: number };
 
 /** Words that start a command position again, or close a compound command, and run nothing themselves. */
 const KEYWORDS: ReadonlySet<string> = new Set(
@@ -155,6 +178,8 @@ type Parsed = {
   readonly unreadable: string | undefined;
   /** The first redirect in it that writes a file. */
   readonly writes: string | undefined;
+  /** Its simple commands in the order they were read, with their redirects. */
+  readonly records: readonly SimpleCommand[];
 };
 
 /** Reads a command into its simple commands. A recursive-descent scan, because `$( … )` and heredocs nest. */
@@ -165,7 +190,14 @@ class Reader {
   writes: string | undefined;
   readonly #source: string;
   #at: number;
+  readonly #shared: Shared;
+  #scope: readonly number[];
+  /** The scopes outside the subshells the scan is in, innermost last. */
+  #outer: (readonly number[])[] = [];
+  /** The command before the one being read piped into it. */
+  #pipedIn = false;
   #words: Word[] = [];
+  #redirects: Word[] = [];
   #discard = false;
   #functionName = false;
   #inConditional = false;
@@ -175,11 +207,30 @@ class Reader {
   #cases: CaseState[] = [];
   #stop: ")" | "`" | undefined;
 
-  constructor(source: string, at = 0, commands: Word[][] = [], functions = new Set<string>()) {
+  constructor(
+    source: string,
+    at = 0,
+    commands: Word[][] = [],
+    functions = new Set<string>(),
+    shared: Shared = { records: [], ids: 0 },
+    scope: readonly number[] = [],
+  ) {
     this.#source = source;
     this.#at = at;
     this.commands = commands;
     this.functions = functions;
+    this.#shared = shared;
+    this.#scope = scope;
+  }
+
+  /** A reader of a part of this command that runs in a subshell of its own (a substitution, a heredoc body). */
+  #child(source: string, at: number): Reader {
+    return new Reader(source, at, this.commands, this.functions, this.#shared, this.#subshell());
+  }
+
+  /** The scope of a new subshell in the current one. */
+  #subshell(): readonly number[] {
+    return [...this.#scope, this.#shared.ids++];
   }
 
   /** Read the whole source; undefined when it ends inside a quote, substitution or subshell. */
@@ -191,6 +242,7 @@ class Reader {
       functions: this.functions,
       unreadable: this.unreadable,
       writes: this.writes,
+      records: this.#shared.records,
     };
   }
 
@@ -207,9 +259,30 @@ class Reader {
     return this.#source.startsWith(text, this.#at);
   }
 
-  #flush(): void {
-    if (!this.#discard && this.#words.length > 0) this.commands.push(this.#words);
+  /** End the simple command being read; `separator` is the operator that ended it (none for a newline or `)`). */
+  #flush(separator = ""): void {
+    const words = this.#words;
+    const redirects = this.#redirects;
+    const pipe = separator === "|" || separator === "|&";
+    const piped = this.#pipedIn || pipe || separator === "&";
+    const record = { redirects, scope: this.#scope, piped };
+
+    if (this.#discard) {
+      // A `for` loop: the words after its `in` are its list.
+      const list = words.findIndex((word) => word.text === "in" && !word.quoted);
+
+      if (list !== -1) {
+        this.#shared.records.push({ ...record, head: undefined, args: words.slice(list + 1) });
+      }
+    } else if (words.length > 0 || redirects.length > 0) {
+      this.#shared.records.push({ ...record, head: words[0], args: words.slice(1) });
+    }
+
+    if (!this.#discard && words.length > 0) this.commands.push(words);
+
+    if (words.length > 0 || redirects.length > 0 || separator !== "") this.#pipedIn = pipe;
     this.#words = [];
+    this.#redirects = [];
     this.#discard = false;
     this.#inConditional = false;
   }
@@ -254,6 +327,7 @@ class Reader {
         this.#at++;
         this.#flush();
         this.#subshells--;
+        this.#scope = this.#outer.pop() ?? [];
       } else if (char === ")" && stop === ")") {
         this.#at++;
         this.#flush();
@@ -286,7 +360,11 @@ class Reader {
         const operator = this.#peek(2) === ">" ? "&>>" : "&>";
 
         this.#at += operator.length;
-        this.#output(operator, this.#redirectTarget());
+
+        const target = this.#redirectTarget();
+
+        this.#output(operator, target);
+        this.#file(operator, target);
 
         return true;
       }
@@ -296,7 +374,7 @@ class Reader {
       this.#at++;
 
       while (this.#peek() === char || this.#peek() === "&") this.#at++;
-      this.#flush();
+      this.#flush(this.#source.slice(start, this.#at));
 
       // `;;`, `;&`, `;;&` end a `case` clause: a pattern follows.
       if (char === ";" && this.#at - start > 1 && this.#cases.at(-1) === "body") {
@@ -330,6 +408,8 @@ class Reader {
       if (this.#words.length > 0) this.unreadable = "a ( inside a command";
       this.#flush();
       this.#subshells++;
+      this.#outer.push(this.#scope);
+      this.#scope = this.#subshell();
 
       return true;
     }
@@ -356,7 +436,7 @@ class Reader {
     if (this.#peek(1) === "(") {
       // Process substitution, `<(…)` or `>(…)`: its commands are read as a substitution's are, but
       // computer's Worker Shell does not parse it (just-bash 3.6 does), so the command is left to the Container.
-      const inner = new Reader(this.#source, this.#at + 2, this.commands, this.functions);
+      const inner = this.#child(this.#source, this.#at + 2);
       const ended = inner.#list(")");
 
       this.#at = inner.#at;
@@ -396,6 +476,16 @@ class Reader {
     const target = this.#redirectTarget();
 
     if (operator.startsWith(">") || operator === "<>") this.#output(operator, target);
+    this.#file(operator, target);
+  }
+
+  /** Record the target of a redirect as a file the command names, unless it is a file descriptor (`>&2`, `<&-`). */
+  #file(operator: string, target: Word | undefined): void {
+    if (target === undefined) return;
+
+    if (operator.endsWith("&") && !target.dynamic && /^(\d+|-)$/.test(target.text)) return;
+
+    this.#redirects.push(target);
   }
 
   /** Read the word of a redirect: a file or file descriptor, not a command. */
@@ -457,7 +547,7 @@ class Reader {
 
       // An unquoted heredoc expands what is in it, `$(…)` included.
       if (!heredoc.quoted && /[$`]/.test(body)) {
-        const inner = new Reader(body, 0, this.commands, this.functions);
+        const inner = this.#child(body, 0);
 
         if (!inner.readExpansions()) this.unreadable = "a heredoc body that does not parse";
         this.#inherit(inner);
@@ -620,6 +710,7 @@ class Reader {
       dynamic,
       quoted,
       assignment: ASSIGNMENT.test(this.#source.slice(start, this.#at)),
+      tilde: this.#source.charAt(start) === "~",
     };
   }
 
@@ -645,12 +736,7 @@ class Reader {
     if (this.#peek() === "`" || (next === "(" && this.#peek(2) !== "(")) {
       const backtick = this.#peek() === "`";
 
-      const inner = new Reader(
-        this.#source,
-        this.#at + (backtick ? 1 : 2),
-        this.commands,
-        this.functions,
-      );
+      const inner = this.#child(this.#source, this.#at + (backtick ? 1 : 2));
 
       const ended = inner.#list(backtick ? "`" : ")");
 
@@ -1200,4 +1286,226 @@ export const workerShellCannot = (output: WorkerOutput): string | undefined => {
     CANNOT_ON_STDOUT.map((pattern) => pattern.exec(output.stdout)).find((found) => found !== null);
 
   return match?.[0].trim();
+};
+
+// Container-only paths (GLOSSARY.md): every path outside `/workspace`, and inside it the launch's dependency, build
+// and cache directories, are on the Container's disk only, so the Worker Shell does not see them. Which paths those are
+// is the Workspace DO's to say (`containerOnly`); what is read here is which paths a command names, so a command naming
+// one goes to the Container before it runs (`commandPaths`), and which path a Worker Shell run found missing, so one
+// that writes no file runs again there (`missingPaths`).
+
+/** The Container's `HOME`, which a leading `~` stands for. */
+const HOME = "/root";
+
+/** Words that name a file the Worker Shell has too, whatever the directory. */
+const SHARED_FILES: ReadonlySet<string> = new Set([...NOT_FILES, "/dev/stdin"]);
+
+const WILDCARD = /[*?[]/;
+
+/** `path` without `.`, `..` and repeated slashes; `path` is absolute. */
+const normalize = (path: string): string => {
+  const segments: string[] = [];
+
+  for (const segment of path.split("/")) {
+    if (segment === "..") segments.pop();
+    else if (segment !== "" && segment !== ".") segments.push(segment);
+  }
+
+  return `/${segments.join("/")}`;
+};
+
+/**
+ * `text`, a path as the command names it, made absolute: a leading `~` (when `tilde`, it was unquoted) is the
+ * Container's home, and a relative path is under `cwd`. Undefined when that cannot be told: a relative path where the
+ * directory is unknown, or `~user`.
+ */
+const resolvePath = (text: string, cwd: string | undefined, tilde: boolean): string | undefined => {
+  let path = text;
+
+  if (tilde) {
+    if (path !== "~" && !path.startsWith("~/")) return undefined;
+    path = `${HOME}${path.slice(1)}`;
+  }
+
+  if (path.startsWith("/")) return normalize(path);
+
+  return cwd === undefined ? undefined : normalize(`${cwd}/${path}`);
+};
+
+/**
+ * What a word with a wildcard is checked as: the literal directory before its first wildcard, and, when a literal
+ * segment follows a wildcard, the word up to the last such segment, wildcards kept as they are
+ * (`pkg/[ab]/node_modules/x?`: `pkg` and `pkg/[ab]/node_modules`). The Workspace DO matches its Container-only paths
+ * against that as against any path, so a directory name it takes at any depth is found behind a wildcard; one it takes
+ * at a set place only (an Environment's `apps/web/dist`) is not.
+ */
+const globPaths = (text: string): readonly string[] => {
+  const segments = text.split("/");
+  const first = segments.findIndex((segment) => WILDCARD.test(segment));
+  const literal = segments.slice(0, first).join("/") || (text.startsWith("/") ? "/" : ".");
+
+  const last = segments.findLastIndex(
+    (segment, at) => at > first && segment !== "" && !WILDCARD.test(segment),
+  );
+
+  return last === -1 ? [literal] : [literal, segments.slice(0, last + 1).join("/")];
+};
+
+/**
+ * The absolute paths `word` may name, run in `cwd`: none for what is not a path (an option, a word the shell computes,
+ * `-`, `/dev/null`); the value of `--opt=value`; the literal part of a glob.
+ */
+const wordPaths = (word: Word, cwd: string | undefined): readonly string[] => {
+  if (word.dynamic || /[$`]/.test(word.text)) return [];
+
+  let text = word.text;
+  let tilde = word.tilde;
+
+  if (text.startsWith("-")) {
+    const value = /^--[^=]+=(.*)$/s.exec(text)?.[1];
+
+    if (value === undefined) return [];
+    text = value;
+    tilde = text.startsWith("~");
+  }
+
+  if (text === "" || text === "-" || SHARED_FILES.has(text)) return [];
+
+  return (WILDCARD.test(text) ? globPaths(text) : [text]).flatMap(
+    (path) => resolvePath(path, cwd, tilde) ?? [],
+  );
+};
+
+/** Where `cd` or `pushd` with `args`, run in `cwd`, goes; undefined when that cannot be told. */
+const cdTarget = (name: string, args: readonly Word[], cwd: string | undefined) => {
+  const target = args.find((arg) => arg.quoted || !arg.text.startsWith("-") || arg.text === "-");
+
+  // Bare `cd` goes home; bare `pushd` swaps with the directory stack, which is not read.
+  if (target === undefined) return name === "cd" ? HOME : undefined;
+
+  if (target.dynamic || target.text === "-" || /[$`]/.test(target.text)) return undefined;
+
+  return resolvePath(target.text, cwd, target.tilde);
+};
+
+/** Whether `outer` is `inner` or a scope `inner` is nested in. */
+const encloses = (outer: readonly number[], inner: readonly number[]): boolean =>
+  outer.length <= inner.length && outer.every((id, at) => inner[at] === id);
+
+/** What a command names: the paths of its words, and the directories it runs them in. */
+export type CommandPaths = {
+  /** The absolute, normalized paths its path words may name, each once, in the order they come. */
+  readonly paths: readonly string[];
+  /** The directories its commands run in, as far as its `cd`s tell: the one it starts in first. */
+  readonly directories: readonly string[];
+};
+
+/** The deepest `bash -c` inside `bash -c` that is read. */
+const MAX_SCRIPT_DEPTH = 8;
+
+const collectPaths = (
+  source: string,
+  start: string | undefined,
+  depth: number,
+  into: { readonly paths: Set<string>; readonly directories: Set<string> },
+): void => {
+  if (depth > MAX_SCRIPT_DEPTH) return;
+
+  const parsed = new Reader(source).readAll();
+
+  if (parsed === undefined) return;
+
+  /** The `cd`s read so far, each with the scope it changes the directory of; `cwd` undefined once it is unknown. */
+  const moves: { readonly scope: readonly number[]; readonly cwd: string | undefined }[] = [];
+
+  for (const { head, args, redirects, scope, piped } of parsed.records) {
+    const move = moves.findLast((earlier) => encloses(earlier.scope, scope));
+    const cwd = move === undefined ? start : move.cwd;
+
+    const add = (word: Word) => {
+      for (const path of wordPaths(word, cwd)) into.paths.add(path);
+    };
+
+    redirects.forEach(add);
+
+    const name = head === undefined || head.dynamic ? undefined : head.text;
+    // The word after `bash -c`, read as the script it is.
+    let skip = false;
+
+    for (const [at, arg] of args.entries()) {
+      const script = args[at + 1];
+
+      if (skip) {
+        skip = false;
+      } else if (
+        (name === "bash" || name === "sh") &&
+        /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg.text) &&
+        script !== undefined &&
+        !script.dynamic
+      ) {
+        // `bash -c` runs its script where it is.
+        collectPaths(script.text, cwd, depth + 1, into);
+        skip = true;
+      } else {
+        add(arg);
+      }
+    }
+
+    if (name === "cd" || name === "pushd" || name === "popd") {
+      const next = name === "popd" ? undefined : cdTarget(name, args, cwd);
+
+      if (next !== undefined) into.directories.add(next);
+
+      // A `cd` in a pipeline or the background runs in a subshell, and changes nothing after it.
+      if (!piped) moves.push({ scope, cwd: next });
+    }
+  }
+};
+
+/**
+ * The paths `command`, run in `cwd`, names (docs/spec.md → Backends): the argument words of every simple command,
+ * those inside substitutions and `bash -c` scripts included, the targets of file redirects, the values of `--opt=value`,
+ * and the literal part of a glob, each made absolute against the directory it runs in, following the command's `cd`s
+ * (a `cd` whose target is unknown stops that). A leading `~` is the Container's home (`/root`). Words that are no path
+ * are skipped: options, `-`, words the shell computes (`$x`, `` `…` ``), heredoc bodies and here-strings; others are
+ * kept though they may be no path (`grep node_modules a.txt`), since a word too many costs only a Container start.
+ */
+export const commandPaths = (command: string, cwd: string): CommandPaths => {
+  const into = { paths: new Set<string>(), directories: new Set([normalize(cwd)]) };
+
+  collectPaths(command, normalize(cwd), 0, into);
+
+  return { paths: [...into.paths], directories: [...into.directories] };
+};
+
+/**
+ * The lines a program prints for a path it did not find, and the path in each: `cat: X: No such file or directory`,
+ * `ls: cannot access 'X': …`, `stat: cannot stat 'X': …`, `bash: cd: X: …`, `tar: X: Cannot open: …`.
+ */
+const MISSING =
+  /^([\w.+-]+): (?:(?:cd|pushd|source|\.): )?(?:cannot (?:access|stat|open) )?(.+?)(?:: Cannot open)?: No such file or directory$/gm;
+
+/**
+ * The paths a Worker Shell run said it did not find, made absolute against each of `directories` (the command's, from
+ * {@link commandPaths}: which one a message is about cannot be told). Only the shell's own messages (`bash: …`) are read
+ * on stdout, where `2>&1` puts them, since a file the command prints may hold any line.
+ */
+export const missingPaths = (
+  output: WorkerOutput,
+  directories: readonly string[],
+): readonly string[] => {
+  const named = [
+    ...output.stderr.matchAll(MISSING),
+    ...[...output.stdout.matchAll(MISSING)].filter((match) => match[1] === "bash"),
+  ].map((match) => (match[2] ?? "").replace(/^'(.*)'$/s, "$1"));
+
+  const paths = named.flatMap((path) => {
+    const tilde = path.startsWith("~");
+
+    return path.startsWith("/") || tilde
+      ? (resolvePath(path, undefined, tilde) ?? [])
+      : directories.flatMap((directory) => resolvePath(path, directory, false) ?? []);
+  });
+
+  return [...new Set(paths)];
 };

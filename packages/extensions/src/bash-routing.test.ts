@@ -4,6 +4,9 @@
 import { describe, expect, it } from "vitest";
 import {
   type BashRoute,
+  type CommandPaths,
+  commandPaths,
+  missingPaths,
   probeAnswer,
   probeScript,
   resolveRoute,
@@ -467,5 +470,166 @@ describe("routeCommand", () => {
 
     expect(routeCommand(long).backend).toBe("container");
     expect(routeCommand(long.replace("node x", "cat x")).backend).toBe("worker");
+  });
+});
+
+describe("commandPaths", () => {
+  const CWD = "/workspace/repo";
+
+  it.each<readonly [command: string, paths: readonly string[], because: string]>([
+    ["ls node_modules", ["/workspace/repo/node_modules"], "an argument"],
+    [
+      "cat README.md src/a.ts | head",
+      ["/workspace/repo/README.md", "/workspace/repo/src/a.ts"],
+      "every argument, in order",
+    ],
+    [
+      "ls -la --color=auto",
+      ["/workspace/repo/auto"],
+      "options are not paths, an option's value is",
+    ],
+    [
+      "grep --exclude-dir=node_modules -r x .",
+      ["/workspace/repo/node_modules", "/workspace/repo/x", "/workspace/repo"],
+      "a word that is no path is kept too",
+    ],
+    [
+      "sort < in.txt > ../out.txt 2>&1 2>/dev/null",
+      ["/workspace/repo/in.txt", "/workspace/out.txt"],
+      "redirect targets, not descriptors or /dev/null",
+    ],
+    [
+      "cat ../../etc/passwd ./a//b /dev/stdin -",
+      ["/etc/passwd", "/workspace/repo/a/b"],
+      "normalized; stdin is no path",
+    ],
+    [
+      "cat \"my file.txt\" 'node_modules/a b'",
+      ["/workspace/repo/my file.txt", "/workspace/repo/node_modules/a b"],
+      "quotes removed",
+    ],
+    [
+      "cat ~/.npmrc ~ '~/x' \\~ ~user/y",
+      ["/root/.npmrc", "/root", "/workspace/repo/~/x", "/workspace/repo/~"],
+      "an unquoted leading ~ is the Container's home; ~user is not read",
+    ],
+    [
+      "ls */node_modules/* src/*.ts /var/log/*.log",
+      ["/workspace/repo", "/workspace/repo/*/node_modules", "/workspace/repo/src", "/var/log"],
+      "a glob's literal directory, and its literal segments behind a wildcard",
+    ],
+    [
+      'for f in node_modules/*/package.json; do cat "$f"; done',
+      ["/workspace/repo/node_modules", "/workspace/repo/node_modules/*/package.json"],
+      "a for loop's list",
+    ],
+    ["echo $HOME \"$x/y\" `pwd` -n ''", [], "words the shell computes, options and empty words"],
+    ["cat $(ls node_modules)", ["/workspace/repo/node_modules"], "inside a substitution"],
+    [
+      "cat <<EOF > notes.md\nnode_modules\nEOF\ngrep x <<< .venv",
+      ["/workspace/repo/notes.md", "/workspace/repo/x"],
+      "not a heredoc body or a here-string",
+    ],
+    [
+      "cd app && ls node_modules",
+      ["/workspace/repo/app", "/workspace/repo/app/node_modules"],
+      "after a cd",
+    ],
+    [
+      "cd node_modules/x; cd ..; cat package.json",
+      [
+        "/workspace/repo/node_modules/x",
+        "/workspace/repo/node_modules",
+        "/workspace/repo/node_modules/package.json",
+      ],
+      "cds one after the other",
+    ],
+    ["cd /tmp\ncat out.txt", ["/tmp", "/tmp/out.txt"], "a cd outside /workspace"],
+    ["cd && cat .bashrc", ["/root/.bashrc"], "a bare cd goes home"],
+    [
+      "(cd app && cat a); cat b",
+      ["/workspace/repo/app", "/workspace/repo/app/a", "/workspace/repo/b"],
+      "a cd in a subshell ends with it",
+    ],
+    [
+      "cd app && echo $(cat a)",
+      ["/workspace/repo/app", "/workspace/repo/app/a"],
+      "a substitution runs where the command is",
+    ],
+    [
+      "cd app | cat; ls x",
+      ["/workspace/repo/app", "/workspace/repo/x"],
+      "a cd in a pipeline changes nothing after it",
+    ],
+    [
+      "cd $DIR && cat a.txt /etc/hosts",
+      ["/etc/hosts"],
+      "after a cd to an unknown directory, only absolute paths",
+    ],
+    [
+      "bash -c 'cd app && cat x'",
+      ["/workspace/repo/app", "/workspace/repo/app/x"],
+      "a bash -c script",
+    ],
+    ["test -d .venv && echo yes", ["/workspace/repo/.venv", "/workspace/repo/yes"], "test"],
+  ])("finds in `%s` the paths %j (%s)", (command, paths) => {
+    expect(commandPaths(command, CWD).paths).toEqual(paths);
+  });
+
+  it("lists the directories the command runs in, the one it starts in first", () => {
+    expect(commandPaths("cd app && cat a; cd /tmp; cd $X; ls", CWD)).toEqual<CommandPaths>({
+      paths: ["/workspace/repo/app", "/workspace/repo/app/a", "/tmp"],
+      directories: ["/workspace/repo", "/workspace/repo/app", "/tmp"],
+    });
+  });
+});
+
+describe("missingPaths", () => {
+  const DIRECTORIES = ["/workspace/repo"];
+
+  it.each([
+    ["cat: node_modules/x: No such file or directory\n", ["/workspace/repo/node_modules/x"]],
+    [
+      "ls: cannot access 'node_modules': No such file or directory\n",
+      ["/workspace/repo/node_modules"],
+    ],
+    ["ls: node_modules: No such file or directory\n", ["/workspace/repo/node_modules"]],
+    ["stat: cannot stat 'a b': No such file or directory\n", ["/workspace/repo/a b"]],
+    ["grep: /root/x: No such file or directory\n", ["/root/x"]],
+    ["bash: cd: .venv: No such file or directory\n", ["/workspace/repo/.venv"]],
+    ["bash: target/a: No such file or directory\n", ["/workspace/repo/target/a"]],
+    ["tar: t.tar: Cannot open: No such file or directory\n", ["/workspace/repo/t.tar"]],
+    [
+      "x\ncat: a: No such file or directory\ncat: ../b: No such file or directory\n",
+      ["/workspace/repo/a", "/workspace/b"],
+    ],
+    ["grep: a.txt: Permission denied\n", []],
+    ["", []],
+  ] as const)("reads `%s` on stderr as missing %j", (stderr, paths) => {
+    expect(missingPaths({ stdout: "", stderr }, DIRECTORIES)).toEqual(paths);
+  });
+
+  it("resolves a relative path against every directory the command ran in", () => {
+    expect(
+      missingPaths({ stdout: "", stderr: "cat: a: No such file or directory\n" }, [
+        "/workspace/repo",
+        "/workspace/repo/app",
+      ]),
+    ).toEqual(["/workspace/repo/a", "/workspace/repo/app/a"]);
+  });
+
+  it("reads only the shell's own messages on stdout, where `2>&1` puts them", () => {
+    expect(
+      missingPaths(
+        { stdout: "bash: node_modules/a: No such file or directory\n", stderr: "" },
+        DIRECTORIES,
+      ),
+    ).toEqual(["/workspace/repo/node_modules/a"]);
+    expect(
+      missingPaths(
+        { stdout: "cat: node_modules/a: No such file or directory\n", stderr: "" },
+        DIRECTORIES,
+      ),
+    ).toEqual([]);
   });
 });

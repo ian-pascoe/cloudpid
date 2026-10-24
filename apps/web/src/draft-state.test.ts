@@ -283,7 +283,7 @@ describe("the draft's Attachments", () => {
           message: {
             input: [
               { type: "text", text: "Read this" },
-              { type: "text", text: "@/workspace/.uploads/s1/notes.txt" },
+              { type: "text", text: "@/workspace/.cloudpid/uploads/s1/notes.txt" },
             ],
           },
         },
@@ -308,7 +308,9 @@ describe("the draft's Attachments", () => {
       expect(registry.get(pendingFirstMessagesAtom)).toMatchObject({
         s1: {
           text: "",
-          message: { input: [{ type: "text", text: "@/workspace/.uploads/s1/notes.txt" }] },
+          message: {
+            input: [{ type: "text", text: "@/workspace/.cloudpid/uploads/s1/notes.txt" }],
+          },
         },
       });
     }),

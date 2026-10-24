@@ -51,11 +51,11 @@ export const fakeUploads = () => {
             Effect.sync(() => {
               onProgress(fraction);
             }).pipe(Effect.andThen(settle)),
-          finish: (stored = { name, path: `/workspace/.uploads/${sessionId}/${name}` }) =>
+          finish: (stored = { name, path: `/workspace/.cloudpid/uploads/${sessionId}/${name}` }) =>
             Deferred.succeed(answer, stored).pipe(Effect.andThen(settle)),
           complete: Deferred.succeed(answer, {
             name,
-            path: `/workspace/.uploads/${sessionId}/${name}`,
+            path: `/workspace/.cloudpid/uploads/${sessionId}/${name}`,
           }).pipe(Effect.asVoid),
           fail: (message) =>
             Deferred.fail(answer, UploadError.make({ message })).pipe(Effect.andThen(settle)),

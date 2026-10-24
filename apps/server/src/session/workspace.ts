@@ -180,7 +180,10 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
   const search = async () => {
     const { ComputerFiles } = await computer();
 
-    return new ComputerFiles(options.namespace.getByName((await ready()).object));
+    // The model's `ls`, `find` and `grep`: a search of a Container-only path runs on the Container (ADR-0018).
+    return new ComputerFiles(options.namespace.getByName((await ready()).object), {
+      reachContainer: true,
+    });
   };
 
   const files: FileSearch = {
@@ -189,7 +192,8 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
     grep: async (pattern, path, matched) => (await search()).grep(pattern, path, matched),
   };
 
-  const envIn = async (placed: Placement, cwd: string) => {
+  /** An environment in `cwd`; with `reachContainer`, its file operations on Container-only paths run on the Container. */
+  const envIn = async (placed: Placement, cwd: string, reachContainer: boolean) => {
     const { ComputerExecutionEnv } = await computer();
 
     return new ComputerExecutionEnv({
@@ -197,6 +201,7 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
       // Environments with equal ids see the same files: one per Workspace.
       id: `computer:${placed.object}`,
       cwd,
+      reachContainer,
     });
   };
 
@@ -212,13 +217,15 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
     env: async (target) => {
       const placed = await ready();
 
-      // A conversation's own `cwd` first, then the Session's Workspace.
-      return envIn(placed, target.cwd ?? placed.directory);
+      // A conversation's own `cwd` first, then the Session's Workspace. The model's tools run on it, so a file of theirs
+      // on a Container-only path is reached through the Container (ADR-0018).
+      return envIn(placed, target.cwd ?? placed.directory, true);
     },
+    // Lookups never start the Container: they see the Workspace's files only.
     lookupEnv: async (target) => {
       const placed = await options.placement();
 
-      return envIn(placed, target.cwd ?? placed.directory);
+      return envIn(placed, target.cwd ?? placed.directory, false);
     },
     files,
     container,

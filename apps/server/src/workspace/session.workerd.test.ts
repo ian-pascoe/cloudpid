@@ -27,8 +27,8 @@ describe("a Session's coding tools", () => {
       "alpha\ngamma\n",
       "notes.txt:2: gamma",
       "notes.txt",
-      // Every Workspace holds the bundled skills, in `.agents/skills`.
-      ".agents/\nnotes.txt",
+      // Every Workspace holds the bundled skills, in `.agents/skills`, and the harness's own files, in `.cloudpid`.
+      ".agents/\n.cloudpid/\nnotes.txt",
       "alpha\ngamma\n",
     ]);
 
@@ -57,7 +57,7 @@ describe("a Session's coding tools", () => {
 
     expect(await first.run([call("read", { path: "shared.txt" }), call("ls", {})])).toEqual([
       "from first\nfrom second\n",
-      ".agents/\nshared.txt",
+      ".agents/\n.cloudpid/\nshared.txt",
     ]);
     // A Session created afterwards finds the files: they belong to the Workspace, not to a Session.
     expect(await sessionOn(slug).run([call("grep", { pattern: "second" })])).toEqual([
@@ -101,6 +101,6 @@ describe("a Session's coding tools", () => {
 
     await one.run([call("write", { path: "mine.txt", content: "x" })]);
 
-    expect(await other.run([call("ls", {})])).toEqual([".agents/"]);
+    expect(await other.run([call("ls", {})])).toEqual([".agents/\n.cloudpid/"]);
   });
 });

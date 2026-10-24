@@ -11,10 +11,13 @@ import {
   LineScanner,
   ok,
 } from "@earendil-works/pi-durable/env";
+import { type ContainerAccess, ContainerFiles } from "./container-files.ts";
+import { HARNESS_ROOT, isContainerOnly } from "./container-paths.ts";
 import { HostFailure, posixCode, toWireError } from "./failure.ts";
 import { listFiles } from "./list-files.ts";
 import { ancestors, basename, dirname, resolve } from "./paths.ts";
 import {
+  type DirectoryEntry,
   type EnvRequest,
   type EnvResponse,
   type HostOperation,
@@ -31,12 +34,16 @@ export const READERS_DIR = "/.computer/readers";
 /** A reader link older than this belongs to a reader whose client went away without closing it. */
 const STALE_READER_MS = 60 * 60 * 1000;
 
-/** Where `createTempDir` and `createTempFile` (and so exec spills) create their paths. */
-const TEMP_DIR = "/tmp";
+/**
+ * Where `createTempDir` and `createTempFile` (and so exec spills) create their paths: the harness's own directory in
+ * the Workspace, synced, so the Worker Shell, the Container and the file tools all see them (outside the Workspace, every
+ * path is the Container's: ADR-0018).
+ */
+export const TEMP_DIR = `${HARNESS_ROOT}/tmp`;
 
 /**
- * A temp entry not modified for this long is removed when the Workspace DO starts: no OS cleans the Workspace's `/tmp`,
- * and its files would otherwise stay in the Workspace's storage, listings and (with a Container) synced tree.
+ * A temp entry not modified for this long is removed when the Workspace DO starts: nothing else cleans the harness's temp
+ * directory, and its files would otherwise stay in the Workspace's storage, listings and the Container's synced tree.
  */
 const STALE_TEMP_MS = 24 * 60 * 60 * 1000;
 
@@ -116,24 +123,182 @@ export const ensureDirectory = async (
   await fs.mkdir(path, { recursive: true });
 };
 
-/** Answers `ComputerExecutionEnv`'s requests from the Workspace it holds. */
+/** The paths an operation works on, which decide whether it runs on the Container. Readers and temp paths never do. */
+const pathsOf = (request: EnvRequest): readonly string[] => {
+  switch (request.op) {
+    case "readerInfo":
+    case "read":
+    case "scanLines":
+    case "closeReader":
+    case "createTempDir":
+    case "containerOnly":
+      return [];
+    case "infos":
+      return request.args[0];
+    case "scan":
+      return request.args[0].map((target) => target.path);
+    case "rename":
+      return [request.args[0], request.args[1]];
+    case "grep":
+      return [request.args[1]];
+    default:
+      return [request.args[0]];
+  }
+};
+
+/** Answers `ComputerExecutionEnv`'s requests from the Workspace it holds, and from its Container when asked to. */
 export class WorkspaceEnvHost {
   readonly #workspace: Workspace;
   readonly #operations: HostOperations;
+  readonly #container: ContainerFiles | undefined;
 
-  constructor(workspace: Workspace) {
+  /**
+   * @param container How the Container's file operations reach it; without it, a request that asks to reach the
+   *   Container sees the Workspace's files only.
+   */
+  constructor(workspace: Workspace, container?: ContainerAccess) {
     this.#workspace = workspace;
     this.#operations = this.#makeOperations();
+
+    const fs = workspace.fs;
+
+    this.#container =
+      container === undefined
+        ? undefined
+        : new ContainerFiles(container, {
+            read: async (path) =>
+              new Uint8Array(await new Response(await fs.readFile(path)).arrayBuffer()),
+            write: async (path, bytes) => {
+              await ensureDirectory(fs, dirname(path));
+              await fs.writeFile(path, bytes);
+            },
+            remove: async (path) => {
+              await fs.rm(path, { force: true });
+            },
+          });
   }
 
   /** Answer one request. */
-  handle(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+  async handle(request: EnvRequest): Promise<EnvResponse<HostOperation>> {
+    if (request.op === "containerOnly") return this.#classify(request.args[0]);
+
+    if (request.reachContainer === true && this.#container !== undefined) {
+      const routed = await this.#onContainer(this.#container, request);
+
+      if (routed !== undefined) return routed;
+    }
+
     // SAFETY: `EnvRequest` pairs each operation with its own parameters, so the arguments fit the operation called.
     const operation = this.#operations[request.op] as (
       ...args: EnvRequest["args"]
     ) => Promise<EnvResponse<HostOperation>>;
 
     return operation(...request.args);
+  }
+
+  /** Whether each path is Container-only: by the current launch's patterns, or (with no Container) outside the Workspace. */
+  #classify(paths: readonly string[]): Promise<WireResult<readonly boolean[]>> {
+    const container = this.#container;
+
+    return attempt(paths[0] ?? "/", async () =>
+      container === undefined
+        ? paths.map((path) => isContainerOnly(path, undefined))
+        : container.classify(paths),
+    );
+  }
+
+  /**
+   * `request` answered on the Container when it works on a Container-only path; undefined when it is the Workspace's to
+   * answer. A `readdir` of a synced directory is the Workspace's, with the Container-only entries the running Container
+   * has added.
+   */
+  async #onContainer(
+    container: ContainerFiles,
+    request: EnvRequest,
+  ): Promise<EnvResponse<HostOperation> | undefined> {
+    const paths = pathsOf(request);
+
+    if (paths.length === 0) return undefined;
+
+    const classified = await attempt(paths[0] ?? "/", () => container.classify(paths));
+
+    if (!classified.ok) return classified;
+
+    if (!classified.value.some(Boolean)) {
+      return request.op === "readdir"
+        ? this.#withContainerEntries(container, request.args[0])
+        : undefined;
+    }
+
+    const path = paths[classified.value.indexOf(true)] ?? paths[0] ?? "/";
+
+    switch (request.op) {
+      case "info":
+        return attempt(path, () => container.info(...request.args));
+      case "canonical":
+        return attempt(path, () => container.canonical(...request.args));
+      case "readFile":
+        return attempt(path, () => container.readFile(...request.args));
+      case "writeFile": {
+        const [target, content, append] = request.args;
+
+        return attempt(path, async () => {
+          await container.writeFile(
+            target,
+            content instanceof Uint8Array ? content : encoder.encode(content),
+            append,
+          );
+
+          return null;
+        });
+      }
+
+      case "openReader":
+        return attempt(path, async () => {
+          const { opened, info } = await container.openReader(
+            request.args[0],
+            request.args[1],
+            (stage) => this.#operations.openReader(stage, false),
+          );
+
+          if (!opened.ok) throw new HostFailure(opened.error.code, opened.error.message, path);
+
+          return { handle: opened.value.handle, info };
+        });
+      case "readdir":
+        return attempt(path, () => container.readdir(...request.args));
+      case "find":
+        return attempt(path, () => container.find(...request.args));
+      case "grep":
+        return attempt(path, () => container.grep(...request.args));
+      default:
+        return {
+          ok: false,
+          error: {
+            code: "not_supported",
+            message: `${path} is only on the Container, where the file tools cannot ${request.op} it: use bash`,
+            path,
+          },
+        };
+    }
+  }
+
+  /** The Workspace's entries of directory `path`, then the Container-only ones the running Container has there. */
+  async #withContainerEntries(
+    container: ContainerFiles,
+    path: string,
+  ): Promise<WireResult<readonly DirectoryEntry[]>> {
+    const own = await this.#operations.readdir(path);
+
+    if (!own.ok) return own;
+
+    const names = new Set(own.value.map((entry) => entry.name));
+
+    const extra = (await container.containerOnlyEntries(path)).filter(
+      (entry) => !names.has(entry.name),
+    );
+
+    return { ok: true, value: [...own.value, ...extra] };
   }
 
   /**
@@ -169,7 +334,7 @@ export class WorkspaceEnvHost {
       }
     }
 
-    await fs.mkdir(TEMP_DIR, { recursive: true });
+    await ensureDirectory(fs, TEMP_DIR);
 
     for (const entry of await fs.readdir(TEMP_DIR)) {
       const path = `${TEMP_DIR}/${entry.name}`;
@@ -366,6 +531,48 @@ export class WorkspaceEnvHost {
       scan: (targets, maxDirectories) =>
         attempt(targets[0]?.path ?? "/", () => scan(stat, fs, targets, maxDirectories)),
       listFiles: (path, options) => attempt(path, () => listFiles(fs, path, options)),
+      // Answered in `handle`, which knows the Container's patterns.
+      containerOnly: (paths) => this.#classify(paths),
+      readdir: (path) =>
+        attempt(path, async () =>
+          (await fs.readdir(path)).map((entry) => ({
+            name: entry.name,
+            isDirectory: entry.isDirectory,
+            isSymbolicLink: entry.isSymbolicLink,
+          })),
+        ),
+      find: (directory, pattern, options) =>
+        attempt(directory, async () =>
+          (
+            await fs.find(directory, pattern, {
+              limit: options.limit,
+              exclude: [...options.exclude],
+            })
+          ).map((entry) => ({ path: entry.path, type: entry.type })),
+        ),
+      grep: (pattern, path, options) =>
+        attempt(path, async () => {
+          const search: NonNullable<Parameters<Workspace["fs"]["grep"]>[2]> = {
+            ignoreCase: options.ignoreCase,
+            regex: options.regex,
+            context: options.context,
+            limit: options.limit,
+            exclude: [...options.exclude],
+          };
+
+          if (options.include !== undefined) search.include = options.include;
+
+          return (await fs.grep(pattern, path, search)).map((match) => ({
+            path: match.path,
+            line: match.line,
+            text: match.text,
+            context: match.context?.map((line) => ({
+              line: line.line,
+              text: line.text,
+              isMatch: line.isMatch,
+            })),
+          }));
+        }),
     };
   }
 }

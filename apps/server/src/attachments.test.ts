@@ -9,7 +9,7 @@ import { serveAttachment } from "./serve-attachment.ts";
 import { attachmentRoute } from "./routes.ts";
 
 const session = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
-const uploads = `/workspace/.uploads/${session}`;
+const uploads = `/workspace/.cloudpid/uploads/${session}`;
 
 /** A Workspace's files in memory, keyed by path. */
 const memory = (initial: Record<string, string> = {}) => {
@@ -60,7 +60,7 @@ const call = async (
 };
 
 describe("an upload", () => {
-  it("stores the body under the Session's .uploads and answers with its name and path", async () => {
+  it("stores the body under the Session's uploads and answers with its name and path", async () => {
     const workspace = memory();
     const response = await call("PUT", "notes.txt", workspace.api, "hello");
 

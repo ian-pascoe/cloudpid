@@ -76,6 +76,40 @@ export type Snapshot = ReadonlyArray<readonly [path: string, entry: string]>;
 /** An open binary reader: a hard link the Workspace DO keeps to the opened file, and that file's metadata. */
 export type OpenedReader = { readonly handle: string; readonly info: FileInfo };
 
+/** An entry of a directory, as `ls` lists it. */
+export type DirectoryEntry = {
+  readonly name: string;
+  readonly isDirectory: boolean;
+  readonly isSymbolicLink: boolean;
+  /** A Container-only entry of a synced directory, which only the running Container listed. */
+  readonly containerOnly?: boolean;
+};
+
+/** An entry a glob found, at its absolute path. */
+export type FoundEntry = { readonly path: string; readonly type: "file" | "dir" };
+
+/** A line of a match's context. */
+export type GrepLine = { readonly line: number; readonly text: string; readonly isMatch: boolean };
+
+/** A matching line at an absolute path; `context` holds the lines around it when asked for. */
+export type GrepMatch = {
+  readonly path: string;
+  readonly line: number;
+  readonly text: string;
+  readonly context?: ReadonlyArray<GrepLine> | undefined;
+};
+
+export type FindOptions = { readonly limit: number; readonly exclude: ReadonlyArray<string> };
+
+export type GrepOptions = {
+  readonly ignoreCase: boolean;
+  readonly regex: boolean;
+  readonly context: number;
+  readonly limit: number;
+  readonly include: string | undefined;
+  readonly exclude: ReadonlyArray<string>;
+};
+
 /** The file operations the Workspace DO runs for `ComputerExecutionEnv`. Every path is absolute and normalized. */
 export type HostOperations = {
   /** Metadata of `path`, following a final symbolic link when `follow`. */
@@ -120,15 +154,36 @@ export type HostOperations = {
     maxDirectories: number,
   ) => Promise<WireResult<Snapshot>>;
   readonly listFiles: (path: string, options: ListFilesOptions) => Promise<WireResult<FileListing>>;
+  /** For each path, whether it is a Container-only path for the Container's current launch (`container-paths.ts`). */
+  readonly containerOnly: (paths: readonly string[]) => Promise<WireResult<readonly boolean[]>>;
+  /** The entries of directory `path`, for `ls`. */
+  readonly readdir: (path: string) => Promise<WireResult<readonly DirectoryEntry[]>>;
+  /** The entries below `directory` whose path relative to it matches the glob `pattern`, for `find`. */
+  readonly find: (
+    directory: string,
+    pattern: string,
+    options: FindOptions,
+  ) => Promise<WireResult<readonly FoundEntry[]>>;
+  /** The lines below `path` (or of the file itself) that match `pattern`, for `grep`. */
+  readonly grep: (
+    pattern: string,
+    path: string,
+    options: GrepOptions,
+  ) => Promise<WireResult<readonly GrepMatch[]>>;
 };
 
 export type HostOperation = keyof HostOperations;
 
-/** One call of a host operation, as `ComputerEnvHost.fileOperation` receives it. */
+/**
+ * One call of a host operation, as `ComputerEnvHost.fileOperation` receives it. With `reachContainer`, an operation on a
+ * Container-only path runs on the Container (the model's own tools ask for it; nothing else does, so nothing else
+ * starts the Container: ADR-0018).
+ */
 export type EnvRequest = {
   readonly [Operation in HostOperation]: {
     readonly op: Operation;
     readonly args: Parameters<HostOperations[Operation]>;
+    readonly reachContainer?: boolean;
   };
 }[HostOperation];
 

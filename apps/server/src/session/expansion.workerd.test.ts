@@ -141,7 +141,7 @@ describe("the composer's catalog", () => {
 describe("a message with Attachments", () => {
   const paths = {
     type: "text" as const,
-    text: "@/workspace/.uploads/s/a.png\n@/workspace/.uploads/s/notes.md",
+    text: "@/workspace/.cloudpid/uploads/s/a.png\n@/workspace/.cloudpid/uploads/s/notes.md",
   };
 
   const image = { type: "image" as const, mimeType: "image/png", data: "iVBO" };

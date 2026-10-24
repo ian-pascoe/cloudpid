@@ -89,7 +89,7 @@ export const UploadsLive: Layer.Layer<Uploads> = Layer.effect(
     return Uploads.of({
       upload,
       remove: (sessionId, name) =>
-        // The file stays in the Workspace's `.uploads`, as a sent one does.
+        // The file stays in the Workspace's `.cloudpid/uploads`, as a sent one does.
         http.del(attachmentRoutePath(sessionId, name)).pipe(Effect.ignore),
     });
   }),

@@ -4,10 +4,10 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions and loops over tens of thousands of paths, per request.
 import {
   bestMatches,
+  CLOUDPID_ROOT,
   MAX_FILE_MATCHES,
   type RankCandidate,
   rankCandidate,
-  UPLOADS_ROOT,
   WORKSPACE_ROOT,
 } from "@cloudpid/protocol";
 import type { Context as ChordContext } from "@earendil-works/chord";
@@ -51,7 +51,10 @@ export const EXCLUDED_NAMES: readonly string[] = ["node_modules"];
  * Directories never offered, wherever the conversation works: every Session's Attachments, and the bundled Skills,
  * mounted read-only into every Workspace (AGENTS.md → Skills).
  */
-export const EXCLUDED_ROOTS: readonly string[] = [UPLOADS_ROOT, `${WORKSPACE_ROOT}/.agents/skills`];
+export const EXCLUDED_ROOTS: readonly string[] = [
+  CLOUDPID_ROOT,
+  `${WORKSPACE_ROOT}/.agents/skills`,
+];
 
 const depth = (path: string): number => {
   let slashes = 0;

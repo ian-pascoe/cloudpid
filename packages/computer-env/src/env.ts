@@ -53,6 +53,11 @@ export type ComputerExecutionEnvOptions = {
   /** The absolute directory relative paths resolve against. */
   readonly cwd: string;
   readonly watch?: PollingOptions;
+  /**
+   * Whether file operations on Container-only paths run on the Container, starting it if it is stopped: the model's own
+   * tools only (ADR-0018). Without it they see the Workspace's files alone, and never start the Container.
+   */
+  readonly reachContainer?: boolean;
 };
 
 /** A backend a command is sent to: its id in the Workspace, and how a command is made to run in bash on it. */
@@ -99,7 +104,7 @@ export class ComputerExecutionEnv implements ExecutionEnv {
     this.cwd = options.cwd;
     this.#options = options;
     this.#workspace = options.workspace;
-    this.#call = caller(options.workspace);
+    this.#call = caller(options.workspace, options.reachContainer === true);
     this.#watch = options.watch ?? {};
     this.#running = running;
     this.#backend = backend;
@@ -120,6 +125,20 @@ export class ComputerExecutionEnv implements ExecutionEnv {
 
   #resolve(path: string): string {
     return resolve(this.cwd, path);
+  }
+
+  /** For each path (resolved against `cwd`), whether it is a Container-only path for the Container's current launch. */
+  async containerOnly(
+    paths: readonly string[],
+    context: Context,
+  ): Promise<Result<readonly boolean[], FileError>> {
+    if (paths.length === 0) return ok([]);
+
+    return this.#call(
+      context,
+      "containerOnly",
+      paths.map((path) => this.#resolve(path)),
+    );
   }
 
   async absolutePath(path: string, _context: Context): Promise<Result<string, FileError>> {

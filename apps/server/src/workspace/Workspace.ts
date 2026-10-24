@@ -23,12 +23,16 @@ import { type KeptSecret, type KeptVault, openKeptVault } from "@cloudpid/extens
 import { redactText } from "./redact.ts";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
+  ComputerExecutionEnv,
   type ComputerWorkspaceStub,
+  type ContainerScriptRun,
   type EnvRequest,
   type EnvResponse,
   type HostOperation,
+  withHarnessKept,
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import type { InstructionFile } from "@cloudpid/extensions/agents-md-discovery";
@@ -154,6 +158,12 @@ const SCAN_TIMEOUT_MS = 30_000;
  */
 const CONNECT_TIMEOUT_MS = 60_000;
 
+/**
+ * How long one of the file tools' scripts may run on the Container: a copy or a search, after the Container's start and
+ * bootstrap, which do not count.
+ */
+const CONTAINER_FILES_TIMEOUT_SECONDS = 300;
+
 /** The id the Container's backend has in the Workspace (`@cloudflare/computer`'s default). */
 export const CONTAINER_BACKEND_ID = "container-shell";
 
@@ -239,10 +249,12 @@ export class Workspace extends ContainerHost {
       // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/spec.md →
       // Container and Toolchains): the built-in paths, then the Workspace's own, so its `!` patterns can take one back.
       // mise's Toolchains are on the Container's disk and need no entry. The local Container cannot keep any.
+      // The harness's own directory (`/workspace/.cloudpid`: temp files, spills, Attachments) is taken back last, so
+      // nothing the Environment adds makes it local (ADR-0018).
       ignore: (settings) =>
         env.CONTAINER_FUSE === "false"
           ? undefined
-          : containerIgnore(TOOLCHAIN_IGNORE, settings.ignore),
+          : withHarnessKept(containerIgnore(TOOLCHAIN_IGNORE, settings.ignore)),
       snapshots,
       // With no snapshot of its own, a launch starts from the Environment's Build the Workspace was handed.
       builds: {
@@ -449,8 +461,58 @@ export class Workspace extends ContainerHost {
       warn: (message) => console.warn(message),
     });
 
-    this.#host = new WorkspaceEnvHost(this.#workspace);
+    // The model's file tools reach Container-only paths through the Container (ADR-0018): by the patterns of the launch
+    // that runs now, or of the next one, each operation a script run as any other command on it.
+    this.#host = new WorkspaceEnvHost(this.#workspace, {
+      patterns: async () => {
+        const patterns = await launch.ignore();
+
+        return patterns === undefined ? undefined : withHarnessKept(patterns);
+      },
+      running: () => ctx.container?.running === true,
+      run: (script, scriptEnv) => this.#runOnContainer(script, scriptEnv),
+    });
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
+  }
+
+  /**
+   * Run one of the file tools' scripts on the Container, through this object's own handle, as a command: it starts the
+   * Container if it is stopped and keeps it from its idle stop. Its two streams come back apart.
+   */
+  async #runOnContainer(
+    script: string,
+    scriptEnv: Readonly<Record<string, string>>,
+  ): Promise<ContainerScriptRun> {
+    const container = new ComputerExecutionEnv({
+      workspace: this.#ownStub(),
+      id: `computer:container-files:${this.ctx.id.toString()}`,
+      cwd: WORKSPACE_ROOT,
+    }).onBackend("container");
+
+    let stdout = "";
+    let stderr = "";
+
+    try {
+      const result = await container.exec(
+        ["bash", "-c", script],
+        {
+          cwd: WORKSPACE_ROOT,
+          timeout: CONTAINER_FILES_TIMEOUT_SECONDS,
+          env: { ...scriptEnv },
+          onOutput: (text, _context, info) => {
+            if (info.stream === "stdout") stdout += text;
+            else stderr += text;
+          },
+        },
+        BACKGROUND_CONTEXT,
+      );
+
+      return result.ok
+        ? { exitCode: result.value.exitCode, stdout, stderr }
+        : { exitCode: null, stdout, stderr: result.error.message };
+    } finally {
+      await container.cleanup(BACKGROUND_CONTEXT);
+    }
   }
 
   /**
@@ -469,20 +531,26 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * The `PreparationHost` of this object over itself, as environment `id`: a spare's preparation and a Build reach it
-   * through a handle of their own, so their calls are not taken for a Session's (`SparePreparation.noteUse`).
+   * This object as a stub of its own: its file operations and Workspace, with no Skills, templates or instructions,
+   * which its own work never asks for.
    */
-  #ownHost(id: string): PreparationHost {
-    const own: ComputerWorkspaceStub = {
+  #ownStub(): ComputerWorkspaceStub {
+    return {
       fileOperation: (request) => this.#fileOperation(request),
       __getWorkspaceStub: () => this.#getWorkspaceStub(),
       skills: async () => [],
       prompts: async () => [],
       instructions: async () => [],
     };
+  }
 
+  /**
+   * The `PreparationHost` of this object over itself, as environment `id`: a spare's preparation and a Build reach it
+   * through a handle of their own, so their calls are not taken for a Session's (`SparePreparation.noteUse`).
+   */
+  #ownHost(id: string): PreparationHost {
     return preparationHost(
-      own,
+      this.#ownStub(),
       id,
       { read: () => this.#settings.read(), write: (overrides) => this.#settings.write(overrides) },
       {

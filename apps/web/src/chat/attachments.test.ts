@@ -7,7 +7,7 @@ import {
   requestedName,
 } from "./attachments.ts";
 
-const uploads = "/workspace/.uploads/0190f0a8-1b2c-7d3e-8f40-123456789abc";
+const uploads = "/workspace/.cloudpid/uploads/0190f0a8-1b2c-7d3e-8f40-123456789abc";
 
 describe("requestedName", () => {
   it("sanitises a file's name", () => {

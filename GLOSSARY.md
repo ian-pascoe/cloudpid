@@ -205,7 +205,7 @@ A script that starts what a Workspace needs running (databases, services) at eac
 _Avoid_: Setup Script (for this), startup hook, entrypoint
 
 **Container-only path**:
-A path in a Workspace that its Container keeps to itself on its own disk, out of the Workspace's files (dependency directories, build output, caches): the built-in ones and those its Environment adds.
+A path whose files only the Workspace's Container has, on its disk and in its Snapshot, never in the Workspace's files: in the Workspace's directory, the built-in ones (dependency directories, build output, caches) and those its Environment adds; outside it, every path. The agent's file tools and commands reach them through the Container.
 _Avoid_: Ignored path (computer's term), excluded path
 
 **Snapshot**:

@@ -203,6 +203,160 @@ describe("bash", () => {
     ]);
   });
 
+  /** Container-only as the Workspace DO answers: outside /workspace, and `node_modules` or `.venv` at any depth. */
+  const containerOnly = (path: string) =>
+    !path.startsWith("/workspace/") || /\/(node_modules|\.venv)(\/|$)/.test(path);
+
+  it.each([
+    ["ls node_modules", "container", ["/workspace/node_modules"]],
+    [
+      "cd app && cat .venv/pyvenv.cfg",
+      "container",
+      ["/workspace/app", "/workspace/app/.venv/pyvenv.cfg"],
+    ],
+    ["cat /tmp/out.txt", "container", ["/tmp/out.txt"]],
+    ["cat ~/.npmrc", "container", ["/root/.npmrc"]],
+    ["cat README.md src/a.ts", "worker", ["/workspace/README.md", "/workspace/src/a.ts"]],
+  ] as const)(
+    "routes `%s` to the %s backend by the paths it names, asking about them in one call",
+    async (command, backend, paths) => {
+      const { call, calls, asked } = await openCodingHarness({ backends: true, containerOnly });
+
+      expect(await call("bash", { command })).toEqual({
+        text: `${backend}: ${command}`,
+        isError: false,
+      });
+      expect(calls).toEqual<BackendCall[]>([{ backend, command }]);
+      expect(asked).toEqual([paths]);
+    },
+  );
+
+  it("does not ask about the paths of a command already going to the Container", async () => {
+    const { call, calls, asked } = await openCodingHarness({ backends: true, containerOnly });
+
+    await call("bash", { command: "npm test --prefix node_modules/x" });
+    await call("bash", { command: "cat node_modules/x/a.js", backend: "worker" });
+
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "container", command: "npm test --prefix node_modules/x" },
+      { backend: "worker", command: "cat node_modules/x/a.js" },
+    ]);
+    expect(asked).toEqual([]);
+  });
+
+  it("runs on the Worker Shell when the environment cannot say which paths are Container-only", async () => {
+    const { call, calls, asked } = await openCodingHarness({
+      backends: true,
+      containerOnly: "fails",
+    });
+
+    await call("bash", { command: "ls node_modules" });
+
+    expect(calls).toEqual<BackendCall[]>([{ backend: "worker", command: "ls node_modules" }]);
+    expect(asked).toEqual([["/workspace/node_modules"]]);
+  });
+
+  /** A Worker Shell that does not find `missing`, named in `command` through a variable. */
+  const notFound =
+    (command: string, missing: string): Respond =>
+    (backend, ran) =>
+      backend === "worker" && ran === command
+        ? {
+            output: `cat: ${missing}: No such file or directory\n`,
+            stream: "stderr",
+            exitCode: 1,
+          }
+        : undefined;
+
+  it("runs a command that writes nothing again in the Container when the Worker Shell did not find a Container-only path", async () => {
+    const command = 'cat "$F"';
+
+    const { call, calls, asked } = await openCodingHarness({
+      backends: true,
+      containerOnly,
+      respond: notFound(command, "node_modules/a/package.json"),
+    });
+
+    const result = await call("bash", { command });
+
+    expect(result.isError).toBe(false);
+    expect(result.text.startsWith('container: cat "$F"')).toBe(true);
+    expect(result.text).toContain(
+      "Ran on the container: /workspace/node_modules/a/package.json is only on the container",
+    );
+    expect(calls).toEqual<BackendCall[]>([
+      { backend: "worker", command },
+      { backend: "container", command },
+    ]);
+    // Nothing to ask before it ran: the command names no path.
+    expect(asked).toEqual([["/workspace/node_modules/a/package.json"]]);
+  });
+
+  it("does not run a command that writes a file again when the Worker Shell did not find a Container-only path", async () => {
+    const command = 'cat "$F" > out.txt';
+
+    const { call, calls, asked } = await openCodingHarness({
+      backends: true,
+      containerOnly,
+      respond: notFound(command, "node_modules/a/package.json"),
+    });
+
+    const result = await call("bash", { command });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("No such file or directory");
+    expect(calls).toEqual<BackendCall[]>([{ backend: "worker", command }]);
+    expect(asked).toEqual([["/workspace/out.txt"]]);
+  });
+
+  it.each([
+    ['cat "$F"', "missing.txt", [["/workspace/missing.txt"]]],
+    // Asked before it ran, and not Container-only then: not asked again.
+    ["cat missing.txt", "missing.txt", [["/workspace/missing.txt"]]],
+  ] as const)(
+    "keeps the Worker Shell's answer to `%s` when the path it did not find is not Container-only",
+    async (command, missing, questions) => {
+      const { call, calls, asked } = await openCodingHarness({
+        backends: true,
+        containerOnly,
+        respond: notFound(command, missing),
+      });
+
+      const result = await call("bash", { command });
+
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain(`cat: ${missing}: No such file or directory`);
+      expect(calls).toEqual<BackendCall[]>([{ backend: "worker", command }]);
+      expect(asked).toEqual(questions);
+    },
+  );
+
+  it("does not run a command again for a missing Container-only path when the environment cannot say which those are", async () => {
+    const command = 'cat "$F"';
+
+    const { call, calls } = await openCodingHarness({
+      backends: true,
+      respond: notFound(command, "node_modules/a/package.json"),
+    });
+
+    await call("bash", { command });
+
+    expect(calls).toEqual<BackendCall[]>([{ backend: "worker", command }]);
+  });
+
+  it("tells the model that paths only the container has are reached through it", async () => {
+    const { tool } = await openCodingHarness({ backends: true });
+
+    expect(tool("bash")?.description).toContain("Paths only the container has");
+    expect(tool("bash")?.description).toContain("node_modules");
+
+    for (const name of ["read", "write", "edit"]) {
+      expect(tool(name)?.description).toContain(
+        "Paths only the container has (anything outside /workspace, /tmp included,",
+      );
+    }
+  });
+
   it("does not run a command that writes a file again, even when the Worker Shell could not run it", async () => {
     const { call, calls } = await openCodingHarness({ backends: true, respond: noColor });
 
@@ -234,6 +388,15 @@ describe("the coding_tools section", () => {
     expect(text).toMatch(/`edit`[^\n]*no python/);
     expect(text).toMatch(/`grep`/);
     expect(text).toMatch(/`backend` unset/);
+  });
+
+  it("tells the model that paths only the container have are reached through it", async () => {
+    expect(await render(["read"])).toMatch(
+      /Paths only the container has \(anything outside \/workspace, `\/tmp` included, and dependency, build and cache directories such as `node_modules`/,
+    );
+    expect(await render(["bash"])).toMatch(
+      /A command naming a path only the container has \([^)]*`node_modules`[^)]*\) is sent there by itself\./,
+    );
   });
 
   it("names only the tools the request offers", async () => {

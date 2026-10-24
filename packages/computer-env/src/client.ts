@@ -56,9 +56,9 @@ export const abortedResult = <T>(
     ? err(new FileError("aborted", "aborted", path))
     : undefined;
 
-/** A `Call` on `host`. */
+/** A `Call` on `host`; with `reachContainer`, its operations on Container-only paths run on the Container. */
 export const caller =
-  (host: Pick<ComputerEnvHost, "fileOperation">): Call =>
+  (host: Pick<ComputerEnvHost, "fileOperation">, reachContainer = false): Call =>
   async (context, op, ...args) => {
     const path = args[0] instanceof Array ? undefined : String(args[0]);
     const before = abortedResult<ValueOf<typeof op>>(context, path);
@@ -70,9 +70,9 @@ export const caller =
     try {
       // SAFETY: `op` and `args` come from one `HostOperations` member, the pairing `EnvRequest` lists; the Workspace DO
       // answers it with that operation's result.
-      response = (await host.fileOperation({ op, args } as EnvRequest)) as WireResult<
-        ValueOf<typeof op>
-      >;
+      response = (await host.fileOperation(
+        (reachContainer ? { op, args, reachContainer } : { op, args }) as EnvRequest,
+      )) as WireResult<ValueOf<typeof op>>;
     } catch (cause) {
       const error = new FileError(
         "unknown",
