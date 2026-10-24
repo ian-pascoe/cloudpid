@@ -191,8 +191,50 @@ describe("limit", () => {
   });
 });
 
+describe("the harness's own files and the Container's", () => {
+  it("are left out of a search from above /workspace/.cloudpid, and found by one inside it", async () => {
+    await write("/workspace/.cloudpid/tmp/tmp-1/out.log", "needle in a spill\n");
+
+    expect((await call("grep", { pattern: "spill", path: "/workspace" })).text).toBe(
+      "No matches found",
+    );
+    expect((await call("find", { pattern: "*.log", path: "/workspace" })).text).toBe(
+      "No files found matching pattern",
+    );
+    expect((await call("grep", { pattern: "spill", path: "/workspace/.cloudpid" })).text).toBe(
+      "tmp/tmp-1/out.log:1: needle in a spill",
+    );
+  });
+
+  it("marks the Container-only entries a listing of a synced directory brings", async () => {
+    const files = new ComputerFiles(workspace);
+
+    const marked = await Effect.runPromise(
+      Files.pipe(
+        Effect.provideService(WorkspaceFiles, {
+          readdir: async (path) => [
+            ...(await files.readdir(path)),
+            { name: ".venv", isDirectory: true, isSymbolicLink: false, containerOnly: true },
+          ],
+          find: (directory, pattern, options) => files.find(directory, pattern, options),
+          grep: (pattern, path, options) => files.grep(pattern, path, options),
+        }),
+      ),
+    );
+
+    const ls = marked.tools?.find((candidate) => candidate.name === "ls");
+
+    // SAFETY: the tools read only the call's environment from the API.
+    const result = await ls?.execute({ path: "src" }, { env: executionEnv } as never, context);
+
+    expect(result?.output).toEqual([
+      { type: "text", text: ".venv/ (container-only)\na.ts\ndeep/" },
+    ]);
+  });
+});
+
 describe("a Workspace's Container", () => {
-  it("is never started by ls, find, or grep, but is by a command", async () => {
+  it("is never started by ls, find, or grep on the Workspace's own paths, but is by a command", async () => {
     await call("ls", {});
     await call("find", { pattern: "*.ts" });
     await call("grep", { pattern: "needle" });

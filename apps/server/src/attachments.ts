@@ -1,6 +1,6 @@
 // Attachments (`docs/spec.md` → Client and protocol → Attachments): the main Worker's `PUT` and `DELETE` of
 // `/sessions/:id/attachments/:name` write a file the owner attached into the Session's Workspace, at
-// `/workspace/.uploads/<session-id>/<name>`, and remove one that was not sent. Every path is made here from the Session's
+// `/workspace/.cloudpid/uploads/<session-id>/<name>`, and remove one that was not sent. Every path is made here from the Session's
 // ID and a sanitised name, so nothing a client sends reaches outside that directory. The Registry's check that the
 // Session exists is `serve-attachment.ts`'s, so this module loads in a Workspace test Worker without alchemy.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off -- the Workspace's file operations are Promise-native (ADR-0003).

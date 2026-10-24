@@ -64,7 +64,8 @@ const workspaceWithRepo = async () => {
     "demo/src/drop.gen.ts": "export {};\n",
     "demo/src/keep.gen.ts": "export {};\n",
     "outside.ts": "export {};\n",
-    ".uploads/other-session/shot.png": "png\n",
+    ".cloudpid/uploads/other-session/shot.png": "png\n",
+    ".cloudpid/tmp/clone-api/README.md": "partial\n",
   };
 
   const writes = Object.entries(files).map(([path, content]) => call("write", { path, content }));
@@ -156,7 +157,7 @@ describe("a files request", () => {
     const top = pathsOf(await ask("top", ""));
 
     expect(top).toEqual(expect.arrayContaining(["demo/", "outside.ts"]));
-    expect(top.some((path) => path.startsWith(".uploads"))).toBe(false);
+    expect(top.some((path) => path.startsWith(".cloudpid"))).toBe(false);
 
     const generated = pathsOf(await ask("gen", "gen.ts"));
 

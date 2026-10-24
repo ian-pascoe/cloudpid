@@ -1,13 +1,16 @@
 // Attachments (GLOSSARY.md → Messages): a file the owner gives with a message is uploaded into the Session's Workspace at
-// `/workspace/.uploads/<session-id>/<name>` and pointed at by its path; an attached image also goes inline to the model.
+// `/workspace/.cloudpid/uploads/<session-id>/<name>` and pointed at by its path; an attached image also goes inline to the model.
 // The web app (to name and size what it uploads and sends) and the server (to place an upload and to bound what a
 // submit may hold) share these rules (`docs/spec.md` → Client and protocol → Attachments).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain string functions.
 import * as Schema from "effect/Schema";
 import { WORKSPACE_ROOT } from "./repo.ts";
 
+/** The harness's own hidden directory at the Workspace root: Attachments, clone staging. */
+export const CLOUDPID_ROOT = `${WORKSPACE_ROOT}/.cloudpid`;
+
 /** Where every Session's Attachments are kept in its Workspace, one directory per Session below it. */
-export const UPLOADS_ROOT = `${WORKSPACE_ROOT}/.uploads`;
+export const UPLOADS_ROOT = `${CLOUDPID_ROOT}/uploads`;
 
 /**
  * The largest Attachment, in bytes. The Workspace DO holds the whole file in memory to write it (its storage then keeps

@@ -185,7 +185,7 @@ describe("preparing a Workspace's clones", () => {
     expect(made.stderr).toContain("has no branch release");
     expect(existsSync(join(root, "app", ".git"))).toBe(true);
     expect(existsSync(join(root, "api"))).toBe(false);
-    expect(existsSync(join(root, ".cloudpid-clone-api"))).toBe(false);
+    expect(existsSync(join(root, ".cloudpid", "tmp", "clone-api"))).toBe(false);
   });
 
   it("leaves a clone that is there alone, uncommitted work included", () => {

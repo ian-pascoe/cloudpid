@@ -94,14 +94,20 @@ describe("the paths a listing leaves out", () => {
           dir(".agents/prompts"),
           dir(".agents/skills"),
           file(".agents/skills/tdd/SKILL.md"),
-          dir(".uploads"),
-          file(".uploads/s1/a.png"),
+          dir(".cloudpid"),
+          file(".cloudpid/uploads/s1/a.png"),
+          file(".cloudpid/tmp/clone-api/README.md"),
           dir("repo"),
         ],
         "/workspace",
       ),
     ).toEqual([".agents/", "repo/", ".agents/prompts/"]);
-    expect(fileCandidates([dir("s1"), file("s1/a.png")], "/workspace/.uploads")).toEqual([]);
+    expect(fileCandidates([dir("s1"), file("s1/a.png")], "/workspace/.cloudpid/uploads")).toEqual(
+      [],
+    );
+    expect(
+      fileCandidates([dir("clone-api"), file("clone-api/a.ts")], "/workspace/.cloudpid/tmp"),
+    ).toEqual([]);
     // A repo's own `.agents/skills` is its own.
     expect(fileCandidates([dir(".agents/skills")], REPO)).toEqual([".agents/", ".agents/skills/"]);
   });

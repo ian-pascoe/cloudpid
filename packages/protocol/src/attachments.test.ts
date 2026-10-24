@@ -99,9 +99,9 @@ describe("freeAttachmentName", () => {
 });
 
 describe("where an Attachment goes", () => {
-  it("is the Session's own directory under the Workspace's .uploads", () => {
-    expect(uploadsDirectory(session)).toBe(`/workspace/.uploads/${session}`);
-    expect(attachmentPath(session, "a.png")).toBe(`/workspace/.uploads/${session}/a.png`);
+  it("is the Session's own directory under the Workspace's .cloudpid/uploads", () => {
+    expect(uploadsDirectory(session)).toBe(`/workspace/.cloudpid/uploads/${session}`);
+    expect(attachmentPath(session, "a.png")).toBe(`/workspace/.cloudpid/uploads/${session}/a.png`);
   });
 
   it("is uploaded to the Session's attachments route, the name escaped as one segment", () => {

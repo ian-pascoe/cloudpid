@@ -1,105 +1,68 @@
-// The Workspace's file search for the `ls`, `find`, and `grep` tools: computer's `fs.readdir`, `fs.find`, and
-// `fs.grep`, answered inside the Workspace DO (docs/spec.md → Filesystem and tools, ADR-0008). A call takes a Workspace
-// client and uses only its `fs`: this class has no way to run a command, so it can never start a Container.
-// Results are copied to plain data before the client is disposed.
+// `ComputerFiles`: the file search `ls`, `find`, and `grep` run on (`@cloudpid/extensions/files`). Each search is one
+// of the Workspace DO's file operations (`host.ts`), answered as plain data. Without `reachContainer` it sees only the
+// Workspace's files and can never start a Container; the model's own tools ask for `reachContainer`, which runs a
+// search of a Container-only path on the Container (ADR-0018).
 // pi-durable's tools are Promise-native and stay so (ADR-0003); this adapter follows them.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
-import { getWorkspace, type WorkspaceClient, type WorkspaceHandle } from "@cloudflare/computer";
+// @effect-diagnostics asyncFunction:off
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { type Call, caller } from "./client.ts";
 import type { ComputerWorkspaceStub } from "./env.ts";
+import type { DirectoryEntry, FindOptions, FoundEntry, GrepMatch, GrepOptions } from "./wire.ts";
 
-/** An entry of a directory. */
-export type DirectoryEntry = {
-  readonly name: string;
-  readonly isDirectory: boolean;
-  readonly isSymbolicLink: boolean;
+export type {
+  DirectoryEntry,
+  FindOptions,
+  FoundEntry,
+  GrepLine,
+  GrepMatch,
+  GrepOptions,
+} from "./wire.ts";
+
+export type ComputerFilesOptions = {
+  /** Whether a search of a Container-only path runs on the Container, starting it if it is stopped. */
+  readonly reachContainer?: boolean;
 };
 
-/** An entry a glob found, at its absolute path. */
-export type FoundEntry = { readonly path: string; readonly type: "file" | "dir" };
-
-/** A line of a match's context. */
-export type GrepLine = { readonly line: number; readonly text: string; readonly isMatch: boolean };
-
-/** A matching line at an absolute path; `context` holds the lines around it when asked for. */
-export type GrepMatch = {
-  readonly path: string;
-  readonly line: number;
-  readonly text: string;
-  readonly context?: ReadonlyArray<GrepLine> | undefined;
-};
-
-export type FindOptions = { readonly limit: number; readonly exclude: ReadonlyArray<string> };
-
-export type GrepOptions = {
-  readonly ignoreCase: boolean;
-  readonly regex: boolean;
-  readonly context: number;
-  readonly limit: number;
-  readonly include: string | undefined;
-  readonly exclude: ReadonlyArray<string>;
-};
-
-/** Read-only file search over a Workspace DO stub. */
+/** File search over a Workspace DO stub. */
 export class ComputerFiles {
-  readonly #workspace: ComputerWorkspaceStub;
+  readonly #call: Call;
 
-  constructor(workspace: ComputerWorkspaceStub) {
-    this.#workspace = workspace;
+  constructor(
+    workspace: Pick<ComputerWorkspaceStub, "fileOperation">,
+    options: ComputerFilesOptions = {},
+  ) {
+    this.#call = caller(workspace, options.reachContainer === true);
   }
 
-  /** Run `search` on a Workspace client's file system, then dispose the client. */
-  async #onFiles<A>(search: (fs: WorkspaceClient["fs"]) => Promise<A>): Promise<A> {
-    // SAFETY: the Workspace DO's `__getWorkspaceStub()` answers computer's `WorkspaceStub` over RPC, the handle
-    // `getWorkspace()` takes; the stub's RPC types only rewrite its declared type.
-    using client = await getWorkspace(this.#workspace as WorkspaceHandle);
+  async readdir(path: string): Promise<ReadonlyArray<DirectoryEntry>> {
+    const listed = await this.#call(BACKGROUND_CONTEXT, "readdir", path);
 
-    return await search(client.fs);
+    if (!listed.ok) throw listed.error;
+
+    return listed.value;
   }
 
-  readdir(path: string): Promise<ReadonlyArray<DirectoryEntry>> {
-    return this.#onFiles(async (fs) =>
-      (await fs.readdir(path)).map((entry) => ({
-        name: entry.name,
-        isDirectory: entry.isDirectory,
-        isSymbolicLink: entry.isSymbolicLink,
-      })),
-    );
-  }
-
-  find(
+  async find(
     directory: string,
     pattern: string,
     options: FindOptions,
   ): Promise<ReadonlyArray<FoundEntry>> {
-    return this.#onFiles(async (fs) =>
-      (
-        await fs.find(directory, pattern, { limit: options.limit, exclude: [...options.exclude] })
-      ).map((entry) => ({ path: entry.path, type: entry.type })),
-    );
+    const found = await this.#call(BACKGROUND_CONTEXT, "find", directory, pattern, options);
+
+    if (!found.ok) throw found.error;
+
+    return found.value;
   }
 
-  grep(pattern: string, path: string, options: GrepOptions): Promise<ReadonlyArray<GrepMatch>> {
-    const search: NonNullable<Parameters<WorkspaceClient["fs"]["grep"]>[2]> = {
-      ignoreCase: options.ignoreCase,
-      regex: options.regex,
-      context: options.context,
-      limit: options.limit,
-      exclude: [...options.exclude],
-    };
+  async grep(
+    pattern: string,
+    path: string,
+    options: GrepOptions,
+  ): Promise<ReadonlyArray<GrepMatch>> {
+    const matched = await this.#call(BACKGROUND_CONTEXT, "grep", pattern, path, options);
 
-    if (options.include !== undefined) search.include = options.include;
+    if (!matched.ok) throw matched.error;
 
-    return this.#onFiles(async (fs) =>
-      (await fs.grep(pattern, path, search)).map((match) => ({
-        path: match.path,
-        line: match.line,
-        text: match.text,
-        context: match.context?.map((line) => ({
-          line: line.line,
-          text: line.text,
-          isMatch: line.isMatch,
-        })),
-      })),
-    );
+    return matched.value;
   }
 }

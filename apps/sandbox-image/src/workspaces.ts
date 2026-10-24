@@ -161,8 +161,9 @@ clone() {
     echo "cloudpid: $dir is there but is not a clone; move it away to clone $2 there" >&2
     return 1
   fi
-  # Made beside the repos, then moved into place: a clone that stopped halfway is never taken for one that is there.
-  partial="$root/.cloudpid-clone-$1"
+  # Made under the Workspace's own .cloudpid/tmp, then moved into place (same mount): a clone that stopped halfway is never taken for one that is there.
+  partial="$root/.cloudpid/tmp/clone-$1"
+  mkdir -p -- "$root/.cloudpid/tmp" || return 1
   rm -rf -- "$partial"
   nohooks clone --quiet --no-checkout -- "$2" "$partial" || return 1
   if git -C "$partial" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
@@ -197,7 +198,7 @@ clone_or_report() {
     return 0
   fi
   clone "$@" && return 0
-  rm -rf -- "$root/.cloudpid-clone-$1"
+  rm -rf -- "$root/.cloudpid/tmp/clone-$1"
   echo "cloudpid: could not clone $2 into $root/$1" >&2
   status=1
 }

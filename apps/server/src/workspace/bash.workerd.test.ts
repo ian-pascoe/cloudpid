@@ -369,6 +369,33 @@ describe("bash on a Workspace", { timeout: 30_000 }, () => {
     expect(await counts()).toMatchObject({ started: 1, container: 0 });
   });
 
+  // This test Workspace has no Container, so its Container-only paths are those outside /workspace.
+  it("sends a command naming a Container-only path to the Container before it runs", async () => {
+    const { run, counts } = await open();
+
+    await run({ command: "cat /etc/hostname notes.txt" });
+
+    expect(await counts()).toMatchObject({ started: 1, container: 1 });
+  });
+
+  it("runs a command that writes nothing again in the Container when the Worker Shell did not find a Container-only path", async () => {
+    const { run, counts } = await open();
+
+    // The path is in a variable, so only the Worker Shell's message names it.
+    await run({ command: 'F=/etc/hostname; cat "$F"' });
+
+    expect(await counts()).toMatchObject({ started: 2, container: 1 });
+  });
+
+  it("keeps the Worker Shell's answer when the path it did not find is synced", async () => {
+    const { run, counts } = await open();
+
+    const result = await run({ command: 'F=missing.txt; cat "$F"' });
+
+    expect(result.text).toMatch(/missing\.txt: No such file or directory/);
+    expect(await counts()).toMatchObject({ started: 1, container: 0 });
+  });
+
   it("runs an explicit worker backend on the Worker Shell even for a binary, which fails there", async () => {
     const { run, counts } = await open();
 

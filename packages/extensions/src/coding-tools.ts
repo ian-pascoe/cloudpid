@@ -7,7 +7,13 @@
 // Shell, unless the command needs a real binary, so the Container (the costly backend) starts only when a command needs
 // it. A program the router does not know is asked of the Worker Shell first (`command -v`, remembered for the tool's
 // life), and a command that writes no file runs again on the Container when the Worker Shell says it cannot run it (a
-// missing program, an option its version lacks, a syntax it does not parse). An environment with no backends runs every command on itself.
+// missing program, an option its version lacks, a syntax it does not parse). A command naming a Container-only path
+// (GLOSSARY.md), which the Worker Shell cannot see, goes to the Container: the environment says which of the command's
+// paths are (`containerOnly`, one call), and a command that writes no file runs again on the Container when the Worker
+// Shell said it did not find one. An environment with no backends runs every command on itself.
+//
+// `read`, `write` and `edit` reach Container-only paths through the Container (the environment's doing); their
+// descriptions say so.
 //
 // The `coding_tools` section tells the model to use `read`, `edit` and `write` for files rather than shell commands or
 // scripts, and to leave the Container to the commands that need it.
@@ -28,14 +34,22 @@ import {
   createReadTool,
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
-import type { ExecutionEnv, ShellOutputInfo } from "@earendil-works/pi-durable/env";
+import type {
+  ExecutionEnv,
+  FileError,
+  Result,
+  ShellOutputInfo,
+} from "@earendil-works/pi-durable/env";
 import {
+  commandPaths,
+  missingPaths,
   probeAnswer,
   probeScript,
   resolveRoute,
   routeCommand,
   workerShellCannot,
   type BashRoute,
+  type WorkerOutput,
 } from "./bash-routing.ts";
 import { Images, type ImagesService, readTool } from "./images.ts";
 
@@ -51,13 +65,54 @@ export interface BackendEnv {
 const hasBackends = (env: ExecutionEnv | undefined): env is ExecutionEnv & BackendEnv =>
   env !== undefined && "onBackend" in env;
 
+/** An execution environment that knows which paths are Container-only: only its Container has their files. */
+export interface ContainerOnlyEnv {
+  /** For each absolute, normalized path, whether it is a Container-only path. */
+  containerOnly(
+    paths: readonly string[],
+    context: Context,
+  ): Promise<Result<readonly boolean[], FileError>>;
+}
+
+const knowsContainerOnly = (env: ExecutionEnv): env is ExecutionEnv & ContainerOnlyEnv =>
+  "containerOnly" in env;
+
+/** The first of `paths` that `env` says is Container-only; undefined for none, and when it cannot say. */
+const firstContainerOnly = async (
+  env: ContainerOnlyEnv,
+  paths: readonly string[],
+  context: Context,
+): Promise<string | undefined> => {
+  if (paths.length === 0) return undefined;
+
+  try {
+    const result = await env.containerOnly(paths, context);
+
+    return result.ok ? paths.find((_, at) => result.value[at] === true) : undefined;
+  } catch {
+    // An environment that cannot answer leaves the command where the rest of its route put it.
+    return undefined;
+  }
+};
+
+/** What `read`, `write` and `edit` add to their descriptions. */
+const CONTAINER_ONLY_FILES =
+  "Paths only the container has (anything outside /workspace, /tmp included, and dependency, build and cache directories such as node_modules, .venv, target and .cache inside it) are read and written through the container, which starts if needed; their files are on its disk and in its snapshot, not in the Workspace's files.";
+
+/** `tool`, telling the model that it reaches Container-only paths through the Container. */
+const throughContainer = <T extends { readonly description: string }>(tool: T): T => ({
+  ...tool,
+  description: `${tool.description} ${CONTAINER_ONLY_FILES}`,
+});
+
 const base = createBashTool();
 
 const backendDescription = [
   "Commands run on one of two backends that share the same files in /workspace. Routing is automatic: leave `backend` unset and the cheapest backend that can run the command is chosen.",
   "- worker: a shell inside a Worker (just-bash). It starts instantly and costs almost nothing. It runs text and file commands: cat, grep, rg, sed, awk, jq, find, sort, head, diff, tar, ls and the like, with cd, pipes, redirects, globs, loops, `case` and substitutions, plus a read-only git: `git status` (one `XY path` line per changed file, `?` for untracked, nothing when clean; the staged column can be wrong, so use `git status --short` on the container after a `git add`), `git log --oneline`, `git rev-parse HEAD`, `git branch`, `git ls-files`. It has no network and cannot run native (ELF) binaries, so no node, npm, python, compilers, test runners, curl, or gh.",
   "- container: a real Linux container (Ubuntu 24.04) with network access, and the costly backend: it takes several seconds to start and is billed while it runs. It runs anything that needs a real binary: npm, node, python, test runners, compilers, package managers, gh, mise toolchains, docker (start its daemon with `cloudpid-dockerd`), all other git (diff, show, add, commit, branch changes, clone, push, pull; the GitHub token is set), and scripts (./script.sh). When it stops answering (every container command hangs, `echo` included), restart it with `restart_container`.",
-  'Without `backend`, a command runs on the worker when the worker has every program in it, and on the container otherwise (also for a script path or `$CMD`); a command that writes no file is rerun on the container by itself when the worker rejects a program or option. So never set `backend` for reading, searching or listing (and to view a file, use `read` rather than `cat`). Override it with `"container"` only when the worker ran a command and its output was wrong; `"worker"` forces the fast shell.',
+  "- Paths only the container has: anything outside /workspace (/tmp and ~ included), and dependency, build and cache directories inside it such as node_modules, .venv, target and .cache. Their files are on the container's disk and in its snapshot, not in the Workspace's files, so the worker does not see them: a command naming one runs on the container by itself, and `read`, `write` and `edit` reach them through the container too, starting it if needed.",
+  'Without `backend`, a command runs on the worker when the worker has every program in it and names no path only the container has, and on the container otherwise (also for a script path or `$CMD`); a command that writes no file is rerun on the container by itself when the worker rejects a program or option, or cannot find a path only the container has. So never set `backend` for reading, searching or listing (and to view a file, use `read` rather than `cat`). Override it with `"container"` only when the worker ran a command and its output was wrong; `"worker"` forces the fast shell.',
 ].join("\n");
 
 const parameters = Type.Object({
@@ -106,28 +161,48 @@ const workerHas = async (
   return new Set(programs.filter((name) => known.get(name) === true));
 };
 
-/** Why `result`, a command's on the Worker Shell with `chunks` of output, should run on the Container instead. */
-const containerReason = (
-  result: Awaited<ReturnType<ExecutionEnv["exec"]>>,
-  chunks: readonly OutputChunk[],
-): string | undefined => {
-  if (!result.ok) return result.error.code === "spawn_error" ? result.error.message : undefined;
-
-  const output = { stdout: "", stderr: "" };
-
-  for (const [text, , info] of chunks) output[info.stream] += text;
-
-  return workerShellCannot(output);
-};
+type ExecResult = Awaited<ReturnType<ExecutionEnv["exec"]>>;
 
 type OutputChunk = [text: string, context: Context, info: ShellOutputInfo];
 
 /**
- * `worker`, holding back each command's output until it has ended. When `rerunnable` (the command writes no file) and
- * the Worker Shell could not run it (`workerShellCannot`, or it never started), the attempt throws `RunOnContainer`
- * with nothing delivered; otherwise its output is delivered as it came.
+ * Why `result`, a command's on the Worker Shell with `output`, should run on the Container instead: the Worker Shell
+ * could not run it, or (asked of `containerOnlyMissing`) did not find a path only the Container has.
  */
-const attemptOn = (worker: ExecutionEnv, rerunnable: boolean): ExecutionEnv => {
+const containerReason = async (
+  result: ExecResult,
+  output: WorkerOutput,
+  containerOnlyMissing: ((output: WorkerOutput) => Promise<string | undefined>) | undefined,
+): Promise<string | undefined> => {
+  if (!result.ok) {
+    return result.error.code === "spawn_error"
+      ? `the worker could not (${result.error.message})`
+      : undefined;
+  }
+
+  const cannot = workerShellCannot(output);
+
+  if (cannot !== undefined) return `the worker could not (${cannot})`;
+
+  const path = await containerOnlyMissing?.(output);
+
+  return path === undefined ? undefined : `${path} is only on the container`;
+};
+
+/** How a command that writes no file is judged after its Worker Shell run, to run it again on the Container. */
+type Rerun = {
+  /** The first path the Worker Shell did not find that only the Container has; undefined when the environment cannot say. */
+  readonly containerOnlyMissing:
+    | ((output: WorkerOutput) => Promise<string | undefined>)
+    | undefined;
+};
+
+/**
+ * `worker`, holding back each command's output until it has ended. When `rerun` is given (the command writes no file)
+ * and the Worker Shell could not run it (`workerShellCannot`, or it never started) or did not find a path only the
+ * Container has, the attempt throws `RunOnContainer` with nothing delivered; otherwise its output is delivered as it came.
+ */
+const attemptOn = (worker: ExecutionEnv, rerun: Rerun | undefined): ExecutionEnv => {
   const attempt: Pick<ExecutionEnv, "cwd" | "exec"> = {
     cwd: worker.cwd,
     exec: async (command, options, context) => {
@@ -139,9 +214,15 @@ const attemptOn = (worker: ExecutionEnv, rerunnable: boolean): ExecutionEnv => {
         context,
       );
 
-      const reason = rerunnable ? containerReason(result, chunks) : undefined;
+      if (rerun !== undefined) {
+        const output = { stdout: "", stderr: "" };
 
-      if (reason !== undefined) throw new RunOnContainer(reason);
+        for (const [text, , info] of chunks) output[info.stream] += text;
+
+        const reason = await containerReason(result, output, rerun.containerOnlyMissing);
+
+        if (reason !== undefined) throw new RunOnContainer(reason);
+      }
 
       for (const chunk of chunks) options?.onOutput?.(...chunk);
 
@@ -183,15 +264,42 @@ const bashTool = (known: Map<string, boolean>): ToolRegistration<typeof paramete
 
       if (route.backend === "container") return runOn(env.onBackend("container"));
 
+      // A command naming a Container-only path goes to the Container before it runs: the Worker Shell cannot see it.
+      const judge = knowsContainerOnly(env) ? env : undefined;
+      const named = judge === undefined ? undefined : commandPaths(args.command, env.cwd);
+
+      if (
+        judge !== undefined &&
+        named !== undefined &&
+        (await firstContainerOnly(judge, named.paths, context)) !== undefined
+      ) {
+        return runOn(env.onBackend("container"));
+      }
+
+      const asked = new Set(named?.paths);
+
+      // Of the paths the Worker Shell did not find, those not asked about already: those were not Container-only.
+      const containerOnlyMissing =
+        judge === undefined || named === undefined
+          ? undefined
+          : (output: WorkerOutput) =>
+              firstContainerOnly(
+                judge,
+                missingPaths(output, named.directories).filter((path) => !asked.has(path)),
+                context,
+              );
+
       try {
-        return await runOn(attemptOn(worker, route.writes === undefined));
+        return await runOn(
+          attemptOn(worker, route.writes === undefined ? { containerOnlyMissing } : undefined),
+        );
       } catch (error) {
         if (!(error instanceof RunOnContainer)) throw error;
 
         api.diagnostic({
           severity: "info",
           code: "container_fallback",
-          message: `Ran on the container: the worker could not (${error.message})`,
+          message: `Ran on the container: ${error.message}`,
         });
 
         return runOn(env.onBackend("container"));
@@ -211,12 +319,16 @@ const GUIDELINES: readonly { readonly tools: readonly string[]; readonly line: s
   },
   { tools: ["write"], line: "Use `write` only for a new file or a complete rewrite." },
   {
+    tools: ["read", "write", "edit"],
+    line: "Paths only the container has (anything outside /workspace, `/tmp` included, and dependency, build and cache directories such as `node_modules`, `.venv`, `target` and `.cache` inside it) are reached through the container: `read`, `write` and `edit` read and write them there, starting it if needed. Their files are on the container's disk and in its snapshot, not in the Workspace's files.",
+  },
+  {
     tools: ["grep", "find", "ls"],
     line: "Use `grep`, `find` and `ls` to search and list files rather than `bash`.",
   },
   {
     tools: ["bash"],
-    line: "Use `bash` for what the file tools cannot do: tests, builds, package managers, git, and running programs. Leave its `backend` unset: routing keeps reads, searches and text processing on the cheap worker shell and starts the costly container only for what needs it (real binaries, the network, and git beyond status, log --oneline, branch and ls-files). Run related container commands together in one call (`pnpm install && pnpm test`) rather than one by one.",
+    line: "Use `bash` for what the file tools cannot do: tests, builds, package managers, git, and running programs. Leave its `backend` unset: routing keeps reads, searches and text processing on the cheap worker shell and starts the costly container only for what needs it (real binaries, the network, and git beyond status, log --oneline, branch and ls-files). Run related container commands together in one call (`pnpm install && pnpm test`) rather than one by one. A command naming a path only the container has (outside /workspace, `/tmp` included, or a dependency, build or cache directory such as `node_modules` inside it) is sent there by itself.",
   },
 ];
 
@@ -241,9 +353,9 @@ export const codingToolsWith = (options: CodingToolsOptions): Extension =>
   defineExtension({
     name: "coding-tools",
     tools: [
-      options.images === undefined ? createReadTool() : readTool(options.images),
-      createWriteTool(),
-      createEditTool(),
+      throughContainer(options.images === undefined ? createReadTool() : readTool(options.images)),
+      throughContainer(createWriteTool()),
+      throughContainer(createEditTool()),
       // Every Worker Shell runs computer's shell at the version the Workspaces Worker deployed, so one answer serves them
       // all; a Workspace DO still on older code may differ, and a command it cannot run falls back as any other does.
       bashTool(new Map()),

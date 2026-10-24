@@ -133,7 +133,7 @@ describe("the thread messages of a view", () => {
             timestamp: 1,
             parts: [
               { type: "text", text: "look" },
-              { type: "text", text: "@/workspace/.uploads/s/a.png" },
+              { type: "text", text: "@/workspace/.cloudpid/uploads/s/a.png" },
               { type: "image", data: "AAAA", mimeType: "image/png" },
             ],
           },
@@ -142,7 +142,7 @@ describe("the thread messages of a view", () => {
     );
 
     expect(message?.content).toEqual([
-      { type: "text", text: "look\n\n@/workspace/.uploads/s/a.png" },
+      { type: "text", text: "look\n\n@/workspace/.cloudpid/uploads/s/a.png" },
       { type: "image", image: "data:image/png;base64,AAAA" },
     ]);
   });

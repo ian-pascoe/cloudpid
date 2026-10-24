@@ -1146,8 +1146,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     if (typed === undefined || !mayExpand(typed)) return Effect.succeed(plain);
 
+    // The lookup environment, which never starts the Container (ADR-0018): what a message names is in the Workspace.
     const expansion = (conversation: Conversation) =>
-      environment(conversation).pipe(
+      environment(conversation, { lookup: true }).pipe(
         Effect.flatMap((env) =>
           env === undefined
             ? Effect.undefined

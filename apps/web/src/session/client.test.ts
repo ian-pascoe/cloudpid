@@ -302,7 +302,7 @@ describe("a Session connection", () => {
         const { client, latest, state } = yield* setup();
 
         const input = [
-          { type: "text" as const, text: "look\n\n@/workspace/.uploads/s/a.png" },
+          { type: "text" as const, text: "look\n\n@/workspace/.cloudpid/uploads/s/a.png" },
           { type: "image" as const, mimeType: "image/jpeg", data: "/9j/" },
         ];
 

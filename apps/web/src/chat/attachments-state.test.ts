@@ -97,7 +97,7 @@ describe("a composer's Attachments", () => {
       expect(state().items[0]).toMatchObject({
         status: "uploaded",
         progress: 1,
-        stored: { name: "notes.txt", path: "/workspace/.uploads/s1/notes.txt" },
+        stored: { name: "notes.txt", path: "/workspace/.cloudpid/uploads/s1/notes.txt" },
       });
 
       yield* uploads.started[1]!.fail("The upload failed (500).");
@@ -141,7 +141,7 @@ describe("a composer's Attachments", () => {
 
       expect(waitingFor(state())).toBeNull();
       expect(sentAttachments(state())).toEqual([
-        { name: "a.txt", path: "/workspace/.uploads/s1/a.txt", inline: undefined },
+        { name: "a.txt", path: "/workspace/.cloudpid/uploads/s1/a.txt", inline: undefined },
       ]);
     }),
   );
@@ -173,7 +173,7 @@ describe("a composer's Attachments", () => {
         yield* add(file("a.txt"), file("b.txt"));
         yield* uploads.started[0]!.finish({
           name: "a-2.txt",
-          path: "/workspace/.uploads/s1/a-2.txt",
+          path: "/workspace/.cloudpid/uploads/s1/a-2.txt",
         });
         yield* remove("a.txt");
 
@@ -207,7 +207,7 @@ describe("a composer's Attachments", () => {
         expect(submit).toMatchObject({
           input: [
             { type: "text", text: "look" },
-            { type: "text", text: "@/workspace/.uploads/s1/a.txt" },
+            { type: "text", text: "@/workspace/.cloudpid/uploads/s1/a.txt" },
           ],
           whenBusy: "followUp",
         });

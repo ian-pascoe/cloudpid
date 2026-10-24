@@ -1,5 +1,5 @@
 // The Attachments route over a real Workspace DO: where an upload lands, that a name cannot leave the Session's
-// `.uploads` directory, suffixing, removal and the size limit (`docs/spec.md` → Client and protocol → Attachments).
+// `.cloudpid/uploads` directory, suffixing, removal and the size limit (`docs/spec.md` → Client and protocol → Attachments).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
@@ -23,7 +23,7 @@ declare global {
 }
 
 const session = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
-const uploads = `/workspace/.uploads/${session}`;
+const uploads = `/workspace/.cloudpid/uploads/${session}`;
 
 /** The Workspace DO namespace, as the Server Worker reaches it: its stubs are what `ComputerExecutionEnv` takes. */
 const namespace: WorkspaceNamespace = { getByName: (slug) => env.WORKSPACES.getByName(slug) };
@@ -77,7 +77,7 @@ const bytesAt = async (look: ComputerExecutionEnv, path: string) => {
 };
 
 describe("an Attachment upload to a Workspace", () => {
-  it("makes the Session's .uploads directory beside the read-only skills and stores the bytes there", async () => {
+  it("makes the Session's uploads directory beside the read-only skills and stores the bytes there", async () => {
     const { files, look } = fresh();
     const bytes = Uint8Array.from({ length: 70_000 }, (_, index) => index % 251);
     const response = await call(files, "PUT", "photo.png", bytes);
@@ -85,7 +85,7 @@ describe("an Attachment upload to a Workspace", () => {
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({ name: "photo.png", path: `${uploads}/photo.png` });
     expect(await bytesAt(look, `${uploads}/photo.png`)).toEqual(bytes);
-    expect(await names(look, "/workspace/.uploads")).toEqual([session]);
+    expect(await names(look, "/workspace/.cloudpid/uploads")).toEqual([session]);
   });
 
   it("suffixes a name the Session already uploaded", async () => {
@@ -110,7 +110,7 @@ describe("an Attachment upload to a Workspace", () => {
     expect(await names(look, uploads)).toEqual(
       ["attachment", "escape", "workspace-escape", "escape-2"].sort(),
     );
-    expect(await names(look, "/workspace")).toEqual([".agents", ".uploads"]);
+    expect(await names(look, "/workspace")).toEqual([".agents", ".cloudpid"]);
   });
 
   it("removes one that was not sent, and only it", async () => {

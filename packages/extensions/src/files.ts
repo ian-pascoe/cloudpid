@@ -3,10 +3,11 @@
 // except where the Workspace's file system differs: it has no `.gitignore` handling, so `find` and `grep` skip
 // `node_modules` and `.git` instead, as local pi's `find` does for a custom backend.
 //
-// The tools reach the Workspace only through `FileSearch`: directory listing, glob find, and grep. It has no command
-// execution, so a call cannot start the Container. A path is resolved and checked through the call's `ExecutionEnv`,
-// narrowed to `PathEnv`, its two path operations (`absolutePath`, `fileInfo`), which answer from the Workspace's files
-// too: nothing a tool holds can execute a command, so that guarantee is in the types, not in the tools' care.
+// The tools reach the Workspace only through `FileSearch`: directory listing, glob find, and grep. A path is resolved
+// and checked through the call's `ExecutionEnv`, narrowed to `PathEnv`, its two path operations (`absolutePath`,
+// `fileInfo`). Neither can run a command of the tool's choosing: both are the Workspace DO's file operations, which
+// answer from the Workspace's files, and, for a Container-only path, from the Container through scripts of the DO's own
+// (ADR-0018, which replaced ADR-0008's "never starts the Container" for these paths).
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
@@ -21,6 +22,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 /** An entry of a directory. */
@@ -28,6 +30,8 @@ export type DirectoryEntry = {
   readonly name: string;
   readonly isDirectory: boolean;
   readonly isSymbolicLink: boolean;
+  /** A Container-only entry of a synced directory, which only the running Container listed. */
+  readonly containerOnly?: boolean;
 };
 
 /** An entry a glob found, at its absolute path. */
@@ -94,20 +98,32 @@ const GREP_MAX_LINE_LENGTH = 500;
 /** What `find` and `grep` skip, as local pi's `find` does. */
 const IGNORED = ["**/node_modules/**", "**/.git/**"] as const;
 
-/** Where the bundled skills are mounted, read-only, in every Workspace (`@cloudpid/extensions/skills`). */
-const SKILLS_MOUNT = "/workspace/.agents/skills";
+/**
+ * Directories a search from above them skips: the bundled skills' mount (`@cloudpid/extensions/skills`), and the
+ * harness's own files (temp files, spills, Attachments).
+ */
+const SKIPPED_FROM_ABOVE = ["/workspace/.agents/skills", "/workspace/.cloudpid"] as const;
 
 /**
- * What a search of `path` skips: `IGNORED`, and the bundled skills' mount when `path` is above it, so a search from the
- * Workspace root does not walk the bundled files; a search of a path in or at the mount finds them.
+ * What a search of `path` skips: `IGNORED`, and each of `SKIPPED_FROM_ABOVE` that is below `path`, so a search from the
+ * Workspace root does not walk them; a search of a path in or at one finds its files.
  */
 const ignoredIn = (path: string): ReadonlyArray<string> => {
   const prefix = path.endsWith("/") ? path : `${path}/`;
 
-  return SKILLS_MOUNT.startsWith(prefix)
-    ? [...IGNORED, `${SKILLS_MOUNT.slice(prefix.length)}/**`]
-    : IGNORED;
+  return [
+    ...IGNORED,
+    ...Arr.filterMap(SKIPPED_FROM_ABOVE, (skipped) =>
+      skipped.startsWith(prefix)
+        ? Result.succeed(`${skipped.slice(prefix.length)}/**`)
+        : Result.failVoid,
+    ),
+  ];
 };
+
+/** What the tools say of Container-only paths. */
+const CONTAINER_NOTE =
+  "Paths only the container has (outside /workspace, and dependency, build and cache directories such as node_modules inside it) are searched on the container, starting it if needed.";
 
 const encoder = new TextEncoder();
 
@@ -224,7 +240,7 @@ const byName = Order.mapInput(
 
 const Ls = defineEffectTool({
   name: "ls",
-  description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LS_LIMIT} entries or ${MAX_BYTES / 1024}KB (whichever is hit first).`,
+  description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LS_LIMIT} entries or ${MAX_BYTES / 1024}KB (whichever is hit first). A directory only the container has (outside /workspace, or such as node_modules inside it) is listed on the container, starting it if needed; in other directories, the container-only entries (marked "(container-only)") are listed only while the container runs.`,
   replay: "safe",
   parameters: Schema.Struct({
     path: Schema.optionalKey(
@@ -262,7 +278,9 @@ const Ls = defineEffectTool({
         isDirectory = kind === "directory";
       }
 
-      listed.push(isDirectory ? `${entry.name}/` : entry.name);
+      const name = isDirectory ? `${entry.name}/` : entry.name;
+
+      listed.push(entry.containerOnly === true ? `${name} (container-only)` : name);
     }
 
     if (listed.length === 0) return textResult("(empty directory)", {});
@@ -289,7 +307,7 @@ const Ls = defineEffectTool({
 
 const Find = defineEffectTool({
   name: "find",
-  description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Skips node_modules and .git. Output is truncated to ${DEFAULT_FIND_LIMIT} results or ${MAX_BYTES / 1024}KB (whichever is hit first).`,
+  description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Skips node_modules and .git below the search directory, and the container-only directories below a synced one. Output is truncated to ${DEFAULT_FIND_LIMIT} results or ${MAX_BYTES / 1024}KB (whichever is hit first). ${CONTAINER_NOTE}`,
   replay: "safe",
   parameters: Schema.Struct({
     pattern: Schema.String.annotate({
@@ -345,7 +363,7 @@ const Find = defineEffectTool({
 
 const Grep = defineEffectTool({
   name: "grep",
-  description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Skips node_modules and .git. Output is truncated to ${DEFAULT_GREP_LIMIT} matches or ${MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+  description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Skips node_modules and .git below the search path, and the container-only directories below a synced one. Output is truncated to ${DEFAULT_GREP_LIMIT} matches or ${MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars. ${CONTAINER_NOTE}`,
   replay: "safe",
   parameters: Schema.Struct({
     pattern: Schema.String.annotate({ description: "Search pattern (regex or literal string)" }),

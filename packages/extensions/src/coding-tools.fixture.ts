@@ -65,6 +65,11 @@ export type CodingHarnessOptions = {
   readonly files?: Readonly<Record<string, Uint8Array>>;
   /** The Images binding `read` prepares images with; none by default. */
   readonly images?: ImagesService;
+  /**
+   * Whether a path is Container-only, as the environment answers `containerOnly`; `"fails"` answers with an error.
+   * Without it, the environment has no `containerOnly`.
+   */
+  readonly containerOnly?: ((path: string) => boolean) | "fails";
 };
 
 /** What the model saw of a call: the text, whether it was an error, and the images, when there were any. */
@@ -110,6 +115,8 @@ type FakeSetup = {
   readonly respond: Respond;
   readonly files: Readonly<Record<string, Uint8Array>>;
   readonly reads: FileReads;
+  /** The paths of each `containerOnly` call. */
+  readonly asked: (readonly string[])[];
 };
 
 /** An environment whose commands report where they ran (or answer as `respond` says), and whose files are `files`. */
@@ -183,10 +190,44 @@ class FakeBackendEnv extends FakeEnv {
   }
 }
 
+/** A fake environment with backends that says which paths are Container-only, as `isContainerOnly` does. */
+class FakeContainerOnlyEnv extends FakeBackendEnv {
+  readonly #asked: (readonly string[])[];
+  readonly #isContainerOnly: ((path: string) => boolean) | "fails";
+
+  constructor(setup: FakeSetup, isContainerOnly: ((path: string) => boolean) | "fails") {
+    super(setup);
+    this.#asked = setup.asked;
+    this.#isContainerOnly = isContainerOnly;
+  }
+
+  async containerOnly(paths: readonly string[]): Promise<Result<readonly boolean[], FileError>> {
+    this.#asked.push(paths);
+
+    const isContainerOnly = this.#isContainerOnly;
+
+    return isContainerOnly === "fails"
+      ? err(new FileError("unknown", "The Workspace did not answer", paths[0] ?? ""))
+      : ok(paths.map((path) => isContainerOnly(path)));
+  }
+}
+
+/** The environment `options` describe. */
+const fakeEnv = (options: CodingHarnessOptions, setup: FakeSetup): ExecutionEnv => {
+  if (!options.backends) return asEnv(new FakeEnv(setup));
+
+  return asEnv(
+    options.containerOnly === undefined
+      ? new FakeBackendEnv(setup)
+      : new FakeContainerOnlyEnv(setup, options.containerOnly),
+  );
+};
+
 /** Open a Harness whose conversations run the coding tools in a fake environment. */
 export const openCodingHarness = async (options: CodingHarnessOptions) => {
   const calls: BackendCall[] = [];
   const reads: FileReads = { largest: 0 };
+  const asked: (readonly string[])[] = [];
 
   const setup: FakeSetup = {
     calls,
@@ -194,6 +235,7 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
     respond: options.respond ?? (() => undefined),
     files: options.files ?? {},
     reads,
+    asked,
   };
 
   const tools = codingToolsWith(options.images === undefined ? {} : { images: options.images });
@@ -209,7 +251,7 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
     {
       models,
       registry,
-      env: () => asEnv(options.backends ? new FakeBackendEnv(setup) : new FakeEnv(setup)),
+      env: () => fakeEnv(options, setup),
     },
     context,
   );
@@ -252,6 +294,8 @@ export const openCodingHarness = async (options: CodingHarnessOptions) => {
     call,
     calls,
     reads,
+    /** The paths of each `containerOnly` call the environment answered. */
+    asked,
     /** The registration of tool `name`, as the model is offered it. */
     tool: (name: string) => tools.tools?.find((tool) => tool.name === name),
   };
