@@ -25,9 +25,10 @@ export const MEMORY_NOTES_DIRECTORY = "/run/cloudpid-memory-guard";
 /**
  * When the guard acts, as earlyoom's `-m` (percent of the memory available) and `-M` (KiB available): it stops the
  * largest process with SIGTERM below the lower of the two first values, and with SIGKILL below the lower of the
- * second. On the default `custom-2` (6 GiB) that is about 950 MB and 510 MB; a larger size stops at 1 GiB and 512 MiB.
- * The Container has no swap, and on the default size computerd's own pages were being evicted at about 400 MB
- * available (2026-10-23): above that, nothing stalled.
+ * second. On the default `custom-1` (3 GiB) that is about 480 MB and 260 MB, on `custom-2` (6 GiB) about 950 MB and
+ * 510 MB; a larger size stops at 1 GiB and 512 MiB. The Container has no swap, and on `custom-2` computerd's own pages
+ * were being evicted at about 400 MB available (2026-10-23): above that, nothing stalled. Not yet measured on `custom-1`,
+ * whose SIGKILL threshold is below that.
  */
 export const MEMORY_GUARD_PERCENT = "15,8";
 
