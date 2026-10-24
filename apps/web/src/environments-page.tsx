@@ -1460,7 +1460,10 @@ export const EnvironmentsPage = () => {
   const error = failureOf(createdEnvironment) ?? listError;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    // `relative` makes the scroller the containing block of the `sr-only` labels in the forms: without it they are
+    // placed against the document at their spot in the long list, which makes the document itself scrollable under
+    // the app, and a scroll that runs past a modal's end then moves the whole app up, leaving a blank strip below.
+    <div className="relative min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
         <div className="flex items-center gap-2">
           <button
