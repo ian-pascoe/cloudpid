@@ -1,12 +1,13 @@
 // @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
 // The tools whose Agent changes wait for the owner's Approval (`docs/spec.md` → Approval, ADR-0019): those that change a
-// Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`, `environment_container_size_limit_set`) and those no
-// revert can undo (`environment_delete`, `environment_secret_delete`). Each checks what it can first and refuses without
-// asking what it would refuse anyway; then it asks the owner (`withApproval`), and on Approve makes the change as the
-// other tools do (applied, recorded with an approved mark, in the Run's Notification), provided the target still has the
-// value the owner saw. A Decline changes nothing, and the result carries the owner's reason. The tools are the root
-// conversation's only (`PARENT_ONLY_TOOL_PREFIXES` has `environment_` and `settings_`), run alone, and are replayed
-// after an eviction: the rerun waits for the same request, or takes the answer given meanwhile.
+// Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`, `settings_subagent_workspaces_set`,
+// `environment_container_size_limit_set`) and those no revert can undo (`environment_delete`,
+// `environment_secret_delete`). Each checks what it can first and refuses without asking what it would refuse anyway;
+// then it asks the owner (`withApproval`), and on Approve makes the change as the other tools do (applied, recorded
+// with an approved mark, in the Run's Notification), provided the target still has the value the owner saw. A Decline
+// changes nothing, and the result carries the owner's reason. The tools are the root conversation's only
+// (`PARENT_ONLY_TOOL_PREFIXES` has `environment_` and `settings_`), run alone, and are replayed after an eviction: the
+// rerun waits for the same request, or takes the answer given meanwhile.
 import {
   compareInstances,
   extensionField,
