@@ -54,7 +54,12 @@ export const workspaceSettingsStore = (storage: SettingsStorage) => {
 
     await storage.put(SETTINGS_KEY, kept);
 
-    return { ok: true, state: { settings: resolved.success, overrides: kept } };
+    // Answered as a read would have them, so a size limit below the size (the Registry refuses one, but a legacy
+    // Environment's overrides name no limit) is the size here too.
+    return {
+      ok: true,
+      state: { settings: resolveContainerSettingsLeniently(kept).settings, overrides: kept },
+    };
   };
 
   return { read, write };
