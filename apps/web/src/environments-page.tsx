@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of cards, Repos, Workspaces and Sessions are native arrays.
 
-import { INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
+import { INSTANCE_TYPES, instanceLimitProblem, type InstanceType } from "@cloudpid/config";
 import {
   DEFAULT_ENVIRONMENT,
   MAX_ENVIRONMENT_NAME_LENGTH,
@@ -89,6 +89,7 @@ import {
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
+  sizeLimitLabel,
   parseVariables,
   repoNameProblem,
   scriptFieldProblem,
@@ -627,25 +628,63 @@ const StartupFields = ({
   </fieldset>
 );
 
-/** The Container fields of the Edit dialog: size, idle time and extra paths, saved together with the name. */
+/** A list of the sizes, by `label`, as `INSTANCE_TYPES` orders them. */
+const SizeSelect = ({
+  id,
+  value,
+  label,
+  onPick,
+  invalid = false,
+}: {
+  id: string;
+  value: InstanceType;
+  label: (type: InstanceType) => string;
+  onPick: (type: InstanceType) => void;
+  invalid?: boolean;
+}) => (
+  <NativeSelect
+    id={id}
+    value={value}
+    aria-invalid={invalid}
+    onChange={(event) => {
+      const picked = INSTANCE_TYPES.find((type) => type === event.target.value);
+
+      if (picked !== undefined) onPick(picked);
+    }}
+  >
+    {INSTANCE_TYPES.map((type) => (
+      <option key={type} value={type}>
+        {label(type)}
+      </option>
+    ))}
+  </NativeSelect>
+);
+
+/** The Container fields of the Edit dialog: size, size limit, idle time and extra paths, saved together with the name. */
 const ContainerFields = ({
   id,
   instance,
+  maxInstance,
+  limitProblem,
   idle,
   idleProblem,
   paths,
   pathsProblem,
   onInstance,
+  onMaxInstance,
   onIdle,
   onPaths,
 }: {
   id: string;
   instance: InstanceType;
+  maxInstance: InstanceType;
+  limitProblem: string | null;
   idle: string;
   idleProblem: string | null;
   paths: string;
   pathsProblem: string | null;
   onInstance: (instance: InstanceType) => void;
+  onMaxInstance: (maxInstance: InstanceType) => void;
   onIdle: (idle: string) => void;
   onPaths: (paths: string) => void;
 }) => (
@@ -655,21 +694,33 @@ const ContainerFields = ({
       <label htmlFor={`instance-${id}`} className="text-sm font-medium">
         Size
       </label>
-      <NativeSelect
+      <SizeSelect
         id={`instance-${id}`}
         value={instance}
-        onChange={(event) => {
-          const picked = INSTANCE_TYPES.find((type) => type === event.target.value);
-
-          if (picked !== undefined) onInstance(picked);
-        }}
-      >
-        {INSTANCE_TYPES.map((type) => (
-          <option key={type} value={type}>
-            {instanceLabel(type)}
-          </option>
-        ))}
-      </NativeSelect>
+        label={instanceLabel}
+        onPick={onInstance}
+      />
+    </div>
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={`max-instance-${id}`} className="text-sm font-medium">
+        Size limit
+      </label>
+      <SizeSelect
+        id={`max-instance-${id}`}
+        value={maxInstance}
+        label={sizeLimitLabel}
+        onPick={onMaxInstance}
+        invalid={limitProblem !== null}
+      />
+      {limitProblem === null ? (
+        <p className="text-xs text-muted-foreground">
+          The largest the size may be, and the largest the agent may restart a Workspace's Container
+          at (container_resize) until it is stopped for being idle. Sizes are ordered by memory,
+          then vCPU. The agent cannot raise it without you.
+        </p>
+      ) : (
+        <p className="text-xs text-destructive">{limitProblem}</p>
+      )}
     </div>
     <div className="flex flex-col gap-1.5">
       <label htmlFor={`idle-${id}`} className="text-sm font-medium">
@@ -740,7 +791,18 @@ const EditEnvironmentDialog = ({
   const [draft, setDraft] = useAtom(environmentDraftAtom(id));
   const [edited, save] = useAtom(saveEnvironmentAtom(id));
   const setDialog = useAtomSet(environmentDialogAtom(id));
-  const { name, instance, idle, ignore, variables, setupScript, startScript, toolchains } = draft;
+
+  const {
+    name,
+    instance,
+    maxInstance,
+    idle,
+    ignore,
+    variables,
+    setupScript,
+    startScript,
+    toolchains,
+  } = draft;
 
   const saved = loaded.pipe(
     AsyncResult.value,
@@ -755,6 +817,12 @@ const EditEnvironmentDialog = ({
   const nameProblem = environmentNameProblem(name, otherNames);
   const idleProblem = saved === undefined ? null : idleMinutesProblem(idle ?? "");
   const pathsProblem = ignore === undefined ? null : ignoreProblem(ignore);
+
+  const limitProblem =
+    instance === undefined || maxInstance === undefined
+      ? null
+      : (instanceLimitProblem({ instance, maxInstance }) ?? null);
+
   const renamed = name.trim() !== environment.name;
   const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
   const parsedVariables = parseVariables(variables ?? "");
@@ -769,7 +837,9 @@ const EditEnvironmentDialog = ({
   const settingsChanged =
     saved !== undefined &&
     instance !== undefined &&
+    maxInstance !== undefined &&
     (instance !== saved.instance ||
+      maxInstance !== saved.maxInstance ||
       idle !== String(saved.idleMinutes) ||
       patterns.join("\n") !== saved.ignore.join("\n") ||
       variablesText(typedVariables) !== variablesText(saved.variables) ||
@@ -780,6 +850,7 @@ const EditEnvironmentDialog = ({
   const invalid =
     nameProblem !== null ||
     idleProblem !== null ||
+    limitProblem !== null ||
     pathsProblem !== null ||
     variablesProblem !== null ||
     scriptsProblem !== null;
@@ -792,9 +863,10 @@ const EditEnvironmentDialog = ({
     save({
       name: renamed ? name.trim() : undefined,
       settings:
-        settingsChanged && instance !== undefined
+        settingsChanged && instance !== undefined && maxInstance !== undefined
           ? {
               instance,
+              maxInstance,
               idleMinutes: Number(idle),
               ignore: patterns,
               variables: typedVariables,
@@ -827,11 +899,13 @@ const EditEnvironmentDialog = ({
         />
         {nameProblem !== null && <p className="text-xs text-destructive">{nameProblem}</p>}
       </div>
-      {saved !== undefined && instance !== undefined ? (
+      {saved !== undefined && instance !== undefined && maxInstance !== undefined ? (
         <>
           <ContainerFields
             id={id}
             instance={instance}
+            maxInstance={maxInstance}
+            limitProblem={limitProblem}
             idle={idle ?? ""}
             idleProblem={idleProblem}
             paths={ignore ?? ""}
@@ -841,6 +915,9 @@ const EditEnvironmentDialog = ({
             }}
             onInstance={(picked) => {
               setDraft((current) => ({ ...current, instance: picked }));
+            }}
+            onMaxInstance={(picked) => {
+              setDraft((current) => ({ ...current, maxInstance: picked }));
             }}
             onIdle={(typed) => {
               setDraft((current) => ({ ...current, idle: typed }));

@@ -55,10 +55,19 @@ const todo = (args: Args): Option.Option<string> =>
     });
   });
 
-/** Why a `restart_container` call restarts the Container, and whether it starts afresh. */
+/** Why a `container_restart` call restarts the Container, and whether it starts afresh. */
 const restart = (args: Args): Option.Option<string> =>
   Option.map(firstLine(args, "reason"), (reason) =>
     args.fresh === true ? `${reason} (fresh)` : reason,
+  );
+
+/** Why a `container_resize` call restarts the Container at another size, and the size. */
+const resize = (args: Args): Option.Option<string> =>
+  Option.map(firstLine(args, "reason"), (reason) =>
+    Option.match(text(args, "size"), {
+      onNone: () => reason,
+      onSome: (size) => `${reason} (to ${size})`,
+    }),
   );
 
 /** `line`, after the agent a call names when it names one. */
@@ -72,7 +81,7 @@ const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string>
 
 /**
  * The one thing about a call worth showing beside its name: the path a file tool works on, what a search looks for,
- * the command a shell runs, why the Container is restarted, the task a subagent starts with, the instructions of a browser handoff, the message an agent sends, or the agent a call addresses. Nothing for a tool the page does not know, or arguments that do not have it.
+ * the command a shell runs, why the Container is restarted or resized, the task a subagent starts with, the instructions of a browser handoff, the message an agent sends, or the agent a call addresses. Nothing for a tool the page does not know, or arguments that do not have it.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const toolSummary = (toolName: string, args: Args): string | undefined => {
@@ -92,8 +101,12 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return firstLine(args, "command");
       case "browser_handoff":
         return firstLine(args, "instructions");
+      // A transcript keeps the calls made under the tool's former name.
+      case "container_restart":
       case "restart_container":
         return restart(args);
+      case "container_resize":
+        return resize(args);
       case "todo":
         return todo(args);
       case "subagent":

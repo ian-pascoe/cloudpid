@@ -157,7 +157,7 @@ _Avoid_: Cleanup (for the owner's action), reset
 ## Execution
 
 **Container restart**:
-Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from its Environment's Build and runs its Start Scripts again; the files and Sessions stay. The owner's, from the Environments page. The agent's (`restart_container`, for a Container that no longer answers) keeps the Snapshot unless asked for a fresh one, so the next Container starts from it.
+Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from its Environment's Build and runs its Start Scripts again; the files and Sessions stay. The owner's, from the Environments page. The agent's (`container_restart`, for a Container that no longer answers) keeps the Snapshot unless asked for a fresh one, so the next Container starts from it.
 _Avoid_: Reset (for the Container alone), reboot
 
 **Container resize**:

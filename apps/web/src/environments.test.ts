@@ -30,6 +30,7 @@ import {
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
+  sizeLimitLabel,
   optionalBranchProblem,
   parseVariables,
   repoNameProblem,
@@ -182,6 +183,15 @@ describe("instanceLabel", () => {
   it("marks exactly one of the offered sizes", () => {
     expect(INSTANCE_TYPES.filter((type) => instanceLabel(type).endsWith("(default)"))).toEqual([
       DEFAULT_CONTAINER_SETTINGS.instance,
+    ]);
+  });
+});
+
+describe("sizeLimitLabel", () => {
+  it("marks custom-2, the default size limit", () => {
+    expect(sizeLimitLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
+    expect(INSTANCE_TYPES.filter((type) => sizeLimitLabel(type).endsWith("(default)"))).toEqual([
+      "custom-2",
     ]);
   });
 });

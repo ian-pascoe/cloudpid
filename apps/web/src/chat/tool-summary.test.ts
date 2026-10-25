@@ -43,12 +43,17 @@ describe("toolSummary", () => {
     expect(toolSummary("browser_handoff", { instructions: "Log in\nthen press Done" })).toBe(
       "Log in",
     );
-    expect(toolSummary("restart_container", { reason: "echo hung\nfor minutes" })).toBe(
+    expect(toolSummary("container_restart", { reason: "echo hung\nfor minutes" })).toBe(
       "echo hung",
     );
-    expect(toolSummary("restart_container", { reason: "echo hung", fresh: true })).toBe(
+    expect(toolSummary("container_restart", { reason: "echo hung", fresh: true })).toBe(
       "echo hung (fresh)",
     );
+    expect(
+      toolSummary("container_resize", { size: "custom-2", reason: "tsc ran out\nof memory" }),
+    ).toBe("tsc ran out (to custom-2)");
+    // A call made before the rename, in a transcript.
+    expect(toolSummary("restart_container", { reason: "echo hung" })).toBe("echo hung");
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");

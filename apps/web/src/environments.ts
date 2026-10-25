@@ -142,9 +142,17 @@ export const repoNameProblem = (text: string): string | null => {
     : "Use letters, digits, dots, underscores and dashes, starting with a letter or digit";
 };
 
+/** `type`'s line in a list of sizes: its name and what it offers, marked when it is `byDefault`. */
+const sizeLine = (type: InstanceType, byDefault: InstanceType): string =>
+  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === byDefault ? " (default)" : ""}`;
+
 /** An instance type's line in the Edit dialog's size list: its name and what it offers, the default marked as such. */
 export const instanceLabel = (type: InstanceType): string =>
-  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_CONTAINER_SETTINGS.instance ? " (default)" : ""}`;
+  sizeLine(type, DEFAULT_CONTAINER_SETTINGS.instance);
+
+/** An instance type's line in the Edit dialog's size limit list, the default limit marked as such. */
+export const sizeLimitLabel = (type: InstanceType): string =>
+  sizeLine(type, DEFAULT_CONTAINER_SETTINGS.maxInstance);
 
 /** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
 export const idleMinutesProblem = (text: string): string | null => {
