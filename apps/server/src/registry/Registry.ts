@@ -9,6 +9,7 @@ import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/cor
 import type {
   AgentChange,
   EnvironmentBuildState,
+  EnvironmentRepo,
   EnvironmentSecretRecord,
   PushState,
   PushSubscription,
@@ -25,6 +26,15 @@ import {
   revertAgentChange,
   wantsNewBuild,
 } from "./agent-changes.ts";
+import {
+  addRepoAs,
+  createEnvironmentAs,
+  type EnvironmentCreation,
+  type LifecycleChange,
+  recordRebuildAs,
+  removeRepoAs,
+  renameEnvironmentAs,
+} from "./environment-lifecycle.ts";
 import {
   buildSecretsOf,
   keepSecret,
@@ -205,6 +215,39 @@ export type RegistryMethods = {
     readonly change: ContainerFieldChange;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<EnvironmentChangeAnswer>;
+  /**
+   * The agent makes an Environment (`docs/spec.md` → Agent changes): `name` as the owner's `createEnvironment` checks
+   * it, `repos` (their directories and addresses, parsed by the caller) added, the default Container settings, recorded
+   * as an Agent change. The caller runs the spares' and Builds' upkeep after.
+   */
+  readonly agentCreateEnvironment: (input: {
+    readonly name: string;
+    readonly repos: ReadonlyArray<EnvironmentRepo>;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<EnvironmentCreation>;
+  /** The agent renames an Environment, as `renameEnvironment` does, and it is recorded. */
+  readonly agentRenameEnvironment: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleChange>;
+  /** The agent adds a Repo to an Environment, as `addRepo` does, and it is recorded. The caller runs the upkeep after. */
+  readonly agentAddRepo: (input: {
+    readonly environment: string;
+    readonly repo: EnvironmentRepo;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleChange>;
+  /** The agent takes a Repo out of an Environment, as `removeRepo` does, and it is recorded. The caller runs the upkeep after. */
+  readonly agentRemoveRepo: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleChange>;
+  /** Record that the agent asked for a new Build of an Environment, once it is under way. */
+  readonly recordRebuild: (input: {
+    readonly environment: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleChange>;
   /** An Environment's Agent changes, newest first; null when it is not registered. */
   readonly listAgentChanges: (input: {
     readonly environment: string;
@@ -491,6 +534,51 @@ export const RegistryLive = Registry.make(
 
               return { ...changed, newBuild } satisfies EnvironmentChangeAnswer;
             }),
+          agentCreateEnvironment: ({ name, repos, author }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              let id = yield* newEnvironmentId;
+
+              while (store.getEnvironment(id) !== null) id = yield* newEnvironmentId;
+
+              return createEnvironmentAs(
+                state.raw.storage,
+                store,
+                changes,
+                { id, name, repos, author },
+                now,
+              );
+            }),
+          agentRenameEnvironment: ({ environment, name, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                renameEnvironmentAs(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, name, author },
+                  now,
+                ),
+              ),
+            ),
+          agentAddRepo: ({ environment, repo, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                addRepoAs(state.raw.storage, store, changes, { environment, repo, author }, now),
+              ),
+            ),
+          agentRemoveRepo: ({ environment, name, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                removeRepoAs(state.raw.storage, store, changes, { environment, name, author }, now),
+              ),
+            ),
+          recordRebuild: ({ environment, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                recordRebuildAs(state.raw.storage, store, changes, { environment, author }, now),
+              ),
+            ),
           listAgentChanges: ({ environment }) =>
             Effect.sync(() =>
               store.getEnvironment(environment) === null ? null : changes.list(environment),

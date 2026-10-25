@@ -26,10 +26,13 @@ import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
 import { createSession, visibleTickAtom } from "./sessions.ts";
 
-/** Every Environment, newest first, with its Repos. */
+/**
+ * Every Environment, newest first, with its Repos, asked again every few seconds while the page is visible: a Session's
+ * agent makes, renames and adds Repos to Environments, which the page hears of no other way.
+ */
 export const environmentsAtom = RegistryClient.query("listEnvironments", undefined, {
   reactivityKeys: ["environments"],
-});
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
 
 /** The Environments, newest first, as of the last answer; null until the first. */
 export const environmentListAtom = Atom.map(environmentsAtom, (result) =>

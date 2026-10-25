@@ -2,6 +2,7 @@ import { SettingsError } from "@cloudpid/config";
 import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
+  fieldRepo,
   MAX_ENVIRONMENT_SECRETS,
   NEW_WORKSPACE,
   parseRepoSource,
@@ -828,8 +829,16 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((revert) => {
             switch (revert.status) {
               case "reverted":
-                // As after the owner's save: the variables are among what a Build is made with.
-                return background(builds.of(environment)).pipe(Effect.as(revert.change));
+                // As after the owner's save: the variables are among what a Build is made with. A Repo put back or
+                // taken out also makes the spare stale, as the owner's \`addRepo\` and \`removeRepo\` do.
+                return (
+                  fieldRepo(revert.change.field) === null
+                    ? Effect.void
+                    : background(spares.of(environment))
+                ).pipe(
+                  Effect.andThen(background(builds.of(environment))),
+                  Effect.as(revert.change),
+                );
               case "changed-since":
                 return failed(
                   `${revert.field} has changed since: it is ${shownValue(revert.current)} now, so the change is not reverted`,

@@ -9,7 +9,13 @@ import {
   containerOverridesFrom,
   DEFAULT_CONTAINER_SETTINGS,
 } from "@cloudpid/config";
-import { type AgentChange, fieldVariable, MAX_AGENT_CHANGES } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  CREATED_FIELD,
+  fieldVariable,
+  MAX_AGENT_CHANGES,
+  unrevertableField,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -23,6 +29,7 @@ import {
 } from "./environment-settings.ts";
 import type { EnvironmentRepo } from "@cloudpid/protocol";
 import { buildKey, buildWanted } from "../workspace/build-record.ts";
+import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
 import type { EnvironmentRecord, RegistryStorage, RegistryStore } from "./store.ts";
 
 /** Who made an Agent change: the Session, the conversation in it that called the tool, the tool, and why. */
@@ -68,7 +75,8 @@ export type AgentChangeRevert =
       readonly status: "reverted";
       /** The owner's change that wrote the value back. */
       readonly change: AgentChange;
-      readonly state: EnvironmentSettingsState;
+      /** The Container settings in force after it; none for a change to the Environment's name or Repos. */
+      readonly state?: EnvironmentSettingsState;
     }
   /** The field has changed since: it is `current` now, and nothing was written. */
   | {
@@ -355,6 +363,24 @@ export const revertAgentChange = (
         status: "refused",
         message: `Change ${change.id} was reverted already, by change ${change.revertedBy}`,
       };
+    }
+
+    if (unrevertableField(change.field)) {
+      return {
+        status: "refused",
+        message:
+          change.field === CREATED_FIELD
+            ? "Making an environment is not reverted: deleting one needs your approval, so delete it from its card's menu"
+            : "A Build asked for is not reverted",
+      };
+    }
+
+    if (isLifecycleField(change.field)) {
+      const reverted = revertLifecycleChange(store, changes, known.record, change, now);
+
+      return reverted.status === "reverted"
+        ? { status: "reverted", change: reverted.change }
+        : reverted;
     }
 
     const value = fieldValue(known.settings, change.field);

@@ -8,11 +8,16 @@ import {
   type AgentChange,
   type BuildView,
   branchProblem,
+  BUILD_FIELD,
+  CREATED_FIELD,
   type EnvironmentSecretRecord,
+  fieldRepo,
   fieldVariable,
+  NAME_FIELD,
   MAX_ENVIRONMENT_NAME_LENGTH,
   MAX_REPO_NAME_LENGTH,
   parseRepoSource,
+  unrevertableField,
   REPO_NAME,
   secretNameProblem,
   secretValueProblem,
@@ -297,7 +302,22 @@ export const changeValueText = (value: AgentChange["before"]): string => {
 export const changeFieldText = (field: string): string => {
   const variable = fieldVariable(field);
 
-  return variable === null ? field : `Variable ${variable}`;
+  if (variable !== null) return `Variable ${variable}`;
+
+  const repo = fieldRepo(field);
+
+  if (repo !== null) return `Repo ${repo}`;
+
+  switch (field) {
+    case NAME_FIELD:
+      return "Name";
+    case CREATED_FIELD:
+      return "Environment";
+    case BUILD_FIELD:
+      return "Build";
+    default:
+      return field;
+  }
 };
 
 /**
@@ -316,9 +336,12 @@ export const changeByline = (change: AgentChange, now: number): string => {
   return `The agent, ${when}${change.tool === null ? "" : `, with ${change.tool}`}`;
 };
 
-/** Whether the owner can revert an Agent change: the agent's, not reverted yet. The Registry decides the rest. */
+/**
+ * Whether the owner can revert an Agent change: the agent's, not reverted yet, and not the making of an Environment or
+ * a Build asked for, which have no revert. The Registry decides the rest.
+ */
 export const revertible = (change: AgentChange): boolean =>
-  change.actor === "agent" && change.revertedBy === null;
+  change.actor === "agent" && change.revertedBy === null && !unrevertableField(change.field);
 
 /**
  * The key of the Secrets kept for every Environment among the page's Secrets sections, which an Environment's id is

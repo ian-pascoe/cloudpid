@@ -33,6 +33,7 @@ import {
   type RunChange,
   type SettingChange,
 } from "./environment.ts";
+import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { secretEnvName, secretReference } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
@@ -93,6 +94,7 @@ const fakeEnvironments = (current: string | null = "default") => {
   let next = 1;
 
   const service: EnvironmentsService = {
+    ...unusedLifecycle,
     current: Effect.succeed(current),
     list: Effect.sync(() => [...details.values()]),
     get: (id) => Effect.sync(() => details.get(id) ?? null),
