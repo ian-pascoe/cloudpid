@@ -269,7 +269,7 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
         : []),
       ...(newBuild
         ? [
-            "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes).",
+            "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes; environment_rebuild asks for another now, such as after it failed).",
           ]
         : []),
     ],
