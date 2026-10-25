@@ -40,6 +40,10 @@ const useNow = (ticking: boolean): number => {
   return now;
 };
 
+/** Whether `target` is a node inside one of `elements`. */
+const within = (target: EventTarget | null, ...elements: ReadonlyArray<HTMLElement | null>) =>
+  target instanceof Node && Arr.some(elements, (element) => element?.contains(target) === true);
+
 /** "10:42": a time of day. */
 const timeOfDay = (at: number): string =>
   new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -219,7 +223,8 @@ const ContextRing = ({ percent }: { percent: number }) => (
 /**
  * How full the active branch's Context Window is, as a ring, turning to a warning near the spend limit and to an error
  * at it (the limit holds the models' cost only). The breakdown of the context and the spend opens on hover, focus and a
- * tap, and closes when the pointer or the focus leaves.
+ * tap, and closes when the pointer or the focus leaves, on Escape, on a second tap of the badge, and on a tap or a scroll
+ * outside it. Touch needs its own handling: iOS Safari does not focus a tapped button, so no blur ever closes it there.
  */
 export const UsageBadge = () => {
   const usage = useAtomValue(usageAtom(useShownSessionId()));
@@ -231,6 +236,50 @@ export const UsageBadge = () => {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  // Whether the breakdown was open when a touch or a pen went down on the badge, so its tap toggles it; `null` for a
+  // mouse or a keyboard, whose click only opens it (hover and focus already did, so a toggle would close it at once).
+  const openAtTap = useRef<boolean | null>(null);
+
+  // While open: a tap outside closes it, as does a scroll (a swipe or a wheel) anywhere but the breakdown, which scrolls
+  // itself when long. A scroll that is not the user's (the page settling as a keyboard hides) only moves it along.
+  useEffect(() => {
+    if (!open) return;
+
+    const close = () => {
+      if (panel.current?.matches(":popover-open") === true) panel.current.hidePopover();
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (!within(event.target, trigger.current, panel.current)) close();
+    };
+
+    const onScrollGesture = (event: Event) => {
+      if (!within(event.target, panel.current)) close();
+    };
+
+    const follow = () => {
+      if (trigger.current !== null && panel.current !== null) {
+        placePopover(panel.current, trigger.current, "end");
+      }
+    };
+
+    const passive = { capture: true, passive: true } as const;
+
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("touchmove", onScrollGesture, passive);
+    document.addEventListener("wheel", onScrollGesture, passive);
+    window.addEventListener("scroll", follow, true);
+    window.addEventListener("resize", follow);
+
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("touchmove", onScrollGesture, passive);
+      document.removeEventListener("wheel", onScrollGesture, passive);
+      window.removeEventListener("scroll", follow, true);
+      window.removeEventListener("resize", follow);
+    };
+  }, [open]);
 
   if (usage === null) return null;
 
@@ -285,8 +334,22 @@ export const UsageBadge = () => {
         }}
         onFocus={show}
         onBlur={hide}
-        // A tap focuses the badge, which opens the breakdown; a tap elsewhere takes the focus and closes it.
-        onClick={show}
+        onPointerDown={(event) => {
+          openAtTap.current =
+            event.pointerType === "mouse" ? null : panel.current?.matches(":popover-open") === true;
+        }}
+        // A swipe that starts on the badge is a scroll, not a tap: no click follows.
+        onPointerCancel={() => {
+          openAtTap.current = null;
+        }}
+        onClick={() => {
+          const wasOpen = openAtTap.current;
+
+          openAtTap.current = null;
+
+          if (wasOpen === true) hide();
+          else show();
+        }}
         onKeyDown={(event) => {
           if (event.key === "Escape") hide();
         }}
@@ -306,6 +369,9 @@ export const UsageBadge = () => {
         id={id}
         popover="manual"
         role="tooltip"
+        onToggle={(event) => setOpen(event.newState === "open")}
+        // A tap inside leaves the focus on the badge, so its blur does not close the breakdown being read.
+        onMouseDown={(event) => event.preventDefault()}
         className="fixed m-0 max-h-[min(70vh,36rem)] w-80 max-w-[calc(100vw-8px)] overflow-y-auto rounded-lg border bg-background p-3 text-xs text-foreground shadow-sm"
       >
         <Breakdown usage={usage} container={container} />
