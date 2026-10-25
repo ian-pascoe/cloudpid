@@ -55,10 +55,14 @@ export type SettingsView = {
   readonly problem?: string | undefined;
 };
 
-/** One setting given a new value: a settings field (`model`, `roles.small.hint`, …); null takes an option away. */
+/**
+ * One setting given a new value: a settings field (`model`, `roles.small.hint`, …); null takes an option away. With
+ * `expected`, it is changed only while it has that value (null: not set), the one the owner saw when they approved it.
+ */
 export type SettingsFieldChange = {
   readonly field: string;
   readonly value: Schema.Json | null;
+  readonly expected?: { readonly value: Schema.Json | null } | undefined;
 };
 
 /** How an Agent change to the Settings went, as the Session reports it. */
@@ -73,7 +77,13 @@ export type AppliedSettingsChange =
   /** Every field already had its value: nothing was saved or recorded. */
   | { readonly status: "unchanged" }
   /** Not values the settings take, said as the owner's save says it: nothing was saved. */
-  | { readonly status: "rejected"; readonly message: string };
+  | { readonly status: "rejected"; readonly message: string }
+  /** A field no longer has the value it was approved against: it is `current`, and nothing was saved. */
+  | {
+      readonly status: "changed-since";
+      readonly field: string;
+      readonly current: Schema.Json | null;
+    };
 
 /** Reaching the Settings failed; its message is what the model sees. */
 export class SettingsAccessError extends Schema.TaggedError<
@@ -317,6 +327,11 @@ export const SettingsTools: Effect.Effect<
         case "rejected":
           return yield* SettingsAccessError.make({
             message: `Nothing was saved: ${answer.message}`,
+          });
+        // Only a change made against an expected value, which these tools never give.
+        case "changed-since":
+          return yield* SettingsAccessError.make({
+            message: `Nothing was saved: ${answer.field} changed meanwhile, to ${shown(answer.current)}`,
           });
         case "unchanged":
           return {

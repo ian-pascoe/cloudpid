@@ -43,6 +43,23 @@ describe("describeEvent", () => {
     });
   });
 
+  it("names the change an Approval request waits on", () => {
+    expect(
+      describeEvent(
+        {
+          kind: "input",
+          names: [],
+          approval: "Spend limit per Session: $5 → $10",
+          reason: "the refactor needs more requests",
+        },
+        session,
+      ),
+    ).toMatchObject({
+      body: "Approval needed: Spend limit per Session: $5 → $10 (the refactor needs more requests)",
+      tag: "0190f3a0-1111-7000-8000-000000000001:input",
+    });
+  });
+
   it("carries a notice a caller words, to the page it names", () => {
     expect(
       describeEvent(

@@ -1,5 +1,7 @@
 import type { Harness } from "@cloudpid/effect-durable";
 import { AgentsMd } from "@cloudpid/extensions/agents-md";
+import { ApprovalTools, type EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import type { Approvals } from "@cloudpid/extensions/approvals";
 import {
   Browser,
   type BrowserHost,
@@ -55,7 +57,10 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * a Secret (`Secrets`) or the GitHub token (`DeployCredentials`), and keep each change for the Run's Notification
  * (`AgentChangeLog`), the root conversation's only (`docs/spec.md` → Agent changes); the `settings_*` tools, which read
  * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
- * after a change (`SettingsReload`); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
+ * after a change (`SettingsReload`); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
+ * `settings_subagent_depth_set`, `environment_container_size_limit_set`, `environment_delete`,
+ * `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
+ * (`docs/spec.md` → Approval); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
@@ -80,6 +85,8 @@ export const sessionExtensions: Effect.Effect<
   | AgentChangeLog
   | SettingsAccess
   | SettingsReload
+  | Approvals
+  | EnvironmentRemoval
 > = Effect.all([
   CodingTools,
   Files,
@@ -95,6 +102,7 @@ export const sessionExtensions: Effect.Effect<
   ContainerTools,
   EnvironmentTools,
   SettingsTools,
+  ApprovalTools,
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),
 ]).pipe(

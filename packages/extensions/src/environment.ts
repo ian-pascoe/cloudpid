@@ -91,6 +91,8 @@ export type ChangeAuthor = {
   readonly conversation: number;
   readonly tool: string;
   readonly reason: string;
+  /** Set when the owner approved the change before it was made (`./approvals.ts`). */
+  readonly approved?: true | undefined;
 };
 
 /** The Environment a change was made to, by id and name. */
@@ -114,6 +116,8 @@ export type AppliedChange =
     }
   /** Not a value the setting takes, said as the owner's save says it: nothing was saved. */
   | { readonly status: "rejected"; readonly message: string }
+  /** The setting no longer has the value the change was approved against: it is `current`, and nothing was saved. */
+  | { readonly status: "changed-since"; readonly current: Schema.Json | null }
   | { readonly status: "missing" };
 
 /** Reaching the Environments failed; its message is what the model sees. */
@@ -140,6 +144,8 @@ export type EnvironmentsService = {
   readonly change: (input: {
     readonly environment: string;
     readonly change: SettingChange;
+    /** The value the setting must still have: the one the owner saw when they approved the change. */
+    readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<AppliedChange, EnvironmentsError>;
 } & EnvironmentLifecycle &
@@ -467,6 +473,11 @@ export const EnvironmentTools: Effect.Effect<
         case "rejected":
           return yield* EnvironmentsError.make({
             message: `Nothing was saved: ${applied.message}`,
+          });
+        // Only a change made against an expected value, which these tools never give.
+        case "changed-since":
+          return yield* EnvironmentsError.make({
+            message: `Nothing was saved: ${field} changed meanwhile, to ${shownValue(applied.current)}`,
           });
         case "unchanged": {
           const where = namedEnvironment(applied.environment);

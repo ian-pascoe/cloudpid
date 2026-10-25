@@ -25,6 +25,8 @@ import {
   Environments,
   EnvironmentTools,
 } from "@cloudpid/extensions/environment";
+import { ApprovalTools, EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import { Approvals } from "@cloudpid/extensions/approvals";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/extensions/settings";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
@@ -79,6 +81,7 @@ import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
+import { sessionApprovalsLayer } from "./approvals.ts";
 import {
   reloadSessionExtensions,
   SessionSettings,
@@ -267,13 +270,21 @@ export class TestSession extends DurableObject {
   /**
    * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
    * tools, the browser tools over a test browser host, and `todo`; for a Session whose name starts with
-   * `environment-`, the `environment_*` tools over `testEnvironments`; and, for one whose name starts with
-   * `tool-search-`, `tool_search` over the Registry's offered tools, which is installed again when they change.
+   * `environment-`, the `environment_*` tools over `testEnvironments`; for one whose name starts with `settings-`,
+   * the `settings_*` tools and those that wait for Approval over the test Registry's Settings; and, for one whose name
+   * starts with `tool-search-`, `tool_search` over the Registry's offered tools, which is installed again when they
+   * change.
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | SessionSettings | AgentChangeLog | SettingsReload
+    | Harness
+    | Secrets
+    | BrowserHandoffs
+    | SessionSettings
+    | AgentChangeLog
+    | SettingsReload
+    | Approvals
   > {
     const { kv } = this.ctx.storage;
     const searching = this.#searching();
@@ -308,6 +319,20 @@ export class TestSession extends DurableObject {
                 SettingsAccess,
                 sessionSettingsAccess({ registry: settingsRegistry, session }),
               ),
+              Effect.provideService(DeployCredentials, { values: [] }),
+            ),
+            yield* ApprovalTools.pipe(
+              Effect.provideService(
+                SettingsAccess,
+                sessionSettingsAccess({ registry: settingsRegistry, session }),
+              ),
+              Effect.provideService(Environments, testEnvironments(kv)),
+              Effect.provideService(EnvironmentRemoval, {
+                footprint: () => Effect.die("No Environment is deleted here"),
+                deleteEnvironment: () => Effect.die("No Environment is deleted here"),
+                keptSecrets: () => Effect.die("No Secret is deleted here"),
+                deleteSecret: () => Effect.die("No Secret is deleted here"),
+              }),
               Effect.provideService(DeployCredentials, { values: [] }),
             ),
           ]
@@ -398,8 +423,13 @@ export class TestSession extends DurableObject {
                 ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
               onIdle: Effect.flatMap(
-                Effect.all([Effect.service(Secrets), Effect.service(BrowserHandoffs)]),
-                ([held, handoffs]) => Effect.all([held.dropAbandoned, handoffs.dropAbandoned]),
+                Effect.all([
+                  Effect.service(Secrets),
+                  Effect.service(BrowserHandoffs),
+                  Effect.service(Approvals),
+                ]),
+                ([held, handoffs, approvals]) =>
+                  Effect.all([held.dropAbandoned, handoffs.dropAbandoned, approvals.dropAbandoned]),
               ),
             }).pipe(
               Layer.provide(
@@ -459,6 +489,13 @@ export class TestSession extends DurableObject {
                 ),
               ),
             ),
+          ),
+          Layer.provideMerge(
+            sessionApprovalsLayer({
+              storage: ctx.storage.kv,
+              sockets: ctx,
+              notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
+            }),
           ),
           Layer.provideMerge(
             sessionSecretsLayer({

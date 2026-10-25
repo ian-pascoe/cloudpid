@@ -2,6 +2,7 @@
 // stops the instance's script where a test needs it, and a call after that returns.
 // @effect-diagnostics asyncFunction:off
 import { defineEffectTool, type Harness } from "@cloudpid/effect-durable";
+import type { Approvals } from "@cloudpid/extensions/approvals";
 import type { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import type { AgentChangeLog } from "@cloudpid/extensions/environment";
 import type { Secrets } from "@cloudpid/extensions/secrets";
@@ -20,7 +21,7 @@ export class TestCodemodeSession extends TestWorkspaceSession {
   protected override hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | AgentChangeLog | SettingsReload
+    Harness | Secrets | BrowserHandoffs | AgentChangeLog | SettingsReload | Approvals
   > {
     const { kv } = this.ctx.storage;
 

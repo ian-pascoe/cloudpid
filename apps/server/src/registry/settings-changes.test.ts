@@ -359,3 +359,47 @@ describe("the owner's revert of a Settings change", () => {
     expect(registry.revert(1)).toEqual({ status: "missing" });
   });
 });
+
+describe("a change to a Limit the owner approved", () => {
+  const approved: AgentChangeAuthor = {
+    session: "s-1",
+    conversation: 1,
+    tool: "settings_spend_limit_set",
+    reason: "The refactor needs more requests",
+    approved: true,
+  };
+
+  const raise = (registry: ReturnType<typeof inRegistry>, expected: SettingsFieldChange["value"]) =>
+    changeSettings(
+      { transactionSync: (body) => body() },
+      registry.store,
+      registry.changes,
+      {
+        changes: [{ field: "spendLimit.perSession", value: 10, expected: { value: expected } }],
+        author: approved,
+      },
+      1_000,
+    );
+
+  it("is made while the setting has the value the owner saw, and recorded as approved", () => {
+    const registry = inRegistry({ [SETTINGS_DOCUMENT]: '{"spendLimit":{"perSession":5}}' });
+
+    expect(raise(registry, 5)).toMatchObject({
+      status: "changed",
+      changes: [{ field: "spendLimit.perSession", before: 5, after: 10, approved: true }],
+    });
+    expect(registry.saved().settings.spendLimit.perSession).toBe(10);
+  });
+
+  it("is not made when the owner changed the setting since they were asked", () => {
+    const registry = inRegistry({ [SETTINGS_DOCUMENT]: '{"spendLimit":{"perSession":7}}' });
+
+    expect(raise(registry, 5)).toEqual({
+      status: "changed-since",
+      field: "spendLimit.perSession",
+      current: 7,
+    });
+    expect(registry.saved().settings.spendLimit.perSession).toBe(7);
+    expect(registry.changes.list(SETTINGS_SCOPE)).toEqual([]);
+  });
+});

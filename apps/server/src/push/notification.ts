@@ -37,6 +37,10 @@ const body = (event: PushEvent): string => {
         ? "Run failed"
         : `Run failed: ${event.reason}`;
     case "input": {
+      if (event.approval !== undefined) {
+        return `Approval needed: ${event.approval}${event.reason === undefined ? "" : ` (${event.reason})`}`;
+      }
+
       const asked = event.names.length === 0 ? "" : `: ${event.names.join(", ")}`;
 
       return `Needs input${asked}${event.reason === undefined ? "" : ` (${event.reason})`}`;

@@ -24,6 +24,7 @@ import {
   Secrets,
   type SecretsError,
 } from "@cloudpid/extensions/secrets";
+import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/extensions/approvals";
 import {
   type BrowserError,
   type BrowserHandoffRequest,
@@ -142,6 +143,25 @@ export const browserHandoffRequests = (
   })),
 });
 
+/**
+ * The `approval_requests` message for `requests`, which every client is sent: each request as the card shows it, without
+ * the value the call checks once approved.
+ */
+export const approvalRequests = (requests: ReadonlyArray<ApprovalAsk>): ServerMessage => ({
+  type: "approval_requests",
+  requests: Arr.map(requests, (request) => ({
+    id: request.id,
+    // SAFETY: a request's conversation is the asking call's, a pi-durable conversation ID.
+    conversationId: request.conversationId as ConversationId,
+    tool: request.tool,
+    target: request.target,
+    change: request.change,
+    before: request.before,
+    after: request.after,
+    reason: request.reason,
+  })),
+});
+
 /** The agent change a `configure` asks for: a field it leaves out is left out, as is. */
 const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): AgentChange => {
   const change: Types.Mutable<AgentChange> = {};
@@ -202,13 +222,14 @@ type WatchKey = ConversationId | typeof TASK_GRAPH | typeof USAGE;
  */
 export const sessionSocketsLayer = (
   state: SocketState,
-): Layer.Layer<SessionSockets, never, SessionHost | Secrets | BrowserHandoffs> =>
+): Layer.Layer<SessionSockets, never, SessionHost | Secrets | BrowserHandoffs | Approvals> =>
   Layer.effect(
     SessionSockets,
     Effect.gen(function* () {
       const host = yield* SessionHost;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
+      const approvals = yield* Approvals;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
       const watching = new Map<WebSocket, FiberMap.FiberMap<WatchKey>>();
@@ -384,7 +405,7 @@ export const sessionSocketsLayer = (
         | Navigated
         | LiveViewLinks
         | null,
-        SessionError | SecretsError | BrowserError
+        SessionError | SecretsError | BrowserError | ApprovalsError
       > => {
         switch (message.type) {
           case "tree":
@@ -459,6 +480,13 @@ export const sessionSocketsLayer = (
           case "secret_answer":
             return secrets
               .answer(message.request, message.values, message.keep)
+              .pipe(Effect.as(null));
+          case "approval_answer":
+            return approvals
+              .answer(message.request, {
+                approve: message.approve,
+                reason: message.reason,
+              })
               .pipe(Effect.as(null));
         }
       };
@@ -556,6 +584,9 @@ export const sessionSocketsLayer = (
         // So are Browser Handoffs, which wait for the owner for up to 30 minutes. Sent when none waits too, so a client
         // can tell "none waits" (a Live View Pane whose handoff is gone closes) from "not heard yet".
         yield* send(server, browserHandoffRequests(yield* handoffs.pending));
+
+        // Approval requests wait with no deadline; sent when none waits too, so a client clears the cards it held.
+        yield* send(server, approvalRequests(yield* approvals.pending));
 
         return client;
       });
