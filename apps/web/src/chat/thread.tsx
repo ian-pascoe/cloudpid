@@ -399,7 +399,11 @@ export const Thread = ({
           {notice}
         </p>
       )}
-      <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto">
+      {/* `relative` makes the scroller the containing block of what is absolutely placed in the messages (the bars'
+          `sr-only` statuses): without it they are placed against the document at their spot in the long thread, which
+          makes the document itself scrollable under the app, and focus going back to a bar's button when a dialog
+          closes then scrolls the whole app up, leaving a blank strip below. */}
+      <ThreadPrimitive.Viewport className="relative min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
           <ThreadPrimitive.Empty>
             <p className="py-16 text-center text-muted-foreground">

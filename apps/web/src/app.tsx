@@ -106,7 +106,12 @@ export const App = () => {
   const listOnly = page.kind === "empty";
 
   return (
-    <div className="flex h-dvh">
+    // The document never scrolls: each page scrolls inside itself. An element absolutely placed without a positioned
+    // scroller around it (an `sr-only` label, say) would otherwise be placed against the document and make it scrollable
+    // under the app, and focus or a scroll past a modal's end would then move the whole app up, leaving a blank strip
+    // below. `relative` makes the shell their containing block, and `overflow-clip` (unlike `hidden`, not scrollable
+    // even by focus) keeps them from growing the document.
+    <div className="relative flex h-dvh overflow-clip">
       {/* On a narrow screen the list and the chat take turns. */}
       <Sidebar
         activeId={page.kind === "session" ? page.sessionId : undefined}
