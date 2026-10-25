@@ -37,12 +37,14 @@ import {
   useAtomValue,
 } from "@effect/atom-react";
 import type { FormEvent } from "react";
+import { ChangeDiff } from "./change-diff.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { cn } from "./lib/utils.ts";
+import { changeDiff } from "./line-diff.ts";
 import { navigate } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
 import { failureOf, settledFailureOf } from "./registry.ts";
@@ -1156,46 +1158,55 @@ const AgentChangeRow = ({
   session: SessionRecord | undefined;
   reverting: boolean;
   onRevert: () => void;
-}) => (
-  <li className="flex flex-col gap-1.5 rounded-md border p-2">
-    <div className="flex items-start justify-between gap-2">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="font-mono text-sm break-all">{changeFieldText(change.field)}</span>
-        <span className="text-xs text-muted-foreground">
-          {/* A change's time is read against the wall clock as the card renders. */}
-          {/* @effect-diagnostics-next-line globalDate:off */}
-          {changeByline(change, Date.now())}
-          {change.actor === "agent" && change.session !== null && session === undefined
-            ? ", in a session that is gone"
-            : null}
-        </span>
-        {session !== undefined && (
-          <SessionLink session={session} active={false} className="-ml-2 text-xs" />
-        )}
+}) => {
+  // A script or the Toolchains is long: it shows as the lines that changed.
+  const diff = changeDiff(change.field, change.before, change.after);
+
+  return (
+    <li className="flex flex-col gap-1.5 rounded-md border p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="font-mono text-sm break-all">{changeFieldText(change.field)}</span>
+          <span className="text-xs text-muted-foreground">
+            {/* A change's time is read against the wall clock as the card renders. */}
+            {/* @effect-diagnostics-next-line globalDate:off */}
+            {changeByline(change, Date.now())}
+            {change.actor === "agent" && change.session !== null && session === undefined
+              ? ", in a session that is gone"
+              : null}
+          </span>
+          {session !== undefined && (
+            <SessionLink session={session} active={false} className="-ml-2 text-xs" />
+          )}
+        </div>
+        {revertible(change) ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={reverting}
+            aria-label={`Revert change ${change.id}: ${changeFieldText(change.field)}`}
+            onClick={onRevert}
+          >
+            <Undo2 aria-hidden />
+            Revert
+          </Button>
+        ) : change.revertedBy !== null ? (
+          <span className="shrink-0 text-xs text-muted-foreground">Reverted</span>
+        ) : null}
       </div>
-      {revertible(change) ? (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={reverting}
-          aria-label={`Revert change ${change.id}: ${changeFieldText(change.field)}`}
-          onClick={onRevert}
-        >
-          <Undo2 aria-hidden />
-          Revert
-        </Button>
-      ) : change.revertedBy !== null ? (
-        <span className="shrink-0 text-xs text-muted-foreground">Reverted</span>
-      ) : null}
-    </div>
-    {change.reason !== "" && <p className="text-sm break-words">{change.reason}</p>}
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-      <ChangeValue label="Before" value={change.before} />
-      <ChangeValue label="After" value={change.after} />
-    </div>
-  </li>
-);
+      {change.reason !== "" && <p className="text-sm break-words">{change.reason}</p>}
+      {diff === undefined ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <ChangeValue label="Before" value={change.before} />
+          <ChangeValue label="After" value={change.after} />
+        </div>
+      ) : (
+        <ChangeDiff rows={diff} />
+      )}
+    </li>
+  );
+};
 
 /**
  * Environment `id`'s Agent changes, newest first (`docs/spec.md` → Agent changes), each with the Session that made it

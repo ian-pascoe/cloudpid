@@ -276,9 +276,21 @@ export const buildLine = (build: BuildView, now: number): string => {
   }
 };
 
-/** A value an Agent change shows: a variable's as written, in full, another setting's as JSON, and none as not set. */
-export const changeValueText = (value: AgentChange["before"]): string =>
-  value === null ? "not set" : Predicate.isString(value) ? value : JSON.stringify(value);
+/**
+ * A value an Agent change shows, in full: a variable's, a script's or the Toolchains' as written, a list of paths a line
+ * each, another setting's as JSON, and none as not set (an empty text as empty, an empty list as none).
+ */
+export const changeValueText = (value: AgentChange["before"]): string => {
+  if (value === null) return "not set";
+
+  if (Predicate.isString(value)) return value === "" ? "empty" : value;
+
+  if (Array.isArray(value) && value.every(Predicate.isString)) {
+    return value.length === 0 ? "none" : value.join("\n");
+  }
+
+  return JSON.stringify(value);
+};
 
 /** The setting an Agent change's field names, as the page says it: `variables.API_URL` is the variable API_URL. */
 export const changeFieldText = (field: string): string => {

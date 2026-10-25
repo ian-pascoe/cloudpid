@@ -5,6 +5,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT, MAX_AGENT_CHANGES, variableField } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
+import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   type AgentChangeAuthor,
@@ -280,5 +281,110 @@ describe("the owner's revert of an Agent change", () => {
       message: "Change 1 was reverted already, by change 2",
     });
     expect(listed.map(({ id }) => id)).toEqual([3, 2, 1]);
+  });
+});
+
+describe("an Agent change to each of the other Container settings", () => {
+  const SCRIPT = "set -eu\napt-get install -y jq\n";
+
+  const cases: ReadonlyArray<{
+    readonly field: string;
+    readonly before: Schema.Json;
+    readonly after: Schema.Json;
+    readonly saved: Schema.Json;
+  }> = [
+    { field: "instance", before: "custom-1", after: "custom-2", saved: { instance: "custom-2" } },
+    { field: "idleMinutes", before: 2, after: 30, saved: { idleMinutes: 30 } },
+    { field: "setupScript", before: "", after: SCRIPT, saved: { setupScript: SCRIPT } },
+    { field: "startScript", before: "", after: SCRIPT, saved: { startScript: SCRIPT } },
+    {
+      field: "toolchains",
+      before: "",
+      after: '[tools]\nnode = "22"\n',
+      saved: { toolchains: '[tools]\nnode = "22"\n' },
+    },
+    {
+      field: "ignore",
+      before: [],
+      after: ["/data", "**/.big"],
+      saved: { ignore: ["/data", "**/.big"] },
+    },
+  ];
+
+  it.each(cases)("saves, records and reverts $field", async ({ field, before, after, saved }) => {
+    const [changed, stored, reverted, restored, listed] = await inRegistry(
+      ({ change, revert, store, changes }) => {
+        const first = change({ field, value: after });
+        const afterChange = store.getEnvironmentSettings(DEFAULT_ENVIRONMENT);
+        const second = revert(1);
+
+        return [
+          first,
+          afterChange,
+          second,
+          store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+          changes.list(DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(changed).toMatchObject({ status: "changed", change: { field, before, after } });
+    expect(stored).toEqual(saved);
+    expect(reverted).toMatchObject({
+      status: "reverted",
+      change: { field, before: after, after: before },
+    });
+    // Back at the defaults, nothing of the field is kept.
+    expect(restored).toEqual({});
+    expect(listed.map(({ actor }) => actor)).toEqual(["owner", "agent"]);
+  });
+
+  it("refuses a size above the size limit, naming both, and saves and records nothing", async () => {
+    const [outcome, listed] = await inRegistry(({ change, changes }) => [
+      change({ field: "instance", value: "standard-3" }),
+      changes.list(DEFAULT_ENVIRONMENT),
+    ]);
+
+    expect(outcome).toEqual({
+      status: "rejected",
+      message: expect.stringContaining("size limit custom-2"),
+    });
+    expect(listed).toEqual([]);
+  });
+
+  it("takes a size up to a raised size limit", async () => {
+    const outcome = await inRegistry(({ change, store }) => {
+      store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, { maxInstance: "standard-4" });
+
+      return change({ field: "instance", value: "standard-3" });
+    });
+
+    expect(outcome).toMatchObject({ status: "changed" });
+  });
+
+  it.each([
+    { field: "idleMinutes", value: 0 },
+    { field: "idleMinutes", value: 1441 },
+    { field: "setupScript", value: "x".repeat(64 * 1024 + 1) },
+    { field: "startScript", value: "a\u0000b" },
+    { field: "toolchains", value: "x".repeat(16 * 1024 + 1) },
+    { field: "ignore", value: ["data"] },
+    { field: "ignore", value: Array.from({ length: 51 }, (_, index) => `/d${index}`) },
+  ])("refuses $field of $value as the owner's save does, and records nothing", async (invalid) => {
+    const [outcome, listed, stored] = await inRegistry(({ change, changes, store }) => [
+      change(invalid),
+      changes.list(DEFAULT_ENVIRONMENT),
+      store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+    ]);
+
+    expect(outcome).toMatchObject({ status: "rejected" });
+    expect(listed).toEqual([]);
+    expect(stored).toEqual({});
+  });
+
+  it("records nothing for the value a setting has", async () => {
+    const outcome = await inRegistry(({ change }) => change({ field: "idleMinutes", value: 2 }));
+
+    expect(outcome).toMatchObject({ status: "unchanged", value: 2 });
   });
 });
