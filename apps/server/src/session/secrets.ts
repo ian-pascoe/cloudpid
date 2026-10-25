@@ -3,6 +3,8 @@
 // sent to every client over the Session socket; and the Secrets kept for its Environment, which the Registry opens and
 // hands over Durable Object RPC, held in memory only.
 import {
+  type KeepRequest,
+  type KeepResult,
   type KeptSecret,
   openVault,
   type Secrets,
@@ -44,6 +46,11 @@ export type SessionSecretsOptions = {
   readonly notify?: (event: PushEvent) => Effect.Effect<void>;
   /** The Secrets kept for the Session's Environment, from the Registry (`sessionSecrets`). Leave it out for none. */
   readonly kept?: Effect.Effect<ReadonlyArray<KeptSecret>, unknown>;
+  /**
+   * Keeps the Secrets the owner chooses to keep in an answer, in the Registry (`keepAskedSecrets`). Leave it out, or
+   * `kept`, and a Secret is held for the Session only whatever the owner chose.
+   */
+  readonly keep?: (request: KeepRequest) => Effect.Effect<ReadonlyArray<KeepResult>>;
 };
 
 /** The Session's `Secrets`; build it once per instance, as it opens every Secret still held. */
@@ -64,6 +71,7 @@ export const sessionSecretsLayer = (
             ? Effect.void
             : options.notify({ kind: "input", names: ask.names, reason: ask.reason }),
         kept: options.kept,
+        keep: options.keep,
       }),
     ),
   );

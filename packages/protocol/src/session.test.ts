@@ -88,6 +88,21 @@ describe("the Session socket messages", () => {
     expect(await readServer(text)).toEqual(JSON.parse(text));
   });
 
+  it("carry where the agent suggests keeping a request's Secrets", async () => {
+    const text = JSON.stringify({
+      type: "secret_requests",
+      lifetimeMinutes: 15,
+      requests: [{ id: "12", conversationId: 1, names: ["API_KEY"], keep: "environment" }],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+    await expect(
+      readServer(
+        '{"type":"secret_requests","lifetimeMinutes":15,"requests":[{"id":"12","conversationId":1,"names":["A"],"keep":"forever"}]}',
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it("carry the Browser Handoffs waiting for the owner, without a Live View link", async () => {
     const text = JSON.stringify({
       type: "browser_handoff_requests",
@@ -131,6 +146,27 @@ describe("the Session socket messages", () => {
       Option.some({ type: "secret_answer", request: "12", values: null }),
     );
     expect(await readClient('{"type":"secret_answer","request":"12"}')).toEqual(Option.none());
+  });
+
+  it("read where the owner chose to keep the values an answer gives", async () => {
+    for (const keep of ["session", "environment", "all"]) {
+      expect(
+        await readClient(
+          `{"type":"secret_answer","request":"12","values":{"API_KEY":"v"},"keep":"${keep}"}`,
+        ),
+      ).toEqual(
+        Option.some({
+          type: "secret_answer",
+          request: "12",
+          values: { API_KEY: "v" },
+          keep,
+        }),
+      );
+    }
+
+    expect(
+      await readClient('{"type":"secret_answer","request":"12","values":null,"keep":"forever"}'),
+    ).toEqual(Option.none());
   });
 
   it("reject a configure for a model the proxy does not serve or a thinking level pi does not have", async () => {

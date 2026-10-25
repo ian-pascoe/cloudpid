@@ -582,9 +582,11 @@ const fakeRegistries = () => {
     agentAddRepo: () => Effect.die("The endpoint makes no Agent change"),
     agentRemoveRepo: () => Effect.die("The endpoint makes no Agent change"),
     recordRebuild: () => Effect.die("The endpoint makes no Agent change"),
+    agentMarkSecretBuild: () => Effect.die("The endpoint makes no Agent change"),
+    keepAskedSecrets: () => Effect.die("The endpoint keeps no Secret for an ask"),
     listAgentChanges: ({ environment }) =>
       Effect.sync(() =>
-        Arr.some(environments, (item) => item.id === environment)
+        environment === "*" || Arr.some(environments, (item) => item.id === environment)
           ? Arr.filter(agentChanges, (change) => change.scope === environment).toReversed()
           : null,
       ),

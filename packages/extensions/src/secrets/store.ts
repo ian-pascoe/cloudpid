@@ -9,6 +9,12 @@
 // The Secrets kept for the Session's Environment (or for every Environment) are held beside them, in memory only: they
 // are asked for (`SecretsOptions.kept`) when first needed and again once `KEPT_REFRESH_MS` has passed, so a change on
 // the Environments page applies soon. An asked Secret of the same name wins, and a kept one cannot be forgotten here.
+//
+// The owner may also choose, in the form, to keep what they enter for the Session's Environment or for every
+// Environment (`SecretsOptions.keep`, which saves through the Registry as the Environments page's form does). A Secret
+// so kept is not entered for 15 minutes: it is a kept one, which the next ask of the Registry brings back, and it is
+// redacted from the moment it is answered. The answer stored for a rerun holds the scope, never a value.
+import { SecretKeep } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -42,14 +48,43 @@ export const SecretAsk = Schema.Struct({
   names: Schema.Array(Schema.String),
   /** Why the agent needs them, shown to the owner. */
   reason: Schema.optionalKey(Schema.String),
+  /** Where the agent suggests keeping them: the form starts with that choice, and the owner's choice is final. */
+  keep: Schema.optionalKey(SecretKeep),
 });
 
 export type SecretAsk = typeof SecretAsk.Type;
 
 /** What became of one name an ask requested. */
 export type AskOutcome =
-  | { readonly name: string; readonly status: "provided"; readonly expiresAt: number }
+  | {
+      readonly name: string;
+      readonly status: "provided";
+      readonly expiresAt: number;
+      /** Why the Secret was held for the Session only although the owner chose to keep it. */
+      readonly notKept?: string;
+    }
+  /** Kept as the owner chose: it does not expire. */
+  | {
+      readonly name: string;
+      readonly status: "kept";
+      readonly scope: KeptScope;
+      /** Set when the Environment keeps its own Secret of the name, which wins over one kept for every Environment. */
+      readonly shadowed?: true;
+    }
   | { readonly name: string; readonly status: "skipped" | "cancelled" };
+
+/** The Secrets the owner chose to keep in an answer: what the Session hands to the Registry to keep. */
+export type KeepRequest = {
+  readonly ask: SecretAsk;
+  readonly scope: KeptScope;
+  /** Only the names the owner gave a value for. */
+  readonly secrets: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+};
+
+/** How keeping one Secret went: kept, or why not (a message that never holds the value). */
+export type KeepResult =
+  | { readonly name: string; readonly kept: true; readonly shadowed?: boolean }
+  | { readonly name: string; readonly kept: false; readonly problem: string };
 
 /** A Secret this Session holds, without its value: one the owner entered, until it expires, or one kept for it. */
 export type HeldSecret =
@@ -108,6 +143,7 @@ export type SecretsService = {
   readonly answer: (
     id: string,
     values: Readonly<Record<string, string>> | null,
+    keep?: SecretKeep,
   ) => Effect.Effect<void, SecretsError>;
   /** `value` with every value held in this instance replaced by its Secret Reference. */
   readonly redact: <A>(value: A) => A;
@@ -154,6 +190,18 @@ const messageDigest = <M>(message: M): Effect.Effect<string, SecretsError> =>
     catch: (cause) => SecretsError.make({ message: `Cannot digest a message: ${String(cause)}` }),
   }).pipe(Effect.map((digest) => btoa(String.fromCharCode(...new Uint8Array(digest)))));
 
+/** The scope the owner's choice keeps in; none for the Session only. */
+const keptScopeOf = (choice: SecretKeep | undefined): KeptScope | undefined => {
+  switch (choice) {
+    case "environment":
+      return "environment";
+    case "all":
+      return "every";
+    default:
+      return undefined;
+  }
+};
+
 type Sealed = Readonly<Record<string, SealedSecret>>;
 
 type Answers = Readonly<Record<string, ReadonlyArray<AskOutcome>>>;
@@ -174,6 +222,12 @@ export type SecretsOptions = {
    * `KEPT_RETRY_MS`. Without it, none are held.
    */
   readonly kept?: Effect.Effect<ReadonlyArray<KeptSecret>, unknown> | undefined;
+  /**
+   * Keep Secrets the owner chose to keep in an answer, for the Session's Environment or for every Environment, and say
+   * of each how it went. It runs once the values are sealed, before anything is stored, and must not fail. Needs
+   * `kept`: without either, the Secrets are held for the Session only, and the answer says so.
+   */
+  readonly keep?: ((request: KeepRequest) => Effect.Effect<ReadonlyArray<KeepResult>>) | undefined;
 };
 
 const fromVault = Effect.mapError((error: SecretVaultError) =>
@@ -187,6 +241,7 @@ const makeSecrets = ({
   announce,
   asked,
   kept,
+  keep,
 }: SecretsOptions): Effect.Effect<SecretsService, SecretsError> =>
   Effect.gen(function* () {
     const redactions = new Redactions();
@@ -338,7 +393,37 @@ const makeSecrets = ({
         return outcomes;
       });
 
-    const answer = (id: string, given: Readonly<Record<string, string>> | null) =>
+    /** Keep what the owner chose to keep, and say of each name how it went; a hook that fails keeps nothing. */
+    const keepChosen = (request: SecretAsk, scope: KeptScope, secrets: KeepRequest["secrets"]) =>
+      Effect.gen(function* () {
+        const problem = (message: string): ReadonlyArray<KeepResult> =>
+          secrets.map(({ name }) => ({ name, kept: false, problem: message }));
+
+        if (keep === undefined || kept === undefined) {
+          return problem("This Session cannot keep Secrets");
+        }
+
+        const results = yield* Effect.result(keep({ ask: request, scope, secrets }));
+
+        if (Result.isFailure(results)) {
+          yield* Effect.logWarning(
+            `Keeping the Secrets ${Arr.join(
+              Arr.map(secrets, ({ name }) => name),
+              ", ",
+            )} failed; they are held for the Session only`,
+          );
+
+          return problem("Keeping them failed; try again");
+        }
+
+        return results.success;
+      });
+
+    const answer = (
+      id: string,
+      given: Readonly<Record<string, string>> | null,
+      choice: SecretKeep | undefined,
+    ) =>
       Effect.gen(function* () {
         const request = asks().find((pending) => pending.id === id);
 
@@ -376,13 +461,55 @@ const makeSecrets = ({
           }
         }
 
-        storage.put(SECRETS_KEY, { ...sealed(), ...records });
+        const scope = keptScopeOf(choice);
+
+        const keeping =
+          scope === undefined || opened.length === 0
+            ? []
+            : yield* keepChosen(request, scope, opened);
+
+        const keptNames = new Set<string>();
+
+        for (const [index, outcome] of outcomes.entries()) {
+          if (outcome.status !== "provided" || scope === undefined) continue;
+
+          const result = keeping.find((candidate) => candidate.name === outcome.name);
+
+          if (result?.kept === true) {
+            keptNames.add(outcome.name);
+            outcomes[index] =
+              result.shadowed === true
+                ? { name: outcome.name, status: "kept", scope, shadowed: true }
+                : { name: outcome.name, status: "kept", scope };
+          } else {
+            outcomes[index] = {
+              ...outcome,
+              notKept: result?.kept === false ? result.problem : "The Secret was not kept",
+            };
+          }
+        }
+
+        // A kept Secret is not entered: it would win over the kept one for 15 minutes, and then lapse.
+        const entered = Object.fromEntries(
+          Object.entries(records).filter(([name]) => !keptNames.has(name)),
+        );
+
+        for (const name of keptNames) values.delete(name);
+
+        storage.put(SECRETS_KEY, {
+          ...Object.fromEntries(Object.entries(sealed()).filter(([name]) => !keptNames.has(name))),
+          ...entered,
+        });
         storage.put(ANSWERS_KEY, { ...answers(), [id]: outcomes });
 
         for (const { name, value } of opened) {
-          values.set(name, { value, expiresAt });
+          if (!keptNames.has(name)) values.set(name, { value, expiresAt });
+
           redactions.hold(name, value);
         }
+
+        // The Registry has the kept Secrets now: ask for them again at the next use.
+        if (keptNames.size > 0) keptDueAt = 0;
 
         yield* putAsks(asks().filter((pending) => pending.id !== id));
 

@@ -41,6 +41,7 @@ import { buildUpkeep } from "../registry/builds.ts";
 import { spareUpkeep } from "../registry/rpc.ts";
 import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
 import { sessionLifecycle } from "./environment-lifecycle.ts";
+import { runChanges } from "./agent-changes.ts";
 import { sessionEnvironments } from "./environments.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
@@ -61,6 +62,7 @@ import {
 } from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
+import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
@@ -375,6 +377,13 @@ export const SessionLive = Session.make(
                       }),
                     ),
                   ),
+          // What the owner chooses to keep in the form is saved in the Registry as the Environments page saves it.
+          keep: sessionKeepSecrets({
+            registry: registryObject,
+            session: name,
+            builds,
+            changes: runChanges(kv),
+          }),
         });
 
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed (with no Live View link).

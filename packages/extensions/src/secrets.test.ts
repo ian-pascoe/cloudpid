@@ -7,7 +7,14 @@ import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
-import { SECRET_LIFETIME_MS, secretEnvName, secretReference } from "./secrets.ts";
+import {
+  type KeepRequest,
+  type KeepResult,
+  type KeptSecret,
+  SECRET_LIFETIME_MS,
+  secretEnvName,
+  secretReference,
+} from "./secrets.ts";
 import { call, openSecretsHarness } from "./secrets/harness.fixture.ts";
 import { toolSearchExtension } from "./tool-search.ts";
 
@@ -262,6 +269,99 @@ describe("secrets", () => {
     expect(await session.transcript()).not.toContain(VALUE);
     expect(JSON.stringify(session.requests)).not.toContain(VALUE);
     expect(session.dump()).not.toContain(VALUE);
+  });
+
+  describe("keeping what the owner enters", () => {
+    /** Keeps what it is handed in the fixture's Registry, as the Session's hook saves it. */
+    const keeping = (request: KeepRequest, registry: { secrets: KeptSecret[] }) => {
+      for (const { name, value } of request.secrets) {
+        registry.secrets.push({ name, value, scope: request.scope, build: false });
+      }
+
+      return request.secrets.map(({ name }): KeepResult => ({ name, kept: true }));
+    };
+
+    it("offers the agent's suggestion in the request, and tells it the scope the owner chose, never the value", async () => {
+      const session = await openSecretsHarness([], [], keeping);
+
+      const running = session.prompt(
+        "Go",
+        call("secret_ask", { names: ["API_KEY"], reason: "deploy", keep: "environment" }),
+      );
+
+      // The owner changes the pre-selected scope in the form.
+      const ask = await session.enter({ API_KEY: VALUE }, "all");
+
+      await running;
+
+      expect(ask).toMatchObject({ names: ["API_KEY"], keep: "environment" });
+
+      const result = await session.lastResult();
+
+      expect(result?.text).toContain("API_KEY: provided and kept for every Environment");
+      expect(result?.text).toContain("it does not expire");
+      expect(result?.text).not.toContain(VALUE);
+      expect(session.registry.secrets).toEqual([
+        { name: "API_KEY", value: VALUE, scope: "every", build: false },
+      ]);
+      expect(await session.transcript()).not.toContain(VALUE);
+      expect(JSON.stringify(session.requests)).not.toContain(VALUE);
+      expect(session.dump()).not.toContain(VALUE);
+    });
+
+    it("lists a Secret it kept as kept, and uses it after the 15 minutes an entered one lasts", async () => {
+      const session = await openSecretsHarness([], [], keeping);
+      const running = session.prompt("Go", call("secret_ask", { names: ["API_KEY"] }));
+
+      await session.enter({ API_KEY: VALUE }, "environment");
+      await running;
+      await session.advance(SECRET_LIFETIME_MS + 1);
+      await session.prompt("Go", call("secret_list", {}));
+
+      expect((await session.lastResult())?.text).toContain("API_KEY: kept for this Environment.");
+
+      await session.prompt("Go", call("bash", { command: `echo $${env("API_KEY")}` }));
+
+      expect(session.execs.at(-1)?.env[env("API_KEY")]).toBe(VALUE);
+    });
+
+    it("holds it for the Session, as it always did, when the agent asks for nothing and the owner keeps nothing", async () => {
+      const session = await openSecretsHarness([], [], keeping);
+      const running = session.prompt("Go", call("secret_ask", { names: ["API_KEY"] }));
+
+      const ask = await session.enter({ API_KEY: VALUE });
+
+      await running;
+
+      expect(ask).not.toHaveProperty("keep");
+      expect((await session.lastResult())?.text).toContain("Held for this Session only");
+      expect(session.registry.secrets).toEqual([]);
+
+      await session.advance(SECRET_LIFETIME_MS + 1);
+      await session.prompt("Go", call("record", { text: ref("API_KEY") }));
+
+      expect((await session.lastResult())?.isError).toBe(true);
+    });
+
+    it("says why the Secret was held for the Session only when it could not be kept", async () => {
+      const session = await openSecretsHarness([], [], (request) =>
+        request.secrets.map(({ name }): KeepResult => ({
+          name,
+          kept: false,
+          problem: "At most 100 Secrets are kept for this environment",
+        })),
+      );
+
+      const running = session.prompt("Go", call("secret_ask", { names: ["API_KEY"] }));
+
+      await session.enter({ API_KEY: VALUE }, "environment");
+      await running;
+
+      const text = (await session.lastResult())?.text;
+
+      expect(text).toContain("The user chose to keep it, but it could not be kept: At most 100");
+      expect(text).toContain(`Use $${env("API_KEY")}`);
+    });
   });
 
   it("forgets a Secret on request", async () => {

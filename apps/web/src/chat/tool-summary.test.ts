@@ -63,6 +63,9 @@ describe("toolSummary", () => {
       "MODE in 0000abcd",
     );
     expect(
+      toolSummary("environment_secret_build", { id: "*", name: "NPM_TOKEN", build: true }),
+    ).toBe("NPM_TOKEN in *");
+    expect(
       toolSummary("environment_container_resize", { size: "custom-2", reason: "needs 6 GiB" }),
     ).toBe("needs 6 GiB (to custom-2)");
     expect(

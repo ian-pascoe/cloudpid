@@ -29,6 +29,7 @@ import {
   type TreePoint,
   type ConversationId,
   type ServerMessage,
+  type SecretKeep,
   type SessionView,
   type TodoTask,
   type UserInput,
@@ -176,12 +177,14 @@ export interface SessionClient {
   readonly configure: (change: ConfigureChange) => Effect.Effect<void>;
   /**
    * Answer Secret request `request` with the values the owner typed (a name left out is skipped), or `null` when the
-   * owner cancelled. The values go to the Session once and are not kept here; the Session's next `secret_requests`
-   * closes the form, and a refusal shows as `failure`.
+   * owner cancelled. `keep` is what the owner chose to do with them: hold them for the Session (the default), or keep
+   * them for its Environment or for every Environment. The values go to the Session once and are not kept here; the
+   * Session's next `secret_requests` closes the form, and a refusal shows as `failure`.
    */
   readonly answerSecrets: (
     request: string,
     values: Readonly<Record<string, string>> | null,
+    keep?: SecretKeep,
   ) => Effect.Effect<void>;
   /**
    * Abort the root conversation's work and withdraw its queued input, or a subagent's when `conversationId` names
@@ -1175,9 +1178,18 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       step(() => {
         send({ type: "configure", id: nextCommandId(), ...change });
       }),
-    answerSecrets: (request, values) =>
+    answerSecrets: (request, values, keep) =>
       step(() => {
-        send({ type: "secret_answer", id: nextCommandId(), request, values });
+        const answer: Types.Mutable<Extract<ClientMessage, { type: "secret_answer" }>> = {
+          type: "secret_answer",
+          id: nextCommandId(),
+          request,
+          values,
+        };
+
+        if (keep !== undefined) answer.keep = keep;
+
+        send(answer);
       }),
     abort: (target = {}) =>
       step(() => {

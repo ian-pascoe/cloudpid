@@ -1709,6 +1709,7 @@ export const EnvironmentsPage = () => {
             title="Secrets for every environment"
             empty="None kept for every environment."
           />
+          <AgentChangesSection id={EVERY_ENVIRONMENT} sessions={sessions ?? []} />
         </section>
         <DialogProblem problem={error ?? sessionsError} />
         {environments === null ? (

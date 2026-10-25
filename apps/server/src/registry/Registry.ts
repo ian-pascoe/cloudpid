@@ -39,8 +39,14 @@ import {
   renameEnvironmentAs,
 } from "./environment-lifecycle.ts";
 import {
+  markSecretBuildAs,
+  type SecretBuildMark,
+  EVERY_ENVIRONMENT_NAME,
+} from "./secret-changes.ts";
+import {
   buildSecretsOf,
   keepSecret,
+  keepSecretAs,
   type SecretsHandover,
   secretsHandover,
   type SecretWrite,
@@ -70,6 +76,7 @@ import {
   type EnvironmentDeletion,
   type EnvironmentNaming,
   type EnvironmentRecord,
+  EVERY_ENVIRONMENT_SCOPE,
   type LegacyObject,
   openRegistryStore,
   type RepoChange,
@@ -130,6 +137,22 @@ export type EnvironmentChangeAnswer =
       readonly newBuild: boolean;
     }
   | Exclude<EnvironmentChange, { readonly status: "changed" }>;
+
+/** How keeping one Secret the owner chose to keep in a `secret_ask` form went: a message never holds the value. */
+export type KeptAskedResult =
+  | { readonly name: string; readonly status: "kept"; readonly shadowed: boolean }
+  | { readonly name: string; readonly status: "rejected"; readonly message: string };
+
+/** How keeping the Secrets of an answered `secret_ask` went. */
+export type KeptAsked =
+  /** The Registry does not list the Session. */
+  | { readonly status: "unknown" }
+  | {
+      readonly status: "done";
+      /** Where they were kept: the Session's Environment, or every Environment (id `*`). */
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly results: ReadonlyArray<KeptAskedResult>;
+    };
 
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
@@ -258,7 +281,32 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<LifecycleOutcome<LifecycleChanged>>;
-  /** An Environment's Agent changes, newest first; null when it is not registered. */
+  /**
+   * An Agent change (`docs/spec.md` → Agent changes): mark the Secret `name` kept for `environment` (an Environment's id,
+   * or `*` for every Environment) for the Build, or take the mark off, as the owner's switch does, and record it with its
+   * `author`; a Secret that has the mark records nothing. The caller runs the Builds' upkeep after.
+   */
+  readonly agentMarkSecretBuild: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly build: boolean;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SecretBuildMark>;
+  /**
+   * Keep Secrets the owner chose to keep in the form of a `secret_ask` of `session`'s conversation `conversation`: for
+   * the Session's Environment (`scope` "environment") or for every Environment ("every"), sealed here as the owner's form
+   * on the Environments page seals them, with the same rules and messages. Each kept Secret is recorded by name in the
+   * scope's Agent changes as the owner's choice made on the agent's request (`reason` is the agent's). The caller runs
+   * the Builds' upkeep after. For the Session DO only: the values arrive over Durable Object RPC and are never answered.
+   */
+  readonly keepAskedSecrets: (input: {
+    readonly session: string;
+    readonly conversation: number;
+    readonly scope: "environment" | "every";
+    readonly reason: string;
+    readonly secrets: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  }) => Effect.Effect<KeptAsked>;
+  /** An Environment's Agent changes (or those of the Secrets kept for every Environment, `*`), newest first; null when it is not registered. */
   readonly listAgentChanges: (input: {
     readonly environment: string;
   }) => Effect.Effect<ReadonlyArray<AgentChange> | null>;
@@ -604,9 +652,72 @@ export const RegistryLive = Registry.make(
                 recordRebuildAs(state.raw.storage, store, changes, { environment, author }, now),
               ),
             ),
+          agentMarkSecretBuild: ({ environment, name, build, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                markSecretBuildAs(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, name, build, author },
+                  now,
+                ),
+              ),
+            ),
+          keepAskedSecrets: ({ session, conversation, scope, reason, secrets: asked }) =>
+            Effect.gen(function* () {
+              const known = store.getSession(session);
+
+              if (known === null) return { status: "unknown" } satisfies KeptAsked;
+
+              const now = yield* Clock.currentTimeMillis;
+              const environment = scope === "every" ? null : known.environment;
+              const author = { session, conversation, tool: "secret_ask", reason };
+              const results: KeptAskedResult[] = [];
+
+              for (const { name, value } of asked) {
+                const kept = yield* Effect.flatMap(vault, (keys) =>
+                  keepSecretAs(
+                    state.raw.storage,
+                    store,
+                    changes,
+                    keys,
+                    { environment, name, value, sessionEnvironment: known.environment, author },
+                    now,
+                  ),
+                ).pipe(
+                  Effect.catch((error) =>
+                    Effect.succeed({
+                      status: "rejected",
+                      message: `The Secret cannot be kept: ${error.message}`,
+                    } as const),
+                  ),
+                );
+
+                results.push(
+                  kept.status === "kept"
+                    ? { name, status: "kept", shadowed: kept.shadowed }
+                    : { name, status: "rejected", message: kept.message },
+                );
+              }
+
+              return {
+                status: "done",
+                environment:
+                  environment === null
+                    ? { id: EVERY_ENVIRONMENT_SCOPE, name: EVERY_ENVIRONMENT_NAME }
+                    : {
+                        id: known.environment,
+                        name: store.getEnvironment(known.environment)?.name ?? known.environment,
+                      },
+                results,
+              } satisfies KeptAsked;
+            }),
           listAgentChanges: ({ environment }) =>
             Effect.sync(() =>
-              store.getEnvironment(environment) === null ? null : changes.list(environment),
+              environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
+                ? null
+                : changes.list(environment),
             ),
           revertAgentChange: ({ environment, change }) =>
             Clock.currentTimeMillis.pipe(

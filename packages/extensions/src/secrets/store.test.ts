@@ -1,6 +1,6 @@
 // The Secrets store: masked asks answered over the client, encrypted values at rest, their lifetime, forgetting, and
 // the scrubbing of provider requests, across an "eviction" (a second store over the same storage).
-// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off
+// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off preferEffectArray:off
 import type { Message } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 import { KEPT_REFRESH_MS, KEPT_RETRY_MS, type KeptSecret } from "./kept.ts";
 import { secretReference } from "./references.ts";
 import {
+  type KeepRequest,
+  type KeepResult,
   SECRET_LIFETIME_MS,
   type SecretAsk,
   Secrets,
@@ -43,6 +45,7 @@ const open = (
   master = MASTER,
   notify?: (ask: SecretAsk) => Effect.Effect<void>,
   kept?: Effect.Effect<ReadonlyArray<KeptSecret>, unknown>,
+  keep?: (request: KeepRequest) => Effect.Effect<ReadonlyArray<KeepResult>>,
 ) =>
   Effect.gen(function* () {
     const announced: (readonly SecretAsk[])[] = [];
@@ -63,6 +66,7 @@ const open = (
             asked.push(ask);
           }).pipe(Effect.andThen(notify?.(ask) ?? Effect.void)),
         kept: kept ?? Effect.succeed([]),
+        keep,
       }),
     );
 
@@ -480,5 +484,225 @@ describe("Secrets kept for the Environment", () => {
       yield* TestClock.adjust(KEPT_RETRY_MS);
       expect(yield* secrets.resolve("DATABASE_URL")).toBeUndefined();
       expect(state.asked).toBe(3);
+    }));
+});
+
+/** What the fake Registry of the keep tests holds, and what its hook was asked. */
+type FakeRegistry = {
+  secrets: KeptSecret[];
+  requests: KeepRequest[];
+  problem: string | undefined;
+  shadowed: boolean;
+};
+
+describe("Secrets the owner chooses to keep when they answer", () => {
+  /**
+   * A Registry that keeps what the hook is handed (as the Session's hook has it save), with the requests the hook got.
+   * `problem` makes it refuse, `shadowed` says the Environment keeps its own Secret of that name.
+   */
+  const registry = () => {
+    const state: FakeRegistry = { secrets: [], requests: [], problem: undefined, shadowed: false };
+
+    const load = Effect.sync(() => state.secrets);
+
+    const keep = (request: KeepRequest) =>
+      Effect.sync((): ReadonlyArray<KeepResult> => {
+        state.requests.push(request);
+
+        if (state.problem !== undefined) {
+          const { problem } = state;
+
+          return request.secrets.map(({ name }) => ({ name, kept: false, problem }));
+        }
+
+        for (const { name, value } of request.secrets) {
+          state.secrets = [
+            ...state.secrets.filter((secret) => secret.name !== name),
+            { name, value, scope: request.scope, build: false },
+          ];
+        }
+
+        return request.secrets.map(({ name }) =>
+          state.shadowed ? { name, kept: true, shadowed: true } : { name, kept: true },
+        );
+      });
+
+    return { state, load, keep };
+  };
+
+  const answered = (
+    secrets: Effect.Success<ReturnType<typeof open>>["secrets"],
+    keep: Parameters<typeof secrets.answer>[2],
+    values: Readonly<Record<string, string>> = { API_KEY: VALUE, OTHER: "" },
+    ask: SecretAsk = ASK,
+  ) =>
+    Effect.gen(function* () {
+      const asking = yield* Effect.forkChild(secrets.ask(ask));
+
+      yield* Effect.yieldNow;
+      yield* secrets.answer(ask.id, values, keep);
+
+      return yield* Fiber.join(asking);
+    });
+
+  test("keeps a Secret for the Environment the owner chose, which then stops expiring", () =>
+    Effect.gen(function* () {
+      const { storage, dump } = memoryStorage();
+      const { load, keep, state } = registry();
+      const { secrets } = yield* open(storage, MASTER, undefined, load, keep);
+
+      expect(yield* answered(secrets, "environment")).toEqual([
+        { name: "API_KEY", status: "kept", scope: "environment" },
+        { name: "OTHER", status: "skipped" },
+      ]);
+      // Only what the owner gave, with the ask that it answers.
+      expect(state.requests).toEqual([
+        { ask: ASK, scope: "environment", secrets: [{ name: "API_KEY", value: VALUE }] },
+      ]);
+      expect(yield* secrets.held).toEqual([{ name: "API_KEY", kept: "environment" }]);
+      expect(yield* secrets.resolve("API_KEY")).toBe(VALUE);
+      // Nothing of it is entered for 15 minutes in this Session's storage, and the answer holds no value.
+      expect(dump()).not.toContain(VALUE);
+
+      yield* TestClock.adjust(SECRET_LIFETIME_MS * 2);
+      yield* secrets.sweep;
+      expect(yield* secrets.resolve("API_KEY")).toBe(VALUE);
+      expect(yield* secrets.nextExpiry).toBeUndefined();
+    }));
+
+  test("keeps a Secret for every Environment when the owner chose that", () =>
+    Effect.gen(function* () {
+      const { load, keep, state } = registry();
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load, keep);
+
+      expect(yield* answered(secrets, "all")).toEqual([
+        { name: "API_KEY", status: "kept", scope: "every" },
+        { name: "OTHER", status: "skipped" },
+      ]);
+      expect(state.requests.map(({ scope }) => scope)).toEqual(["every"]);
+      expect(yield* secrets.held).toEqual([{ name: "API_KEY", kept: "every" }]);
+    }));
+
+  test("holds it for the Session only, as before, when the owner chose that or left the choice out", () =>
+    Effect.gen(function* () {
+      const { load, keep, state } = registry();
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load, keep);
+
+      expect(yield* answered(secrets, "session")).toEqual([
+        { name: "API_KEY", status: "provided", expiresAt: SECRET_LIFETIME_MS },
+        { name: "OTHER", status: "skipped" },
+      ]);
+      expect(yield* answered(secrets, undefined, { API_KEY: VALUE })).toEqual([
+        { name: "API_KEY", status: "provided", expiresAt: SECRET_LIFETIME_MS },
+        { name: "OTHER", status: "skipped" },
+      ]);
+      expect(state.requests).toEqual([]);
+    }));
+
+  test("shows the agent's suggestion in the request, and keeps nothing for a cancelled one", () =>
+    Effect.gen(function* () {
+      const { load, keep, state } = registry();
+
+      const { secrets, announced } = yield* open(
+        memoryStorage().storage,
+        MASTER,
+        undefined,
+        load,
+        keep,
+      );
+
+      const ask: SecretAsk = { ...ASK, keep: "environment" };
+      const asking = yield* Effect.forkChild(secrets.ask(ask));
+
+      yield* Effect.yieldNow;
+      expect(announced.at(-1)).toEqual([ask]);
+
+      yield* secrets.answer("7", null, "all");
+      expect(yield* Fiber.join(asking)).toEqual([
+        { name: "API_KEY", status: "cancelled" },
+        { name: "OTHER", status: "cancelled" },
+      ]);
+      expect(state.requests).toEqual([]);
+    }));
+
+  test("holds it for the Session and says why when it could not be kept", () =>
+    Effect.gen(function* () {
+      const { storage, dump } = memoryStorage();
+      const { load, keep, state } = registry();
+      const { secrets } = yield* open(storage, MASTER, undefined, load, keep);
+
+      state.problem = "At most 100 Secrets are kept for this environment";
+
+      expect(yield* answered(secrets, "environment")).toEqual([
+        {
+          name: "API_KEY",
+          status: "provided",
+          expiresAt: SECRET_LIFETIME_MS,
+          notKept: "At most 100 Secrets are kept for this environment",
+        },
+        { name: "OTHER", status: "skipped" },
+      ]);
+      expect(yield* secrets.held).toEqual([{ name: "API_KEY", expiresAt: SECRET_LIFETIME_MS }]);
+      expect(dump()).not.toContain(VALUE);
+    }));
+
+  test("holds it for the Session when the Session cannot keep Secrets", () =>
+    Effect.gen(function* () {
+      const { secrets } = yield* open(memoryStorage().storage);
+      const [first] = yield* answered(secrets, "all");
+
+      expect(first).toMatchObject({ name: "API_KEY", status: "provided" });
+      expect(first).toHaveProperty("notKept");
+      expect(yield* secrets.resolve("API_KEY")).toBe(VALUE);
+    }));
+
+  test("replaces a Secret of the same name entered earlier, which would otherwise win over it", () =>
+    Effect.gen(function* () {
+      const { load, keep } = registry();
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load, keep);
+
+      yield* answered(secrets, "session", { API_KEY: "older-entered-value-1" });
+      expect(yield* secrets.resolve("API_KEY")).toBe("older-entered-value-1");
+
+      yield* answered(secrets, "environment", { API_KEY: VALUE }, { ...ASK, id: "8" });
+      expect(yield* secrets.resolve("API_KEY")).toBe(VALUE);
+      expect(yield* secrets.held).toEqual([{ name: "API_KEY", kept: "environment" }]);
+      // Both stay redacted in this instance.
+      expect(secrets.redact("older-entered-value-1")).toBe(secretReference("API_KEY"));
+    }));
+
+  test("says when the Environment's own Secret of the name wins over one kept for every Environment", () =>
+    Effect.gen(function* () {
+      const { load, keep, state } = registry();
+      const { secrets } = yield* open(memoryStorage().storage, MASTER, undefined, load, keep);
+
+      state.shadowed = true;
+      expect((yield* answered(secrets, "all"))[0]).toEqual({
+        name: "API_KEY",
+        status: "kept",
+        scope: "every",
+        shadowed: true,
+      });
+    }));
+
+  test("keeps the answer across an eviction without a value, and redacts the value from the first request", () =>
+    Effect.gen(function* () {
+      const { storage, dump } = memoryStorage();
+      const { load, keep } = registry();
+      const first = yield* open(storage, MASTER, undefined, load, keep);
+      const asking = yield* Effect.forkChild(first.secrets.ask(ASK));
+
+      yield* Effect.yieldNow;
+      yield* first.secrets.answer("7", { API_KEY: VALUE }, "environment");
+
+      // The call was cut off before it took the answer; the rerun finds it in storage.
+      yield* Fiber.interrupt(asking);
+
+      const second = yield* open(storage, MASTER, undefined, load, keep);
+
+      expect(dump()).not.toContain(VALUE);
+      expect(yield* second.secrets.scrub([userMessage(`key ${VALUE}`)])).toEqual([
+        userMessage(`key ${secretReference("API_KEY")}`),
+      ]);
     }));
 });

@@ -12,6 +12,7 @@ import {
   CREATED_FIELD,
   type EnvironmentSecretRecord,
   fieldRepo,
+  fieldSecret,
   fieldVariable,
   NAME_FIELD,
   MAX_ENVIRONMENT_NAME_LENGTH,
@@ -307,6 +308,14 @@ export const changeFieldText = (field: string): string => {
   const repo = fieldRepo(field);
 
   if (repo !== null) return `Repo ${repo}`;
+
+  const secret = fieldSecret(field);
+
+  if (secret !== null) {
+    return secret.kind === "kept"
+      ? `Secret ${secret.name}`
+      : `Secret ${secret.name}, for the Build`;
+  }
 
   switch (field) {
     case NAME_FIELD:

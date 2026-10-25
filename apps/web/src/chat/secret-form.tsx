@@ -1,4 +1,4 @@
-import type { SecretRequest } from "@cloudpid/protocol";
+import type { SecretKeep, SecretRequest } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
@@ -14,17 +14,23 @@ import {
   sessionStatusAtom,
 } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
+import { chosenKeep, defaultKeep, KEEP_CHOICES, KEEP_FIELD, keepNote } from "./secret-keep.ts";
 
 /** Values shorter than this are redacted only as written, so redacting them may also hide unrelated output. */
 const SHORT_SECRET_LENGTH = 8;
 
 /**
- * One form's state: how long each typed value is, for the short-value warning (never the value itself), and whether the
- * form was answered.
+ * One form's state: how long each typed value is, for the short-value warning (never the value itself), what the owner
+ * chose to do with the values (`null`: the agent's suggestion still stands), and whether the form was answered.
  */
 const FormState = ScopedAtom.make(() =>
-  Atom.make<{ readonly lengths: Readonly<Record<string, number>>; readonly sent: boolean }>({
+  Atom.make<{
+    readonly lengths: Readonly<Record<string, number>>;
+    readonly keep: SecretKeep | null;
+    readonly sent: boolean;
+  }>({
     lengths: {},
+    keep: null,
     sent: false,
   }),
 );
@@ -43,9 +49,14 @@ const SecretForm = ({
   request: SecretRequest;
   lifetimeMinutes: number;
   disabled: boolean;
-  onAnswer: (request: string, values: Readonly<Record<string, string>> | null) => void;
+  onAnswer: (
+    request: string,
+    values: Readonly<Record<string, string>> | null,
+    keep?: SecretKeep,
+  ) => void;
 }) => {
-  const [{ lengths, sent }, setState] = useAtom(FormState.use());
+  const [{ lengths, keep, sent }, setState] = useAtom(FormState.use());
+  const chosen = keep ?? defaultKeep(request);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -59,9 +70,11 @@ const SecretForm = ({
       if (Predicate.isString(value) && value !== "") values[name] = value;
     }
 
+    const choice = chosenKeep(form.get(KEEP_FIELD));
+
     event.currentTarget.reset();
-    setState({ lengths: {}, sent: true });
-    onAnswer(request.id, values);
+    setState({ lengths: {}, keep: choice, sent: true });
+    onAnswer(request.id, values, choice);
   };
 
   return (
@@ -108,9 +121,26 @@ const SecretForm = ({
           </label>
         ))}
       </div>
+      <fieldset className="mt-3 flex flex-col gap-1" disabled={disabled || sent}>
+        <legend className="text-xs font-medium">What to do with them</legend>
+        {Arr.map(KEEP_CHOICES, ({ value, label }) => (
+          <label key={value} className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name={KEEP_FIELD}
+              value={value}
+              checked={chosen === value}
+              onChange={() => {
+                setState((previous) => ({ ...previous, keep: value }));
+              }}
+            />
+            {label}
+          </label>
+        ))}
+      </fieldset>
       <p className="mt-3 text-xs text-muted-foreground">
-        The agent never sees the values, only references to them. They are kept encrypted for{" "}
-        {lifetimeMinutes} minutes. Leave a field empty to skip it.
+        The agent never sees the values, only references to them.{" "}
+        {keepNote(chosen, lifetimeMinutes)} Leave a field empty to skip it.
       </p>
       <div className="mt-3 flex justify-end gap-2">
         <Button
@@ -149,8 +179,8 @@ export const SecretRequests = () => {
         request={request}
         lifetimeMinutes={lifetimeMinutes}
         disabled={disabled}
-        onAnswer={(id, values) => {
-          answer({ request: id, values });
+        onAnswer={(id, values, keep) => {
+          answer(keep === undefined ? { request: id, values } : { request: id, values, keep });
         }}
       />
     </FormState.Provider>

@@ -3,6 +3,7 @@ import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   fieldRepo,
+  fieldSecret,
   MAX_ENVIRONMENT_SECRETS,
   NEW_WORKSPACE,
   parseRepoSource,
@@ -38,7 +39,13 @@ import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
 import { noEnvironment, noRepo, nameTaken, reason, repoTaken, thenSaying } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
-import type { EnvironmentNaming, SessionRecord, SessionRefusal, WorkspaceRecord } from "./store.ts";
+import {
+  type EnvironmentNaming,
+  EVERY_ENVIRONMENT_SCOPE,
+  type SessionRecord,
+  type SessionRefusal,
+  type WorkspaceRecord,
+} from "./store.ts";
 import { SettingsUpdate } from "./settings.ts";
 
 /**
@@ -829,6 +836,14 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((revert) => {
             switch (revert.status) {
               case "reverted":
+                // A Build mark put back: as after the owner's switch, the Builds the Secret may reach are looked at
+                // again, each Environment's for one kept for every Environment (scope `*`).
+                if (fieldSecret(revert.change.field) !== null) {
+                  return secretChanged(
+                    environment === EVERY_ENVIRONMENT_SCOPE ? null : environment,
+                  ).pipe(Effect.as(revert.change));
+                }
+
                 // As after the owner's save: the variables are among what a Build is made with. A Repo put back or
                 // taken out also makes the spare stale, as the owner's \`addRepo\` and \`removeRepo\` do.
                 return (

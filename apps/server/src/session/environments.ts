@@ -10,7 +10,7 @@ import type {
   EnvironmentsService,
   KeptSecretListing,
 } from "@cloudpid/extensions/environment";
-import { EnvironmentsError } from "@cloudpid/extensions/environment";
+import { EnvironmentsError, EVERY_ENVIRONMENT_ID } from "@cloudpid/extensions/environment";
 import type { BuildView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -30,6 +30,7 @@ export type EnvironmentsRegistry = Pick<
   | "getEnvironmentSettings"
   | "listEnvironmentSecrets"
   | "changeEnvironment"
+  | "agentMarkSecretBuild"
   | "getWorkspace"
 >;
 
@@ -71,6 +72,27 @@ const keptFor = (
 
 /** An Environment as a change names it: its id and name. */
 const changedEnvironment = ({ id, name }: EnvironmentRecord) => ({ id, name });
+
+/**
+ * The Builds' upkeep after a kept Secret changed (its Build mark, or one more kept), as the main Worker runs it after the
+ * owner's: the Builds the Secret may reach are looked at again, each Environment's for one kept for every Environment
+ * (`*`).
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const buildsAfterSecret = (
+  registry: Pick<RegistryMethods, "listEnvironments">,
+  builds: Pick<Builds, "of">,
+  environment: string,
+): Effect.Effect<void> =>
+  environment === EVERY_ENVIRONMENT_ID
+    ? registry
+        .listEnvironments()
+        .pipe(
+          Effect.flatMap((all) =>
+            Effect.forEach(all, (item) => builds.of(item.id), { discard: true }),
+          ),
+        )
+    : builds.of(environment);
 
 /** The error of a failed call to the Registry or the Workspace, as the model sees it. */
 const failedCall = (what: string) => (cause: unknown) =>
@@ -145,6 +167,28 @@ export const sessionEnvironments = ({
           problem: state.problem,
           secrets: keptFor(id, secrets),
         } satisfies EnvironmentDetails;
+      }),
+    markSecret: ({ environment, name, build, author }) =>
+      Effect.gen(function* () {
+        if (session === undefined) {
+          return yield* EnvironmentsError.make({
+            message: "This Session is not one the Registry lists, so it changes no Environment.",
+          });
+        }
+
+        const marked = yield* registry.agentMarkSecretBuild({
+          environment,
+          name,
+          build,
+          author: { session, ...author },
+        });
+
+        // As after the owner's switch: the Secrets marked for the Build are part of what a Build is made with.
+        if (marked.status === "changed") {
+          yield* buildsAfterSecret(registry, builds, environment);
+        }
+
+        return marked;
       }),
     change: ({ environment, change, author }) =>
       Effect.gen(function* () {

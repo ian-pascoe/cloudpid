@@ -12,6 +12,7 @@ import {
 import {
   type AgentChange,
   CREATED_FIELD,
+  fieldSecret,
   fieldVariable,
   MAX_AGENT_CHANGES,
   unrevertableField,
@@ -30,7 +31,13 @@ import {
 import type { EnvironmentRepo } from "@cloudpid/protocol";
 import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
-import type { EnvironmentRecord, RegistryStorage, RegistryStore } from "./store.ts";
+import { revertSecretBuild } from "./secret-changes.ts";
+import {
+  type EnvironmentRecord,
+  EVERY_ENVIRONMENT_SCOPE,
+  type RegistryStorage,
+  type RegistryStore,
+} from "./store.ts";
 
 /** Who made an Agent change: the Session, the conversation in it that called the tool, the tool, and why. */
 export type AgentChangeAuthor = {
@@ -86,6 +93,17 @@ export type AgentChangeRevert =
     }
   | { readonly status: "refused"; readonly message: string }
   | { readonly status: "missing" };
+
+/** Why a change of `field`, one of the fields with no revert, is not reverted. */
+const unrevertableMessage = (field: string): string => {
+  if (field === CREATED_FIELD) {
+    return "Making an environment is not reverted: deleting one needs your approval, so delete it from its card's menu";
+  }
+
+  return fieldSecret(field) === null
+    ? "A Build asked for is not reverted"
+    : "Keeping a secret is not reverted: the history holds no value to bring back, so delete the secret itself in the Secrets section";
+};
 
 const SETTING_NAMES: ReadonlySet<string> = new Set<string>(Record.keys(DEFAULT_CONTAINER_SETTINGS));
 
@@ -348,10 +366,12 @@ export const revertAgentChange = (
   now: number,
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {
-    const known = current(store, environment);
+    // The Secrets kept for every Environment have a history of their own, in the scope `*`.
+    const every = environment === EVERY_ENVIRONMENT_SCOPE;
+    const known = every ? null : current(store, environment);
     const change = changes.get(environment, id);
 
-    if (known === null || change === null) return { status: "missing" };
+    if (change === null || (known === null && !every)) return { status: "missing" };
 
     if (change.actor === "owner") {
       return { status: "refused", message: "A revert is not undone: change the setting itself" };
@@ -368,12 +388,15 @@ export const revertAgentChange = (
     if (unrevertableField(change.field)) {
       return {
         status: "refused",
-        message:
-          change.field === CREATED_FIELD
-            ? "Making an environment is not reverted: deleting one needs your approval, so delete it from its card's menu"
-            : "A Build asked for is not reverted",
+        message: unrevertableMessage(change.field),
       };
     }
+
+    if (fieldSecret(change.field) !== null) {
+      return revertSecretBuild(store, changes, environment, change, now);
+    }
+
+    if (known === null) return { status: "missing" };
 
     if (isLifecycleField(change.field)) {
       const reverted = revertLifecycleChange(store, changes, known.record, change, now);
