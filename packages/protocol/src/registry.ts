@@ -376,7 +376,9 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * Delete a Session for good: stop everything it runs, close its browser and its clients' sockets, wipe its storage,
-   * then forget it. Its Workspace stays, with the files it wrote, until the owner removes it. A `SessionActionError` leaves it listed, to try again.
+   * then forget it. Its Workspace stays, with the files it wrote, while another Session (archived too) is bound to it;
+   * the last one's delete removes the Workspace too, with what was not committed or pushed. A `SessionActionError`
+   * leaves the Session listed, to try again; a Workspace that cannot be removed is kept listed, for the owner to remove.
    */
   Rpc.make("deleteSession", {
     payload: { id: Schema.String },
