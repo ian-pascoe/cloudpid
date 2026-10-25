@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
+import type * as Schema from "effect/Schema";
 import {
   type ExportPage,
   type ExportRequest,
@@ -248,6 +249,10 @@ export const spareUpkeep = (
       ),
   };
 };
+
+/** A setting's value as a refusal shows it: JSON, or "not set" for none. */
+const shownValue = (value: Schema.Json | null): string =>
+  value === null ? "not set" : JSON.stringify(value);
 
 /** Why the default Environment is not deleted. */
 const DEFAULT_KEPT = "The default environment cannot be deleted";
@@ -811,6 +816,28 @@ export const serveRegistryRpc = <R = never>(
                 return failed(update.message);
               case "missing":
                 return failed(noEnvironment(environment));
+            }
+          }),
+        ),
+      listAgentChanges: ({ environment }) =>
+        registry
+          .listAgentChanges({ environment })
+          .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(noEnvironment(environment)))),
+      revertAgentChange: ({ environment, change }) =>
+        registry.revertAgentChange({ environment, change }).pipe(
+          Effect.flatMap((revert) => {
+            switch (revert.status) {
+              case "reverted":
+                // As after the owner's save: the variables are among what a Build is made with.
+                return background(builds.of(environment)).pipe(Effect.as(revert.change));
+              case "changed-since":
+                return failed(
+                  `${revert.field} has changed since: it is ${shownValue(revert.current)} now, so the change is not reverted`,
+                );
+              case "refused":
+                return failed(revert.message);
+              case "missing":
+                return failed(`Environment "${environment}" has no change ${change}`);
             }
           }),
         ),

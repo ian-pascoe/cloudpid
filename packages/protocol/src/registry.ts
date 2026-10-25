@@ -230,6 +230,45 @@ export const ContainerSettingsState = Schema.Struct({
 
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
 
+/** The scope of the Agent changes to the Settings, beside those of each Environment (by its id). */
+export const SETTINGS_SCOPE = "settings";
+
+/** How many Agent changes each scope keeps: the oldest go once there are more. */
+export const MAX_AGENT_CHANGES = 200;
+
+/**
+ * One Agent change (GLOSSARY.md → Agent change; `docs/spec.md` → Agent changes): a change the agent made to an
+ * Environment or to the Settings, or the owner's revert of one. `field` names what changed (`variables.<NAME>` for a
+ * variable), and `before` and `after` are its values then, null where it had none (a variable not set). A Secret's
+ * change holds its name and Build mark only, never its value.
+ */
+export const AgentChange = Schema.Struct({
+  /** Its number, which grows with each change in the Registry. */
+  id: Schema.Finite,
+  /** The Environment's id, or `SETTINGS_SCOPE`. */
+  scope: Schema.String,
+  at: Schema.Finite,
+  /** Who made it: the agent, or the owner reverting an Agent change. */
+  actor: Schema.Literals(["agent", "owner"]),
+  /** The Session whose agent made it; null for the owner's. */
+  session: Schema.NullOr(Schema.String),
+  /** The conversation that called the tool, in that Session; null for the owner's. */
+  conversation: Schema.NullOr(Schema.Finite),
+  /** The tool that made it; null for the owner's. */
+  tool: Schema.NullOr(Schema.String),
+  /** Why: the agent's reason, or what the owner's revert undid. */
+  reason: Schema.String,
+  field: Schema.String,
+  before: Schema.NullOr(Schema.Json),
+  after: Schema.NullOr(Schema.Json),
+  /** The change this one reverted, for the owner's revert. */
+  reverts: Schema.NullOr(Schema.Finite),
+  /** The owner's revert of this change, once there is one. */
+  revertedBy: Schema.NullOr(Schema.Finite),
+});
+
+export type AgentChange = typeof AgentChange.Type;
+
 /** The hosts of the push services browsers use: Google's FCM, Mozilla's autopush, Apple's and Windows'. */
 const PUSH_SERVICE_HOSTS: ReadonlyArray<(host: string) => boolean> = [
   (host) => host === "fcm.googleapis.com",
@@ -451,6 +490,25 @@ export class RegistryRpcs extends RpcGroup.make(
    * flags and times, never a value.
    */
   Rpc.make("listEnvironmentSecrets", { success: Schema.Array(EnvironmentSecretRecord) }),
+  /**
+   * An Environment's Agent changes (`docs/spec.md` → Agent changes), newest first: the last `MAX_AGENT_CHANGES`, the
+   * owner's reverts among them.
+   */
+  Rpc.make("listAgentChanges", {
+    payload: { environment: EnvironmentId },
+    success: Schema.Array(AgentChange),
+    error: EnvironmentError,
+  }),
+  /**
+   * Revert Agent change `change` of `environment`: write its `before` value back, recorded as the owner's change, which
+   * this answers. Refused with an `EnvironmentError` showing the value now when the field has changed since, and for a
+   * change that is the owner's own revert. Each Workspace applies it at its next Container start, as any save.
+   */
+  Rpc.make("revertAgentChange", {
+    payload: { environment: EnvironmentId, change: Schema.Finite },
+    success: AgentChange,
+    error: EnvironmentError,
+  }),
   /**
    * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The
    * value is sealed in the Registry and never comes back. `build` says whether it reaches the Environment's Build;
