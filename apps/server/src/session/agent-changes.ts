@@ -39,7 +39,7 @@ export const agentChangesNotice = (changes: ReadonlyArray<RunChange>): PushNotic
   body: `${changes.length === 1 ? "1 Agent change" : `${changes.length} Agent changes`}: ${Arr.join(
     Arr.map(
       changes,
-      ({ tool, environment, field }) => `${tool} ${JSON.stringify(environment)} ${field}`,
+      ({ tool, environmentName, field }) => `${tool} ${JSON.stringify(environmentName)} ${field}`,
     ),
     "; ",
   )}`,

@@ -7,6 +7,7 @@ import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
+  fieldVariable,
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
   MAX_TITLE_LENGTH,
@@ -593,7 +594,7 @@ const fakeRegistries = () => {
         if (found.value.actor === "owner")
           return { status: "refused", message: "A revert is not undone" };
 
-        const name = found.value.field.slice("variables.".length);
+        const name = fieldVariable(found.value.field) ?? found.value.field;
 
         // SAFETY: the tests only save overrides of the settings' own shape.
         const overrides = (overridesOf.get(environment) ?? {}) as {

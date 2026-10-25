@@ -10,7 +10,8 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
-import { changeOf, type ShownChange, shownValue } from "./agent-change.ts";
+import { changeFieldText, changeValueText } from "../environments.ts";
+import { changeOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
 
@@ -133,10 +134,10 @@ const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
 const Change = ({ change }: { change: ShownChange }) => (
   <div className="mt-2 first:mt-0">
     <div className="text-xs font-medium text-muted-foreground">
-      Changed {change.field} in {change.environment.name}
+      {changeFieldText(change.field)} in {change.environment.name}
     </div>
-    <Output label="Before" text={shownValue(change.before)} />
-    <Output label="After" text={shownValue(change.after)} />
+    <Output label="Before" text={changeValueText(change.before)} />
+    <Output label="After" text={changeValueText(change.after)} />
   </div>
 );
 

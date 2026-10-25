@@ -230,22 +230,27 @@ export const ContainerSettingsState = Schema.Struct({
 
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
 
-/** The scope of the Agent changes to the Settings, beside those of each Environment (by its id). */
-export const SETTINGS_SCOPE = "settings";
+const VARIABLE_FIELD = "variables.";
+
+/** An Agent change's field for one of the variables: `variables.<NAME>`. Any other field is a setting's name. */
+export const variableField = (name: string): string => `${VARIABLE_FIELD}${name}`;
+
+/** The variable an Agent change's field names, or null for a field that is a setting's name. */
+export const fieldVariable = (field: string): string | null =>
+  field.startsWith(VARIABLE_FIELD) ? field.slice(VARIABLE_FIELD.length) : null;
 
 /** How many Agent changes each scope keeps: the oldest go once there are more. */
 export const MAX_AGENT_CHANGES = 200;
 
 /**
  * One Agent change (GLOSSARY.md → Agent change; `docs/spec.md` → Agent changes): a change the agent made to an
- * Environment or to the Settings, or the owner's revert of one. `field` names what changed (`variables.<NAME>` for a
- * variable), and `before` and `after` are its values then, null where it had none (a variable not set). A Secret's
- * change holds its name and Build mark only, never its value.
+ * Environment, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`
+ * and `after` are its values then, null where it had none (a variable not set).
  */
 export const AgentChange = Schema.Struct({
   /** Its number, which grows with each change in the Registry. */
   id: Schema.Finite,
-  /** The Environment's id, or `SETTINGS_SCOPE`. */
+  /** The Environment's id. */
   scope: Schema.String,
   at: Schema.Finite,
   /** Who made it: the agent, or the owner reverting an Agent change. */

@@ -9,6 +9,7 @@ import {
   type BuildView,
   branchProblem,
   type EnvironmentSecretRecord,
+  fieldVariable,
   MAX_ENVIRONMENT_NAME_LENGTH,
   MAX_REPO_NAME_LENGTH,
   parseRepoSource,
@@ -280,8 +281,11 @@ export const changeValueText = (value: AgentChange["before"]): string =>
   value === null ? "not set" : Predicate.isString(value) ? value : JSON.stringify(value);
 
 /** The setting an Agent change's field names, as the page says it: `variables.API_URL` is the variable API_URL. */
-export const changeFieldText = (field: string): string =>
-  field.startsWith("variables.") ? `Variable ${field.slice("variables.".length)}` : field;
+export const changeFieldText = (field: string): string => {
+  const variable = fieldVariable(field);
+
+  return variable === null ? field : `Variable ${variable}`;
+};
 
 /**
  * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it), or

@@ -2,7 +2,7 @@
 // the refusal of values that hold a Secret, and the Run's record of the changes.
 // @effect-diagnostics asyncFunction:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
-import type { AgentChange } from "@cloudpid/protocol";
+import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   ROOT_CONVERSATION_ID,
@@ -83,7 +83,7 @@ const fakeEnvironments = (current: string | null = "default") => {
 
         if (found === undefined) return { status: "missing" };
 
-        const name = change.field.slice("variables.".length);
+        const name = fieldVariable(change.field) ?? change.field;
 
         if (name === "PATH") {
           return {
@@ -300,7 +300,11 @@ describe("environment_variable_set", () => {
       own: true,
     });
     expect(logged).toEqual([
-      { tool: "environment_variable_set", environment: "Default", field: "variables.API_URL" },
+      {
+        tool: "environment_variable_set",
+        environmentName: "Default",
+        field: "variables.API_URL",
+      },
     ]);
   });
 
@@ -350,6 +354,25 @@ describe("environment_variable_set", () => {
 
     expect(environments.changes).toEqual([]);
     expect(logged).toEqual([]);
+  });
+
+  it("refuses a reason holding a Secret this Session holds, and saves nothing", async () => {
+    const environments = fakeEnvironments();
+
+    const tool = await toolsOver(environments.service, {
+      held: { API_KEY: "sk-live-0123456789" },
+    });
+
+    expect(
+      await failure(
+        run(tool("environment_variable_set"), {
+          name: "A",
+          value: "1",
+          reason: "The key is sk-live-0123456789",
+        }),
+      ),
+    ).toContain("the reason holds");
+    expect(environments.changes).toEqual([]);
   });
 
   it("refuses a value holding the GitHub token", async () => {

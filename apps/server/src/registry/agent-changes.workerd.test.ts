@@ -3,7 +3,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT, MAX_AGENT_CHANGES } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, MAX_AGENT_CHANGES, variableField } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
@@ -12,7 +12,6 @@ import {
   type ContainerFieldChange,
   openAgentChanges,
   revertAgentChange,
-  variableField,
 } from "./agent-changes.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
@@ -265,5 +264,21 @@ describe("the owner's revert of an Agent change", () => {
 
     expect(again).toMatchObject({ status: "refused" });
     expect(elsewhere).toEqual({ status: "missing" });
+  });
+
+  it("is refused once reverted, even after the agent gives the variable that value again", async () => {
+    const [twice, listed] = await inRegistry(({ change, revert, changes }) => {
+      change(setVariable("A", "2"));
+      revert(1);
+      change(setVariable("A", "2"));
+
+      return [revert(1), changes.list(DEFAULT_ENVIRONMENT)];
+    });
+
+    expect(twice).toEqual({
+      status: "refused",
+      message: "Change 1 was reverted already, by change 2",
+    });
+    expect(listed.map(({ id }) => id)).toEqual([3, 2, 1]);
   });
 });

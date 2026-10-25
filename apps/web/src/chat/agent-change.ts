@@ -4,7 +4,6 @@
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { TranscriptPart } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 /** A change as a card shows it. */
@@ -30,7 +29,3 @@ export const madeChange = (
 /** The change a card's artifact holds, if it does. */
 export const changeOf = (artifact: ToolCallMessagePartProps["artifact"]): ShownChange | undefined =>
   Option.getOrUndefined(Option.map(decodeArtifact(artifact), (found) => found.change));
-
-/** A value as a card shows it: a text as written, anything else as JSON, and null as not set. */
-export const shownValue = (value: Schema.Json | null): string =>
-  value === null ? "(not set)" : Predicate.isString(value) ? value : JSON.stringify(value, null, 2);

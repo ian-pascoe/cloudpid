@@ -9,7 +9,7 @@ import {
   containerOverridesFrom,
   DEFAULT_CONTAINER_SETTINGS,
 } from "@cloudpid/config";
-import { type AgentChange, MAX_AGENT_CHANGES } from "@cloudpid/protocol";
+import { type AgentChange, fieldVariable, MAX_AGENT_CHANGES } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -22,8 +22,7 @@ import {
   writeEnvironmentSettings,
 } from "./environment-settings.ts";
 import type { EnvironmentRepo } from "@cloudpid/protocol";
-import { buildKey } from "../workspace/build-record.ts";
-import { buildWanted } from "./builds.ts";
+import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import type { EnvironmentRecord, RegistryStorage, RegistryStore } from "./store.ts";
 
 /** Who made an Agent change: the Session, the conversation in it that called the tool, the tool, and why. */
@@ -80,24 +79,19 @@ export type AgentChangeRevert =
   | { readonly status: "refused"; readonly message: string }
   | { readonly status: "missing" };
 
-const VARIABLE_FIELD = "variables.";
-
-/** The field of variable `name`. */
-export const variableField = (name: string): string => `${VARIABLE_FIELD}${name}`;
-
 const SETTING_NAMES: ReadonlySet<string> = new Set<string>(Record.keys(DEFAULT_CONTAINER_SETTINGS));
 
 const isSetting = (field: string): field is keyof ContainerSettings => SETTING_NAMES.has(field);
 
 /** Whether `field` names a Container setting or one variable. */
 const isContainerField = (field: string): boolean =>
-  field.startsWith(VARIABLE_FIELD) || isSetting(field);
+  fieldVariable(field) !== null || isSetting(field);
 
 /** The value `field` has in `settings`: null for a variable that is not set. */
 export const fieldValue = (settings: ContainerSettings, field: string): Schema.Json | null => {
-  if (field.startsWith(VARIABLE_FIELD)) {
-    return settings.variables[field.slice(VARIABLE_FIELD.length)] ?? null;
-  }
+  const variable = fieldVariable(field);
+
+  if (variable !== null) return settings.variables[variable] ?? null;
 
   return isSetting(field) ? settings[field] : null;
 };
@@ -109,8 +103,9 @@ const overridesWith = (
 ): Schema.Json => {
   const overrides: Record<string, Schema.Json> = { ...containerOverridesFrom(settings) };
 
-  if (field.startsWith(VARIABLE_FIELD)) {
-    const name = field.slice(VARIABLE_FIELD.length);
+  const name = fieldVariable(field);
+
+  if (name !== null) {
     const { [name]: _replaced, ...others } = settings.variables;
 
     overrides.variables = value === null ? others : { ...others, [name]: value };
@@ -166,7 +161,7 @@ const toChange = (row: AgentChangeRow): AgentChange => ({
 /** What a change records: everything but its number, which the table gives it. */
 type NewAgentChange = Omit<AgentChange, "id" | "revertedBy">;
 
-/** The Agent changes the Registry keeps, by scope (an Environment's id, or the Settings'). */
+/** The Agent changes the Registry keeps, by scope (an Environment's id). */
 export type AgentChanges = {
   /** Record `change`, keeping only the newest `MAX_AGENT_CHANGES` of its scope; answers it as recorded. */
   readonly record: (change: NewAgentChange) => AgentChange;
@@ -222,7 +217,10 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
         MAX_AGENT_CHANGES,
       );
 
-      return { ...change, id: row?.id ?? 0, revertedBy: null };
+      // SQLite answers the row it inserted; one that does not is a broken store, not a change to report.
+      if (row === undefined) throw new Error("Recording an Agent change returned no id");
+
+      return { ...change, id: row.id, revertedBy: null };
     },
     list: (scope) =>
       Arr.map(
@@ -349,6 +347,14 @@ export const revertAgentChange = (
 
     if (change.actor === "owner") {
       return { status: "refused", message: "A revert is not undone: change the setting itself" };
+    }
+
+    // Once only: the agent may give the field the change's value again, which a second revert would undo unrecorded.
+    if (change.revertedBy !== null) {
+      return {
+        status: "refused",
+        message: `Change ${change.id} was reverted already, by change ${change.revertedBy}`,
+      };
     }
 
     const value = fieldValue(known.settings, change.field);

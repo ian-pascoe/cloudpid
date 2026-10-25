@@ -1,6 +1,6 @@
 // Environments for the test Sessions: one Environment, "Default", whose variables are kept in the Session's storage and
 // each of whose changes is applied as the Registry applies one, so a Session's `environment_*` tools run end to end.
-import type { AgentChange } from "@cloudpid/protocol";
+import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type { EnvironmentsService } from "@cloudpid/extensions/environment";
 import * as Effect from "effect/Effect";
@@ -31,7 +31,7 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
       Effect.sync(() => {
         if (environment !== DEFAULT.id) return { status: "missing" as const };
 
-        const name = change.field.slice("variables.".length);
+        const name = fieldVariable(change.field) ?? change.field;
         const { [name]: before = null, ...others } = variables();
 
         if (before === change.value) {

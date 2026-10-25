@@ -8,7 +8,12 @@
 // @effect-diagnostics missingPipeableSignature:off
 import type { ContainerSettings } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import type { AgentChange, BuildView, EnvironmentRepo } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  type BuildView,
+  type EnvironmentRepo,
+  variableField,
+} from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -117,7 +122,7 @@ export class Environments extends Context.Service<Environments, EnvironmentsServ
 /** An Agent change of the Run, for the Notification its end sends: the tool, the Environment's name and the field. */
 export type RunChange = {
   readonly tool: string;
-  readonly environment: string;
+  readonly environmentName: string;
   readonly field: string;
 };
 
@@ -135,8 +140,6 @@ export class DeployCredentials extends Context.Service<
 
 /** The longest reason a change may give. */
 export const MAX_CHANGE_REASON = 500;
-
-const VARIABLE_FIELD = "variables.";
 
 const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));
 
@@ -244,7 +247,7 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
         : []),
       ...(newBuild
         ? [
-            "The Environment's Build depends on it, so a new Build was asked for (environment_get shows how it goes).",
+            "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes).",
           ]
         : []),
     ],
@@ -261,7 +264,7 @@ const Reason = Schema.String.check(
   Schema.isMaxLength(MAX_CHANGE_REASON),
 ).annotate({
   description:
-    "Why you make the change, for the user to read in the Environment's history, such as 'the tests read the API address from API_URL'",
+    "Why you make the change, for the user to read in the Environment's Agent changes, such as 'the tests read the API address from API_URL'",
 });
 
 const VariableName = Schema.String.check(Schema.isMinLength(1)).annotate({
@@ -299,11 +302,14 @@ export const EnvironmentTools: Effect.Effect<
 
   for (const value of (yield* DeployCredentials).values) credentials.hold("GITHUB_TOKEN", value);
 
-  /** Whether `value` holds a Secret's value or a credential, as written or in an encoding redaction knows. */
+  /**
+   * Whether `value` holds a Secret's value or a credential, as written or in an encoding redaction knows: checked once
+   * the Secrets are fresh, so one the owner has just kept for the Environment counts.
+   */
   const holdsSecret = (value: string) =>
-    Effect.as(
+    Effect.map(
       secrets.refresh,
-      secrets.redact(value) !== value || credentials.redact(value) !== value,
+      () => secrets.redact(value) !== value || credentials.redact(value) !== value,
     );
 
   /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
@@ -346,8 +352,16 @@ export const EnvironmentTools: Effect.Effect<
         });
       }
 
+      // The reason is kept with the change as written, for the user to read.
+      if (yield* holdsSecret(reason)) {
+        return yield* EnvironmentsError.make({
+          message:
+            "Nothing was saved: the reason holds the value of a Secret this Session holds, or of the GitHub token. Say why without it.",
+        });
+      }
+
       const { environment, own } = yield* target(id);
-      const field = `${VARIABLE_FIELD}${name}`;
+      const field = variableField(name);
 
       const applied = yield* environments.change({
         environment,
@@ -382,7 +396,7 @@ export const EnvironmentTools: Effect.Effect<
         case "changed": {
           const { change } = applied;
 
-          yield* log.record({ tool, environment: applied.environment.name, field });
+          yield* log.record({ tool, environmentName: applied.environment.name, field });
 
           const did = value === null ? `Unset ${name}` : `Set ${name}`;
 

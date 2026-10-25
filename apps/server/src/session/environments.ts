@@ -16,6 +16,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type { RegistryMethods } from "../registry/Registry.ts";
+import type { EnvironmentRecord } from "../registry/store.ts";
 import type { Builds } from "../registry/builds.ts";
 import type { Placement } from "./workspace.ts";
 
@@ -65,8 +66,11 @@ const keptFor = (
   ];
 };
 
-/** A failed call to the Registry or the Workspace, as the model sees it. */
-const unreachable = (what: string) => (cause: unknown) =>
+/** An Environment as a change names it: its id and name. */
+const changedEnvironment = ({ id, name }: EnvironmentRecord) => ({ id, name });
+
+/** The error of a failed call to the Registry or the Workspace, as the model sees it. */
+const failedCall = (what: string) => (cause: unknown) =>
   EnvironmentsError.make({ message: `${what} failed: ${String(cause)}. Try again.` });
 
 export const sessionEnvironments = ({
@@ -84,7 +88,7 @@ export const sessionEnvironments = ({
 
     const { workspace, object } = yield* Effect.tryPromise({
       try: placement,
-      catch: unreachable("Finding the Session's Workspace"),
+      catch: failedCall("Finding the Session's Workspace"),
     });
 
     const record =
@@ -158,7 +162,7 @@ export const sessionEnvironments = ({
           case "unchanged":
             return {
               status: "unchanged",
-              environment: { id: answer.environment.id, name: answer.environment.name },
+              environment: changedEnvironment(answer.environment),
               value: answer.value,
             };
           case "changed":
@@ -191,7 +195,7 @@ export const sessionEnvironments = ({
 
         return {
           status: "changed",
-          environment: { id: answer.environment.id, name: answer.environment.name },
+          environment: changedEnvironment(answer.environment),
           change: answer.change,
           newBuild: answer.newBuild,
         } satisfies AppliedChange;

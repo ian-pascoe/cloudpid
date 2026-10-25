@@ -4,14 +4,14 @@
 // the Repos, the Container settings a Build uses, the image) is neither the last good one nor under way, or once a day
 // to look at the Repos' default branches. What the Build object answers is recorded in the Registry, which hands the
 // last good Build to each new Workspace and shows where each stands (`listBuilds`).
-import { type ContainerSettings, resolveContainerSettingsLeniently } from "@cloudpid/config";
+import { resolveContainerSettingsLeniently } from "@cloudpid/config";
 import type { BuildView, EnvironmentRepo } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { buildObjectName } from "../workspace/binding.ts";
-import { buildKey, type BuildState } from "../workspace/build-record.ts";
+import { buildKey, type BuildState, buildWanted } from "../workspace/build-record.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import { noEnvironment, reason } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
@@ -76,16 +76,6 @@ export const buildDue = ({
 
   return due ? "check" : undefined;
 };
-
-/**
- * Whether an Environment has a Build: one with no Repo, no Setup Script and no Toolchains has nothing a Build would
- * hold beyond the image.
- */
-// @effect-diagnostics-next-line missingPipeableSignature:off
-export const buildWanted = (
-  repos: ReadonlyArray<EnvironmentRepo>,
-  settings: Pick<ContainerSettings, "setupScript" | "toolchains">,
-): boolean => repos.length > 0 || settings.setupScript !== "" || settings.toolchains !== "";
 
 /** Where an Environment's Build stands, for the owner, from what the Registry recorded. */
 export const buildView = ({ build, status }: BuildRecord): BuildView => {
