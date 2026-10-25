@@ -5,16 +5,14 @@ import { isModelId, THINKING_LEVELS } from "@cloudpid/config";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
-import { Archive, ArchiveRestore, ArrowLeft, Pencil } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft } from "lucide-react";
 import { type ForkKind, MAX_TITLE_LENGTH, type SessionView } from "@cloudpid/protocol";
 import { panesAtom } from "../panes-state.ts";
 import { TREE_PANE } from "../panes.ts";
 import { forkChooserAtom } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
-import { Input } from "../components/ui/input.tsx";
 import { isLevel, modelChoices, modelName } from "../models.ts";
-import { settledFailureOf } from "../registry.ts";
 import { navigate, SETTINGS_PATH } from "../router.ts";
 import {
   configureAtom,
@@ -35,7 +33,7 @@ import { UsageBadge } from "./usage-badge.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
-import { type Rename, saveTitleAtom, titleDraftAtom } from "./title-state.ts";
+import type { Rename } from "./title-state.ts";
 
 /** An archived Session: read-only until the owner unarchives it, which resolves to null or why it failed. */
 export type Archived = { readonly unarchive: () => Promise<string | null> };
@@ -82,86 +80,14 @@ const ArchivedBanner = ({ archived }: { archived: Archived }) => (
   </Unarchiving.Provider>
 );
 
-/**
- * The title and a button that turns it into a field to rename it in place. Enter (outside an IME composition) or
- * leaving the field saves, Escape cancels; the field stays, with the reason inline, while a save fails.
- */
-const EditableTitle = ({ title, rename }: { title: string | undefined; rename: Rename }) => {
-  const sessionId = useShownSessionId();
-  const [draft, setDraft] = useAtom(titleDraftAtom(sessionId));
-  const [saved, save] = useAtom(saveTitleAtom(sessionId));
-  const saving = saved.waiting;
-  const problem = settledFailureOf(saved);
-
-  const close = () => {
-    setDraft(null);
-    save(Atom.Reset);
-  };
-
-  const submit = () => {
-    if (!saving) save(rename);
-  };
-
-  if (draft === null) {
-    return (
-      <div className="flex min-w-0 flex-1 items-center gap-1">
-        <h2 className="min-w-0 truncate text-sm font-semibold">{title ?? "Session"}</h2>
-        <button
-          type="button"
-          onClick={() => {
-            setDraft(rename.current);
-          }}
-          aria-label={`Rename ${title ?? "session"}`}
-          className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Pencil className="size-3.5" />
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-w-0 flex-1">
-      <Input
-        autoFocus
-        aria-label="Session title"
-        aria-invalid={problem !== null}
-        value={draft}
-        maxLength={MAX_TITLE_LENGTH}
-        disabled={saving}
-        className="h-8 w-full font-semibold"
-        onChange={(event) => {
-          setDraft(event.target.value);
-          save(Atom.Reset);
-        }}
-        onBlur={() => {
-          // A field that could not save is left as it was, rather than tried again by the blur.
-          if (problem === null) submit();
-          else close();
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.nativeEvent.isComposing) submit();
-          else if (event.key === "Escape") close();
-        }}
-      />
-      {problem !== null && (
-        <p role="alert" className="mt-1 text-xs text-destructive">
-          {problem}
-        </p>
-      )}
-    </div>
-  );
-};
-
+/** The Session's title (renamed from its "⋯" menu, among the `actions`), its origin under it, and the actions. */
 const Header = ({
   title,
   subtitle,
-  rename,
   actions,
 }: {
   title: string | undefined;
   subtitle: ReactNode;
-  rename: Rename | undefined;
   actions: ReactNode;
 }) => (
   <header className="flex items-center gap-2 border-b px-4 py-2.5">
@@ -176,11 +102,7 @@ const Header = ({
       <ArrowLeft className="size-4" />
     </button>
     <div className="flex min-w-0 flex-1 flex-col">
-      {rename === undefined ? (
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title ?? "Session"}</h2>
-      ) : (
-        <EditableTitle title={title} rename={rename} />
-      )}
+      <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title ?? "Session"}</h2>
       {subtitle !== undefined && subtitle !== null && (
         <p className="min-w-0 truncate text-xs text-muted-foreground">{subtitle}</p>
       )}
@@ -410,7 +332,7 @@ export const Thread = ({
   title: string | undefined;
   /** A line under the title: the Session this one is a Fork or Clone of. */
   subtitle?: ReactNode;
-  /** Lets the owner rename the Session from its header. */
+  /** Lets the owner rename the Session with `/name`; the "⋯" menu renames it too. */
   rename?: Rename | undefined;
   /** Set while the Session is archived: no composer, a banner to unarchive it instead. */
   archived?: Archived | undefined;
@@ -468,7 +390,7 @@ export const Thread = ({
 
   return (
     <ThreadPrimitive.Root ref={dropZone} className="flex min-h-0 flex-1 flex-col">
-      <Header title={title} subtitle={subtitle} rename={rename} actions={actions} />
+      <Header title={title} subtitle={subtitle} actions={actions} />
       {notice !== null && notice !== undefined && (
         <p
           role="status"

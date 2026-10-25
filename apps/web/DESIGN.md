@@ -267,7 +267,7 @@ The page a new Session starts from, centred in the main column (a back arrow abo
 
 ### Dialog
 
-The platform's modal `dialog` (`showModal`, focus trapped, Escape closes; a click on the backdrop closes it too): a bordered 10 px panel, at most 448 px wide and 16 px from the screen's edges, 20 px padding, `shadow-sm`, over the Backdrop. A 16 px semibold title that asks the question, a muted 14 px description, the body, then the actions: right-aligned on a row, stacked full width on a phone with the main action on top. A destructive confirm names what is lost and keeps Cancel focused; deleting a Workspace also asks for its slug typed in, and its button stays disabled until it matches.
+The platform's modal `dialog` (`showModal`, focus trapped, Escape closes; a click on the backdrop closes it too): a bordered 10 px panel, at most 448 px wide and 16 px from the screen's edges, 20 px padding, `shadow-sm`, over the Backdrop. A 16 px semibold title that asks the question, a muted 14 px description, the body, then the actions: right-aligned on a row, stacked full width on a phone with the main action on top. A destructive confirm names what is lost and keeps Cancel focused; deleting a Workspace also asks for its slug typed in, and its button stays disabled until it matches. A dialog that edits one value (renaming a Session) holds its field, focused with the text selected, and Return saves; why a save failed shows under the field.
 
 ### Composer
 

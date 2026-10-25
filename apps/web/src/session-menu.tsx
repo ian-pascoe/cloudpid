@@ -1,11 +1,13 @@
-import type { SessionRecord } from "@cloudpid/protocol";
+import { MAX_TITLE_LENGTH, type SessionRecord } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { Archive, ArchiveRestore, GitFork, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, GitFork, Pencil, Trash2 } from "lucide-react";
+import { type Rename, saveTitleAtom, titleDraft } from "./chat/title-state.ts";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
+import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
@@ -18,13 +20,75 @@ import {
 } from "./sessions.ts";
 
 /**
- * What a Session's menu does besides delete: start another Session in its Workspace, archive and unarchive, through the
- * Session list.
+ * What a Session's menu does besides delete: rename it, start another Session in its Workspace, archive and unarchive,
+ * through the Session list.
  */
-export type SessionActions = Pick<AllSessionActions, "create" | "archive" | "unarchive">;
+export type SessionActions = Pick<AllSessionActions, "rename" | "create" | "archive" | "unarchive">;
 
 /** Whether a menu's delete dialog is open; each menu has its own, since a Session's page and its list item both have one. */
 const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
+
+/** The title typed in a menu's rename dialog, or null while it is closed; each menu has its own, as for delete. */
+const RenameDraft = ScopedAtom.make(titleDraft);
+
+/**
+ * Rename a Session: its title in a field, saved by Save or Return (outside an IME composition), the reason inline while
+ * a save fails. A blank or unchanged title only closes it.
+ */
+const RenameSessionDialog = ({ rename }: { rename: Rename }) => {
+  const draft = RenameDraft.use();
+  const [typed, setTyped] = useAtom(draft);
+  const saving_ = saveTitleAtom(draft);
+  const [saved, save] = useAtom(saving_);
+  const saving = saved.waiting;
+  const problem = settledFailureOf(saved);
+
+  const close = () => {
+    if (saving) return;
+
+    setTyped(null);
+    save(Atom.Reset);
+  };
+
+  return (
+    <Dialog open={typed !== null} onClose={close} dismissible={!saving} title="Rename session">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+
+          if (!saving) save(rename);
+        }}
+        className="flex flex-col gap-4"
+      >
+        <Input
+          autoFocus
+          aria-label="Session title"
+          aria-invalid={problem !== null}
+          value={typed ?? ""}
+          maxLength={MAX_TITLE_LENGTH}
+          disabled={saving}
+          placeholder="Untitled session"
+          onChange={(event) => {
+            setTyped(event.target.value);
+            save(Atom.Reset);
+          }}
+          onFocus={(event) => {
+            event.currentTarget.select();
+          }}
+        />
+        <DialogProblem problem={problem} />
+        <DialogActions>
+          <Button type="button" variant="outline" disabled={saving} onClick={close}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        </DialogActions>
+      </form>
+    </Dialog>
+  );
+};
 
 /**
  * Confirm deleting a Session: what goes (its conversations and history) and what stays (its files), or, for the last
@@ -102,13 +166,23 @@ const Actions = ({
   className?: string | undefined;
 }) => {
   const setOpen = useAtomSet(DeleteOpen.use());
+  const setTyped = useAtomSet(RenameDraft.use());
   // A delete that failed shows no more once the dialog is opened again.
   const forgetDelete = useAtomSet(deleteSessionAtom(session.id));
   const archived = session.archivedAt !== null;
+  const current = session.title ?? "";
 
   return (
     <>
       <Menu label={`Actions for ${sessionTitle(session)}`} className={className}>
+        <MenuItem
+          onSelect={() => {
+            setTyped(current);
+          }}
+        >
+          <Pencil aria-hidden />
+          Rename…
+        </MenuItem>
         {!archived && (
           <MenuItem
             onSelect={() => {
@@ -150,13 +224,16 @@ const Actions = ({
         </MenuItem>
       </Menu>
       <DeleteSessionDialog session={session} environmentName={environmentName} />
+      <RenameSessionDialog
+        rename={{ current, save: (title) => actions.rename(session.id, title) }}
+      />
     </>
   );
 };
 
 /**
- * A Session's "⋯" menu: start another Session in its Workspace, archive or unarchive it, or delete it after a
- * confirmation. A menu has no room for a failure, so a new Session, an archive or an unarchive that failed is reported
+ * A Session's "⋯" menu: rename it, start another Session in its Workspace, archive or unarchive it, or delete it after
+ * a confirmation. A menu has no room for a failure, so a new Session, an archive or an unarchive that failed is reported
  * by `actions` to the surface the menu is on.
  */
 export const SessionMenu = (props: {
@@ -166,6 +243,8 @@ export const SessionMenu = (props: {
   className?: string | undefined;
 }) => (
   <DeleteOpen.Provider>
-    <Actions {...props} />
+    <RenameDraft.Provider>
+      <Actions {...props} />
+    </RenameDraft.Provider>
   </DeleteOpen.Provider>
 );

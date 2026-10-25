@@ -6,7 +6,10 @@ import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { settledFailureOf } from "../registry.ts";
 import { settled } from "../registry.testing.ts";
-import { type Rename, saveTitleAtom, titleDraftAtom } from "./title-state.ts";
+import { type Rename, saveTitleAtom, titleDraft } from "./title-state.ts";
+
+/** One menu's rename dialog, as its `ScopedAtom` makes it. */
+const draft = titleDraft();
 
 /** A rename of a Session titled `current` that refuses `refused`, and the titles it saved. */
 const renaming = (current: string) => {
@@ -26,72 +29,72 @@ const renaming = (current: string) => {
   return { rename, saved };
 };
 
-const typing = (registry: AtomRegistry.AtomRegistry, draft: string) => {
-  registry.mount(saveTitleAtom("s1"));
-  registry.set(titleDraftAtom("s1"), draft);
+const typing = (registry: AtomRegistry.AtomRegistry, title: string) => {
+  registry.mount(saveTitleAtom(draft));
+  registry.set(draft, title);
 };
 
-describe("renaming a Session in place", () => {
-  it.effect("saves the trimmed title and closes the field", () =>
+describe("renaming a Session from its menu", () => {
+  it.effect("saves the trimmed title and closes the dialog", () =>
     Effect.gen(function* () {
       const registry = AtomRegistry.make();
       const { rename, saved } = renaming("Old");
 
       typing(registry, "  New  ");
-      registry.set(saveTitleAtom("s1"), rename);
-      yield* settled(registry, saveTitleAtom("s1"));
+      registry.set(saveTitleAtom(draft), rename);
+      yield* settled(registry, saveTitleAtom(draft));
 
       expect(saved).toEqual(["New"]);
-      expect(registry.get(titleDraftAtom("s1"))).toBe(null);
+      expect(registry.get(draft)).toBe(null);
     }),
   );
 
-  it.effect("only closes the field for a blank or unchanged title", () =>
+  it.effect("only closes the dialog for a blank or unchanged title", () =>
     Effect.gen(function* () {
       const registry = AtomRegistry.make();
       const { rename, saved } = renaming("Old");
 
       typing(registry, " Old ");
-      registry.set(saveTitleAtom("s1"), rename);
-      yield* settled(registry, saveTitleAtom("s1"));
+      registry.set(saveTitleAtom(draft), rename);
+      yield* settled(registry, saveTitleAtom(draft));
 
       typing(registry, "   ");
-      registry.set(saveTitleAtom("s1"), rename);
-      yield* settled(registry, saveTitleAtom("s1"));
+      registry.set(saveTitleAtom(draft), rename);
+      yield* settled(registry, saveTitleAtom(draft));
 
       expect(saved).toEqual([]);
-      expect(registry.get(titleDraftAtom("s1"))).toBe(null);
+      expect(registry.get(draft)).toBe(null);
     }),
   );
 
-  it.effect("keeps the field open, saying why, when the save is refused, until reset", () =>
+  it.effect("keeps the dialog open, saying why, when the save is refused, until reset", () =>
     Effect.gen(function* () {
       const registry = AtomRegistry.make();
       const { rename } = renaming("Old");
 
       typing(registry, "refused");
-      registry.set(saveTitleAtom("s1"), rename);
+      registry.set(saveTitleAtom(draft), rename);
 
-      expect(settledFailureOf(yield* settled(registry, saveTitleAtom("s1")))).toBe(
+      expect(settledFailureOf(yield* settled(registry, saveTitleAtom(draft)))).toBe(
         "No such session.",
       );
-      expect(registry.get(titleDraftAtom("s1"))).toBe("refused");
+      expect(registry.get(draft)).toBe("refused");
 
-      registry.set(saveTitleAtom("s1"), Atom.Reset);
+      registry.set(saveTitleAtom(draft), Atom.Reset);
 
-      expect(settledFailureOf(registry.get(saveTitleAtom("s1")))).toBe(null);
+      expect(settledFailureOf(registry.get(saveTitleAtom(draft)))).toBe(null);
     }),
   );
 
-  it.effect("saves nothing once the field is closed, as when it blurs on closing", () =>
+  it.effect("saves nothing once the dialog is closed", () =>
     Effect.gen(function* () {
       const registry = AtomRegistry.make();
       const { rename, saved } = renaming("Old");
 
       typing(registry, "New");
-      registry.set(titleDraftAtom("s1"), null);
-      registry.set(saveTitleAtom("s1"), rename);
-      yield* settled(registry, saveTitleAtom("s1"));
+      registry.set(draft, null);
+      registry.set(saveTitleAtom(draft), rename);
+      yield* settled(registry, saveTitleAtom(draft));
 
       expect(saved).toEqual([]);
     }),
