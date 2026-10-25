@@ -40,6 +40,7 @@ import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH, SUBAGENT_TOOLSET_OPTIONS } from "./subagents/options.ts";
+import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 import { ALWAYS_OFFERED } from "./tool-search.ts";
 
 export const extensionName = "settings";
@@ -228,6 +229,11 @@ export const describeSettings = (view: SettingsView): string => {
         extensionField("subagents", "maxSubagentDepth"),
         settings.extensions.subagents?.maxSubagentDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH,
       )}. A Limit: settings_subagent_depth_set changes it once the user approves.`,
+      `${line(
+        "Subagent Workspace limit (Subagent Workspaces one Session may have at once)",
+        extensionField("subagents", "maxSubagentWorkspaces"),
+        settings.extensions.subagents?.maxSubagentWorkspaces ?? DEFAULT_MAX_SUBAGENT_WORKSPACES,
+      )}. A Limit: settings_subagent_workspaces_set changes it once the user approves.`,
       `Extension options: ${options.length === 0 ? "none" : `\n${Arr.join(options, "\n")}`}`,
       ...(view.problem === undefined
         ? []
@@ -698,7 +704,7 @@ export const SettingsTools: Effect.Effect<
     description: Arr.join(
       [
         `Set one option of one extension: the settings keep each extension's options under its name, and an extension reads the ones it knows. The subagents extension reads ${Arr.join(SUBAGENT_TOOLSET_OPTIONS, ", ")} (lists of tool names or patterns with *: the tools a subagent is granted); an option no extension reads is saved and does nothing. A value of null takes the option away, back to the extension's default.`,
-        "The subagent depth (subagents.maxSubagentDepth) is a Limit: it is not set here, but with settings_subagent_depth_set, which asks the user for their Approval.",
+        "The subagent depth (subagents.maxSubagentDepth) and the Subagent Workspace limit (subagents.maxSubagentWorkspaces) are Limits: they are not set here, but with settings_subagent_depth_set and settings_subagent_workspaces_set, which ask the user for their Approval.",
         LIMIT_NOTE,
       ],
       "\n\n",
@@ -723,6 +729,13 @@ export const SettingsTools: Effect.Effect<
           return yield* SettingsAccessError.make({
             message:
               "subagents.maxSubagentDepth is a Limit: it is not set with settings_extension_set. Use settings_subagent_depth_set, which asks the user for their Approval.",
+          });
+        }
+
+        if (extension === "subagents" && key === "maxSubagentWorkspaces") {
+          return yield* SettingsAccessError.make({
+            message:
+              "subagents.maxSubagentWorkspaces is a Limit: it is not set with settings_extension_set. Use settings_subagent_workspaces_set, which asks the user for their Approval.",
           });
         }
 

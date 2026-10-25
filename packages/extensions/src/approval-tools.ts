@@ -52,6 +52,7 @@ import { Redactions } from "./secrets/redaction.ts";
 import { Secrets } from "./secrets/store.ts";
 import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
+import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 
 export const extensionName = "approval-tools";
 
@@ -151,6 +152,20 @@ const depthOf = (stored: Schema.Json | null): number =>
 /** A stored subagent depth as the owner reads it. */
 const storedDepthWords = (stored: Schema.Json | null): string =>
   `${depthWords(depthOf(stored))}${stored === null ? " (the default)" : ""}`;
+
+/** A Subagent Workspace limit as the owner reads it. */
+const workspacesWords = (limit: number): string =>
+  `${limit} Subagent Workspace${limit === 1 ? "" : "s"} per Session`;
+
+/** The Subagent Workspace limit a stored value gives: the default where it is unset or not a limit. */
+const workspacesOf = (stored: Schema.Json | null): number =>
+  Predicate.isNumber(stored) && Number.isInteger(stored) && stored >= 0
+    ? stored
+    : DEFAULT_MAX_SUBAGENT_WORKSPACES;
+
+/** A stored Subagent Workspace limit as the owner reads it. */
+const storedWorkspacesWords = (stored: Schema.Json | null): string =>
+  `${workspacesWords(workspacesOf(stored))}${stored === null ? " (the default)" : ""}`;
 
 /** A size limit as the owner reads it. */
 const sizeWords = (size: InstanceType): string => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
@@ -471,6 +486,59 @@ export const ApprovalTools: Effect.Effect<
           before: storedDepthWords(stored),
           after: depthWords(depth),
           words: storedDepthWords,
+        });
+      }),
+  });
+
+  const workspacesField = extensionField("subagents", "maxSubagentWorkspaces");
+
+  const subagentWorkspaces = yield* defineEffectTool({
+    name: "settings_subagent_workspaces_set",
+    description: Arr.join(
+      [
+        `Set the Subagent Workspace limit: how many Subagent Workspaces (subagent with workspace "new": a Workspace of its own, with its own Container) one Session may have at once, default ${DEFAULT_MAX_SUBAGENT_WORKSPACES}. Each runs a Container of its own, which costs while it runs. It is a Limit, so the user must approve the change. Subagent Workspaces that exist stay.`,
+        APPROVAL,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      limit: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+        description: "Subagent Workspaces one Session may have at once; 0 allows none",
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "safe",
+    execute: ({ limit, reason }, api) =>
+      Effect.gen(function* () {
+        yield* plainReason(reason);
+
+        const view = yield* access.get;
+        const stored = view.settings.extensions.subagents?.maxSubagentWorkspaces ?? null;
+
+        if (workspacesOf(stored) === limit && !(yield* askedBefore(approvals, api))) {
+          return {
+            output: [
+              {
+                type: "text" as const,
+                text: `The Subagent Workspace limit is ${limit} already: nothing was asked, changed or recorded.`,
+              },
+            ],
+            details: { unchanged: [workspacesField], agentChanges: [] },
+          };
+        }
+
+        return yield* changeLimit({
+          tool: "settings_subagent_workspaces_set",
+          field: workspacesField,
+          value: limit,
+          stored,
+          reason,
+          api,
+          change: "Subagent Workspace limit",
+          before: storedWorkspacesWords(stored),
+          after: workspacesWords(limit),
+          words: storedWorkspacesWords,
         });
       }),
   });
@@ -886,6 +954,13 @@ export const ApprovalTools: Effect.Effect<
 
   return defineExtension({
     name: extensionName,
-    tools: [spendLimit, subagentDepth, sizeLimit, deleteEnvironment, deleteSecret],
+    tools: [
+      spendLimit,
+      subagentDepth,
+      subagentWorkspaces,
+      sizeLimit,
+      deleteEnvironment,
+      deleteSecret,
+    ],
   });
 });
