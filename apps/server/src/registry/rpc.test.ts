@@ -2995,13 +2995,18 @@ describe("a Test Build", () => {
     return { fake, environment };
   };
 
-  const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.result(effect));
+  /** What `effect` succeeds with. */
+  const ok = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
+
+  /** Why `effect` fails. */
+  const refused = <A, E>(effect: Effect.Effect<A, E>) =>
+    effect.pipe(Effect.flip, Effect.runPromise);
 
   it("asks the Test Build object for the saved settings with the proposed fields replaced, leaving the Build object alone", async () => {
     const { fake, environment } = await saved();
     const before = fake.buildObjects.get(`build:${environment}`);
 
-    const started = await run(
+    const started = await ok(
       fake.buildUpkeep.test.start({
         environment,
         id: "s-1/7",
@@ -3009,10 +3014,7 @@ describe("a Test Build", () => {
       }),
     );
 
-    expect(started).toMatchObject({
-      _tag: "Success",
-      success: { id: "s-1/7", status: "building" },
-    });
+    expect(started).toMatchObject({ id: "s-1/7", status: "building" });
     // Nothing is recorded: the Registry's record of the Build is the Build object's.
     expect(buildCalls(fake)).toEqual([
       `buildState:test-build:${environment}`,
@@ -3020,7 +3022,13 @@ describe("a Test Build", () => {
     ]);
 
     const repos = [{ name: "app", url: "https://github.com/acme/app.git" }];
-    const settings = { setupScript: "exit 1", startScript: "make up", idleMinutes: 30, variables: { CI: "1" } };
+
+    const settings = {
+      setupScript: "exit 1",
+      startScript: "make up",
+      idleMinutes: 30,
+      variables: { CI: "1" },
+    };
 
     expect(fake.buildRequests.get(`test-build:${environment}`)).toEqual({
       key: await buildKey({
@@ -3046,7 +3054,7 @@ describe("a Test Build", () => {
     const { fake, environment } = await saved();
     const repos = [{ name: "web", url: "https://github.com/acme/web.git" }];
 
-    await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: { repos } }));
+    await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: { repos } }));
 
     expect(fake.buildRequests.get(`test-build:${environment}`)?.repos).toEqual(repos);
   });
@@ -3055,66 +3063,60 @@ describe("a Test Build", () => {
     const { fake, environment } = await saved();
 
     expect(
-      await run(
+      await refused(
         fake.buildUpkeep.test.start({
           environment,
           id: "s-1/7",
           proposed: { variables: { PATH: "/bin" } },
         }),
       ),
-    ).toMatchObject({
-      _tag: "Failure",
-      failure: expect.stringContaining("The proposed settings are refused: variables"),
-    });
+    ).toContain("The proposed settings are refused: variables");
     expect(
-      await run(
+      await refused(
         fake.buildUpkeep.test.start({
           environment,
           id: "s-1/7",
           proposed: { repos: [], setupScript: "" },
         }),
       ),
-    ).toMatchObject({ _tag: "Failure", failure: expect.stringContaining("nothing to build") });
+    ).toContain("nothing to build");
     expect(fake.calls).not.toContain(`startBuild:test-build:${environment}`);
   });
 
   it("is refused while another runs, and found again by its own id", async () => {
     const { fake, environment } = await saved();
 
-    await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
+    await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
 
     expect(
-      await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} })),
-    ).toMatchObject({ _tag: "Success", success: { id: "s-1/7", status: "building" } });
+      await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} })),
+    ).toMatchObject({ id: "s-1/7", status: "building" });
     expect(
-      await run(fake.buildUpkeep.test.start({ environment, id: "s-2/1", proposed: {} })),
-    ).toMatchObject({
-      _tag: "Failure",
-      failure: expect.stringContaining("Another Test Build of the environment is under way"),
-    });
-    expect(
-      await run(fake.buildUpkeep.test.state({ environment, id: "s-2/1" })),
-    ).toMatchObject({ _tag: "Success", success: null });
+      await refused(fake.buildUpkeep.test.start({ environment, id: "s-2/1", proposed: {} })),
+    ).toContain("Another Test Build of the environment is under way");
+    expect(await ok(fake.buildUpkeep.test.state({ environment, id: "s-2/1" }))).toBeNull();
   });
 
   it("is cancelled through its object", async () => {
     const { fake, environment } = await saved();
 
-    await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
-    await run(fake.buildUpkeep.test.cancel({ environment, id: "s-1/7" }));
+    await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
+    await ok(fake.buildUpkeep.test.cancel({ environment, id: "s-1/7" }));
 
     expect(fake.calls).toContain(`cancelBuild:test-build:${environment}:s-1/7`);
-    expect(
-      await run(fake.buildUpkeep.test.state({ environment, id: "s-1/7" })),
-    ).toMatchObject({ _tag: "Success", success: { status: "cancelled" } });
+    expect(await ok(fake.buildUpkeep.test.state({ environment, id: "s-1/7" }))).toMatchObject({
+      status: "cancelled",
+    });
   });
 
   it("refuses an Environment that is not there", async () => {
     const fake = fakeRegistries();
 
     expect(
-      await run(fake.buildUpkeep.test.start({ environment: "0000beef", id: "s-1/7", proposed: {} })),
-    ).toMatchObject({ _tag: "Failure" });
+      await refused(
+        fake.buildUpkeep.test.start({ environment: "0000beef", id: "s-1/7", proposed: {} }),
+      ),
+    ).toContain("0000beef");
     expect(fake.calls).not.toContain("startBuild:test-build:0000beef");
   });
 });

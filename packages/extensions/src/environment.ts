@@ -907,13 +907,19 @@ export const EnvironmentTools: Effect.Effect<
       }),
   });
 
-  /** Fails, saving nothing, when a text holds a Secret the Session holds or a deploy-time credential. */
-  const refuseSecrets = (texts: ReadonlyArray<{ readonly what: string; readonly text: string }>) =>
+  /**
+   * Fails, saving nothing (`outcome` says what was not done), when a text holds a Secret the Session holds or a
+   * deploy-time credential.
+   */
+  const refuseSecrets = (
+    texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
+    outcome = "Nothing was saved",
+  ) =>
     Effect.gen(function* () {
       for (const { what, text } of texts) {
         if (text !== "" && (yield* holdsSecret(text))) {
           return yield* EnvironmentsError.make({
-            message: `Nothing was saved: ${what} holds the value of a Secret this Session holds, or of the GitHub token. Say it without the value; a credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page.`,
+            message: `${outcome}: ${what} holds the value of a Secret this Session holds, or of the GitHub token. Say it without the value; a credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page.`,
           });
         }
       }

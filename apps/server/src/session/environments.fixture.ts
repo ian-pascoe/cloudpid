@@ -22,6 +22,9 @@ export const unusedLifecycle: EnvironmentLifecycle & SecretMarks = {
   removeRepo: unused,
   rebuild: unused,
   markSecret: unused,
+  startTestBuild: unused,
+  testBuild: unused,
+  cancelTestBuild: unused,
 };
 
 export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {

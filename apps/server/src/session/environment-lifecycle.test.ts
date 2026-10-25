@@ -4,6 +4,8 @@
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
+import type { ProposedBuild } from "../registry/builds.ts";
+import type { TestBuildState } from "../workspace/build-record.ts";
 import { type LifecycleRegistry, sessionLifecycle } from "./environment-lifecycle.ts";
 
 const RECORD = { id: "0000abcd", name: "Other", repos: [], createdAt: 0 };
@@ -40,6 +42,14 @@ type Options = {
   readonly known?: boolean;
 };
 
+/** The Test Builds asked for, what each state read answers next (the last repeats), and the ids cancelled. */
+type FakeTestBuilds = {
+  started: Array<{ environment: string; id: string; proposed: ProposedBuild }>;
+  states: Array<TestBuildState | null>;
+  reads: number;
+  cancelled: string[];
+};
+
 const open = ({
   answer = "changed",
   rebuild = Effect.succeed("asked" as const),
@@ -48,6 +58,8 @@ const open = ({
 }: Options = {}) => {
   const asked: Array<{ op: string; input: Asked }> = [];
   const upkept: string[] = [];
+
+  const tests: FakeTestBuilds = { started: [], states: [], reads: 0, cancelled: [] };
 
   const said = () => {
     switch (answer) {
@@ -107,11 +119,23 @@ const open = ({
         rebuild.pipe(
           Effect.tap(() => Effect.sync(() => void upkept.push(`rebuild:${environment}`))),
         ),
+      test: {
+        start: (input) =>
+          Effect.sync(() => {
+            tests.started.push({ ...input });
+
+            return { id: input.id, key: "k", startedAt: 5, status: "building" as const };
+          }),
+        state: () =>
+          Effect.sync(() => tests.states[Math.min(tests.reads++, tests.states.length - 1)] ?? null),
+        cancel: ({ id }) => Effect.sync(() => void tests.cancelled.push(id)),
+      },
     },
     spares: { of: (environment) => Effect.sync(() => void upkept.push(`spare:${environment}`)) },
+    testBuildRound: { roundMs: 30, pollMs: 10 },
   });
 
-  return { lifecycle, asked, upkept };
+  return { lifecycle, asked, upkept, tests };
 };
 
 describe("creating an Environment", () => {
@@ -237,6 +261,109 @@ describe("changing the Repos", () => {
       );
       expect(upkept).toEqual([]);
     }
+  });
+});
+
+describe("a Test Build", () => {
+  it("parses the proposed Repos as the owner's are and asks the Builds, by the Session's id and the call's", async () => {
+    const { lifecycle, asked, upkept, tests } = open();
+
+    const started = await Effect.runPromise(
+      lifecycle.startTestBuild({
+        environment: "0000abcd",
+        call: "7",
+        proposed: {
+          repos: [{ url: "o/app" }, { url: "o/api", name: "backend" }],
+          setupScript: "x",
+        },
+      }),
+    );
+
+    expect(started).toEqual({
+      status: "started",
+      environment: { id: "0000abcd", name: "Other" },
+      progress: { status: "building", startedAt: 5 },
+    });
+    expect(tests.started).toEqual([
+      {
+        environment: "0000abcd",
+        id: "s-1/7",
+        proposed: {
+          repos: [
+            { name: "app", url: "https://github.com/o/app.git" },
+            { name: "backend", url: "https://github.com/o/api.git" },
+          ],
+          setupScript: "x",
+        },
+      },
+    ]);
+    // Nothing is recorded, and no upkeep runs: nothing changed.
+    expect(asked).toEqual([]);
+    expect(upkept).toEqual([]);
+  });
+
+  it("refuses a Repo the owner's rules refuse, and two in one directory, asking nothing", async () => {
+    const { lifecycle, tests } = open();
+
+    for (const repos of [[{ url: "ftp://x" }], [{ url: "o/app" }, { url: "p/app" }]]) {
+      expect(
+        (
+          await Effect.runPromise(
+            lifecycle.startTestBuild({ environment: "0000abcd", call: "7", proposed: { repos } }),
+          )
+        ).status,
+      ).toBe("rejected");
+    }
+
+    expect(tests.started).toEqual([]);
+  });
+
+  it("passes on why the Builds refuse it, and finds an Environment that is not there missing", async () => {
+    expect(
+      (
+        await Effect.runPromise(
+          open({ known: false }).lifecycle.startTestBuild({
+            environment: "ghost",
+            call: "7",
+            proposed: {},
+          }),
+        )
+      ).status,
+    ).toBe("missing");
+  });
+
+  it("waits a round, answering as soon as it ended, or how it stands at the round's end", async () => {
+    const { lifecycle, tests } = open();
+    const building = { id: "s-1/7", key: "k", startedAt: 5, status: "building" as const };
+
+    tests.states = [building, { ...building, status: "succeeded", finishedAt: 9 }];
+
+    expect(
+      await Effect.runPromise(lifecycle.testBuild({ environment: "0000abcd", call: "7" })),
+    ).toEqual({ status: "succeeded", startedAt: 5, finishedAt: 9 });
+
+    tests.states = [building];
+    tests.reads = 0;
+
+    expect(
+      await Effect.runPromise(lifecycle.testBuild({ environment: "0000abcd", call: "7" })),
+    ).toEqual({ status: "building", startedAt: 5 });
+    expect(tests.reads).toBeGreaterThan(1);
+
+    tests.states = [null];
+    tests.reads = 0;
+
+    expect(
+      await Effect.runPromise(lifecycle.testBuild({ environment: "0000abcd", call: "7" })),
+    ).toEqual({ status: "gone" });
+  });
+
+  it("cancels by the Session's id and the call's", async () => {
+    const { lifecycle, tests } = open();
+
+    await Effect.runPromise(lifecycle.cancelTestBuild({ environment: "0000abcd", call: "7" }));
+
+    expect(tests.cancelled).toEqual(["s-1/7"]);
   });
 });
 

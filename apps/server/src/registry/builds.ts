@@ -337,10 +337,10 @@ const testBuilds = (
       const written = writeEnvironmentSettings(
         containerOverridesFrom({
           ...saved,
-          ...(proposed.variables === undefined ? {} : { variables: proposed.variables }),
-          ...(proposed.setupScript === undefined ? {} : { setupScript: proposed.setupScript }),
-          ...(proposed.toolchains === undefined ? {} : { toolchains: proposed.toolchains }),
-          ...(proposed.ignore === undefined ? {} : { ignore: proposed.ignore }),
+          variables: proposed.variables ?? saved.variables,
+          setupScript: proposed.setupScript ?? saved.setupScript,
+          toolchains: proposed.toolchains ?? saved.toolchains,
+          ignore: proposed.ignore ?? saved.ignore,
         }),
       );
 
@@ -358,6 +358,7 @@ const testBuilds = (
       }
 
       const name = testBuildObjectName(environment);
+
       const { image } = yield* onTestObject("Could not reach the Test Build", () =>
         workspaces.buildState(name),
       );
@@ -397,7 +398,9 @@ const testBuilds = (
           : "The Test Build was not begun",
       );
     }).pipe(
-      Effect.catchDefect((defect) => Effect.fail(`Could not ask for the Test Build: ${String(defect)}`)),
+      Effect.catchDefect((defect) =>
+        Effect.fail(`Could not ask for the Test Build: ${String(defect)}`),
+      ),
     ),
   state: ({ environment, id }) =>
     Effect.map(
