@@ -124,6 +124,9 @@ describe("toolSummary", () => {
       "no limit",
     );
     expect(toolSummary("settings_subagent_depth_set", { depth: 3, reason: "r" })).toBe("depth 3");
+    expect(toolSummary("settings_subagent_workspaces_set", { limit: 5, reason: "r" })).toBe(
+      "limit 5",
+    );
     expect(
       toolSummary("environment_container_size_limit_set", { id: "0000abcd", size: "custom-3" }),
     ).toBe("0000abcd: limit custom-3");

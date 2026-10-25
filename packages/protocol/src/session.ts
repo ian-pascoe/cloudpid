@@ -541,6 +541,11 @@ export const GraphAgent = Schema.Struct({
   model: Schema.String,
   /** `working` while its conversation has live work, otherwise `idle`: it keeps its history and can take more input. */
   status: Schema.Literals(["working", "idle"]),
+  /**
+   * The branch of the Subagent Workspace it works in (its own, or the nearest ancestor's it shares); absent for one that
+   * works in the Session's Workspace.
+   */
+  branch: Schema.optionalKey(Schema.String),
 });
 
 export type GraphAgent = typeof GraphAgent.Type;

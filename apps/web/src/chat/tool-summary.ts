@@ -155,6 +155,10 @@ const spendLimit = (args: Args): Option.Option<string> =>
 const subagentDepth = (args: Args): Option.Option<string> =>
   Predicate.isNumber(args.depth) ? Option.some(`depth ${args.depth}`) : Option.none();
 
+/** What a `settings_subagent_workspaces_set` call asks to set: Subagent Workspaces per Session. */
+const subagentWorkspaces = (args: Args): Option.Option<string> =>
+  Predicate.isNumber(args.limit) ? Option.some(`limit ${args.limit}`) : Option.none();
+
 /** `line`, after the agent a call names when it names one. */
 const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string> =>
   Option.map(line, (value) =>
@@ -225,6 +229,8 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return spendLimit(args);
       case "settings_subagent_depth_set":
         return subagentDepth(args);
+      case "settings_subagent_workspaces_set":
+        return subagentWorkspaces(args);
       case "environment_setup_script_set":
       case "environment_start_script_set":
       case "environment_toolchains_set":

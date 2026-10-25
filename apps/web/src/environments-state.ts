@@ -7,7 +7,12 @@ import {
   type InstanceType,
   type ContainerSettings,
 } from "@cloudpid/config";
-import type { BuildView, ContainerSettingsState } from "@cloudpid/protocol";
+import type {
+  BuildView,
+  ContainerSettingsState,
+  WorkspaceRecord,
+  WorkspaceWork,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -288,6 +293,43 @@ export const removeWorkspaceAtom = Atom.family((id: string) =>
     { concurrent: true },
   ),
 );
+
+/**
+ * What Workspace `id`'s clones hold that is not on the remote, per Repo (`workspaceWork`): read on its Container when a
+ * confirmation that would lose it opens, and again each time one does.
+ */
+export const workspaceWorkAtom = Atom.family((id: string) =>
+  RegistryClient.query("workspaceWork", { id }, { reactivityKeys: [`workspace-work:${id}`] }),
+);
+
+/** The Subagent Workspaces of Session `session`, as the last listing has them. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain lookup in a listing.
+export const subagentWorkspacesOf = (
+  workspaces: ReadonlyArray<WorkspaceRecord> | null,
+  session: string,
+): WorkspaceRecord[] =>
+  Arr.filter(workspaces ?? [], (workspace) => workspace.subagent?.session === session);
+
+/** What a Workspace holds that is not on the remote, in words: `app: 2 commits not pushed, 1 uncommitted change`. */
+export const describeWorkspaceWork = (work: ReadonlyArray<WorkspaceWork>): string =>
+  Arr.join(
+    Arr.map(
+      work,
+      ({ repo, uncommitted, unpushed }) =>
+        `${repo}: ${Arr.join(
+          [
+            ...(unpushed > 0
+              ? [`${unpushed} ${unpushed === 1 ? "commit" : "commits"} not pushed`]
+              : []),
+            ...(uncommitted > 0
+              ? [`${uncommitted} uncommitted ${uncommitted === 1 ? "change" : "changes"}`]
+              : []),
+          ],
+          ", ",
+        )}`,
+    ),
+    "; ",
+  );
 
 /**
  * Stop a Workspace's Container of Environment `id` and forget its saved disk; its files and Sessions stay. Once it is

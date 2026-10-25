@@ -58,11 +58,41 @@ import {
   restartContainerAtom,
   saveEnvironmentAtom,
   startSessionAtom,
+  describeWorkspaceWork,
+  subagentWorkspacesOf,
   workspaceBranchesAtom,
   workspaceListAtom,
   workspacesAtom,
 } from "./environments-state.ts";
 import { EMPTY_SECRET_DRAFT, EVERY_ENVIRONMENT } from "./environments.ts";
+
+describe("Subagent Workspaces on the Environments page", () => {
+  it("says what a Workspace has not pushed, per Repo", () => {
+    expect(
+      describeWorkspaceWork([
+        { repo: "app", uncommitted: 1, unpushed: 2 },
+        { repo: "docs", uncommitted: 3, unpushed: 0 },
+      ]),
+    ).toBe("app: 2 commits not pushed, 1 uncommitted change; docs: 3 uncommitted changes");
+  });
+
+  it("finds a Session's Subagent Workspaces in the listing", () => {
+    const listed = {
+      id: "0000abcd",
+      environment: "default",
+      branch: "cloudpid/0000abcd",
+      base: null,
+      repos: [],
+      directory: "/workspace",
+      createdAt: 0,
+    };
+
+    const owned = { ...listed, id: "0000beef", subagent: { session: "s1", agent: "agent-1" } };
+
+    expect(subagentWorkspacesOf([listed, owned], "s1")).toEqual([owned]);
+    expect(subagentWorkspacesOf(null, "s1")).toEqual([]);
+  });
+});
 
 const environment = (
   id: string,
