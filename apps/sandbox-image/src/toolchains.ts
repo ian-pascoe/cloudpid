@@ -385,14 +385,17 @@ exit "$status"
 `;
 };
 
-/** A repo's Setup Script, relative to the repo's directory: what prepares the repo on a Container (its dependencies). */
-export const SETUP_SCRIPT = ".agents/setup.sh";
+/**
+ * A repo's Setup Script, relative to the repo's directory: what prepares the repo on a Container (its dependencies).
+ * Under `.cloudpid/`, not the shared `.agents/`, since only cloudpid runs it (ADR-0020).
+ */
+export const SETUP_SCRIPT = ".cloudpid/setup.sh";
 
 /**
  * A repo's Start Script, relative to the repo's directory: what brings up the repo's services (a database, a dev
  * dependency) at each Container start, which a snapshot of the disk cannot hold.
  */
-export const START_SCRIPT = ".agents/start.sh";
+export const START_SCRIPT = ".cloudpid/start.sh";
 
 /**
  * Where the Container records the Setup Scripts that succeeded, one file per script holding its SHA-256: a repo's under

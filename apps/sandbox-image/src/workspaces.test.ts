@@ -289,7 +289,7 @@ describe("a clone's Setup Script", () => {
     const { root, state, sh, prepare } = container();
 
     prepare();
-    mkdirSync(join(root, "app", ".agents"), { recursive: true });
+    mkdirSync(join(root, "app", ".cloudpid"), { recursive: true });
     writeFileSync(join(root, "app", SETUP_SCRIPT), "echo ran >> ../setup-runs\n");
 
     expect(sh(repoSetupScript("app", root, state)).status).toBe(0);
@@ -315,7 +315,7 @@ describe("a clone's Start Script", () => {
     const { root, prepare } = workspace;
 
     prepare();
-    mkdirSync(join(root, "app", ".agents"), { recursive: true });
+    mkdirSync(join(root, "app", ".cloudpid"), { recursive: true });
     writeFileSync(join(root, "app", START_SCRIPT), 'echo "$PWD" >> ../start-runs\n');
 
     const runs = () =>
@@ -339,7 +339,7 @@ describe("a clone's Start Script", () => {
     sh(repoStartScript("app", root));
     sh(`rm -rf ${join(root, "app")}`);
     prepare();
-    mkdirSync(join(root, "app", ".agents"), { recursive: true });
+    mkdirSync(join(root, "app", ".cloudpid"), { recursive: true });
     writeFileSync(join(root, "app", START_SCRIPT), 'echo "$PWD" >> ../start-runs\n');
     sh(repoStartScript("app", root));
 

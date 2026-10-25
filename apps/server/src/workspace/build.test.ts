@@ -36,7 +36,7 @@ const stepOf = (script: string): string => {
 
   if (script.includes("/var/lib/cloudpid/environment/setup.sh")) return "environment-setup";
 
-  const repo = /\/var\/tmp\/cloudpid-build\/([^/']+)\/\.agents\/setup\.sh/.exec(script);
+  const repo = /\/var\/tmp\/cloudpid-build\/([^/']+)\/\.cloudpid\/setup\.sh/.exec(script);
 
   if (repo !== null) return `setup:${repo[1]}`;
 
@@ -333,7 +333,7 @@ describe("a Build", () => {
     expect(state.progress).toEqual({
       status: "failed",
       key: "key-2",
-      reason: "The Setup Script app/.agents/setup.sh failed (exit 1): npm ERR! 401 with ***",
+      reason: "The Setup Script app/.cloudpid/setup.sh failed (exit 1): npm ERR! 401 with ***",
       at: fake.now,
     });
     expect(fake.warnings.join("\n")).not.toContain(TOKEN);

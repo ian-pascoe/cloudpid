@@ -603,7 +603,7 @@ const StartupFields = ({
       value={draft.setupScript}
       placeholder="sudo apt-get install -y postgresql-client"
       problem={scriptFieldProblem(draft.setupScript)}
-      hint="Runs in /workspace before the repos' .agents/setup.sh, to install what the Workspace needs. It runs again only when it changes, or after it failed."
+      hint="Runs in /workspace before the repos' .cloudpid/setup.sh, to install what the Workspace needs. It runs again only when it changes, or after it failed."
       onChange={(setupScript) => {
         onChange({ setupScript });
       }}
@@ -615,7 +615,7 @@ const StartupFields = ({
       value={draft.startScript}
       placeholder={"setsid nohup docker compose up >/tmp/compose.log 2>&1 &"}
       problem={scriptFieldProblem(draft.startScript)}
-      hint="Runs in /workspace at every Container start, before the repos' .agents/start.sh, and is stopped after 5 minutes. A service it starts must detach (setsid nohup cmd >/tmp/cmd.log 2>&1 &), or the script does not end."
+      hint="Runs in /workspace at every Container start, before the repos' .cloudpid/start.sh, and is stopped after 5 minutes. A service it starts must detach (setsid nohup cmd >/tmp/cmd.log 2>&1 &), or the script does not end."
       onChange={(startScript) => {
         onChange({ startScript });
       }}

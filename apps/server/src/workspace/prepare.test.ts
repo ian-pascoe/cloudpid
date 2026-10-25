@@ -196,7 +196,7 @@ describe("readying a Workspace", () => {
 
     await prepare({ ...setup, secrets: [marked, other] });
 
-    expect(scripts[1]?.script).toContain("/workspace/api/.agents/setup.sh");
+    expect(scripts[1]?.script).toContain("/workspace/api/.cloudpid/setup.sh");
     expect(scripts[1]?.env).toEqual({ [variable]: marked.value });
     expect(scripts[0]?.env ?? {}).not.toHaveProperty(variable);
     expect(scripts[2]?.env ?? {}).not.toHaveProperty(variable);
@@ -236,8 +236,8 @@ describe("readying a Workspace", () => {
     expect(scripts[0]?.script).not.toContain("clone_or_report 'app'");
     expect(scripts[0]?.script).toContain("branch='cloudpid/1a2b3c4d'");
     expect(scripts[0]?.timeoutSeconds).toBe(CLONE_TIMEOUT_SECONDS);
-    expect(scripts[1]?.script).toContain("/workspace/api/.agents/setup.sh");
-    expect(scripts[2]?.script).toContain("/workspace/api/.agents/start.sh");
+    expect(scripts[1]?.script).toContain("/workspace/api/.cloudpid/setup.sh");
+    expect(scripts[2]?.script).toContain("/workspace/api/.cloudpid/start.sh");
     expect(scripts[2]?.timeoutSeconds).toBeGreaterThan(5 * 60);
   });
 
@@ -250,8 +250,8 @@ describe("readying a Workspace", () => {
     expect(scripts[0]?.script).toContain("clone_or_report 'app' 'https://github.com/acme/app.git'");
     expect(scripts[0]?.script).not.toContain("clone_or_report 'api'");
     expect(scripts[0]?.script).toContain(`spare='${SPARE_BRANCH}'`);
-    expect(scripts[1]?.script).toContain("/workspace/app/.agents/setup.sh");
-    expect(scripts[2]?.script).toContain("/workspace/app/.agents/start.sh");
+    expect(scripts[1]?.script).toContain("/workspace/app/.cloudpid/setup.sh");
+    expect(scripts[2]?.script).toContain("/workspace/app/.cloudpid/start.sh");
   });
 
   it("leaves a spare's own clones on its branch, starting no Container", async () => {
@@ -295,7 +295,7 @@ describe("readying a Workspace", () => {
     await prepare();
 
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("/workspace/app/.agents/setup.sh failed");
+    expect(warnings[0]).toContain("/workspace/app/.cloudpid/setup.sh failed");
     expect(warnings[0]).toContain("ERR_PNPM_NO_LOCKFILE");
   });
 
@@ -312,7 +312,7 @@ describe("readying a Workspace", () => {
     await prepare();
 
     expect(warnings).toHaveLength(2);
-    expect(warnings[1]).toContain("/workspace/app/.agents/start.sh failed");
+    expect(warnings[1]).toContain("/workspace/app/.cloudpid/start.sh failed");
     expect(warnings[1]).toContain("docker: not running");
   });
 

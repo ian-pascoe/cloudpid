@@ -205,11 +205,11 @@ A program an Environment or Repo declares in its mise configuration, which the C
 _Avoid_: Dependency, package (for tools)
 
 **Setup Script**:
-A script that installs what an Environment's Workspaces need (typically their dependencies): the Environment's own, and each Repo's `.agents/setup.sh`. A Build runs them; a Workspace runs each once on its Container, a Workspace made from a Build too, and again when it changes on the Workspace's branch.
+A script that installs what an Environment's Workspaces need (typically their dependencies): the Environment's own, and each Repo's `.cloudpid/setup.sh`. A Build runs them; a Workspace runs each once on its Container, a Workspace made from a Build too, and again when it changes on the Workspace's branch.
 _Avoid_: Install script, setup hook
 
 **Start Script**:
-A script that starts what a Workspace needs running (databases, services) at each start of its Container: the Environment's own, and each Repo's `.agents/start.sh`.
+A script that starts what a Workspace needs running (databases, services) at each start of its Container: the Environment's own, and each Repo's `.cloudpid/start.sh`.
 _Avoid_: Setup Script (for this), startup hook, entrypoint
 
 **Container-only path**:

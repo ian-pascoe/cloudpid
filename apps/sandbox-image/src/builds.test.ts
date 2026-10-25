@@ -234,9 +234,9 @@ describe("a Build's Setup Scripts", () => {
   it("runs the Environment's in the scratch root and each Repo's in its clone, recording them", () => {
     const { root, state, repos, app, git, sh } = container();
 
-    mkdirSync(join(app.work, ".agents"));
+    mkdirSync(join(app.work, ".cloudpid"));
     writeFileSync(join(app.work, SETUP_SCRIPT), 'echo "repo in $PWD" > ../repo-ran\n');
-    git("add .agents", app.work);
+    git("add .cloudpid", app.work);
     git("commit -q -m setup", app.work);
     git("push -q origin main", app.work);
     sh(buildCloneScript(repos, root, "file"));
