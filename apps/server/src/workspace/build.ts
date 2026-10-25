@@ -10,7 +10,10 @@
 // record, snapshots the Container (after the scan for the token and the Environment's Secrets) and stops it. The
 // Setup Scripts get the Environment's Secrets marked for the Build, as `$PI_SECRET_<NAME>` (the name a Session's
 // commands get them under), in their environment only. The last good Build is kept with the state of the one in
-// progress or the last failure; a Build that fails keeps the last good one.
+// progress or the last failure; a Build that fails keeps the last good one. An Environment's Test Build object
+// (`testBuildObjectName`) makes Test Builds of proposed changes the same way, one at a time, by the id of the call that
+// asks: their outcome is answered to that call (`BuildState.test`), never kept as the last good Build, and a cancel
+// stops one.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import {
   containerOverridesFrom,
@@ -34,12 +37,7 @@ import {
   setupScriptRunIfDue,
 } from "@cloudpid/sandbox-image/toolchains";
 import type * as Schema from "effect/Schema";
-import type {
-  BuildRequest,
-  BuildState,
-  EnvironmentBuild,
-  TestBuildState,
-} from "./build-record.ts";
+import type { BuildRequest, BuildState, EnvironmentBuild, TestBuildState } from "./build-record.ts";
 import { buildSecretEnvironment, type HeldSecrets } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
 import { CLONE_TIMEOUT_SECONDS, SCRIPT_RUN_MARGIN_SECONDS, type ScriptRun } from "./prepare.ts";
@@ -260,7 +258,9 @@ export class BuildRunner {
       try {
         await deps.stop();
       } catch (cause) {
-        deps.warn(`${LOG_KEY}: stopping the cancelled Test Build's Container failed: ${String(cause)}`);
+        deps.warn(
+          `${LOG_KEY}: stopping the cancelled Test Build's Container failed: ${String(cause)}`,
+        );
       }
     }
 

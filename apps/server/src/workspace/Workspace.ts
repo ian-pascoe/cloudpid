@@ -705,8 +705,9 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s): it is
-   * kept and begun at the alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
+   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s), or
+   * its Test Build of a request marked `test` (the object is `testBuildObjectName`'s): it is kept and begun at the
+   * alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
    * Environment's, are kept sealed apart from the request: those for the Build reach its Setup Scripts, and every one is
    * searched for before its snapshot.
    */
