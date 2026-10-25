@@ -252,8 +252,8 @@ describe("the agent adding and removing Repos", () => {
     expect(listed[0]).toMatchObject({ field: "repos.app", before: APP.url, after: null });
   });
 
-  it("are reverted by the opposite, unless the Repo has changed since", async () => {
-    const [outAgain, backAgain, repos, since] = await inRegistry(
+  it("are reverted by the opposite", async () => {
+    const [outAgain, backAgain, repos, finalRepos] = await inRegistry(
       ({ add, remove, revert, store }) => {
         add(DEFAULT_ENVIRONMENT, APP); // change 1
         remove(DEFAULT_ENVIRONMENT, "app"); // change 2
@@ -278,7 +278,7 @@ describe("the agent adding and removing Repos", () => {
       status: "reverted",
       change: { field: "repos.app", before: APP.url, after: null, reverts: 1 },
     });
-    expect(since).toEqual([]);
+    expect(finalRepos).toEqual([]);
   });
 
   it("refuse the revert of an add when the Repo was removed and added at another address", async () => {

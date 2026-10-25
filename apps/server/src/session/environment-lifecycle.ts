@@ -6,6 +6,8 @@
 import type {
   EnvironmentLifecycle,
   RecordChanged,
+  RecordMade,
+  RecordOutcome,
 } from "@cloudpid/extensions/environment-lifecycle";
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import {
@@ -19,6 +21,11 @@ import * as Result from "effect/Result";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { Spares } from "../registry/rpc.ts";
+import type {
+  LifecycleChange,
+  LifecycleChanged,
+  LifecycleOutcome,
+} from "../registry/environment-lifecycle.ts";
 import type { EnvironmentRecord } from "../registry/store.ts";
 
 /** What the lifecycle operations use of the Registry. */
@@ -58,7 +65,7 @@ const repoOf = (
 ): Result.Result<EnvironmentRepo, string> => {
   const found = parseRepoSource(source);
 
-  if (Result.isFailure(found)) return Result.fail(`${source}: ${found.failure}`);
+  if (Result.isFailure(found)) return Result.fail(found.failure);
 
   const directory = name ?? found.success.name;
   const problem = directoryProblem(directory);
@@ -96,7 +103,9 @@ export const sessionLifecycle = ({
         for (const source of repos) {
           const repo = repoOf(source, undefined);
 
-          if (Result.isFailure(repo)) return { status: "rejected" as const, message: repo.failure };
+          if (Result.isFailure(repo)) {
+            return { status: "rejected" as const, message: `${source}: ${repo.failure}` };
+          }
 
           parsed.push(repo.success);
         }
@@ -161,7 +170,7 @@ export const sessionLifecycle = ({
 
         if (answer.status === "changed") yield* keepCurrent(environment);
 
-        return recordChanged(answer);
+        return recordedChange(answer);
       }),
     rebuild: ({ environment, author: by }) =>
       Effect.gen(function* () {
@@ -179,24 +188,28 @@ export const sessionLifecycle = ({
 
         if (refused !== undefined) return { status: "rejected" as const, message: refused };
 
-        return recordChanged(
+        return recordedChange(
           yield* registry.recordRebuild({ environment, author: { session: owner, ...by } }),
         );
       }),
   };
 };
 
-/** The Registry's answer to a change of an Environment's record, as the Session reports it. */
-const recordChanged = (
-  answer: Effect.Success<ReturnType<RegistryMethods["recordRebuild"]>>,
-): RecordChanged => {
-  switch (answer.status) {
-    case "changed":
-      return {
+/** The Registry's answer to a change that was made, as the Session reports it; a refusal as it is. */
+const recordedChange = (answer: LifecycleOutcome<LifecycleChanged>): RecordOutcome<RecordMade> =>
+  answer.status === "changed"
+    ? {
         status: "changed",
         environment: changedEnvironment(answer.environment),
         change: answer.change,
-      };
+      }
+    : answer;
+
+/** The Registry's answer to a rename or an add of a Repo, as the Session reports it. */
+const recordChanged = (answer: LifecycleChange): RecordChanged => {
+  switch (answer.status) {
+    case "changed":
+      return recordedChange(answer);
     case "unchanged":
       return { status: "unchanged", environment: changedEnvironment(answer.environment) };
     case "rejected":

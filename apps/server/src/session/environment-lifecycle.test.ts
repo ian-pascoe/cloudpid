@@ -69,6 +69,12 @@ const open = ({
       return said();
     });
 
+  // A removal and a Build asked for are never answered "unchanged".
+  const changing = (name: string) => (input: Asked) =>
+    Effect.map(op(name)(input), (answered) =>
+      answered.status === "unchanged" ? { status: "missing" as const } : answered,
+    );
+
   const registry: LifecycleRegistry = {
     agentCreateEnvironment: (input) =>
       Effect.sync(() => {
@@ -87,8 +93,8 @@ const open = ({
       }),
     agentRenameEnvironment: op("rename"),
     agentAddRepo: op("addRepo"),
-    agentRemoveRepo: op("removeRepo"),
-    recordRebuild: op("recordRebuild"),
+    agentRemoveRepo: changing("removeRepo"),
+    recordRebuild: changing("recordRebuild"),
     getEnvironment: () => Effect.succeed(known ? RECORD : null),
   };
 

@@ -20,22 +20,32 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { noEnvironment } from "./messages.ts";
+import { nameTaken, noEnvironment, noRepo, repoTaken } from "./messages.ts";
 import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
 import type { EnvironmentRecord, RegistryStorage, RegistryStore } from "./store.ts";
 
-/** How an Agent change to an Environment's record went. */
-export type LifecycleChange =
-  | {
-      readonly status: "changed";
-      readonly environment: EnvironmentRecord;
-      readonly change: AgentChange;
-    }
-  /** The record already was as asked (the name it has, the Repo it holds): nothing was saved or recorded. */
-  | { readonly status: "unchanged"; readonly environment: EnvironmentRecord }
+/** An Agent change made to an Environment's record, as recorded. */
+export type LifecycleChanged = {
+  readonly status: "changed";
+  readonly environment: EnvironmentRecord;
+  readonly change: AgentChange;
+};
+
+/** The record already was as asked (the name it has, the Repo it holds): nothing was saved or recorded. */
+export type LifecycleUnchanged = {
+  readonly status: "unchanged";
+  readonly environment: EnvironmentRecord;
+};
+
+/** How an Agent change to an Environment's record went: `A` where it was allowed, else why not. */
+export type LifecycleOutcome<A> =
+  | A
   /** Not allowed, said as the owner's RPC says it: nothing was saved. */
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
+
+/** How a rename or an add of a Repo went. */
+export type LifecycleChange = LifecycleOutcome<LifecycleChanged | LifecycleUnchanged>;
 
 /** How the agent's making an Environment went. */
 export type EnvironmentCreation =
@@ -45,13 +55,6 @@ export type EnvironmentCreation =
       readonly change: AgentChange;
     }
   | { readonly status: "rejected"; readonly message: string };
-
-/** The message of a name another Environment has already, as the owner's RPC says it. */
-const nameTaken = (name: string): string => `Another environment is already named "${name}"`;
-
-/** The message of a Repo directory another Repo has already, as the owner's RPC says it. */
-const repoTaken = (name: string): string =>
-  `The environment already has a repo in ${name}: name this one`;
 
 const sameText = Schema.toEquivalence(Schema.String);
 
@@ -114,7 +117,10 @@ export const createEnvironmentAs = (
       }
 
       if (directories.has(repo.name)) {
-        return { status: "rejected", message: repoTaken(repo.name) };
+        return {
+          status: "rejected",
+          message: `Two repos would be cloned into ${repo.name}: make the Environment with one, then add the other with environment_repo_add and a directory name`,
+        };
       }
 
       directories.add(repo.name);
@@ -237,8 +243,8 @@ export const removeRepoAs = (
     readonly author: AgentChangeAuthor;
   },
   now: number,
-): LifecycleChange =>
-  storage.transactionSync((): LifecycleChange => {
+): LifecycleOutcome<LifecycleChanged> =>
+  storage.transactionSync((): LifecycleOutcome<LifecycleChanged> => {
     const known = store.getEnvironment(environment);
 
     if (known === null) return { status: "missing" };
@@ -246,7 +252,7 @@ export const removeRepoAs = (
     const held = Arr.findFirst(known.repos, (each) => each.name === name);
 
     if (Option.isNone(held)) {
-      return { status: "rejected", message: `The environment has no repo "${name}"` };
+      return { status: "rejected", message: noRepo(name) };
     }
 
     store.removeRepo(environment, name);
@@ -265,8 +271,8 @@ export const recordRebuildAs = (
   changes: AgentChanges,
   { environment, author }: { readonly environment: string; readonly author: AgentChangeAuthor },
   now: number,
-): LifecycleChange =>
-  storage.transactionSync((): LifecycleChange => {
+): LifecycleOutcome<LifecycleChanged> =>
+  storage.transactionSync((): LifecycleOutcome<LifecycleChanged> => {
     const known = store.getEnvironment(environment);
 
     if (known === null) return { status: "missing" };

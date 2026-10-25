@@ -36,7 +36,7 @@ import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
 import { buildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
-import { noEnvironment, reason, thenSaying } from "./messages.ts";
+import { noEnvironment, noRepo, nameTaken, reason, repoTaken, thenSaying } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import type { EnvironmentNaming, SessionRecord, SessionRefusal, WorkspaceRecord } from "./store.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -421,7 +421,7 @@ export const serveRegistryRpc = <R = never>(
         case "named":
           return Effect.succeed(naming.environment);
         case "taken":
-          return failed(`Another environment is already named "${name}"`);
+          return failed(nameTaken(name));
         case "missing":
           return failed(noEnvironment(id ?? name));
       }
@@ -781,7 +781,7 @@ export const serveRegistryRpc = <R = never>(
 
               return repo;
             case "taken":
-              return yield* failed(`The environment already has a repo in ${repo}: name this one`);
+              return yield* failed(repoTaken(repo));
             default:
               return yield* failed(noEnvironment(environment));
           }
@@ -795,7 +795,7 @@ export const serveRegistryRpc = <R = never>(
                   Effect.andThen(background(builds.of(environment))),
                 );
               case "absent":
-                return failed(`The environment has no repo "${repo}"`);
+                return failed(noRepo(repo));
               default:
                 return failed(noEnvironment(environment));
             }

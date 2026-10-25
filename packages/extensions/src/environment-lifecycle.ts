@@ -19,19 +19,29 @@ import {
   type RunChange,
 } from "./environment.ts";
 
-/** How an Agent change to an Environment's record went, as the Session reports it. */
-export type RecordChanged =
-  | {
-      readonly status: "changed";
-      readonly environment: ChangedEnvironment;
-      /** The change as the Registry recorded it, with the values before and after. */
-      readonly change: AgentChange;
-    }
-  /** The record already was as asked: nothing was saved or recorded. */
-  | { readonly status: "unchanged"; readonly environment: ChangedEnvironment }
+/** An Agent change made to an Environment's record, as the Session reports it. */
+export type RecordMade = {
+  readonly status: "changed";
+  readonly environment: ChangedEnvironment;
+  /** The change as the Registry recorded it, with the values before and after. */
+  readonly change: AgentChange;
+};
+
+/** The record already was as asked: nothing was saved or recorded. */
+export type RecordUnchanged = {
+  readonly status: "unchanged";
+  readonly environment: ChangedEnvironment;
+};
+
+/** How an Agent change to an Environment's record went: `A` where it was allowed, else why not. */
+export type RecordOutcome<A> =
+  | A
   /** Not allowed, said as the owner's save says it: nothing was saved. */
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
+
+/** How a rename or an add of a Repo went. */
+export type RecordChanged = RecordOutcome<RecordMade | RecordUnchanged>;
 
 /** How the agent's making an Environment went. */
 export type EnvironmentMade =
@@ -71,12 +81,12 @@ export type EnvironmentLifecycle = {
     readonly environment: string;
     readonly name: string;
     readonly author: ChangeAuthor;
-  }) => Effect.Effect<RecordChanged, EnvironmentsError>;
+  }) => Effect.Effect<RecordOutcome<RecordMade>, EnvironmentsError>;
   /** Ask for a new Build now, as the owner's Rebuild does, and record it once it is under way. */
   readonly rebuild: (input: {
     readonly environment: string;
     readonly author: ChangeAuthor;
-  }) => Effect.Effect<RecordChanged, EnvironmentsError>;
+  }) => Effect.Effect<RecordOutcome<RecordMade>, EnvironmentsError>;
 };
 
 const Id = Schema.String.annotate({
@@ -178,12 +188,12 @@ export const lifecycleTools = ({
   });
 
   /** Apply `change` to the Environment `id` names; what it answers for each outcome but a recorded change. */
-  const applied = (
+  const applied = <A extends RecordMade | RecordUnchanged>(
     id: string | undefined,
-    change: (environment: string) => Effect.Effect<RecordChanged, EnvironmentsError>,
+    change: (environment: string) => Effect.Effect<RecordOutcome<A>, EnvironmentsError>,
   ) =>
     Effect.gen(function* () {
-      const { environment, own } = yield* target(id);
+      const { environment } = yield* target(id);
       const answer = yield* change(environment);
 
       switch (answer.status) {
@@ -192,7 +202,7 @@ export const lifecycleTools = ({
         case "rejected":
           return yield* refused(answer.message);
         default:
-          return { answer, own };
+          return answer;
       }
     });
 
@@ -275,7 +285,7 @@ export const lifecycleTools = ({
           { what: "the reason", text: reason },
         ]);
 
-        const { answer } = yield* applied(id, (environment) =>
+        const answer = yield* applied(id, (environment) =>
           environments.rename({
             environment,
             name,
@@ -326,7 +336,7 @@ export const lifecycleTools = ({
           { what: "the reason", text: reason },
         ]);
 
-        const { answer } = yield* applied(id, (environment) =>
+        const answer = yield* applied(id, (environment) =>
           environments.addRepo({
             environment,
             source: url,
@@ -373,22 +383,18 @@ export const lifecycleTools = ({
     replay: "unsafe",
     execute: ({ id, name, reason }, api) =>
       Effect.gen(function* () {
-        yield* refuseSecrets([{ what: "the reason", text: reason }]);
+        yield* refuseSecrets([
+          { what: "the name", text: name },
+          { what: "the reason", text: reason },
+        ]);
 
-        const { answer } = yield* applied(id, (environment) =>
+        const answer = yield* applied(id, (environment) =>
           environments.removeRepo({
             environment,
             name,
             author: { conversation: api.conversationId, tool: "environment_repo_remove", reason },
           }),
         );
-
-        if (answer.status === "unchanged") {
-          return unchangedResult(
-            `${named(answer.environment)} has no repo ${name}: nothing changed, and nothing was recorded.`,
-            answer.environment,
-          );
-        }
 
         const { environment, change } = answer;
 
@@ -417,19 +423,12 @@ export const lifecycleTools = ({
       Effect.gen(function* () {
         yield* refuseSecrets([{ what: "the reason", text: reason }]);
 
-        const { answer } = yield* applied(id, (environment) =>
+        const answer = yield* applied(id, (environment) =>
           environments.rebuild({
             environment,
             author: { conversation: api.conversationId, tool: "environment_rebuild", reason },
           }),
         );
-
-        if (answer.status === "unchanged") {
-          return unchangedResult(
-            `${named(answer.environment)}: nothing to ask for.`,
-            answer.environment,
-          );
-        }
 
         const { environment, change } = answer;
 

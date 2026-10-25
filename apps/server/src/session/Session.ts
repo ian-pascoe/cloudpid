@@ -299,19 +299,16 @@ export const SessionLive = Session.make(
         const spares = spareUpkeep(registries, { workspaces: workspaceObjects });
         const builds = buildUpkeep(registries, { workspaces: workspaceObjects, spares });
 
+        const registryObject = registries.getByName(REGISTRY_NAME);
+
         const environments = sessionEnvironments({
-          registry: registries.getByName(REGISTRY_NAME),
+          registry: registryObject,
           session: name,
           placement,
           handOver: (object, overrides) =>
             workspaces.getByName(object).updateContainerSettings(overrides),
           builds,
-          lifecycle: sessionLifecycle({
-            registry: registries.getByName(REGISTRY_NAME),
-            session: name,
-            builds,
-            spares,
-          }),
+          lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
         });
 
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.

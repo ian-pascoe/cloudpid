@@ -31,6 +31,8 @@ import {
   createEnvironmentAs,
   type EnvironmentCreation,
   type LifecycleChange,
+  type LifecycleChanged,
+  type LifecycleOutcome,
   recordRebuildAs,
   removeRepoAs,
   renameEnvironmentAs,
@@ -242,12 +244,12 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly name: string;
     readonly author: AgentChangeAuthor;
-  }) => Effect.Effect<LifecycleChange>;
+  }) => Effect.Effect<LifecycleOutcome<LifecycleChanged>>;
   /** Record that the agent asked for a new Build of an Environment, once it is under way. */
   readonly recordRebuild: (input: {
     readonly environment: string;
     readonly author: AgentChangeAuthor;
-  }) => Effect.Effect<LifecycleChange>;
+  }) => Effect.Effect<LifecycleOutcome<LifecycleChanged>>;
   /** An Environment's Agent changes, newest first; null when it is not registered. */
   readonly listAgentChanges: (input: {
     readonly environment: string;

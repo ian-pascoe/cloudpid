@@ -169,7 +169,7 @@ describe("environment_create", () => {
     );
   });
 
-  it("refuses a name another Environment has in any case, with the user's message", async () => {
+  it("refuses a name another Environment has in any case, passing on the Registry's words", async () => {
     const { tool, logged } = await setUp();
 
     expect(await failure(run(tool("environment_create"), { name: "OTHER", reason: "r" }))).toBe(
@@ -178,7 +178,7 @@ describe("environment_create", () => {
     expect(logged).toEqual([]);
   });
 
-  it("refuses an empty name and one over 80 characters, with the user's messages", async () => {
+  it("refuses an empty name and one over 80 characters, passing on the Registry's words", async () => {
     const { tool } = await setUp();
 
     expect(await failure(run(tool("environment_create"), { name: "   ", reason: "r" }))).toBe(
@@ -332,7 +332,7 @@ describe("environment_repo_add and environment_repo_remove", () => {
     expect(logged).toHaveLength(1);
   });
 
-  it("refuse a Repo the Environment does not have, with the user's message", async () => {
+  it("refuse a Repo the Environment does not have, passing on the Registry's words", async () => {
     const { tool, logged } = await setUp();
 
     expect(
