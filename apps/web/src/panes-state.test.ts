@@ -73,29 +73,36 @@ describe("the Panes open, as atoms over the URL", () => {
     stubWindow("/sessions/a?pane=tasks");
     const registry = registryOver();
 
-    expect(registry.get(panesAtom)).toEqual({ open: ["tasks"], shown: "tasks" });
+    expect(registry.get(panesAtom)).toEqual({ open: ["tasks"], shown: "tasks", hidden: false });
   });
 
   it("are closed for a URL with none", () => {
     stubWindow("/sessions/a");
     const registry = registryOver();
 
-    expect(registry.get(panesAtom)).toEqual({ open: [], shown: undefined });
+    expect(registry.get(panesAtom)).toEqual({ open: [], shown: undefined, hidden: false });
   });
 
-  it("open and close from the toggle's action, in the URL", () => {
+  it("open, hide and show again from the area's button, in the URL", () => {
     const browser = stubWindow("/sessions/a");
     const registry = registryOver();
 
     registry.mount(panesAtom);
 
-    registry.set(panesAtom, { type: "toggle", key: "tasks" });
-    expect(registry.get(panesAtom).shown).toBe("tasks");
+    registry.set(panesAtom, { type: "toggleArea" });
+    expect(registry.get(panesAtom).shown).toBe("new");
+    expect(browser.history().entries).toEqual(["/sessions/a?pane=new"]);
+
+    registry.set(panesAtom, { type: "replace", key: "new", by: "tasks" });
     expect(browser.history().entries).toEqual(["/sessions/a?pane=tasks"]);
 
-    registry.set(panesAtom, { type: "toggle", key: "tasks" });
-    expect(registry.get(panesAtom).shown).toBeUndefined();
-    expect(browser.history().entries).toEqual(["/sessions/a"]);
+    registry.set(panesAtom, { type: "toggleArea" });
+    expect(registry.get(panesAtom).hidden).toBe(true);
+    expect(browser.history().entries).toEqual(["/sessions/a?pane=tasks&panes=hidden"]);
+
+    registry.set(panesAtom, { type: "toggleArea" });
+    expect(registry.get(panesAtom)).toEqual({ open: ["tasks"], shown: "tasks", hidden: false });
+    expect(browser.history().entries).toEqual(["/sessions/a?pane=tasks"]);
   });
 
   it("survive a reload", () => {
@@ -107,7 +114,11 @@ describe("the Panes open, as atoms over the URL", () => {
 
     // A reload builds the page again over the same URL.
     expect(browser.history().entries).toEqual(["/sessions/a?pane=tasks"]);
-    expect(registryOver().get(panesAtom)).toEqual({ open: ["tasks"], shown: "tasks" });
+    expect(registryOver().get(panesAtom)).toEqual({
+      open: ["tasks"],
+      shown: "tasks",
+      hidden: false,
+    });
   });
 
   it("replace the history entry, so Back leaves the Session and not the Pane", () => {
@@ -128,7 +139,7 @@ describe("the Panes open, as atoms over the URL", () => {
 
     // Forward comes back to the Session as it was left, Pane and all.
     browser.forward();
-    expect(registry.get(panesAtom)).toEqual({ open: ["tasks"], shown: "tasks" });
+    expect(registry.get(panesAtom)).toEqual({ open: ["tasks"], shown: "tasks", hidden: false });
   });
 
   it("are heard from the browser's back and forward buttons", () => {

@@ -1,6 +1,35 @@
 import { SUPPORTED_MODELS } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
-import { agentSelect, FOLLOW_DEFAULT, modelChoices, modelName } from "./models.ts";
+import {
+  agentSelect,
+  FOLLOW_DEFAULT,
+  isLevel,
+  modelChoices,
+  modelName,
+  pickedChange,
+} from "./models.ts";
+
+describe("a model and thinking level picked together", () => {
+  it("ask for both, or to follow the default for either", () => {
+    expect(pickedChange("anthropic/claude-opus-5-5", "high")).toEqual({
+      model: "anthropic/claude-opus-5-5",
+      thinkingLevel: "high",
+    });
+    expect(pickedChange(FOLLOW_DEFAULT, FOLLOW_DEFAULT)).toEqual({
+      model: null,
+      thinkingLevel: null,
+    });
+  });
+
+  it("leave a model the settings no longer accept as it is", () => {
+    expect(pickedChange("anthropic/claude-retired-1", "low")).toEqual({ thinkingLevel: "low" });
+  });
+
+  it("know the thinking levels", () => {
+    expect(isLevel("xhigh")).toBe(true);
+    expect(isLevel("huge")).toBe(false);
+  });
+});
 
 describe("model names", () => {
   it("drop the provider", () => {

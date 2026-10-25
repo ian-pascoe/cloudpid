@@ -173,12 +173,27 @@ describe("the page's query", () => {
 
 describe("the Pane parameters of a query", () => {
   it("are the repeated `pane` values in order, and the `shown` one", () => {
-    expect(paneParamsOf("")).toEqual({ keys: [], shown: undefined });
-    expect(paneParamsOf("?pane=tasks")).toEqual({ keys: ["tasks"], shown: undefined });
+    expect(paneParamsOf("")).toEqual({ keys: [], shown: undefined, hidden: false });
+    expect(paneParamsOf("?pane=tasks")).toEqual({
+      keys: ["tasks"],
+      shown: undefined,
+      hidden: false,
+    });
     expect(paneParamsOf("?pane=tasks&pane=terminal:1&shown=terminal:1")).toEqual({
       keys: ["tasks", "terminal:1"],
       shown: "terminal:1",
+      hidden: false,
     });
+  });
+
+  it("say the area is hidden with `panes=hidden`", () => {
+    expect(paneParamsOf("?pane=tasks&panes=hidden").hidden).toBe(true);
+    expect(paneParamsOf("?pane=tasks&panes=shown").hidden).toBe(false);
+    expect(withPaneParams("", { keys: ["tasks"], shown: "tasks", hidden: true })).toBe(
+      "?pane=tasks&panes=hidden",
+    );
+    // Nothing to hide without a Pane.
+    expect(withPaneParams("?panes=hidden", { keys: [], shown: undefined, hidden: true })).toBe("");
   });
 
   it("read a key whether its colon is escaped or not", () => {
@@ -189,17 +204,19 @@ describe("the Pane parameters of a query", () => {
   });
 
   it("are written with the colon as it is, and `shown` only when it is not the first", () => {
-    expect(withPaneParams("", { keys: ["tasks"], shown: "tasks" })).toBe("?pane=tasks");
-    expect(withPaneParams("", { keys: ["tasks", "terminal:1"], shown: "tasks" })).toBe(
-      "?pane=tasks&pane=terminal:1",
+    expect(withPaneParams("", { keys: ["tasks"], shown: "tasks", hidden: false })).toBe(
+      "?pane=tasks",
     );
-    expect(withPaneParams("", { keys: ["tasks", "terminal:1"], shown: "terminal:1" })).toBe(
-      "?pane=tasks&pane=terminal:1&shown=terminal:1",
-    );
+    expect(
+      withPaneParams("", { keys: ["tasks", "terminal:1"], shown: "tasks", hidden: false }),
+    ).toBe("?pane=tasks&pane=terminal:1");
+    expect(
+      withPaneParams("", { keys: ["tasks", "terminal:1"], shown: "terminal:1", hidden: false }),
+    ).toBe("?pane=tasks&pane=terminal:1&shown=terminal:1");
   });
 
   it("are written encoded when a key holds more than letters", () => {
-    expect(withPaneParams("", { keys: ["live-view:a b&c"], shown: undefined })).toBe(
+    expect(withPaneParams("", { keys: ["live-view:a b&c"], shown: undefined, hidden: false })).toBe(
       "?pane=live-view:a%20b%26c",
     );
     expect(paneParamsOf("?pane=live-view:a%20b%26c").keys).toEqual(["live-view:a b&c"]);
@@ -207,12 +224,18 @@ describe("the Pane parameters of a query", () => {
 
   it("are replaced in a query that has other parameters, which stay", () => {
     expect(
-      withPaneParams("?x=1&pane=old&shown=old&y=two", { keys: ["tasks"], shown: "tasks" }),
+      withPaneParams("?x=1&pane=old&shown=old&panes=hidden&y=two", {
+        keys: ["tasks"],
+        shown: "tasks",
+        hidden: false,
+      }),
     ).toBe("?x=1&y=two&pane=tasks");
   });
 
   it("leave no query when none is left", () => {
-    expect(withPaneParams("?pane=tasks&shown=tasks", { keys: [], shown: undefined })).toBe("");
-    expect(withPaneParams("?pane=tasks&x=1", { keys: [], shown: undefined })).toBe("?x=1");
+    const none = { keys: [], shown: undefined, hidden: false };
+
+    expect(withPaneParams("?pane=tasks&shown=tasks", none)).toBe("");
+    expect(withPaneParams("?pane=tasks&x=1", none)).toBe("?x=1");
   });
 });

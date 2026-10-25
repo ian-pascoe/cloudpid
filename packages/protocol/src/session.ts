@@ -570,11 +570,33 @@ export const ContainerUsage = Schema.Struct({
 export type ContainerUsage = typeof ContainerUsage.Type;
 
 /**
+ * How full the active branch's Context Window is: `tokens`, the size of its next request as pi-durable reckons it before
+ * compacting (the newest answer's usage, plus estimates of the messages after it), out of the model's `contextWindow`.
+ * `compactAt` is where automatic compaction starts (null when it is off). `parts` splits `tokens` by the kind of message,
+ * in proportion to estimates of each, since a provider reports one figure per request: the system prompt and tool
+ * definitions, the owner's messages (a compaction's summary among them), the model's answers and calls, and tool results.
+ */
+export const ContextUsage = Schema.Struct({
+  tokens: Schema.Finite,
+  contextWindow: Schema.Finite,
+  compactAt: Schema.NullOr(Schema.Finite),
+  parts: Schema.Struct({
+    system: Schema.Finite,
+    user: Schema.Finite,
+    assistant: Schema.Finite,
+    tools: Schema.Finite,
+  }),
+});
+
+export type ContextUsage = typeof ContextUsage.Type;
+
+/**
  * What the Session has spent on model requests (`docs/spec.md` → Telemetry), as pi-durable's `pi.usage` counts it:
  * every conversation of the Session, subagents' included, and the title call, which has no conversation. Token counts
  * are as the provider reported them; `cost` is in US dollars, as the model catalog prices the tokens. `container` is
  * what its Workspace's Containers have cost, absent when no Container has run or it could not be read; it is not part of
- * `cost`, and the spend limit holds `cost` only.
+ * `cost`, and the spend limit holds `cost` only. `context` is how full the active branch's Context Window is, absent
+ * when it could not be read or the model's context window is not known.
  */
 export const SessionUsage = Schema.Struct({
   input: Schema.Finite,
@@ -586,6 +608,7 @@ export const SessionUsage = Schema.Struct({
   /** The Session's spend limit in US dollars, or null when it has none. A Session at it stops before its next request. */
   limit: Schema.NullOr(Schema.Finite),
   container: Schema.optionalKey(ContainerUsage),
+  context: Schema.optionalKey(ContextUsage),
 });
 
 export type SessionUsage = typeof SessionUsage.Type;

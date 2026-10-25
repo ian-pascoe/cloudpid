@@ -837,6 +837,10 @@ describe("a usage watch", () => {
     expect(spent?.cost).toBeCloseTo(REQUEST_COST);
     expect(spent?.totalTokens).toBeGreaterThan(0);
     expect(spent?.limit).toBe(5);
+    // The active branch's Context Window, against the faux model's 128k.
+    expect(spent?.context?.contextWindow).toBe(128_000);
+    expect(spent?.context?.tokens).toBeGreaterThan(0);
+    expect(spent?.context?.compactAt).toBeLessThan(128_000);
 
     client.send({ type: "unwatch_usage", id: "unwatch" });
     await client.answer("unwatch");

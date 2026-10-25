@@ -1,20 +1,15 @@
 // @effect-diagnostics preferEffectArray:off -- the tree's rows are a short native array rendered as a JSX list.
 
-// The Session tree Pane (GLOSSARY.md → Session tree): every Session branch's messages as a tree under a filter, and
-// the header button that opens it.
+// The Session tree Pane (GLOSSARY.md → Session tree): every Session branch's messages as a tree under a filter.
 
 import type { TreeNode } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { Network } from "lucide-react";
 import { use } from "react";
-import { Button } from "../components/ui/button.tsx";
 import { NativeSelect } from "../components/ui/native-select.tsx";
 import { cn } from "../lib/utils.ts";
-import { panesAtom } from "../panes-state.ts";
-import { TREE_PANE } from "../panes.ts";
 import { messageOf } from "../registry.ts";
 import { isOwnerNode, pointOf, TREE_FILTERS, type TreeFilter, treeRows } from "../session/tree.ts";
 import { useShownSessionId } from "./conversation.ts";
@@ -142,25 +137,3 @@ export const SessionTreePane = () => (
     </PaneFilter.Provider>
   </div>
 );
-
-/** The button that opens the Session tree Pane, and closes it when it is shown. */
-export const TreePaneToggle = () => {
-  const [{ shown }, act] = useAtom(panesAtom);
-  const open = shown === TREE_PANE;
-
-  return (
-    <Button
-      type="button"
-      variant={open ? "default" : "outline"}
-      size="sm"
-      aria-pressed={open}
-      aria-label="Session tree"
-      title="Session tree"
-      onClick={() => {
-        act({ type: "toggle", key: TREE_PANE });
-      }}
-    >
-      <Network />
-    </Button>
-  );
-};

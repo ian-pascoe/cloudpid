@@ -1,6 +1,35 @@
-import type { ContainerUsage, SessionUsage } from "@cloudpid/protocol";
+import type { ContainerUsage, ContextUsage, SessionUsage } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { liveContainerUsage, totalSpend } from "./usage.ts";
+import { contextLevel, contextPercent, liveContainerUsage, totalSpend } from "./usage.ts";
+
+const context = (tokens: number, compactAt: number | null = 160_000): ContextUsage => ({
+  tokens,
+  contextWindow: 200_000,
+  compactAt,
+  parts: { system: 0, user: tokens, assistant: 0, tools: 0 },
+});
+
+describe("how full the context is", () => {
+  it("is the share of the window used, whole and within 0 to 100", () => {
+    expect(contextPercent(context(0))).toBe(0);
+    expect(contextPercent(context(50_000))).toBe(25);
+    expect(contextPercent(context(1_001))).toBe(1);
+    expect(contextPercent(context(250_000))).toBe(100);
+    expect(contextPercent({ ...context(10), contextWindow: 0 })).toBe(0);
+  });
+
+  it("is near from 85% of where compaction starts, and full at it", () => {
+    expect(contextLevel(context(100_000))).toBe("ok");
+    expect(contextLevel(context(136_000))).toBe("near");
+    expect(contextLevel(context(160_000))).toBe("full");
+  });
+
+  it("is measured against the window when automatic compaction is off", () => {
+    expect(contextLevel(context(160_000, null))).toBe("ok");
+    expect(contextLevel(context(170_000, null))).toBe("near");
+    expect(contextLevel(context(200_000, null))).toBe("full");
+  });
+});
 
 const AS_OF = 1_700_000_000_000;
 

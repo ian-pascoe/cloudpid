@@ -7,7 +7,7 @@ import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { ReactNode } from "react";
 import { drainFirstMessageAtom } from "../draft-state.ts";
-import { PaneArea } from "../pane-area.tsx";
+import { PaneArea, PaneAreaToggle } from "../pane-area.tsx";
 import { canStopAllBelow } from "../session/agents.ts";
 import {
   abortAtom,
@@ -24,12 +24,9 @@ import { textOf } from "./queue-adapter.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
 import { TreeBarScope, useForkNotice } from "./tree-actions.ts";
 import { TreeDialogs } from "./tree-dialogs.tsx";
-import { TreePaneToggle } from "./tree-pane.tsx";
-import { TasksPaneToggle } from "./tasks-pane.tsx";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
 import type { Rename } from "./title-state.ts";
-import { UsageBadge } from "./usage-badge.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
@@ -89,7 +86,7 @@ const LiveSession = ({
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
   const queue = useAtomValue(threadQueueAtom(root));
-  // The cards and the Tasks Pane read the task graph, and the header what the Session has spent: their atoms watch them
+  // The cards and the Tasks Pane read the task graph, and the composer's context ring its usage: their atoms watch them
   // for as long as the Session is shown.
   const taskGraph = useAtomValue(taskGraphAtom(sessionId));
 
@@ -152,10 +149,8 @@ const LiveSession = ({
                 }
                 actions={
                   <>
-                    <UsageBadge />
-                    {archived === undefined && <TreePaneToggle />}
-                    <TasksPaneToggle />
                     {menu}
+                    <PaneAreaToggle />
                   </>
                 }
               />

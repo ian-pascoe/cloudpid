@@ -9,6 +9,10 @@
 // `liveViewPaneKey`, which a push's link opens too; `terminal:<tab>`), the argument
 // telling the Panes of one type apart. The component a type shows is in `pane-area.tsx`, so these rules stay testable
 // without React; a type with no component there fails to typecheck.
+//
+// The Pane area has one button in the Session's header: it opens the **New pane** (`new`), a tab that offers the Pane
+// types the owner can open, when no Pane is open, and otherwise hides the area and shows it again. A hidden area keeps
+// its Panes open (and mounted, so a Live View stays connected); opening or showing a Pane shows it again.
 
 import * as Match from "effect/Match";
 import { paneParamsOf, withPaneParams, type PaneParams } from "./router.ts";
@@ -43,10 +47,12 @@ const liveViewLabel = (argument: string | undefined, agentOfHandoff: AgentOfHand
 };
 
 /**
- * The Pane types: the Tasks Pane and the Session tree Pane, one each per Session, and a Live View per Browser Handoff
- * waiting (`live-view:<requestId>`). The Terminal (#139) joins them here.
+ * The Pane types: the New pane, the Tasks Pane and the Session tree Pane, one each per Session, and a Live View per
+ * Browser Handoff waiting (`live-view:<requestId>`). The Terminal (#139) joins them here, and in the New pane's choices
+ * (`new-pane.tsx`) if the owner opens it.
  */
 export const PANE_TYPES = [
+  { id: "new", multiple: false, label: () => ({ name: "New pane" }) },
   { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
   { id: "tree", multiple: false, label: () => ({ name: "Tree" }) },
   { id: "live-view", multiple: true, label: liveViewLabel },
@@ -54,6 +60,9 @@ export const PANE_TYPES = [
 
 /** The ID of a type in `PANE_TYPES`. */
 export type PaneTypeId = (typeof PANE_TYPES)[number]["id"];
+
+/** The key of the New pane, which offers the Pane types to open and becomes the one picked. */
+export const NEW_PANE = "new";
 
 /** The key of the Tasks Pane. */
 export const TASKS_PANE = "tasks";
@@ -69,14 +78,18 @@ export interface PaneProps {
   readonly close: () => void;
 }
 
-/** The Panes open and the one shown: `shown` is one of `open`, and undefined only when `open` is empty. */
+/**
+ * The Panes open and the one shown: `shown` is one of `open`, and undefined only when `open` is empty. `hidden` is set
+ * while the area is hidden with Panes still open, never when none is.
+ */
 export interface PaneArea {
   readonly open: readonly string[];
   readonly shown: string | undefined;
+  readonly hidden: boolean;
 }
 
 /** No Pane open: the Pane area is closed. */
-export const NO_PANES: PaneArea = { open: [], shown: undefined };
+export const NO_PANES: PaneArea = { open: [], shown: undefined, hidden: false };
 
 /** A Pane key, taken apart. */
 export interface PaneKey {
@@ -105,29 +118,29 @@ export const paneKeyOf = (
 };
 
 /** The area with `open` as its tabs: the Pane shown is `shown` if it is open, else the first. */
-const areaOf = (open: readonly string[], shown: string | undefined): PaneArea =>
+const areaOf = (open: readonly string[], shown: string | undefined, hidden = false): PaneArea =>
   open.length === 0
     ? NO_PANES
-    : { open, shown: shown !== undefined && open.includes(shown) ? shown : open[0] };
+    : { open, shown: shown !== undefined && open.includes(shown) ? shown : open[0], hidden };
 
 /**
  * The area a query holds. A key no type can open is dropped, so is a repeat of one already open, and a `shown` that is
  * not open falls back to the first: a stale or hand-edited link opens what it can.
  */
 export const paneAreaOf = (search: string, types: readonly PaneType[] = PANE_TYPES): PaneArea => {
-  const { keys, shown } = paneParamsOf(search);
+  const { keys, shown, hidden } = paneParamsOf(search);
   const open: string[] = [];
 
   for (const key of keys) {
     if (paneKeyOf(key, types) !== undefined && !open.includes(key)) open.push(key);
   }
 
-  return areaOf(open, shown);
+  return areaOf(open, shown, hidden);
 };
 
 /** `search` with `area` in place of the Panes it held, and everything else in it kept. */
 export const searchWithPaneArea = (search: string, area: PaneArea): string => {
-  const params: PaneParams = { keys: area.open, shown: area.shown };
+  const params: PaneParams = { keys: area.open, shown: area.shown, hidden: area.hidden };
 
   return withPaneParams(search, params);
 };
@@ -140,13 +153,38 @@ export type PaneAction =
   | { readonly type: "close"; readonly key: string }
   /** Show an open Pane. */
   | { readonly type: "show"; readonly key: string }
-  /** What a Pane's button does: open it; show it when another is shown; close it when it is the one shown. */
-  | { readonly type: "toggle"; readonly key: string };
+  /** Put Pane `by` in the tab of `key` and show it, as the New pane does with the type picked. */
+  | { readonly type: "replace"; readonly key: string; readonly by: string }
+  /** What the header's button does: open the New pane when no Pane is open, else hide the area or show it again. */
+  | { readonly type: "toggleArea" }
+  /** Hide the area, its Panes kept open. */
+  | { readonly type: "hide" };
 
 const withOpened = (area: PaneArea, key: string, types: readonly PaneType[]): PaneArea => {
   if (paneKeyOf(key, types) === undefined) return area;
 
   return areaOf(area.open.includes(key) ? area.open : [...area.open, key], key);
+};
+
+const withReplaced = (
+  area: PaneArea,
+  key: string,
+  by: string,
+  types: readonly PaneType[],
+): PaneArea => {
+  if (!area.open.includes(key) || paneKeyOf(by, types) === undefined) return area;
+
+  // A Pane open already is shown where its tab is, and the tab replaced goes.
+  if (area.open.includes(by))
+    return areaOf(
+      area.open.filter((known) => known !== key),
+      by,
+    );
+
+  return areaOf(
+    area.open.map((known) => (known === key ? by : known)),
+    by,
+  );
 };
 
 const withClosed = (area: PaneArea, key: string): PaneArea => {
@@ -160,6 +198,7 @@ const withClosed = (area: PaneArea, key: string): PaneArea => {
   return areaOf(
     remaining,
     key === area.shown ? (remaining[index] ?? remaining[index - 1]) : area.shown,
+    area.hidden,
   );
 };
 
@@ -176,10 +215,14 @@ export const applyPaneAction = (
       return withClosed(area, action.key);
     case "show":
       return area.open.includes(action.key) ? areaOf(area.open, action.key) : area;
-    case "toggle":
-      return action.key === area.shown
-        ? withClosed(area, action.key)
-        : withOpened(area, action.key, types);
+    case "replace":
+      return withReplaced(area, action.key, action.by, types);
+    case "toggleArea":
+      if (area.open.length === 0) return withOpened(area, NEW_PANE, types);
+
+      return areaOf(area.open, area.shown, !area.hidden);
+    case "hide":
+      return area.open.length === 0 || area.hidden ? area : areaOf(area.open, area.shown, true);
   }
 };
 
@@ -187,7 +230,10 @@ export const applyPaneAction = (
  * The tab a keyboard key moves to from the one shown, as in a tab list: the arrows step (and wrap), Home and End go to
  * the ends. Undefined for any other key.
  */
-export const tabForKey = (area: PaneArea, key: string): string | undefined => {
+export const tabForKey = (
+  area: Pick<PaneArea, "open" | "shown">,
+  key: string,
+): string | undefined => {
   const { open } = area;
   const at = area.shown === undefined ? 0 : open.indexOf(area.shown);
 

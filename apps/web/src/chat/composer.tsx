@@ -94,8 +94,10 @@ type ComposerProps = {
   sending: readonly SendingEntry[];
   /** Stop the run and every subagent below it; offered beside Stop while there is one to stop. */
   onStopAll?: (() => void) | undefined;
-  /** The toolbar's left side: the pickers of what the next request runs with. */
+  /** The toolbar's left side: the picker of what the next request runs with. */
   tools?: ReactNode;
+  /** The toolbar's right side, before the attach and send buttons: what the conversation has used (the context ring). */
+  status?: ReactNode;
   /** Slash commands of the page, besides the conversation's own. */
   commands?: readonly ComposerCommand[];
   /** Inside a card: no page margins, and the input does not take the focus. */
@@ -114,6 +116,7 @@ const ComposerBox = ({
   sending,
   onStopAll,
   tools,
+  status,
   commands = [],
   compact = false,
   who = "the session",
@@ -437,6 +440,7 @@ const ComposerBox = ({
           <div className="flex items-center gap-2 px-1.5 pb-1.5">
             <div className="flex min-w-0 flex-1 items-center gap-0.5">{tools}</div>
             <div className="flex shrink-0 items-center gap-1">
+              {status}
               <AttachButton onAttach={addAttachments} />
               {running && hasMessage && (
                 <button
@@ -517,8 +521,8 @@ const ComposerBox = ({
 };
 
 /**
- * The composer: one bordered box holding the input and a toolbar, with `tools` (the model and thinking pickers) on the
- * left and the send controls on the right. While a Run is in progress a message is a steer by default (it joins the
+ * The composer: one bordered box holding the input and a toolbar, with `tools` (the model and thinking picker) on the
+ * left and `status` (the context ring) and the send controls on the right. While a Run is in progress a message is a steer by default (it joins the
  * Run at its next boundary, after the tool calls in progress) and Alt+Enter, or the Queue button, makes it a follow-up
  * (it waits for the next Run); with nothing typed, the main button stops the Run instead. Enter sends, except on a touch
  * screen without a mouse, where it starts a new line and only the buttons send. Messages waiting in the

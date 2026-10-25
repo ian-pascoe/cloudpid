@@ -1,7 +1,12 @@
 // @effect-diagnostics preferEffectArray:off -- plain functions over native arrays.
 
 // How the web app names and offers the models and thinking levels the settings accept.
-import { SUPPORTED_MODELS } from "@cloudpid/config";
+import { isModelId, SUPPORTED_MODELS, THINKING_LEVELS, type ThinkingLevel } from "@cloudpid/config";
+import type { ConfigureChange } from "./session/state.ts";
+
+/** Whether `value` is one of pi-ai's thinking levels. */
+export const isLevel = (value: string): value is ThinkingLevel =>
+  THINKING_LEVELS.some((level) => level === value);
 
 /** A model's name without its provider: `anthropic/claude-opus-5-5` shows as `claude-opus-5-5`. */
 export const modelName = (id: string): string => id.slice(id.indexOf("/") + 1);
@@ -17,6 +22,20 @@ export const modelChoices = (current: string | null): readonly string[] =>
 
 /** The select value that stands for "follow the default". */
 export const FOLLOW_DEFAULT = "";
+
+/**
+ * What a model (an ID, or `FOLLOW_DEFAULT`) and a thinking level (or `FOLLOW_DEFAULT`) picked together ask of the
+ * Session. A model the settings no longer accept (one the Session still runs) is left as it is.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a view helper, not a combinator.
+export const pickedChange = (model: string, level: string): ConfigureChange => {
+  const thinkingLevel = level === FOLLOW_DEFAULT ? null : isLevel(level) ? level : undefined;
+
+  const change: ConfigureChange =
+    model === FOLLOW_DEFAULT ? { model: null } : isModelId(model) ? { model } : {};
+
+  return thinkingLevel === undefined ? change : { ...change, thinkingLevel };
+};
 
 /** What a select over a Session's model or thinking level shows. */
 export type AgentSelect = { readonly value: string; readonly defaultLabel: string };

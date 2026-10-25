@@ -14,6 +14,9 @@ env:
   # `pnpm install` runs `prepare`: skip the git hooks. CI=true (set by Actions)
   # makes it skip the large reference-repo clones but keeps the effect-tsgo patch.
   HUSKY: "0"
+  # Turbo's local cache, where the `check` job's cache step saves and restores it. Set, not left to turbo's default, so
+  # the two cannot drift apart.
+  TURBO_CACHE_DIR: .turbo/cache
 
 jobs:
   # Reusable by the deploy job: `needs: check`.
@@ -27,22 +30,19 @@ jobs:
     concurrency:
       group: check-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      # A run summary per turbo run (`.turbo/runs`), naming every task's hash, for the cache pruning below.
+      TURBO_RUN_SUMMARY: "true"
     steps:
       - uses: actions/checkout@v7
 
-      # Version comes from `packageManager` in package.json.
-      - uses: pnpm/action-setup@v6
+      # pnpm, Node, the pnpm store (cached by lockfile, with a fallback), and the install.
+      - uses: ./.github/actions/setup
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: lts/*
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
+      # Turbo's cache: the newest one of this branch, else of main (a pull request can read its base's caches).
       - uses: actions/cache@v6
         with:
-          path: .turbo/cache
+          path: ${{ env.TURBO_CACHE_DIR }}
           key: turbo-${{ runner.os }}-${{ github.sha }}
           restore-keys: turbo-${{ runner.os }}-
 
@@ -50,6 +50,20 @@ jobs:
 
       # `check` does not build; the web app's bundle is what the server serves, so make sure it still builds.
       - run: pnpm turbo run build --filter @cloudpid/web
+
+      # Keep only the entries this commit's tasks used or made. Turbo never evicts, and each save carries the restored
+      # cache forward, so without this it grows with every commit. Every task runs in every check, so what this run
+      # names is all a later run can hit. Only after a passing run: a failed one stops early and names too few, and the
+      # cache step saves nothing then anyway.
+      - name: Prune turbo cache
+        run: |
+          hashes=$(jq -r '.tasks[].hash' .turbo/runs/*.json | sort -u)
+          before=$(du -sh "$TURBO_CACHE_DIR" | cut -f1)
+          for file in "$TURBO_CACHE_DIR"/*; do
+            name=$(basename "$file")
+            grep -qxF "${name%%[-.]*}" <<<"$hashes" || rm -f "$file"
+          done
+          echo "Turbo cache: $before → $(du -sh "$TURBO_CACHE_DIR" | cut -f1), $(wc -l <<<"$hashes") tasks kept"
 
   # Deploys `prod` on push to main with a scoped API token from the `production` environment
   # (credentials as code: infra/github.ts, AGENTS.md → Infra).
@@ -141,14 +155,12 @@ jobs:
           ref: ${{ github.event.action == 'closed' && github.event.pull_request.head.sha || '' }}
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
-
-      # No dependency cache in a job holding deploy credentials (cache poisoning).
-      - uses: actions/setup-node@v7
+      # The pnpm store is only read here, never written: this job holds deploy credentials. Reading it adds no trust a
+      # preview did not already need: a pull request can read only its own caches (written by its `check` job, from the
+      # code this job deploys) and main's, and pnpm checks every package against the lockfile's integrity hash.
+      - uses: ./.github/actions/setup
         with:
-          node-version: lts/*
-
-      - run: pnpm install --frozen-lockfile
+          save-cache: "false"
 
       # The deploy credentials are scoped to this step: install scripts never see them. `destroy` evaluates the stack,
       # so it needs every variable `deploy` does (see the `deploy` job for what each is).

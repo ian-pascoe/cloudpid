@@ -1,4 +1,4 @@
-// Renaming a Session in place, from its header: the title being typed, and its save.
+// Renaming a Session from its "⋯" menu: the title being typed in the rename dialog, and its save.
 
 import * as Effect from "effect/Effect";
 import * as Atom from "effect/reactivity/Atom";
@@ -10,25 +10,25 @@ export type Rename = {
   readonly save: (title: string) => Promise<string | null>;
 };
 
-/** The title typed in Session `sessionId`'s header, or null while its field is closed. */
-export const titleDraftAtom = Atom.family<string, Atom.Writable<string | null>>(() =>
-  Atom.make<string | null>(null),
-);
+/**
+ * The title typed in one menu's rename dialog, or null while the dialog is closed. One per menu (a `ScopedAtom`), since
+ * a Session's page and its list item each have a menu.
+ */
+export const titleDraft = (): Atom.Writable<string | null> => Atom.make<string | null>(null);
 
 /**
- * Save the title typed in Session `sessionId`'s header with `rename`, and close the field; a blank or unchanged title
- * only closes it. Fails with why the title was not saved, leaving the field open. A field already closed (by Escape, or
- * by the save before) has nothing to save, so the blur of its closing is no save.
+ * Save the title typed in `draft` with `rename`, and close the dialog; a blank or unchanged title only closes it. Fails
+ * with why the title was not saved, leaving the dialog open. A dialog already closed has nothing to save.
  */
-export const saveTitleAtom = Atom.family((sessionId: string) =>
+export const saveTitleAtom = Atom.family((draft: Atom.Writable<string | null>) =>
   Atom.fn((rename: Rename, get) =>
     Effect.gen(function* () {
       // Read, not followed: typing on must not save again.
-      const draft = get.registry.get(titleDraftAtom(sessionId));
+      const typed = get.registry.get(draft);
 
-      if (draft === null) return;
+      if (typed === null) return;
 
-      const next = draft.trim();
+      const next = typed.trim();
 
       if (next !== "" && next !== rename.current) {
         const failure = yield* Effect.promise(() => rename.save(next));
@@ -36,7 +36,7 @@ export const saveTitleAtom = Atom.family((sessionId: string) =>
         if (failure !== null) return yield* Effect.fail(failure);
       }
 
-      get.set(titleDraftAtom(sessionId), null);
+      get.set(draft, null);
     }),
   ),
 );
