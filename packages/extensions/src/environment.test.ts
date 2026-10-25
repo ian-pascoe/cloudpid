@@ -662,8 +662,8 @@ describe.each([
     value: '[tools]\nnode = "22"\n',
     hint: "mise.toml",
   },
-])("$name", ({ name, field, what, key, value: text_, hint }) => {
-  const args = { [key]: text_ };
+])("$name", ({ name, field, what, key, value: content, hint }) => {
+  const args = { [key]: content };
 
   it("saves the whole text, with the old and new values for the card, and records it for the Run", async () => {
     const environments = fakeEnvironments();
@@ -674,17 +674,17 @@ describe.each([
 
     expect(environments.changes[0]).toMatchObject({
       environment: "default",
-      change: { field, value: text_ },
+      change: { field, value: content },
       tool: name,
       reason: "Needed",
     });
     expect(text(result)).toContain(`Set the ${what} of Environment "Default" (default)`);
     expect(text(result)).toContain("it was none");
     expect(text(result)).toContain("a new Build was asked for");
-    expect(result.details).toMatchObject({ agentChange: { field, before: "", after: text_ } });
+    expect(result.details).toMatchObject({ agentChange: { field, before: "", after: content } });
     expect(logged).toEqual([{ tool: name, environmentName: "Default", field }]);
     // The text itself is not echoed back: the card shows it.
-    expect(text(result)).not.toContain(String(text_).trim());
+    expect(text(result)).not.toContain(content.trim());
   });
 
   it("explains itself, pointing a Repo's own step to its .cloudpid directory", async () => {

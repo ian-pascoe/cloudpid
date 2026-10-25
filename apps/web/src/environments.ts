@@ -31,6 +31,7 @@ import {
   toolchainsProblem,
   variableNameProblem,
 } from "@cloudpid/config";
+import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -285,7 +286,7 @@ export const changeValueText = (value: AgentChange["before"]): string => {
 
   if (Predicate.isString(value)) return value === "" ? "empty" : value;
 
-  if (Array.isArray(value) && value.every(Predicate.isString)) {
+  if (Arr.isArray(value) && Arr.every(value, Predicate.isString)) {
     return value.length === 0 ? "none" : value.join("\n");
   }
 

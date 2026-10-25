@@ -15,7 +15,6 @@ import {
   containerRates,
   INSTANCE_DESCRIPTIONS,
   INSTANCE_RESOURCES,
-  INSTANCE_TYPES,
   InstanceType,
   MAX_IDLE_MINUTES,
   MAX_IGNORE_PATTERNS,
@@ -38,6 +37,7 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import { SIZE_LINES } from "./container.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -279,12 +279,6 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
 const RECORDED =
   "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.";
 
-/** Each size with what it offers, smallest first (by memory, then vCPU). */
-const SIZE_LINES = Arr.join(
-  Arr.map(INSTANCE_TYPES, (size) => `- ${size}: ${INSTANCE_DESCRIPTIONS[size]}`),
-  "\n",
-);
-
 /** US dollars, to two significant digits. */
 const money = (dollars: number): string => `$${dollars.toPrecision(2)}`;
 
@@ -299,10 +293,11 @@ export const describeIdleCost = (minutes: number, instance: InstanceType): strin
 /** A script or Toolchains value as a result sizes it: the card shows the user the difference. */
 const textSize = (value: Schema.Json | null): string => {
   const text = Predicate.isString(value) ? value : "";
+  const lines = text.replace(/\n$/, "").split("\n").length;
 
   return text === ""
     ? "none"
-    : `${text.split("\n").length} line${text.includes("\n") ? "s" : ""}, ${new TextEncoder().encode(text).length} bytes`;
+    : `${lines} line${lines === 1 ? "" : "s"}, ${new TextEncoder().encode(text).length} bytes`;
 };
 
 /** A size or a number of minutes as a result says it: a text bare, a number as it is. */
@@ -401,8 +396,8 @@ export const EnvironmentTools: Effect.Effect<
     id,
     field,
     value,
-    texts,
-    refusal,
+    texts = [],
+    refusal = "",
     reason,
     conversation,
     prepare,
@@ -414,8 +409,9 @@ export const EnvironmentTools: Effect.Effect<
     readonly field: string;
     readonly value: Schema.Json | null;
     /** The text the value is made of, kept as written: none holds a Secret's value or a credential. */
-    readonly texts: ReadonlyArray<string>;
-    readonly refusal: string;
+    readonly texts?: ReadonlyArray<string>;
+    /** What a refusal for a text that holds a Secret says. */
+    readonly refusal?: string;
     readonly reason: string;
     readonly conversation: number;
     readonly prepare: (environment: string) => Effect.Effect<Prepared, EnvironmentsError>;
@@ -693,8 +689,6 @@ export const EnvironmentTools: Effect.Effect<
         id,
         field: "instance",
         value: size,
-        texts: [],
-        refusal: "",
         reason,
         conversation: api.conversationId,
         prepare: (environment) =>
@@ -714,7 +708,7 @@ export const EnvironmentTools: Effect.Effect<
         unchanged: (where) =>
           `The Container size of ${where} is ${size} already: nothing changed, and nothing was recorded.`,
         changed: ({ where, change, own, newBuild }) =>
-          `Set the Container size of ${where}: it was ${plainValue(change.before)}, and is ${plainValue(change.after)} now (${INSTANCE_DESCRIPTIONS[size]}). It is the size of the next Container of every Workspace of the Environment, and of those after each idle stop; Containers that run keep their size, and container_resize changes only this Workspace's current Container, until its idle stop, and no Environment. ${describeApplied(own, newBuild)}`,
+          `Set the Container size of ${where}: it was ${plainValue(change.before)}, and is ${plainValue(change.after)} now (${INSTANCE_DESCRIPTIONS[size]}). It is the size of the next Container of every Workspace of the Environment, and of those after each idle stop; Containers that run keep their size, and container_resize changes only this Workspace's current Container, until its idle stop, and no Environment. ${describeApplied(own, newBuild)}${own ? " If container_resize gave this Workspace's Container another size, that size holds through container_restart until the idle stop." : ""}`,
       }),
   });
 
@@ -743,8 +737,6 @@ export const EnvironmentTools: Effect.Effect<
         id,
         field: "idleMinutes",
         value: minutes,
-        texts: [],
-        refusal: "",
         reason,
         conversation: api.conversationId,
         prepare: (environment) => environments.get(environment),
