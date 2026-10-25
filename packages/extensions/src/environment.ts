@@ -196,6 +196,7 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
       `Environment ${JSON.stringify(details.name)} (id ${details.id}${current ? ", the Environment of this Session" : ""})`,
       `Repos: ${reposLine(details.repos)}`,
       `Container size: ${settings.instance}`,
+      `Size limit (the largest size, container_resize's too; the user sets it on the Environments page): ${settings.maxInstance}`,
       `Idle time: ${settings.idleMinutes} minute${settings.idleMinutes === 1 ? "" : "s"}`,
       `Container-only paths (ignore): ${settings.ignore.length === 0 ? "none" : Arr.join(settings.ignore, ", ")}`,
       `Variables (plain, in every command's environment): ${
@@ -457,7 +458,7 @@ export const EnvironmentTools: Effect.Effect<
   const get = yield* defineEffectTool({
     name: "environment_get",
     description:
-      "Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains), the names of the Secrets kept for it and for every Environment (never their values), and how its Build stands, with the end of the last failed Build's reason.",
+      "Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains), the names of the Secrets kept for it and for every Environment (never their values), and how its Build stands, with the end of the last failed Build's reason.",
     parameters: Schema.Struct({ id: Schema.optionalKey(Id) }),
     replay: "safe",
     execute: ({ id }) =>

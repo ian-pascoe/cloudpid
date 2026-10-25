@@ -240,6 +240,7 @@ describe("the environment tools", () => {
 
     expect(shown).toContain('Environment "Default" (id default, the Environment of this Session)');
     expect(shown).toContain("Container size: custom-1");
+    expect(shown).toMatch(/Size limit \(.*\): custom-2/);
     expect(shown).toContain("Idle time: 2 minutes");
     expect(shown).toContain("NODE_ENV=test");
     expect(shown).toContain(
