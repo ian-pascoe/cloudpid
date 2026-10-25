@@ -342,7 +342,7 @@ export const SessionLive = Session.make(
         });
 
         // The deletes the owner approved: an Environment with its Workspaces and Sessions, wiped as the owner's delete
-        // wipes them (`worker.ts`), and a kept Secret.
+        // wipes them (`removals`, `registry/removal.ts`), and a kept Secret.
         const environmentRemoval = sessionEnvironmentRemoval({
           registry: registryObject,
           session: name,

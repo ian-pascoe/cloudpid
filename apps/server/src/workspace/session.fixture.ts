@@ -26,7 +26,7 @@ import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
-import { testEnvironments } from "../session/environments.fixture.ts";
+import { testEnvironments, unusedRemoval } from "../session/environments.fixture.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
 import { type Placement, sessionWorkspace } from "../session/workspace.ts";
@@ -78,12 +78,7 @@ export class TestWorkspaceSession extends TestSession {
   > {
     return sessionExtensions.pipe(
       // The tests of the Workspace delete nothing.
-      Effect.provideService(EnvironmentRemoval, {
-        footprint: () => Effect.die("No delete"),
-        deleteEnvironment: () => Effect.die("No delete"),
-        keptSecrets: () => Effect.die("No delete"),
-        deleteSecret: () => Effect.die("No delete"),
-      }),
+      Effect.provideService(EnvironmentRemoval, unusedRemoval),
       Effect.provideService(Environments, testEnvironments(this.ctx.storage.kv)),
       // The tests of the Workspace call no `settings_*` tool.
       Effect.provideService(SettingsAccess, {

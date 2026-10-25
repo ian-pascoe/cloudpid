@@ -66,6 +66,12 @@ const REQUEST: ApprovalAsk = { ...CHANGE, id: "7", conversationId: 1 };
 /** A moment for the fibers forked so far to run. */
 const settle = Effect.sleep("20 millis");
 
+/** Until the owner was notified of a request: in the background, which a busy machine may run late. */
+const notified = (asked: ReadonlyArray<ApprovalAsk>) =>
+  Effect.gen(function* () {
+    while (asked.length === 0) yield* Effect.sleep("5 millis");
+  }).pipe(Effect.timeout("5 seconds"));
+
 describe("Approval requests", () => {
   it("show the request to every client, notify the owner once, and hand the call the owner's Approve", async () => {
     const result = await Effect.runPromise(
@@ -80,6 +86,7 @@ describe("Approval requests", () => {
 
         expect(yield* approvals.pending).toEqual([REQUEST]);
         expect(announced.at(-1)).toEqual([REQUEST]);
+        yield* notified(asked);
         expect(asked).toEqual([REQUEST]);
 
         yield* approvals.answer("7", { approve: true });

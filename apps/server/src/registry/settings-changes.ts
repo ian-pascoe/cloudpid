@@ -12,7 +12,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { type AgentChangeAuthor, type AgentChanges, approvedMark } from "./agent-changes.ts";
+import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
 import { type DocumentStore, readSettings, type SettingsState, writeSettings } from "./settings.ts";
 
 /** What the Settings' changes need of the Registry's storage. */
@@ -142,7 +142,7 @@ export const changeSettings = (
         before,
         after: settingsFieldValue(saved.success.settings, field),
         reverts: null,
-        ...approvedMark(author),
+        approved: author.approved,
       }),
     );
 

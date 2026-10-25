@@ -49,10 +49,6 @@ export type AgentChangeAuthor = {
   readonly approved?: true | undefined;
 };
 
-/** The approved mark a change by `author` is recorded with: only an approved one has it. */
-export const approvedMark = (author: AgentChangeAuthor): { readonly approved?: true } =>
-  author.approved === true ? { approved: true } : {};
-
 /**
  * One Container setting of an Environment, given a new value: `field` is a setting's name (`idleMinutes`) or
  * `variables.<NAME>` for one variable, and a `value` of null takes the setting back to its default (a variable: unset).
@@ -200,8 +196,21 @@ const toChange = (row: AgentChangeRow): AgentChange => {
   return row.approved === 1 ? { ...change, approved: true } : change;
 };
 
-/** What a change records: everything but its number, which the table gives it. */
-type NewAgentChange = Omit<AgentChange, "id" | "revertedBy">;
+/**
+ * What a change records: everything but its number, which the table gives it, and whether the owner approved it first
+ * (absent or false: not).
+ */
+type NewAgentChange = Omit<AgentChange, "id" | "revertedBy" | "approved"> & {
+  readonly approved?: boolean | undefined;
+};
+
+/** `change` as it is recorded under `id`, with no revert yet; marked approved only when the owner approved it. */
+export const asRecorded = (change: NewAgentChange, id: number): AgentChange => {
+  const { approved, ...made } = change;
+  const recorded: AgentChange = { ...made, id, revertedBy: null };
+
+  return approved === true ? { ...recorded, approved: true } : recorded;
+};
 
 /** The Agent changes the Registry keeps, by scope (an Environment's id). */
 export type AgentChanges = {
@@ -263,7 +272,7 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
       // SQLite answers the row it inserted; one that does not is a broken store, not a change to report.
       if (row === undefined) throw new Error("Recording an Agent change returned no id");
 
-      return { ...change, id: row.id, revertedBy: null };
+      return asRecorded(change, row.id);
     },
     list: (scope) =>
       Arr.map(
@@ -366,7 +375,7 @@ export const changeEnvironment = (
       before,
       after: fieldValue(saved.success.settings, change.field),
       reverts: null,
-      ...approvedMark(author),
+      approved: author.approved,
     });
 
     return {

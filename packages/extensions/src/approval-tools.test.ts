@@ -15,7 +15,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ApprovalTools,
   type EnvironmentFootprint,
@@ -99,6 +99,8 @@ type Answer = {
   readonly approve: boolean;
   readonly reason?: string;
   readonly meanwhile?: () => void;
+  /** The task of a rerun: a call an eviction cut off, which asked already. */
+  readonly task?: number;
 };
 
 const APPROVE: Answer = { approve: true };
@@ -109,7 +111,7 @@ const setUp = async ({
   extensions = {},
   held = { default: details("default", "Default"), "0000abcd": details("0000abcd", "Other") },
   footprint = { workspaces: 2, sessions: 3, secrets: 1 },
-  kept = { default: [{ name: "API_KEY", build: true }], "*": [] },
+  kept = { default: [{ name: "API_KEY", build: true, updatedAt: 1 }], "*": [] },
 }: Start = {}) => {
   const calls: Calls = { settings: [], environments: [], deleted: [], secrets: [], reloads: 0 };
   const logged: RunChange[] = [];
@@ -117,7 +119,7 @@ const setUp = async ({
   const asked: ApprovalAsk[] = [];
   /** The requests the owner was notified of. */
   const notified: ApprovalAsk[] = [];
-  const state = { spendLimit, extensions, footprint };
+  const state = { spendLimit, extensions, footprint, kept };
   const map = new Map<string, unknown>();
 
   const approvals: ApprovalsService = await Effect.runPromise(
@@ -198,10 +200,19 @@ const setUp = async ({
           Effect.sync(() => {
             calls.deleted.push(environment);
           }),
-        keptSecrets: (scope) => Effect.succeed(kept[scope] ?? null),
-        deleteSecret: ({ environment, name, author }) =>
+        keptSecrets: (scope) => Effect.sync(() => state.kept[scope] ?? null),
+        deleteSecret: ({ environment, name, expected, author }) =>
           Effect.sync(() => {
             calls.secrets.push({ environment, name, author });
+
+            const secret = state.kept[environment]?.find((each) => each.name === name);
+            const where = { id: environment, name: held[environment]?.name ?? "every Environment" };
+
+            if (secret === undefined) return { status: "absent" as const, environment: where };
+
+            if (expected !== undefined && expected.updatedAt !== secret.updatedAt) {
+              return { status: "changed-since" as const, environment: where };
+            }
 
             return {
               status: "deleted" as const,
@@ -233,6 +244,8 @@ const setUp = async ({
               first.field === "spendLimit.perSession"
                 ? state.spendLimit
                 : (state.extensions.subagents?.maxSubagentDepth ?? null);
+
+            if (before === first.value) return { status: "unchanged" as const };
 
             if (first.expected !== undefined && first.expected.value !== before) {
               return { status: "changed-since" as const, field: first.field, current: before };
@@ -276,11 +289,11 @@ const setUp = async ({
     args: Readonly<Record<string, Schema.Json>>,
     answer: Answer = APPROVE,
   ) => {
-    task++;
+    const id = answer.task ?? ++task;
 
     const asking: Pick<ToolExecutionApi, "taskId" | "conversationId"> = {
       // SAFETY: a task's id is a number pi-durable brands; each call here is a task of its own.
-      taskId: task as TaskId,
+      taskId: id as TaskId,
       conversationId: ROOT_CONVERSATION_ID,
     };
 
@@ -325,7 +338,33 @@ const setUp = async ({
     return { result, text, pending: await Effect.runPromise(approvals.pending) };
   };
 
-  return { tool, call, calls, logged, asked, notified, state };
+  /**
+   * A call of task `id` that asked with `expected` and was answered, then cut off by an eviction before it ended: the
+   * answer is kept for its rerun.
+   */
+  const answeredEarlier = async (id: number, expected: Schema.Json | null) => {
+    task = Math.max(task, id);
+
+    const asking = Effect.runPromise(
+      approvals.ask({
+        id: String(id),
+        conversationId: ROOT_CONVERSATION_ID,
+        tool: "earlier",
+        target: "earlier",
+        change: "earlier",
+        before: "earlier",
+        after: "earlier",
+        reason: "earlier",
+        expected,
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await Effect.runPromise(approvals.answer(String(id), { approve: true }));
+    await asking;
+  };
+
+  return { tool, call, calls, logged, asked, notified, state, answeredEarlier };
 };
 
 const NAMES = [
@@ -407,8 +446,7 @@ describe("settings_spend_limit_set", () => {
     expect(calls.reloads).toBe(1);
     expect(pending).toEqual([]);
     // The owner's notification goes out in the background, once.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(notified).toEqual(asked);
+    await vi.waitFor(() => expect(notified).toEqual(asked));
   });
 
   it("changes nothing on Decline, and gives the owner's reason", async () => {
@@ -455,6 +493,26 @@ describe("settings_spend_limit_set", () => {
 
     expect(text).toContain("already");
     expect(asked).toEqual([]);
+  });
+
+  it("reports the owner's Approval on a rerun that finds the limit it set before an eviction", async () => {
+    const { call, answeredEarlier, state, asked } = await setUp();
+
+    await answeredEarlier(7, 5);
+    // The cut-off call had applied the change.
+    state.spendLimit = 10;
+
+    const { result, text, pending } = await call(
+      "settings_spend_limit_set",
+      { per_session: 10, reason: "More requests" },
+      { approve: true, task: 7 },
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain("The user approved, and Spend limit is $10 per Session already");
+    expect(result.details).toMatchObject({ approval: { approved: true } });
+    expect(asked).toEqual([]);
+    expect(pending).toEqual([]);
   });
 });
 
@@ -598,6 +656,24 @@ describe("environment_delete", () => {
     expect(calls.deleted).toEqual([]);
   });
 
+  it("finishes on a rerun a delete an eviction cut off, which took part of it already", async () => {
+    const { call, calls, answeredEarlier, state } = await setUp();
+
+    await answeredEarlier(3, { workspaces: 2, sessions: 3, secrets: 1 });
+    state.footprint = { workspaces: 1, sessions: 1, secrets: 1 };
+
+    const { result, text } = await call(
+      "environment_delete",
+      { id: "0000abcd", reason: "The experiment is over" },
+      { approve: true, task: 3 },
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain("The user approved: deleted");
+    expect(text).toContain("2 Workspaces with 3 Sessions");
+    expect(calls.deleted).toEqual(["0000abcd"]);
+  });
+
   it("changes nothing on Decline", async () => {
     const { call, calls } = await setUp();
 
@@ -661,5 +737,23 @@ describe("environment_secret_delete", () => {
       { tool: "environment_secret_delete", environmentName: "Default", field: "secrets.API_KEY" },
     ]);
     expect(JSON.stringify(result)).not.toContain(HELD);
+  });
+
+  it("deletes nothing when the owner kept a new value between the request and the answer", async () => {
+    const { call, state } = await setUp();
+
+    const { result, text } = await call(
+      "environment_secret_delete",
+      { name: "API_KEY", reason: "The key was rotated" },
+      {
+        approve: true,
+        meanwhile: () => {
+          state.kept = { ...state.kept, default: [{ name: "API_KEY", build: true, updatedAt: 2 }] };
+        },
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain("changed since they were asked");
   });
 });

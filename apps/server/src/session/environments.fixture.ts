@@ -2,6 +2,7 @@
 // each of whose changes is applied as the Registry applies one, so a Session's `environment_*` tools run end to end.
 import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import type { EnvironmentRemovalService } from "@cloudpid/extensions/approval-tools";
 import type { EnvironmentsService } from "@cloudpid/extensions/environment";
 import type { SecretMarks } from "@cloudpid/extensions/environment";
 import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
@@ -25,6 +26,16 @@ export const unusedLifecycle: EnvironmentLifecycle & SecretMarks = {
   startTestBuild: unused,
   testBuildRound: unused,
   cancelTestBuild: unused,
+};
+
+const undeleted = () => Effect.die("the test Environments delete nothing");
+
+/** Deletes that die when called, for Sessions whose tests delete no Environment or kept Secret. */
+export const unusedRemoval: EnvironmentRemovalService = {
+  footprint: undeleted,
+  deleteEnvironment: undeleted,
+  keptSecrets: undeleted,
+  deleteSecret: undeleted,
 };
 
 export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {

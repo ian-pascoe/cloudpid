@@ -6,7 +6,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import { describe, expect, it } from "vitest";
-import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
+import { type AgentChangeAuthor, type AgentChanges, asRecorded } from "./agent-changes.ts";
 import {
   changeSettings,
   type SettingsFieldChange,
@@ -53,7 +53,7 @@ const memoryChanges = (): AgentChanges => {
 
   return {
     record: (change) => {
-      const recorded = { ...change, id: rows.length + 1, revertedBy: null };
+      const recorded = asRecorded(change, rows.length + 1);
 
       rows.push(recorded);
 

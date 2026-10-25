@@ -17,7 +17,6 @@ import {
   type AgentChangeAuthor,
   type AgentChangeRevert,
   type AgentChanges,
-  approvedMark,
 } from "./agent-changes.ts";
 import {
   EVERY_ENVIRONMENT_SCOPE,
@@ -46,6 +45,8 @@ export type SecretDeletion =
   | { readonly status: "deleted"; readonly environment: SecretScope; readonly change: AgentChange }
   /** No Secret of the name is kept in that scope: nothing was deleted or recorded. */
   | { readonly status: "absent"; readonly environment: SecretScope }
+  /** The Secret's value or Build mark changed since the owner was asked: nothing was deleted or recorded. */
+  | { readonly status: "changed-since"; readonly environment: SecretScope }
   | { readonly status: "missing" };
 
 /** The part of the store these changes use. */
@@ -67,16 +68,17 @@ const scopeOf = (scope: string, store: SecretMarkStore): SecretScope | null => {
   return record === null ? null : { id: record.id, name: record.name };
 };
 
-/** The Build mark of the Secret `name` kept in `scope`, or null when none is kept there. */
-const markOf = (store: SecretMarkStore, scope: string, name: string): boolean | null => {
-  const found = store
+/** The Secret `name` kept in `scope`, as the Registry lists it, or undefined when none is kept there. */
+const keptRecord = (store: SecretMarkStore, scope: string, name: string) =>
+  store
     .listEnvironmentSecrets()
     .find(
       (record) => (record.environment ?? EVERY_ENVIRONMENT_SCOPE) === scope && record.name === name,
     );
 
-  return found === undefined ? null : found.build;
-};
+/** The Build mark of the Secret `name` kept in `scope`, or null when none is kept there. */
+const markOf = (store: SecretMarkStore, scope: string, name: string): boolean | null =>
+  keptRecord(store, scope, name)?.build ?? null;
 
 /**
  * Mark the Secret `name` kept in `scope` (an Environment's id, or `*` for every Environment) for the Build, or take the
@@ -137,7 +139,8 @@ export const markSecretBuildAs = (
 /**
  * Delete the Secret `name` kept in `scope` (an Environment's id, or `*` for every Environment), as the owner's delete on
  * the Environments page does, and record it by `author`, the agent the owner approved: `secrets.<NAME>`, `kept` before
- * and none after. It has no revert: the history holds no value to bring back.
+ * and none after. It has no revert: the history holds no value to bring back. With `expected`, the Secret is deleted
+ * only while it was last changed then (its value or Build mark), as the owner saw it when asked.
  */
 export const deleteSecretAs = (
   storage: Pick<RegistryStorage, "transactionSync">,
@@ -146,10 +149,12 @@ export const deleteSecretAs = (
   {
     environment,
     name,
+    expected,
     author,
   }: {
     readonly environment: string;
     readonly name: string;
+    readonly expected?: { readonly updatedAt: number } | undefined;
     readonly author: AgentChangeAuthor;
   },
   now: number,
@@ -158,6 +163,12 @@ export const deleteSecretAs = (
     const where = scopeOf(environment, store);
 
     if (where === null) return { status: "missing" };
+
+    const kept = keptRecord(store, environment, name);
+
+    if (kept !== undefined && expected !== undefined && kept.updatedAt !== expected.updatedAt) {
+      return { status: "changed-since", environment: where };
+    }
 
     if (
       !store.deleteEnvironmentSecret(
@@ -180,7 +191,7 @@ export const deleteSecretAs = (
       before: KEPT_SECRET,
       after: null,
       reverts: null,
-      ...approvedMark(author),
+      approved: author.approved,
     });
 
     return { status: "deleted", environment: where, change };

@@ -74,7 +74,7 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { testEnvironments } from "./environments.fixture.ts";
+import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
@@ -327,12 +327,7 @@ export class TestSession extends DurableObject {
                 sessionSettingsAccess({ registry: settingsRegistry, session }),
               ),
               Effect.provideService(Environments, testEnvironments(kv)),
-              Effect.provideService(EnvironmentRemoval, {
-                footprint: () => Effect.die("No Environment is deleted here"),
-                deleteEnvironment: () => Effect.die("No Environment is deleted here"),
-                keptSecrets: () => Effect.die("No Secret is deleted here"),
-                deleteSecret: () => Effect.die("No Secret is deleted here"),
-              }),
+              Effect.provideService(EnvironmentRemoval, unusedRemoval),
               Effect.provideService(DeployCredentials, { values: [] }),
             ),
           ]

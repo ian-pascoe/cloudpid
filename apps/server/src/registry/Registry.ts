@@ -299,11 +299,13 @@ export type RegistryMethods = {
   /**
    * An Agent change the owner approved (`docs/spec.md` → Approval): delete the Secret `name` kept for `environment` (an
    * Environment's id, or `*` for every Environment), as the owner's delete does, and record it by name with its
-   * `author`. The caller runs the Builds' upkeep after.
+   * `author`, provided it was last changed at `expected.updatedAt` (as the owner saw it). The caller runs the Builds'
+   * upkeep after.
    */
   readonly agentDeleteSecret: (input: {
     readonly environment: string;
     readonly name: string;
+    readonly expected?: { readonly updatedAt: number } | undefined;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<SecretDeletion>;
   /**
@@ -678,14 +680,14 @@ export const RegistryLive = Registry.make(
                 ),
               ),
             ),
-          agentDeleteSecret: ({ environment, name, author }) =>
+          agentDeleteSecret: ({ environment, name, expected, author }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 deleteSecretAs(
                   state.raw.storage,
                   store,
                   changes,
-                  { environment, name, author },
+                  { environment, name, expected, author },
                   now,
                 ),
               ),

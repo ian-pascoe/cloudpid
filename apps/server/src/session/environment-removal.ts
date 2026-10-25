@@ -85,15 +85,20 @@ export const sessionEnvironmentRemoval = ({
           return null;
         }
 
-        return Arr.map(yield* keptIn(scope), ({ name, build }) => ({ name, build }));
+        return Arr.map(yield* keptIn(scope), ({ name, build, updatedAt }) => ({
+          name,
+          build,
+          updatedAt,
+        }));
       }),
-    deleteSecret: ({ environment, name, author }) =>
+    deleteSecret: ({ environment, name, expected, author }) =>
       Effect.gen(function* () {
         if (session === undefined) return yield* unlisted;
 
         const deleted = yield* registry.agentDeleteSecret({
           environment,
           name,
+          expected,
           author: { session, ...author },
         });
 

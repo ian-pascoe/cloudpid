@@ -7,11 +7,7 @@ import { DEFAULT_ENVIRONMENT, EnvironmentError, SessionActionError } from "@clou
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import {
-  buildObjectName,
-  testBuildObjectName,
-  workspaceObjectName,
-} from "../workspace/binding.ts";
+import { buildObjectName, testBuildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import { noEnvironment, reason, thenSaying } from "./messages.ts";
 import type { RegistryMethods } from "./Registry.ts";

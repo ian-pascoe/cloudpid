@@ -77,6 +77,8 @@ export type ApprovalsService = {
   readonly ask: (request: ApprovalAsk) => Effect.Effect<ApprovalAnswer, ApprovalsError>;
   /** The call that asked `id` is done: withdraw its request if it still waits, and forget its answer. */
   readonly settle: (id: string) => Effect.Effect<void>;
+  /** Whether a request `id` waits or its answer is kept: the call that asked it is a rerun. */
+  readonly holds: (id: string) => Effect.Effect<boolean>;
   /** The requests waiting for the owner, oldest first. */
   readonly pending: Effect.Effect<ReadonlyArray<ApprovalAsk>>;
   /**
@@ -246,6 +248,10 @@ export const makeApprovals = ({
     return {
       ask,
       settle,
+      holds: (id) =>
+        Effect.sync(
+          () => answers()[id] !== undefined || requests().some((pending) => pending.id === id),
+        ),
       pending: Effect.sync(requests),
       answer,
       dropAbandoned: Effect.suspend(() => {
@@ -267,6 +273,16 @@ export type ApprovalCall = { readonly taskId: number; readonly conversationId: n
 
 /** What a change shown on an Approval card is: everything but who asks, which the call says. */
 export type ApprovalChange = Omit<ApprovalAsk, "id" | "conversationId">;
+
+/**
+ * Whether the call `api` runs asked already: a rerun after an eviction, whose request still waits or whose answer is
+ * kept. Such a call goes on to `withApproval` even when the target now has the value it asks for (the call may have made
+ * the change itself before the eviction), so that it reports what the owner answered.
+ */
+export const askedBefore = (
+  approvals: ApprovalsService,
+  api: ApprovalCall,
+): Effect.Effect<boolean> => approvals.holds(String(api.taskId));
 
 /**
  * Ask the owner to approve `change` for the call `api` runs, wait for the answer, and hand it to `then`; the request is

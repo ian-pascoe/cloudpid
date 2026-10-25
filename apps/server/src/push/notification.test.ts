@@ -43,7 +43,7 @@ describe("describeEvent", () => {
     });
   });
 
-  it("names the change an Approval request waits on", () => {
+  it("names the change an Approval request waits on, tagged apart from a Secret request", () => {
     expect(
       describeEvent(
         {
@@ -56,7 +56,7 @@ describe("describeEvent", () => {
       ),
     ).toMatchObject({
       body: "Approval needed: Spend limit per Session: $5 → $10 (the refactor needs more requests)",
-      tag: "0190f3a0-1111-7000-8000-000000000001:input",
+      tag: "0190f3a0-1111-7000-8000-000000000001:approval",
     });
   });
 

@@ -411,6 +411,46 @@ describe("a kept Secret the agent deletes with the owner's Approval", () => {
     expect(history).toEqual([]);
   });
 
+  it("is deleted only while it is as the owner saw it, recording nothing otherwise", async () => {
+    const [changedSince, left, history, deleted] = await inRegistry(
+      async ({ keep, store, changes }) => {
+        await keep("API_KEY", DEFAULT_ENVIRONMENT);
+
+        const [kept] = store.listEnvironmentSecrets();
+
+        const remove = (updatedAt: number) =>
+          deleteSecretAs(
+            { transactionSync: (body) => body() },
+            store,
+            changes,
+            {
+              environment: DEFAULT_ENVIRONMENT,
+              name: "API_KEY",
+              expected: { updatedAt },
+              author: approved,
+            },
+            2_000,
+          );
+
+        const recordedBefore = changes.list(DEFAULT_ENVIRONMENT).length;
+        // The owner was shown an earlier value of the Secret.
+        const refused = remove((kept?.updatedAt ?? 0) - 1);
+        const listed = store.listEnvironmentSecrets().length;
+        const recorded = changes.list(DEFAULT_ENVIRONMENT).length - recordedBefore;
+
+        return [refused, listed, recorded, remove(kept?.updatedAt ?? 0)];
+      },
+    );
+
+    expect(changedSince).toMatchObject({
+      status: "changed-since",
+      environment: { id: DEFAULT_ENVIRONMENT },
+    });
+    expect(left).toBe(1);
+    expect(history).toBe(0);
+    expect(deleted).toMatchObject({ status: "deleted" });
+  });
+
   it("deletes a Secret kept for every Environment in the scope *", async () => {
     const [deleted, left] = await inRegistry(async ({ keep, store, changes }) => {
       await keep("NPM_TOKEN", null);

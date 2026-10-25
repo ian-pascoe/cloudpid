@@ -29,7 +29,13 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { type ApprovalAnswer, type ApprovalCall, Approvals, withApproval } from "./approvals.ts";
+import {
+  type ApprovalAnswer,
+  type ApprovalCall,
+  Approvals,
+  askedBefore,
+  withApproval,
+} from "./approvals.ts";
 import {
   AgentChangeLog,
   type ChangeAuthor,
@@ -46,20 +52,29 @@ import { Secrets } from "./secrets/store.ts";
 import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
 
-export const extensionName = "approvals";
+export const extensionName = "approval-tools";
 
 /** What deleting an Environment takes with it, as the owner is asked about it. */
-export type EnvironmentFootprint = {
+export const EnvironmentFootprint = Schema.Struct({
   /** Its Workspaces, but its spare. */
-  readonly workspaces: number;
+  workspaces: Schema.Int,
   /** The Sessions in them, archived ones too. */
-  readonly sessions: number;
+  sessions: Schema.Int,
   /** The Secrets kept for it alone. */
-  readonly secrets: number;
+  secrets: Schema.Int,
+});
+
+export type EnvironmentFootprint = typeof EnvironmentFootprint.Type;
+
+/** A Secret kept in a scope, by name: whether it reaches the Build, and when its value or mark last changed. */
+export type KeptSecretMark = {
+  readonly name: string;
+  readonly build: boolean;
+  readonly updatedAt: number;
 };
 
-/** A Secret kept in a scope, by name: whether it reaches the Build. */
-export type KeptSecretMark = { readonly name: string; readonly build: boolean };
+/** What a kept Secret was when the owner was asked to delete it: when its value or Build mark last changed. */
+const SecretAsked = Schema.Struct({ updatedAt: Schema.Finite });
 
 /** How the delete of a kept Secret went. */
 export type SecretDeleted =
@@ -71,6 +86,8 @@ export type SecretDeleted =
     }
   /** No Secret of the name is kept there (any more): nothing was deleted. */
   | { readonly status: "absent"; readonly environment: ChangedEnvironment }
+  /** Its value or Build mark changed since the owner was asked: nothing was deleted. */
+  | { readonly status: "changed-since"; readonly environment: ChangedEnvironment }
   | { readonly status: "missing" };
 
 /**
@@ -91,10 +108,14 @@ export type EnvironmentRemovalService = {
   readonly keptSecrets: (
     scope: string,
   ) => Effect.Effect<ReadonlyArray<KeptSecretMark> | null, EnvironmentsError>;
-  /** Delete the Secret `name` kept in `environment`'s scope and record it, then run the Builds' upkeep it touches. */
+  /**
+   * Delete the Secret `name` kept in `environment`'s scope and record it, then run the Builds' upkeep it touches; with
+   * `expected`, only while it was last changed then.
+   */
   readonly deleteSecret: (input: {
     readonly environment: string;
     readonly name: string;
+    readonly expected?: { readonly updatedAt: number } | undefined;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<SecretDeleted, EnvironmentsError>;
 };
@@ -120,8 +141,24 @@ const spendWords = (limit: Schema.Json | null): string =>
 const depthWords = (depth: number): string =>
   `${depth} level${depth === 1 ? "" : "s"} of subagents below the root`;
 
+/** The subagent depth a stored value gives: the default where it is unset or not a depth. */
+const depthOf = (stored: Schema.Json | null): number =>
+  Predicate.isNumber(stored) && Number.isInteger(stored) && stored > 0
+    ? stored
+    : DEFAULT_MAX_SUBAGENT_DEPTH;
+
+/** A stored subagent depth as the owner reads it. */
+const storedDepthWords = (stored: Schema.Json | null): string =>
+  `${depthWords(depthOf(stored))}${stored === null ? " (the default)" : ""}`;
+
 /** A size limit as the owner reads it. */
 const sizeWords = (size: InstanceType): string => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
+
+const isInstanceType = Schema.is(InstanceType);
+
+/** A stored size limit as the owner reads it. */
+const storedSizeWords = (stored: Schema.Json | null): string =>
+  isInstanceType(stored) ? sizeWords(stored) : JSON.stringify(stored);
 
 /** An Environment as a result and a card name it. */
 const named = ({ id, name }: ChangedEnvironment): string =>
@@ -130,6 +167,12 @@ const named = ({ id, name }: ChangedEnvironment): string =>
     : `Environment ${JSON.stringify(name)} (${id})`;
 
 const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/** Whether `now` takes no more of anything than `approved`, what the owner was shown. */
+const within = (now: EnvironmentFootprint, approved: EnvironmentFootprint): boolean =>
+  now.workspaces <= approved.workspaces &&
+  now.sessions <= approved.sessions &&
+  now.secrets <= approved.secrets;
 
 /** What deleting an Environment takes with it, as the card says it: what the owner approves. */
 const footprintWords = (footprint: EnvironmentFootprint): string =>
@@ -152,6 +195,13 @@ const declined = (answer: Extract<ApprovalAnswer, { approved: false }>, what: st
 /** What a change the owner approved says when the target changed between the request and the answer. */
 const changedSince = (what: string, now: string) =>
   `The user approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
+
+/**
+ * What a change the owner approved says when the target has the value already: this call made it before the Session
+ * restarted (recorded then), or the user made it meanwhile.
+ */
+const approvedAlready = (what: string) =>
+  `The user approved, and ${what} already, as approved: nothing more needed changing.`;
 
 const Reason = Schema.String.check(
   Schema.isMinLength(1),
@@ -239,6 +289,7 @@ export const ApprovalTools: Effect.Effect<
     change,
     before,
     after,
+    words,
   }: {
     readonly tool: string;
     readonly field: string;
@@ -249,6 +300,8 @@ export const ApprovalTools: Effect.Effect<
     readonly change: string;
     readonly before: string;
     readonly after: string;
+    /** A stored value of the field as the owner reads it. */
+    readonly words: (value: Schema.Json | null) => string;
   }) =>
     withApproval(
       approvals,
@@ -270,16 +323,11 @@ export const ApprovalTools: Effect.Effect<
               });
             case "changed-since":
               return yield* SettingsAccessError.make({
-                message: changedSince(change, JSON.stringify(applied.current)),
+                message: changedSince(change, words(applied.current)),
               });
             case "unchanged":
               return {
-                output: [
-                  {
-                    type: "text" as const,
-                    text: `The user approved, and ${change} is ${after} already: nothing changed, and nothing was recorded.`,
-                  },
-                ],
+                output: [{ type: "text" as const, text: approvedAlready(`${change} is ${after}`) }],
                 details: { approval: { approved: true }, agentChanges: [] },
               };
             case "changed": {
@@ -333,7 +381,7 @@ export const ApprovalTools: Effect.Effect<
 
         const current = (yield* access.get).settings.spendLimit.perSession;
 
-        if (current === per_session) {
+        if (current === per_session && !(yield* askedBefore(approvals, api))) {
           return {
             output: [
               {
@@ -355,6 +403,7 @@ export const ApprovalTools: Effect.Effect<
           change: "Spend limit",
           before: spendWords(current),
           after: spendWords(per_session),
+          words: spendWords,
         });
       }),
   });
@@ -385,12 +434,9 @@ export const ApprovalTools: Effect.Effect<
         const view = yield* access.get;
         const stored = view.settings.extensions.subagents?.maxSubagentDepth ?? null;
 
-        const current =
-          Predicate.isNumber(stored) && Number.isInteger(stored) && stored > 0
-            ? stored
-            : DEFAULT_MAX_SUBAGENT_DEPTH;
+        const current = depthOf(stored);
 
-        if (current === depth) {
+        if (current === depth && !(yield* askedBefore(approvals, api))) {
           return {
             output: [
               {
@@ -410,8 +456,9 @@ export const ApprovalTools: Effect.Effect<
           reason,
           api,
           change: "Subagent depth",
-          before: `${depthWords(current)}${stored === null ? " (the default)" : ""}`,
+          before: storedDepthWords(stored),
           after: depthWords(depth),
+          words: storedDepthWords,
         });
       }),
   });
@@ -455,7 +502,7 @@ export const ApprovalTools: Effect.Effect<
           });
         }
 
-        if (size === maxInstance) {
+        if (size === maxInstance && !(yield* askedBefore(approvals, api))) {
           return {
             output: [
               {
@@ -518,7 +565,7 @@ export const ApprovalTools: Effect.Effect<
                   return yield* EnvironmentsError.make({
                     message: changedSince(
                       `the size limit of ${where}`,
-                      JSON.stringify(applied.current),
+                      storedSizeWords(applied.current),
                     ),
                   });
                 case "unchanged":
@@ -526,7 +573,7 @@ export const ApprovalTools: Effect.Effect<
                     output: [
                       {
                         type: "text" as const,
-                        text: `The user approved, and the size limit of ${where} is ${size} already: nothing changed, and nothing was recorded.`,
+                        text: approvedAlready(`the size limit of ${where} is ${size}`),
                       },
                     ],
                     details: { approval: { approved: true } },
@@ -599,62 +646,69 @@ export const ApprovalTools: Effect.Effect<
           });
         }
 
-        /** The Environment as the owner is asked about it, or null when it is gone. */
+        /** The Environment and what deleting it takes, or null when it is gone. */
         const describe = Effect.gen(function* () {
           const details = yield* environments.get(id);
           const footprint = yield* removal.footprint(id);
 
-          return details === null || footprint === null
-            ? null
-            : { details, words: `${named(details)}: ${footprintWords(footprint)}` };
+          return details === null || footprint === null ? null : { details, footprint };
         });
 
         const found = yield* describe;
+        const rerun = yield* askedBefore(approvals, api);
 
-        if (found === null) return yield* notFound(id);
+        if (found === null && !rerun) return yield* notFound(id);
 
-        const { details } = found;
+        // A rerun whose Environment is gone (deleted by this call before the Session restarted, or by the user) waits
+        // for, or takes, the answer to the request it made: what it shows the owner is that request's.
+        const environment: ChangedEnvironment = found?.details ?? { id, name: id };
+        const where = named(environment);
+        const before = found === null ? where : `${where}: ${footprintWords(found.footprint)}`;
 
         return yield* withApproval(
           approvals,
           api,
           {
             tool: "environment_delete",
-            target: `Environment ${JSON.stringify(details.name)}`,
+            target: `Environment ${JSON.stringify(environment.name)}`,
             change: "Delete the Environment",
-            before: found.words,
+            before,
             after: "Deleted, with no revert",
             reason,
-            expected: found.words,
+            expected: found?.footprint ?? null,
           },
           (answer) =>
             Effect.gen(function* () {
-              if (!answer.approved) return declined(answer, `deleting ${named(details)}`);
+              if (!answer.approved) return declined(answer, `deleting ${where}`);
 
               const now = yield* describe;
 
               if (now === null) {
                 return {
-                  output: [
-                    {
-                      type: "text" as const,
-                      text: `The user approved, and ${named(details)} is gone already: nothing was deleted.`,
-                    },
-                  ],
+                  output: [{ type: "text" as const, text: approvedAlready(`${where} is gone`) }],
                   details: { approval: { approved: true } },
                 };
               }
 
-              if (now.words !== answer.expected) {
+              const approved = Schema.decodeUnknownOption(EnvironmentFootprint)(answer.expected);
+
+              // The approval covers what the card showed, or less of it: a delete an eviction cut off has taken some
+              // of it already. A Workspace, Session or kept Secret added since is not covered.
+              if (Option.isNone(approved) || !within(now.footprint, approved.value)) {
                 return yield* EnvironmentsError.make({
-                  message: changedSince(named(details), now.words),
+                  message: changedSince(
+                    `what deleting ${where} takes`,
+                    footprintWords(now.footprint),
+                  ),
                 });
               }
+
+              const deleted = `${named(now.details)}: ${footprintWords(approved.value)}`;
 
               yield* removal.deleteEnvironment(id);
               yield* log.record({
                 tool: "environment_delete",
-                environmentName: details.name,
+                environmentName: now.details.name,
                 field: DELETED_FIELD,
               });
 
@@ -662,15 +716,15 @@ export const ApprovalTools: Effect.Effect<
                 output: [
                   {
                     type: "text" as const,
-                    text: `The user approved: deleted ${now.words}. No revert brings it back.`,
+                    text: `The user approved: deleted ${deleted}. No revert brings it back.`,
                   },
                 ],
                 details: {
                   approval: { approved: true },
                   agentChange: {
-                    environment: { id: details.id, name: details.name },
+                    environment: { id: now.details.id, name: now.details.name },
                     field: DELETED_FIELD,
-                    before: now.words,
+                    before: deleted,
                     after: null,
                   },
                 },
@@ -722,13 +776,14 @@ export const ApprovalTools: Effect.Effect<
 
         const secret = Arr.findFirst(kept, (each) => each.name === name);
 
-        if (Option.isNone(secret)) {
+        if (Option.isNone(secret) && !(yield* askedBefore(approvals, api))) {
           return yield* EnvironmentsError.make({
             message: `Nothing was asked or deleted: no Secret ${name} is kept for ${named(scope)}. environment_get lists the Secrets kept (names only); a Secret kept for every Environment is addressed with id "${EVERY_ENVIRONMENT_ID}".`,
           });
         }
 
-        const before = `${name}, kept for ${named(scope)}${secret.value.build ? ", marked for the Build" : ""}`;
+        const marked = Option.isSome(secret) && secret.value.build;
+        const before = `${name}, kept for ${named(scope)}${marked ? ", marked for the Build" : ""}`;
 
         return yield* withApproval(
           approvals,
@@ -743,7 +798,11 @@ export const ApprovalTools: Effect.Effect<
             before,
             after: "Deleted, with no revert",
             reason,
-            expected: name,
+            // The Secret as the owner saw it: deleted only while its value and Build mark are still those.
+            expected: Option.match(secret, {
+              onNone: () => null,
+              onSome: ({ updatedAt }) => ({ updatedAt }),
+            }),
           },
           (answer) =>
             Effect.gen(function* () {
@@ -752,6 +811,9 @@ export const ApprovalTools: Effect.Effect<
               const deleted = yield* removal.deleteSecret({
                 environment,
                 name,
+                expected: Option.getOrUndefined(
+                  Schema.decodeUnknownOption(SecretAsked)(answer.expected),
+                ),
                 author: {
                   conversation: api.conversationId,
                   tool: "environment_secret_delete",
@@ -768,11 +830,17 @@ export const ApprovalTools: Effect.Effect<
                     output: [
                       {
                         type: "text" as const,
-                        text: `The user approved, and no Secret ${name} is kept for ${named(deleted.environment)} any more: nothing was deleted.`,
+                        text: approvedAlready(
+                          `no Secret ${name} is kept for ${named(deleted.environment)}`,
+                        ),
                       },
                     ],
                     details: { approval: { approved: true } },
                   };
+                case "changed-since":
+                  return yield* EnvironmentsError.make({
+                    message: `The user approved, but ${name}, kept for ${named(deleted.environment)}, changed since they were asked (its value or its Build mark): nothing was deleted. Ask again if it should still be deleted.`,
+                  });
                 case "deleted":
                   yield* log.record({
                     tool: "environment_secret_delete",
