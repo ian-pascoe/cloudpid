@@ -1,6 +1,7 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
 import type { AgentChangeRevert } from "./agent-changes.ts";
+import type { SettingsChangeRevert } from "./settings-changes.ts";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import {
   type AgentChange,
@@ -79,6 +80,8 @@ const fakeRegistries = () => {
   const keptSecrets: Array<EnvironmentSecretRecord & { readonly value: string }> = [];
   /** The Agent changes recorded, oldest first. */
   const agentChanges: AgentChange[] = [];
+  /** The Settings' Agent changes recorded, oldest first. */
+  const settingsChanges: AgentChange[] = [];
 
   /** What `environment` uses: its own over those kept for every Environment, by name. */
   const keptFor = (environment: string): ReadonlyArray<KeptSecret> => {
@@ -902,6 +905,50 @@ const fakeRegistries = () => {
         pushes.delete(endpoint);
       }),
     notify: () => Effect.void,
+    // The Session DO makes Agent changes, never the endpoint.
+    changeSettings: () => Effect.die("The endpoint makes no Agent change"),
+    listSettingsChanges: () => Effect.sync(() => settingsChanges.toReversed()),
+    // A revert of the model, as the Registry DO's (`revertSettingsChange`).
+    revertSettingsChange: ({ change }) =>
+      Effect.sync((): SettingsChangeRevert => {
+        calls.push(`revertSettingsChange:${change}`);
+
+        const found = Arr.findFirst(settingsChanges, (item) => item.id === change);
+
+        if (Option.isNone(found)) return { status: "missing" };
+
+        if (found.value.actor === "owner")
+          return { status: "refused", message: "A revert is not undone" };
+
+        if (found.value.after !== DEFAULT_SETTINGS.model) {
+          return {
+            status: "changed-since",
+            field: found.value.field,
+            current: DEFAULT_SETTINGS.model,
+          };
+        }
+
+        const revert: AgentChange = {
+          ...found.value,
+          id: settingsChanges.length + 1,
+          actor: "owner",
+          session: null,
+          conversation: null,
+          tool: null,
+          reason: `Reverted change ${change}`,
+          before: found.value.after,
+          after: found.value.before,
+          reverts: change,
+        };
+
+        settingsChanges.push(revert);
+
+        return {
+          status: "reverted",
+          change: revert,
+          state: { settings: DEFAULT_SETTINGS, overrides: {} },
+        };
+      }),
     updateSettings: ({ overrides }) =>
       Effect.sync(() => {
         calls.push("updateSettings");
@@ -935,6 +982,7 @@ const fakeRegistries = () => {
     workspaces,
     environments,
     agentChanges,
+    settingsChanges,
     sessionObjects,
     workspaceObjects,
     breakSession: (id: string, message: string) => {
@@ -2243,6 +2291,73 @@ it("refuses to revert an Agent change whose variable changed since, showing its 
   );
   expect(missing.message).toBe('Environment "default" has no change 9');
   expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "3" } });
+});
+
+/** A Settings change that set the model from `before` to `after`, as the Registry records it. */
+const settingsChange = (id: number, before: string, after: string): AgentChange => ({
+  id,
+  scope: "settings",
+  at: id * 1_000,
+  actor: "agent",
+  session: "s-1",
+  conversation: 1,
+  tool: "settings_model_set",
+  reason: "For the tests",
+  field: "model",
+  before,
+  after,
+  reverts: null,
+  revertedBy: null,
+});
+
+it("lists the Settings' Agent changes, newest first", async () => {
+  const fake = fakeRegistries();
+
+  fake.settingsChanges.push(
+    settingsChange(1, "a/b", "c/d"),
+    settingsChange(2, "c/d", DEFAULT_SETTINGS.model),
+  );
+
+  const listed = await call(fake, (registry) => registry.listSettingsChanges());
+
+  expect(Arr.map(listed, (change) => change.id)).toEqual([2, 1]);
+});
+
+it("reverts a Settings change and answers the owner's change", async () => {
+  const fake = fakeRegistries();
+
+  fake.settingsChanges.push(
+    settingsChange(1, "anthropic/claude-haiku-5-5", DEFAULT_SETTINGS.model),
+  );
+
+  const reverted = await call(fake, (registry) => registry.revertSettingsChange({ change: 1 }));
+
+  expect(reverted).toMatchObject({
+    actor: "owner",
+    field: "model",
+    after: "anthropic/claude-haiku-5-5",
+    reverts: 1,
+  });
+});
+
+it("refuses to revert a Settings change whose setting changed since, or one that is not there, as the owner's save refuses", async () => {
+  const fake = fakeRegistries();
+
+  fake.settingsChanges.push(settingsChange(1, "anthropic/claude-haiku-5-5", "x/y"));
+
+  const changed = await call(fake, (registry) =>
+    Effect.flip(registry.revertSettingsChange({ change: 1 })),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.revertSettingsChange({ change: 9 })),
+  );
+
+  expect(changed).toBeInstanceOf(SettingsError);
+  expect(changed.message).toBe(
+    `model has changed since: it is "${DEFAULT_SETTINGS.model}" now, so the change is not reverted`,
+  );
+  expect(missing.message).toBe("The Settings have no change 9");
 });
 
 it("lists Workspaces of every Environment, newest first", async () => {

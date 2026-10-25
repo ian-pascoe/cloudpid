@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off newSchemaClass:off -- in-memory fakes of the Registry over native arrays.
 
 import { DEFAULT_SETTINGS, overridesFrom, SettingsError, type Settings } from "@cloudpid/config";
-import type { SettingsState } from "@cloudpid/protocol";
+import type { AgentChange, SettingsState } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { describe, expect, it } from "@effect/vitest";
@@ -13,7 +13,9 @@ import {
   justSavedAtom,
   limitTextAtom,
   offeredTextAtom,
+  revertSettingsChangeAtom,
   settingsAtom,
+  settingsChangesAtom,
   settingsDraftAtom,
   updateSettingsAtom,
 } from "./settings.ts";
@@ -174,6 +176,82 @@ describe("the settings form", () => {
       yield* settled(registry, updateSettingsAtom);
 
       expect(registry.get(justSavedAtom)).toBe(false);
+    }),
+  );
+});
+
+describe("the Settings' Agent changes", () => {
+  const change = (id: number, revertedBy: number | null = null): AgentChange => ({
+    id,
+    scope: "settings",
+    at: 1_000,
+    actor: "agent",
+    session: "s-1",
+    conversation: 1,
+    tool: "settings_model_set",
+    reason: "The task is small",
+    field: "model",
+    before: DEFAULT_SETTINGS.model,
+    after: "anthropic/claude-haiku-5-5",
+    reverts: null,
+    revertedBy,
+  });
+
+  it.effect("lists them, and a revert writes the old value back and shows it in the form", () =>
+    Effect.gen(function* () {
+      const reverted: unknown[] = [];
+      let held: Settings = { ...DEFAULT_SETTINGS, model: "anthropic/claude-haiku-5-5" };
+
+      const registry = registryWith({
+        getSettings: () => Effect.sync(() => stateOf(held)),
+        listSettingsChanges: () => Effect.succeed([change(1, reverted.length === 0 ? null : 2)]),
+        revertSettingsChange: (input) =>
+          Effect.sync(() => {
+            reverted.push(input);
+            held = DEFAULT_SETTINGS;
+
+            return { ...change(2), actor: "owner" as const, reverts: 1 };
+          }),
+      });
+
+      registry.mount(settingsAtom);
+      registry.mount(settingsDraftAtom);
+      registry.mount(settingsChangesAtom);
+      yield* settled(registry, settingsAtom);
+
+      expect(AsyncResult.getOrThrow(yield* settled(registry, settingsChangesAtom))).toEqual([
+        change(1),
+      ]);
+      expect(registry.get(settingsDraftAtom).model).toBe("anthropic/claude-haiku-5-5");
+
+      registry.mount(revertSettingsChangeAtom);
+      registry.set(revertSettingsChangeAtom, 1);
+      yield* settled(registry, revertSettingsChangeAtom);
+      yield* settled(registry, settingsChangesAtom);
+
+      expect(reverted).toEqual([{ change: 1 }]);
+      expect(AsyncResult.getOrThrow(registry.get(settingsChangesAtom))).toEqual([change(1, 2)]);
+      expect(registry.get(settingsDraftAtom)).toEqual(DEFAULT_SETTINGS);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("say why a revert was refused", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        revertSettingsChange: () =>
+          Effect.fail(
+            new SettingsError({ message: "model has changed since: it is x now, so not reverted" }),
+          ),
+      });
+
+      registry.mount(revertSettingsChangeAtom);
+      registry.set(revertSettingsChangeAtom, 1);
+
+      expect(failureOf(yield* settled(registry, revertSettingsChangeAtom))).toBe(
+        "model has changed since: it is x now, so not reverted",
+      );
+      registry.dispose();
     }),
   );
 });

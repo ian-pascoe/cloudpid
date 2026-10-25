@@ -140,10 +140,13 @@ export class Environments extends Context.Service<Environments, EnvironmentsServ
   "@cloudpid/extensions/environment/Environments",
 ) {}
 
-/** An Agent change of the Run, for the Notification its end sends: the tool, the Environment's name and the field. */
+/**
+ * An Agent change of the Run, for the Notification its end sends: the tool, the Environment's name (absent for a change
+ * to the Settings) and the field.
+ */
 export type RunChange = {
   readonly tool: string;
-  readonly environmentName: string;
+  readonly environmentName?: string | undefined;
   readonly field: string;
 };
 

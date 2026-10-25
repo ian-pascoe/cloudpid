@@ -13,6 +13,7 @@ import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
+import { SettingsAccess } from "@cloudpid/extensions/settings";
 import { SubagentSettings } from "@cloudpid/extensions/subagents";
 import { ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
@@ -41,6 +42,7 @@ import { spareUpkeep } from "../registry/rpc.ts";
 import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
 import { sessionLifecycle } from "./environment-lifecycle.ts";
 import { sessionEnvironments } from "./environments.ts";
+import { sessionSettingsAccess } from "./settings-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
@@ -425,6 +427,13 @@ export const SessionLive = Session.make(
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(WorkspaceContainer, workspace.container),
                   Effect.provideService(Environments, environments),
+                  Effect.provideService(
+                    SettingsAccess,
+                    sessionSettingsAccess({
+                      registry: registries.getByName(REGISTRY_NAME),
+                      session: name,
+                    }),
+                  ),
                   Effect.provideService(DeployCredentials, {
                     values: [Redacted.value(github.token)],
                   }),

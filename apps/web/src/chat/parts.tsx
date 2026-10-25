@@ -13,7 +13,7 @@ import { cn } from "../lib/utils.ts";
 import { ChangeDiff } from "../change-diff.tsx";
 import { changeFieldText, changeValueText } from "../environments.ts";
 import { changeDiff } from "../line-diff.ts";
-import { changeOf, type ShownChange } from "./agent-change.ts";
+import { changesOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
 
@@ -133,7 +133,7 @@ const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
 );
 
 /**
- * The Agent change a call made: the Environment and field, and its value before and after, in full; a script's or the
+ * The Agent change a call made: the Environment (or the Settings) and field, and its value before and after, in full; a script's or the
  * Toolchains' as a diff.
  */
 const Change = ({ change }: { change: ShownChange }) => {
@@ -142,7 +142,7 @@ const Change = ({ change }: { change: ShownChange }) => {
   return (
     <div className="mt-2 first:mt-0">
       <div className="text-xs font-medium text-muted-foreground">
-        {changeFieldText(change.field)} in {change.environment.name}
+        {changeFieldText(change.field)} in {change.environment?.name ?? "the Settings"}
       </div>
       {diff === undefined ? (
         <>
@@ -187,7 +187,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   );
 
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
-  const change = changeOf(artifact);
+  const changes = changesOf(artifact);
 
   // The screenshots a call returned, which show beside its card rather than inside it.
   const images = Option.getOrElse(
@@ -218,7 +218,9 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       }
     >
       <Output label="Arguments" text={shownArgs} />
-      {change !== undefined && <Change change={change} />}
+      {Arr.map(changes, (change) => (
+        <Change key={change.field} change={change} />
+      ))}
       {calls.length > 0 && <NestedCalls calls={calls} />}
       {streamed !== undefined && result === undefined && <Output label="Output" text={streamed} />}
       {result !== undefined && (

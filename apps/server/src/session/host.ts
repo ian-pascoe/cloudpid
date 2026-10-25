@@ -91,6 +91,7 @@ import type * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
 import { AgentChangeLog } from "@cloudpid/extensions/environment";
+import { SettingsReload, type SettingsApplied } from "@cloudpid/extensions/settings";
 import { agentChangesNotice, runChanges } from "./agent-changes.ts";
 import {
   harnessSettings,
@@ -212,12 +213,13 @@ export type SessionHostOptions<R = never> = {
   readonly reset: (reason: string) => void;
   /**
    * The extensions the Session's conversations run with, installed before any work resumes. Their Agent changes
-   * (`AgentChangeLog`) are kept for the Notification at the end of the Run.
+   * (`AgentChangeLog`) are kept for the Notification at the end of the Run, and the Settings they change are read
+   * again, and the root conversation's agent brought to the default, through `SettingsReload`.
    */
   readonly extensions: Effect.Effect<
     readonly Extension[],
     never,
-    Harness | SessionSettings | AgentChangeLog | R
+    Harness | SessionSettings | AgentChangeLog | SettingsReload | R
   >;
   /**
    * Extensions that follow the settings: after a read that brought new values, given the extensions installed, the
@@ -540,6 +542,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   // Before anything resumes, so resumed tool calls find their tools.
   const installed = yield* options.extensions.pipe(
     Effect.provideService(AgentChangeLog, { record: changes.record }),
+    Effect.provideService(SettingsReload, { apply: Effect.suspend(() => reloadSettings) }),
   );
 
   for (const extension of installed) yield* harness.install(extension);
@@ -636,6 +639,34 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     yield* attempt("configure", () => conversation.configure(want, context));
   });
+
+  /**
+   * Read the settings again after the agent changed them, and bring the active branch's agent to the default, so its
+   * next request uses it. A read or a write that fails is logged and left: the Session carries on with the settings it
+   * last read, and reads them when it next admits input. Says whether the Session picked its own model and level.
+   */
+  const reloadSettings: Effect.Effect<SettingsApplied> = refreshSettings.pipe(
+    Effect.andThen(applyAgent.pipe(serially)),
+    Effect.andThen(Effect.suspend(() => usageChanged)),
+    Effect.catchCause((cause) =>
+      Effect.logWarning(
+        "Reading the settings after an Agent change failed; the Session reads them when it next admits input",
+        cause,
+      ),
+    ),
+    Effect.andThen(
+      Effect.sync(() => {
+        const pick = picked();
+
+        return {
+          picked: {
+            model: pick.model !== undefined,
+            thinkingLevel: pick.thinkingLevel !== undefined,
+          },
+        };
+      }),
+    ),
+  );
 
   const inspect = harness.inspect.pipe(fromHarness);
 

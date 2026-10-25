@@ -243,6 +243,12 @@ export const fieldVariable = (field: string): string | null =>
 export const MAX_AGENT_CHANGES = 200;
 
 /**
+ * The scope of the Settings' Agent changes, where an Environment's are kept under its id (`default`, or eight hex
+ * digits). A change's `field` is then a settings field (`settingsFieldPath` in `@cloudpid/config`).
+ */
+export const SETTINGS_SCOPE = "settings";
+
+/**
  * One Agent change (GLOSSARY.md → Agent change; `docs/spec.md` → Agent changes): a change the agent made to an
  * Environment, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`
  * and `after` are its values then, null where it had none (a variable not set).
@@ -614,6 +620,22 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("updateSettings", {
     payload: { overrides: Schema.Json },
     success: SettingsState,
+    error: SettingsError,
+  }),
+  /**
+   * The Settings' Agent changes (`docs/spec.md` → Agent changes), newest first: the last `MAX_AGENT_CHANGES`, the
+   * owner's reverts among them. Each one's `field` names a setting (`model`, `roles.small.model`, `tools.offered`,
+   * `extensions.<extension>.<key>`).
+   */
+  Rpc.make("listSettingsChanges", { success: Schema.Array(AgentChange) }),
+  /**
+   * Revert Settings change `change`: write its `before` value back, recorded as the owner's change, which this answers.
+   * Refused with a `SettingsError` showing the value now when the field has changed since, and for a change that is the
+   * owner's own revert. A Session reads the settings when it next admits input.
+   */
+  Rpc.make("revertSettingsChange", {
+    payload: { change: Schema.Finite },
+    success: AgentChange,
     error: SettingsError,
   }),
   /**

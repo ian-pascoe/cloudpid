@@ -3,6 +3,7 @@
 // the schema's `Encoded` side is the overrides' shape: a deep partial of the settings that rejects keys it does not know.
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -293,6 +294,93 @@ export const overridesFrom = (settings: Settings): SettingsOverrides =>
   // SAFETY: both sides are complete encodings of `Settings`, and the difference keeps only keys the first has.
   (difference(encodeSettings(settings), encodeSettings(DEFAULT_SETTINGS)) ??
     {}) as SettingsOverrides;
+
+const SETTINGS_ROOTS: ReadonlySet<string> = new Set(Record.keys(DEFAULT_SETTINGS));
+
+/** The field of one option of an extension: `extensions.<extension>.<key>`. */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const extensionField = (extension: string, key: string): string =>
+  `extensions.${extension}.${key}`;
+
+/**
+ * The keys a settings field leads through (`docs/spec.md` → Agent changes): a setting's dotted path (`thinkingLevel`,
+ * `roles.small.model`), or `extensions.<extension>.<key>` for an extension's option, whose key may hold dots (the
+ * extension's name may not). Undefined for a path that does not start at a setting or has an empty part.
+ */
+export const settingsFieldPath = (field: string): ReadonlyArray<string> | undefined => {
+  const parts = field.split(".");
+  const [root, extension, ...key] = parts;
+
+  if (root === undefined || !SETTINGS_ROOTS.has(root) || Arr.some(parts, (part) => part === "")) {
+    return undefined;
+  }
+
+  if (root !== "extensions") return parts;
+
+  return extension === undefined || key.length === 0
+    ? undefined
+    : [root, extension, Arr.join(key, ".")];
+};
+
+/** The value `field` has in `settings`: null where there is none (an option not set, a field that is not one). */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const settingsFieldValue = (settings: Settings, field: string): Schema.Json | null => {
+  const keys = settingsFieldPath(field);
+
+  if (keys === undefined) return null;
+
+  let found: unknown = settings;
+
+  for (const key of keys) {
+    found = Predicate.hasProperty(found, key) ? found[key] : undefined;
+  }
+
+  // The settings are plain JSON data: what the path leads to is JSON, or nothing.
+  return Option.getOrNull(decodeJson(found));
+};
+
+const decodeJson = Schema.decodeUnknownOption(Schema.Json);
+
+const decodeJsonObject = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json));
+
+/** `value` with `leaf` at `keys`, objects made on the way; null takes the leaf away, and an object left empty with it. */
+const withLeaf = (
+  value: Schema.JsonObject,
+  keys: ReadonlyArray<string>,
+  leaf: Schema.Json | null,
+): Schema.JsonObject => {
+  const [head, ...rest] = keys;
+
+  if (head === undefined) return value;
+
+  const { [head]: held, ...others } = value;
+
+  if (rest.length === 0) return leaf === null ? others : { ...others, [head]: leaf };
+
+  const inner = withLeaf(held !== undefined && isJsonObject(held) ? held : {}, rest, leaf);
+
+  return Record.isEmptyRecord(inner) ? others : { ...others, [head]: inner };
+};
+
+/**
+ * The overrides that make `settings` into settings where each of `changes` has its value (`settingsFieldPath`; null: the
+ * option is taken away), over what `settings` override already. A field that is not a setting changes nothing; the
+ * strict resolution of the result says whether the values are valid.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const overridesWithFields = (
+  settings: Settings,
+  changes: ReadonlyArray<{ readonly field: string; readonly value: Schema.Json | null }>,
+): Schema.Json =>
+  Arr.reduce(
+    changes,
+    Option.getOrElse(decodeJsonObject(overridesFrom(settings)), () => ({})),
+    (overrides, change) => {
+      const keys = settingsFieldPath(change.field);
+
+      return keys === undefined ? overrides : withLeaf(overrides, keys, change.value);
+    },
+  );
 
 /** `value` without what lies at `keys`, if anything does. */
 const omitPath = (value: Schema.Json, keys: ReadonlyArray<string>): Schema.Json => {

@@ -932,6 +932,28 @@ export const serveRegistryRpc = <R = never>(
             }),
           ),
         ),
+      listSettingsChanges: () => registry.listSettingsChanges(),
+      revertSettingsChange: ({ change }) =>
+        registry.revertSettingsChange({ change }).pipe(
+          Effect.flatMap((revert) => {
+            switch (revert.status) {
+              case "reverted":
+                return Effect.succeed(revert.change);
+              case "changed-since":
+                return Effect.fail(
+                  SettingsError.make({
+                    message: `${revert.field} has changed since: it is ${shownValue(revert.current)} now, so the change is not reverted`,
+                  }),
+                );
+              case "refused":
+                return Effect.fail(SettingsError.make({ message: revert.message }));
+              case "missing":
+                return Effect.fail(
+                  SettingsError.make({ message: `The Settings have no change ${change}` }),
+                );
+            }
+          }),
+        ),
     });
 
     const serve = yield* RpcServer.toHttpEffect(RegistryRpcs).pipe(
