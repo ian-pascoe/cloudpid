@@ -15,6 +15,7 @@ import type {
   PushSubscription,
   SessionOrigin,
 } from "@cloudpid/protocol";
+import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
   type AgentChangeAuthor,
@@ -59,7 +60,6 @@ import {
   type SettingsChangeRevert,
   type SettingsFieldChange,
 } from "./settings-changes.ts";
-import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import {
   readEnvironmentSettings,
   type EnvironmentSettingsState,

@@ -250,7 +250,7 @@ export const SETTINGS_SCOPE = "settings";
 
 /**
  * One Agent change (GLOSSARY.md → Agent change; `docs/spec.md` → Agent changes): a change the agent made to an
- * Environment, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`
+ * Environment or to the Settings, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`
  * and `after` are its values then, null where it had none (a variable not set).
  */
 export const AgentChange = Schema.Struct({

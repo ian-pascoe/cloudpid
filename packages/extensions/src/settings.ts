@@ -13,7 +13,6 @@ import {
   ModelId,
   ROLE_NAMES,
   type Settings,
-  settingsFieldValue,
   SUPPORTED_MODELS,
   type SettingsOverrides,
   THINKING_LEVELS,
@@ -732,6 +731,3 @@ export const SettingsTools: Effect.Effect<
     tools: [get, model, role, offer, defer, compaction, branchSummary, extension],
   });
 });
-
-/** The field's value in `settings`, as `settings_get` shows it: for the tests and the Session's own reads. */
-export const settingValue = settingsFieldValue;
