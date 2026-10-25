@@ -26,13 +26,13 @@ import type {
   IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
 import {
-  compareInstances,
   containerInstance,
   DEFAULT_CONTAINER_SETTINGS,
   type InstanceType,
   type ContainerSettings,
 } from "@cloudpid/config";
 import { type EnvironmentBuild, RESET_STORE_VARIABLE } from "./build-record.ts";
+import { launchSize } from "./resize.ts";
 import {
   type ContainerSnapshots,
   samePaths,
@@ -67,9 +67,9 @@ export type ContainerLaunchDeps = {
   readonly settings: () => Promise<ContainerSettings>;
   /**
    * The size the agent's resize recorded for the next launch (`ContainerResizes`), which it takes instead of the
-   * settings' while it is within their size limit; undefined for none.
+   * settings' while it is within their size limit (`launchSize`); undefined for none.
    */
-  readonly resized?: (() => Promise<InstanceType | undefined>) | undefined;
+  readonly resized: () => Promise<InstanceType | undefined>;
   /** The Container-only paths a launch with `settings` has: the built-in ones, then the Workspace's own. */
   readonly ignore: (settings: ContainerSettings) => readonly string[] | undefined;
   readonly snapshots: Pick<
@@ -127,15 +127,6 @@ export const containerIgnore = (
 
   return all.filter((pattern, index) => all.lastIndexOf(pattern) === index);
 };
-
-/** The size a launch with `settings` has: the one a resize recorded, while the size limit allows it, else the settings'. */
-const launchInstance = (
-  settings: ContainerSettings,
-  resized: InstanceType | undefined,
-): InstanceType =>
-  resized !== undefined && compareInstances(resized, settings.maxInstance) <= 0
-    ? resized
-    : settings.instance;
 
 /** `spec` with computerd's store reset at the Container's start (`RESET_STORE_VARIABLE`) when `reset`. */
 const resettingStore = (spec: ContainerLaunchSpec, reset: boolean): ContainerLaunchSpec =>
@@ -323,7 +314,7 @@ export class ContainerLaunch {
 
     const instance =
       kept?.instance ??
-      (running ? UNRECORDED_INSTANCE : launchInstance(settings, await this.#deps.resized?.()));
+      (running ? UNRECORDED_INSTANCE : launchSize(settings, await this.#deps.resized()));
 
     const size = containerInstance(instance);
 
@@ -479,7 +470,7 @@ export class ContainerLaunch {
       record?.instance ??
       (this.#deps.running()
         ? UNRECORDED_INSTANCE
-        : launchInstance(await this.#deps.settings(), await this.#deps.resized?.()));
+        : launchSize(await this.#deps.settings(), await this.#deps.resized()));
 
     this.#deps.info("Container launch: restarted from the image (computer's restart)");
 

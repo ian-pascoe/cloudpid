@@ -740,15 +740,18 @@ export class Workspace extends ContainerHost {
    * Stop the Container and forget its snapshot (`LifecycleHost.restartContainer`), so the next command starts one from
    * the Environment's Build when there is a usable one, else from the image, bootstraps it and snapshots it. The files are the Workspace's and stay; what only the
    * Container's disk held is gone. Commands running in the Container end. The idle alarm finds no Container to stop.
+   * The size the agent's resize recorded is forgotten too: the owner starts the Workspace over, on its Environment's size.
    */
   async restartContainer(): Promise<void> {
     await this.stopContainer({ forgetSnapshot: true });
+    await this.#resizes.forget();
   }
 
   /**
-   * Stop the Container if it runs, at once and without a snapshot of its own (the agent's `restart_container`, which
+   * Stop the Container if it runs, at once and without a snapshot of its own (the agent's `container_restart`, which
    * works when computerd no longer answers: the platform stops the Container). The next command starts a Container
-   * from the snapshot the Workspace holds, as after an idle stop, with what its disk held when that was taken; with
+   * from the snapshot the Workspace holds, as after an idle stop, with what its disk held when that was taken, on the
+   * size the agent's resize recorded if there is one, which this keeps; with
    * `forgetSnapshot` it is forgotten first, as the owner's restart does (`restartContainer`). Commands running in the
    * Container end. Answers whether a Container was running.
    */

@@ -157,11 +157,23 @@ describe("a Container resize", () => {
 
     expect(await resizes.recorded()).toBe("custom-2");
 
-    // The next command started a Container on that size, which the idle stop then stops.
+    // The next command started a Container on that size, which the idle stop then stops. The size is forgotten before
+    // the stop, so a resize that lands while the Container is being destroyed is kept.
     state.running = true;
+    state.events = [];
     await resizes.stopIdle();
 
     expect(state.running).toBe(false);
+    expect(state.events).toEqual(["clear", "stop"]);
+    expect(await resizes.recorded()).toBeUndefined();
+  });
+
+  it("is forgotten by the owner's restart, whatever runs", async () => {
+    const { resizes } = open();
+
+    await resizes.resize("custom-2");
+    await resizes.forget();
+
     expect(await resizes.recorded()).toBeUndefined();
   });
 });

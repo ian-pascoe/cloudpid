@@ -66,8 +66,8 @@ export class ContainerError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("ContainerError", { message: Schema.String }) {}
 
-/** The longest reason a call may give. */
-export const MAX_RESTART_REASON = 500;
+/** The longest reason a call of either tool may give. */
+export const MAX_CONTAINER_REASON = 500;
 
 const restartDescription = Arr.join(
   [
@@ -79,7 +79,7 @@ const restartDescription = Arr.join(
 );
 
 const Reason = (description: string) =>
-  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_RESTART_REASON)).annotate({
+  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CONTAINER_REASON)).annotate({
     description,
   });
 
@@ -165,7 +165,7 @@ const ResizeParameters = Schema.Struct({
 });
 
 /** `size`, with what it offers. */
-const sized = (size: InstanceType) => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
+const sizeLabel = (size: InstanceType) => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
 
 /** What the model is told once a resize is done. */
 const describeResize = (
@@ -196,7 +196,7 @@ const describeResize = (
     ? `Stopped the container (it ran on ${previous}): the commands that were running there have ended, other Sessions' in this Workspace too, so run again what you still need.`
     : "No container was running, so none was stopped.";
 
-  return `${stopped} The next container command starts a new container on ${sized(next)} ${from}. ${lasts}${disk}`;
+  return `${stopped} The next container command starts a new container on ${sizeLabel(next)} ${from}. ${lasts}${disk}`;
 };
 
 /**

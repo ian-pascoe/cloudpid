@@ -704,6 +704,7 @@ describe("a start the platform rejects for the snapshot", () => {
     await expect(
       new ContainerLaunch({
         settings: async () => state.settings,
+        resized: async () => undefined,
         ignore: () => undefined,
         image: () => state.image,
         snapshots: {

@@ -242,7 +242,12 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
     };
 
     const launch = new ContainerLaunch({
-      settings: async () => ({ ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-3" }),
+      settings: async () => ({
+        ...DEFAULT_CONTAINER_SETTINGS,
+        instance: "standard-3",
+        maxInstance: "standard-3",
+      }),
+      resized: async () => undefined,
       ignore: () => undefined,
       snapshots: {
         restorable: async () => ({ id: "snap-1", image: undefined }),
@@ -779,8 +784,18 @@ describe("restarting a Workspace's Container", () => {
         refreshedAt: 1,
       });
     });
+    expect(await workspace.resizeContainer({ size: "custom-2" })).toMatchObject({
+      outcome: "resized",
+    });
 
     await workspaceObjectsRemote(env.WORKSPACES).restartContainer("restart-me");
+
+    // The owner's restart starts over on the Environment's size: the agent's resize is forgotten.
+    expect(
+      await runInDurableObject(workspace, (_instance, state) =>
+        state.storage.get("cloudpid:container-resize"),
+      ),
+    ).toBeUndefined();
 
     expect(getOrThrow(await executionEnv.readTextFile("/workspace/notes.md", context))).toBe(
       "kept",

@@ -1,6 +1,7 @@
 // `container_restart` and `container_resize` (docs/spec.md → Container and Toolchains → Restart by the agent, Resize by
 // the agent), over a fake Workspace Container.
 // @effect-diagnostics asyncFunction:off
+import type { InstanceType } from "@cloudpid/config";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -12,7 +13,7 @@ import {
   type ContainerResizeOutcome,
   ContainerTools,
   describeRestart,
-  MAX_RESTART_REASON,
+  MAX_CONTAINER_REASON,
   WorkspaceContainer,
 } from "./container.ts";
 
@@ -33,7 +34,7 @@ const fakeContainer = (
   },
 ) => {
   const restarts: Array<{ readonly fresh: boolean }> = [];
-  const resizes: Array<{ readonly size: string }> = [];
+  const resizes: Array<{ readonly size: InstanceType }> = [];
 
   const control: ContainerControl = {
     restart: async (options) => {
@@ -179,7 +180,7 @@ describe("container_restart", () => {
     const container = fakeContainer(true);
     const tool = await restartOver(container.control);
 
-    for (const args of [{}, { reason: "" }, { reason: "x".repeat(MAX_RESTART_REASON + 1) }]) {
+    for (const args of [{}, { reason: "" }, { reason: "x".repeat(MAX_CONTAINER_REASON + 1) }]) {
       const result = await run(tool, args);
 
       expect(result.isError, JSON.stringify(args).slice(0, 40)).toBe(true);
@@ -357,7 +358,7 @@ describe("container_resize", () => {
       { size: "huge", reason: "more" },
       { size: "custom-2" },
       { size: "custom-2", reason: "" },
-      { size: "custom-2", reason: "x".repeat(MAX_RESTART_REASON + 1) },
+      { size: "custom-2", reason: "x".repeat(MAX_CONTAINER_REASON + 1) },
     ]) {
       const result = await run(tool, args);
 
