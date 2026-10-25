@@ -11,7 +11,6 @@ import { withAbortSignal } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -107,7 +106,7 @@ export type EnvironmentLifecycle = {
     readonly proposed: ProposedChanges;
   }) => Effect.Effect<RecordOutcome<TestBuildStarted>, EnvironmentsError>;
   /** One round of waiting for Test Build `call`: how it stands at the round's end, or as soon as it ended. */
-  readonly testBuild: (input: {
+  readonly testBuildRound: (input: {
     readonly environment: string;
     readonly call: string;
   }) => Effect.Effect<TestBuildProgress, EnvironmentsError>;
@@ -144,7 +143,7 @@ export type TestBuildProgress =
       readonly reason: string;
     }
   | { readonly status: "cancelled"; readonly startedAt: number; readonly finishedAt: number }
-  /** Its object no longer holds it: wiped with its Environment. */
+  /** Its object no longer holds it: another Test Build took its place, or the object was wiped with its Environment. */
   | { readonly status: "gone" };
 
 /** A Test Build asked for (or found again, for a call asked again), with how it stands. */
@@ -181,7 +180,7 @@ const named = ({ id, name }: ChangedEnvironment): string =>
 const asJsonValue = (value: Schema.Json | null): JsonValue | null => value as JsonValue | null;
 
 /** A duration as a result says it: seconds, or minutes and seconds. */
-export const durationWords = (ms: number): string => {
+const durationWords = (ms: number): string => {
   const seconds = Math.max(0, Math.round(ms / 1000));
 
   return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
@@ -199,8 +198,20 @@ const SAVING_TOOLS = {
 /** What a Test Build's call keeps in its memo: that a Build of the saved settings was asked for once. */
 const REBUILD_ASKED = "environment-rebuild-asked";
 
-/** Consecutive failed rounds of waiting before the wait for a Test Build gives up. */
-const MAX_ROUND_FAILURES = 3;
+/** What a Test Build's call keeps in its memo once it asked for one: the Environment, by id and name. */
+const TEST_BUILD_ASKED = "environment-test-build-asked";
+
+/** Consecutive failed rounds of waiting before the wait for a Test Build gives up (the Test Build goes on). */
+const MAX_ROUND_FAILURES = 5;
+
+/** The Environment a call's memo kept (`TEST_BUILD_ASKED`), or undefined when it kept none. */
+const rememberedEnvironment = (value: JsonValue | undefined): ChangedEnvironment | undefined =>
+  Predicate.isObject(value) &&
+  !Arr.isArray(value) &&
+  Predicate.isString(value["id"]) &&
+  Predicate.isString(value["name"])
+    ? { id: value["id"], name: value["name"] }
+    : undefined;
 
 /** Read (no `candidate`) or keep the call's memo `name` through the call's pi-durable API. */
 const memo = (api: ToolExecutionApi, name: string, candidate?: JsonValue) =>
@@ -606,14 +617,18 @@ export const lifecycleTools = ({
       let failures = 0;
 
       while (progress.status === "building") {
-        const round = yield* Effect.result(environments.testBuild({ environment, call }));
+        const round = yield* Effect.result(environments.testBuildRound({ environment, call }));
 
         if (Result.isFailure(round)) {
           failures += 1;
 
-          if (failures >= MAX_ROUND_FAILURES) return yield* round.failure;
+          if (failures >= MAX_ROUND_FAILURES) {
+            return yield* EnvironmentsError.make({
+              message: `Waiting for the Test Build failed: ${round.failure.message} It may still be running, and another is refused until it ends.`,
+            });
+          }
 
-          yield* Effect.sleep("2 seconds");
+          yield* Effect.sleep("5 seconds");
           continue;
         }
 
@@ -625,8 +640,9 @@ export const lifecycleTools = ({
     });
 
   /**
-   * Make a Test Build of `proposed` and wait for it: nothing is saved or recorded. The call's task names it, so a rerun
-   * after an eviction waits for the same one; a call that ends otherwise than with its outcome (Stop) cancels it.
+   * Make a Test Build of `proposed` and wait for it: nothing is saved or recorded. The call's task names it, and its
+   * memo keeps that it was asked for, so a rerun after an eviction waits for the same one without asking again; a call
+   * that is stopped (Stop) cancels it.
    */
   const testBuild = (
     id: string | undefined,
@@ -669,7 +685,17 @@ export const lifecycleTools = ({
           ),
         );
 
-      const { started, ended } = yield* Effect.gen(function* () {
+      const { asked, ended } = yield* Effect.gen(function* () {
+        const known = rememberedEnvironment(yield* memo(api, TEST_BUILD_ASKED));
+
+        // Asked for by this call already (the rerun after an eviction): the first round says how it stands.
+        if (known !== undefined) {
+          return {
+            asked: known,
+            ended: yield* waitForTest(environment, call, { status: "building", startedAt: 0 }),
+          };
+        }
+
         const answer = yield* environments.startTestBuild({
           environment,
           call,
@@ -690,18 +716,20 @@ export const lifecycleTools = ({
               message: `Nothing was built: ${answer.message}`,
             });
           case "started":
+            yield* memo(api, TEST_BUILD_ASKED, { ...answer.environment });
+
             return {
-              started: answer,
+              asked: answer.environment,
               ended: yield* waitForTest(environment, call, answer.progress),
             };
         }
       }).pipe(
-        // Stopped (or failing) before it ended: the Test Build goes with it. An eviction runs no finalizer, and the
-        // rerun waits for the same one.
-        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : cancel)),
+        // Stopped before it ended: the Test Build goes with it. An eviction runs no finalizer, and the rerun waits for
+        // the same one; a wait that failed leaves it to end on its own.
+        Effect.onInterrupt(() => cancel),
       );
 
-      const where = named(started.environment);
+      const where = named(asked);
       const proposal = fields.length === 0 ? "its saved settings" : Arr.join(fields, ", ");
 
       switch (ended.status) {
@@ -729,7 +757,7 @@ export const lifecycleTools = ({
             ],
             details: {
               testBuild: {
-                environment: started.environment,
+                environment: asked,
                 status: "succeeded",
                 tookMs,
                 proposed: [...fields],
@@ -748,7 +776,7 @@ export const lifecycleTools = ({
           });
         case "gone":
           return yield* EnvironmentsError.make({
-            message: `The Test Build of ${where} is no longer known: its Environment's Build objects were wiped (was the Environment deleted?). Nothing was saved.`,
+            message: `The Test Build of ${where} is no longer known: it ended and another Test Build took its place, or the Environment was deleted. Nothing was saved; call environment_rebuild with the proposal again to try it.`,
           });
       }
     });

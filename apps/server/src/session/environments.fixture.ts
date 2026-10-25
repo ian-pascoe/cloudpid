@@ -23,7 +23,7 @@ export const unusedLifecycle: EnvironmentLifecycle & SecretMarks = {
   rebuild: unused,
   markSecret: unused,
   startTestBuild: unused,
-  testBuild: unused,
+  testBuildRound: unused,
   cancelTestBuild: unused,
 };
 

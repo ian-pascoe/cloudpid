@@ -29,7 +29,7 @@ export const unusedLifecycle: EnvironmentLifecycle = {
   removeRepo: () => Effect.die("removeRepo is not used here"),
   rebuild: () => Effect.die("rebuild is not used here"),
   startTestBuild: () => Effect.die("startTestBuild is not used here"),
-  testBuild: () => Effect.die("testBuild is not used here"),
+  testBuildRound: () => Effect.die("testBuildRound is not used here"),
   cancelTestBuild: () => Effect.die("cancelTestBuild is not used here"),
 };
 
@@ -312,7 +312,7 @@ export const fakeLifecycle = () => {
 
         return { status: "started" as const, environment: asEnvironment, progress };
       }),
-    testBuild: ({ call }) =>
+    testBuildRound: ({ call }) =>
       tests.hold
         ? Effect.never
         : Effect.sync(() => {

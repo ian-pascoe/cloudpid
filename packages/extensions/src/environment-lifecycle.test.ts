@@ -487,12 +487,13 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     tests.hold = true;
 
     const controller = new AbortController();
+    const memos = new Map<string, unknown>();
 
     // The first run is cut off while it waits (the eviction runs no finalizer: here, its wait is left hanging).
     void run(
       tool("environment_rebuild"),
       { reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
-      callApi(9),
+      callApi(9, memos),
       withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
     ).catch(() => undefined);
     await vi.waitFor(() => {
@@ -504,12 +505,50 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
     const rerun = await run(
       tool("environment_rebuild"),
       { reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
-      callApi(9),
+      callApi(9, memos),
     );
 
-    expect(text(rerun)).toContain("succeeded");
+    expect(text(rerun)).toContain(
+      'The Test Build of Environment "Default" (default) with the proposed toolchains succeeded',
+    );
     expect(tests.starts).toBe(1);
     expect(tests.cancelled).toEqual([]);
+    controller.abort();
+  });
+
+  it("says so when the rerun after an eviction finds its Test Build gone", async () => {
+    const { tool, tests } = await setUp();
+
+    tests.hold = true;
+
+    const controller = new AbortController();
+    const memos = new Map<string, unknown>();
+
+    void run(
+      tool("environment_rebuild"),
+      { reason: "r", proposed: { setup_script: "make" } },
+      callApi(9, memos),
+      withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+    ).catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(tests.starts).toBe(1);
+    });
+
+    tests.hold = false;
+    tests.rounds = [{ status: "gone" }];
+
+    const message = await failure(
+      run(
+        tool("environment_rebuild"),
+        { reason: "r", proposed: { setup_script: "make" } },
+        callApi(9, memos),
+      ),
+    );
+
+    expect(message).toContain(
+      'The Test Build of Environment "Default" (default) is no longer known',
+    );
+    expect(tests.starts).toBe(1);
     controller.abort();
   });
 

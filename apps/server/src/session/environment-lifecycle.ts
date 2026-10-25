@@ -52,14 +52,14 @@ export type SessionLifecycleOptions = {
   /** The upkeep of the spare Workspaces, run after the Repos change. */
   readonly spares: Pick<Spares, "of">;
   /** How long one round of waiting for a Test Build lasts at most, and how often it looks; for tests. */
-  readonly testBuildRound?: { readonly roundMs: number; readonly pollMs: number } | undefined;
+  readonly rounds?: { readonly roundMs: number; readonly pollMs: number } | undefined;
 };
 
 /** How long one round of waiting for a Test Build lasts at most: short, so no round depends on outliving an eviction. */
-export const TEST_BUILD_ROUND_MS = 25_000;
+const TEST_BUILD_ROUND_MS = 25_000;
 
 /** How often a round of waiting asks the Test Build object how its Test Build stands. */
-export const TEST_BUILD_POLL_MS = 5_000;
+const TEST_BUILD_POLL_MS = 5_000;
 
 /** A Test Build's state as the agent's tool reads it; none held (null): gone. */
 const testProgress = (state: TestBuildState | null): TestBuildProgress => {
@@ -109,7 +109,7 @@ export const sessionLifecycle = ({
   session,
   builds,
   spares,
-  testBuildRound = { roundMs: TEST_BUILD_ROUND_MS, pollMs: TEST_BUILD_POLL_MS },
+  rounds = { roundMs: TEST_BUILD_ROUND_MS, pollMs: TEST_BUILD_POLL_MS },
 }: SessionLifecycleOptions): EnvironmentLifecycle => {
   /** The Session's id, or why it changes no Environment. */
   const author = Effect.fromNullishOr(session).pipe(
@@ -278,10 +278,10 @@ export const sessionLifecycle = ({
 
         return started;
       }),
-    testBuild: ({ environment, call }) =>
+    testBuildRound: ({ environment, call }) =>
       Effect.gen(function* () {
         const id = yield* testId(call);
-        const until = (yield* Clock.currentTimeMillis) + testBuildRound.roundMs;
+        const until = (yield* Clock.currentTimeMillis) + rounds.roundMs;
 
         while (true) {
           const progress = testProgress(
@@ -292,7 +292,7 @@ export const sessionLifecycle = ({
 
           if (progress.status !== "building" || now >= until) return progress;
 
-          yield* Effect.sleep(Math.min(testBuildRound.pollMs, until - now));
+          yield* Effect.sleep(Math.min(rounds.pollMs, until - now));
         }
       }),
     cancelTestBuild: ({ environment, call }) =>

@@ -132,7 +132,7 @@ const open = ({
       },
     },
     spares: { of: (environment) => Effect.sync(() => void upkept.push(`spare:${environment}`)) },
-    testBuildRound: { roundMs: 30, pollMs: 10 },
+    rounds: { roundMs: 30, pollMs: 10 },
   });
 
   return { lifecycle, asked, upkept, tests };
@@ -339,14 +339,14 @@ describe("a Test Build", () => {
     tests.states = [building, { ...building, status: "succeeded", finishedAt: 9 }];
 
     expect(
-      await Effect.runPromise(lifecycle.testBuild({ environment: "0000abcd", call: "7" })),
+      await Effect.runPromise(lifecycle.testBuildRound({ environment: "0000abcd", call: "7" })),
     ).toEqual({ status: "succeeded", startedAt: 5, finishedAt: 9 });
 
     tests.states = [building];
     tests.reads = 0;
 
     expect(
-      await Effect.runPromise(lifecycle.testBuild({ environment: "0000abcd", call: "7" })),
+      await Effect.runPromise(lifecycle.testBuildRound({ environment: "0000abcd", call: "7" })),
     ).toEqual({ status: "building", startedAt: 5 });
     expect(tests.reads).toBeGreaterThan(1);
 
@@ -354,7 +354,7 @@ describe("a Test Build", () => {
     tests.reads = 0;
 
     expect(
-      await Effect.runPromise(lifecycle.testBuild({ environment: "0000abcd", call: "7" })),
+      await Effect.runPromise(lifecycle.testBuildRound({ environment: "0000abcd", call: "7" })),
     ).toEqual({ status: "gone" });
   });
 
