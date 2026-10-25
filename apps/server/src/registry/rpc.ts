@@ -34,11 +34,7 @@ import {
   type ForkSourceRequest,
 } from "../session/fork.ts";
 import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
-import {
-  buildObjectName,
-  testBuildObjectName,
-  workspaceObjectName,
-} from "../workspace/binding.ts";
+import { buildObjectName, testBuildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
 import { noEnvironment, noRepo, nameTaken, reason, repoTaken, thenSaying } from "./messages.ts";
