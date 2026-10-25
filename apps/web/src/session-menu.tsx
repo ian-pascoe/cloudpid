@@ -1,5 +1,5 @@
 import type { SessionRecord } from "@cloudpid/protocol";
-import { useAtom, useAtomSet } from "@effect/atom-react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
@@ -10,7 +10,12 @@ import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
 import type { SessionActions as AllSessionActions } from "./session-actions.ts";
-import { deleteSessionAtom, sameWorkspacePlace } from "./sessions.ts";
+import {
+  deleteSessionAtom,
+  lastInWorkspace,
+  sameWorkspacePlace,
+  sessionListAtom,
+} from "./sessions.ts";
 
 /**
  * What a Session's menu does besides delete: start another Session in its Workspace, archive and unarchive, through the
@@ -22,8 +27,9 @@ export type SessionActions = Pick<AllSessionActions, "create" | "archive" | "una
 const DeleteOpen = ScopedAtom.make(() => Atom.make(false));
 
 /**
- * Confirm deleting a Session: what goes (its conversations and history) and what stays (its files). Deleting a running
- * Session stops it first, which the dialog says.
+ * Confirm deleting a Session: what goes (its conversations and history) and what stays (its files), or, for the last
+ * Session in its Workspace, that the Workspace goes too. Deleting a running Session stops it first, which the dialog
+ * says. A list that has not answered counts as the last, so the dialog never promises files that may go.
  */
 const DeleteSessionDialog = ({
   session,
@@ -34,6 +40,7 @@ const DeleteSessionDialog = ({
 }) => {
   const [open, setOpen] = useAtom(DeleteOpen.use());
   const [deleted, remove] = useAtom(deleteSessionAtom(session.id));
+  const last = lastInWorkspace(useAtomValue(sessionListAtom) ?? [], session);
   const deleting = deleted.waiting;
   const problem = settledFailureOf(deleted);
 
@@ -51,9 +58,21 @@ const DeleteSessionDialog = ({
       description={
         <>
           <span className="font-medium text-foreground">{sessionTitle(session)}</span> and its
-          conversation, subagents and history are deleted for good. Files it wrote in the{" "}
-          <span className="font-medium text-foreground">{environmentName}</span> environment's
-          workspace stay until the workspace is removed.
+          conversation, subagents and history are deleted for good.{" "}
+          {last ? (
+            <>
+              It is the last session in its{" "}
+              <span className="font-medium text-foreground">{environmentName}</span> environment
+              workspace, which is removed with it: uncommitted changes and unpushed commits are
+              lost.
+            </>
+          ) : (
+            <>
+              Files it wrote in the{" "}
+              <span className="font-medium text-foreground">{environmentName}</span> environment's
+              workspace stay until the workspace is removed.
+            </>
+          )}
           {session.status === "running" && " It is running: everything it runs stops first."}
         </>
       }

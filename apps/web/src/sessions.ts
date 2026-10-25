@@ -120,7 +120,8 @@ export const unarchiveSessionAtom = appRuntime.fn(
 );
 
 /**
- * Delete Session `id` for good; its Workspace stays, with the files the Session wrote. Once it is gone its page is left, saying so;
+ * Delete Session `id` for good; its Workspace stays, with the files the Session wrote, unless it was the last Session in
+ * it (`lastInWorkspace`), which removes the Workspace too. Once it is gone its page is left, saying so;
  * its socket's close, which can come first, is then no news. Each Session has its own, so one's delete does not show on
  * another's dialog.
  */
@@ -150,6 +151,13 @@ export const deleteSessionAtom = Atom.family((id: string) =>
     { concurrent: true },
   ),
 );
+
+/**
+ * Whether `session` is the last one bound to its Workspace, archived ones counted, as the list last had it: deleting it
+ * removes the Workspace.
+ */
+export const lastInWorkspace = (sessions: ReadonlyArray<SessionRecord>, session: SessionRecord) =>
+  !Arr.some(sessions, (other) => other.id !== session.id && other.workspace === session.workspace);
 
 /** The Session the page shows, as the list last had it; undefined while the list has not answered or lacks it. */
 export const currentSessionAtom = Atom.make((get) => {

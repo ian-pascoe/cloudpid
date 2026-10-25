@@ -363,6 +363,32 @@ export const serveRegistryRpc = <R = never>(
         },
       );
 
+    /**
+     * Remove Workspace `id` once its last Session is deleted: its object (files, Container, settings), then its record.
+     * The Session is gone whatever happens here, so a failure is logged and leaves the Workspace listed, for the owner to
+     * remove; a Session started in it meanwhile keeps the record, and its object is made again as it first works there.
+     */
+    const removeIfEmpty = (id: string) =>
+      Effect.gen(function* () {
+        const left = yield* registry.listSessions();
+
+        if (Arr.some(left, (session) => session.workspace === id)) return;
+
+        yield* inWorkspace("Could not delete the workspace's files", () =>
+          workspaces.destroy(workspaceObjectName(id)),
+        );
+
+        if ((yield* registry.deleteWorkspace({ id })) === "in-use") {
+          yield* Effect.logWarning(
+            `Workspace ${id} got a Session while it was removed, and is kept`,
+          );
+        }
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(`Could not remove workspace ${id} with its last session`, error),
+        ),
+      );
+
     /** Remove an Environment's spare Workspace, if it has one: its record, then its object. */
     const removeSpare = (environment: string) =>
       Effect.gen(function* () {
@@ -672,8 +698,12 @@ export const serveRegistryRpc = <R = never>(
         registry
           .unarchiveSession({ id })
           .pipe(Effect.filterOrFail(Predicate.isNotNull, () => notFound(id))),
-      // The Workspace stays, with what the Session left in it, until the owner removes it.
-      deleteSession: ({ id }) => known(id).pipe(Effect.flatMap(deleteSession)),
+      // A Workspace is removed with its last Session, archived ones counted; else it stays, with what the Session left.
+      deleteSession: ({ id }) =>
+        known(id).pipe(
+          Effect.tap(deleteSession),
+          Effect.flatMap((session) => removeIfEmpty(session.workspace)),
+        ),
       listEnvironments: () => registry.listEnvironments(),
       createEnvironment: ({ name }) =>
         registry.createEnvironment({ name }).pipe(

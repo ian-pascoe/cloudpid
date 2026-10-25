@@ -1351,19 +1351,84 @@ it("rejects an Environment, Workspace or branch that is not one, before it reach
   }
 });
 
-it("deletes a Session without touching its Workspace", async () => {
+it("deletes a Session without touching its Workspace while another Session, archived too, is in it", async () => {
   const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  const archived = await call(fake, (registry) =>
+    registry.createSession({ workspace: session.workspace }),
+  );
+
+  await call(fake, (registry) => registry.archiveSession({ id: archived.id }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`, `deleteSession:${session.id}`]);
+  expect(Arr.map(await call(fake, (registry) => registry.listSessions()), (s) => s.id)).toEqual([
+    archived.id,
+  ]);
+  expect(await call(fake, (registry) => registry.listWorkspaces())).toMatchObject([
+    { id: session.workspace },
+  ]);
+});
+
+it("removes a Workspace with its last Session: the Session, then the Workspace's object, then its record", async () => {
+  const fake = fakeRegistries();
+  const kept = await call(fake, (registry) => registry.createSession({}));
   const session = await call(fake, (registry) => registry.createSession({}));
 
   fake.calls.length = 0;
 
   await call(fake, (registry) => registry.deleteSession({ id: session.id }));
 
-  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`, `deleteSession:${session.id}`]);
-  expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
-  expect(await call(fake, (registry) => registry.listWorkspaces())).toMatchObject([
-    { id: session.workspace },
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    `deleteSession:${session.id}`,
+    `destroyWorkspace:ws:${session.workspace}`,
+    `deleteWorkspace:${session.workspace}`,
   ]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([kept]);
+  expect(Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.id)).toEqual([
+    kept.workspace,
+  ]);
+});
+
+it("deletes the last Session of a Workspace whose object cannot be wiped, keeping the Workspace listed", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.failWorkspace("unreachable");
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    `deleteSession:${session.id}`,
+    `destroyWorkspace:ws:${session.workspace}`,
+  ]);
+  expect(fake.sessions).toEqual([]);
+  expect(Arr.map(fake.workspaces, (w) => w.id)).toEqual([session.workspace]);
+});
+
+it("keeps the Workspace of a deleted last Session when another starts in it while its object is wiped", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.startDuringDestroy(() => ({ ...session, id: "late" }));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    `deleteSession:${session.id}`,
+    `destroyWorkspace:ws:${session.workspace}`,
+    `deleteWorkspace:${session.workspace}`,
+  ]);
+  expect(Arr.map(fake.sessions, (s) => s.id)).toEqual(["late"]);
+  expect(Arr.map(fake.workspaces, (w) => w.id)).toEqual([session.workspace]);
 });
 
 it("lists the default Environment, and the ones created, newest first", async () => {
@@ -1558,7 +1623,10 @@ it("removes a Workspace that has no Sessions left", async () => {
   const fake = fakeRegistries();
   const session = await call(fake, (registry) => registry.createSession({}));
 
+  // Its object could not be wiped with its last Session, so it is still listed.
+  fake.failWorkspace("unreachable");
   await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+  fake.failWorkspace(undefined);
   fake.calls.length = 0;
 
   await call(fake, (registry) => registry.removeWorkspace({ id: session.workspace }));
@@ -2173,7 +2241,12 @@ it("deletes a Session: wipes its object, then forgets it", async () => {
 
   await call(fake, (registry) => registry.deleteSession({ id: doomed.id }));
 
-  expect(lifecycle(fake)).toEqual([`destroy:${doomed.id}`, `deleteSession:${doomed.id}`]);
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${doomed.id}`,
+    `deleteSession:${doomed.id}`,
+    `destroyWorkspace:ws:${doomed.workspace}`,
+    `deleteWorkspace:${doomed.workspace}`,
+  ]);
   expect(await call(fake, (registry) => registry.listSessions())).toEqual([kept]);
 });
 
@@ -2428,8 +2501,9 @@ it("says what is kept, as a sentence of its own, when what an Environment being 
   const id = await makeEnvironment(fake, "Cloudpid");
   const first = await call(fake, (registry) => registry.createSession({ environment: id }));
 
-  await call(fake, (registry) => registry.deleteSession({ id: first.id }));
+  // Its object cannot be wiped with its last Session either, so its Workspace is left with none.
   fake.failWorkspace("unreachable");
+  await call(fake, (registry) => registry.deleteSession({ id: first.id }));
 
   const files = await call(fake, (registry) =>
     Effect.flip(registry.deleteEnvironment({ environment: id })),

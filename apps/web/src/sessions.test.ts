@@ -14,6 +14,7 @@ import {
   archiveSessionAtom,
   createSessionAtom,
   deleteSessionAtom,
+  lastInWorkspace,
   newSessionPlace,
   workspaceLabel,
   sameWorkspacePlace,
@@ -120,6 +121,19 @@ describe("where a new Session starts", () => {
     expect(workspaceLabel("new", branches)).toBe("New workspace");
     expect(workspaceLabel("0a1b2c3d", branches)).toBe("fix/build");
     expect(workspaceLabel("ffffffff", branches)).toBe("ffffffff");
+  });
+});
+
+describe("the last Session in a Workspace", () => {
+  it("is one no other Session, archived ones counted, shares a Workspace with", () => {
+    const alone = { ...session("alone"), workspace: "ffffffff" };
+    const first = session("first");
+    const archived = { ...session("archived"), archivedAt: 2 };
+
+    expect(lastInWorkspace([alone, first, archived], alone)).toBe(true);
+    expect(lastInWorkspace([alone, first, archived], first)).toBe(false);
+    expect(lastInWorkspace([alone, first], first)).toBe(true);
+    expect(lastInWorkspace([], first)).toBe(true);
   });
 });
 
