@@ -8,6 +8,7 @@ import {
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
+import { DeployCredentials, Environments } from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
@@ -35,6 +36,10 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
+import { buildUpkeep } from "../registry/builds.ts";
+import { spareUpkeep } from "../registry/rpc.ts";
+import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
+import { sessionEnvironments } from "./environments.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
@@ -104,6 +109,21 @@ export const ModelProxyConfigLive = Layer.effect(
 );
 
 /**
+ * The GitHub token the Workspaces' commands get: a deploy-time secret, bound to the Worker by `Config.Redacted`, which
+ * the Session reads only to refuse it in a plain value (`docs/spec.md` → Agent changes).
+ */
+export class GitHubTokenConfig extends Context.Service<
+  GitHubTokenConfig,
+  { readonly token: Redacted.Redacted<string> }
+>()("@cloudpid/server/session/Session/GitHubTokenConfig") {}
+
+/** Reads `CLOUDPID_GITHUB_TOKEN`: from the deploying environment, then from the Worker's secrets. */
+export const GitHubTokenConfigLive = Layer.effect(
+  GitHubTokenConfig,
+  Config.all({ token: Config.Redacted("CLOUDPID_GITHUB_TOKEN") }),
+);
+
+/**
  * What the Session DO answers: its alarm, and its clients' sockets (`docs/spec.md` → Client and protocol). `fetch`
  * accepts a socket upgrade the main Worker forwards; the socket's events then reach the object directly.
  */
@@ -154,6 +174,7 @@ export const SessionLive = Session.make(
   Effect.gen(function* () {
     return {
       proxy: yield* ModelProxyConfig,
+      github: yield* GitHubTokenConfig,
       secrets: yield* SecretsConfig,
       web: yield* WebConfig,
       registries: yield* Registry,
@@ -163,7 +184,7 @@ export const SessionLive = Session.make(
     };
   }).pipe(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
-    Effect.map(({ proxy, registries, secrets, state, web, worker }) =>
+    Effect.map(({ github, proxy, registries, secrets, state, web, worker }) =>
       Effect.gen(function* () {
         // One tracer for the object's life: its spans are custom spans of the Worker's trace (`docs/spec.md` → Telemetry).
         const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
@@ -265,6 +286,25 @@ export const SessionLive = Session.make(
 
             if (setup !== null) await prepare(workspaceObjectName(id), setup);
           },
+        });
+
+        // The Builds' upkeep after an Agent change, as the main Worker runs it after the owner's save, and the
+        // Environments the agent reads and changes.
+        // SAFETY: the same binding; the Workspace DO answers `LifecycleHost`'s calls and the Build object's.
+        const workspaceObjects = workspaceObjectsRemote(
+          worker[WORKSPACE_BINDING] as Parameters<typeof workspaceObjectsRemote>[0],
+        );
+
+        const environments = sessionEnvironments({
+          registry: registries.getByName(REGISTRY_NAME),
+          session: name,
+          placement,
+          handOver: (object, overrides) =>
+            workspaces.getByName(object).updateContainerSettings(overrides),
+          builds: buildUpkeep(registries, {
+            workspaces: workspaceObjects,
+            spares: spareUpkeep(registries, { workspaces: workspaceObjects }),
+          }),
         });
 
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.
@@ -380,6 +420,10 @@ export const SessionLive = Session.make(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(WorkspaceContainer, workspace.container),
+                  Effect.provideService(Environments, environments),
+                  Effect.provideService(DeployCredentials, {
+                    values: [Redacted.value(github.token)],
+                  }),
                   Effect.provideService(Images, images),
                   // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),

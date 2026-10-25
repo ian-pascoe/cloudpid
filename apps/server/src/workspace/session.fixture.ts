@@ -6,6 +6,11 @@ import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
 import { BrowserHost, BrowserSession, type BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
+import {
+  type AgentChangeLog,
+  DeployCredentials,
+  Environments,
+} from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import type { Secrets } from "@cloudpid/extensions/secrets";
@@ -18,6 +23,7 @@ import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
+import { testEnvironments } from "../session/environments.fixture.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
 import { type Placement, sessionWorkspace } from "../session/workspace.ts";
@@ -65,9 +71,11 @@ export class TestWorkspaceSession extends TestSession {
   protected override hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs
+    Harness | Secrets | BrowserHandoffs | AgentChangeLog
   > {
     return sessionExtensions.pipe(
+      Effect.provideService(Environments, testEnvironments(this.ctx.storage.kv)),
+      Effect.provideService(DeployCredentials, { values: [] }),
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
       Effect.provideService(WorkspaceContainer, this.#workspace().container),
       Effect.provideService(Images, this.env.IMAGES),

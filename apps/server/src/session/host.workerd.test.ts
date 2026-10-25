@@ -183,6 +183,43 @@ describe("a Session host", () => {
     );
   });
 
+  it("notifies the owner once of the Agent changes a run made, besides its end", async () => {
+    const { stub } = await registered("environment");
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([
+        'call:environment_variable_set:{"name":"API_URL","value":"https://api.test","reason":"The tests read it"}',
+        'call:environment_variable_set:{"name":"MODE","value":"ci","reason":"The build reads it"}',
+        "Set both.",
+      ]);
+      await instance.prompt({ requestId: "turn-1", text: "Set them" });
+    });
+
+    await settles(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([
+        { kind: "finished" },
+        {
+          kind: "notice",
+          body: '2 Agent changes: environment_variable_set "Default" variables.API_URL; environment_variable_set "Default" variables.MODE',
+        },
+      ]),
+    );
+
+    // A later run that changes nothing sends only its end.
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["done"]);
+      await instance.prompt({ requestId: "turn-2", text: "hi" });
+    });
+
+    await settles(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toHaveLength(3),
+    );
+  });
+
   it("says nothing of a run the owner stopped", async () => {
     const { stub, status } = await registered();
 

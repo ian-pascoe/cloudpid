@@ -90,6 +90,8 @@ import * as Stream from "effect/Stream";
 import type * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
+import { AgentChangeLog } from "@cloudpid/extensions/environment";
+import { agentChangesNotice, runChanges } from "./agent-changes.ts";
 import {
   harnessSettings,
   SessionSettings,
@@ -208,8 +210,15 @@ export type SessionHostOptions<R = never> = {
    * instance, which reopens it.
    */
   readonly reset: (reason: string) => void;
-  /** The extensions the Session's conversations run with, installed before any work resumes. */
-  readonly extensions: Effect.Effect<readonly Extension[], never, Harness | SessionSettings | R>;
+  /**
+   * The extensions the Session's conversations run with, installed before any work resumes. Their Agent changes
+   * (`AgentChangeLog`) are kept for the Notification at the end of the Run.
+   */
+  readonly extensions: Effect.Effect<
+    readonly Extension[],
+    never,
+    Harness | SessionSettings | AgentChangeLog | R
+  >;
   /**
    * Extensions that follow the settings: after a read that brought new values, given the extensions installed, the
    * values now and those before, it returns the ones to install over those of the same name (none when what they follow
@@ -525,8 +534,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const onIdle =
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
 
+  /** The Agent changes of the Run, kept until its end notifies them. */
+  const changes = runChanges(storage.kv);
+
   // Before anything resumes, so resumed tool calls find their tools.
-  const installed = yield* options.extensions;
+  const installed = yield* options.extensions.pipe(
+    Effect.provideService(AgentChangeLog, { record: changes.record }),
+  );
 
   for (const extension of installed) yield* harness.install(extension);
 
@@ -821,6 +835,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       NOTIFY_KEY,
       Arr.filter(pendingNotices(), (id) => !endedIds.has(id)),
     );
+
+    // Besides the Run's own: one Notification of the Agent changes it made, which wait for the next end if it fails.
+    const changed = yield* changes.pending;
+
+    if (changed.length > 0 && (yield* notifyOwner(agentChangesNotice(changed)))) {
+      yield* changes.drop(changed.length);
+    }
   }).pipe(
     Effect.catchCause((cause) => Effect.logWarning("Run notifications failed", cause)),
     notifying,
