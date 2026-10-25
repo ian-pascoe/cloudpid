@@ -5,9 +5,12 @@
 // one Layer kept in a `ManagedRuntime`.
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import {
+  deleteAgent,
   isAgentConversation,
   EMPTY_SUBAGENTS_STATE as EMPTY_STATE,
+  type OwnerDeletion,
   stopConversation,
+  type SubagentWorkspaceHost,
   SubagentsDoc,
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
@@ -262,6 +265,8 @@ export type SessionHostOptions<R = never> = {
   readonly containerUsage?:
     | ((subagents: ReadonlyArray<string>) => Promise<ContainerUsage | null>)
     | undefined;
+  /** The Session's Subagent Workspaces, which the owner's delete of a subagent removes. */
+  readonly subagentWorkspaces?: SubagentWorkspaceHost | undefined;
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
   /** How long a submitted message's expansion may take before it goes as typed. Defaults to `EXPAND_TIMEOUT`. */
@@ -382,6 +387,11 @@ export type SessionHostService = {
    * and withdraw its queued input, once it is idle. Subagents below it keep working unless `subagents` is true.
    */
   readonly abort: (options?: AbortOptions) => Effect.Effect<void, SessionError>;
+  /**
+   * Delete subagent `agent` with everything below it, as `subagent_delete` with `discard: true` does, Subagent Workspaces
+   * included: the owner removed its Subagent Workspace from the Environments page, after a confirmation.
+   */
+  readonly deleteSubagent: (agent: string) => Effect.Effect<OwnerDeletion, SessionError>;
   /**
    * Close the Harness: admission is sealed and the commits it admitted settle, so nothing writes the storage after. Every
    * later call fails; the object is reset before it serves another. For a Session being deleted.
@@ -1876,6 +1886,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             ),
           ),
         ),
+      ),
+    deleteSubagent: (agent) =>
+      attempt("deleteSubagent", () =>
+        deleteAgent(harness.harness, agent, options.subagentWorkspaces, context),
       ),
     close: attempt("close", () => harness.harness.close(context)),
     taskGraph: taskGraphSummaries,

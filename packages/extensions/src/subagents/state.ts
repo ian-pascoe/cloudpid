@@ -272,6 +272,48 @@ export const waitEvent = (
   elapsed_ms: fields.elapsed_ms ?? 0,
 });
 
+/** An agent deleted with its subtree (`deleteSubtree`): what stops its conversation, and its Subagent Workspace. */
+export type DeletedAgent = Pick<AgentRecord, "id" | "conversationId"> & {
+  workspace?: AgentWorkspace;
+};
+
+/**
+ * Delete `target` and everything below it from `doc`, in a commit: each record goes, its conversation is unmapped (so no
+ * deleted agent can spawn again), its ID is retired, and every open wait on it ends `deleted`. Returns what went.
+ */
+export const deleteSubtree = (doc: SubagentsState, target: string): DeletedAgent[] => {
+  const gone: DeletedAgent[] = [];
+
+  for (const agent of subtreeOf(doc, target)) {
+    delete doc.agents[agent.id];
+    delete doc.conversations[String(agent.conversationId)];
+    doc.tombstones.push(agent.id);
+
+    const removed: DeletedAgent = { id: agent.id, conversationId: agent.conversationId };
+
+    if (agent.workspace !== undefined) removed.workspace = { ...agent.workspace };
+
+    gone.push(removed);
+  }
+
+  const ids = Arr.map(gone, (agent) => agent.id);
+
+  for (const [key, waiter] of Record.toEntries(doc.waiters)) {
+    if (!ids.includes(waiter.target) || waiter.result !== null) continue;
+
+    const entry = doc.waiters[key];
+
+    if (entry !== undefined) {
+      entry.result = waitEvent("turn", waiter.target, {
+        turn_id: waiter.turnId,
+        status: "deleted",
+      });
+    }
+  }
+
+  return gone;
+};
+
 /** The open waiter of `caller` on `target`, if one is blocked, with its wait task's ID. */
 export const openWaiter = (
   state: SubagentsState,

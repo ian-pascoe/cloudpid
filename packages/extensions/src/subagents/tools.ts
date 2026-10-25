@@ -52,6 +52,7 @@ import {
   answerText,
   childrenOf,
   conversationOf,
+  deleteSubtree,
   EMPTY_STATE,
   openWaiter,
   reportConversationOf,
@@ -1408,42 +1409,7 @@ const Delete = defineEffectTool({
     // The subtree as it is now: a descendant spawned after the last scan is deleted too, and stopped below. Once its
     // conversation is unmapped, no deleted agent can spawn again.
     const removed = yield* durable("delete", (context) =>
-      api.commit(async (tx) => {
-        const doc = await tx.doc(SubagentsDoc);
-        const gone: Array<Stoppable & { readonly workspace?: AgentWorkspace }> = [];
-
-        for (const agent of subtreeOf(doc, target)) {
-          delete doc.agents[agent.id];
-          delete doc.conversations[String(agent.conversationId)];
-          doc.tombstones.push(agent.id);
-
-          const removed: Stoppable & { workspace?: AgentWorkspace } = {
-            id: agent.id,
-            conversationId: agent.conversationId,
-          };
-
-          if (agent.workspace !== undefined) removed.workspace = { ...agent.workspace };
-
-          gone.push(removed);
-        }
-
-        const ids = Arr.map(gone, (agent) => agent.id);
-
-        for (const [key, waiter] of Record.toEntries(doc.waiters)) {
-          if (!ids.includes(waiter.target) || waiter.result !== null) continue;
-
-          const entry = doc.waiters[key];
-
-          if (entry !== undefined) {
-            entry.result = waitEvent("turn", waiter.target, {
-              turn_id: waiter.turnId,
-              status: "deleted",
-            });
-          }
-        }
-
-        return gone;
-      }, context),
+      api.commit(async (tx) => deleteSubtree(await tx.doc(SubagentsDoc), target), context),
     );
 
     yield* stopAll(

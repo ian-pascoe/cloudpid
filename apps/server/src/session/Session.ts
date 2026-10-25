@@ -168,6 +168,13 @@ export type SessionMethods = {
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
   /** Take messages again once a Fork or Clone in a new Workspace carried this Session's files. */
   readonly releaseFork: () => Effect.Effect<void>;
+  /**
+   * Delete subagent `agent` with everything below it and their Subagent Workspaces: the owner removed its Subagent
+   * Workspace. Answers why a Subagent Workspace of theirs is still there, one line each.
+   */
+  readonly deleteSubagent: (input: {
+    readonly agent: string;
+  }) => Effect.Effect<ReadonlyArray<string>, SessionError>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -504,6 +511,7 @@ export const SessionLive = Session.make(
 
                   return sumContainerUsage(Arr.filter(read, (usage) => usage !== null));
                 },
+                subagentWorkspaces,
                 extensions: sessionExtensions.pipe(
                   // After every other extension, so each of their tools is named and its call is a span.
                   Effect.map((installed) => [
@@ -620,6 +628,11 @@ export const SessionLive = Session.make(
               host.importFinish(plan).pipe(Effect.andThen(sockets.greetAgain)),
             ),
           releaseFork: () => invoked("session.fork.release", host.releaseFork),
+          deleteSubagent: ({ agent }) =>
+            invoked(
+              "session.subagent.delete",
+              host.deleteSubagent(agent).pipe(Effect.map((deletion) => deletion.kept)),
+            ),
           destroy: () =>
             invoked(
               "session.destroy",

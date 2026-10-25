@@ -48,7 +48,14 @@ export {
   unpushedWork,
 } from "./subagents/workspaces.ts";
 
-export { isAgentConversation, type OwnerHarness, stopConversation } from "./subagents/owner.ts";
+export {
+  deleteAgent,
+  isAgentConversation,
+  type OwnerDeleteHarness,
+  type OwnerDeletion,
+  type OwnerHarness,
+  stopConversation,
+} from "./subagents/owner.ts";
 
 export { AGENT_INPUT_KIND } from "./subagents/tasks.ts";
 

@@ -11,7 +11,7 @@ import {
   gate,
   openSubagentHarness,
 } from "./subagents/harness.fixture.ts";
-import { isAgentConversation, stopConversation } from "./subagents/owner.ts";
+import { deleteAgent, isAgentConversation, stopConversation } from "./subagents/owner.ts";
 import { conversationWorkspace, SubagentsDoc } from "./subagents/state.ts";
 
 describe("subagents", () => {
@@ -1137,5 +1137,43 @@ describe("Subagent Workspaces", () => {
     await session.settle();
 
     expect(workspaces.removed).toEqual(["00000001"]);
+  });
+
+  it("lets the owner delete a child with its Workspace, unpushed work and all, as the Environments page's Remove does", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+    workspaces.work.set("00000001", [
+      { repo: "app", cloned: true, uncommitted: 2, unpushed: 1, onRemote: true },
+    ]);
+
+    expect(await deleteAgent(session.harness, "agent-1", workspaces.host, context)).toEqual({
+      deleted: ["agent-1"],
+      kept: [],
+    });
+    expect((await session.state()).tombstones).toContain("agent-1");
+    expect(workspaces.removed).toEqual(["00000001"]);
+
+    // Asked again, as a retried RPC does, nothing more is deleted.
+    expect(await deleteAgent(session.harness, "agent-1", workspaces.host, context)).toEqual({
+      deleted: [],
+      kept: [],
+    });
   });
 });
