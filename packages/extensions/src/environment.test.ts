@@ -529,6 +529,7 @@ describe("environment_container_resize", () => {
     expect(text(result)).toContain(
       "container_resize changes only this Workspace's current Container",
     );
+    expect(text(result)).toContain("holds through container_restart until the idle stop");
     expect(result.details).toMatchObject({
       agentChange: { field: "instance", before: "custom-1", after: "custom-2" },
     });
@@ -680,6 +681,7 @@ describe.each([
     });
     expect(text(result)).toContain(`Set the ${what} of Environment "Default" (default)`);
     expect(text(result)).toContain("it was none");
+    expect(text(result)).toMatch(/and is [23] lines, \d+ bytes now/);
     expect(text(result)).toContain("a new Build was asked for");
     expect(result.details).toMatchObject({ agentChange: { field, before: "", after: content } });
     expect(logged).toEqual([{ tool: name, environmentName: "Default", field }]);
