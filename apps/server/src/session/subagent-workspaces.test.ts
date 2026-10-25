@@ -1,5 +1,6 @@
 // @effect-diagnostics asyncFunction:off
 import type { RepoWorkState } from "@cloudpid/extensions/subagents";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import type { SubagentWorkspaceRefusal, WorkspaceRecord } from "../registry/store.ts";
@@ -64,7 +65,7 @@ const setUp = (
     placement: async () => workspacePlacement("0a0a0a0a", "/workspace/app"),
     objects: {
       workState: async (name, branch, repos) => {
-        calls.push(`workState:${name}:${branch}:${repos.join(",")}`);
+        calls.push(`workState:${name}:${branch}:${Arr.join(repos, ",")}`);
 
         return options.states ?? [repo()];
       },
