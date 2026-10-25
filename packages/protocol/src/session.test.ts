@@ -303,6 +303,27 @@ describe("the Session socket messages", () => {
     ).toEqual(Option.none());
   });
 
+  it("carry how full the active branch's Context Window is, when it is known", async () => {
+    const text = JSON.stringify({
+      type: "usage",
+      input: 1200,
+      output: 340,
+      cacheRead: 9000,
+      cacheWrite: 800,
+      totalTokens: 11340,
+      cost: 0.4321,
+      limit: null,
+      context: {
+        tokens: 42_000,
+        contextWindow: 400_000,
+        compactAt: 367_616,
+        parts: { system: 12_000, user: 3_000, assistant: 7_000, tools: 20_000 },
+      },
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+  });
+
   it("carry a conversation's whole Todo List", async () => {
     const text = JSON.stringify({
       type: "todos",

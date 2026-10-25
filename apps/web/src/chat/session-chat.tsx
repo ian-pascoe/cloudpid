@@ -27,7 +27,6 @@ import { TreeDialogs } from "./tree-dialogs.tsx";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
 import type { Rename } from "./title-state.ts";
-import { UsageBadge } from "./usage-badge.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
@@ -87,7 +86,7 @@ const LiveSession = ({
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
   const queue = useAtomValue(threadQueueAtom(root));
-  // The cards and the Tasks Pane read the task graph, and the header what the Session has spent: their atoms watch them
+  // The cards and the Tasks Pane read the task graph, and the composer's context ring its usage: their atoms watch them
   // for as long as the Session is shown.
   const taskGraph = useAtomValue(taskGraphAtom(sessionId));
 
@@ -150,7 +149,6 @@ const LiveSession = ({
                 }
                 actions={
                   <>
-                    <UsageBadge />
                     {menu}
                     <PaneAreaToggle />
                   </>

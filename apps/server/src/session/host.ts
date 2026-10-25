@@ -33,6 +33,7 @@ import {
   type SessionTree,
   type SessionUsage,
   type ContainerUsage,
+  type ContextUsage,
   type TaskGraphSummary,
   type TodoTask,
   USER_ENTRY_KIND,
@@ -103,6 +104,7 @@ import {
   usageMessage,
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
+import { contextUsageOf } from "./context-usage.ts";
 import { attempt, refuse, SessionError } from "./errors.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
@@ -1533,12 +1535,58 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     }
   };
 
+  /** Tell the watches of the Session's usage that it changed outside the Harness's ledgers. */
+  const usageChanged = Effect.sync(() => {
+    for (const listener of usageListeners) listener();
+  });
+
+  /** The active branch's Context Window as last read, and what it was read at: an unchanged branch is not read again. */
+  let lastContext: { readonly key: string; readonly usage: ContextUsage | null } | undefined;
+
+  /**
+   * How full the active branch's Context Window is; null when its model's context window is not known. A task graph
+   * changes far more often than the transcript (every tool call), so the context is read again only when the branch,
+   * its newest entry, its model's window or the compaction settings changed.
+   */
+  const readContextUsage = Effect.gen(function* () {
+    const conversation = yield* active;
+    const agent = yield* attempt("agent", () => conversation.agent(context));
+
+    const contextWindow =
+      agent.model === undefined
+        ? undefined
+        : models.getModel(agent.model.provider, agent.model.modelId)?.contextWindow;
+
+    if (contextWindow === undefined || contextWindow <= 0) return null;
+
+    const { compaction } = settings.current();
+
+    const newest = yield* attempt("entries", () => conversation.entries({}, 1, undefined, context));
+
+    const key = `${conversation.id} ${newest.items[0]?.id ?? "none"} ${contextWindow} ${compaction.enabled} ${compaction.reserveTokens} ${compaction.backgroundTokens}`;
+
+    if (lastContext?.key === key) return lastContext.usage;
+
+    const view = yield* attempt("context", () => conversation.context(context));
+    const usage = contextUsageOf(view, contextWindow, compaction);
+
+    lastContext = { key, usage };
+
+    return usage;
+  }).pipe(
+    // Its failure only leaves it out, as the Containers' does.
+    Effect.catch((error) =>
+      Effect.logWarning("Context usage read failed", error).pipe(Effect.as(null)),
+    ),
+  );
+
   /** The Session's usage and limit; one per change, the first being how it stands. */
   const usageUpdates = Stream.callback<SessionUsage, SessionError>((queue) =>
     Effect.flatMap(Effect.context<never>(), (services) =>
       Effect.acquireRelease(
         attempt("watchUsage", async () => {
           const run = Effect.runForkWith(services);
+          const runPromise = Effect.runPromiseWith(services);
           // Usage is committed with each response, so a request that ends changes the task graph after it.
           const graph = await harness.harness.watchTaskGraph(context);
           let stopped = false;
@@ -1563,17 +1611,23 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                   changed = false;
 
                   try {
-                    const [totals, container] = await Promise.all([
+                    const [totals, container, contextUsage] = await Promise.all([
                       sessionTotals(harness.harness, kv),
                       readContainerUsage((message) => {
                         run(Effect.logWarning("Container usage read failed", message));
                       }),
+                      runPromise(readContextUsage),
                     ]);
 
                     if (!stopped) {
                       Queue.offerUnsafe(
                         queue,
-                        usageMessage(totals, settings.current().spendLimit, container),
+                        usageMessage(
+                          totals,
+                          settings.current().spendLimit,
+                          container,
+                          contextUsage,
+                        ),
                       );
                     }
                   } catch (error) {
@@ -1720,8 +1774,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     activeBranch: Effect.map(active, (conversation) => conversation.id),
     copying: forks.filling,
     tree: branches.tree,
-    navigate: branches.navigate,
-    switchBranch: branches.switchBranch,
+    // Another branch, or another model, is another Context Window: the clients that watch the usage hear of it at once.
+    navigate: (request) => branches.navigate(request).pipe(Effect.tap(usageChanged)),
+    switchBranch: (conversationId) =>
+      branches.switchBranch(conversationId).pipe(Effect.tap(usageChanged)),
     stopEverything: branches.stopEverything,
     forkSource: forks.forkSource,
     exportEntries: forks.exportEntries,
@@ -1737,6 +1793,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             serially,
           ),
         ),
+        Effect.tap(usageChanged),
       ),
     sync: refreshSettings.pipe(Effect.andThen(applyAgent.pipe(serially))),
     picks: Effect.sync(() => {

@@ -13,7 +13,7 @@ export type Align = "start" | "center" | "end";
  * Place `panel` under `trigger`, lined up with it by `align`, or above it when there is no room below. The panel is a
  * popover in the top layer, so it is positioned against the viewport.
  */
-const place = (panel: HTMLElement, trigger: HTMLElement, align: Align) => {
+export const placePopover = (panel: HTMLElement, trigger: HTMLElement, align: Align) => {
   const anchor = trigger.getBoundingClientRect();
   const { offsetWidth: width, offsetHeight: height } = panel;
 
@@ -64,13 +64,13 @@ export const useAnchoredPopover = (
 
       if (!open || trigger.current === null) return;
 
-      place(element, trigger.current, align);
+      placePopover(element, trigger.current, align);
       onOpenRef.current(element);
     };
 
     const follow = () => {
       if (trigger.current !== null && element.matches(":popover-open")) {
-        place(element, trigger.current, align);
+        placePopover(element, trigger.current, align);
       }
     };
 

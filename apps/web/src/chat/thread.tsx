@@ -13,7 +13,7 @@ import { forkChooserAtom } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
-import { modelChoices, modelName } from "../models.ts";
+import { isLevel, modelChoices, modelName } from "../models.ts";
 import { settledFailureOf } from "../registry.ts";
 import { navigate, SETTINGS_PATH } from "../router.ts";
 import {
@@ -30,7 +30,8 @@ import type { ComposerCommand } from "./commands.ts";
 import { Composer } from "./composer.tsx";
 import { conversationKey, useShownSessionId } from "./conversation.ts";
 import { EarlierHistory } from "./earlier-history.tsx";
-import { isLevel, ModelPicker, type PickerHandle } from "./model-picker.tsx";
+import { ModelPicker, type PickerHandle } from "./model-picker.tsx";
+import { UsageBadge } from "./usage-badge.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
@@ -518,6 +519,7 @@ export const Thread = ({
           onStopAll={onStopAll}
           commands={commands}
           dropZone={dropZone}
+          status={<UsageBadge />}
           tools={
             <ModelPicker
               ref={picker}
