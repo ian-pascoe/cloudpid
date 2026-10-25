@@ -84,7 +84,7 @@ export type SecretKept =
 
 /**
  * Keep `value` under `name` for `environment` (null: every Environment) as the owner's form on the Environments page
- * does (`keepSecret`: the same rules and messages), because the owner chose to in a `secret_ask` form the agent asked
+ * does (`keepSecret`: the same name and value rules), because the owner chose to in a `secret_ask` form the agent asked
  * for, and record that in the scope's Agent changes by name only (`keptSecretField`: kept after, kept before where the
  * scope kept one of the name already). The record and the Secret are one step. `sessionEnvironment` is the asking
  * Session's, which says whether a Secret kept for every Environment is shadowed there. A value never reaches the

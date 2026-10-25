@@ -295,7 +295,7 @@ export type RegistryMethods = {
   /**
    * Keep Secrets the owner chose to keep in the form of a `secret_ask` of `session`'s conversation `conversation`: for
    * the Session's Environment (`scope` "environment") or for every Environment ("every"), sealed here as the owner's form
-   * on the Environments page seals them, with the same rules and messages. Each kept Secret is recorded by name in the
+   * on the Environments page seals them, by the same name and value rules. Each kept Secret is recorded by name in the
    * scope's Agent changes as the owner's choice made on the agent's request (`reason` is the agent's). The caller runs
    * the Builds' upkeep after. For the Session DO only: the values arrive over Durable Object RPC and are never answered.
    */
@@ -672,7 +672,17 @@ export const RegistryLive = Registry.make(
 
               const now = yield* Clock.currentTimeMillis;
               const environment = scope === "every" ? null : known.environment;
-              const author = { session, conversation, tool: "secret_ask", reason };
+
+              // The reason is the agent's text and is kept as written: one that holds a value being kept is left out.
+              const author = {
+                session,
+                conversation,
+                tool: "secret_ask",
+                reason: Arr.some(asked, ({ value }) => reason.includes(value))
+                  ? "The user chose to keep the Secret in the form the agent asked it in"
+                  : reason,
+              };
+
               const results: KeptAskedResult[] = [];
 
               for (const { name, value } of asked) {
@@ -686,11 +696,13 @@ export const RegistryLive = Registry.make(
                     now,
                   ),
                 ).pipe(
-                  Effect.catch((error) =>
-                    Effect.succeed({
-                      status: "rejected",
-                      message: `The Secret cannot be kept: ${error.message}`,
-                    } as const),
+                  // A fixed message: what a failed seal says may hold more than the Registry should pass on.
+                  Effect.orElseSucceed(
+                    () =>
+                      ({
+                        status: "rejected",
+                        message: "The Secret cannot be kept: the Registry could not seal it",
+                      }) as const,
                   ),
                 );
 
