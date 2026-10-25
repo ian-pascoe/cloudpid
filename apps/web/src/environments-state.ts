@@ -344,7 +344,7 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
         registry("revertAgentChange", { environment: id, change }),
       ).pipe(
         Effect.asVoid,
-        changing([`agent-changes:${id}`, `environment-settings:${id}`, "builds"]),
+        changing([`agent-changes:${id}`, `environment-settings:${id}`, "builds", "environments"]),
       ),
     { concurrent: true },
   ),

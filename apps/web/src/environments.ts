@@ -312,7 +312,7 @@ export const changeFieldText = (field: string): string => {
     case NAME_FIELD:
       return "Name";
     case CREATED_FIELD:
-      return "Environment";
+      return "Creation";
     case BUILD_FIELD:
       return "Build";
     default:

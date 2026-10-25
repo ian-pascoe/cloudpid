@@ -397,7 +397,7 @@ describe("an Agent change", () => {
     expect(changeFieldText("idleMinutes")).toBe("idleMinutes");
     expect(changeFieldText("name")).toBe("Name");
     expect(changeFieldText("repos.api")).toBe("Repo api");
-    expect(changeFieldText("environment")).toBe("Environment");
+    expect(changeFieldText("environment")).toBe("Creation");
     expect(changeFieldText("build")).toBe("Build");
   });
 

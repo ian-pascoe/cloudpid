@@ -241,7 +241,7 @@ const failure = async (call: Promise<Result>) => {
 };
 
 describe("the environment tools", () => {
-  it("are ten, and only the changes are kept from a rerun after an eviction", async () => {
+  it("are the ten setting tools, and only the changes are kept from a rerun after an eviction", async () => {
     const tool = await toolsOver(fakeEnvironments().service);
 
     expect(
