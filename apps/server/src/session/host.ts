@@ -389,9 +389,13 @@ export type SessionHostService = {
   readonly abort: (options?: AbortOptions) => Effect.Effect<void, SessionError>;
   /**
    * Delete subagent `agent` with everything below it, as `subagent_delete` with `discard: true` does, Subagent Workspaces
-   * included: the owner removed its Subagent Workspace from the Environments page, after a confirmation.
+   * included: the owner removed its Subagent Workspace `workspace` from the Environments page, after a confirmation. An
+   * agent that does not work in `workspace` is not deleted.
    */
-  readonly deleteSubagent: (agent: string) => Effect.Effect<OwnerDeletion, SessionError>;
+  readonly deleteSubagent: (
+    agent: string,
+    workspace: string,
+  ) => Effect.Effect<OwnerDeletion, SessionError>;
   /**
    * Close the Harness: admission is sealed and the commits it admitted settle, so nothing writes the storage after. Every
    * later call fails; the object is reset before it serves another. For a Session being deleted.
@@ -1887,9 +1891,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         ),
       ),
-    deleteSubagent: (agent) =>
+    deleteSubagent: (agent, workspace) =>
       attempt("deleteSubagent", () =>
-        deleteAgent(harness.harness, agent, options.subagentWorkspaces, context),
+        deleteAgent(harness.harness, agent, workspace, options.subagentWorkspaces, context),
       ),
     close: attempt("close", () => harness.harness.close(context)),
     taskGraph: taskGraphSummaries,

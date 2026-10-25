@@ -1,5 +1,6 @@
-// The Tasks Pane: the Session's live work, its Todo List, its subagents (each openable into its thread) and the
-// background tasks running, from the task graph the Session streams.
+// The Tasks Pane: the Session's live work, its Todo List, its subagents (each openable into its thread, its header with
+// its Subagent Workspace's branch when it has one) and the background tasks running, from the task graph the Session
+// streams.
 
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
@@ -19,7 +20,7 @@ import {
 import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
-import { AgentStatus, shortModel } from "./subagent-card.tsx";
+import { AgentBranch, AgentStatus, shortModel } from "./subagent-card.tsx";
 import { TodoList } from "./todo-list.tsx";
 import { todoProgress } from "../session/todos.ts";
 
@@ -53,6 +54,9 @@ const Row = ({ agent, depth }: RowProps) => {
           )}
           <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
             {shortModel(agent.model)}
+          </span>
+          <span className="min-w-0 text-muted-foreground">
+            <AgentBranch agent={agent} />
           </span>
         </button>
         <AgentStatus agent={agent} />

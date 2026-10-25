@@ -16,7 +16,7 @@ A Subagent Workspace lasts as long as its subagent. `subagent_cancel` keeps it (
 
 - **A Clone that reports back.** The child would be a Session of its own, made by `forkSession` into a new Workspace, whose answer is sent to the parent. The Session would keep exactly one Workspace, but the subagent tools would need a second implementation over Sessions: waits across Session objects, a Stop that reaches another object, a task graph and spend limit that span Sessions, and a lifetime tied to the parent's by hand. Keeping the child a subagent keeps all of that as it is, at the cost of a Session no longer having exactly one Workspace.
 - **Copy the parent's uncommitted work into the child.** `forkSession`'s carry does this for a Fork, but for a subagent it would race the parent's own edits and hide what the child started from. A pushed branch is what the owner can read and what the child can rebase on.
-- **Cap running Containers, not Workspaces.** A child's stopped Container starts again at its next command, so a cap on running ones would not bound what the Session can start; the limit counts the Workspaces that exist.
+- **Limit running Containers, not Workspaces.** A child's stopped Container starts again at its next command, so a Limit on running ones would not bound what the Session can start; the limit counts the Workspaces that exist.
 
 ## Consequences
 

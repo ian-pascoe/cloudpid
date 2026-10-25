@@ -52,6 +52,7 @@ import {
   answerText,
   childrenOf,
   conversationOf,
+  type DeletedAgent,
   deleteSubtree,
   EMPTY_STATE,
   openWaiter,
@@ -422,6 +423,27 @@ const newWorkspace = Effect.fnUntraced(function* (
   return { agent: chosen.id, ...made };
 });
 
+/**
+ * Remove the Subagent Workspace made for a spawn whose commit did not land (refused, or failed), so it neither stays
+ * listed under an agent ID that is not its agent's nor counts against the limit. Kept when an agent's record has it.
+ */
+const discardUnclaimed = (api: ToolExecutionApi, workspace: AgentWorkspace) =>
+  Effect.ignore(
+    Effect.gen(function* () {
+      const host = yield* Effect.serviceOption(SubagentWorkspaces);
+      const state = yield* readState(api);
+
+      const claimed = Arr.some(
+        Record.values(state.agents),
+        (agent) => agent.workspace?.id === workspace.id,
+      );
+
+      if (Option.isNone(host) || claimed) return;
+
+      yield* Effect.tryPromise(() => host.value.remove(workspace));
+    }),
+  );
+
 /** The model a spawn runs on, and the role it named. */
 const resolveModel = Effect.fnUntraced(function* (
   api: ToolExecutionApi,
@@ -651,7 +673,11 @@ const Spawn = defineEffectTool({
             ? null
             : { id: workspace.workspace.id, branch: workspace.workspace.branch },
       } satisfies SpawnResult;
-    });
+    }).pipe(
+      Effect.tapError(() =>
+        workspace === undefined ? Effect.void : discardUnclaimed(api, workspace.workspace),
+      ),
+    );
 
     const spawned = spawnResult(result);
 
@@ -1365,18 +1391,62 @@ const removeWorkspaces = Effect.fnUntraced(function* (
   return Arr.flatten(kept);
 });
 
+/** What a delete took out, recorded for its call: a rerun after an eviction stops and removes what it still has to. */
+type DeleteResult = { deleted: DeletedAgent[] };
+
+const DeleteCall = callDoc<DeleteResult>("cloudpid.subagent-call.delete");
+
+/** Stop what a delete took out that is still running, remove its Subagent Workspaces, and say so. */
+const finishDelete = Effect.fnUntraced(function* (
+  api: ToolExecutionApi,
+  target: string,
+  removed: ReadonlyArray<DeletedAgent>,
+  stopped: ReadonlySet<string>,
+) {
+  yield* stopAll(
+    api,
+    Arr.filter(removed, (agent) => !stopped.has(agent.id)),
+    true,
+  );
+
+  const deleted = Arr.map(removed, (agent) => agent.id);
+  const kept = yield* removeWorkspaces(removed);
+
+  return {
+    output: text(
+      Arr.join(
+        [
+          deleted.length === 0
+            ? `${target} was already deleted.`
+            : `Deleted ${Arr.join(deleted, ", ")}; their IDs are retired.`,
+          ...kept,
+        ],
+        "\n",
+      ),
+    ),
+    structuredOutput: { agent_id: target, deleted_agent_ids: deleted },
+  };
+});
+
 const Delete = defineEffectTool({
   name: "subagent_delete",
   description:
     "Delete one direct child, stopping its work, and tombstone its ID so it is never reused. Recursive deletion includes its subtree and defaults to true. A deleted child's Subagent Workspace is removed with it; while one in the subtree has commits not pushed or uncommitted changes, the delete is refused naming them, unless discard is true.",
   parameters: DeleteParameters,
+  // A rerun after an eviction past the delete's commit finishes it: the Subagent Workspaces it took out are removed.
+  replay: "safe",
   execute: Effect.fnUntraced(function* (
     { agent_id, recursive, discard }: typeof DeleteParameters.Type,
     api: ToolExecutionApi,
   ) {
+    const target = normalizeAgentId(agent_id);
+    const earlier = yield* recorded(api, DeleteCall);
+
+    if (Option.isSome(earlier))
+      return yield* finishDelete(api, target, earlier.value.deleted, new Set());
+
     const state = yield* readState(api);
     const caller = yield* callerOf(api, state);
-    const target = normalizeAgentId(agent_id);
 
     if (parentAgentId(target) === caller && Arr.contains(state.tombstones, target)) {
       return {
@@ -1408,33 +1478,11 @@ const Delete = defineEffectTool({
 
     // The subtree as it is now: a descendant spawned after the last scan is deleted too, and stopped below. Once its
     // conversation is unmapped, no deleted agent can spawn again.
-    const removed = yield* durable("delete", (context) =>
-      api.commit(async (tx) => deleteSubtree(await tx.doc(SubagentsDoc), target), context),
-    );
+    const { deleted } = yield* decide(api, DeleteCall, "delete", async (tx) => ({
+      deleted: deleteSubtree(await tx.doc(SubagentsDoc), target),
+    }));
 
-    yield* stopAll(
-      api,
-      Arr.filter(removed, (agent) => !stopped.has(agent.id)),
-      true,
-    );
-
-    const deleted = Arr.map(removed, (agent) => agent.id);
-    const kept = yield* removeWorkspaces(removed);
-
-    return {
-      output: text(
-        Arr.join(
-          [
-            deleted.length === 0
-              ? `${target} was already deleted.`
-              : `Deleted ${Arr.join(deleted, ", ")}; their IDs are retired.`,
-            ...kept,
-          ],
-          "\n",
-        ),
-      ),
-      structuredOutput: { agent_id: target, deleted_agent_ids: deleted },
-    };
+    return yield* finishDelete(api, target, deleted, stopped);
   }),
 });
 

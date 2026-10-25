@@ -170,10 +170,12 @@ export type SessionMethods = {
   readonly releaseFork: () => Effect.Effect<void>;
   /**
    * Delete subagent `agent` with everything below it and their Subagent Workspaces: the owner removed its Subagent
-   * Workspace. Answers why a Subagent Workspace of theirs is still there, one line each.
+   * Workspace `workspace` (an agent that does not work in it is kept). Answers why a Subagent Workspace of theirs is
+   * still there, one line each.
    */
   readonly deleteSubagent: (input: {
     readonly agent: string;
+    readonly workspace: string;
   }) => Effect.Effect<ReadonlyArray<string>, SessionError>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
@@ -628,10 +630,10 @@ export const SessionLive = Session.make(
               host.importFinish(plan).pipe(Effect.andThen(sockets.greetAgain)),
             ),
           releaseFork: () => invoked("session.fork.release", host.releaseFork),
-          deleteSubagent: ({ agent }) =>
+          deleteSubagent: ({ agent, workspace }) =>
             invoked(
               "session.subagent.delete",
-              host.deleteSubagent(agent).pipe(Effect.map((deletion) => deletion.kept)),
+              host.deleteSubagent(agent, workspace).pipe(Effect.map((deletion) => deletion.kept)),
             ),
           destroy: () =>
             invoked(

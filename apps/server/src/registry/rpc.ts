@@ -75,7 +75,11 @@ export type SessionObjects = {
    * Delete subagent `agent` of Session `id` with its subtree and their Subagent Workspaces
    * (`SessionMethods.deleteSubagent`); why a Subagent Workspace of theirs is still there, one line each.
    */
-  readonly deleteSubagent: (id: string, agent: string) => Effect.Effect<ReadonlyArray<string>>;
+  readonly deleteSubagent: (
+    id: string,
+    agent: string,
+    workspace: string,
+  ) => Effect.Effect<ReadonlyArray<string>>;
 };
 
 /**
@@ -304,7 +308,7 @@ export const serveRegistryRpc = <R = never>(
     const removeSubagent = (workspace: WorkspaceRecord, owner: SubagentOwner) =>
       Effect.gen(function* () {
         if ((yield* registry.getSession({ id: owner.session })) !== null) {
-          const kept = yield* sessions.deleteSubagent(owner.session, owner.agent);
+          const kept = yield* sessions.deleteSubagent(owner.session, owner.agent, workspace.id);
 
           if (kept.length > 0) return yield* failed(Arr.join(kept, "\n"));
         }

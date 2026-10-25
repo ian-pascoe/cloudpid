@@ -59,6 +59,7 @@ import {
   saveEnvironmentAtom,
   startSessionAtom,
   describeWorkspaceWork,
+  subagentWorkspacesBelow,
   subagentWorkspacesOf,
   workspaceBranchesAtom,
   workspaceListAtom,
@@ -91,6 +92,22 @@ describe("Subagent Workspaces on the Environments page", () => {
 
     expect(subagentWorkspacesOf([listed, owned], "s1")).toEqual([owned]);
     expect(subagentWorkspacesOf(null, "s1")).toEqual([]);
+
+    const below = {
+      ...listed,
+      id: "0000cafe",
+      subagent: { session: "s1", agent: "agent-1.agent-1" },
+    };
+
+    const sibling = { ...listed, id: "0000f00d", subagent: { session: "s1", agent: "agent-10" } };
+    const elsewhere = { ...below, id: "0000dead", subagent: { session: "s2", agent: "agent-1.x" } };
+
+    expect(
+      subagentWorkspacesBelow([listed, owned, below, sibling, elsewhere], {
+        session: "s1",
+        agent: "agent-1",
+      }),
+    ).toEqual([below]);
   });
 });
 

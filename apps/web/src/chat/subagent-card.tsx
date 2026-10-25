@@ -28,6 +28,18 @@ export const AgentStatus = ({ agent }: { agent: GraphAgent | undefined }) =>
     </span>
   );
 
+/** The branch of the Subagent Workspace an agent works in, as the card and the panel show it; nothing without one. */
+export const AgentBranch = ({ agent }: { agent: GraphAgent | undefined }) =>
+  agent?.branch === undefined ? null : (
+    <span
+      className="flex min-w-0 items-center gap-1 text-xs"
+      title={`Works in a Subagent Workspace, on branch ${agent.branch}`}
+    >
+      <GitBranch className="size-3 shrink-0" aria-hidden />
+      <span className="truncate font-mono">{agent.branch}</span>
+    </span>
+  );
+
 /** The model without its provider, which the card has no room for. */
 export const shortModel = (model: string): string => model.slice(model.indexOf("/") + 1);
 
@@ -70,15 +82,7 @@ const Card = ({ subagent, args, messages }: CardProps) => {
         {agent !== undefined && (
           <span className="min-w-0 truncate font-mono text-xs">{shortModel(agent.model)}</span>
         )}
-        {agent?.branch !== undefined && (
-          <span
-            className="flex min-w-0 items-center gap-1 text-xs"
-            title={`Works in a Subagent Workspace of its own, on branch ${agent.branch}`}
-          >
-            <GitBranch className="size-3 shrink-0" aria-hidden />
-            <span className="truncate font-mono">{agent.branch}</span>
-          </span>
-        )}
+        <AgentBranch agent={agent} />
         <span className="ml-auto shrink-0">
           <AgentStatus agent={agent} />
         </span>

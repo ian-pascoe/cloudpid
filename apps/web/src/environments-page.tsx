@@ -13,6 +13,7 @@ import {
   type SessionRecord,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
@@ -47,6 +48,7 @@ import { NativeSelect } from "./components/ui/native-select.tsx";
 import { cn } from "./lib/utils.ts";
 import { changeDiff } from "./line-diff.ts";
 import { navigate, sessionPath } from "./router.ts";
+import { SubagentWorkspaceLoss } from "./session-menu.tsx";
 import { SessionLink, sessionTitle } from "./sidebar.tsx";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
@@ -82,6 +84,7 @@ import {
   saveEnvironmentAtom,
   startSessionAtom,
   describeWorkspaceWork,
+  subagentWorkspacesBelow,
   workspaceListAtom,
   workspaceWorkAtom,
   type EnvironmentDialog,
@@ -1435,6 +1438,12 @@ const RemoveSubagentWorkspaceDialog = ({
   const busy = removed.waiting;
   const confirmed = deleteConfirmed(workspace.branch, typed);
 
+  // The Subagent Workspaces of the subagents below it, which go too: each that holds work not pushed is named.
+  const below = subagentWorkspacesBelow(useAtomValue(workspaceListAtom), {
+    session: workspace.subagent?.session ?? "",
+    agent,
+  });
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
 
@@ -1454,6 +1463,13 @@ const RemoveSubagentWorkspaceDialog = ({
         <li>Its files and Container, and those of the Subagent Workspaces below it.</li>
       </ul>
       <UnpushedWork id={workspace.id} />
+      {below.length > 0 && (
+        <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-destructive">
+          {Arr.map(below, (each) => (
+            <SubagentWorkspaceLoss key={each.id} workspace={each} />
+          ))}
+        </ul>
+      )}
       <p className="text-sm text-muted-foreground">
         What was pushed to <span className="font-mono">{workspace.branch}</span> stays on the
         remote.

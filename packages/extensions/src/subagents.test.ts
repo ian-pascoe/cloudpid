@@ -11,6 +11,7 @@ import {
   gate,
   openSubagentHarness,
 } from "./subagents/harness.fixture.ts";
+import type { SubagentWorkspaceHost } from "./subagents.ts";
 import { deleteAgent, isAgentConversation, stopConversation } from "./subagents/owner.ts";
 import { conversationWorkspace, SubagentsDoc } from "./subagents/state.ts";
 
@@ -929,6 +930,44 @@ describe("Subagent Workspaces", () => {
     expect(first).toMatch(/Fix it$/);
   });
 
+  it("removes the Workspace of a spawn refused after it was made", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+    let taking: (() => Promise<void>) | undefined;
+
+    const host: SubagentWorkspaceHost = {
+      ...workspaces.host,
+      create: async (request) => {
+        const made = await workspaces.host.create(request);
+
+        await taking?.();
+
+        return made;
+      },
+    };
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Delegate it"
+          ? call(["subagent", { task: "Work", workspace: "new" }])
+          : answer("Noted."),
+      {},
+      [],
+      host,
+    );
+
+    // Another spawn takes agent-1's ID while its Workspace is made.
+    taking = () =>
+      session.harness.commit(async (tx) => {
+        (await tx.doc(SubagentsDoc)).nextIndex["root"] = 2;
+      }, context);
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    expect((await session.texts("toolResult"))[0]).toContain("agent-1 was taken");
+    expect(workspaces.removed).toEqual(["00000001"]);
+  });
+
   it("ends each report with the child's branch and what it has not pushed", async () => {
     const workspaces = fakeSubagentWorkspaces();
     const ready = gate();
@@ -1163,7 +1202,15 @@ describe("Subagent Workspaces", () => {
       { repo: "app", cloned: true, uncommitted: 2, unpushed: 1, onRemote: true },
     ]);
 
-    expect(await deleteAgent(session.harness, "agent-1", workspaces.host, context)).toEqual({
+    // A Workspace left under the ID by another agent's spawn deletes no agent that does not work in it.
+    expect(
+      await deleteAgent(session.harness, "agent-1", "0000000f", workspaces.host, context),
+    ).toEqual({ deleted: [], kept: [] });
+    expect(workspaces.removed).toEqual([]);
+
+    expect(
+      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context),
+    ).toEqual({
       deleted: ["agent-1"],
       kept: [],
     });
@@ -1171,7 +1218,9 @@ describe("Subagent Workspaces", () => {
     expect(workspaces.removed).toEqual(["00000001"]);
 
     // Asked again, as a retried RPC does, nothing more is deleted.
-    expect(await deleteAgent(session.harness, "agent-1", workspaces.host, context)).toEqual({
+    expect(
+      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context),
+    ).toEqual({
       deleted: [],
       kept: [],
     });

@@ -310,6 +310,19 @@ export const subagentWorkspacesOf = (
 ): WorkspaceRecord[] =>
   Arr.filter(workspaces ?? [], (workspace) => workspace.subagent?.session === session);
 
+/**
+ * The Subagent Workspaces of the subagents below `owner` (its descendants', whose IDs extend its own), which deleting it
+ * removes too.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain lookup in a listing.
+export const subagentWorkspacesBelow = (
+  workspaces: ReadonlyArray<WorkspaceRecord> | null,
+  owner: { readonly session: string; readonly agent: string },
+): WorkspaceRecord[] =>
+  Arr.filter(subagentWorkspacesOf(workspaces, owner.session), (workspace) =>
+    (workspace.subagent?.agent ?? "").startsWith(`${owner.agent}.`),
+  );
+
 /** What a Workspace holds that is not on the remote, in words: `app: 2 commits not pushed, 1 uncommitted change`. */
 export const describeWorkspaceWork = (work: ReadonlyArray<WorkspaceWork>): string =>
   Arr.join(

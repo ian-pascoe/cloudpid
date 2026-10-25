@@ -202,7 +202,7 @@ export const reporterWith = (handBack: HandBack): ReporterTask => {
         const settled = await submission.wait(context);
 
         // Read before the commit, which holds the Session line: what the agent's own Workspace has not pushed.
-        const handOff =
+        const handBackLine =
           agent?.workspace === undefined || settled.reason === "aborted"
             ? undefined
             : await handBack(agent, context);
@@ -235,7 +235,7 @@ export const reporterWith = (handBack: HandBack): ReporterTask => {
           settledTurn.error = error;
           settledTurn.endedAt = now;
 
-          if (handOff !== undefined && status !== "aborted") settledTurn.handBack = handOff;
+          if (handBackLine !== undefined) settledTurn.handBack = handBackLine;
 
           const next = (report: string | null): NextTaskState<ReporterState, null> => ({
             status: "running",

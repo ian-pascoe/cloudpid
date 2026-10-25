@@ -109,17 +109,21 @@ export type OwnerDeletion = {
 /**
  * Delete agent `agentId` with everything below it, as `subagent_delete` with `discard: true` does (the owner confirmed
  * losing what was not pushed): stop them, retire their IDs, end the waits on them, and remove their Subagent Workspaces
- * through `workspaces`. An agent already deleted deletes nothing.
+ * through `workspaces`. An agent already deleted deletes nothing, and so does one that does not work in `workspace` (an
+ * agent that took the ID of one whose Workspace was left behind).
  */
 export const deleteAgent = async (
   harness: OwnerDeleteHarness,
   agentId: string,
+  workspace: string,
   workspaces: SubagentWorkspaceHost | undefined,
   context: Context,
 ): Promise<OwnerDeletion> => {
   const agent = (await readState(harness, context)).agents[agentId];
 
-  if (agent === undefined || agentId === ROOT_AGENT) return { deleted: [], kept: [] };
+  if (agent === undefined || agentId === ROOT_AGENT || agent.workspace?.id !== workspace) {
+    return { deleted: [], kept: [] };
+  }
 
   await stopConversation(harness, agent.conversationId, { subagents: true }, context);
 

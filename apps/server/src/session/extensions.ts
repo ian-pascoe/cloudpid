@@ -58,8 +58,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * (`AgentChangeLog`), the root conversation's only (`docs/spec.md` → Agent changes); the `settings_*` tools, which read
  * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
  * after a change (`SettingsReload`); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
- * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `environment_container_size_limit_set`, `environment_delete`,
- * `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
+ * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `environment_container_size_limit_set`,
+ * `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
  * (`docs/spec.md` → Approval); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with

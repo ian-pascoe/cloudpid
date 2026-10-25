@@ -1,7 +1,7 @@
-// @effect-diagnostics preferEffectArray:off -- the JSX list of Subagent Workspaces is a native array.
 import { MAX_TITLE_LENGTH, type SessionRecord, type WorkspaceRecord } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
+import * as Arr from "effect/Array";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, GitFork, Pencil, Trash2 } from "lucide-react";
@@ -97,8 +97,8 @@ const RenameSessionDialog = ({ rename }: { rename: Rename }) => {
   );
 };
 
-/** A Subagent Workspace the Session's delete removes, named when it holds work that is not pushed. */
-const SubagentWorkspaceLoss = ({ workspace }: { workspace: WorkspaceRecord }) => {
+/** A Subagent Workspace a delete removes, named when it holds work that is not pushed. */
+export const SubagentWorkspaceLoss = ({ workspace }: { workspace: WorkspaceRecord }) => {
   const work = useAtomValue(workspaceWorkAtom(workspace.id));
   const agent = workspace.subagent?.agent ?? "";
 
@@ -133,7 +133,7 @@ const SubagentWorkspacesLost = ({ session }: { session: SessionRecord }) => {
         with it, with what was not pushed:
       </p>
       <ul className="flex list-disc flex-col gap-1 pl-5 text-destructive">
-        {workspaces.map((workspace) => (
+        {Arr.map(workspaces, (workspace) => (
           <SubagentWorkspaceLoss key={workspace.id} workspace={workspace} />
         ))}
       </ul>
