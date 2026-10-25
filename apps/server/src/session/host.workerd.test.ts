@@ -432,9 +432,10 @@ describe("a Session's agent", () => {
       model: "anthropic/claude-sonnet-5-5",
       thinkingLevel: "low",
     });
+    // Newest first: the thinking level was recorded after the model.
     expect(await registry.listSettingsChanges()).toMatchObject([
-      { field: "model", tool: "settings_model_set", reason: "The task is small" },
       { field: "thinkingLevel" },
+      { field: "model", tool: "settings_model_set", reason: "The task is small" },
     ]);
 
     await settles(async () =>
