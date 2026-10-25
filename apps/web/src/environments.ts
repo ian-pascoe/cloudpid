@@ -5,6 +5,7 @@
 // shows of a Build and a Secret.
 
 import {
+  type AgentChange,
   type BuildView,
   branchProblem,
   type EnvironmentSecretRecord,
@@ -29,6 +30,7 @@ import {
   toolchainsProblem,
   variableNameProblem,
 } from "@cloudpid/config";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import { relativeTime } from "./format.ts";
@@ -272,6 +274,34 @@ export const buildLine = (build: BuildView, now: number): string => {
       return `Build failed ${relativeTime(build.at, now)}: ${build.reason}. Meanwhile ${meanwhile(build.lastGoodAt)}`;
   }
 };
+
+/** A value an Agent change shows: a variable's as written, in full, another setting's as JSON, and none as not set. */
+export const changeValueText = (value: AgentChange["before"]): string =>
+  value === null ? "not set" : Predicate.isString(value) ? value : JSON.stringify(value);
+
+/** The setting an Agent change's field names, as the page says it: `variables.API_URL` is the variable API_URL. */
+export const changeFieldText = (field: string): string =>
+  field.startsWith("variables.") ? `Variable ${field.slice("variables.".length)}` : field;
+
+/**
+ * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it), or
+ * the owner, reverting an earlier one.
+ */
+export const changeByline = (change: AgentChange, now: number): string => {
+  const when = relativeTime(change.at, now);
+
+  if (change.actor === "owner") {
+    return change.reverts === null
+      ? `You, ${when}`
+      : `You reverted change ${change.reverts}, ${when}`;
+  }
+
+  return `The agent, ${when}${change.tool === null ? "" : `, with ${change.tool}`}`;
+};
+
+/** Whether the owner can revert an Agent change: the agent's, not reverted yet. The Registry decides the rest. */
+export const revertible = (change: AgentChange): boolean =>
+  change.actor === "agent" && change.revertedBy === null;
 
 /**
  * The key of the Secrets kept for every Environment among the page's Secrets sections, which an Environment's id is

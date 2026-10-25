@@ -7,6 +7,7 @@ import {
   type ContainerSettings,
 } from "@cloudpid/config";
 import {
+  type AgentChange,
   EnvironmentError,
   type ContainerSettingsState,
   type EnvironmentRecord,
@@ -27,6 +28,8 @@ import {
   addRepoAtom,
   addRepoNameAtom,
   addRepoSourceAtom,
+  agentChangesAtom,
+  revertAgentChangeAtom,
   createEnvironmentAtom,
   deleteSecretAtom,
   environmentSecretsAtom,
@@ -1127,6 +1130,88 @@ describe("an Environment's Build", () => {
 
       expect(settledFailureOf(yield* settled(registry, rebuildEnvironmentAtom("work")))).toBe(
         "There is nothing to build.",
+      );
+      registry.dispose();
+    }),
+  );
+});
+
+describe("the Agent changes", () => {
+  const change = (id: number, revertedBy: number | null = null): AgentChange => ({
+    id,
+    scope: "work",
+    at: 1,
+    actor: "agent",
+    session: "s-1",
+    conversation: 1,
+    tool: "environment_variable_set",
+    reason: "The tests read it",
+    field: "variables.API_URL",
+    before: null,
+    after: "https://api.test",
+    reverts: null,
+    revertedBy,
+  });
+
+  it.effect("are listed, and a revert loads them and the settings again", () =>
+    Effect.gen(function* () {
+      const reverted: Array<{ environment: string; change: number }> = [];
+      let settingsAsked = 0;
+
+      const registry = registryWith({
+        listAgentChanges: ({ environment }) =>
+          Effect.succeed(
+            environment === "work" ? [change(1, reverted.length === 0 ? null : 2)] : [],
+          ),
+        revertAgentChange: (input) =>
+          Effect.sync(() => {
+            reverted.push(input);
+
+            return { ...change(2), actor: "owner" as const, reverts: 1 };
+          }),
+        getEnvironmentSettings: () =>
+          Effect.sync(() => {
+            settingsAsked += 1;
+
+            return { settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} };
+          }),
+        listBuilds: () => Effect.succeed([]),
+      });
+
+      registry.mount(environmentSettingsAtom("work"));
+      registry.mount(agentChangesAtom("work"));
+      expect(AsyncResult.getOrThrow(yield* settled(registry, agentChangesAtom("work")))).toEqual([
+        change(1),
+      ]);
+
+      registry.mount(revertAgentChangeAtom("work"));
+      registry.set(revertAgentChangeAtom("work"), 1);
+      yield* settled(registry, revertAgentChangeAtom("work"));
+      yield* settled(registry, agentChangesAtom("work"));
+
+      expect(reverted).toEqual([{ environment: "work", change: 1 }]);
+      expect(AsyncResult.getOrThrow(registry.get(agentChangesAtom("work")))).toEqual([
+        change(1, 2),
+      ]);
+      expect(settingsAsked).toBe(2);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("say why a revert was refused", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        revertAgentChange: () =>
+          refused(
+            'variables.API_URL has changed since: it is "x" now, so the change is not reverted',
+          ),
+      });
+
+      registry.mount(revertAgentChangeAtom("work"));
+      registry.set(revertAgentChangeAtom("work"), 1);
+
+      expect(settledFailureOf(yield* settled(registry, revertAgentChangeAtom("work")))).toBe(
+        'variables.API_URL has changed since: it is "x" now, so the change is not reverted',
       );
       registry.dispose();
     }),

@@ -45,7 +45,9 @@ const open = (
     listBuilds: () =>
       Effect.succeed([{ environment: "default", build: { status: "ready", at: 5 } as const }]),
     getEnvironment: ({ id }: { readonly id: string }) =>
-      Effect.succeed(Option.getOrNull(Arr.findFirst([DEFAULT, OTHER], (each) => each.id === id))),
+      Effect.succeed(
+        Arr.findFirst([DEFAULT, OTHER], (each) => each.id === id).pipe(Option.getOrNull),
+      ),
     getEnvironmentSettings: ({ environment }: { readonly environment: string }) =>
       Effect.succeed(
         environment === "default" || environment === "0000abcd"
