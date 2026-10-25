@@ -110,6 +110,24 @@ describe("a Container resize", () => {
     });
   });
 
+  it("puts custom-3 (9 GiB) above the default limit and standard-3, and under a custom-3 or standard-4 limit", async () => {
+    expect(await open().resizes.resize("custom-3")).toEqual({
+      outcome: "refused",
+      limit: "custom-2",
+    });
+    expect(await open({ maxInstance: "standard-3" }).resizes.resize("custom-3")).toEqual({
+      outcome: "refused",
+      limit: "standard-3",
+    });
+
+    for (const maxInstance of ["custom-3", "standard-4"] as const) {
+      expect(await open({ maxInstance }).resizes.resize("custom-3")).toMatchObject({
+        outcome: "resized",
+        next: "custom-3",
+      });
+    }
+  });
+
   it("leaves a Container that already runs on the size running, keeping the size for a restart", async () => {
     const { state, resizes } = open({}, { launched: "custom-2" });
 

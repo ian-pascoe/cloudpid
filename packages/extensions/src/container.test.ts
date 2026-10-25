@@ -208,6 +208,7 @@ describe("container_resize", () => {
             "standard-2",
             "custom-2",
             "standard-3",
+            "custom-3",
             "standard-4",
           ],
         },
@@ -216,6 +217,10 @@ describe("container_resize", () => {
     });
     // Each size with what it offers, smallest memory first.
     expect(tool.description).toMatch(/custom-1: 1 vCPU, 3 GiB memory/);
+    expect(tool.description).toMatch(/custom-3: 3 vCPU, 9 GiB memory, 12 GB disk/);
+    expect(tool.description.indexOf("standard-3:")).toBeLessThan(
+      tool.description.indexOf("custom-3:"),
+    );
     expect(tool.description.indexOf("custom-1:")).toBeLessThan(
       tool.description.indexOf("standard-1:"),
     );

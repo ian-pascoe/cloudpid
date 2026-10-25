@@ -178,6 +178,16 @@ describe("instanceLabel", () => {
     expect(instanceLabel("custom-1")).toBe("custom-1: 1 vCPU, 3 GiB memory, 12 GB disk (default)");
     expect(instanceLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk");
     expect(instanceLabel("standard-2")).toBe("standard-2: 1 vCPU, 6 GiB memory, 12 GB disk");
+    expect(instanceLabel("custom-3")).toBe("custom-3: 3 vCPU, 9 GiB memory, 12 GB disk");
+  });
+
+  it("offers custom-3 between standard-3 and standard-4, in the size and the size limit pickers", () => {
+    expect(INSTANCE_TYPES.slice(INSTANCE_TYPES.indexOf("standard-3"))).toEqual([
+      "standard-3",
+      "custom-3",
+      "standard-4",
+    ]);
+    expect(sizeLimitLabel("custom-3")).toBe("custom-3: 3 vCPU, 9 GiB memory, 12 GB disk");
   });
 
   it("marks exactly one of the offered sizes", () => {

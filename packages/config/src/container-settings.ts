@@ -27,6 +27,7 @@ export const INSTANCE_TYPES = [
   "standard-2",
   "custom-2",
   "standard-3",
+  "custom-3",
   "standard-4",
 ] as const;
 
@@ -44,13 +45,15 @@ export type ContainerResources = {
 /**
  * The custom sizes, by stored name. Cloudflare bills CPU only for active use, and memory and disk for as long as the
  * Container runs, so memory is what a running Container costs: `custom-1` (the default) has `standard-2`'s vCPU with half
- * its memory, and `custom-2` has `standard-2`'s memory with twice its vCPU. A custom size needs at least 3 GiB of memory
- * per vCPU. Both keep `standard-2`'s 12 GB disk, which costs little, so a snapshot or Build taken on one restores on the
- * other.
+ * its memory, `custom-2` has `standard-2`'s memory with twice its vCPU, and `custom-3` sits between `standard-3` and
+ * `standard-4`. A custom size needs 1 to 4 vCPU, at most 12 GiB of memory and at least 3 GiB of it per vCPU, and at most
+ * 20 GB of disk (Cloudflare's Containers limits page). All keep `standard-2`'s 12 GB disk, which costs little, so a
+ * snapshot or Build taken on one restores on the others.
  */
 const CUSTOM_INSTANCES = {
   "custom-1": { vcpu: 1, memoryMib: 3072, diskMb: 12_000 },
   "custom-2": { vcpu: 2, memoryMib: 6144, diskMb: 12_000 },
+  "custom-3": { vcpu: 3, memoryMib: 9216, diskMb: 12_000 },
 } as const satisfies Partial<Record<InstanceType, ContainerResources>>;
 
 type CustomInstanceType = keyof typeof CUSTOM_INSTANCES;
@@ -74,6 +77,7 @@ export const INSTANCE_RESOURCES: Readonly<Record<InstanceType, ContainerResource
   "standard-2": { vcpu: 1, memoryMib: 6144, diskMb: 12_000 },
   "custom-2": CUSTOM_INSTANCES["custom-2"],
   "standard-3": { vcpu: 2, memoryMib: 8192, diskMb: 16_000 },
+  "custom-3": CUSTOM_INSTANCES["custom-3"],
   "standard-4": { vcpu: 4, memoryMib: 12_288, diskMb: 20_000 },
 };
 
@@ -117,6 +121,7 @@ export const INSTANCE_DESCRIPTIONS: Readonly<Record<InstanceType, string>> = {
   "standard-2": "1 vCPU, 6 GiB memory, 12 GB disk",
   "custom-2": describeResources(CUSTOM_INSTANCES["custom-2"]),
   "standard-3": "2 vCPU, 8 GiB memory, 16 GB disk",
+  "custom-3": describeResources(CUSTOM_INSTANCES["custom-3"]),
   "standard-4": "4 vCPU, 12 GiB memory, 20 GB disk",
 };
 

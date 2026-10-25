@@ -6,6 +6,7 @@ describe("INSTANCE_RESOURCES", () => {
   it("has the resources containerInstance starts a custom size with", () => {
     expect(INSTANCE_RESOURCES["custom-1"]).toEqual(containerInstance("custom-1"));
     expect(INSTANCE_RESOURCES["custom-2"]).toEqual(containerInstance("custom-2"));
+    expect(INSTANCE_RESOURCES["custom-3"]).toEqual(containerInstance("custom-3"));
   });
 });
 
@@ -39,6 +40,14 @@ describe("containerRates", () => {
     expect((rates.memory + rates.disk) * 3600).toBeCloseTo(0.03002, 5);
     expect(rates.cpu * 3600).toBeCloseTo(0.072, 5);
     expect(rates.memory).toBe(containerRates("custom-2").memory / 2);
+  });
+
+  it("prices custom-3's memory and disk at about 8.4 cents a running hour, its CPU at 21.6 cents a busy hour", () => {
+    const rates = containerRates("custom-3");
+
+    expect((rates.memory + rates.disk) * 3600).toBeCloseTo(0.08402, 5);
+    expect(rates.cpu * 3600).toBeCloseTo(0.216, 5);
+    expect(rates.memory).toBeCloseTo(containerRates("custom-1").memory * 3, 12);
   });
 
   it("prices standard-2's memory as custom-2's, with half its CPU", () => {

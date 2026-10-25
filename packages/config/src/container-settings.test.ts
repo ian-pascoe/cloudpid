@@ -82,12 +82,33 @@ describe("containerInstance", () => {
     expect(containerInstance("custom-2")).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
   });
 
-  it("gives every custom size at least the 3 GiB of memory per vCPU Cloudflare requires", () => {
-    for (const type of INSTANCE_TYPES) {
-      const { vcpu, memoryMib } = INSTANCE_RESOURCES[type];
+  it("maps custom-3 to 3 vCPU, 9 GiB memory and 12 GB disk", () => {
+    expect(containerInstance("custom-3")).toEqual({ vcpu: 3, memoryMib: 9216, diskMb: 12_000 });
+  });
 
-      if (type.startsWith("custom-")) expect(memoryMib).toBeGreaterThanOrEqual(vcpu * 3072);
+  it("keeps every custom size within Cloudflare's custom instance limits", () => {
+    for (const type of INSTANCE_TYPES) {
+      const { vcpu, memoryMib, diskMb } = INSTANCE_RESOURCES[type];
+
+      if (!type.startsWith("custom-")) continue;
+
+      // 1 to 4 vCPU, at most 12 GiB memory and 20 GB disk, at least 3 GiB memory per vCPU.
+      expect(vcpu).toBeGreaterThanOrEqual(1);
+      expect(vcpu).toBeLessThanOrEqual(4);
+      expect(memoryMib).toBeLessThanOrEqual(12_288);
+      expect(diskMb).toBeLessThanOrEqual(20_000);
+      expect(memoryMib).toBeGreaterThanOrEqual(vcpu * 3072);
     }
+  });
+
+  it("gives every custom size the same disk, so a snapshot or Build restores on any of them", () => {
+    const disks = new Set<number>();
+
+    for (const type of INSTANCE_TYPES) {
+      if (type.startsWith("custom-")) disks.add(INSTANCE_RESOURCES[type].diskMb);
+    }
+
+    expect([...disks]).toEqual([12_000]);
   });
 
   it("orders the sizes by memory, then vCPU", () => {
@@ -101,6 +122,7 @@ describe("containerInstance", () => {
       "standard-2",
       "custom-2",
       "standard-3",
+      "custom-3",
       "standard-4",
     ]);
     expect(compareInstances("custom-2", "custom-2")).toBe(0);
@@ -110,6 +132,7 @@ describe("containerInstance", () => {
     for (const type of INSTANCE_TYPES) expect(INSTANCE_DESCRIPTIONS[type]).not.toBe("");
     expect(INSTANCE_DESCRIPTIONS["custom-1"]).toBe("1 vCPU, 3 GiB memory, 12 GB disk");
     expect(INSTANCE_DESCRIPTIONS["custom-2"]).toBe("2 vCPU, 6 GiB memory, 12 GB disk");
+    expect(INSTANCE_DESCRIPTIONS["custom-3"]).toBe("3 vCPU, 9 GiB memory, 12 GB disk");
   });
 });
 
