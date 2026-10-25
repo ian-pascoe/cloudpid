@@ -4,15 +4,22 @@
 // the Repos, the Container settings a Build uses, the image) is neither the last good one nor under way, or once a day
 // to look at the Repos' default branches. What the Build object answers is recorded in the Registry, which hands the
 // last good Build to each new Workspace and shows where each stands (`listBuilds`).
-import { resolveContainerSettingsLeniently } from "@cloudpid/config";
+import { containerOverridesFrom, resolveContainerSettingsLeniently } from "@cloudpid/config";
 import type { BuildView, EnvironmentRepo } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { buildObjectName } from "../workspace/binding.ts";
-import { buildKey, type BuildState, buildWanted } from "../workspace/build-record.ts";
+import * as Result from "effect/Result";
+import { buildObjectName, testBuildObjectName } from "../workspace/binding.ts";
+import {
+  buildKey,
+  type BuildState,
+  buildWanted,
+  type TestBuildState,
+} from "../workspace/build-record.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
+import { writeEnvironmentSettings } from "./environment-settings.ts";
 import { noEnvironment, reason } from "./messages.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
 import type { Spares } from "./rpc.ts";
@@ -91,6 +98,46 @@ export const buildView = ({ build, status }: BuildRecord): BuildView => {
   }
 };
 
+/**
+ * What a Test Build is asked to try: any of the inputs to a Build's key, each replacing the Environment's saved one
+ * whole (the full list of Repos, the full map of variables). Not the size, idle time or Start Script, which a Build
+ * does not use.
+ */
+export type ProposedBuild = {
+  readonly repos?: ReadonlyArray<EnvironmentRepo> | undefined;
+  readonly variables?: Readonly<Record<string, string>> | undefined;
+  readonly setupScript?: string | undefined;
+  readonly toolchains?: string | undefined;
+  readonly ignore?: ReadonlyArray<string> | undefined;
+};
+
+/**
+ * The Environments' Test Builds (docs/spec.md → Builds → Test Builds), each made by the Environment's Test Build object
+ * (`testBuildObjectName`), one at a time, by the id of the call that asks for it. Each fails with why, in words.
+ */
+export type TestBuilds = {
+  /**
+   * Ask for Test Build `id` of `environment`'s saved Repos and settings with `proposed` replacing theirs, checked as
+   * the owner's save checks them; answers its state (the one asked for already, for an `id` asked for before). Refused
+   * while another Test Build of the Environment is under way.
+   */
+  readonly start: (input: {
+    readonly environment: string;
+    readonly id: string;
+    readonly proposed: ProposedBuild;
+  }) => Effect.Effect<TestBuildState, string>;
+  /** Test Build `id` of `environment`, or null when its object no longer holds it (another replaced it, or it was wiped). */
+  readonly state: (input: {
+    readonly environment: string;
+    readonly id: string;
+  }) => Effect.Effect<TestBuildState | null, string>;
+  /** Stop Test Build `id` of `environment`, if it is under way. */
+  readonly cancel: (input: {
+    readonly environment: string;
+    readonly id: string;
+  }) => Effect.Effect<void, string>;
+};
+
 /** The upkeep of the Environments' Builds (`buildUpkeep`). Only `rebuild` fails, with why. */
 export type Builds = {
   /** Keep every Environment's Build current. Once a run finds nothing to do or under way, this isolate rests a while. */
@@ -102,6 +149,8 @@ export type Builds = {
    * way already, which asks for nothing.
    */
   readonly rebuild: (environment: string) => Effect.Effect<"asked" | "underway", string>;
+  /** The Test Builds: Builds of proposed changes, which nothing records or starts from. */
+  readonly test: TestBuilds;
 };
 
 const sameJson = Schema.toEquivalence(Schema.Json);
@@ -122,7 +171,10 @@ export const buildUpkeep = (
     workspaces,
     spares,
   }: {
-    readonly workspaces: Pick<WorkspaceObjects, "buildState" | "startBuild" | "destroy">;
+    readonly workspaces: Pick<
+      WorkspaceObjects,
+      "buildState" | "startBuild" | "cancelBuild" | "destroy"
+    >;
     readonly spares: Pick<Spares, "of">;
   },
 ): Builds => {
@@ -258,5 +310,106 @@ export const buildUpkeep = (
 
         return asked === undefined ? "underway" : "asked";
       }),
+    test: testBuilds(registries, workspaces),
   };
 };
+
+/** A call to a Test Build object, failing with what went wrong in words. */
+const onTestObject = <A>(what: string, call: () => Promise<A>) =>
+  Effect.tryPromise({ try: call, catch: (cause) => `${what}: ${String(cause)}` });
+
+/** The Test Builds over the Registry and the Test Build objects (`testBuildObjectName`). */
+const testBuilds = (
+  registries: Cloudflare.DurableObject<Registry>,
+  workspaces: Pick<WorkspaceObjects, "buildState" | "startBuild" | "cancelBuild" | "destroy">,
+): TestBuilds => ({
+  start: ({ environment, id, proposed }) =>
+    Effect.gen(function* () {
+      const registry = registries.getByName(REGISTRY_NAME);
+      const [work] = yield* registry.buildWork({ environments: [environment] });
+
+      if (work === undefined) return yield* Effect.fail(noEnvironment(environment));
+
+      // The saved settings as they are read (what no longer resolves left out), the proposed fields over them, then
+      // checked as the owner's save checks them.
+      const saved = resolveContainerSettingsLeniently(work.settings).settings;
+
+      const written = writeEnvironmentSettings(
+        containerOverridesFrom({
+          ...saved,
+          ...(proposed.variables === undefined ? {} : { variables: proposed.variables }),
+          ...(proposed.setupScript === undefined ? {} : { setupScript: proposed.setupScript }),
+          ...(proposed.toolchains === undefined ? {} : { toolchains: proposed.toolchains }),
+          ...(proposed.ignore === undefined ? {} : { ignore: proposed.ignore }),
+        }),
+      );
+
+      if (Result.isFailure(written)) {
+        return yield* Effect.fail(`The proposed settings are refused: ${written.failure}`);
+      }
+
+      const repos = proposed.repos ?? work.repos;
+      const { settings, overrides } = written.success;
+
+      if (!buildWanted(repos, settings)) {
+        return yield* Effect.fail(
+          "With the proposed changes the environment has no repos, no Setup Script and no Toolchains: there is nothing to build",
+        );
+      }
+
+      const name = testBuildObjectName(environment);
+      const { image } = yield* onTestObject("Could not reach the Test Build", () =>
+        workspaces.buildState(name),
+      );
+
+      // Computed as a Build's is, for the object's record, and never compared with the Environment's.
+      const key = yield* Effect.promise(() =>
+        buildKey({ repos, settings, image, secrets: work.secrets }),
+      );
+
+      // As for a Build: those marked for it reach its Setup Scripts, and every one is searched for before its snapshot.
+      const secrets = yield* registry
+        .environmentSecrets({ environment })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.fail(`Could not open the environment's Secrets: ${reason(cause)}`),
+          ),
+        );
+
+      const state = yield* onTestObject("Could not ask for the Test Build", () =>
+        workspaces.startBuild(name, { key, repos, settings: overrides, test: id }, secrets),
+      );
+
+      // The Environment deleted meanwhile (its objects wiped) is not made anew by the request.
+      if ((yield* registry.getEnvironment({ id: environment })) === null) {
+        yield* onTestObject("Could not remove the Test Build", () => workspaces.destroy(name));
+
+        return yield* Effect.fail(noEnvironment(environment));
+      }
+
+      const { test } = state;
+
+      if (test?.id === id) return test;
+
+      return yield* Effect.fail(
+        test?.status === "building"
+          ? "Another Test Build of the environment is under way, and one runs at a time: wait for it to end, then ask again"
+          : "The Test Build was not begun",
+      );
+    }).pipe(
+      Effect.catchDefect((defect) => Effect.fail(`Could not ask for the Test Build: ${String(defect)}`)),
+    ),
+  state: ({ environment, id }) =>
+    Effect.map(
+      onTestObject("Could not reach the Test Build", () =>
+        workspaces.buildState(testBuildObjectName(environment)),
+      ),
+      ({ test }) => (test?.id === id ? test : null),
+    ),
+  cancel: ({ environment, id }) =>
+    Effect.asVoid(
+      onTestObject("Could not stop the Test Build", () =>
+        workspaces.cancelBuild(testBuildObjectName(environment), id),
+      ),
+    ),
+});

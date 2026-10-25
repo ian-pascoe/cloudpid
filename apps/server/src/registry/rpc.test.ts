@@ -35,7 +35,7 @@ import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { isRegistryRpc } from "../routes.ts";
 import type { ForkPlan } from "../session/fork.ts";
@@ -274,6 +274,23 @@ const fakeRegistries = () => {
 
       buildSecrets.set(name, secrets);
 
+      // A Test Build object's: one at a time, by the id of the call that asked.
+      if (request.test !== undefined) {
+        const held = buildStateOf(name);
+
+        if (held.test?.id === request.test || held.test?.status === "building") return held;
+
+        const tested: BuildState = {
+          ...held,
+          test: { id: request.test, key: request.key, startedAt: 50, status: "building" },
+        };
+
+        buildObjects.set(name, tested);
+        buildRequests.set(name, request);
+
+        return tested;
+      }
+
       const state: BuildState = {
         ...buildStateOf(name),
         progress: {
@@ -287,6 +304,22 @@ const fakeRegistries = () => {
       buildRequests.set(name, request);
 
       return state;
+    },
+    cancelBuild: async (name, id) => {
+      calls.push(`cancelBuild:${name}:${id}`);
+
+      const held = buildStateOf(name);
+
+      if (held.test?.id !== id || held.test.status !== "building") return held;
+
+      const cancelled: BuildState = {
+        ...held,
+        test: { ...held.test, status: "cancelled", finishedAt: 60 },
+      };
+
+      buildObjects.set(name, cancelled);
+
+      return cancelled;
     },
     destroy: (name) => {
       const result = workspaceCall("destroyWorkspace", name);
@@ -1671,9 +1704,11 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
     `destroyWorkspace:ws:${first.workspace}`,
     `deleteWorkspace:${first.workspace}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
     `deleteEnvironment:${id}`,
     // Again, for a Build asked for after the first wipe.
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
   ]);
   expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
   expect(Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.id)).toEqual([
@@ -1684,7 +1719,7 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
   ).toEqual([DEFAULT_ENVIRONMENT]);
 });
 
-it("deletes an Environment with no Workspaces: its Build object, then its record, then its Build object again", async () => {
+it("deletes an Environment with no Workspaces: its Build and Test Build objects, then its record, then those objects again", async () => {
   const fake = fakeRegistries();
   const id = await makeEnvironment(fake, "Empty");
 
@@ -1692,8 +1727,10 @@ it("deletes an Environment with no Workspaces: its Build object, then its record
 
   expect(lifecycle(fake)).toEqual([
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
     `deleteEnvironment:${id}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
   ]);
 });
 
@@ -2773,8 +2810,10 @@ it("deletes an Environment's spare Workspace with it: its record, then its objec
     `forgetSpare:${spare}`,
     `destroyWorkspace:ws:${spare}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
     `deleteEnvironment:${id}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
   ]);
 });
 
@@ -2935,6 +2974,149 @@ it("asks for a Build of an Environment with Toolchains only, and Rebuilds it", a
   expect(fake.calls).toContain(`startBuild:build:${environment}`);
 
   await call(fake, (registry) => registry.rebuildEnvironment({ environment }));
+});
+
+describe("a Test Build", () => {
+  /** An Environment with repo app and a Setup Script saved, its Build under way, and the upkeep's run done. */
+  const saved = async () => {
+    const fake = fakeRegistries();
+    const environment = await makeEnvironment(fake, "Cloudpid");
+
+    await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+    await call(fake, (registry) =>
+      registry.updateEnvironmentSettings({
+        environment,
+        overrides: { setupScript: "make deps", startScript: "make up", idleMinutes: 30 },
+      }),
+    );
+    await fake.runBackground();
+    fake.calls.length = 0;
+
+    return { fake, environment };
+  };
+
+  const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.result(effect));
+
+  it("asks the Test Build object for the saved settings with the proposed fields replaced, leaving the Build object alone", async () => {
+    const { fake, environment } = await saved();
+    const before = fake.buildObjects.get(`build:${environment}`);
+
+    const started = await run(
+      fake.buildUpkeep.test.start({
+        environment,
+        id: "s-1/7",
+        proposed: { setupScript: "exit 1", variables: { CI: "1" } },
+      }),
+    );
+
+    expect(started).toMatchObject({
+      _tag: "Success",
+      success: { id: "s-1/7", status: "building" },
+    });
+    // Nothing is recorded: the Registry's record of the Build is the Build object's.
+    expect(buildCalls(fake)).toEqual([
+      `buildState:test-build:${environment}`,
+      `startBuild:test-build:${environment}`,
+    ]);
+
+    const repos = [{ name: "app", url: "https://github.com/acme/app.git" }];
+    const settings = { setupScript: "exit 1", startScript: "make up", idleMinutes: 30, variables: { CI: "1" } };
+
+    expect(fake.buildRequests.get(`test-build:${environment}`)).toEqual({
+      key: await buildKey({
+        repos,
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
+        image: "img-1",
+      }),
+      repos,
+      settings,
+      test: "s-1/7",
+    });
+    // The saved settings and the Build object are as they were, and nothing was recorded.
+    expect(fake.overridesOf.get(environment)).toEqual({
+      setupScript: "make deps",
+      startScript: "make up",
+      idleMinutes: 30,
+    });
+    expect(fake.buildObjects.get(`build:${environment}`)).toEqual(before);
+    expect(fake.buildRecords.get(environment)?.status).toMatchObject({ status: "building" });
+  });
+
+  it("takes the proposed Repos as the whole list", async () => {
+    const { fake, environment } = await saved();
+    const repos = [{ name: "web", url: "https://github.com/acme/web.git" }];
+
+    await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: { repos } }));
+
+    expect(fake.buildRequests.get(`test-build:${environment}`)?.repos).toEqual(repos);
+  });
+
+  it("refuses proposed settings the owner's save refuses, and a change that leaves nothing to build", async () => {
+    const { fake, environment } = await saved();
+
+    expect(
+      await run(
+        fake.buildUpkeep.test.start({
+          environment,
+          id: "s-1/7",
+          proposed: { variables: { PATH: "/bin" } },
+        }),
+      ),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: expect.stringContaining("The proposed settings are refused: variables"),
+    });
+    expect(
+      await run(
+        fake.buildUpkeep.test.start({
+          environment,
+          id: "s-1/7",
+          proposed: { repos: [], setupScript: "" },
+        }),
+      ),
+    ).toMatchObject({ _tag: "Failure", failure: expect.stringContaining("nothing to build") });
+    expect(fake.calls).not.toContain(`startBuild:test-build:${environment}`);
+  });
+
+  it("is refused while another runs, and found again by its own id", async () => {
+    const { fake, environment } = await saved();
+
+    await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
+
+    expect(
+      await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} })),
+    ).toMatchObject({ _tag: "Success", success: { id: "s-1/7", status: "building" } });
+    expect(
+      await run(fake.buildUpkeep.test.start({ environment, id: "s-2/1", proposed: {} })),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: expect.stringContaining("Another Test Build of the environment is under way"),
+    });
+    expect(
+      await run(fake.buildUpkeep.test.state({ environment, id: "s-2/1" })),
+    ).toMatchObject({ _tag: "Success", success: null });
+  });
+
+  it("is cancelled through its object", async () => {
+    const { fake, environment } = await saved();
+
+    await run(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
+    await run(fake.buildUpkeep.test.cancel({ environment, id: "s-1/7" }));
+
+    expect(fake.calls).toContain(`cancelBuild:test-build:${environment}:s-1/7`);
+    expect(
+      await run(fake.buildUpkeep.test.state({ environment, id: "s-1/7" })),
+    ).toMatchObject({ _tag: "Success", success: { status: "cancelled" } });
+  });
+
+  it("refuses an Environment that is not there", async () => {
+    const fake = fakeRegistries();
+
+    expect(
+      await run(fake.buildUpkeep.test.start({ environment: "0000beef", id: "s-1/7", proposed: {} })),
+    ).toMatchObject({ _tag: "Failure" });
+    expect(fake.calls).not.toContain("startBuild:test-build:0000beef");
+  });
 });
 
 it("asks for a Build again when the settings a Build uses change, and not for a new idle time", async () => {

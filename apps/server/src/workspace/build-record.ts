@@ -45,7 +45,35 @@ export type BuildRequest = {
    * that Build is old), else just note that it looked.
    */
   readonly check?: boolean | undefined;
+  /**
+   * A Test Build (GLOSSARY.md), by the id of the call that asks for it: `repos` and `settings` are the proposed ones, and
+   * its outcome is answered (`BuildState.test`) instead of kept as the last good Build. It is made by the Environment's
+   * Test Build object (`testBuildObjectName`), never by its Build object, so a Build under way goes on beside it.
+   */
+  readonly test?: string | undefined;
 };
+
+/**
+ * A Test Build's state, as its object answers it to the call that asked for it (by `id`): under way, or how it ended.
+ * Its snapshot is not kept, so no Workspace or spare can start from it. Times are epoch milliseconds.
+ */
+export type TestBuildState = {
+  readonly id: string;
+  /** The key its proposed Repos and settings give: computed, never compared with the Environment's. */
+  readonly key: string;
+  readonly startedAt: number;
+} & (
+  | { readonly status: "building" }
+  | { readonly status: "succeeded"; readonly finishedAt: number }
+  | {
+      readonly status: "failed";
+      readonly finishedAt: number;
+      /** Why, as a Build's failure says it: the failing step with the end of its output, redacted. */
+      readonly reason: string;
+    }
+  /** Stopped by its call (the owner's Stop). */
+  | { readonly status: "cancelled"; readonly finishedAt: number }
+);
 
 /** The Build in progress (`checking`: the daily look, which is not a Build yet), or the last that failed. */
 export type BuildProgress =
@@ -70,6 +98,8 @@ export type BuildState = {
   readonly progress: BuildProgress | null;
   /** When the last Build or daily look ended, good or not: the next look is due a day after. */
   readonly attemptedAt: number | null;
+  /** A Test Build object's latest Test Build (absent: none was asked for), kept until the next replaces it. */
+  readonly test?: TestBuildState | undefined;
 };
 
 /** What a Build's key covers, besides the image: the Container settings a Build depends on. */

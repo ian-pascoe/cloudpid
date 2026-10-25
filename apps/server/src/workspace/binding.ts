@@ -30,3 +30,9 @@ export const workspaceObjectName = (id: string): string => `ws:${id}`;
  * own, whose name no Workspace's can be (`ws:` and the eight hex digits of a `WorkspaceId`).
  */
 export const buildObjectName = (environment: string): string => `build:${environment}`;
+
+/**
+ * The name of the Durable Object that makes Environment `id`'s Test Builds (docs/spec.md → Builds → Test Builds): a
+ * Workspace DO of its own beside the Build object, so a Test Build never waits for a Build or holds one up.
+ */
+export const testBuildObjectName = (environment: string): string => `test-build:${environment}`;

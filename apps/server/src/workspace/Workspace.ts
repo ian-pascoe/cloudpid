@@ -719,9 +719,20 @@ export class Workspace extends ContainerHost {
     return this.#builds.request(request);
   }
 
-  /** This Build object's last good Build, the one in progress or the last failure, and the image a launch would run now. */
+  /**
+   * This Build object's last good Build, the one in progress or the last failure, and the image a launch would run now;
+   * a Test Build object's latest Test Build.
+   */
   buildState(): Promise<BuildState> {
     return this.#builds.state();
+  }
+
+  /**
+   * Stop Test Build `id` (a Test Build object's, `testBuildObjectName`: its call was stopped): one under way has its
+   * Container stopped, and one that waits never begins (`BuildRunner.cancel`).
+   */
+  cancelBuild(id: string): Promise<BuildState> {
+    return this.#builds.cancel(id);
   }
 
   /**

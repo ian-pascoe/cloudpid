@@ -488,6 +488,222 @@ describe("a Build cut off by an eviction", () => {
   });
 });
 
+describe("a Test Build", () => {
+  const test = (overrides: Partial<BuildRequest> = {}) =>
+    request({ key: "key-test", test: "s-1/7", ...overrides });
+
+  /** Run the alarm and wait for the Test Build it began to end. */
+  const ended = async (builds: BuildRunner, fake: Fake) => {
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.stored?.test?.status).not.toBe("building");
+    });
+  };
+
+  it("is made as a Build is, and answers its outcome without recording it as the last good Build", async () => {
+    const { fake, builds } = open();
+
+    fake.answers = GOOD_COMMITS;
+
+    const started = await builds.request(test());
+
+    expect(started.test).toEqual({
+      id: "s-1/7",
+      status: "building",
+      key: "key-test",
+      startedAt: fake.now,
+    });
+    expect(started.progress).toBeNull();
+    expect(fake.wakes).toEqual([fake.now]);
+
+    const startedAt = fake.now;
+
+    fake.now += 90_000;
+    await ended(builds, fake);
+
+    expect(fake.steps).toEqual([
+      "clone",
+      "environment-setup",
+      "setup:app",
+      "setup:api",
+      "commits",
+      "cleanup",
+      "snapshot",
+      "stop",
+    ]);
+
+    const state = await builds.state();
+
+    expect(state.last).toBeNull();
+    expect(state.progress).toBeNull();
+    expect(state.test).toEqual({
+      id: "s-1/7",
+      status: "succeeded",
+      key: "key-test",
+      startedAt,
+      finishedAt: fake.now,
+    });
+    // Its snapshot is not kept: nothing the object stores names it.
+    expect(JSON.stringify(fake.stored)).not.toContain("snap-1");
+    expect(fake.stored?.pending).toBeNull();
+    expect(fake.holds).toBe(0);
+  });
+
+  it("fails with the failing script's output, redacted, and leaves the last good Build as it was", async () => {
+    const { fake, builds, build } = open();
+
+    fake.answers = GOOD_COMMITS;
+    await builds.request(request());
+    await build();
+
+    const before = await builds.state();
+
+    fake.answers = {
+      ...GOOD_COMMITS,
+      "environment-setup": { exitCode: 1, output: `apt: not found ${TOKEN}\n` },
+    };
+    fake.steps = [];
+    await builds.request(test({ settings: { setupScript: "apt install nothing" } }));
+    await ended(builds, fake);
+
+    expect(fake.steps).toEqual(["clone", "environment-setup", "stop"]);
+
+    const state = await builds.state();
+
+    expect(state.test).toMatchObject({
+      status: "failed",
+      reason: "The environment's Setup Script failed (exit 1): apt: not found ***",
+    });
+    expect(state.last).toEqual(before.last);
+    expect(state.progress).toEqual(before.progress);
+    expect(state.attemptedAt).toBe(before.attemptedAt);
+  });
+
+  it("is found again by a request of the same id, and refuses another while it runs", async () => {
+    const { fake, builds } = open();
+
+    fake.gate = new Promise<void>(() => undefined);
+    await builds.request(test());
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.steps).toEqual(["clone"]);
+    });
+
+    // The rerun of the same call: the same Test Build, not another.
+    expect((await builds.request(test())).test).toMatchObject({
+      id: "s-1/7",
+      status: "building",
+    });
+
+    const other = await builds.request(test({ test: "s-2/3", key: "key-other" }));
+
+    expect(other.test).toMatchObject({ id: "s-1/7", status: "building" });
+    expect(fake.stored?.pending?.test).toBe("s-1/7");
+    expect(fake.wakes).toHaveLength(1);
+  });
+
+  it("answers a finished one to the rerun of its call", async () => {
+    const { fake, builds } = open();
+
+    fake.answers = GOOD_COMMITS;
+    await builds.request(test());
+    await ended(builds, fake);
+    fake.steps = [];
+
+    expect((await builds.request(test())).test).toMatchObject({
+      id: "s-1/7",
+      status: "succeeded",
+    });
+    expect(fake.steps).toEqual([]);
+    expect(fake.stored?.pending).toBeNull();
+  });
+
+  it("is stopped by a cancel: the Container stops, no step runs after it, and the next one may begin", async () => {
+    const { fake, builds } = open();
+    let release: () => void = () => undefined;
+
+    fake.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await builds.request(test());
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.steps).toEqual(["clone"]);
+    });
+
+    const cancelled = await builds.cancel("s-1/7");
+
+    expect(cancelled.test).toMatchObject({ id: "s-1/7", status: "cancelled" });
+    expect(fake.steps).toEqual(["clone", "stop"]);
+
+    // The clone answers after the stop: no later step runs.
+    release();
+    await vi.waitFor(() => {
+      expect(fake.holds).toBe(0);
+    });
+    expect(fake.steps).toEqual(["clone", "stop", "stop"]);
+    expect(fake.stored?.test).toMatchObject({ status: "cancelled" });
+
+    fake.gate = undefined;
+    fake.steps = [];
+    await builds.request(test({ test: "s-1/8" }));
+    await ended(builds, fake);
+    expect(fake.stored?.test).toMatchObject({ id: "s-1/8", status: "succeeded" });
+  });
+
+  it("is cancelled before it begins without a step", async () => {
+    const { fake, builds } = open();
+
+    await builds.request(test());
+    await builds.cancel("s-1/7");
+    await builds.alarm();
+
+    expect(fake.steps).toEqual([]);
+    expect(fake.stored?.pending).toBeNull();
+    expect(fake.stored?.test).toMatchObject({ status: "cancelled" });
+  });
+
+  it("ignores a cancel of another id", async () => {
+    const { fake, builds } = open();
+
+    await builds.request(test());
+    await builds.cancel("s-2/3");
+
+    expect(fake.stored?.test).toMatchObject({ id: "s-1/7", status: "building" });
+    expect(fake.stored?.pending?.test).toBe("s-1/7");
+  });
+
+  it("cut off by evictions too often is reported as failed", async () => {
+    const { fake, builds } = open();
+
+    await builds.request(test());
+
+    const stored = fake.stored;
+    const pending = stored?.pending;
+
+    if (stored === undefined || pending == null) throw new Error("Expected a waiting request");
+
+    fake.stored = { ...stored, pending: { ...pending, attempts: BUILD_ATTEMPTS } };
+    await builds.alarm();
+
+    expect(fake.steps).toEqual([]);
+    expect(fake.stored?.pending).toBeNull();
+    expect(fake.stored?.progress).toBeNull();
+    expect(fake.stored?.test).toMatchObject({ status: "failed", id: "s-1/7" });
+  });
+
+  it("fails at once where the Container takes no snapshots (alchemy dev)", async () => {
+    const { fake, builds } = open(false);
+
+    expect((await builds.request(test())).test).toMatchObject({
+      id: "s-1/7",
+      status: "failed",
+    });
+    expect(fake.stored?.progress).toBeNull();
+    expect(fake.wakes).toEqual([]);
+  });
+});
+
 describe("a Build's key", () => {
   const repos = [
     { name: "app", url: "https://github.com/acme/app.git" },
