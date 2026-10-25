@@ -127,7 +127,7 @@ _Avoid_: Feedback, comment batch, code review (for the message)
 ## Environments, Repos and Workspaces
 
 **Environment**:
-What the owner sets up for Sessions to work in, under a name of their choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Container settings, Setup and Start Scripts). Every Workspace is made from one.
+What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Container settings, Setup and Start Scripts). Every Workspace is made from one.
 _Avoid_: Project, template, Machine, sandbox
 
 **Repo**:
@@ -146,6 +146,10 @@ _Avoid_: Pool, warm Workspace, standby
 An Environment's prepared starting point for its Workspaces' Containers: a Snapshot with its Toolchains installed and what its Setup Scripts download (packages, images) already there. It is made again when the Environment changes or a default branch moves, and the last good one stays in use while a new one fails.
 _Avoid_: Image, template, cache
 
+**Test Build**:
+A Build the agent makes from proposed Environment changes before saving them, to check that they work. No Workspace starts from it, and it never replaces the Environment's last good Build.
+_Avoid_: Dry run, preview Build, draft Build
+
 **Workspace removal**:
 Deleting a Workspace with its Sessions, files and Container. What it pushed stays on the remote; its uncommitted changes and unpushed commits are lost.
 _Avoid_: Cleanup (for the owner's action), reset
@@ -155,6 +159,10 @@ _Avoid_: Cleanup (for the owner's action), reset
 **Container restart**:
 Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from its Environment's Build and runs its Start Scripts again; the files and Sessions stay. The owner's, from the Environments page. The agent's (`restart_container`, for a Container that no longer answers) keeps the Snapshot unless asked for a fresh one, so the next Container starts from it.
 _Avoid_: Reset (for the Container alone), reboot
+
+**Container resize**:
+The agent restarting its Workspace's Container at another size, up to its Environment's size limit, for that Container alone: the next Container after the idle stop has the Environment's size again. Changing the Environment's size is not a Container resize.
+_Avoid_: Scaling, upgrade
 
 **Backend**:
 A place a Workspace runs commands: the Worker Shell or the Container.
@@ -221,7 +229,7 @@ A Web Push to the owner's subscribed devices when a Session's Run ends, fails, o
 _Avoid_: Alert, push message (for the user-facing thing)
 
 **Settings**:
-The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options). The overrides the user saves live in the Registry, and each Session reads them before its next request.
+The typed configuration with defaults (default model and thinking level, Roles, compaction, offered tools, spend limit, extension options). The overrides the owner or the agent saves live in the Registry, and each Session reads them before its next request.
 _Avoid_: Config, preferences
 
 **Usage**:
@@ -231,6 +239,20 @@ _Avoid_: Billing, tokens (for the whole figure)
 **Spend limit**:
 The most a Session may spend, in US dollars, set in the Settings (off by default). A Session at its limit refuses its next model request and ends the Run unanswered, with a message that says why; raising or clearing the limit lets the next prompt go on.
 _Avoid_: Budget, quota, cap
+
+## The agent's changes to its harness
+
+**Agent change**:
+A change the agent makes to an Environment or to the Settings, recorded with when, the Session, the reason and the values before and after, so the owner can see it and revert it.
+_Avoid_: Audit entry, self-modification (for one change), edit
+
+**Limit**:
+A setting that bounds what the agent may spend or start: the Spend limit, an Environment's size limit, the subagent depth. The agent changes one only with the owner's Approval.
+_Avoid_: Guardrail, ceiling, cap, quota
+
+**Approval**:
+The owner's yes or no to an Agent change that waits for it: a change to a Limit, or one no revert can undo (deleting an Environment or a kept Secret).
+_Avoid_: Confirmation, permission, consent
 
 ## Credentials and the browser
 
