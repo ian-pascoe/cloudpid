@@ -850,7 +850,7 @@ const setupSandbox = () => {
   const repo = (name: string, script?: string) => {
     const dir = join(root, ...name.split("/"));
 
-    mkdirSync(join(dir, ".agents"), { recursive: true });
+    mkdirSync(join(dir, ".cloudpid"), { recursive: true });
 
     if (script !== undefined) writeFileSync(join(dir, SETUP_SCRIPT), script);
 

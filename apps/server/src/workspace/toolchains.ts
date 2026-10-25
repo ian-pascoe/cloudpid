@@ -6,14 +6,14 @@
 //   Workspace's files to the Container (which a command is always preceded by) and before the command itself. A command
 //   that waits for a bootstrap that failed starts with a note on stderr saying so, and a command killed while it waits
 //   is not run.
-// - Once the Toolchains are installed, the bootstrap runs each repo's Setup Script (`.agents/setup.sh`) that is due: one
+// - Once the Toolchains are installed, the bootstrap runs each repo's Setup Script (`.cloudpid/setup.sh`) that is due: one
 //   whose content has not succeeded on this Container's disk yet. Each is an exec of its own, bounded by 15 minutes. A
 //   failed or stopped one does not hold commands back: the first command that starts after it gets a note carrying the
 //   end of its output, later ones a pointer to it, and it is due again at the next Container start. The Environment's
 //   own Setup Script, from its Container settings, runs first, in `/workspace`. The Setup Scripts, and no other script
 //   or command, get the Environment's Secrets marked for the Build, as `$PI_SECRET_<NAME>`, from the Workspace's copy.
 // - Then, after the hook that snapshots the disk (so no service is writing to it meanwhile), the Start Scripts run: the
-//   Environment's, then each repo's `.agents/start.sh`, at every Container start, each bounded by 5 minutes and
+//   Environment's, then each repo's `.cloudpid/start.sh`, at every Container start, each bounded by 5 minutes and
 //   reported like a Setup Script.
 // - Every command's environment carries the Environment's variables, under mise's settings and the GitHub token
 //   (`toolchainEnv`), under what the caller passes, and the token and the Environment's kept Secrets are taken out of

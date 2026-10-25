@@ -26,7 +26,8 @@ const encoder = new TextEncoder();
 const isBootstrap = (input: ExecInput) => input.source.includes("has_mise_config");
 
 /** Whether `input` lists the due Setup Scripts. */
-const isSetupList = (input: ExecInput) => input.source.includes("/.agents/setup.sh ] || continue");
+const isSetupList = (input: ExecInput) =>
+  input.source.includes("/.cloudpid/setup.sh ] || continue");
 
 /** Whether `input` runs a script of the bootstrap's own, bounded in time (a command's note may quote one's output). */
 const isScriptRun = (input: ExecInput) =>
@@ -37,7 +38,7 @@ const isSetupRun = (input: ExecInput) =>
   isScriptRun(input) && input.source.includes("Setup Script ran past its time");
 
 /** Whether `input` lists the repos' Start Scripts. */
-const isStartList = (input: ExecInput) => input.source.includes("/.agents/start.sh ] && printf");
+const isStartList = (input: ExecInput) => input.source.includes("/.cloudpid/start.sh ] && printf");
 
 /** Whether `input` runs a Start Script. */
 const isStartRun = (input: ExecInput) =>
@@ -756,7 +757,7 @@ describe("the Setup Scripts", () => {
       "/workspace",
       "ls node_modules",
     ]);
-    expect(container.execs.filter(isSetupRun)[0]?.source).toContain(".agents/setup.sh");
+    expect(container.execs.filter(isSetupRun)[0]?.source).toContain(".cloudpid/setup.sh");
   });
 
   it("are given a command's environment, the token included, and a quarter of an hour", async () => {
@@ -858,11 +859,11 @@ describe("the Setup Scripts", () => {
     expect(runs(container.execs)).toEqual(["/workspace/a", "/workspace/b"]);
     expect(command?.source).toMatch(/^printf .*>&2\npnpm test$/s);
     expect(command?.source).toContain(
-      "the Setup Script /workspace/a/.agents/setup.sh failed (exit status 1)",
+      "the Setup Script /workspace/a/.cloudpid/setup.sh failed (exit status 1)",
     );
     expect(command?.source).toContain("ERR_PNPM_FETCH (***)");
     expect(command?.source).not.toContain("x".repeat(2_001));
-    expect(command?.source).not.toContain("/workspace/b/.agents");
+    expect(command?.source).not.toContain("/workspace/b/.cloudpid");
     expect(command?.source).not.toContain("ghp_secret");
     expect(warnings.join("\n")).toContain("ERR_PNPM_FETCH");
     expect(warnings.join("\n")).not.toContain("ghp_secret");
@@ -931,7 +932,7 @@ describe("the Setup Scripts", () => {
 
     expect(runs(container.execs)).toEqual(["/workspace/a"]);
     expect(later?.source).toMatch(/\nb$/);
-    expect(later?.source).toContain("Setup Script (.agents/setup.sh) of /workspace/a failed");
+    expect(later?.source).toContain("Setup Script (.cloudpid/setup.sh) of /workspace/a failed");
     expect(later?.source).not.toContain("ERR_PNPM_FETCH");
   });
 
@@ -1268,7 +1269,7 @@ describe("the Start Scripts", () => {
     ).toEqual(["/workspace", "/workspace", "/workspace/a", "/workspace/b", "pnpm dev"]);
     expect(container.execs.filter(isStartRun)[0]?.source).toContain(ENVIRONMENT_START_FILE);
     expect(container.execs.filter(isStartRun)[0]?.source).toContain(btoa("docker start db\n"));
-    expect(container.execs.filter(isStartRun)[1]?.source).toContain(".agents/start.sh");
+    expect(container.execs.filter(isStartRun)[1]?.source).toContain(".cloudpid/start.sh");
   });
 
   it("are bounded by five minutes, and do not count as an install", async () => {
@@ -1334,15 +1335,15 @@ describe("the Start Scripts", () => {
     );
     expect(first?.source).toContain("docker: not running");
     expect(first?.source).toContain(
-      "the Start Script /workspace/a/.agents/start.sh failed (exit status 1)",
+      "the Start Script /workspace/a/.cloudpid/start.sh failed (exit status 1)",
     );
     expect(first?.source).toContain("port 5432 in use (***)");
-    expect(first?.source).not.toContain("/workspace/b/.agents");
+    expect(first?.source).not.toContain("/workspace/b/.cloudpid");
     expect(first?.source).toMatch(/\na$/);
     expect(unquoted(second?.source)).toContain(
       "the Environment's Start Script failed at this Container's start",
     );
-    expect(second?.source).toContain("Start Script (.agents/start.sh) of /workspace/a failed");
+    expect(second?.source).toContain("Start Script (.cloudpid/start.sh) of /workspace/a failed");
     expect(second?.source).not.toContain("port 5432");
     expect(warnings.join("\n")).toContain("port 5432 in use (***)");
   });
@@ -1362,8 +1363,8 @@ describe("the Start Scripts", () => {
 
     const [command] = commands(container.execs);
 
-    expect(command?.source).toContain("Setup Script /workspace/a/.agents/setup.sh failed");
-    expect(command?.source).toContain("Start Script /workspace/a/.agents/start.sh failed");
+    expect(command?.source).toContain("Setup Script /workspace/a/.cloudpid/setup.sh failed");
+    expect(command?.source).toContain("Start Script /workspace/a/.cloudpid/start.sh failed");
   });
 
   it("say so when one ran past its time and was stopped", async () => {
