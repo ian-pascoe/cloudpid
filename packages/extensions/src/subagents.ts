@@ -7,9 +7,11 @@ import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { currentOptions, type SubagentSettings } from "./subagents/options.ts";
-import { Anchor, Reporter, WaitTask } from "./subagents/tasks.ts";
+import { Anchor, reporterWith, SubagentReporter, WaitTask } from "./subagents/tasks.ts";
 import { coordinatorTools } from "./subagents/tools.ts";
+import { handBackLine, SubagentWorkspaces } from "./subagents/workspaces.ts";
 
 export const extensionName = "subagents";
 
@@ -26,11 +28,25 @@ export {
 
 export {
   type AgentRecord,
+  type AgentWorkspace,
+  conversationWorkspace,
   EMPTY_STATE as EMPTY_SUBAGENTS_STATE,
   isSessionBranch,
   SubagentsDoc,
   type SubagentsState,
+  workspaceOf,
 } from "./subagents/state.ts";
+
+export {
+  DEFAULT_MAX_SUBAGENT_WORKSPACES,
+  describeWork,
+  type RepoWorkState,
+  type SubagentWorkspaceHost,
+  type SubagentWorkspaceMade,
+  type SubagentWorkspaceRequest,
+  SubagentWorkspaces,
+  unpushedWork,
+} from "./subagents/workspaces.ts";
 
 export { isAgentConversation, type OwnerHarness, stopConversation } from "./subagents/owner.ts";
 
@@ -63,15 +79,29 @@ const Roles = effectSection("subagent_roles", (input) =>
 
 /**
  * The `subagents` extension. Its task definitions come with it, so a restarted Session resumes pending turns and waits
- * once it installs the extension again. Reads its options from `SubagentSettings` at each call.
+ * once it installs the extension again. Reads its options from `SubagentSettings` at each call. Makes, reads and removes
+ * Subagent Workspaces through `SubagentWorkspaces` when the host provides it; without it, `workspace: "new"` is refused.
  */
-export const Subagents: Effect.Effect<Extension, never, SubagentSettings> = Effect.map(
-  Effect.all([coordinatorTools, Roles]),
-  ([tools, roles]) =>
-    defineExtension({
+export const Subagents: Effect.Effect<Extension, never, SubagentSettings> = Effect.gen(
+  function* () {
+    const workspaces = yield* Effect.serviceOption(SubagentWorkspaces);
+
+    // A turn of an agent with a Workspace of its own ends with its branch and what it has not pushed.
+    const reporter = reporterWith((agent) =>
+      Option.isNone(workspaces) || agent.workspace === undefined
+        ? Promise.resolve(undefined)
+        : handBackLine(workspaces.value, agent.workspace),
+    );
+
+    const [tools, roles] = yield* Effect.all([coordinatorTools, Roles]).pipe(
+      Effect.provideService(SubagentReporter, reporter),
+    );
+
+    return defineExtension({
       name: extensionName,
       tools,
       sections: [roles],
-      tasks: [Anchor, Reporter, WaitTask],
-    }),
+      tasks: [Anchor, reporter, WaitTask],
+    });
+  },
 );

@@ -138,6 +138,11 @@ export const WorkspaceRecord = Schema.Struct({
   /** Where its Sessions work: its one repo's clone, or `/workspace` (`workspaceDirectory`). */
   directory: Schema.String,
   createdAt: Schema.Finite,
+  /**
+   * For a Subagent Workspace (GLOSSARY.md): the Session and the subagent (its canonical ID) it was made for. Absent for a
+   * Workspace Sessions are started in.
+   */
+  subagent: Schema.optionalKey(Schema.Struct({ session: Schema.String, agent: Schema.String })),
 });
 
 export type WorkspaceRecord = typeof WorkspaceRecord.Type;

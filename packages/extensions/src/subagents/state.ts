@@ -60,6 +60,22 @@ export type Turn = {
   answer: EntryId | null;
   error: string | null;
   delivery: Delivery | null;
+  /**
+   * For an agent with a Subagent Workspace of its own: what the turn's report ends with, its Workspace's branch and what
+   * it has not pushed as the turn settled (`handBackLine`). Absent for any other.
+   */
+  handBack?: string;
+};
+
+/**
+ * A Subagent Workspace (GLOSSARY.md), as its agent's record keeps it: the Workspace's id and branch, and where the
+ * agent's conversation works, the Workspace's Durable Object (`object`) and its directory: its Placement.
+ */
+export type AgentWorkspace = {
+  id: string;
+  branch: string;
+  object: string;
+  directory: string;
 };
 
 export type AgentRecord = {
@@ -80,6 +96,11 @@ export type AgentRecord = {
   nextTurn: number;
   /** The newest turns, oldest first. */
   turns: Turn[];
+  /**
+   * The Subagent Workspace the agent was started in (`workspace: "new"`), which its conversation's tools use. Absent for
+   * an agent that works in its parent's Workspace.
+   */
+  workspace?: AgentWorkspace;
 };
 
 /** What a `subagent_wait` returns. */
@@ -169,6 +190,28 @@ export const reportConversationOf = (
   return agent.parent === "root" && agent.origin !== undefined
     ? agent.origin
     : conversationOf(state, agent.parent);
+};
+
+/**
+ * The Subagent Workspace agent `id` works in: its own, else the nearest ancestor's that has one. Undefined for the root
+ * agent, and for an agent that works in the Session's Workspace.
+ */
+export const workspaceOf = (state: SubagentsState, id: string): AgentWorkspace | undefined => {
+  for (let agent = state.agents[id]; agent !== undefined; agent = state.agents[agent.parent]) {
+    if (agent.workspace !== undefined) return agent.workspace;
+  }
+
+  return undefined;
+};
+
+/** The Subagent Workspace conversation `conversationId` works in (`workspaceOf` its agent), if any. */
+export const conversationWorkspace = (
+  state: SubagentsState,
+  conversationId: ConversationId,
+): AgentWorkspace | undefined => {
+  const agent = agentOf(state, conversationId);
+
+  return agent === undefined ? undefined : workspaceOf(state, agent);
 };
 
 /** The direct children of `id`, oldest first. */

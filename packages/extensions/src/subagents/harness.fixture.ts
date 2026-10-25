@@ -32,8 +32,70 @@ import {
   Subagents,
   type SubagentOptions,
   SubagentsDoc,
+  type SubagentWorkspaceHost,
+  SubagentWorkspaces,
 } from "../subagents.ts";
-import { EMPTY_STATE } from "./state.ts";
+import { type AgentWorkspace, EMPTY_STATE } from "./state.ts";
+import type { RepoWorkState, SubagentWorkspaceRequest } from "./workspaces.ts";
+
+/**
+ * Subagent Workspaces kept in memory: each made on `cloudpid/<id>` (or the branch asked for), with what each has not
+ * pushed set by the test (`work`), and those removed. `refuse` makes the next `create` reject with its message.
+ */
+export const fakeSubagentWorkspaces = () => {
+  const requests: SubagentWorkspaceRequest[] = [];
+  const made = new Map<string, AgentWorkspace>();
+  const work = new Map<string, RepoWorkState[]>();
+  const removed: string[] = [];
+  let refusal: string | undefined;
+  let warnings: string[] = [];
+
+  const host: SubagentWorkspaceHost = {
+    create: async (request) => {
+      requests.push(request);
+
+      if (refusal !== undefined) throw new Error(refusal);
+
+      const known = made.get(request.agent);
+
+      if (known !== undefined) return { workspace: known, warnings };
+
+      const id = `0000000${made.size + 1}`;
+
+      const workspace: AgentWorkspace = {
+        id,
+        branch: request.branch ?? `cloudpid/${id}`,
+        object: `ws:${id}`,
+        directory: "/workspace/app",
+      };
+
+      made.set(request.agent, workspace);
+
+      return { workspace, warnings };
+    },
+    workState: async (workspace) =>
+      work.get(workspace.id) ?? [
+        { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: true },
+      ],
+    remove: async (workspace) => {
+      removed.push(workspace.id);
+    },
+  };
+
+  return {
+    host,
+    requests,
+    made,
+    work,
+    removed,
+    refuse: (message: string | undefined) => {
+      refusal = message;
+    },
+    warn: (next: string[]) => {
+      warnings = next;
+    },
+  };
+};
 
 export const context = BACKGROUND_CONTEXT;
 
@@ -115,6 +177,8 @@ export const openSubagentHarness = async (
   options: Partial<SubagentOptions> = {},
   /** Extensions installed beside the subagents and the stand-in coding tools. */
   extensions: readonly Extension[] = [],
+  /** The Session's Subagent Workspaces; without them `workspace: "new"` is refused. */
+  workspaces?: SubagentWorkspaceHost,
 ) => {
   const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-small" }] });
   const models = createModels();
@@ -148,7 +212,12 @@ export const openSubagentHarness = async (
   );
 
   const subagents = await Effect.runPromise(
-    Effect.provide(Subagents, defaultSubagentSettings(options)),
+    Effect.provide(
+      workspaces === undefined
+        ? Subagents
+        : Subagents.pipe(Effect.provideService(SubagentWorkspaces, workspaces)),
+      defaultSubagentSettings(options),
+    ),
   );
 
   registry.install(Coding);

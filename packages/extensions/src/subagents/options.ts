@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./workspaces.ts";
 
 /** A model role: its model, and the hint that tells an agent when to pick it. */
 export type SubagentRole = { readonly model: ModelRef; readonly hint: string };
@@ -25,6 +26,11 @@ export type SubagentOptions = {
   readonly roles: Readonly<Record<string, SubagentRole>>;
   /** Subagent levels allowed below the root: `1` permits root children, `2` grandchildren too. */
   readonly maxSubagentDepth: number;
+  /**
+   * The Subagent Workspace limit (GLOSSARY.md → Limit): how many Subagent Workspaces one Session may have at once, `0`
+   * for none.
+   */
+  readonly maxSubagentWorkspaces: number;
   readonly toolsets: Toolsets;
 };
 
@@ -57,6 +63,7 @@ export const SUBAGENT_TOOLSET_OPTIONS: ReadonlyArray<string> = [
 /** The extension's own options in the settings' `extensions.subagents`, each optional. */
 const ExtensionOptions = Schema.Struct({
   maxSubagentDepth: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+  maxSubagentWorkspaces: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   baseToolset: Schema.optionalKey(Patterns),
   readToolset: Schema.optionalKey(Patterns),
   modifyToolset: Schema.optionalKey(Patterns),
@@ -81,6 +88,7 @@ export const subagentOptions = (
   return {
     roles,
     maxSubagentDepth: decoded.maxSubagentDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH,
+    maxSubagentWorkspaces: decoded.maxSubagentWorkspaces ?? DEFAULT_MAX_SUBAGENT_WORKSPACES,
     toolsets: {
       baseToolset: decoded.baseToolset ?? DEFAULT_TOOLSETS.baseToolset,
       readToolset: decoded.readToolset ?? DEFAULT_TOOLSETS.readToolset,

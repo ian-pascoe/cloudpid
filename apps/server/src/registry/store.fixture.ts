@@ -45,6 +45,8 @@ import {
   type SessionStatus,
   type SpareUpkeep,
   type StoredWorkspaceChoice,
+  type SubagentWorkspaceRefusal,
+  type SubagentWorkspaceRequest,
   type WorkspaceRecord,
   type WorkspaceSetup,
 } from "./store.ts";
@@ -73,6 +75,17 @@ export class TestRegistry extends DurableObject {
 
   getSession(id: string): SessionRecord | null {
     return this.#store.getSession(id);
+  }
+
+  createSubagentWorkspace(
+    input: SubagentWorkspaceRequest,
+    now: number,
+  ): WorkspaceRecord | SubagentWorkspaceRefusal {
+    return this.#store.createSubagentWorkspace(input, now);
+  }
+
+  listSubagentWorkspaces(session: string): WorkspaceRecord[] {
+    return this.#store.listSubagentWorkspaces(session);
   }
 
   listSessions(): SessionRecord[] {

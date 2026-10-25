@@ -69,7 +69,33 @@ export type WorkspaceRecord = {
   /** Where its Sessions work: `workspaceDirectory(repos)`. */
   readonly directory: string;
   readonly createdAt: number;
+  /** For a Subagent Workspace: the Session and the subagent it was made for. Absent for any other. */
+  readonly subagent?: SubagentOwner;
 };
+
+/** Whose a Subagent Workspace is (GLOSSARY.md → Subagent Workspace): a Session's, made for one of its subagents. */
+export type SubagentOwner = { readonly session: string; readonly agent: string };
+
+/**
+ * A Subagent Workspace asked for (`createSubagentWorkspace`): its id unless the Environment's spare is taken, the Session
+ * and subagent it is for, its branch (null: `cloudpid/<id>` of the Workspace it gets) and base, and how many the Session
+ * may have at once (the Subagent Workspace limit).
+ */
+export type SubagentWorkspaceRequest = SubagentOwner & {
+  readonly id: string;
+  readonly branch: string | null;
+  readonly base: string | null;
+  readonly limit: number;
+};
+
+/**
+ * Why the store refused a Subagent Workspace: its Session is not listed, the Session has as many as the limit allows
+ * (`count`), or the branch is another Workspace's of the Environment.
+ */
+export type SubagentWorkspaceRefusal =
+  | { readonly refused: "no-session" }
+  | { readonly refused: "limit"; readonly count: number }
+  | { readonly refused: "branch-taken"; readonly workspace: string };
 
 /** What a Workspace's Durable Object is told to set itself up with: its Repos' addresses, its branch and its base. */
 export type WorkspaceSetup = {
@@ -167,6 +193,18 @@ export type RegistryStore = {
   ) => SessionRecord | SessionRefusal;
   /** The Session registered under `id`, or null. */
   readonly getSession: (id: string) => SessionRecord | null;
+  /**
+   * Register a Subagent Workspace for subagent `agent` of Session `session`, in the Session's Environment, as
+   * `createSession` registers a new Workspace (taking the Environment's spare when its Repos are the Environment's), in
+   * one transaction. The one the subagent has already is answered again, so a spawn that is run again makes no other.
+   * Refused past `limit` Subagent Workspaces of the Session.
+   */
+  readonly createSubagentWorkspace: (
+    input: SubagentWorkspaceRequest,
+    now: number,
+  ) => WorkspaceRecord | SubagentWorkspaceRefusal;
+  /** Session `session`'s Subagent Workspaces, newest first. */
+  readonly listSubagentWorkspaces: (session: string) => WorkspaceRecord[];
   /** Every Session, newest first. */
   readonly listSessions: () => SessionRecord[];
   /** Record that a Session's Run started or ended. A Session that is not registered is ignored. */
@@ -322,6 +360,9 @@ type WorkspaceRow = {
   spare: number;
   /** The snapshot id of the Build it was made from as a spare; null for none, or a Workspace never spare. */
   spare_build: string | null;
+  /** For a Subagent Workspace, the Session and subagent it is for; null for any other. */
+  session: string | null;
+  subagent: string | null;
 };
 
 type PushSubscriptionRow = { endpoint: string; p256dh: string; auth: string };
@@ -438,7 +479,7 @@ const sameRepos = (
 const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => {
   const repos = Arr.map(decodeRepos(row.repos), (repo) => repo.name);
 
-  return {
+  const record: WorkspaceRecord = {
     id: row.id,
     environment: row.environment,
     branch: row.branch,
@@ -447,6 +488,10 @@ const toWorkspace = (row: WorkspaceRow): WorkspaceRecord => {
     directory: workspaceDirectory(repos),
     createdAt: row.created_at,
   };
+
+  return row.session === null || row.subagent === null
+    ? record
+    : { ...record, subagent: { session: row.session, agent: row.subagent } };
 };
 
 /** The part of a Durable Object's storage the store uses: its SQLite database, and transactions over it. */
@@ -661,6 +706,13 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE agent_changes ADD COLUMN approved INTEGER NOT NULL DEFAULT 0");
   },
+  // 19: Subagent Workspaces (GLOSSARY.md), each the Session's and the subagent's it was made for. Null for every Workspace
+  // stored before, all Sessions' own or spares.
+  (sql) => {
+    sql.exec("ALTER TABLE workspaces ADD COLUMN session TEXT");
+    sql.exec("ALTER TABLE workspaces ADD COLUMN subagent TEXT");
+    sql.exec("CREATE INDEX workspaces_by_session ON workspaces (session, subagent)");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -740,6 +792,71 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     sql.exec("UPDATE environments SET repos = ? WHERE id = ?", JSON.stringify(repos), environment);
   };
 
+  /**
+   * Register a new Workspace of `choice`'s Environment, inside the caller's transaction: its spare when the spare holds
+   * the Environment's Repos (it stops being spare and gets the branch and base), else one under `choice.id`. Answers the
+   * Workspace's id and Environment, or why it was refused.
+   */
+  const registerWorkspace = (
+    choice: Extract<StoredWorkspaceChoice, { kind: "new" }>,
+    now: number,
+  ):
+    | { readonly workspace: string; readonly environment: string }
+    | Extract<SessionRefusal, { refused: "no-environment" | "branch-taken" }> => {
+    const made = getEnvironment(choice.environment);
+
+    if (made === null) return { refused: "no-environment" };
+
+    // The spare is taken only while it holds the Environment's Repos; a stale one is left to be removed.
+    const spare = getSpareRow(made.id);
+
+    const taking =
+      spare !== undefined && sameRepos(decodeRepos(spare.repos), made.repos) ? spare : undefined;
+
+    const workspace = taking?.id ?? choice.id;
+    const branch = choice.branch ?? `cloudpid/${workspace}`;
+
+    const [taken] = sql
+      .exec<{ id: string }>(
+        "SELECT id FROM workspaces WHERE environment = ? AND branch = ?",
+        choice.environment,
+        branch,
+      )
+      .toArray();
+
+    if (taken !== undefined) return { refused: "branch-taken", workspace: taken.id };
+
+    if (taking === undefined) {
+      sql.exec(
+        "INSERT INTO workspaces (id, environment, branch, base, repos, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        workspace,
+        made.id,
+        branch,
+        choice.base,
+        JSON.stringify(made.repos),
+        now,
+      );
+    } else {
+      sql.exec(
+        "UPDATE workspaces SET spare = 0, branch = ?, base = ?, created_at = ? WHERE id = ?",
+        branch,
+        choice.base,
+        now,
+        workspace,
+      );
+    }
+
+    return { workspace, environment: made.id };
+  };
+
+  const subagentWorkspaceRows = (session: string): WorkspaceRow[] =>
+    sql
+      .exec<WorkspaceRow>(
+        "SELECT * FROM workspaces WHERE session = ? ORDER BY created_at DESC, id",
+        session,
+      )
+      .toArray();
+
   return {
     createSession: (input, now) =>
       storage.transactionSync((): SessionRecord | SessionRefusal => {
@@ -751,58 +868,18 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         if (choice.kind === "existing") {
           const known = getWorkspaceRow(choice.id);
 
-          // A spare is no Workspace a Session can name.
-          if (known === undefined || known.spare === 1) return { refused: "no-workspace" };
+          // A spare, or a subagent's Workspace, is no Workspace a Session can name.
+          if (known === undefined || known.spare === 1 || known.session !== null) {
+            return { refused: "no-workspace" };
+          }
 
           environment = known.environment;
         } else {
-          const made = getEnvironment(choice.environment);
+          const registered = registerWorkspace(choice, now);
 
-          if (made === null) return { refused: "no-environment" };
+          if ("refused" in registered) return registered;
 
-          // The spare is taken only while it holds the Environment's Repos; a stale one is left to be removed.
-          const spare = getSpareRow(made.id);
-
-          const taking =
-            spare !== undefined && sameRepos(decodeRepos(spare.repos), made.repos)
-              ? spare
-              : undefined;
-
-          workspace = taking?.id ?? choice.id;
-
-          const branch = choice.branch ?? `cloudpid/${workspace}`;
-
-          const [taken] = sql
-            .exec<{ id: string }>(
-              "SELECT id FROM workspaces WHERE environment = ? AND branch = ?",
-              choice.environment,
-              branch,
-            )
-            .toArray();
-
-          if (taken !== undefined) return { refused: "branch-taken", workspace: taken.id };
-
-          environment = made.id;
-
-          if (taking === undefined) {
-            sql.exec(
-              "INSERT INTO workspaces (id, environment, branch, base, repos, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-              workspace,
-              environment,
-              branch,
-              choice.base,
-              JSON.stringify(made.repos),
-              now,
-            );
-          } else {
-            sql.exec(
-              "UPDATE workspaces SET spare = 0, branch = ?, base = ?, created_at = ? WHERE id = ?",
-              branch,
-              choice.base,
-              now,
-              workspace,
-            );
-          }
+          ({ workspace, environment } = registered);
         }
 
         const origin = input.origin ?? null;
@@ -836,6 +913,55 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       }),
 
     getSession,
+
+    createSubagentWorkspace: (input, now) =>
+      storage.transactionSync((): WorkspaceRecord | SubagentWorkspaceRefusal => {
+        const [had] = sql
+          .exec<WorkspaceRow>(
+            "SELECT * FROM workspaces WHERE session = ? AND subagent = ?",
+            input.session,
+            input.agent,
+          )
+          .toArray();
+
+        if (had !== undefined) return toWorkspace(had);
+
+        const session = getSession(input.session);
+
+        if (session === null) return { refused: "no-session" };
+
+        const count = subagentWorkspaceRows(input.session).length;
+
+        if (count >= input.limit) return { refused: "limit", count };
+
+        const registered = registerWorkspace(
+          {
+            kind: "new",
+            id: input.id,
+            environment: session.environment,
+            branch: input.branch,
+            base: input.base,
+          },
+          now,
+        );
+
+        // The Session's Environment is there while the Session is: only a branch is refused.
+        if ("refused" in registered) {
+          return registered.refused === "branch-taken" ? registered : { refused: "no-session" };
+        }
+
+        sql.exec(
+          "UPDATE workspaces SET session = ?, subagent = ? WHERE id = ?",
+          input.session,
+          input.agent,
+          registered.workspace,
+        );
+
+        // SAFETY: the row was written above, in this transaction.
+        return toWorkspace(getWorkspaceRow(registered.workspace)!);
+      }),
+
+    listSubagentWorkspaces: (session) => Arr.map(subagentWorkspaceRows(session), toWorkspace),
 
     listSessions: () =>
       Arr.map(

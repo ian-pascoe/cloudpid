@@ -309,3 +309,64 @@ for repo in \${repos[@]+"\${repos[@]}"}; do
 done
 exit 0
 `;
+
+/**
+ * What one clone of a Workspace has not pushed (docs/spec.md → Subagents): its uncommitted Changes (untracked files that
+ * are not ignored included) and the commits of a branch that no remote branch has. `cloned` is false for a Repo with no
+ * clone there; `onRemote` says whether `origin` has the branch, as the clone last saw it.
+ */
+export type RepoWorkState = {
+  readonly repo: string;
+  readonly cloned: boolean;
+  readonly uncommitted: number;
+  readonly unpushed: number;
+  readonly onRemote: boolean;
+};
+
+/**
+ * The bash script that reads what each of `repos` cloned at `<root>/<repo>` has not pushed of `branch` (whether checked
+ * out or not), without fetching: one line per Repo, `<repo>\t<cloned>\t<uncommitted>\t<unpushed>\t<on remote>`
+ * (`parseWorkState`). A branch the clone does not have has nothing unpushed. It changes nothing in the clones.
+ */
+export const workStateScript = (
+  repos: ReadonlyArray<string>,
+  branch: string,
+  root: string = WORKSPACE_ROOT,
+): string => `set -u -o pipefail
+root=${shellQuote(root)}
+branch=${shellQuote(branch)}
+repos=(${repos.map(shellQuote).join(" ")})
+for repo in \${repos[@]+"\${repos[@]}"}; do
+  dir="$root/$repo"
+  if [ ! -e "$dir/.git" ]; then
+    printf '%s\\t0\\t0\\t0\\t0\\n' "$repo"
+    continue
+  fi
+  uncommitted=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  unpushed=0 remote=0
+  if git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then remote=1; fi
+  if git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
+    unpushed=$(git -C "$dir" rev-list --count "refs/heads/$branch" --not --remotes 2>/dev/null || echo 0)
+  fi
+  printf '%s\\t1\\t%s\\t%s\\t%s\\n' "$repo" "\${uncommitted:-0}" "$unpushed" "$remote"
+done
+exit 0
+`;
+
+/** The lines `workStateScript` prints, read back; a line it did not print is left out. */
+export const parseWorkState = (stdout: string): RepoWorkState[] =>
+  stdout.split("\n").flatMap((line) => {
+    const [repo, cloned, uncommitted, unpushed, onRemote] = line.split("\t");
+
+    if (repo === undefined || repo === "" || onRemote === undefined) return [];
+
+    return [
+      {
+        repo,
+        cloned: cloned === "1",
+        uncommitted: Number(uncommitted) || 0,
+        unpushed: Number(unpushed) || 0,
+        onRemote: onRemote === "1",
+      },
+    ];
+  });

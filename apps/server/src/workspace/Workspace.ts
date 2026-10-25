@@ -60,7 +60,12 @@ import {
   preparationHost,
   type WorkspaceSetup,
 } from "./prepare.ts";
-import { carryWorkspaceScript } from "@cloudpid/sandbox-image/workspaces";
+import {
+  carryWorkspaceScript,
+  parseWorkState,
+  type RepoWorkState,
+  workStateScript,
+} from "@cloudpid/sandbox-image/workspaces";
 import {
   workspaceBuildStore,
   type WorkspaceSettingsAnswer,
@@ -154,6 +159,9 @@ const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
 
 /** How long carrying the clones to a Fork's new Workspace may take, in seconds: a Container start, then pushes. */
 const CARRY_TIMEOUT_SECONDS = 15 * 60;
+
+/** How long reading what the clones have not pushed may take, in seconds: a Container start, then local git. */
+const WORK_STATE_TIMEOUT_SECONDS = 5 * 60;
 
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
@@ -835,6 +843,28 @@ export class Workspace extends ContainerHost {
     if (ran.exitCode !== 0) {
       throw failure(`The workspace's repos could not be carried to branch ${branch}`, ran);
     }
+  }
+
+  /**
+   * What this Workspace's clones of `repos` have not pushed of `branch` (`LifecycleHost.workState`): a Subagent
+   * Workspace's report and delete, and the warning a spawn from this one gives (`workStateScript`). It runs on the
+   * Container, starting it if it is stopped.
+   */
+  async workState(
+    branch: string,
+    repos: ReadonlyArray<string>,
+  ): Promise<ReadonlyArray<RepoWorkState>> {
+    this.#spare.noteUse();
+
+    const ran = await this.#ownHost(`computer:work-state:${this.ctx.id.toString()}`).run(
+      workStateScript(repos, branch),
+      WORK_STATE_TIMEOUT_SECONDS,
+    );
+
+    if (ran.exitCode !== 0) throw failure("The workspace's repos could not be read", ran);
+
+    // Its own lines have five tab-separated fields: anything else the run printed is left out.
+    return parseWorkState(ran.output);
   }
 
   /**
