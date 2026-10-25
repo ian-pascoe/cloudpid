@@ -1,16 +1,30 @@
 // @effect-diagnostics preferEffectArray:off -- a message's siblings and entries are short native arrays rendered as JSX lists.
 // @effect-diagnostics missedPipeableOpportunity:off -- an Exit's failure is read once, where a pipe adds nothing.
+// @effect-diagnostics globalTimers:off -- Copy's "Copied" goes back after a moment, timed by a React effect.
 
 // The Session tree in the transcript (GLOSSARY.md → Session tree, Fork, Clone): the chevrons on the first message of a
 // Session branch that has siblings, and the bar under the owner's messages and the answers of the active branch
-// (Branch, and Fork or Clone).
+// (Copy, Branch, and Fork or Clone).
 
+import { useAuiState } from "@assistant-ui/react";
 import type { SessionTree, TreeNode } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
-import { ChevronDown, ChevronLeft, ChevronRight, GitBranch, GitFork, Split } from "lucide-react";
-import { use } from "react";
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  GitBranch,
+  GitFork,
+  Split,
+  X,
+} from "lucide-react";
+import { use, useEffect, useState } from "react";
 import { useCall } from "../calls.ts";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
+import { Tooltip } from "../components/ui/tooltip.tsx";
+import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
 import { exitFailure } from "../registry.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
@@ -24,6 +38,7 @@ import {
   siblingsOf,
 } from "../session/tree.ts";
 import { useShownSessionId } from "./conversation.ts";
+import { messageText } from "./message-text.ts";
 import {
   TreeBarScope,
   useBusy,
@@ -35,8 +50,16 @@ import {
 } from "./tree-actions.ts";
 import { forkingAtom, switchBranchAtom } from "./tree-state.ts";
 
+/**
+ * The message's controls show on hover or focus with a fine pointer, always on a touch screen. The message is the
+ * `group/message` around them.
+ */
+const revealOnHover =
+  "pointer-fine:opacity-0 pointer-fine:group-focus-within/message:opacity-100 pointer-fine:group-hover/message:opacity-100";
+
+// A disabled one lets the pointer through to its tooltip's wrapper, which says why.
 const chevron =
-  "touch-target inline-flex size-7 items-center justify-center rounded-md hover:bg-accent disabled:opacity-50";
+  "touch-target inline-flex size-7 items-center justify-center rounded-md hover:bg-accent disabled:pointer-events-none disabled:opacity-50";
 
 /**
  * The ‹ n/m › between a node's sibling Session branches: each lands on the branch through it that was active last.
@@ -68,34 +91,47 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
   };
 
   return (
-    <span className="inline-flex items-center text-xs text-muted-foreground tabular-nums">
-      <button
-        type="button"
-        aria-label="Previous session branch"
-        title={busy ? WHILE_BUSY : "Previous session branch"}
-        disabled={busy || index === 0}
-        onClick={() => {
-          go(siblings[index - 1]);
-        }}
-        className={chevron}
-      >
-        <ChevronLeft className="size-3.5" aria-hidden />
-      </button>
+    <span
+      className={cn(
+        "inline-flex items-center text-xs text-muted-foreground tabular-nums",
+        revealOnHover,
+      )}
+    >
+      <Tooltip content={busy ? WHILE_BUSY : "Previous session branch"}>
+        {(describedBy) => (
+          <button
+            type="button"
+            aria-label="Previous session branch"
+            aria-describedby={busy ? describedBy : undefined}
+            disabled={busy || index === 0}
+            onClick={() => {
+              go(siblings[index - 1]);
+            }}
+            className={chevron}
+          >
+            <ChevronLeft className="size-3.5" aria-hidden />
+          </button>
+        )}
+      </Tooltip>
       <span aria-label={`Session branch ${index + 1} of ${siblings.length}`}>
         {index + 1}/{siblings.length}
       </span>
-      <button
-        type="button"
-        aria-label="Next session branch"
-        title={busy ? WHILE_BUSY : "Next session branch"}
-        disabled={busy || index === siblings.length - 1}
-        onClick={() => {
-          go(siblings[index + 1]);
-        }}
-        className={chevron}
-      >
-        <ChevronRight className="size-3.5" aria-hidden />
-      </button>
+      <Tooltip content={busy ? WHILE_BUSY : "Next session branch"}>
+        {(describedBy) => (
+          <button
+            type="button"
+            aria-label="Next session branch"
+            aria-describedby={busy ? describedBy : undefined}
+            disabled={busy || index === siblings.length - 1}
+            onClick={() => {
+              go(siblings[index + 1]);
+            }}
+            className={chevron}
+          >
+            <ChevronRight className="size-3.5" aria-hidden />
+          </button>
+        )}
+      </Tooltip>
     </span>
   );
 };
@@ -119,7 +155,69 @@ export const BranchChevrons = ({ ids }: { ids: readonly number[] }) => {
 };
 
 const barButton =
-  "touch-target inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5";
+  "touch-target inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5";
+
+/** How long Copy says it copied. */
+const COPIED_MS = 2000;
+
+/**
+ * What Copy says and shows: what it does, then for a moment whether the last copy took. The icon says it too, for a
+ * mouse (a press hides the tooltip) and a touch (which has none); a screen reader hears it from a status.
+ */
+const COPY_STATES = {
+  idle: { tip: "Copy message", Icon: Copy },
+  copied: { tip: "Copied", Icon: Check },
+  failed: { tip: "The browser refused to copy.", Icon: X },
+} as const;
+
+/**
+ * Copies the message it is under: the owner's words as text; an answer's markdown as text, and as HTML too
+ * (`formatted`), which a document or an email pastes with its formatting.
+ */
+const CopyButton = ({ formatted }: { formatted: boolean }) => {
+  const text = useAuiState((state) => messageText(state.message.content));
+  const [copied, setCopied] = useState<keyof typeof COPY_STATES>("idle");
+
+  useEffect(() => {
+    if (copied === "idle") return;
+
+    const timer = setTimeout(() => setCopied("idle"), COPIED_MS);
+
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  if (text === "") return null;
+
+  const { tip, Icon } = COPY_STATES[copied];
+
+  return (
+    <Tooltip content={tip}>
+      {() => (
+        <>
+          <button
+            type="button"
+            className={barButton}
+            aria-label={COPY_STATES.idle.tip}
+            onClick={() => {
+              const html = formatted
+                ? import("./markdown-html.ts").then(({ markdownHtml }) => markdownHtml(text))
+                : undefined;
+
+              void copyToClipboard(text, html).then((done) => {
+                setCopied(done ? "copied" : "failed");
+              });
+            }}
+          >
+            <Icon aria-hidden />
+          </button>
+          <span role="status" className="sr-only">
+            {copied === "idle" ? "" : tip}
+          </span>
+        </>
+      )}
+    </Tooltip>
+  );
+};
 
 /** What Branch says it does, or why it cannot. */
 const branchTitle = (busy: boolean, owner: boolean, latest: boolean): string => {
@@ -146,10 +244,11 @@ const forkTitle = (refused: boolean, forking: boolean, clone: boolean, owner: bo
 };
 
 /**
- * The bar under a message of the active branch: the chevrons when it starts a Session branch with siblings, then
+ * The bar under a message of the active branch: the chevrons when it starts a Session branch with siblings, then Copy,
  * Branch (to just before an owner's message, or after an answer) and Fork, a new Session from the same point (Clone
- * under the latest answer, where Branch has nowhere to go), with a menu to make it in a new Workspace. Branch and Fork
- * show on hover or focus with a fine pointer, always on a touch screen. An archived Session's bar only forks.
+ * under the latest answer, where Branch has nowhere to go), with a menu to make it in a new Workspace. They are icons,
+ * each named by its tooltip, and show on hover or focus with a fine pointer, always on a touch screen. An archived
+ * Session's bar only copies and forks.
  */
 const Bar = ({ node, tree }: { node: TreeNode; tree: SessionTree }) => {
   const scope = use(TreeBarScope);
@@ -174,50 +273,64 @@ const Bar = ({ node, tree }: { node: TreeNode; tree: SessionTree }) => {
   return (
     <div className={cn("flex items-center gap-1", owner ? "justify-end" : "justify-start")}>
       {owner && <Chevrons tree={tree} id={node.id} />}
-      <span className="flex items-center gap-0.5 pointer-fine:opacity-0 pointer-fine:group-focus-within/message:opacity-100 pointer-fine:group-hover/message:opacity-100">
+      <span className={cn("flex items-center gap-0.5", revealOnHover)}>
+        <CopyButton formatted={!owner} />
         {!scope.archived && (
-          <button
-            type="button"
-            className={barButton}
-            disabled={busy || !live || latest}
-            title={branchTitle(busy, owner, latest)}
-            onClick={() => {
-              move(point);
-            }}
-          >
-            <GitBranch aria-hidden />
-            Branch
-          </button>
+          <Tooltip content={branchTitle(busy, owner, latest)}>
+            {(describedBy) => (
+              <button
+                type="button"
+                className={barButton}
+                disabled={busy || !live || latest}
+                aria-label="Branch"
+                aria-describedby={describedBy}
+                onClick={() => {
+                  move(point);
+                }}
+              >
+                <GitBranch aria-hidden />
+              </button>
+            )}
+          </Tooltip>
         )}
-        <button
-          type="button"
-          className={barButton}
-          disabled={refusedWhileRunning || forking}
-          title={forkTitle(refusedWhileRunning, forking, clone, owner)}
-          onClick={() => {
-            fork(forkPoint, false);
-          }}
-        >
-          <ForkIcon aria-hidden />
-          {forkWord}
-        </button>
-        <Menu
-          label={`More ways to ${forkWord.toLowerCase()}`}
-          title={`More ways to ${forkWord.toLowerCase()}`}
-          icon={<ChevronDown className="size-3.5" aria-hidden />}
-          className="size-7"
-        >
-          <MenuItem
-            disabled={busy || forking}
-            title={busy ? "Wait for the run to end, or stop it, to carry the files." : undefined}
-            onSelect={() => {
-              fork(forkPoint, true);
-            }}
-          >
-            <ForkIcon aria-hidden />
-            {forkWord} in a new workspace…
-          </MenuItem>
-        </Menu>
+        <Tooltip content={forkTitle(refusedWhileRunning, forking, clone, owner)}>
+          {(describedBy) => (
+            <button
+              type="button"
+              className={barButton}
+              disabled={refusedWhileRunning || forking}
+              aria-label={forkWord}
+              aria-describedby={describedBy}
+              onClick={() => {
+                fork(forkPoint, false);
+              }}
+            >
+              <ForkIcon aria-hidden />
+            </button>
+          )}
+        </Tooltip>
+        <Tooltip content={`More ways to ${forkWord.toLowerCase()}`}>
+          {() => (
+            <Menu
+              label={`More ways to ${forkWord.toLowerCase()}`}
+              icon={<ChevronDown className="size-3.5" aria-hidden />}
+              className="size-7"
+            >
+              <MenuItem
+                disabled={busy || forking}
+                title={
+                  busy ? "Wait for the run to end, or stop it, to carry the files." : undefined
+                }
+                onSelect={() => {
+                  fork(forkPoint, true);
+                }}
+              >
+                <ForkIcon aria-hidden />
+                {forkWord} in a new workspace…
+              </MenuItem>
+            </Menu>
+          )}
+        </Tooltip>
       </span>
     </div>
   );

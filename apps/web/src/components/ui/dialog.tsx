@@ -80,9 +80,14 @@ export const Dialog = ({
   );
 };
 
-/** The row of buttons at the end of a dialog: the dismissing one first, the action last. */
+/**
+ * The row of buttons at the end of a dialog: the dismissing one first, the action last. Stacked on a phone; in a row
+ * from `sm` up, wrapping onto a second line rather than running out of the dialog when their labels are long.
+ */
 export const DialogActions = ({ children }: { children: ReactNode }) => (
-  <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">{children}</div>
+  <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+    {children}
+  </div>
 );
 
 /**

@@ -257,6 +257,13 @@ export const sessionBranches = (options: BranchesOptions) => {
         request.summary,
       );
 
+      // Before the Session's first message the new branch has no entry to take its agent from: it takes the one of the
+      // branch left. Read as a snapshot: a transaction's document is a tracking proxy, which `structuredClone` refuses.
+      const agent =
+        plan.kind === "fresh"
+          ? yield* attempt("snapshot", () => harness.snapshot(AgentDoc, current.id, context))
+          : undefined;
+
       const now = yield* Clock.currentTimeMillis;
 
       const target = yield* attempt("navigate", () =>
@@ -271,10 +278,8 @@ export const sessionBranches = (options: BranchesOptions) => {
           } else {
             // Before the Session's first message: a branch of no entries, with the agent of the branch left.
             id = (await tx.createConversation(ownerless)).id;
-            copyAgent(
-              await tx.doc(AgentDoc, id),
-              structuredClone(await tx.doc(AgentDoc, current.id)),
-            );
+
+            if (agent !== undefined) copyAgent(await tx.doc(AgentDoc, id), agent);
           }
 
           if (summary !== undefined) {

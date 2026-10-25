@@ -11,7 +11,7 @@ import * as Atom from "effect/reactivity/Atom";
 import type { ReactNode } from "react";
 import { useCall } from "../calls.ts";
 import { Button } from "../components/ui/button.tsx";
-import { Dialog } from "../components/ui/dialog.tsx";
+import { Dialog, DialogActions } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { cn } from "../lib/utils.ts";
 import { exitFailure } from "../registry.ts";
@@ -80,7 +80,7 @@ const SummaryChoices = ({ close }: { close: () => void }) => {
           {failure}
         </p>
       )}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <DialogActions>
         <Button
           type="button"
           variant="outline"
@@ -124,7 +124,7 @@ const SummaryChoices = ({ close }: { close: () => void }) => {
             {running ? "Summarizing…" : "Summarize"}
           </Button>
         )}
-      </div>
+      </DialogActions>
     </>
   );
 };
@@ -141,6 +141,8 @@ const SummaryDialog = () => {
     <Dialog
       open={pending !== null}
       onClose={close}
+      // Three choices side by side.
+      className="max-w-lg"
       title="Summarize the session branch you leave?"
       description="A summary of what this session branch did starts the one you go to, so the agent keeps it in mind. It is a model request on this session's usage."
     >
@@ -211,14 +213,14 @@ const ForkFields = ({ close }: { close: () => void }) => {
           {shown}
         </p>
       )}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <DialogActions>
         <Button type="button" variant="outline" disabled={running} onClick={close}>
           Cancel
         </Button>
         <Button type="submit" disabled={running || problem !== undefined}>
           {running ? "Carrying the files…" : pending.point === undefined ? "Clone" : "Fork"}
         </Button>
-      </div>
+      </DialogActions>
     </form>
   );
 };
@@ -305,7 +307,7 @@ const ChooserFields = ({ close }: { close: () => void }) => {
             ))}
           </ul>
         ))}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <DialogActions>
         <Button type="button" variant="outline" onClick={close}>
           Cancel
         </Button>
@@ -328,7 +330,7 @@ const ChooserFields = ({ close }: { close: () => void }) => {
         >
           {word} in this workspace
         </Button>
-      </div>
+      </DialogActions>
     </div>
   );
 };
@@ -347,6 +349,8 @@ const ForkChooserDialog = () => {
     <Dialog
       open={open}
       onClose={close}
+      // Three choices side by side.
+      className="max-w-xl"
       title={chooser?.kind === "clone" ? "Clone" : "Fork"}
       description={
         chooser?.kind === "clone"

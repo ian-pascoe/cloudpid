@@ -36,6 +36,11 @@ export const placePopover = (panel: HTMLElement, trigger: HTMLElement, align: Al
   panel.style.left = `${left}px`;
 };
 
+/** Close the popover `panel` if it is open (`hidePopover` throws on one that is not). */
+export const hidePopover = (panel: HTMLElement | null) => {
+  if (panel?.matches(":popover-open") === true) panel.hidePopover();
+};
+
 /**
  * Keep the popover `panel` placed against `trigger` while it is open: on opening, when the page scrolls or resizes, and
  * when its own size changes (items that arrive after it opened). `onOpen` runs once it is placed, to move the focus in;

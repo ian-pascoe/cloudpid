@@ -81,6 +81,35 @@ describe("a Session's tree", () => {
     });
   });
 
+  it("branches before the Session's first message, with the agent of the branch left", async () => {
+    await runInDurableObject(fresh(), async (instance: TestSession) => {
+      instance.script(["one"]);
+      await instance.configure({ model: { provider: "anthropic", modelId: "claude-haiku-5-5" } });
+      await instance.prompt({ requestId: "turn-1", text: "first" });
+
+      const before = await instance.tree();
+
+      const went = await instance.navigate({
+        entryId: node(before, "user", "first").id,
+        position: "before",
+      });
+
+      expect(went).toMatchObject({ navigated: { text: "first" } });
+
+      const branch = await instance.activeBranch();
+
+      expect(branch).not.toBe(before.active);
+
+      instance.script(["two"]);
+      await instance.prompt({ requestId: "turn-2", text: "other" });
+
+      const after = await instance.tree();
+
+      expect(node(after, "user", "other")).toMatchObject({ parent: null, conversationId: branch });
+      expect(instance.requests().at(-1)).toMatchObject({ model: "claude-haiku-5-5" });
+    });
+  });
+
   it("goes back to a branch's tip without making another, and switches as the chevrons do", async () => {
     await runInDurableObject(fresh(), async (instance: TestSession) => {
       const before = await twoExchanges(instance);

@@ -143,7 +143,7 @@ const NoticeMessage = () => {
   const id = useAuiState((state) => entryIdOf(state.message.id));
 
   return (
-    <MessagePrimitive.Root className="flex items-center gap-3 text-xs text-muted-foreground">
+    <MessagePrimitive.Root className="group/message flex items-center gap-3 text-xs text-muted-foreground">
       <BranchChevrons ids={id === undefined ? [] : [id]} />
       <span className="h-px flex-1 bg-border" aria-hidden />
       {text === "" ? (
