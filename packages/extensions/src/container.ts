@@ -1,9 +1,10 @@
 // The `container` extension (`docs/spec.md` → Container and Toolchains → Restart by the agent, Resize by the agent): the
-// tools that act on the Session's Workspace's Container. `container_restart` stops it so the next command starts a new
-// one: the agent's way out of a Container that no longer answers (every command hangs, `echo` included), which it cannot
-// fix with a command. `container_resize` restarts it at another size, up to its Environment's size limit, until the idle
-// stop (GLOSSARY.md → Container resize). Both reach the Container only through `WorkspaceContainer`, which the Session
-// provides over its Workspace DO, and nothing here runs a command.
+// tools that act on the Container of the calling conversation's Workspace (the Session's, or its Subagent Workspace).
+// `container_restart` stops it so the next command starts a new one: the agent's way out of a Container that no longer
+// answers (every command hangs, `echo` included), which it cannot fix with a command. `container_resize` restarts it at
+// another size, up to its Environment's size limit, until the idle stop (GLOSSARY.md → Container resize). Both reach the
+// Container only through `WorkspaceContainer`, which the Session provides over the conversation's Workspace DO, and
+// nothing here runs a command.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   compareInstances,

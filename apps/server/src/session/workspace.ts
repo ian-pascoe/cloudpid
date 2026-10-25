@@ -2,7 +2,9 @@
 // environment is a `ComputerExecutionEnv` over the Workspace's own Durable Object (`workspaceObjectName`), and `ls`,
 // `find`, and `grep` search the same Workspace's files. Every Session in a Workspace reaches the same DO, so they share
 // one tree and one Container. A Session works in its Workspace's directory (its one repo's clone, or `/workspace`) unless
-// a conversation names another `cwd`, once the Workspace is readied: its Repos cloned on its branch (`prepare.ts`).
+// a conversation names another `cwd`, once the Workspace is readied: its Repos cloned on its branch (`prepare.ts`). A
+// conversation with a Subagent Workspace (its agent's own, or its nearest ancestor's) works in that one instead, as the
+// Subagents document records it (ADR-0021).
 // @effect-diagnostics asyncFunction:off globalDate:off missingPipeableSignature:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { ContainerControl } from "@cloudpid/extensions/container";

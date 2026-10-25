@@ -1,0 +1,27 @@
+---
+status: accepted
+---
+
+# Subagents in Workspaces of their own
+
+Every subagent ran in its parent's Workspace, so parallel implementers shared its Container's 2 vCPU and 6 GiB. Builds ran with `--concurrency=1`, the memory guard stopped one agent's process for another's, and any agent's `container_restart` ended every agent's commands. `subagent` can now start the child in a **Subagent Workspace** (`workspace: "new"`): a new Workspace of the parent's Environment, on a branch of its own (`cloudpid/<id>` unless named), from a pushed base branch (the parent Workspace's branch unless named), with a Container of its own. It is made as a new Session's Workspace is: from the Environment's spare when there is one, with a new spare made behind it, and otherwise from the Build.
+
+The child stays a subagent of the parent's Session. Its conversation, its turns, its reports, `subagent_wait`, `subagent_cancel`, Stop and the task graph work as for any subagent. What changes is the Session's Placement: there is one per conversation that has a Subagent Workspace, recorded on its agent in the Subagents document (so it survives an eviction), and every tool a conversation runs (files, shell, file search, `container_*`, skills, project instructions, `cwd`) uses its conversation's Workspace. A conversation without one uses its nearest ancestor's, else the Session's: a grandchild started `"shared"` by a child with a Subagent Workspace shares the child's. The Registry records a Subagent Workspace as its Session's and its subagent's (`workspaces.session`, `workspaces.subagent`), so listings, Workspace removal and the Session's delete find it, and counts them against a new Limit, the **Subagent Workspace limit** (default 3 per Session), which the agent raises only with the owner's Approval (`settings_subagent_workspaces_set`).
+
+The hand-over is a pushed branch. Nothing is copied across in either direction: the child starts from the remote's base branch (the spawn result warns when the parent's Workspace holds uncommitted changes or unpushed commits on it, or the remote lacks it), is told its branch and to push it, and each report it sends ends with its branch and whether it has unpushed commits or uncommitted changes, read on its Container. The parent never reads or runs anything in a child's Workspace.
+
+A Subagent Workspace lasts as long as its subagent. `subagent_cancel` keeps it (its Container idle-stops), and `subagent_delete` removes it, refusing while one in the subtree holds unpushed work unless `discard: true`. Deleting the Session removes them all, and the owner's _Remove_ on the Environments page deletes the subagent as `subagent_delete` does, after a confirmation that names the unpushed work.
+
+## Considered Options
+
+- **A Clone that reports back.** The child would be a Session of its own, made by `forkSession` into a new Workspace, whose answer is sent to the parent. The Session would keep exactly one Workspace, but the subagent tools would need a second implementation over Sessions: waits across Session objects, a Stop that reaches another object, a task graph and spend limit that span Sessions, and a lifetime tied to the parent's by hand. Keeping the child a subagent keeps all of that as it is, at the cost of a Session no longer having exactly one Workspace.
+- **Copy the parent's uncommitted work into the child.** `forkSession`'s carry does this for a Fork, but for a subagent it would race the parent's own edits and hide what the child started from. A pushed branch is what the owner can read and what the child can rebase on.
+- **Cap running Containers, not Workspaces.** A child's stopped Container starts again at its next command, so a cap on running ones would not bound what the Session can start; the limit counts the Workspaces that exist.
+
+## Consequences
+
+- A Session's Container cost is its Workspace's and its Subagent Workspaces' summed. Several children running side by side cost a Container each: about 6¢ per running hour on `custom-2`, before CPU (ADR-0016). A deleted child's Workspace takes its usage with it.
+- A child runs at the Environment's size and may `container_resize` itself up to `maxInstance`; its restart or resize stops only its own Container.
+- The unpushed-work check runs `git` on the child's Container, starting it if it is stopped, at each report and each delete.
+- A Subagent Workspace takes no new Session: `createSession` refuses one, and the Environments page offers no _New session here_ on it.
+- Files, Changes and Terminal panes show the Session's Workspace only, and the owner cannot start a subagent in a new Workspace from the UI.
