@@ -422,6 +422,13 @@ describe("an Agent change", () => {
     expect(
       changeByline({ ...change, actor: "owner", tool: null, session: null, reverts: 2 }, NOW),
     ).toBe("You reverted change 2, 5 minutes ago");
+    // A change the owner approved first says so.
+    expect(
+      changeByline(
+        { ...change, tool: "environment_container_size_limit_set", approved: true },
+        NOW,
+      ),
+    ).toBe("The agent, 5 minutes ago, with environment_container_size_limit_set, approved by you");
     expect(revertible(change)).toBe(true);
     expect(revertible({ ...change, revertedBy: 4 })).toBe(false);
     expect(revertible({ ...change, actor: "owner", reverts: 2 })).toBe(false);

@@ -143,6 +143,7 @@ const Change = ({ change }: { change: ShownChange }) => {
     <div className="mt-2 first:mt-0">
       <div className="text-xs font-medium text-muted-foreground">
         {changeFieldText(change.field)} in {change.environment?.name ?? "the Settings"}
+        {change.approved === true && " · approved by you"}
       </div>
       {diff === undefined ? (
         <>

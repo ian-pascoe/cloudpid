@@ -142,7 +142,7 @@ const NotificationsSection = () => {
     <Section title="Notifications">
       <p className="text-sm text-muted-foreground">
         A push to this device when a run finishes or fails, or when the agent needs you to enter a
-        secret, linking to the session. Each device chooses for itself.
+        secret or approve a change, linking to the session. Each device chooses for itself.
       </p>
       {status?.kind === "unsupported" && (
         <p className="text-sm text-muted-foreground">

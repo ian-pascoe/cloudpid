@@ -4,6 +4,7 @@
 
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { TranscriptPart } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -14,14 +15,19 @@ export const ShownChange = Schema.Struct({
   field: Schema.String,
   before: Schema.NullOr(Schema.Json),
   after: Schema.NullOr(Schema.Json),
+  /** The owner approved the change before it was made (`docs/spec.md` → Approval). */
+  approved: Schema.optionalKey(Schema.Literal(true)),
 });
 
 export type ShownChange = typeof ShownChange.Type;
 
+/** The owner's answer a call that waited for Approval records. */
+const Approval = Schema.optionalKey(Schema.Struct({ approved: Schema.Boolean }));
+
 const decodeDetails = Schema.decodeUnknownOption(
   Schema.Union([
-    Schema.Struct({ agentChange: ShownChange }),
-    Schema.Struct({ agentChanges: Schema.Array(ShownChange) }),
+    Schema.Struct({ agentChange: ShownChange, approval: Approval }),
+    Schema.Struct({ agentChanges: Schema.Array(ShownChange), approval: Approval }),
   ]),
 );
 
@@ -38,7 +44,13 @@ export const madeChanges = (
 ): ReadonlyArray<ShownChange> =>
   Option.match(decodeDetails(details), {
     onNone: () => [],
-    onSome: (found) => ("agentChange" in found ? [found.agentChange] : found.agentChanges),
+    onSome: (found) => {
+      const made = "agentChange" in found ? [found.agentChange] : found.agentChanges;
+
+      return found.approval?.approved === true
+        ? Arr.map(made, (change) => ({ ...change, approved: true as const }))
+        : made;
+    },
   });
 
 /** The changes a card's artifact holds, if it holds any. */

@@ -143,6 +143,18 @@ const extensionOption = (args: Args): Option.Option<string> =>
     Option.map(text(args, "key"), (key) => `${extension}.${key}`),
   );
 
+/** What a `settings_spend_limit_set` call asks to set: US dollars per Session, or no limit. */
+const spendLimit = (args: Args): Option.Option<string> =>
+  Predicate.isNumber(args.per_session)
+    ? Option.some(`$${args.per_session} per Session`)
+    : args.per_session === null
+      ? Option.some("no limit")
+      : Option.none();
+
+/** What a `settings_subagent_depth_set` call asks to set: the levels of subagents below the root. */
+const subagentDepth = (args: Args): Option.Option<string> =>
+  Predicate.isNumber(args.depth) ? Option.some(`depth ${args.depth}`) : Option.none();
+
 /** `line`, after the agent a call names when it names one. */
 const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string> =>
   Option.map(line, (value) =>
@@ -200,6 +212,19 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return inEnvironment(args, resize(args));
       case "environment_idle_time_set":
         return inEnvironment(args, idleTime(args));
+      case "environment_container_size_limit_set":
+        return inEnvironment(
+          args,
+          Option.map(text(args, "size"), (size) => `limit ${size}`),
+        );
+      case "environment_delete":
+        return text(args, "id");
+      case "environment_secret_delete":
+        return variable(args);
+      case "settings_spend_limit_set":
+        return spendLimit(args);
+      case "settings_subagent_depth_set":
+        return subagentDepth(args);
       case "environment_setup_script_set":
       case "environment_start_script_set":
       case "environment_toolchains_set":
