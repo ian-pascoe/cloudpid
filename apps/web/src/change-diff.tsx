@@ -1,6 +1,7 @@
 // The difference an Agent change made to a long value, a script or a `mise.toml` (`docs/spec.md` → Agent changes):
 // its lines with a `+` or `-`, and the runs of lines that stayed folded to a count. Shown on the call's card in the
 // transcript and on the Environments page.
+import * as Arr from "effect/Array";
 import type { DiffRow } from "./line-diff.ts";
 import { cn } from "./lib/utils.ts";
 
@@ -14,7 +15,7 @@ export const ChangeDiff = ({ rows }: { rows: ReadonlyArray<DiffRow> }) => (
     {rows.length === 0 ? (
       <div className="px-2 text-muted-foreground italic">No lines</div>
     ) : (
-      rows.map((row, index) =>
+      Arr.map(rows, (row, index) =>
         row.kind === "skipped" ? (
           <div key={index} className="px-2 text-muted-foreground italic">
             … {row.count} unchanged line{row.count === 1 ? "" : "s"}

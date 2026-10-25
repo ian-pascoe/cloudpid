@@ -1,5 +1,6 @@
 // A line diff for the long values of an Agent change (`docs/spec.md` → Agent changes): a script or a `mise.toml` is
 // shown as what was added and removed, with a few lines of the text around each change, instead of twice in full.
+// @effect-diagnostics missingPipeableSignature:off -- plain functions over values, called from React.
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
@@ -111,7 +112,7 @@ export const foldDiff = (lines: ReadonlyArray<DiffLine>, context = 3): ReadonlyA
   const rows: DiffRow[] = [];
   let hidden = 0;
 
-  lines.forEach((line, index) => {
+  for (const [index, line] of lines.entries()) {
     if (near[index] === true) {
       if (hidden > 0) rows.push({ kind: "skipped", count: hidden });
 
@@ -120,7 +121,7 @@ export const foldDiff = (lines: ReadonlyArray<DiffLine>, context = 3): ReadonlyA
     } else {
       hidden += 1;
     }
-  });
+  }
 
   if (hidden > 0) rows.push({ kind: "skipped", count: hidden });
 

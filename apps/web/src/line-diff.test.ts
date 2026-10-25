@@ -1,11 +1,18 @@
 // The line diff of an Agent change's long values (docs/spec.md → Agent changes).
+import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import { changeDiff, diffLines, foldDiff } from "./line-diff.ts";
+
+/** A text of `count` lines, each made by `line`. */
+const numbered = (count: number, line: (index: number) => string): string =>
+  Arr.join(Arr.makeBy(count, line), "\n");
 
 const MARKS = { added: "+", removed: "-", same: " " } as const;
 
 const shown = (rows: ReturnType<typeof foldDiff>) =>
-  rows.map((row) => (row.kind === "skipped" ? `… ${row.count}` : `${MARKS[row.kind]}${row.text}`));
+  Arr.map(rows, (row) =>
+    row.kind === "skipped" ? `… ${row.count}` : `${MARKS[row.kind]}${row.text}`,
+  );
 
 describe("diffLines", () => {
   it("marks what was put in and taken out, keeping the lines both have", () => {
@@ -29,12 +36,12 @@ describe("diffLines", () => {
   });
 
   it("has no change for the same text", () => {
-    expect(diffLines("a\nb", "a\nb\n").every((line) => line.kind === "same")).toBe(true);
+    expect(Arr.every(diffLines("a\nb", "a\nb\n"), (line) => line.kind === "same")).toBe(true);
   });
 
   it("replaces a huge changed middle wholesale rather than tabulating it", () => {
-    const before = Array.from({ length: 3_000 }, (_, index) => `a${index}`).join("\n");
-    const after = Array.from({ length: 3_000 }, (_, index) => `b${index}`).join("\n");
+    const before = numbered(3_000, (index) => `a${index}`);
+    const after = numbered(3_000, (index) => `b${index}`);
     const lines = diffLines(before, after);
 
     expect(lines).toHaveLength(6_000);
@@ -45,10 +52,8 @@ describe("diffLines", () => {
 
 describe("foldDiff", () => {
   const lines = diffLines(
-    Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n"),
-    Array.from({ length: 20 }, (_, index) => (index === 10 ? "changed" : `line ${index}`)).join(
-      "\n",
-    ),
+    numbered(20, (index) => `line ${index}`),
+    numbered(20, (index) => (index === 10 ? "changed" : `line ${index}`)),
   );
 
   it("folds the unchanged lines far from a change into a count", () => {

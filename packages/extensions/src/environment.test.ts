@@ -569,7 +569,10 @@ describe("environment_container_resize", () => {
     await run(tool("environment_container_resize"), { size: "custom-2", reason: "r" });
     await run(tool("environment_container_resize"), { size: "basic", reason: "r" });
 
-    expect(environments.changes.map(({ change }) => change.value)).toEqual(["custom-2", "basic"]);
+    expect(Arr.map(environments.changes, ({ change }) => change.value)).toEqual([
+      "custom-2",
+      "basic",
+    ]);
   });
 
   it("says so of the size the Environment has, and records nothing", async () => {
