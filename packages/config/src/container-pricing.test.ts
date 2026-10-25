@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { containerRates, INSTANCE_RESOURCES, usageSumsCost } from "./container-pricing.ts";
-import { containerInstance } from "./container-settings.ts";
+import { containerRates, usageSumsCost } from "./container-pricing.ts";
+import { containerInstance, INSTANCE_RESOURCES } from "./container-settings.ts";
 
 describe("INSTANCE_RESOURCES", () => {
   it("has the resources containerInstance starts a custom size with", () => {

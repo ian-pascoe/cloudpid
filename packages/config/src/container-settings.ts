@@ -65,6 +65,45 @@ const isCustomInstance = (type: InstanceType): type is CustomInstanceType =>
 export const containerInstance = (type: InstanceType): NamedInstanceType | ContainerResources =>
   isCustomInstance(type) ? CUSTOM_INSTANCES[type] : type;
 
+/** The resources of every size: Cloudflare's limits page for its named types, `containerInstance`'s for the custom ones. */
+export const INSTANCE_RESOURCES: Readonly<Record<InstanceType, ContainerResources>> = {
+  lite: { vcpu: 1 / 16, memoryMib: 256, diskMb: 2_000 },
+  basic: { vcpu: 1 / 4, memoryMib: 1024, diskMb: 4_000 },
+  "standard-1": { vcpu: 1 / 2, memoryMib: 4096, diskMb: 8_000 },
+  "custom-1": CUSTOM_INSTANCES["custom-1"],
+  "standard-2": { vcpu: 1, memoryMib: 6144, diskMb: 12_000 },
+  "custom-2": CUSTOM_INSTANCES["custom-2"],
+  "standard-3": { vcpu: 2, memoryMib: 8192, diskMb: 16_000 },
+  "standard-4": { vcpu: 4, memoryMib: 12_288, diskMb: 20_000 },
+};
+
+/**
+ * How size `left` compares with size `right`, for a sort and the size limit: by memory, then by vCPU (negative when
+ * `left` is smaller). Memory first, since it is what a running Container costs and what a command runs out of.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a comparator for `Array.sort`, not a combinator.
+export const compareInstances = (left: InstanceType, right: InstanceType): number => {
+  const a = INSTANCE_RESOURCES[left];
+  const b = INSTANCE_RESOURCES[right];
+
+  return a.memoryMib - b.memoryMib || a.vcpu - b.vcpu;
+};
+
+/**
+ * Why an Environment cannot have the size `instance` under its size limit `maxInstance` (a Limit: the agent raises it
+ * only with the owner's Approval), or undefined when it can. A save of the settings is refused for it.
+ */
+export const instanceLimitProblem = ({
+  instance,
+  maxInstance,
+}: {
+  readonly instance: InstanceType;
+  readonly maxInstance: InstanceType;
+}): string | undefined =>
+  compareInstances(instance, maxInstance) > 0
+    ? `The size ${instance} is larger than the size limit ${maxInstance}: raise the limit to ${instance} or more, or pick a size up to ${maxInstance}`
+    : undefined;
+
 const describeResources = ({ vcpu, memoryMib, diskMb }: ContainerResources): string =>
   `${vcpu} vCPU, ${memoryMib / 1024} GiB memory, ${diskMb / 1000} GB disk`;
 
@@ -268,6 +307,12 @@ const Toolchains = Schema.String.check(Schema.makeFilter(toolchainsProblem));
 export const ContainerSettings = Schema.Struct({
   /** The instance type the Container starts on. */
   instance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-1"))),
+  /**
+   * The size limit: the largest size the Environment's size may be, and the agent's `container_resize` may restart a
+   * Container at, ordered by `compareInstances`. A Limit (GLOSSARY.md). The schema does not check `instance` against it:
+   * a save does (`instanceLimitProblem`), and a lenient read raises it to `instance` for an Environment saved before it.
+   */
+  maxInstance: InstanceType.pipe(Schema.withDecodingDefaultKey(Effect.succeed("custom-2"))),
   /** Minutes without a command on the Container before it is stopped (a disk snapshot is taken first). */
   idleMinutes: IdleMinutes.pipe(Schema.withDecodingDefaultKey(Effect.succeed(2))),
   /**
@@ -356,6 +401,10 @@ export const containerOverridesFrom = (settings: ContainerSettings): ContainerSe
     overrides.instance = settings.instance;
   }
 
+  if (settings.maxInstance !== DEFAULT_CONTAINER_SETTINGS.maxInstance) {
+    overrides.maxInstance = settings.maxInstance;
+  }
+
   if (settings.idleMinutes !== DEFAULT_CONTAINER_SETTINGS.idleMinutes) {
     overrides.idleMinutes = settings.idleMinutes;
   }
@@ -384,9 +433,19 @@ const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
   Predicate.isObject(value) && !Arr.isArray(value);
 
 /**
+ * `settings` with the size limit raised to the size where it is smaller: an Environment saved with a size above the
+ * default limit before there was one keeps its size, and its size is its limit.
+ */
+const withLimitAtLeastSize = (settings: ContainerSettings): ContainerSettings =>
+  instanceLimitProblem(settings) === undefined
+    ? settings
+    : { ...settings, maxInstance: settings.instance };
+
+/**
  * The settings `overrides` give once every override that does not resolve is dropped, so a value a later release stops
  * accepting (an instance type Cloudflare retires) costs only itself. Reading what was saved is lenient and writing is
- * strict (`resolveContainerSettings`), as for the global settings.
+ * strict (`resolveContainerSettings`), as for the global settings. A size limit below the size is raised to it
+ * (`withLimitAtLeastSize`).
  */
 export const resolveContainerSettingsLeniently = (
   overrides: Schema.Json,
@@ -405,7 +464,8 @@ export const resolveContainerSettingsLeniently = (
   for (let round = 0; round <= Record.size(overrides); round += 1) {
     const result = decodeOverrides(rest);
 
-    if (Result.isSuccess(result)) return { settings: result.success, dropped };
+    if (Result.isSuccess(result))
+      return { settings: withLimitAtLeastSize(result.success), dropped };
 
     const problems = problemsOf(result.failure);
 

@@ -213,9 +213,50 @@ const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
     };
   });
 
+const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
+  Predicate.isObject(value) && !Arr.isArray(value);
+
+const isJsonArray = (value: Schema.Json): value is Schema.JsonArray => Arr.isArray(value);
+
+/** Tools that were renamed, by their former name: an offered list that names one offers it under its new name. */
+const RENAMED_TOOLS: ReadonlyMap<string, string> = new Map([
+  ["restart_container", "container_restart"],
+]);
+
+/**
+ * `overrides` with each renamed tool in `tools.offered` under its new name (once, where the list now names it twice), so
+ * a list saved before a rename keeps offering the tool, is not reported, and is saved with the new name. Patterns are
+ * left as they are.
+ */
+const withRenamedTools = (overrides: Schema.Json): Schema.Json => {
+  if (!isJsonObject(overrides)) return overrides;
+
+  const tools = overrides["tools"];
+
+  if (tools === undefined || !isJsonObject(tools)) return overrides;
+
+  const offered = tools["offered"];
+
+  if (offered === undefined || !isJsonArray(offered)) return overrides;
+
+  const renamed: Schema.JsonArray = Arr.dedupe(
+    Arr.map(offered, (entry) =>
+      Predicate.isString(entry) ? (RENAMED_TOOLS.get(entry) ?? entry) : entry,
+    ),
+  );
+
+  if (renamed.length === offered.length && Arr.every(offered, (entry, i) => entry === renamed[i])) {
+    return overrides;
+  }
+
+  const renamedTools = Record.map(tools, (entry, key) => (key === "offered" ? renamed : entry));
+
+  return Record.map(overrides, (entry, key) => (key === "tools" ? renamedTools : entry));
+};
+
 /** The settings `overrides` give over the defaults, or why they are not valid settings. */
 export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings, SettingsError> =>
-  Result.mapError(decodeOverrides(overrides), (error) =>
+  Result.mapError(decodeOverrides(withRenamedTools(overrides)), (error) =>
     SettingsError.make({
       message: Arr.join(
         Arr.map(problemsOf(error), (problem) => problem.line),
@@ -227,9 +268,6 @@ export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings,
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
 export const DEFAULT_SETTINGS: Settings = Schema.decodeSync(Settings)({});
-
-const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 /** What of `value` differs from `base`; `undefined` when nothing does. A key `base` lacks is kept whole. */
 const difference = (value: Schema.Json, base: Schema.Json): Schema.Json | undefined => {
@@ -288,7 +326,7 @@ export type LenientSettings = {
  * reading what an earlier release saved.
  */
 export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
-  let rest = overrides;
+  let rest = withRenamedTools(overrides);
   const dropped: string[] = [];
 
   // Dropping a path settles its problem; a few rounds cover a document with several.

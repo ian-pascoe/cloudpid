@@ -2,13 +2,15 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { INSTANCE_RESOURCES } from "./container-pricing.ts";
 import {
+  compareInstances,
   containerInstance,
   DEFAULT_CONTAINER_SETTINGS,
   ignorePatternProblem,
   INSTANCE_DESCRIPTIONS,
+  INSTANCE_RESOURCES,
   INSTANCE_TYPES,
+  instanceLimitProblem,
   MAX_IGNORE_PATTERNS,
   MAX_SCRIPT_BYTES,
   MAX_TOOLCHAINS_BYTES,
@@ -22,7 +24,13 @@ import {
   variableNameProblem,
 } from "./container-settings.ts";
 
-const NONE = { variables: {}, setupScript: "", startScript: "", toolchains: "" };
+const NONE = {
+  maxInstance: "custom-2",
+  variables: {},
+  setupScript: "",
+  startScript: "",
+  toolchains: "",
+} as const;
 
 const resolved = (overrides: Schema.Json): ContainerSettings => {
   const result = resolveContainerSettings(overrides);
@@ -44,6 +52,7 @@ describe("the defaults", () => {
   it("are the 1 vCPU / 3 GiB custom size and a 2-minute idle stop, as the spec says", () => {
     expect(DEFAULT_CONTAINER_SETTINGS).toEqual({
       instance: "custom-1",
+      maxInstance: "custom-2",
       idleMinutes: 2,
       ignore: [],
       variables: {},
@@ -81,6 +90,22 @@ describe("containerInstance", () => {
     }
   });
 
+  it("orders the sizes by memory, then vCPU", () => {
+    const ordered = [...INSTANCE_TYPES].sort(compareInstances);
+
+    expect(ordered).toEqual([
+      "lite",
+      "basic",
+      "custom-1",
+      "standard-1",
+      "standard-2",
+      "custom-2",
+      "standard-3",
+      "standard-4",
+    ]);
+    expect(compareInstances("custom-2", "custom-2")).toBe(0);
+  });
+
   it("describes every instance type", () => {
     for (const type of INSTANCE_TYPES) expect(INSTANCE_DESCRIPTIONS[type]).not.toBe("");
     expect(INSTANCE_DESCRIPTIONS["custom-1"]).toBe("1 vCPU, 3 GiB memory, 12 GB disk");
@@ -106,6 +131,14 @@ describe("resolveContainerSettings", () => {
 
   it("accepts every instance type Cloudflare Containers offers", () => {
     for (const instance of INSTANCE_TYPES) expect(resolved({ instance }).instance).toBe(instance);
+  });
+
+  it("takes any instance type as the size limit, and rejects one Cloudflare does not offer", () => {
+    for (const maxInstance of INSTANCE_TYPES) {
+      expect(resolved({ maxInstance }).maxInstance).toBe(maxInstance);
+    }
+
+    expect(rejected({ maxInstance: "huge" })).toMatch(/^maxInstance: /);
   });
 
   it("rejects an instance type Cloudflare does not offer", () => {
@@ -302,6 +335,30 @@ describe("containerOverridesFrom", () => {
     expect(
       containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, toolchains: "[tools]\n" }),
     ).toEqual({ toolchains: "[tools]\n" });
+    expect(
+      containerOverridesFrom({ ...DEFAULT_CONTAINER_SETTINGS, maxInstance: "standard-4" }),
+    ).toEqual({ maxInstance: "standard-4" });
+  });
+});
+
+describe("instanceLimitProblem", () => {
+  it("accepts a size up to the size limit", () => {
+    expect(instanceLimitProblem({ instance: "custom-2", maxInstance: "custom-2" })).toBeUndefined();
+    expect(instanceLimitProblem(DEFAULT_CONTAINER_SETTINGS)).toBeUndefined();
+    // standard-1 has more memory than custom-1, though fewer vCPU.
+    expect(
+      instanceLimitProblem({ instance: "custom-1", maxInstance: "standard-1" }),
+    ).toBeUndefined();
+  });
+
+  it("refuses a size above the size limit, naming both", () => {
+    const problem = instanceLimitProblem({ instance: "standard-3", maxInstance: "custom-2" });
+
+    expect(problem).toMatch(/standard-3/);
+    expect(problem).toMatch(/custom-2/);
+    expect(instanceLimitProblem({ instance: "standard-1", maxInstance: "custom-1" })).toMatch(
+      /standard-1.*custom-1/,
+    );
   });
 });
 
@@ -329,6 +386,20 @@ describe("resolveContainerSettingsLeniently", () => {
 
     expect(settings).toEqual({ ...DEFAULT_CONTAINER_SETTINGS, startScript: "make up\n" });
     expect(dropped).toHaveLength(5);
+  });
+
+  it("raises the size limit to the size of an Environment saved larger before it had one, and reports nothing", () => {
+    expect(resolveContainerSettingsLeniently({ instance: "standard-4" })).toEqual({
+      settings: {
+        ...DEFAULT_CONTAINER_SETTINGS,
+        instance: "standard-4",
+        maxInstance: "standard-4",
+      },
+      dropped: [],
+    });
+    expect(resolveContainerSettingsLeniently({ instance: "standard-2" }).settings.maxInstance).toBe(
+      "custom-2",
+    );
   });
 
   it("gives the defaults for overrides that are not an object", () => {
