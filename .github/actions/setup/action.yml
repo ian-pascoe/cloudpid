@@ -1,0 +1,49 @@
+name: Set up pnpm and dependencies
+description: >-
+  pnpm (the version in package.json's `packageManager`), Node LTS, the pnpm store from the Actions cache, and
+  `pnpm install --frozen-lockfile`. The store is keyed by the lockfile and falls back to the newest store of any lockfile,
+  so a lockfile change downloads only what changed. With `save-cache: false` the cache is only read, for jobs that hold
+  deploy credentials.
+
+inputs:
+  save-cache:
+    description: Write the store back to the cache when the lockfile's key missed (`false` only restores).
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Version comes from `packageManager` in package.json.
+    - uses: pnpm/action-setup@v6
+
+    - uses: actions/setup-node@v7
+      with:
+        node-version: lts/*
+
+    - id: store
+      shell: bash
+      run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      if: inputs.save-cache == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-${{ runner.os }}-
+
+    - if: inputs.save-cache != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.store.outputs.path }}
+        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-${{ runner.os }}-
+
+    - shell: bash
+      run: pnpm install --frozen-lockfile
+
+    # A store restored from another lockfile's key still holds the packages that lockfile dropped; drop them before the
+    # job saves it under this lockfile's key, so the cache does not grow with every dependency change.
+    - if: inputs.save-cache == 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: pnpm store prune
