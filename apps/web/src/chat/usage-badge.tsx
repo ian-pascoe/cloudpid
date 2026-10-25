@@ -8,7 +8,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { ContextUsage, SessionUsage } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
-import { placePopover } from "../components/ui/popover.tsx";
+import { hidePopover, placePopover } from "../components/ui/popover.tsx";
 import { cn } from "../lib/utils.ts";
 import { byteSize, dollars, duration, spendLevel, tokenCount } from "../format.ts";
 import { usageAtom } from "../session/atoms.ts";
@@ -246,9 +246,7 @@ export const UsageBadge = () => {
   useEffect(() => {
     if (!open) return;
 
-    const close = () => {
-      if (panel.current?.matches(":popover-open") === true) panel.current.hidePopover();
-    };
+    const close = () => hidePopover(panel.current);
 
     const onPointerDown = (event: PointerEvent) => {
       if (!within(event.target, trigger.current, panel.current)) close();
@@ -314,9 +312,7 @@ export const UsageBadge = () => {
     placePopover(breakdown, button, "end");
   };
 
-  const hide = () => {
-    if (panel.current?.matches(":popover-open") === true) panel.current.hidePopover();
-  };
+  const hide = () => hidePopover(panel.current);
 
   return (
     <>

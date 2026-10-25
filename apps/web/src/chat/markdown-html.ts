@@ -11,8 +11,9 @@ import remarkRehype from "remark-rehype";
 import { unified } from "unified";
 
 /**
- * Images become their alt text, as the transcript does not load them either: a pasted `<img>` would fetch whatever URL
- * the model named. Raw HTML in the markdown is dropped (remark-rehype's default), and the rest sanitized.
+ * Markdown in, HTML out. Images become their alt text, as the transcript does not load them either: a pasted `<img>`
+ * would fetch whatever URL the model named. Raw HTML in the markdown is dropped (remark-rehype's default), and the rest
+ * sanitized.
  */
 const processor = unified()
   .use(remarkParse)

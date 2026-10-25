@@ -2,32 +2,26 @@
 // @effect-diagnostics missingPipeableSignature:off -- a React component, not a combinator.
 
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { cn } from "../../lib/utils.ts";
-import { type Align, placePopover } from "./popover.tsx";
+import { hidePopover, placePopover } from "./popover.tsx";
 
 /** How long a mouse rests on the control before its tooltip shows, so one passing over a row of buttons shows none. */
 const SHOW_AFTER_MS = 400;
 
 /**
- * A short note on a control, such as what an icon button does or why it is disabled: shown under it (above where there is
+ * A short tip on a control, such as what an icon button does or why it is disabled: shown under it (above where there is
  * no room) after a mouse rests on it, or at once when the keyboard focuses it; hidden when the pointer or the focus
  * leaves, on a press, on Escape and on a scroll. A popover in the top layer, so never clipped. The control gets the
- * note's id through `children`, for its `aria-describedby`. A touch shows nothing: a tap is the press itself.
+ * tip's id through `children`, for its `aria-describedby`. A touch shows nothing: a tap is the press itself.
  *
  * The control is wrapped in a span that hears the pointer, so a disabled button, which hears none, still says why. A
- * popover the control opens (a menu) shows no note.
+ * popover the control opens (a menu) shows no tip, nor does the control while that popover is open.
  */
 export const Tooltip = ({
   content,
-  align = "center",
-  className,
   children,
 }: {
   content: ReactNode;
-  /** Which edge of the control the note lines up with. */
-  align?: Align;
-  className?: string | undefined;
-  /** The control, given the note's id. */
+  /** The control, given the tip's id. */
   children: (describedBy: string) => ReactNode;
 }) => {
   const id = useId();
@@ -40,42 +34,45 @@ export const Tooltip = ({
     clearTimeout(timer.current);
 
     const control = anchor.current;
-    const note = panel.current;
+    const tip = panel.current;
 
-    if (control === null || note === null || note.matches(":popover-open")) return;
+    if (
+      control === null ||
+      tip === null ||
+      tip.matches(":popover-open") ||
+      control.querySelector(":popover-open") !== null
+    ) {
+      return;
+    }
 
-    note.showPopover();
-    placePopover(note, control, align);
+    tip.showPopover();
+    placePopover(tip, control, "center");
   };
 
   const hide = () => {
     clearTimeout(timer.current);
-
-    if (panel.current?.matches(":popover-open") === true) panel.current.hidePopover();
+    hidePopover(panel.current);
   };
 
-  // Whether an event is the control's, not a popover's it opened: a menu's items are in the wrapper too, and are
-  // entered and focused without a note.
+  // Whether an event is the control's, not a popover's it opened: a menu's items are in the wrapper too.
   const onControl = (target: EventTarget) => {
     const opened = target instanceof Element ? target.closest("[popover]") : null;
 
     return opened === null || anchor.current?.contains(opened) !== true;
   };
 
-  // A note whose text changes while it shows ("Copied") is placed again for its new width.
+  // A tip whose text changes while it shows ("Copied") is placed again for its new width.
   useLayoutEffect(() => {
     if (open && anchor.current !== null && panel.current !== null) {
-      placePopover(panel.current, anchor.current, align);
+      placePopover(panel.current, anchor.current, "center");
     }
-  }, [open, content, align]);
+  }, [open, content]);
 
-  // The control moves away from under the note when the page scrolls.
+  // The control moves away from under the tip when the page scrolls.
   useEffect(() => {
     if (!open) return;
 
-    const close = () => {
-      if (panel.current?.matches(":popover-open") === true) panel.current.hidePopover();
-    };
+    const close = () => hidePopover(panel.current);
 
     window.addEventListener("scroll", close, true);
 
@@ -115,10 +112,7 @@ export const Tooltip = ({
         popover="manual"
         role="tooltip"
         onToggle={(event) => setOpen(event.newState === "open")}
-        className={cn(
-          "pointer-events-none fixed m-0 max-w-64 rounded-md bg-foreground px-2 py-1 text-xs text-background shadow-sm",
-          className,
-        )}
+        className="pointer-events-none fixed m-0 max-w-64 rounded-md bg-foreground px-2 py-1 text-xs text-background shadow-sm"
       >
         {content}
       </div>

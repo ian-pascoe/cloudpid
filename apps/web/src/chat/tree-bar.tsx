@@ -18,6 +18,7 @@ import {
   GitBranch,
   GitFork,
   Split,
+  X,
 } from "lucide-react";
 import { use, useEffect, useState } from "react";
 import { useCall } from "../calls.ts";
@@ -49,8 +50,16 @@ import {
 } from "./tree-actions.ts";
 import { forkingAtom, switchBranchAtom } from "./tree-state.ts";
 
+/**
+ * The message's controls show on hover or focus with a fine pointer, always on a touch screen. The message is the
+ * `group/message` around them.
+ */
+const revealOnHover =
+  "pointer-fine:opacity-0 pointer-fine:group-focus-within/message:opacity-100 pointer-fine:group-hover/message:opacity-100";
+
+// A disabled one lets the pointer through to its tooltip's wrapper, which says why.
 const chevron =
-  "touch-target inline-flex size-7 items-center justify-center rounded-md hover:bg-accent disabled:opacity-50";
+  "touch-target inline-flex size-7 items-center justify-center rounded-md hover:bg-accent disabled:pointer-events-none disabled:opacity-50";
 
 /**
  * The ‹ n/m › between a node's sibling Session branches: each lands on the branch through it that was active last.
@@ -82,34 +91,47 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
   };
 
   return (
-    <span className="inline-flex items-center text-xs text-muted-foreground tabular-nums">
-      <button
-        type="button"
-        aria-label="Previous session branch"
-        title={busy ? WHILE_BUSY : "Previous session branch"}
-        disabled={busy || index === 0}
-        onClick={() => {
-          go(siblings[index - 1]);
-        }}
-        className={chevron}
-      >
-        <ChevronLeft className="size-3.5" aria-hidden />
-      </button>
+    <span
+      className={cn(
+        "inline-flex items-center text-xs text-muted-foreground tabular-nums",
+        revealOnHover,
+      )}
+    >
+      <Tooltip content={busy ? WHILE_BUSY : "Previous session branch"}>
+        {(describedBy) => (
+          <button
+            type="button"
+            aria-label="Previous session branch"
+            aria-describedby={busy ? describedBy : undefined}
+            disabled={busy || index === 0}
+            onClick={() => {
+              go(siblings[index - 1]);
+            }}
+            className={chevron}
+          >
+            <ChevronLeft className="size-3.5" aria-hidden />
+          </button>
+        )}
+      </Tooltip>
       <span aria-label={`Session branch ${index + 1} of ${siblings.length}`}>
         {index + 1}/{siblings.length}
       </span>
-      <button
-        type="button"
-        aria-label="Next session branch"
-        title={busy ? WHILE_BUSY : "Next session branch"}
-        disabled={busy || index === siblings.length - 1}
-        onClick={() => {
-          go(siblings[index + 1]);
-        }}
-        className={chevron}
-      >
-        <ChevronRight className="size-3.5" aria-hidden />
-      </button>
+      <Tooltip content={busy ? WHILE_BUSY : "Next session branch"}>
+        {(describedBy) => (
+          <button
+            type="button"
+            aria-label="Next session branch"
+            aria-describedby={busy ? describedBy : undefined}
+            disabled={busy || index === siblings.length - 1}
+            onClick={() => {
+              go(siblings[index + 1]);
+            }}
+            className={chevron}
+          >
+            <ChevronRight className="size-3.5" aria-hidden />
+          </button>
+        )}
+      </Tooltip>
     </span>
   );
 };
@@ -138,20 +160,23 @@ const barButton =
 /** How long Copy says it copied. */
 const COPIED_MS = 2000;
 
-/** What Copy says: what it does, then whether the last copy took. */
-const COPY_TITLES = {
-  idle: "Copy message",
-  copied: "Copied",
-  failed: "The browser refused to copy.",
+/**
+ * What Copy says and shows: what it does, then for a moment whether the last copy took. The icon says it too, for a
+ * mouse (a press hides the tooltip) and a touch (which has none); a screen reader hears it from a status.
+ */
+const COPY_STATES = {
+  idle: { tip: "Copy message", Icon: Copy },
+  copied: { tip: "Copied", Icon: Check },
+  failed: { tip: "The browser refused to copy.", Icon: X },
 } as const;
 
 /**
- * Copies the message it is under: the owner's words as they were typed; an answer's markdown as text, and as HTML too
+ * Copies the message it is under: the owner's words as text; an answer's markdown as text, and as HTML too
  * (`formatted`), which a document or an email pastes with its formatting.
  */
 const CopyButton = ({ formatted }: { formatted: boolean }) => {
   const text = useAuiState((state) => messageText(state.message.content));
-  const [copied, setCopied] = useState<keyof typeof COPY_TITLES>("idle");
+  const [copied, setCopied] = useState<keyof typeof COPY_STATES>("idle");
 
   useEffect(() => {
     if (copied === "idle") return;
@@ -163,26 +188,32 @@ const CopyButton = ({ formatted }: { formatted: boolean }) => {
 
   if (text === "") return null;
 
-  return (
-    <Tooltip content={COPY_TITLES[copied]}>
-      {(describedBy) => (
-        <button
-          type="button"
-          className={barButton}
-          aria-label={copied === "copied" ? "Copied" : "Copy message"}
-          aria-describedby={describedBy}
-          onClick={() => {
-            const html = formatted
-              ? import("./markdown-html.ts").then(({ markdownHtml }) => markdownHtml(text))
-              : undefined;
+  const { tip, Icon } = COPY_STATES[copied];
 
-            void copyToClipboard(text, html).then((done) => {
-              setCopied(done ? "copied" : "failed");
-            });
-          }}
-        >
-          {copied === "copied" ? <Check aria-hidden /> : <Copy aria-hidden />}
-        </button>
+  return (
+    <Tooltip content={tip}>
+      {() => (
+        <>
+          <button
+            type="button"
+            className={barButton}
+            aria-label={COPY_STATES.idle.tip}
+            onClick={() => {
+              const html = formatted
+                ? import("./markdown-html.ts").then(({ markdownHtml }) => markdownHtml(text))
+                : undefined;
+
+              void copyToClipboard(text, html).then((done) => {
+                setCopied(done ? "copied" : "failed");
+              });
+            }}
+          >
+            <Icon aria-hidden />
+          </button>
+          <span role="status" className="sr-only">
+            {copied === "idle" ? "" : tip}
+          </span>
+        </>
       )}
     </Tooltip>
   );
@@ -242,7 +273,7 @@ const Bar = ({ node, tree }: { node: TreeNode; tree: SessionTree }) => {
   return (
     <div className={cn("flex items-center gap-1", owner ? "justify-end" : "justify-start")}>
       {owner && <Chevrons tree={tree} id={node.id} />}
-      <span className="flex items-center gap-0.5 pointer-fine:opacity-0 pointer-fine:group-focus-within/message:opacity-100 pointer-fine:group-hover/message:opacity-100">
+      <span className={cn("flex items-center gap-0.5", revealOnHover)}>
         <CopyButton formatted={!owner} />
         {!scope.archived && (
           <Tooltip content={branchTitle(busy, owner, latest)}>
