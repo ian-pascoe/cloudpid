@@ -280,7 +280,7 @@ describe("Approval over the Session socket", () => {
       state.storage.kv.put("approval-requests", [
         {
           id: "99",
-          conversationId: 0,
+          conversationId: 1,
           tool: "settings_spend_limit_set",
           target: "the Settings",
           change: "Spend limit",

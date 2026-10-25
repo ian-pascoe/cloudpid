@@ -575,7 +575,7 @@ describe("environment_delete", () => {
     expect(text).toContain("The user approved: deleted");
     expect(result.details).toMatchObject({ approval: { approved: true } });
     expect(logged).toEqual([
-      { tool: "environment_delete", environmentName: "Other", field: "environment" },
+      { tool: "environment_delete", environmentName: "Other", field: "deleted" },
     ]);
   });
 

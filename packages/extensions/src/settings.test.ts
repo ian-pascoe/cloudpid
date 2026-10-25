@@ -263,6 +263,9 @@ describe("settings_get", () => {
     expect(shown).toContain(`Offered tools`);
     expect(shown).toContain(Arr.join(DEFAULT_OFFERED_TOOLS, ", "));
     expect(shown).toContain("Spend limit per Session (US dollars): not set");
+    // The Limits say which tool changes them, with the owner's Approval.
+    expect(shown).toContain("settings_spend_limit_set changes it once the user approves");
+    expect(shown).toContain("Subagent depth (levels of subagents below the root): 2.");
     expect(shown).toContain("subagents.readToolset = read");
   });
 

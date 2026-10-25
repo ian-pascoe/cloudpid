@@ -74,8 +74,9 @@ const BUILD_MARK_SUFFIX = ".build";
 
 /**
  * The field of the Agent change that records a Secret kept, by its name only: `secrets.<NAME>`, `kept` after it, and
- * before it `kept` where the scope kept one of the name already (its value replaced), else none. There is no revert: the
- * history holds no value to bring back.
+ * before it `kept` where the scope kept one of the name already (its value replaced), else none. A kept Secret the agent
+ * deleted with the owner's Approval (`environment_secret_delete`) is recorded the other way round: `kept` before, none
+ * after. There is no revert: the history holds no value to bring back.
  */
 export const keptSecretField = (name: string): string => `${KEPT_SECRET_FIELD}${name}`;
 

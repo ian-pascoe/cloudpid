@@ -17,6 +17,7 @@ import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   type AgentChange,
   DEFAULT_ENVIRONMENT,
+  DELETED_FIELD,
   keptSecretField,
   SecretName,
 } from "@cloudpid/protocol";
@@ -654,7 +655,7 @@ export const ApprovalTools: Effect.Effect<
               yield* log.record({
                 tool: "environment_delete",
                 environmentName: details.name,
-                field: "environment",
+                field: DELETED_FIELD,
               });
 
               return {
@@ -668,7 +669,7 @@ export const ApprovalTools: Effect.Effect<
                   approval: { approved: true },
                   agentChange: {
                     environment: { id: details.id, name: details.name },
-                    field: "environment",
+                    field: DELETED_FIELD,
                     before: now.words,
                     after: null,
                   },
