@@ -486,6 +486,9 @@ importers:
 
   packages/extensions:
     dependencies:
+      '@cloudpid/config':
+        specifier: workspace:*
+        version: link:../config
       '@cloudpid/effect-durable':
         specifier: workspace:*
         version: link:../effect-durable
@@ -510,10 +513,6 @@ importers:
       yaml:
         specifier: 2.9.1
         version: 2.9.1
-    devDependencies:
-      '@cloudpid/config':
-        specifier: workspace:*
-        version: link:../config
 
   packages/protocol:
     dependencies:

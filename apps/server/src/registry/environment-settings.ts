@@ -4,6 +4,7 @@
 import {
   type ContainerSettings,
   containerOverridesFrom,
+  instanceLimitProblem,
   resolveContainerSettings,
   resolveContainerSettingsLeniently,
 } from "@cloudpid/config";
@@ -30,13 +31,20 @@ export const readEnvironmentSettings = (overrides: Schema.Json): EnvironmentSett
 };
 
 /**
- * The state to save for `overrides`, or why they do not resolve, one problem per line. Only what differs from the
- * defaults is kept, so a setting left alone follows later changes of the default.
+ * The state to save for `overrides`, or why they do not resolve, one problem per line, or why the size is larger than
+ * the size limit (`instanceLimitProblem`). Only what differs from the defaults is kept, so a setting left alone follows
+ * later changes of the default.
  */
 export const writeEnvironmentSettings = (
   overrides: Schema.Json,
 ): Result.Result<EnvironmentSettingsState, string> =>
-  Result.map(
+  Result.flatMap(
     Result.mapError(resolveContainerSettings(overrides), (error) => error.message),
-    (settings) => ({ settings, overrides: containerOverridesFrom(settings) }),
+    (settings) => {
+      const problem = instanceLimitProblem(settings);
+
+      return problem === undefined
+        ? Result.succeed({ settings, overrides: containerOverridesFrom(settings) })
+        : Result.fail(problem);
+    },
   );

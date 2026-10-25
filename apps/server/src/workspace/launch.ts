@@ -2,8 +2,8 @@
 // `@cloudflare/computer`'s `ContainerBackend` builds each launch's spec itself and has no hook for either a size that
 // changes or a snapshot, so this wraps the Container API it launches through (`wrap`):
 //
-// - the size is the Workspace's setting when the Container launches, and is then kept for as long as that
-//   Container runs. computer relaunches a running Container whose launch differs from the one asked for, so a setting
+// - the size is the one the agent's resize recorded for it (`resize.ts`), else the Workspace's setting, when the
+//   Container launches, and is then kept for as long as that Container runs. computer relaunches a running Container whose launch differs from the one asked for, so a setting
 //   saved meanwhile must not reach a reconnect to it: it applies at the next launch;
 // - the idle time is kept the same way, for the idle stop;
 // - the latest snapshot is restored when there is one. A Container that does not come up from it is started again from
@@ -26,6 +26,7 @@ import type {
   IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
 import {
+  compareInstances,
   containerInstance,
   DEFAULT_CONTAINER_SETTINGS,
   type InstanceType,
@@ -64,6 +65,11 @@ export type LaunchRecord = {
 export type ContainerLaunchDeps = {
   /** The Workspace's settings now. */
   readonly settings: () => Promise<ContainerSettings>;
+  /**
+   * The size the agent's resize recorded for the next launch (`ContainerResizes`), which it takes instead of the
+   * settings' while it is within their size limit; undefined for none.
+   */
+  readonly resized?: (() => Promise<InstanceType | undefined>) | undefined;
   /** The Container-only paths a launch with `settings` has: the built-in ones, then the Workspace's own. */
   readonly ignore: (settings: ContainerSettings) => readonly string[] | undefined;
   readonly snapshots: Pick<
@@ -121,6 +127,15 @@ export const containerIgnore = (
 
   return all.filter((pattern, index) => all.lastIndexOf(pattern) === index);
 };
+
+/** The size a launch with `settings` has: the one a resize recorded, while the size limit allows it, else the settings'. */
+const launchInstance = (
+  settings: ContainerSettings,
+  resized: InstanceType | undefined,
+): InstanceType =>
+  resized !== undefined && compareInstances(resized, settings.maxInstance) <= 0
+    ? resized
+    : settings.instance;
 
 /** `spec` with computerd's store reset at the Container's start (`RESET_STORE_VARIABLE`) when `reset`. */
 const resettingStore = (spec: ContainerLaunchSpec, reset: boolean): ContainerLaunchSpec =>
@@ -306,7 +321,10 @@ export class ContainerLaunch {
     const kept = running ? await this.#current() : undefined;
     const settings = await this.#deps.settings();
 
-    const instance = kept?.instance ?? (running ? UNRECORDED_INSTANCE : settings.instance);
+    const instance =
+      kept?.instance ??
+      (running ? UNRECORDED_INSTANCE : launchInstance(settings, await this.#deps.resized?.()));
+
     const size = containerInstance(instance);
 
     const ignore = ignoreOf(spec);
@@ -459,7 +477,9 @@ export class ContainerLaunch {
     // `#start`), else this is a launch of its own and the settings decide.
     const instance =
       record?.instance ??
-      (this.#deps.running() ? UNRECORDED_INSTANCE : (await this.#deps.settings()).instance);
+      (this.#deps.running()
+        ? UNRECORDED_INSTANCE
+        : launchInstance(await this.#deps.settings(), await this.#deps.resized?.()));
 
     this.#deps.info("Container launch: restarted from the image (computer's restart)");
 

@@ -82,11 +82,12 @@ export const INSTANCE_RESOURCES: Readonly<Record<InstanceType, ContainerResource
  * `left` is smaller). Memory first, since it is what a running Container costs and what a command runs out of.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a comparator for `Array.sort`, not a combinator.
-export const compareInstances = (left: InstanceType, right: InstanceType): number => {
+export const compareInstances = (left: InstanceType, right: InstanceType): -1 | 0 | 1 => {
   const a = INSTANCE_RESOURCES[left];
   const b = INSTANCE_RESOURCES[right];
+  const difference = a.memoryMib - b.memoryMib || a.vcpu - b.vcpu;
 
-  return a.memoryMib - b.memoryMib || a.vcpu - b.vcpu;
+  return difference < 0 ? -1 : difference > 0 ? 1 : 0;
 };
 
 /**

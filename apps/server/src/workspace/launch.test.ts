@@ -4,7 +4,11 @@
 // the image.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
-import { DEFAULT_CONTAINER_SETTINGS, type ContainerSettings } from "@cloudpid/config";
+import {
+  DEFAULT_CONTAINER_SETTINGS,
+  type ContainerSettings,
+  type InstanceType,
+} from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
 import type { EnvironmentBuild } from "./build-record.ts";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
@@ -24,6 +28,8 @@ const specFor = (ignore: readonly string[]): Spec => ({
 
 type Fake = {
   settings: ContainerSettings;
+  /** The size the agent's resize recorded for the next launch, if any. */
+  resized: InstanceType | undefined;
   running: boolean;
   /** What the platform answers `start` with. */
   outcome: "launched" | "adopted" | "relaunched";
@@ -63,6 +69,7 @@ const open = (
 ) => {
   const state: Fake = {
     settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
+    resized: undefined,
     running: false,
     outcome: "launched",
     restorable: undefined,
@@ -117,6 +124,7 @@ const open = (
   const make = () =>
     new ContainerLaunch({
       settings: async () => state.settings,
+      resized: async () => state.resized,
       ignore: (settings) => [...BUILT_IN, ...settings.ignore],
       image: () => state.image,
       snapshots: {
@@ -349,6 +357,51 @@ describe("a launch", () => {
     expect(state.starts[0]?.instance).toBe("standard-2");
     expect(state.record?.instance).toBe("standard-2");
     expect(state.record?.needsSnapshot).toBe(false);
+  });
+});
+
+describe("a launch after the agent's resize", () => {
+  it("starts on the size the resize recorded instead of the settings', and records it", async () => {
+    const { state, container } = open({ instance: "custom-1" });
+
+    state.resized = "custom-2";
+    state.restorable = { id: "snap-resize", image: "img-1" };
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
+    expect(state.starts[0]?.containerSnapshot).toEqual({ id: "snap-resize" });
+    expect(state.record?.instance).toBe("custom-2");
+  });
+
+  it("keeps the size the running Container launched with on a reconnect, whatever was recorded since", async () => {
+    const { state, container } = open({ instance: "custom-1" });
+
+    await container.start(SPEC);
+    state.running = true;
+    state.outcome = "adopted";
+    state.resized = "custom-2";
+    await container.start(SPEC);
+
+    expect(state.starts[1]?.instance).toEqual({ vcpu: 1, memoryMib: 3072, diskMb: 12_000 });
+  });
+
+  it("uses the recorded size for computer's restart of a launch with no record", async () => {
+    const { state, container } = open({ instance: "custom-1" });
+
+    state.resized = "standard-3";
+    state.settings = { ...state.settings, maxInstance: "standard-4" };
+    await container.restart(SPEC);
+
+    expect(state.restarts[0]?.instance).toBe("standard-3");
+  });
+
+  it("ignores a recorded size above the size limit the settings have now", async () => {
+    const { state, container } = open({ instance: "custom-1", maxInstance: "custom-1" });
+
+    state.resized = "custom-2";
+    await container.start(SPEC);
+
+    expect(state.record?.instance).toBe("custom-1");
   });
 });
 

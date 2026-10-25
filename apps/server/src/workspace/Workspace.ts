@@ -37,6 +37,8 @@ import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import type { InstructionFile } from "@cloudpid/extensions/agents-md-discovery";
 import type { ContainerUsage } from "@cloudpid/protocol";
+import type { InstanceType } from "@cloudpid/config";
+import type { ContainerResizeOutcome } from "@cloudpid/extensions/container";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -49,6 +51,7 @@ import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type ContainerUsageRecord } from "./container-usage.ts";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
+import { ContainerResizes } from "./resize.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
   failure,
@@ -131,6 +134,9 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
+/** Where the size the agent's resize recorded for the next launch is kept, until the idle stop (`ContainerResizes`). */
+const RESIZE_KEY = "cloudpid:container-resize";
+
 /** Where what the Containers have cost is kept (`ContainerUsageLedger`). */
 const USAGE_KEY = "cloudpid:container-usage";
 
@@ -172,6 +178,7 @@ export class Workspace extends ContainerHost {
   readonly #host: WorkspaceEnvHost;
   readonly #container: PerLaunchContainerBackend;
   readonly #idle: IdleStop;
+  readonly #resizes: ContainerResizes;
   readonly #usage: ContainerUsageLedger;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
@@ -242,10 +249,11 @@ export class Workspace extends ContainerHost {
       info: (message) => console.info(message),
     }));
 
-    // The size, idle time and Container-only paths of each launch are the Workspace's settings at that moment, and a
-    // snapshot is restored.
+    // The size, idle time and Container-only paths of each launch are the Workspace's settings at that moment (the size
+    // the agent's resize recorded instead of theirs), and a snapshot is restored.
     const launch = new ContainerLaunch({
       settings: async () => (await this.#settings.read()).settings,
+      resized: () => this.#resizes.recorded(),
       // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/spec.md →
       // Container and Toolchains): the built-in paths, then the Workspace's own, so its `!` patterns can take one back.
       // mise's Toolchains are on the Container's disk and need no entry. The local Container cannot keep any.
@@ -312,6 +320,21 @@ export class Workspace extends ContainerHost {
       await tally(usage.stopped());
     };
 
+    // The agent's resize snapshots and stops the Container as the idle stop does, and the idle stop forgets its size.
+    const resizes = (this.#resizes = new ContainerResizes({
+      settings: async () => (await this.#settings.read()).settings,
+      running: () => ctx.container?.running === true,
+      launched: async () => (await ctx.storage.get<LaunchRecord>(LAUNCH_KEY))?.instance,
+      load: () => ctx.storage.get<InstanceType>(RESIZE_KEY),
+      save: (size) => ctx.storage.put(RESIZE_KEY, size),
+      clear: async () => {
+        await ctx.storage.delete(RESIZE_KEY);
+      },
+      snapshot: () => launch.snapshot("resize"),
+      stop: destroyContainer,
+      info: (message) => console.info(message),
+    }));
+
     this.#idle = new IdleStop({
       idleMs: () => launch.idleMs(),
       now: () => Date.now(),
@@ -326,7 +349,8 @@ export class Workspace extends ContainerHost {
       snapshot: async () => {
         if (!(await this.#builds.isBuild())) await launch.snapshot("idle");
       },
-      stop: destroyContainer,
+      // The size the agent's resize recorded lasts until here.
+      stop: () => resizes.stopIdle(),
       used: () => void tally(usage.seen()),
       busy: (busy) => void tally(usage.busy(busy)),
     });
@@ -743,6 +767,24 @@ export class Workspace extends ContainerHost {
     });
 
     return { wasRunning };
+  }
+
+  /**
+   * Have the Container start on `size` until its idle stop (the agent's `container_resize`; docs/spec.md → Resize by the
+   * agent), within the Environment's size limit: a running Container is snapshotted and stopped (commands running there
+   * end), unless it already runs on `size`, and the next launch restores the snapshot on `size`. The resize holds the
+   * Container from the idle stop meanwhile, so the idle alarm does not stop it under the snapshot and forget the size.
+   */
+  async resizeContainer(options: { readonly size: InstanceType }): Promise<ContainerResizeOutcome> {
+    this.#spare.noteUse();
+
+    await this.#idle.begin();
+
+    try {
+      return await this.#resizes.resize(options.size);
+    } finally {
+      await this.#idle.end();
+    }
   }
 
   /**

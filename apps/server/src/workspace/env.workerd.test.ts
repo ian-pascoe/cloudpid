@@ -5,7 +5,7 @@ import {
   ContainerBackend,
   type IWorkspaceContainerAPI,
 } from "@cloudflare/computer/backends/container";
-import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { DEFAULT_CONTAINER_SETTINGS, type InstanceType } from "@cloudpid/config";
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { secretReference } from "@cloudpid/extensions/secrets/core";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -19,7 +19,9 @@ import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
+import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
+import { ContainerResizes } from "./resize.ts";
 import { workspaceObjectsRemote } from "./lifecycle.ts";
 import { bundledSkills, PRIOR_SKILLS } from "./skills.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
@@ -286,6 +288,147 @@ describe("the Container launch, through computer's own ContainerBackend", () => 
     expect(restarts[0]?.instance).toBe("standard-3");
     expect(restarts[0]?.containerSnapshot).toBeUndefined();
     expect(forgotten).toBe(1);
+  });
+});
+
+describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Object's storage", () => {
+  type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
+
+  const SPEC: Spec = { env: {}, enableInternet: true, name: "WorkspaceContainer" };
+
+  it("launches on the new size from the snapshot, keeps it through a restart, and the launch after the idle stop is on the Environment's size", async () => {
+    await runInDurableObject(env.WORKSPACES.getByName("resize-until-idle"), async (_i, state) => {
+      const { storage } = state;
+      const starts: Spec[] = [];
+      const taken: string[] = [];
+      let running = false;
+      let now = 1_000_000;
+      let snapshot: { id: string; image: string } | undefined;
+
+      const platform: IWorkspaceContainerAPI = {
+        start: async (spec) => {
+          starts.push(spec);
+          running = true;
+
+          return { runtimeId: "r", clientSecret: "s", outcome: "launched" };
+        },
+        restart: async () => {
+          throw new Error("not used");
+        },
+        status: async () => ({ running, exit: null }),
+        exitInfo: async () => null,
+        interceptOutboundHttp: async () => undefined,
+        interceptAllOutboundHttp: async () => undefined,
+        setInactivityTimeout: async () => undefined,
+        fetchPort: async () => {
+          throw new Error("not used");
+        },
+        port: () => {
+          throw new Error("not used");
+        },
+      };
+
+      // The Environment's size is the default, custom-1, under the default size limit, custom-2.
+      const settings = async () => DEFAULT_CONTAINER_SETTINGS;
+
+      const launch: ContainerLaunch = new ContainerLaunch({
+        settings,
+        resized: () => resizes.recorded(),
+        ignore: () => undefined,
+        snapshots: {
+          restorable: async () => snapshot,
+          restored: async () => undefined,
+          forget: async () => undefined,
+          take: async (reason) => {
+            taken.push(reason);
+            snapshot = { id: `snap-${taken.length}`, image: "img-1" };
+
+            return "taken";
+          },
+          capture: async () => ({ outcome: "skipped", reason: "not used" }),
+        },
+        image: () => "img-1",
+        load: () => storage.get<LaunchRecord>("test:launch"),
+        save: (record) => storage.put("test:launch", record),
+        running: () => running,
+        now: () => now,
+        warn: () => undefined,
+        info: () => undefined,
+      });
+
+      const resizes: ContainerResizes = new ContainerResizes({
+        settings,
+        running: () => running,
+        launched: async () => (await storage.get<LaunchRecord>("test:launch"))?.instance,
+        load: () => storage.get<InstanceType>("test:resize"),
+        save: (size) => storage.put("test:resize", size),
+        clear: async () => {
+          await storage.delete("test:resize");
+        },
+        snapshot: () => launch.snapshot("resize"),
+        stop: async () => {
+          running = false;
+        },
+        info: () => undefined,
+      });
+
+      const idle = new IdleStop({
+        idleMs: () => launch.idleMs(),
+        now: () => now,
+        load: () => storage.get<number>("test:last-use"),
+        save: (at) => storage.put("test:last-use", at),
+        setAlarm: async () => undefined,
+        snapshot: async () => {
+          await launch.snapshot("idle");
+        },
+        stop: () => resizes.stopIdle(),
+      });
+
+      const container = launch.wrap(platform);
+      const custom1 = { vcpu: 1, memoryMib: 3072, diskMb: 12_000 };
+      const custom2 = { vcpu: 2, memoryMib: 6144, diskMb: 12_000 };
+
+      // A Container on the Environment's size runs a command.
+      await container.start(SPEC);
+      await idle.touch();
+      expect(starts[0]?.instance).toEqual(custom1);
+
+      // A size above the limit stops nothing.
+      expect(await resizes.resize("standard-3")).toEqual({ outcome: "refused", limit: "custom-2" });
+      expect(running).toBe(true);
+
+      // The agent resizes: the Container is snapshotted and stopped, and the next command's launch restores it larger.
+      expect(await resizes.resize("custom-2")).toMatchObject({
+        outcome: "resized",
+        wasRunning: true,
+        previous: "custom-1",
+        snapshotted: true,
+      });
+      expect(running).toBe(false);
+      await container.start(SPEC);
+      await idle.touch();
+      expect(starts[1]).toMatchObject({ instance: custom2, containerSnapshot: { id: "snap-1" } });
+
+      // A resize to the size it already runs on stops nothing.
+      expect(await resizes.resize("custom-2")).toEqual({ outcome: "unchanged", size: "custom-2" });
+      expect(running).toBe(true);
+
+      // `container_restart` stops it without a snapshot: the next launch keeps the size.
+      running = false;
+      await container.start(SPEC);
+      await idle.touch();
+      expect(starts[2]?.instance).toEqual(custom2);
+
+      // The idle stop snapshots and stops it, and forgets the size: the next launch is on the Environment's again.
+      now += 3 * 60_000;
+      await idle.alarm();
+      expect(running).toBe(false);
+      expect(taken).toEqual(["resize", "idle"]);
+      expect(await storage.get("test:resize")).toBeUndefined();
+
+      await container.start(SPEC);
+      expect(starts[3]).toMatchObject({ instance: custom1, containerSnapshot: { id: "snap-2" } });
+    });
   });
 });
 
@@ -672,6 +815,44 @@ describe("restarting a Workspace's Container", () => {
         state.storage.get("cloudpid:container-snapshot"),
       ),
     ).toBeUndefined();
+  });
+
+  it("records the agent's resize for the next launch, within the Environment's size limit, and keeps it through a restart", async () => {
+    const workspace = env.WORKSPACES.getByName("agent-resizes");
+
+    const resized = () =>
+      runInDurableObject(workspace, (_instance, state) =>
+        state.storage.get("cloudpid:container-resize"),
+      );
+
+    expect(await workspace.updateContainerSettings({ maxInstance: "standard-3" })).toMatchObject({
+      ok: true,
+    });
+
+    // The test Worker runs no Container: the size is only recorded.
+    expect(await workspace.resizeContainer({ size: "standard-3" })).toEqual({
+      outcome: "resized",
+      wasRunning: false,
+      previous: "custom-1",
+      next: "standard-3",
+      environment: "custom-1",
+      snapshotted: false,
+    });
+    expect(await resized()).toBe("standard-3");
+
+    expect(await workspace.resizeContainer({ size: "standard-4" })).toEqual({
+      outcome: "refused",
+      limit: "standard-3",
+    });
+    expect(await workspace.stopContainer({ forgetSnapshot: true })).toEqual({ wasRunning: false });
+    expect(await resized()).toBe("standard-3");
+
+    // Back to the Environment's own size: nothing is recorded.
+    expect(await workspace.resizeContainer({ size: "custom-1" })).toMatchObject({
+      previous: "standard-3",
+      next: "custom-1",
+    });
+    expect(await resized()).toBeUndefined();
   });
 });
 
