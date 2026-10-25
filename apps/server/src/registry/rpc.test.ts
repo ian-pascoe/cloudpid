@@ -330,6 +330,11 @@ const fakeRegistries = () => {
     },
     restartContainer: (name) => workspaceCall("restartContainer", name),
     carry: (name, branch, repos) => workspaceCall("carry", `${name}:${branch}:${repos.join(",")}`),
+    workState: async (name) => {
+      calls.push(`workState:${name}`);
+
+      return [];
+    },
     prepareSpare: (name, setup) => {
       spareSecrets.set(name, "secrets" in setup ? setup.secrets : undefined);
       spareBuilds.set(name, setup.build ?? null);
@@ -729,6 +734,12 @@ const fakeRegistries = () => {
         };
       }),
     listWorkspaces: () => Effect.sync(() => [...workspaces]),
+    // The endpoint makes no Subagent Workspace: a Session does (`subagent-workspaces.ts`).
+    createSubagentWorkspace: () => Effect.succeed({ refused: "no-session" as const }),
+    listSubagentWorkspaces: ({ session }) =>
+      Effect.sync(() =>
+        Arr.filter(workspaces, (workspace) => workspace.subagent?.session === session),
+      ),
     upkeepSpares: ({ environments: named }) =>
       Effect.sync(() => {
         calls.push(`upkeepSpares:${named === undefined ? "*" : Arr.join(named, ",")}`);
@@ -1557,6 +1568,37 @@ it("deletes a Session without touching its Workspace while another Session, arch
   expect(await call(fake, (registry) => registry.listWorkspaces())).toMatchObject([
     { id: session.workspace },
   ]);
+});
+
+it("deletes a Session with its Subagent Workspaces: the Session's object, then each one's object and record, then the Session", async () => {
+  const fake = fakeRegistries();
+  const kept = await call(fake, (registry) => registry.createSession({}));
+
+  const session = await call(fake, (registry) =>
+    registry.createSession({ workspace: kept.workspace }),
+  );
+
+  fake.workspaces.push({
+    id: "5ab0a9e7",
+    environment: DEFAULT_ENVIRONMENT,
+    branch: "cloudpid/5ab0a9e7",
+    base: "main",
+    repos: [],
+    directory: "/workspace",
+    createdAt: 0,
+    subagent: { session: session.id, agent: "impl" },
+  });
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    "destroyWorkspace:ws:5ab0a9e7",
+    "deleteWorkspace:5ab0a9e7",
+    `deleteSession:${session.id}`,
+  ]);
+  expect(Arr.map(fake.workspaces, (workspace) => workspace.id)).toEqual([kept.workspace]);
 });
 
 it("removes a Workspace with its last Session: the Session, then the Workspace's object, then its record", async () => {

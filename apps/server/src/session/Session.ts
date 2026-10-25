@@ -16,7 +16,7 @@ import { Images } from "@cloudpid/extensions/images";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SettingsAccess } from "@cloudpid/extensions/settings";
-import { SubagentSettings } from "@cloudpid/extensions/subagents";
+import { SubagentSettings, SubagentWorkspaces } from "@cloudpid/extensions/subagents";
 import { ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
 import {
@@ -41,6 +41,9 @@ import * as Tracer from "effect/Tracer";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { buildUpkeep } from "../registry/builds.ts";
 import { spareUpkeep } from "../registry/rpc.ts";
+import { removals } from "../registry/removal.ts";
+import { sumContainerUsage } from "./container-cost.ts";
+import { sessionSubagentWorkspaces } from "./subagent-workspaces.ts";
 import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
 import { sessionLifecycle } from "./environment-lifecycle.ts";
 import { runChanges } from "./agent-changes.ts";
@@ -353,6 +356,21 @@ export const SessionLive = Session.make(
           builds,
         });
 
+        // The Session's Subagent Workspaces: registered by the Registry as the Session's, removed as a Workspace is.
+        const subagentWorkspaces = sessionSubagentWorkspaces({
+          registry: registryObject,
+          session: name,
+          placement,
+          objects: workspaceObjects,
+          remove: removals(registryObject, {
+            workspaces: workspaceObjects,
+            sessions: { destroy: destroySessionObject(sessions) },
+          }).removeSubagentWorkspace,
+          spares,
+          builds,
+          run: (effect) => runtime.runPromise(effect),
+        });
+
         // The Agent changes waiting for the owner's Approval: kept here, shown on the sockets, and pushed.
         const sessionApprovals = sessionApprovalsLayer({
           storage: kv,
@@ -410,15 +428,25 @@ export const SessionLive = Session.make(
                   .sessionSecrets({ session: name })
                   .pipe(
                     Effect.tap((kept) =>
-                      // @effect-diagnostics-next-line asyncFunction:off
-                      Effect.tryPromise(async () => {
-                        const { workspace: id } = await placement();
+                      Effect.gen(function* () {
+                        const { workspace: id } = yield* Effect.tryPromise(() => placement());
 
-                        if (id !== null) {
-                          await workspaces
-                            .getByName(workspaceObjectName(id))
-                            .updateEnvironmentSecrets(kept);
-                        }
+                        if (id === null) return;
+
+                        // The Session's Workspace, and each of its Subagent Workspaces.
+                        const subagents = yield* registries
+                          .getByName(REGISTRY_NAME)
+                          .listSubagentWorkspaces({ session: name });
+
+                        yield* Effect.tryPromise(() =>
+                          Promise.all(
+                            Arr.map([id, ...Arr.map(subagents, (each) => each.id)], (each) =>
+                              workspaces
+                                .getByName(workspaceObjectName(each))
+                                .updateEnvironmentSecrets(kept),
+                            ),
+                          ),
+                        );
                       }),
                     ),
                   ),
@@ -461,12 +489,20 @@ export const SessionLive = Session.make(
                   ),
                 ),
                 reset: (reason) => state.raw.abort(reason),
-                // Read where the Session works, without readying the Workspace: it starts nothing.
+                // Read where the Session and its Subagent Workspaces work, without readying them: it starts nothing.
                 // @effect-diagnostics-next-line asyncFunction:off
-                containerUsage: async () => {
+                containerUsage: async (subagents) => {
                   const { workspace: id, object } = await placement();
 
-                  return id === null ? null : workspaces.getByName(object).containerUsage();
+                  if (id === null) return null;
+
+                  const read = await Promise.all(
+                    Arr.map([object, ...subagents], (each) =>
+                      workspaces.getByName(each).containerUsage(),
+                    ),
+                  );
+
+                  return sumContainerUsage(Arr.filter(read, (usage) => usage !== null));
                 },
                 extensions: sessionExtensions.pipe(
                   // After every other extension, so each of their tools is named and its call is a span.
@@ -480,6 +516,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(WorkspaceContainer, workspace.container),
+                  Effect.provideService(SubagentWorkspaces, subagentWorkspaces),
                   Effect.provideService(Environments, environments),
                   Effect.provideService(EnvironmentRemoval, environmentRemoval),
                   Effect.provideService(

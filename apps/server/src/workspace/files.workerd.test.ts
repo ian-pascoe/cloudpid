@@ -29,7 +29,7 @@ const executionEnv = new ComputerExecutionEnv({
 });
 
 const extension = await Effect.runPromise(
-  Files.pipe(Effect.provideService(WorkspaceFiles, new ComputerFiles(workspace))),
+  Files.pipe(Effect.provideService(WorkspaceFiles, () => new ComputerFiles(workspace))),
 );
 
 /** What the model reads from calling `name`: the result's text, and whether it is an error. */
@@ -211,14 +211,14 @@ describe("the harness's own files and the Container's", () => {
 
     const marked = await Effect.runPromise(
       Files.pipe(
-        Effect.provideService(WorkspaceFiles, {
+        Effect.provideService(WorkspaceFiles, () => ({
           readdir: async (path) => [
             ...(await files.readdir(path)),
             { name: ".venv", isDirectory: true, isSymbolicLink: false, containerOnly: true },
           ],
           find: (directory, pattern, options) => files.find(directory, pattern, options),
           grep: (pattern, path, options) => files.grep(pattern, path, options),
-        }),
+        })),
       ),
     );
 

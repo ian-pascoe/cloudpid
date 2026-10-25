@@ -255,10 +255,13 @@ export type SessionHostOptions<R = never> = {
    */
   readonly lookupEnv?: HarnessOptions["env"];
   /**
-   * What the Session's Workspace's Containers have cost, read with its usage (null: none ran, or the Session has no
-   * Workspace). A read that fails leaves it out of that message.
+   * What the Containers of the Session's Workspace and of `subagents`' Workspaces (each Subagent Workspace's object, as
+   * the Subagents document has it) have cost, read with its usage (null: none ran, or the Session has no Workspace). A
+   * read that fails leaves it out of that message.
    */
-  readonly containerUsage?: (() => Promise<ContainerUsage | null>) | undefined;
+  readonly containerUsage?:
+    | ((subagents: ReadonlyArray<string>) => Promise<ContainerUsage | null>)
+    | undefined;
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
   /** How long a submitted message's expansion may take before it goes as typed. Defaults to `EXPAND_TIMEOUT`. */
@@ -1579,7 +1582,15 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     warn: (message: string) => void,
   ): Promise<ContainerUsage | null> => {
     try {
-      return (await options.containerUsage?.()) ?? null;
+      if (options.containerUsage === undefined) return null;
+
+      const state = await harness.harness.snapshot(SubagentsDoc, context);
+
+      const subagents = Arr.flatMap(Record.values(state?.agents ?? {}), (agent) =>
+        agent.workspace === undefined ? [] : [agent.workspace.object],
+      );
+
+      return (await options.containerUsage(subagents)) ?? null;
     } catch (error) {
       warn(error instanceof Error ? error.message : String(error));
 

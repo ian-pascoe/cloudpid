@@ -24,6 +24,9 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { type ConversationTarget, conversationTarget } from "./conversation-target.ts";
+
+export type { ConversationTarget } from "./conversation-target.ts";
 
 /** An entry of a directory. */
 export type DirectoryEntry = {
@@ -73,10 +76,20 @@ export interface FileSearch {
   ): Promise<ReadonlyArray<GrepMatch>>;
 }
 
-/** The Workspace's file search, for the tools: the Session provides it over its Workspace. */
-export class WorkspaceFiles extends Context.Service<WorkspaceFiles, FileSearch>()(
-  "@cloudpid/extensions/files/WorkspaceFiles",
-) {}
+/**
+ * The file search of the Workspace a conversation works in, for the tools: the Session provides it over its Workspace, or
+ * over the conversation's Subagent Workspace when it has one.
+ */
+export class WorkspaceFiles extends Context.Service<
+  WorkspaceFiles,
+  (target: ConversationTarget) => FileSearch
+>()("@cloudpid/extensions/files/WorkspaceFiles") {}
+
+/** The file search of the Workspace the calling conversation works in. */
+const searchFor = (api: ToolExecutionApi) =>
+  Effect.flatMap(conversationTarget(api), (target) =>
+    Effect.map(Effect.service(WorkspaceFiles), (files) => files(target)),
+  );
 
 /** A search tool call failed; its message is what the model sees. */
 export class FilesError extends Schema.TaggedError<FilesError, { readonly brand: unique symbol }>()(
@@ -249,7 +262,7 @@ const Ls = defineEffectTool({
     limit: optionalLimit(`Maximum number of entries to return (default: ${DEFAULT_LS_LIMIT})`),
   }),
   execute: Effect.fnUntraced(function* ({ path, limit }, api) {
-    const files = yield* WorkspaceFiles;
+    const files = yield* searchFor(api);
     const env = yield* requireEnv(api);
     const directory = yield* directoryPath(env, path);
     const effectiveLimit = limit ?? DEFAULT_LS_LIMIT;
@@ -321,7 +334,7 @@ const Find = defineEffectTool({
     limit: optionalLimit(`Maximum number of results (default: ${DEFAULT_FIND_LIMIT})`),
   }),
   execute: Effect.fnUntraced(function* ({ pattern, path, limit }, api) {
-    const files = yield* WorkspaceFiles;
+    const files = yield* searchFor(api);
     const env = yield* requireEnv(api);
     const directory = yield* directoryPath(env, path);
     const effectiveLimit = limit ?? DEFAULT_FIND_LIMIT;
@@ -396,7 +409,7 @@ const Grep = defineEffectTool({
     { pattern, path, glob, ignoreCase, literal, context, limit },
     api,
   ) {
-    const files = yield* WorkspaceFiles;
+    const files = yield* searchFor(api);
     const env = yield* requireEnv(api);
     const searched = yield* resolvePath(env, path);
     const kind = yield* kindOf(env, searched);

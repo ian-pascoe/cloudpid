@@ -35,17 +35,21 @@ const fakeContainer = (
 ) => {
   const restarts: Array<{ readonly fresh: boolean }> = [];
   const resizes: Array<{ readonly size: InstanceType }> = [];
+  /** The conversations the calls were for. */
+  const targets: unknown[] = [];
 
   const control: ContainerControl = {
-    restart: async (options) => {
+    restart: async ({ target, ...options }) => {
       restarts.push(options);
+      targets.push(target.conversationId);
 
       if (failure !== undefined) throw failure;
 
       return { wasRunning };
     },
-    resize: async (options) => {
+    resize: async ({ target, ...options }) => {
       resizes.push(options);
+      targets.push(target.conversationId);
 
       if (failure !== undefined) throw failure;
 
@@ -53,7 +57,7 @@ const fakeContainer = (
     },
   };
 
-  return { control, restarts, resizes };
+  return { control, restarts, resizes, targets };
 };
 
 const toolsOver = async (control: ContainerControl): Promise<ReadonlyArray<ToolRegistration>> => {
@@ -72,8 +76,8 @@ const toolOver = async (control: ContainerControl, name: string): Promise<ToolRe
   return tool.value;
 };
 
-// The tools read nothing from the invocation's API.
-const api: ToolExecutionApi = Object.create(null);
+// The tools read only the calling conversation from the invocation's API: its Workspace's Container is the one stopped.
+const api: ToolExecutionApi = Object.assign(Object.create(null), { conversationId: "child" });
 
 /** A call's arguments, as the model sends them: what the tool takes, or less, to see it refused. */
 type Args = { readonly reason?: string; readonly fresh?: boolean; readonly size?: string };
@@ -104,6 +108,18 @@ describe("the container extension", () => {
       expect(tool.replay, tool.name).toBe("unsafe");
       expect(tool.executionMode, tool.name).toBe("sequential");
     }
+  });
+
+  it("acts on the Container of the calling conversation's Workspace, so a subagent's stops only its own", async () => {
+    const container = fakeContainer(true);
+
+    await run(await toolOver(container.control, "container_restart"), { reason: "hung" });
+    await run(await toolOver(container.control, "container_resize"), {
+      reason: "memory",
+      size: "custom-2",
+    });
+
+    expect(container.targets).toEqual(["child", "child"]);
   });
 });
 
