@@ -7,7 +7,7 @@ import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { ReactNode } from "react";
 import { drainFirstMessageAtom } from "../draft-state.ts";
-import { PaneArea } from "../pane-area.tsx";
+import { PaneArea, PaneAreaToggle } from "../pane-area.tsx";
 import { canStopAllBelow } from "../session/agents.ts";
 import {
   abortAtom,
@@ -24,8 +24,6 @@ import { textOf } from "./queue-adapter.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
 import { TreeBarScope, useForkNotice } from "./tree-actions.ts";
 import { TreeDialogs } from "./tree-dialogs.tsx";
-import { TreePaneToggle } from "./tree-pane.tsx";
-import { TasksPaneToggle } from "./tasks-pane.tsx";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
 import { type Archived, type SessionCommandActions, Thread } from "./thread.tsx";
 import type { Rename } from "./title-state.ts";
@@ -153,9 +151,8 @@ const LiveSession = ({
                 actions={
                   <>
                     <UsageBadge />
-                    {archived === undefined && <TreePaneToggle />}
-                    <TasksPaneToggle />
                     {menu}
+                    <PaneAreaToggle />
                   </>
                 }
               />

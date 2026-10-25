@@ -6,7 +6,7 @@ import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
-import { ListTree, Square } from "lucide-react";
+import { Square } from "lucide-react";
 import { Button } from "../components/ui/button.tsx";
 import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
 import {
@@ -22,8 +22,6 @@ import { Messages } from "./messages.tsx";
 import { AgentStatus, shortModel } from "./subagent-card.tsx";
 import { TodoList } from "./todo-list.tsx";
 import { todoProgress } from "../session/todos.ts";
-import { panesAtom } from "../panes-state.ts";
-import { TASKS_PANE } from "../panes.ts";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
 const kindLabel = (kind: string): string =>
@@ -99,14 +97,16 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   </li>
 );
 
-/**
- * The button that opens the Tasks Pane (and shows it when another Pane is shown, and closes it when it is shown), with
- * how many agents are working and how far the Todo List is.
- */
-export const TasksPaneToggle = () => {
+/** What the Session shown has going: agents working below the root, and the Todo List's tasks done of all. */
+export interface TasksSummary {
+  readonly working: number;
+  readonly completed: number;
+  readonly total: number;
+}
+
+/** The Session shown's `TasksSummary`, for the Pane area's button and the New pane. */
+export const useTasksSummary = (): TasksSummary => {
   const sessionId = useShownSessionId();
-  const [{ shown }, act] = useAtom(panesAtom);
-  const open = shown === TASKS_PANE;
 
   const working = useAtomValue(
     taskGraphAtom(sessionId),
@@ -116,27 +116,7 @@ export const TasksPaneToggle = () => {
   const todos = useAtomValue(todosAtom(sessionId));
   const { total, completed } = todoProgress(todos);
 
-  return (
-    <Button
-      type="button"
-      variant={open ? "default" : "outline"}
-      size="sm"
-      aria-pressed={open}
-      aria-label="Tasks"
-      onClick={() => {
-        act({ type: "toggle", key: TASKS_PANE });
-      }}
-    >
-      <ListTree />
-      <span className="hidden sm:inline">Tasks</span>
-      {working > 0 && <span className="text-xs tabular-nums">{working}</span>}
-      {total > 0 && (
-        <span className="text-xs tabular-nums" title="Todo List: done of all">
-          {completed}/{total}
-        </span>
-      )}
-    </Button>
-  );
+  return { working, completed, total };
 };
 
 /** The Tasks Pane: the Todo List, then the task graph, with Stop all while something below the root can be stopped. */

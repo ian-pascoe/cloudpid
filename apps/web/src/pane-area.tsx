@@ -2,12 +2,13 @@
 
 // The Pane area beside a Session's chat: a tab for each open Pane and the shown one's component under them. A resizable
 // right column on `md` and up, its width kept on the device; a full-screen sheet on a phone. Every Pane type lives here:
-// none picks its own edge.
+// none picks its own edge. One button in the Session's header (`PaneAreaToggle`) opens the area on the New pane, which
+// offers the Pane types, and hides and shows it after; the tab bar's + opens another New pane.
 
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
-import { X } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Plus, X } from "lucide-react";
 import {
   useId,
   useRef,
@@ -19,12 +20,16 @@ import {
 } from "react";
 import { useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
-import { TasksPane } from "./chat/tasks-pane.tsx";
+import { TasksPane, useTasksSummary } from "./chat/tasks-pane.tsx";
+import { Button } from "./components/ui/button.tsx";
 import { cn } from "./lib/utils.ts";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
 import { handoffAgentsAtom } from "./live-view/atoms.ts";
+import { NewPane } from "./new-pane.tsx";
 import {
+  NEW_PANE,
   paneKeyOf,
+  TASKS_PANE,
   tabForKey,
   type AgentOfHandoff,
   type PaneProps,
@@ -41,6 +46,7 @@ import {
 
 /** The component each Pane type shows. A type in `PANE_TYPES` with none is a type error. */
 const PANE_COMPONENTS = {
+  new: NewPane,
   tasks: TasksPane,
   tree: SessionTreePane,
   "live-view": LiveViewPane,
@@ -110,9 +116,53 @@ const useAgentOfHandoff = (): AgentOfHandoff => {
   return (requestId) => agents.get(requestId);
 };
 
-/** The Pane area of the Session shown: nothing while no Pane is open. */
+/** The Pane area's element, which the header's button controls: a Session page has one. */
+const PANE_AREA_ID = "pane-area";
+
+/**
+ * The header's button for the Pane area: it opens the New pane while no Pane is open, else hides the area or shows it
+ * again. While subagents work and the Tasks Pane is not in sight, it says how many.
+ */
+export const PaneAreaToggle = () => {
+  const [{ open, shown, hidden }, act] = useAtom(panesAtom);
+  const { working } = useTasksSummary();
+  const visible = open.length > 0 && !hidden;
+  const label = visible ? "Hide panes" : open.length > 0 ? "Show panes" : "Open a pane";
+  const badge = working > 0 && !(visible && shown === TASKS_PANE);
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      aria-label={badge ? `${label} (${working} working)` : label}
+      aria-expanded={visible}
+      aria-controls={open.length > 0 ? PANE_AREA_ID : undefined}
+      title={label}
+      onClick={() => {
+        act({ type: "toggleArea" });
+      }}
+      className="relative size-8 text-muted-foreground"
+    >
+      {visible ? <PanelRightClose /> : <PanelRightOpen />}
+      {badge && (
+        <span
+          aria-hidden
+          className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[0.625rem] leading-none font-medium text-primary-foreground tabular-nums"
+        >
+          {working}
+        </span>
+      )}
+    </Button>
+  );
+};
+
+/**
+ * The Pane area of the Session shown: nothing while no Pane is open. Hidden, it keeps its Panes mounted, so a Live View
+ * stays connected and every Pane comes back as it was.
+ */
 export const PaneArea = () => {
-  const [{ open, shown }, act] = useAtom(panesAtom);
+  const [{ open, shown, hidden }, act] = useAtom(panesAtom);
   const agentOfHandoff = useAgentOfHandoff();
   const [width] = useAtom(paneWidthAtom);
   const base = useId();
@@ -143,19 +193,20 @@ export const PaneArea = () => {
   return (
     <aside
       ref={area}
-      id={`${base}-area`}
+      id={PANE_AREA_ID}
       aria-label="Panes"
+      hidden={hidden}
       style={style}
       className="fixed inset-0 z-20 flex flex-col bg-background md:relative md:inset-auto md:z-auto md:w-(--pane-width) md:max-w-[calc(100%-20rem)] md:min-w-72 md:shrink-0 md:border-l"
     >
-      <ResizeHandle area={area} controls={`${base}-area`} />
-      <header className="border-b px-2 py-1.5">
+      <ResizeHandle area={area} controls={PANE_AREA_ID} />
+      <header className="flex items-center gap-1 border-b px-2 py-1.5">
         <div
           ref={tabs}
           role="tablist"
           aria-label="Open panes"
           onKeyDown={onTabKeyDown}
-          className="flex gap-1 overflow-x-auto"
+          className="flex min-w-0 gap-1 overflow-x-auto"
         >
           {open.map((key) => {
             const pane = paneKeyOf(key);
@@ -206,6 +257,35 @@ export const PaneArea = () => {
             );
           })}
         </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="New pane"
+          title="New pane"
+          onClick={() => {
+            act({ type: "open", key: NEW_PANE });
+          }}
+          className="touch-target size-8 text-muted-foreground"
+        >
+          <Plus />
+        </Button>
+        {/* On a phone the area covers the header and its button, so it has its own. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Hide panes"
+          title="Hide panes"
+          aria-expanded
+          aria-controls={PANE_AREA_ID}
+          onClick={() => {
+            act({ type: "hide" });
+          }}
+          className="touch-target ml-auto size-8 text-muted-foreground md:hidden"
+        >
+          <PanelRightClose />
+        </Button>
       </header>
       {/* Every open Pane stays mounted, the ones not shown hidden, so one keeps its state (scroll, a connection) while another is shown. */}
       {open.map((key) => {

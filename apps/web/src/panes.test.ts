@@ -14,8 +14,9 @@ import {
   type PaneType,
 } from "./panes.ts";
 
-/** The types the later Panes will register, with the Tasks Pane that exists. */
+/** The types the later Panes will register, with the New pane and the Tasks Pane that exist. */
 const TYPES: readonly PaneType[] = [
+  { id: "new", multiple: false, label: () => ({ name: "New pane" }) },
   { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
   {
     id: "live-view",
@@ -25,10 +26,11 @@ const TYPES: readonly PaneType[] = [
   { id: "terminal", multiple: true, label: (argument) => ({ name: `Terminal ${argument}` }) },
 ];
 
-const area = (open: readonly string[], shown: string | undefined = open[0]): PaneArea => ({
-  open,
-  shown,
-});
+const area = (
+  open: readonly string[],
+  shown: string | undefined = open[0],
+  hidden = false,
+): PaneArea => ({ open, shown, hidden });
 
 /** The area after `actions`, one after the other. */
 const after = (start: PaneArea, ...actions: PaneAction[]): PaneArea =>
@@ -113,11 +115,17 @@ describe("the area a query holds", () => {
     expect(paneAreaOf("?shown=tasks", TYPES)).toEqual(NO_PANES);
   });
 
+  it("is hidden with `panes=hidden`, only while a Pane is open", () => {
+    expect(paneAreaOf("?pane=tasks&panes=hidden", TYPES)).toEqual(area(["tasks"], "tasks", true));
+    expect(paneAreaOf("?panes=hidden", TYPES)).toEqual(NO_PANES);
+  });
+
   it("is written back as it was read", () => {
     for (const search of [
       "?pane=tasks",
       "?pane=tasks&pane=terminal:1",
       "?pane=tasks&pane=live-view:r1&pane=live-view:r2&shown=live-view:r2",
+      "?pane=tasks&pane=terminal:1&shown=terminal:1&panes=hidden",
     ]) {
       expect(searchWithPaneArea("", paneAreaOf(search, TYPES))).toBe(search);
     }
@@ -217,20 +225,73 @@ describe("switching Panes", () => {
   });
 });
 
-describe("a Pane's toggle", () => {
-  it("opens the Pane, shows it when another is shown, and closes it when it is the one shown", () => {
-    const opened = after(NO_PANES, { type: "toggle", key: "tasks" });
+describe("the area's button", () => {
+  it("opens the New pane when no Pane is open", () => {
+    expect(after(NO_PANES, { type: "toggleArea" })).toEqual(area(["new"]));
+  });
 
-    expect(opened).toEqual(area(["tasks"]));
+  it("hides the area with its Panes kept, and shows it again as it was", () => {
+    const two = area(["tasks", "terminal:1"], "terminal:1");
+    const hidden = after(two, { type: "toggleArea" });
 
-    const other = after(opened, { type: "open", key: "terminal:1" });
+    expect(hidden).toEqual(area(["tasks", "terminal:1"], "terminal:1", true));
+    expect(after(hidden, { type: "toggleArea" })).toEqual(two);
+  });
+});
 
-    expect(after(other, { type: "toggle", key: "tasks" })).toEqual(
+describe("a hidden area", () => {
+  const hidden = area(["tasks", "terminal:1"], "tasks", true);
+
+  it("is hidden by `hide`, which leaves a closed or hidden area alone", () => {
+    expect(after(area(["tasks"]), { type: "hide" })).toEqual(area(["tasks"], "tasks", true));
+    expect(after(hidden, { type: "hide" })).toBe(hidden);
+    expect(after(NO_PANES, { type: "hide" })).toBe(NO_PANES);
+  });
+
+  it("shows again when a Pane is opened or shown", () => {
+    expect(after(hidden, { type: "open", key: "live-view:r1" })).toEqual(
+      area(["tasks", "terminal:1", "live-view:r1"], "live-view:r1"),
+    );
+    expect(after(hidden, { type: "open", key: "tasks" })).toEqual(
       area(["tasks", "terminal:1"], "tasks"),
     );
+    expect(after(hidden, { type: "show", key: "terminal:1" })).toEqual(
+      area(["tasks", "terminal:1"], "terminal:1"),
+    );
+  });
+
+  it("stays hidden when a Pane closes, and is closed with the last", () => {
+    expect(after(hidden, { type: "close", key: "tasks" })).toEqual(
+      area(["terminal:1"], "terminal:1", true),
+    );
     expect(
-      after(other, { type: "toggle", key: "tasks" }, { type: "toggle", key: "tasks" }),
-    ).toEqual(area(["terminal:1"]));
+      after(hidden, { type: "close", key: "tasks" }, { type: "close", key: "terminal:1" }),
+    ).toEqual(NO_PANES);
+  });
+});
+
+describe("the New pane's pick", () => {
+  it("takes the New pane's tab, in its place, and is shown", () => {
+    expect(
+      after(area(["tasks", "new", "terminal:1"], "new"), {
+        type: "replace",
+        key: "new",
+        by: "terminal:2",
+      }),
+    ).toEqual(area(["tasks", "terminal:2", "terminal:1"], "terminal:2"));
+  });
+
+  it("shows a Pane open already, and the New pane goes", () => {
+    expect(
+      after(area(["tasks", "new"], "new"), { type: "replace", key: "new", by: "tasks" }),
+    ).toEqual(area(["tasks"]));
+  });
+
+  it("does nothing when the New pane is not open or the pick is no Pane", () => {
+    const open = area(["tasks", "new"], "new");
+
+    expect(after(open, { type: "replace", key: "terminal:1", by: "tasks" })).toBe(open);
+    expect(after(open, { type: "replace", key: "new", by: "diff" })).toBe(open);
   });
 });
 

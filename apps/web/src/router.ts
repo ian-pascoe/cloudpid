@@ -9,6 +9,7 @@
 //   its own, and each `pane` reads as one tab. A key's `:` is written as it is, not as `%3A`, so a link stays readable.
 // - `shown=<key>` names the Pane shown when it is not the first `pane`. Without it (or when it names a Pane that is not
 //   open) the first is shown, so the common link, one Pane, has no `shown`.
+// - `panes=hidden`: the Pane area is hidden, its Panes still open. Written only beside an open Pane.
 // - Anything else in the query is kept as it was, whatever opens or closes a Pane.
 //
 // Opening, closing and switching Panes *replace* the history entry (`replaceSearch`) instead of pushing one. A Pane is
@@ -74,17 +75,25 @@ export const pathAtom = locationAtom((location) => location.pathname, "/", navig
  */
 export const searchAtom = locationAtom((location) => location.search, "", replaceSearch);
 
-/** The query's Pane parameters: the open Panes' keys in tab order, and the key of the one shown, if named. */
+/**
+ * The query's Pane parameters: the open Panes' keys in tab order, the key of the one shown, if named, and whether the
+ * area is hidden.
+ */
 export interface PaneParams {
   readonly keys: readonly string[];
   readonly shown: string | undefined;
+  readonly hidden: boolean;
 }
 
 /** The Pane parameters of `search`; the keys are as written, for `panes.ts` to check against the Pane types. */
 export const paneParamsOf = (search: string): PaneParams => {
   const params = new URLSearchParams(search);
 
-  return { keys: params.getAll("pane"), shown: params.get("shown") ?? undefined };
+  return {
+    keys: params.getAll("pane"),
+    shown: params.get("shown") ?? undefined,
+    hidden: params.get("panes") === "hidden",
+  };
 };
 
 /** A Pane key as it is written in a query: encoded, but for the `:` that separates its type from its argument. */
@@ -99,6 +108,7 @@ export const withPaneParams = (search: string, params: PaneParams): string => {
 
   others.delete("pane");
   others.delete("shown");
+  others.delete("panes");
 
   const parts = others.size === 0 ? [] : [others.toString()];
 
@@ -107,6 +117,8 @@ export const withPaneParams = (search: string, params: PaneParams): string => {
   if (params.shown !== undefined && params.shown !== params.keys[0]) {
     parts.push(`shown=${encodeKey(params.shown)}`);
   }
+
+  if (params.hidden && params.keys.length > 0) parts.push("panes=hidden");
 
   return parts.length === 0 ? "" : `?${Arr.join(parts, "&")}`;
 };
