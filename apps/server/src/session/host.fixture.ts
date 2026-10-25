@@ -949,6 +949,11 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("settingsMode", mode);
   }
 
+  /** Script subagent `agent`'s responses apart from the Run's, which it takes otherwise. */
+  agentScript(agent: string, responses: readonly string[]): void {
+    this.ctx.storage.kv.put(`script:${agent}`, { responses, next: 0 } satisfies Script);
+  }
+
   script(responses: readonly string[]): void {
     this.ctx.storage.kv.put("script", { responses, next: 0 } satisfies Script);
   }
@@ -1190,10 +1195,20 @@ export class TestSession extends DurableObject {
         { model: model.id, thinking: options?.reasoning } satisfies TestRequest,
       ]);
 
-      const script = this.ctx.storage.kv.get<Script>("script") ?? { responses: [], next: 0 };
+      // A subagent names itself in its instructions; one given a script of its own (`agentScript`) follows that one.
+      const agent = Object.values(sections)
+        .map((section) => /You are subagent `([^`]+)`/.exec(section)?.[1])
+        .find((found) => found !== undefined);
+
+      const key =
+        agent !== undefined && kv.get<Script>(`script:${agent}`) !== undefined
+          ? `script:${agent}`
+          : "script";
+
+      const script = this.ctx.storage.kv.get<Script>(key) ?? { responses: [], next: 0 };
       const text = script.responses[script.next] ?? "unscripted";
 
-      this.ctx.storage.kv.put("script", { ...script, next: script.next + 1 });
+      this.ctx.storage.kv.put(key, { ...script, next: script.next + 1 });
 
       if (text.startsWith("gate:")) {
         this.gated.resolve();

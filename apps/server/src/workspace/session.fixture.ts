@@ -17,7 +17,13 @@ import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import { SettingsAccess, type SettingsReload } from "@cloudpid/extensions/settings";
-import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
+import {
+  type AgentWorkspace,
+  SubagentSettings,
+  type SubagentWorkspaceHost,
+  SubagentWorkspaces,
+  subagentOptions,
+} from "@cloudpid/extensions/subagents";
 import { fixedToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
 import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
@@ -46,6 +52,30 @@ declare global {
 
 const KEY = "workspace";
 
+/** The prefix of the Subagent Workspaces' ids and objects the test Session makes. */
+export const SUBAGENT_WORKSPACE_PREFIX = "subagent-";
+
+/**
+ * Subagent Workspaces as the Session makes them, without a Registry: subagent `agent` gets the Workspace DO
+ * `subagent-<agent>` of this Session, at its root, where the test Worker clones nothing; the same one when asked again.
+ */
+const testSubagentWorkspaces = (session: string): SubagentWorkspaceHost => ({
+  create: async ({ agent }) => {
+    const id = `${SUBAGENT_WORKSPACE_PREFIX}${session}-${agent}`;
+
+    const workspace: AgentWorkspace = {
+      id,
+      branch: `cloudpid/${agent}`,
+      object: id,
+      directory: WORKSPACE_ROOT,
+    };
+
+    return { workspace, warnings: [] };
+  },
+  workState: async () => [],
+  remove: async () => {},
+});
+
 export class TestWorkspaceSession extends TestSession {
   /** The Session's Workspace, as the Session DO makes it from its Registry record and its `WORKSPACES` binding. */
   #workspace() {
@@ -59,8 +89,12 @@ export class TestWorkspaceSession extends TestSession {
             directory: WORKSPACE_ROOT,
           },
         ),
-      // The test Worker has no Container to clone on: its Sessions are placed in Workspaces nobody readies.
-      prepare: () => Promise.reject(new Error("The test Worker readies no Workspace")),
+      // The test Worker has no Container to clone on: its Sessions are placed in Workspaces nobody readies, and its
+      // Subagent Workspaces hold nothing to ready.
+      prepare: (id) =>
+        id.startsWith(SUBAGENT_WORKSPACE_PREFIX)
+          ? Promise.resolve()
+          : Promise.reject(new Error("The test Worker readies no Workspace")),
     });
   }
 
@@ -106,6 +140,7 @@ export class TestWorkspaceSession extends TestSession {
         closeIfIdle: Effect.void,
       }),
       Effect.provideService(SubagentSettings, { current: () => subagentOptions({}, undefined) }),
+      Effect.provideService(SubagentWorkspaces, testSubagentWorkspaces(this.ctx.id.toString())),
       Effect.provide(fixedToolSearchSettings(DEFAULT_OFFERED_TOOLS)),
       // No search keys: the tests script the model, and none searches.
       Effect.provideService(WebConfig, { exaApiKey: Option.none(), parallelApiKey: Option.none() }),
