@@ -610,6 +610,7 @@ const fakeRegistries = () => {
         const before = Option.getOrNull(
           Option.liftPredicate(found.value.before, Predicate.isString),
         );
+
         const variables = before === null ? others : { ...others, [name]: before };
 
         overridesOf.set(environment, { ...overrides, variables });
