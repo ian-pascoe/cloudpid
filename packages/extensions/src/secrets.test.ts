@@ -2,7 +2,8 @@
 // references, while the value never reaches the transcript, tool output, or the model. pi-durable's Harness is
 // Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
-import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools, Type } from "@earendil-works/pi-ai";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
@@ -119,6 +120,34 @@ describe("secrets", () => {
 
     expect((await session.lastResult())?.text).toContain("not a valid Secret Name");
     expect(session.recorded).toEqual([]);
+  });
+
+  it("lets an environment tool save a reference as the text it is, held or not", async () => {
+    const saved: string[] = [];
+
+    const session = await openSecretsHarness([
+      defineExtension({
+        name: "environment",
+        tools: [
+          defineTool({
+            name: "environment_variable_set",
+            description: "Save a variable",
+            parameters: Type.Object({ value: Type.String() }),
+            execute: async ({ value }) => {
+              saved.push(value);
+
+              return { output: [{ type: "text", text: "saved" }] };
+            },
+          }),
+        ],
+      }),
+    ]);
+
+    await session.hold({ API_KEY: VALUE });
+    await session.prompt("Go", call("environment_variable_set", { value: ref("MISSING") }));
+    await session.prompt("Go", call("environment_variable_set", { value: ref("API_KEY") }));
+
+    expect(saved).toEqual([ref("MISSING"), ref("API_KEY")]);
   });
 
   it("writes an escaped reference as literal text", async () => {

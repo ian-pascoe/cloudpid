@@ -31,6 +31,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { BackendEnv } from "../coding-tools.ts";
+import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
 import {
   isSecretName,
   referencedSecretNames,
@@ -451,6 +452,10 @@ export const secretsExtension = (
 
           // So the call's result is redacted of the kept Secrets (`afterTool`) also when it references none.
           yield* secrets.refresh;
+
+          // The `environment` tools save plain values as written and resolve no Secret Reference (`docs/spec.md` →
+          // Agent changes): a reference in their arguments is text, whether or not the Session holds it.
+          if (call.name.startsWith(ENVIRONMENT_TOOL_PREFIX)) return undefined;
 
           const names = [...referencedSecretNames(call.arguments)];
 

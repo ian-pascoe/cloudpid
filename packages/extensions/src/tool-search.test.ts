@@ -148,6 +148,45 @@ describe("deferred tools", () => {
     expect(tools.at(-1)).not.toContain("web_search");
   });
 
+  it("are each named when more than 40 are deferred, a family to a line", async () => {
+    const families = [
+      ...Array.from({ length: 20 }, (_, n) => `environment_tool_${n}`),
+      ...Array.from({ length: 15 }, (_, n) => `settings_tool_${n}`),
+    ];
+
+    const many = defineExtension({
+      name: "many",
+      tools: families.map((name) =>
+        defineTool({
+          name,
+          description: `The ${name} tool`,
+          parameters: Type.Object({}),
+          execute: async () => ({ output: [{ type: "text", text: `${name} ran` }] }),
+        }),
+      ),
+    });
+
+    const toolSearch = await Effect.runPromise(
+      ToolSearch([...NAMES, ...families]).pipe(Effect.provide(fixedToolSearchSettings(CODING))),
+    );
+
+    const session = await openSubagentHarness(() => answer("seen"), {}, [Extras, many, toolSearch]);
+
+    await session.prompt("hello");
+
+    const named = deferredIn(session.requests[0]?.system);
+    const lines = named.split("\n");
+
+    for (const name of [...families, "web_fetch", "todo", ...COORDINATOR_TOOLS]) {
+      expect(named).toContain(name);
+    }
+
+    expect(lines).toContainEqual(expect.stringMatching(/^- environment_\*: environment_tool_0, /));
+    expect(lines).toContainEqual(expect.stringMatching(/^- settings_\*: settings_tool_0, /));
+    expect(lines).toContainEqual("- web_*: web_fetch, web_search");
+    expect(lines).toContainEqual(expect.stringMatching(/^- others: .*todo/));
+  });
+
   it("can all be deferred, leaving the model tool_search", async () => {
     const session = await open(() => answer("ok"), []);
 
