@@ -53,9 +53,11 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
               ...listing,
               settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: variables() },
               secrets: [],
+              everyVariables: {},
             }
           : null,
       ),
+    every: Effect.succeed({ variables: {}, secrets: [] }),
     change: ({ environment, change, author }) =>
       Effect.sync(() => {
         if (environment !== DEFAULT.id) return { status: "missing" as const };

@@ -5,6 +5,7 @@ import {
   EnvironmentError,
   fieldRepo,
   fieldSecret,
+  fieldVariable,
   MAX_ENVIRONMENT_SECRETS,
   NEW_WORKSPACE,
   parseRepoSource,
@@ -381,19 +382,24 @@ export const serveRegistryRpc = <R = never>(
       environment === null ? "every environment" : `environment "${environment}"`;
 
     /**
+     * After a Secret or a variable kept for every Environment changed: every Environment's Build is looked at again
+     * (their key covers the Secrets and variables a Build gets).
+     */
+    const everyEnvironmentChanged = () =>
+      registry
+        .listEnvironments()
+        .pipe(
+          Effect.flatMap((all) =>
+            Effect.forEach(all, (item) => background(builds.of(item.id)), { discard: true }),
+          ),
+        );
+
+    /**
      * After a kept Secret changed: the Builds it may reach are looked at again (their key covers the Secrets a Build
      * gets), each Environment's for one kept for every Environment.
      */
     const secretChanged = (environment: string | null) =>
-      environment === null
-        ? registry
-            .listEnvironments()
-            .pipe(
-              Effect.flatMap((all) =>
-                Effect.forEach(all, (item) => background(builds.of(item.id)), { discard: true }),
-              ),
-            )
-        : background(builds.of(environment));
+      environment === null ? everyEnvironmentChanged() : background(builds.of(environment));
 
     /**
      * The Workspace whose files a Fork or Clone carries to a new one (`fresh`), after checking the Git branch asked for;
@@ -728,6 +734,20 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
+      getEveryEnvironmentSettings: () => registry.getEveryEnvironmentSettings(),
+      updateEveryEnvironmentSettings: ({ overrides }) =>
+        registry.updateEveryEnvironmentSettings({ overrides }).pipe(
+          Effect.flatMap((update) => {
+            switch (update.status) {
+              case "saved":
+                // A Build is made with the variables, so every Environment's is looked at again.
+                return everyEnvironmentChanged().pipe(Effect.as(update.state));
+              // Overrides that do not resolve say why, one problem per line, and nothing was saved.
+              case "rejected":
+                return failed(update.message);
+            }
+          }),
+        ),
       listAgentChanges: ({ environment }) =>
         registry
           .listAgentChanges({ environment })
@@ -737,6 +757,14 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((revert) => {
             switch (revert.status) {
               case "reverted":
+                // A variable put back: as after the owner's save, every Environment's Build is looked at again.
+                if (
+                  environment === EVERY_ENVIRONMENT_SCOPE &&
+                  fieldVariable(revert.change.field) !== null
+                ) {
+                  return everyEnvironmentChanged().pipe(Effect.as(revert.change));
+                }
+
                 // A Build mark put back: as after the owner's switch, the Builds the Secret may reach are looked at
                 // again, each Environment's for one kept for every Environment (scope `*`).
                 if (fieldSecret(revert.change.field) !== null) {

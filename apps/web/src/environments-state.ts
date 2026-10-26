@@ -1,9 +1,10 @@
 // The Environment list, what the owner does to an Environment in it (create, edit, delete, add and remove Repos, make
 // its Build again, keep Secrets for it) and to its Workspaces (start a Session, remove, restart the Container), the
-// Secrets kept for every Environment, and the state of the Environments page's forms and dialogs.
+// variables and Secrets kept for every Environment, and the state of the Environments page's forms and dialogs.
 
 import {
   containerOverridesFrom,
+  everyEnvironmentOverridesFrom,
   type InstanceType,
   type ContainerSettings,
 } from "@cloudpid/config";
@@ -406,6 +407,7 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
         changing([
           `agent-changes:${id}`,
           `environment-settings:${id}`,
+          "every-environment",
           "environment-secrets",
           "builds",
           "environments",
@@ -486,6 +488,60 @@ export const environmentDraftAtom = Atom.family((id: string) =>
       ctx.setSelf(draft);
     },
   ),
+);
+
+/**
+ * The settings kept for every Environment in force (the variables), which each Workspace of every Environment applies
+ * at its next Container start. Asked again every few seconds while the page is visible: a Session's agent changes them,
+ * which the page hears of no other way.
+ */
+export const everyEnvironmentSettingsAtom = RegistryClient.query(
+  "getEveryEnvironmentSettings",
+  undefined,
+  { reactivityKeys: ["every-environment"] },
+).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
+
+/** Why the settings kept for every Environment could not load, or null. */
+export const everyEnvironmentSettingsErrorAtom = Atom.map(everyEnvironmentSettingsAtom, failureOf);
+
+/** The variables kept for every Environment as of the last answer; none until the first. */
+export const everyVariablesAtom = Atom.map(
+  everyEnvironmentSettingsAtom,
+  (result): Readonly<Record<string, string>> =>
+    result.pipe(
+      AsyncResult.value,
+      Option.map((state) => state.settings.variables),
+      Option.getOrElse(() => ({})),
+    ),
+);
+
+/**
+ * What is typed in the form of the variables kept for every Environment, a `NAME=value` line each; undefined until
+ * something is, when the form shows the variables in force. It is kept apart from them, so what is typed survives the
+ * page asking again.
+ */
+export const everyVariablesDraftAtom = Atom.make<string | undefined>(undefined);
+
+/**
+ * Save the variables kept for every Environment, as the whole map, and load them again. Every Environment's Build is
+ * made with them, so the Builds ask again too. Once they are saved the form fills in from them again.
+ */
+export const saveEveryVariablesAtom = appRuntime.fn(
+  (variables: Readonly<Record<string, string>>, get) =>
+    RegistryClient.use((registry) =>
+      registry("updateEveryEnvironmentSettings", {
+        overrides: everyEnvironmentOverridesFrom({ variables }),
+      }),
+    ).pipe(
+      Effect.asVoid,
+      changing(["every-environment", "builds"]),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          get.set(everyVariablesDraftAtom, undefined);
+        }),
+      ),
+    ),
+  { concurrent: true },
 );
 
 /**

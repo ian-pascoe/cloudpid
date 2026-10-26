@@ -305,7 +305,10 @@ export type RegistryStore = {
   ) => EnvironmentSecretRecord | null;
   /** Delete a kept Secret; says whether one was kept. */
   readonly deleteEnvironmentSecret: (environment: string | null, name: string) => boolean;
-  /** The JSON text of the document called `name`, or null. Documents hold the Registry's own settings. */
+  /**
+   * The JSON text of the document called `name`, or null. Documents hold the Registry's own settings and the variables
+   * kept for every Environment.
+   */
   readonly getDocument: (name: string) => string | null;
   /** Save a document, replacing the one with its name. */
   readonly putDocument: (name: string, body: string, now: number) => void;

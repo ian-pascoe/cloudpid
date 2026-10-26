@@ -35,6 +35,7 @@ import {
   MAX_IGNORE_PATTERNS,
   MAX_VARIABLE_VALUE_LENGTH,
   MAX_VARIABLES,
+  mergedVariablesProblem,
   scriptProblem,
   toolchainsProblem,
   variableNameProblem,
@@ -209,12 +210,38 @@ export const variablesText = (variables: Readonly<Record<string, string>>): stri
     .map(([name, value]) => `${name}=${value}`)
     .join("\n");
 
+/** The names of the variables kept for every Environment that an Environment gets, and of its own that override one. */
+export type InheritedVariables = {
+  readonly inherited: readonly string[];
+  readonly overridden: readonly string[];
+};
+
+/**
+ * The variables kept for every Environment that an Environment with the variables `own` gets, by name, and the ones of
+ * its own that override such a variable: the counterpart of `inheritedSecrets`. Its own wins.
+ */
+export const inheritedVariables = (
+  own: Readonly<Record<string, string>>,
+  every: Readonly<Record<string, string>>,
+): InheritedVariables => {
+  const names = Record.keys(every).toSorted();
+
+  return {
+    inherited: names.filter((name) => !Record.has(own, name)),
+    overridden: names.filter((name) => Record.has(own, name)),
+  };
+};
+
 /**
  * The variables typed in the Edit dialog, or why they cannot be saved: a `NAME=value` line each, the value everything
  * after the first `=` as typed, blank lines and lines starting with `#` left out. The server's rules
- * (`variableNameProblem`), with the first line that breaks them.
+ * (`variableNameProblem`), with the first line that breaks them. With the variables kept for every Environment,
+ * `inherited`, the 50 counts them too, the ones of the same name once.
  */
-export const parseVariables = (text: string): Result.Result<Record<string, string>, string> => {
+export const parseVariables = (
+  text: string,
+  inherited: Readonly<Record<string, string>> = {},
+): Result.Result<Record<string, string>, string> => {
   // A Map, so a name like `__proto__` is a variable like any other.
   const variables = new Map<string, string>();
   const lines = text.split("\n");
@@ -244,9 +271,17 @@ export const parseVariables = (text: string): Result.Result<Record<string, strin
     variables.set(name, value);
   }
 
-  return variables.size > MAX_VARIABLES
-    ? Result.fail(`Use at most ${MAX_VARIABLES} variables`)
-    : Result.succeed(Record.fromEntries(variables));
+  const typed = Record.fromEntries(variables);
+
+  if (variables.size > MAX_VARIABLES) return Result.fail(`Use at most ${MAX_VARIABLES} variables`);
+
+  if (mergedVariablesProblem(typed, inherited) !== undefined) {
+    return Result.fail(
+      `With the ${inheritedVariables(typed, inherited).inherited.length} variables for every environment it does not override, use at most ${MAX_VARIABLES} variables in all`,
+    );
+  }
+
+  return Result.succeed(typed);
 };
 
 /** Why `text` cannot be an Environment's Setup or Start Script, or null when it can: the server's rules (`scriptProblem`). */

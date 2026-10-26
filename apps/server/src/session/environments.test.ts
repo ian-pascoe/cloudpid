@@ -35,14 +35,30 @@ const CHANGE: AgentChange = {
 /** What the fake Registry answers a mark with. */
 type MarkAnswers = { mark: SecretBuildMark };
 
+/** The variables kept for every Environment in the fake Registry. */
+const EVERY = { SHARED: "all" };
+
+/**
+ * What the Workspace of the Session's Environment is handed: its own `A`, and the variables kept for every Environment.
+ */
+const MERGED = { variables: { A: "1", ...EVERY } };
+
 const open = (
   answer: Effect.Success<
     ReturnType<EnvironmentsRegistry["changeEnvironment"]>
   >["status"] = "changed",
+  everyAnswer: Effect.Success<
+    ReturnType<EnvironmentsRegistry["changeEveryEnvironment"]>
+  >["status"] = "changed",
+  // Whether the Session's Environment has a variable of its own by the name that changed for every Environment.
+  overridesHere = false,
+  // Whether the Registry fails to say what the Session's Workspace is handed.
+  overridesUnreadable = false,
 ) => {
   const handedOver: Array<{ object: string; overrides: Schema.Json }> = [];
   const upkept: string[] = [];
   const asked: unknown[] = [];
+  const everyAsked: unknown[] = [];
   const markAsked: unknown[] = [];
 
   // The mark the fake Registry answers.
@@ -69,6 +85,34 @@ const open = (
           ? { settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} }
           : null,
       ),
+    getEveryEnvironmentSettings: () =>
+      Effect.succeed({ settings: { variables: EVERY }, overrides: { variables: EVERY } }),
+    workspaceOverrides: ({ environment }: { readonly environment: string }) =>
+      overridesUnreadable
+        ? Effect.die("Registry is down")
+        : Effect.succeed(environment === "default" ? MERGED : null),
+    changeEveryEnvironment: (
+      input: Parameters<EnvironmentsRegistry["changeEveryEnvironment"]>[0],
+    ) =>
+      Effect.sync(() => {
+        everyAsked.push(input);
+
+        switch (everyAnswer) {
+          case "changed":
+            return {
+              status: "changed" as const,
+              change: { ...CHANGE, scope: "*", field: "variables.SHARED" },
+              variables: EVERY,
+              overriddenIn: overridesHere ? [{ id: "default", name: "Default" }] : [],
+              newBuilds: [{ id: "0000abcd", name: "Other" }],
+              own: input.environment === undefined ? undefined : !overridesHere,
+            };
+          case "unchanged":
+            return { status: "unchanged" as const, value: "all" };
+          case "rejected":
+            return { status: "rejected" as const, message: "no" };
+        }
+      }),
     listEnvironmentSecrets: () =>
       Effect.succeed([
         { environment: "default", name: "API_KEY", build: true, updatedAt: 0 },
@@ -140,6 +184,7 @@ const open = (
     handedOver,
     upkept,
     asked,
+    everyAsked,
     markAsked,
     setMark: (next: SecretBuildMark) => {
       answers.mark = next;
@@ -172,6 +217,24 @@ describe("the Session's Environments", () => {
     expect(await Effect.runPromise(environments.get("ghost"))).toBeNull();
   });
 
+  it("carry the variables kept for every Environment in an Environment's details", async () => {
+    const { environments } = open();
+
+    expect((await Effect.runPromise(environments.get("default")))?.everyVariables).toEqual(EVERY);
+  });
+
+  it("show what is kept for every Environment: its variables, and its Secrets by name", async () => {
+    const { environments } = open();
+
+    expect(await Effect.runPromise(environments.every)).toEqual({
+      variables: EVERY,
+      secrets: [
+        { name: "API_KEY", scope: "every", build: false },
+        { name: "NPM_TOKEN", scope: "every", build: false },
+      ],
+    });
+  });
+
   it("hand a change of the Session's own Environment to its Workspace, and keep its Build current", async () => {
     const { environments, handedOver, upkept, asked } = open();
 
@@ -188,8 +251,75 @@ describe("the Session's Environments", () => {
       change: CHANGE,
       newBuild: true,
     });
-    expect(handedOver).toEqual([{ object: "ws:0a1b2c3d", overrides: { variables: { A: "1" } } }]);
+    // What the Registry says its Workspaces are handed, with the variables kept for every Environment merged in, not
+    // the Environment's own overrides alone.
+    expect(handedOver).toEqual([{ object: "ws:0a1b2c3d", overrides: MERGED }]);
     expect(upkept).toEqual(["default"]);
+  });
+
+  it("hand a change of a variable kept for every Environment to the Session's Workspace, and keep every Environment's Build current", async () => {
+    const { environments, handedOver, upkept, everyAsked, asked } = open();
+
+    const applied = await Effect.runPromise(
+      environments.change({ environment: "*", change, author }),
+    );
+
+    expect(asked).toEqual([]);
+    expect(everyAsked).toEqual([
+      { change, author: { session: "s-1", ...author }, environment: "default" },
+    ]);
+    expect(applied).toEqual({
+      status: "changed",
+      environment: { id: "*", name: "every Environment" },
+      change: { ...CHANGE, scope: "*", field: "variables.SHARED" },
+      newBuild: true,
+      every: {
+        overriddenIn: [],
+        newBuilds: [{ id: "0000abcd", name: "Other" }],
+        own: true,
+      },
+    });
+    expect(handedOver).toEqual([{ object: "ws:0a1b2c3d", overrides: MERGED }]);
+    expect(upkept).toEqual(["default", "0000abcd"]);
+  });
+
+  it("only log a failure to read what the Session's Workspace is handed after a change that was recorded", async () => {
+    for (const environment of ["default", "*"]) {
+      const { environments, handedOver, upkept } = open("changed", "changed", false, true);
+
+      const applied = await Effect.runPromise(environments.change({ environment, change, author }));
+
+      expect(applied).toMatchObject({ status: "changed" });
+      expect(handedOver).toEqual([]);
+      expect(upkept).toEqual(environment === "*" ? ["default", "0000abcd"] : ["default"]);
+    }
+  });
+
+  it("leave the Session's Workspace as it is for a variable for every Environment that its Environment overrides", async () => {
+    const { environments, handedOver, upkept } = open("changed", "changed", true);
+
+    const applied = await Effect.runPromise(
+      environments.change({ environment: "*", change, author }),
+    );
+
+    expect(applied).toMatchObject({
+      status: "changed",
+      every: { overriddenIn: [{ id: "default", name: "Default" }], own: false },
+    });
+    expect(handedOver).toEqual([]);
+    expect(upkept).toEqual(["default", "0000abcd"]);
+  });
+
+  it("do nothing after a change for every Environment that changed nothing or was refused", async () => {
+    for (const status of ["unchanged", "rejected"] as const) {
+      const { environments, handedOver, upkept } = open("changed", status);
+
+      expect(
+        (await Effect.runPromise(environments.change({ environment: "*", change, author }))).status,
+      ).toBe(status);
+      expect(handedOver).toEqual([]);
+      expect(upkept).toEqual([]);
+    }
   });
 
   it("leave the Session's Workspace as it is for a change of another Environment", async () => {

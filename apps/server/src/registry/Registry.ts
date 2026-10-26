@@ -2,9 +2,11 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
+import { withEveryEnvironmentVariables } from "@cloudpid/config";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   AgentChange,
@@ -21,8 +23,11 @@ import {
   type AgentChangeAuthor,
   type AgentChangeRevert,
   changeEnvironment,
+  changeEveryEnvironment,
   type ContainerFieldChange,
   type EnvironmentChange,
+  type EveryEnvironmentChange,
+  everyChangeReach,
   openAgentChanges,
   revertAgentChange,
   wantsNewBuild,
@@ -73,6 +78,13 @@ import {
   type EnvironmentSettingsState,
   writeEnvironmentSettings,
 } from "./environment-settings.ts";
+import {
+  type EveryEnvironmentState,
+  everyVariablesOf,
+  readEveryEnvironment,
+  workspaceOverridesOf,
+  writeEveryEnvironment,
+} from "./every-environment.ts";
 import {
   type Deletion,
   type EnvironmentDeletion,
@@ -140,6 +152,32 @@ export type EnvironmentChangeAnswer =
       readonly newBuild: boolean;
     }
   | Exclude<EnvironmentChange, { readonly status: "changed" }>;
+
+/** How saving the settings kept for every Environment went. */
+export type EveryEnvironmentSettingsUpdate =
+  | { readonly status: "saved"; readonly state: EveryEnvironmentState }
+  | { readonly status: "rejected"; readonly message: string };
+
+/**
+ * How an Agent change to a variable kept for every Environment went (`changeEveryEnvironment`): as
+ * `EveryEnvironmentChange` says, a change also saying which Environments override the variable, so it does not reach
+ * them, and which want a new Build (`wantsNewBuild`).
+ */
+export type EveryEnvironmentChangeAnswer =
+  | {
+      readonly status: "changed";
+      readonly change: AgentChange;
+      /** The variables kept for every Environment now. */
+      readonly variables: Readonly<Record<string, string>>;
+      readonly overriddenIn: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+      readonly newBuilds: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+      /**
+       * Whether it reaches the Workspaces of the Environment the caller named: it does not override the variable.
+       * Undefined: none named.
+       */
+      readonly own: boolean | undefined;
+    }
+  | Exclude<EveryEnvironmentChange, { readonly status: "changed" }>;
 
 /** How keeping one Secret the owner chose to keep in a `secret_ask` form went: a message never holds the value. */
 export type KeptAskedResult =
@@ -253,6 +291,33 @@ export type RegistryMethods = {
     readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<EnvironmentChangeAnswer>;
+  /** The settings kept for every Environment in force (the variables) and their overrides. */
+  readonly getEveryEnvironmentSettings: () => Effect.Effect<EveryEnvironmentState>;
+  /**
+   * Save the settings kept for every Environment if they resolve and no Environment is left with more variables than it
+   * may have with its own; otherwise say why not, and save nothing.
+   */
+  readonly updateEveryEnvironmentSettings: (input: {
+    readonly overrides: Schema.Json;
+  }) => Effect.Effect<EveryEnvironmentSettingsUpdate>;
+  /**
+   * An Agent change (`docs/spec.md` → Agent changes): give one variable kept for every Environment a new value, by the
+   * rules of `updateEveryEnvironmentSettings`, and record it with its `author` under the scope `*`. Says which
+   * Environments override it and which want a new Build; a variable that already has the value records nothing. The
+   * caller runs the Build upkeep after. `environment` is the caller's own, to say whether the change reaches it.
+   */
+  readonly changeEveryEnvironment: (input: {
+    readonly change: ContainerFieldChange;
+    readonly author: AgentChangeAuthor;
+    readonly environment?: string | undefined;
+  }) => Effect.Effect<EveryEnvironmentChangeAnswer>;
+  /**
+   * The Container settings overrides a Workspace of `environment` is handed: its own with the variables kept for every
+   * Environment under them. Null when the Environment is not registered.
+   */
+  readonly workspaceOverrides: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<Schema.Json | null>;
   /**
    * The agent makes an Environment (`docs/spec.md` → Agent changes): `name` as the owner's `createEnvironment` checks
    * it, `repos` (their directories and addresses, parsed by the caller) added, the default Container settings, recorded
@@ -513,26 +578,44 @@ export const RegistryLive = Registry.make(
           );
 
         /**
+         * The Container settings overrides `environment`'s Workspaces are handed (`workspaceOverridesOf`), or null when
+         * it is not registered. Only the overrides that still resolve reach a Workspace, which checks them again.
+         */
+        const workspaceOverrides = (environment: string): Effect.Effect<Schema.Json | null> =>
+          Effect.suspend(() => {
+            const handed = workspaceOverridesOf(store, environment);
+
+            if (handed === null) return Effect.succeed(null);
+
+            return handed.problem === undefined
+              ? Effect.succeed(handed.overrides)
+              : Effect.logWarning(
+                  `Environment ${environment}'s variables are cut to fit: ${handed.problem}`,
+                ).pipe(Effect.as(handed.overrides));
+          });
+
+        /**
          * A Workspace's set-up with its Environment's Container settings overrides, last good Build (`build`, the one
          * a spare was registered with, else the Environment's now) and Secrets, or why it gets none.
          */
         const withSettings = (
           setup: WorkspaceSetup & { readonly build?: EnvironmentBuild | null },
         ): Effect.Effect<WorkspaceSetupWithSettings> =>
-          Effect.map(secretsHandover(store, vault, setup.environment), (handover) => {
-            // Only the overrides that still resolve reach the Workspace, which checks them again.
-            const overrides = store.getEnvironmentSettings(setup.environment) ?? {};
-
-            return {
+          Effect.map(
+            Effect.zip(
+              secretsHandover(store, vault, setup.environment),
+              workspaceOverrides(setup.environment),
+            ),
+            ([handover, overrides]) => ({
               ...setup,
-              settings: readEnvironmentSettings(overrides).overrides,
+              settings: overrides ?? {},
               build:
                 setup.build === undefined
                   ? (store.getBuild(setup.environment)?.build ?? null)
                   : setup.build,
               ...handover,
-            };
-          });
+            }),
+          );
 
         return {
           createSession: ({ title, workspace, origin }) =>
@@ -610,7 +693,7 @@ export const RegistryLive = Registry.make(
             Effect.sync((): EnvironmentSettingsUpdate => {
               if (store.getEnvironment(environment) === null) return { status: "missing" };
 
-              const saved = writeEnvironmentSettings(overrides);
+              const saved = writeEnvironmentSettings(overrides, everyVariablesOf(store));
 
               if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
 
@@ -618,6 +701,18 @@ export const RegistryLive = Registry.make(
 
               return { status: "saved", state: saved.success };
             }),
+          getEveryEnvironmentSettings: () => Effect.sync(() => readEveryEnvironment(store)),
+          updateEveryEnvironmentSettings: ({ overrides }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now): EveryEnvironmentSettingsUpdate => {
+                const saved = writeEveryEnvironment(store, overrides, now);
+
+                return Result.isSuccess(saved)
+                  ? { status: "saved", state: saved.success }
+                  : { status: "rejected", message: saved.failure };
+              }),
+            ),
+          workspaceOverrides: ({ environment }) => workspaceOverrides(environment),
           changeEnvironment: ({ environment, change, expected, author }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
@@ -634,11 +729,52 @@ export const RegistryLive = Registry.make(
 
               const { previous, ...changed } = outcome;
 
+              const every = everyVariablesOf(store);
+
               const newBuild = yield* Effect.promise(() =>
-                wantsNewBuild(outcome.environment.repos, previous, outcome.state.settings),
+                wantsNewBuild(
+                  outcome.environment.repos,
+                  withEveryEnvironmentVariables(previous, every),
+                  withEveryEnvironmentVariables(outcome.state.settings, every),
+                ),
               );
 
               return { ...changed, newBuild } satisfies EnvironmentChangeAnswer;
+            }),
+          changeEveryEnvironment: ({ change, author, environment }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+
+              const outcome = changeEveryEnvironment(
+                state.raw.storage,
+                store,
+                changes,
+                { change, author },
+                now,
+              );
+
+              if (outcome.status !== "changed") return outcome;
+
+              const { name, previous, variables } = outcome;
+
+              const environments = Arr.map(store.listEnvironments(), (record) => ({
+                id: record.id,
+                name: record.name,
+                repos: record.repos,
+                settings: readEnvironmentSettings(store.getEnvironmentSettings(record.id) ?? {})
+                  .settings,
+              }));
+
+              const reach = yield* Effect.promise(() =>
+                everyChangeReach(environments, name, previous, variables, environment),
+              );
+
+              return {
+                status: "changed",
+                change: outcome.change,
+                variables,
+                ...reach,
+              } satisfies EveryEnvironmentChangeAnswer;
             }),
           agentCreateEnvironment: ({ name, repos, author }) =>
             Effect.gen(function* () {
@@ -818,6 +954,8 @@ export const RegistryLive = Registry.make(
             }),
           buildWork: ({ environments }) =>
             Effect.gen(function* () {
+              const every = everyVariablesOf(store);
+
               const wanted = Arr.filterMap(store.listEnvironments(), (environment) => {
                 const recorded = store.getBuild(environment.id);
 
@@ -835,6 +973,7 @@ export const RegistryLive = Registry.make(
                     settings: readEnvironmentSettings(
                       store.getEnvironmentSettings(environment.id) ?? {},
                     ).overrides,
+                    everyVariables: every,
                     recorded,
                     // The values a Build gets, as a keyed digest only: the key is stored and shown in the clear.
                     secrets: digest,

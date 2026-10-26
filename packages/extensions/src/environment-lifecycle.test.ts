@@ -48,6 +48,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
+    every: Effect.succeed({ variables: {}, secrets: [] }),
     change: () => Effect.die("not used here"),
   };
 

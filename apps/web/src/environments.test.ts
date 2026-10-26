@@ -21,6 +21,7 @@ import {
   EMPTY_SECRET_DRAFT,
   EVERY_ENVIRONMENT,
   inheritedSecrets,
+  inheritedVariables,
   secretDraftProblems,
   secretDraftReady,
   secretScopeOf,
@@ -261,11 +262,13 @@ describe("ignoreProblem", () => {
 describe("parseVariables", () => {
   const parsed = (text: string) => Result.getOrThrow(parseVariables(text));
 
-  const problem = (text: string) => {
-    const result = parseVariables(text);
+  const problemWith = (text: string, inherited: Readonly<Record<string, string>>) => {
+    const result = parseVariables(text, inherited);
 
     return Result.isFailure(result) ? result.failure : null;
   };
+
+  const problem = (text: string) => problemWith(text, {});
 
   it("reads a NAME=value line each, the value everything after the first =, as typed", () => {
     expect(parsed("NODE_ENV=test\nQUERY=a=b&c=d\nEMPTY=\nSPACED= two words ")).toEqual({
@@ -308,11 +311,41 @@ describe("parseVariables", () => {
     expect(problem(`A=${"a".repeat(4097)}`)).toBe("A's value is longer than 4096 characters");
   });
 
+  it("counts the variables kept for every Environment in the limit, an overridden name once", () => {
+    const every = Record.fromEntries(Array.from({ length: 10 }, (_, i) => [`E${i}`, "x"] as const));
+
+    const own = (count: number, names: readonly string[] = []) =>
+      [
+        ...Array.from({ length: count }, (_, i) => `V${i}=x`),
+        ...names.map((name) => `${name}=y`),
+      ].join("\n");
+
+    expect(Result.isSuccess(parseVariables(own(MAX_VARIABLES - 10), every))).toBe(true);
+    expect(problemWith(own(MAX_VARIABLES - 10 + 1), every)).toBe(
+      "With the 10 variables for every environment it does not override, use at most 50 variables in all",
+    );
+    // Ten of its own override those ten: 50 in all.
+    expect(
+      Result.isSuccess(parseVariables(own(MAX_VARIABLES - 10, Record.keys(every)), every)),
+    ).toBe(true);
+    expect(problem(own(MAX_VARIABLES + 1))).toBe(`Use at most ${MAX_VARIABLES} variables`);
+  });
+
   it("gives back the variables it was made from", () => {
     const variables = { NODE_ENV: "test", QUERY: "a=b" };
 
     expect(variablesText(variables)).toBe("NODE_ENV=test\nQUERY=a=b");
     expect(parsed(variablesText(variables))).toEqual(variables);
+  });
+});
+
+describe("inheritedVariables", () => {
+  it("names the variables for every Environment an Environment gets, and those of its own that override one", () => {
+    expect(inheritedVariables({ B: "1", C: "2" }, { A: "x", B: "y", D: "z" })).toEqual({
+      inherited: ["A", "D"],
+      overridden: ["B"],
+    });
+    expect(inheritedVariables({ A: "1" }, {})).toEqual({ inherited: [], overridden: [] });
   });
 });
 

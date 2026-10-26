@@ -135,7 +135,7 @@ _Avoid_: Feedback, comment batch, code review (for the message)
 ## Environments, Repos and Workspaces
 
 **Environment**:
-What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Container settings, Setup and Start Scripts). Every Workspace is made from one.
+What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Container settings, Setup and Start Scripts). Every Workspace is made from one. Variables and Secrets can also be kept for every Environment; an Environment's own of the same name wins.
 _Avoid_: Project, template, Machine, sandbox
 
 **Repo**:
