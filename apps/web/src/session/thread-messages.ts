@@ -8,7 +8,7 @@ import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/p
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { callDiffPatch } from "../call-diff.ts";
+import { type CallDiff, callDiffOf } from "../call-diff.ts";
 import { madeChanges, type ShownChange } from "../chat/agent-change.ts";
 import { liveCalls, type NestedCall, settledCalls } from "../chat/nested-calls.ts";
 import { type StartedSubagent, startedSubagent } from "../chat/subagent.ts";
@@ -126,13 +126,13 @@ const resolveCall = (
     const subagent = result.name === "subagent" ? startedSubagent(result.details) : undefined;
     const images = shownImages(result.content);
     const changes = madeChanges(result.details);
-    const patch = callDiffPatch(result.name, result.details, result.error);
+    const diff = callDiffOf(result.name, result.details, result.error);
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
 
     // What a tool left besides its text: the calls it made, which its result lists once it has ended, the subagent a
     // `subagent` call started, the images it returned (a browser's screenshots), the Agent change it made, and the patch an
-    // `edit` recorded (its Call diff).
+    // `edit` or `write` recorded (its Call diff).
     const artifact: CardArtifact = {};
 
     if (nested.length > 0) artifact.nested = nested;
@@ -143,7 +143,7 @@ const resolveCall = (
 
     if (changes.length > 0) artifact.changes = changes;
 
-    if (patch !== undefined) artifact.patch = patch;
+    if (diff !== undefined) artifact.diff = diff;
 
     turn?.content.splice(
       index,
@@ -152,7 +152,7 @@ const resolveCall = (
         subagent === undefined &&
         images.length === 0 &&
         changes.length === 0 &&
-        patch === undefined
+        diff === undefined
         ? resolved
         : { ...resolved, artifact },
     );
@@ -165,7 +165,7 @@ type CardArtifact = {
   subagent?: StartedSubagent;
   images?: { readonly mimeType: string; readonly data: string }[];
   changes?: ReadonlyArray<ShownChange>;
-  patch?: string;
+  diff?: CallDiff;
 };
 
 const userMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();

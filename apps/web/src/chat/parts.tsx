@@ -19,8 +19,8 @@ import { useShownSessionId, useThreadConversation } from "./conversation.ts";
 import { ChangeDiff } from "../change-diff.tsx";
 import { changeTitleText, fieldValueText } from "../environments.ts";
 import { changeDiff } from "../line-diff.ts";
-import { decodeRecorded } from "../call-diff.ts";
-import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
+import { decodeCardDiff, diffTotals } from "../call-diff.ts";
+import { CallDiffBody, CallDiffStats, DiffTally } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
@@ -181,37 +181,100 @@ const StateIcon = ({ status }: { status: NestedCall["status"] }) => {
   }
 };
 
-/** The calls a tool made, such as a script's, in the order they started: live while it runs, then as it recorded them. */
-const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
-  <div className="mt-2 first:mt-0">
-    <div className="text-xs font-medium text-muted-foreground">Calls</div>
-    <ul className="mt-1 space-y-1">
-      {Arr.map(calls, (call) => {
-        const summary = toolSummary(call.name, call.args);
+/** One call of a script, on one line: its state, name, the argument that tells it apart, its change, and its time. */
+const NestedLine = ({ call, path }: { call: NestedCall; path?: string | undefined }) => {
+  // The arguments of a call are cut for display, and may not say the file; a Call diff does.
+  const summary = toolSummary(call.name, call.args) ?? path;
 
-        return (
-          <li key={call.id}>
-            <div className="flex items-center gap-2 text-xs">
-              <StateIcon status={call.status} />
-              <span className="font-mono text-[0.8125rem] text-foreground">{call.name}</span>
-              {summary !== undefined && (
-                <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
+      <StateIcon status={call.status} />
+      <span className="font-mono text-[0.8125rem] text-foreground">{call.name}</span>
+      {summary !== undefined && (
+        <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>
+      )}
+      {call.diff !== undefined && <CallDiffStats diff={call.diff} />}
+      {call.durationMs !== undefined && (
+        <span className="ml-auto shrink-0 text-muted-foreground">{duration(call.durationMs)}</span>
+      )}
+    </div>
+  );
+};
+
+/**
+ * The calls a tool made, such as a script's, in the order they started: live while it runs, then as it recorded them.
+ * An `edit` or `write` of a script that ended has its change on its line, and opens to its diff in place.
+ */
+const NestedCalls = ({
+  parentId,
+  calls,
+}: {
+  /** The call that made them: its `callId` keeps which of them are open. */
+  parentId: string;
+  calls: readonly NestedCall[];
+}) => {
+  // A line that opens has a chevron before it; the others keep its place.
+  const opens = Arr.some(calls, (call) => call.diff !== undefined);
+
+  return (
+    <div className="mt-2 first:mt-0">
+      <div className="text-xs font-medium text-muted-foreground">Calls</div>
+      <ul className="mt-1 space-y-1">
+        {Arr.map(calls, (call) => {
+          const { diff } = call;
+
+          // The script's arguments are cut for display, so the path is the one the diff was recorded with.
+          const path =
+            diff?.path ??
+            Option.getOrUndefined(Option.map(decodePath(call.args), (found) => found.path));
+
+          return (
+            <li key={call.id}>
+              {diff === undefined ? (
+                <div className="flex items-center gap-2">
+                  {opens && <span className="size-3.5 shrink-0" aria-hidden />}
+                  <NestedLine call={call} />
+                </div>
+              ) : (
+                <KeptDetails
+                  disclosure={{ kind: "tool", callId: `${parentId}/c${call.id}` }}
+                  className="group/call"
+                >
+                  {(open) => (
+                    <>
+                      <summary className="flex cursor-pointer list-none items-center gap-2 select-none [&::-webkit-details-marker]:hidden">
+                        <ChevronRight
+                          className="size-3.5 shrink-0 text-muted-foreground motion-safe:transition-transform group-open/call:rotate-90"
+                          aria-hidden
+                        />
+                        <NestedLine call={call} path={path} />
+                      </summary>
+                      {open && (
+                        <div className="mt-1.5 mb-1 ml-5.5">
+                          <CallDiffBody diff={diff} path={path} />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </KeptDetails>
               )}
-              {call.durationMs !== undefined && (
-                <span className="ml-auto shrink-0 text-muted-foreground">
-                  {duration(call.durationMs)}
-                </span>
+              {call.error !== undefined && (
+                <div
+                  className={cn(
+                    "mt-0.5 truncate text-xs text-destructive",
+                    opens ? "ml-11" : "ml-5.5",
+                  )}
+                >
+                  {call.error}
+                </div>
               )}
-            </div>
-            {call.error !== undefined && (
-              <div className="mt-0.5 ml-5.5 truncate text-xs text-destructive">{call.error}</div>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  </div>
-);
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
 
 /**
  * The Agent change a call made: the Environment (or the Settings) and field, and its value before and after, in full; a script's or the
@@ -272,8 +335,11 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
   const changes = changesOf(artifact);
 
-  // The Call diff of an `edit` that finished: only a call with a result has one.
-  const patch = Option.getOrUndefined(Option.map(decodeRecorded(artifact), (found) => found.patch));
+  // The Call diff of an `edit` or `write` that finished: only a call with a result has one.
+  const diff = Option.getOrUndefined(Option.map(decodeCardDiff(artifact), (found) => found.diff));
+
+  // A script's own: the lines its `edit` and `write` calls changed, together.
+  const totals = diffTotals(Arr.map(calls, (nested) => nested.diff));
 
   const path = Option.getOrUndefined(Option.map(decodePath(args), (found) => found.path));
 
@@ -290,7 +356,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       {Arr.map(changes, (change) => (
         <Change key={change.field} change={change} />
       ))}
-      {calls.length > 0 && <NestedCalls calls={calls} />}
+      {calls.length > 0 && <NestedCalls parentId={toolCallId} calls={calls} />}
       {streamed !== undefined && result === undefined && <Output label="Output" text={streamed} />}
       {result !== undefined && (
         <Output
@@ -322,15 +388,16 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
           {summary !== undefined && (
             <span className="min-w-0 truncate font-mono text-xs">{summary}</span>
           )}
-          {patch !== undefined && <CallDiffStats patch={patch} />}
+          {diff !== undefined && <CallDiffStats diff={diff} />}
+          {totals !== undefined && <DiffTally counts={totals} />}
         </>
       }
     >
       {(open) => {
-        if (patch === undefined) return call;
+        if (diff === undefined) return call;
 
         // Mounted only while the card is open: the diff is drawn when the owner looks at it.
-        return open ? <CallDiffBody patch={patch} path={path} call={call} /> : null;
+        return open ? <CallDiffBody diff={diff} path={path} call={call} /> : null;
       }}
     </Disclosure>
   );

@@ -24,10 +24,15 @@ import {
   defineExtension,
   defineTool,
   type Extension,
+  hook,
+  type JsonObject,
+  NestedCallDoc,
   section,
+  ToolTask,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import {
   createBashTool,
   createEditTool,
@@ -51,6 +56,7 @@ import {
   type BashRoute,
   type WorkerOutput,
 } from "./bash-routing.ts";
+import { byteLength, capturedDiffs, oldFile, writeDetails } from "./call-diff.ts";
 import { Images, type ImagesService, readTool } from "./images.ts";
 
 /** Where a `bash` command can run: the Worker Shell (`worker`) or the Container (`container`). */
@@ -106,6 +112,57 @@ const throughContainer = <T extends { readonly description: string }>(tool: T): 
 });
 
 const base = createBashTool();
+
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/** The path as `write` itself resolves it: unusual spaces become spaces, and a leading `@` is dropped. */
+const writtenPath = (path: string): string => {
+  const normalized = path.replace(UNICODE_SPACES, " ");
+
+  return normalized.startsWith("@") ? normalized.slice(1) : normalized;
+};
+
+/**
+ * pi-durable's `write`, recording the Call diff in the result's `details` (`./call-diff.ts`): the file is read before it
+ * is written, and the patch made once the write has succeeded. Nothing about the diff can fail the write or its result:
+ * a diff that cannot be made leaves the result as `write` made it. The old text is read outside pi-durable's per-file
+ * mutation queue (which it does not export), so two writes to one file at once may show each other's text as old.
+ */
+const writeTool = () => {
+  const write = createWriteTool();
+
+  return defineTool({
+    ...write,
+    async execute(args, api, context) {
+      const env = api.env;
+
+      const before = await (async () => {
+        try {
+          const absolute = await env?.absolutePath(writtenPath(args.path), context);
+
+          return env === undefined || absolute === undefined || !absolute.ok
+            ? undefined
+            : await oldFile(env, absolute.value, byteLength(args.content), context);
+        } catch {
+          return undefined;
+        }
+      })();
+
+      const result = await write.execute(args, api, context);
+
+      if (before === undefined) return result;
+
+      try {
+        // SAFETY: a `RecordedDiff` holds strings and booleans only, and leaves out the fields it does not have.
+        const details = writeDetails(args.path, before, args.content) as JsonObject;
+
+        return { ...result, details };
+      } catch {
+        return result;
+      }
+    },
+  });
+};
 
 const backendDescription = [
   "Commands run on one of two backends that share the same files in /workspace. Routing is automatic: leave `backend` unset and the cheapest backend that can run the command is chosen.",
@@ -342,6 +399,38 @@ const Guidelines = section("coding_tools", (input) => {
   return lines.length === 0 ? undefined : lines.join("\n");
 });
 
+/**
+ * Puts the Call diffs of the `edit` and `write` calls a `codemode` script made in its result's `details`, keyed by the
+ * call's number in the script: `details.diffs`. Each nested call's result is in its caller's `NestedCallDoc` when the
+ * script ends, so this reads them there, in the `afterTool` of the `codemode` call itself. A script that failed partway
+ * has its finished calls' diffs; one stopped before its result is stored has none (the Changes still show its changes).
+ */
+const CodemodeDiffs = hook(ToolTask, {
+  afterTool: async (call, result, api, context) => {
+    if (call.parent !== undefined || call.name !== "codemode" || result.details === undefined) {
+      return undefined;
+    }
+
+    // The diffs are an extra: a failure to read them leaves the script's result as it is, and never fails the call.
+    try {
+      const diffs = await capturedDiffs(result.details, async (id) => {
+        const nested = await api.snapshot(NestedCallDoc, api.taskId, `c${id}`, context);
+
+        return nested?.result?.details;
+      });
+
+      if (Record.isEmptyRecord(diffs)) return undefined;
+
+      // SAFETY: `result.details` is a JSON object here (`capturedDiffs` read its `calls`), and the diffs hold JSON values.
+      const details = { ...(result.details as JsonObject), diffs } as JsonObject;
+
+      return { ...result, details };
+    } catch {
+      return undefined;
+    }
+  },
+});
+
 /** What the coding tools are built with. */
 export type CodingToolsOptions = {
   /** The Images binding `read` prepares images with (`./images.ts`); without one, pi-durable's own checks apply. */
@@ -354,13 +443,14 @@ export const codingToolsWith = (options: CodingToolsOptions): Extension =>
     name: "coding-tools",
     tools: [
       throughContainer(options.images === undefined ? createReadTool() : readTool(options.images)),
-      throughContainer(createWriteTool()),
+      throughContainer(writeTool()),
       throughContainer(createEditTool()),
       // Every Worker Shell runs computer's shell at the version the Workspaces Worker deployed, so one answer serves them
       // all; a Workspace DO still on older code may differ, and a command it cannot run falls back as any other does.
       bashTool(new Map()),
     ],
     sections: [Guidelines],
+    hooks: [CodemodeDiffs],
   });
 
 /** The coding tools, with `read` preparing images through the Session's `Images` binding. */
