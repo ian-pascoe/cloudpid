@@ -189,15 +189,15 @@ An interactive shell the owner runs on a Workspace's Container from a Session, i
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), the Session tree, a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is on the Activity overlay.
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), the Session tree, a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
-**Activity overlay**:
-A small panel over the top right of a Session's chat that shows the root agent's Todo List and the Session's subagents while the owner reads, each subagent opening the Subagents Pane at it. An icon button in the Session's header, always there, opens and closes it; with nothing to show it says so.
-_Avoid_: Activity card, popover, plan overlay, todo panel
+**Session details**:
+A small panel over the top right of a Session's chat with what the owner follows of the Session while reading, one section each: for now the root agent's Todo List and the Session's subagents, each subagent opening the Subagents Pane at it. An icon button in the Session's header, always there, opens and closes it; with nothing to show it says so.
+_Avoid_: Activity card, Activity overlay, Session preview (a preview is a pull request's preview stage), popover, todo panel
 
 **Session layout**:
-What the owner opened, collapsed and picked on a Session's page (its Panes, the Activity overlay, open subagents and disclosures, the Session tree's filter), kept per Session on the device so the Session shows again as it was left.
+What the owner opened, collapsed and picked on a Session's page (its Panes, the Session details, open subagents and disclosures, the Session tree's filter), kept per Session on the device so the Session shows again as it was left.
 _Avoid_: View state, UI state
 
 **Offered tool**:

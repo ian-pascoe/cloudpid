@@ -19,10 +19,10 @@ import {
   usageAtom,
 } from "../session/atoms.ts";
 import type { ConnectionStatus } from "../session/state.ts";
-import { ActivityButton } from "./activity.tsx";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
 import { showLayoutAtom } from "../session-layout-state.ts";
+import { SessionDetailsButton } from "./session-details.tsx";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
 import { TreeBarScope, useForkNotice } from "./tree-actions.ts";
 import { TreeDialogs } from "./tree-dialogs.tsx";
@@ -88,7 +88,7 @@ const LiveSession = ({
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
   const queue = useAtomValue(threadQueueAtom(root));
-  // The cards, the Activity overlay and the Subagents Pane read the task graph, and the composer's context ring its usage:
+  // The cards, the Session details and the Subagents Pane read the task graph, and the composer's context ring its usage:
   // their atoms watch them for as long as the Session is shown.
   const taskGraph = useAtomValue(taskGraphAtom(sessionId));
 
@@ -155,7 +155,7 @@ const LiveSession = ({
                 actions={
                   <>
                     {menu}
-                    <ActivityButton />
+                    <SessionDetailsButton />
                     <PaneAreaToggle />
                   </>
                 }

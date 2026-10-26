@@ -69,7 +69,7 @@ export const SUBAGENTS_PANE = "subagents";
 
 /**
  * Keys a Pane was once opened under, and the key it has now: the Tasks Pane (`tasks`) became the Subagents Pane when
- * the Todo List moved to the Activity overlay, so an old link or stored layout opens it.
+ * the Todo List moved to the Session details, so an old link or stored layout opens it.
  */
 const RENAMED_KEYS: ReadonlyMap<string, string> = new Map([["tasks", SUBAGENTS_PANE]]);
 

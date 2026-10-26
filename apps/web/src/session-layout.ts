@@ -4,7 +4,7 @@
 // Session on this device so that going back to a Session shows it as it was left. This module is the rules over it,
 // with no atoms and no React (`session-layout-state.ts` keeps it).
 //
-// It holds the Pane area (the Panes open, the one shown, whether the area is hidden), whether the Activity overlay is
+// It holds the Pane area (the Panes open, the one shown, whether the area is hidden), whether the Session details are
 // open, which subagents are open in the Subagents Pane and in the transcript's cards, which of the transcript's
 // disclosures (tool cards, thinking, Skills, notices) are open, and the Session tree Pane's filter. Only the Sessions
 // shown last are kept (`MAX_LAYOUTS`): a Session not opened for that long starts afresh.
@@ -16,8 +16,8 @@ import { TREE_FILTER_VALUES, type TreeFilter } from "./session/tree.ts";
 /** One Session's layout. */
 export interface SessionLayout {
   readonly panes: PaneArea;
-  /** Whether the Activity overlay is open: the owner opens and closes it from the header. */
-  readonly activityOpen: boolean;
+  /** Whether the Session details are open: the owner opens and closes them from the header. */
+  readonly detailsOpen: boolean;
   /** The conversations of the subagents open in the Subagents Pane. */
   readonly openAgents: readonly number[];
   /** The conversations of the subagent cards open in the transcript. */
@@ -30,7 +30,7 @@ export interface SessionLayout {
 /** A Session's layout until the owner changes it: nothing open, every default. */
 export const DEFAULT_LAYOUT: SessionLayout = {
   panes: NO_PANES,
-  activityOpen: false,
+  detailsOpen: false,
   openAgents: [],
   openCards: [],
   openDisclosures: [],
@@ -55,7 +55,7 @@ const StoredLayout = Schema.Struct({
       hidden: Schema.Boolean,
     }),
   ),
-  activityOpen: Schema.optional(Schema.Boolean),
+  detailsOpen: Schema.optional(Schema.Boolean),
   openAgents: Schema.Array(Schema.Finite).pipe(Schema.optional),
   openCards: Schema.Array(Schema.Finite).pipe(Schema.optional),
   openDisclosures: Schema.Array(Schema.String).pipe(Schema.optional),
@@ -90,7 +90,7 @@ export const layoutOf = (stored: StoredLayouts, sessionId: string): SessionLayou
 
   return {
     panes: checkedPanes(found.panes),
-    activityOpen: found.activityOpen ?? false,
+    detailsOpen: found.detailsOpen ?? false,
     openAgents: found.openAgents ?? [],
     openCards: found.openCards ?? [],
     openDisclosures: found.openDisclosures ?? [],

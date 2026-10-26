@@ -96,14 +96,14 @@ export const subagentCardOpenAtom = (sessionId: string, conversationId: number) 
 export const disclosureOpenAtom = (sessionId: string, disclosure: TranscriptDisclosure) =>
   disclosures(sessionId)(disclosureKey(disclosure));
 
-/** Whether Session `sessionId`'s Activity overlay is open; writing it opens or closes it, kept in the layout. */
-export const activityOpenAtom = Atom.family((sessionId: string) => {
+/** Whether Session `sessionId`'s Session details are open; writing it opens or closes them, kept in the layout. */
+export const detailsOpenAtom = Atom.family((sessionId: string) => {
   const layout = sessionLayoutAtom(sessionId);
 
   return Atom.writable(
-    (get): boolean => get(layout).activityOpen,
-    (ctx, activityOpen: boolean) => {
-      ctx.set(layout, { activityOpen });
+    (get): boolean => get(layout).detailsOpen,
+    (ctx, detailsOpen: boolean) => {
+      ctx.set(layout, { detailsOpen });
     },
   );
 });

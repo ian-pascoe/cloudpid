@@ -24,7 +24,7 @@ describe("a Session's layout on this device", () => {
   it("reads back as it was kept", () => {
     const kept = layout({
       panes: { open: ["subagents", "tree"], shown: "tree", hidden: true },
-      activityOpen: true,
+      detailsOpen: true,
       openAgents: [3],
       openCards: [3, 4],
       openDisclosures: ["root/tool:call-1"],
