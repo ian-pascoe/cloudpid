@@ -432,10 +432,15 @@ describe("the Browser Pane over the Session socket", () => {
     });
 
     // Opening it was a use of the browser: the idle Session wakes to close the browser once it has sat idle since.
-    const opened = await use();
+    // The settle that arms the wake runs after the answer, in the background.
+    const opened = await vi.waitFor(async () => {
+      const now = await use();
 
-    expect(opened.lastUsed).toBeTypeOf("number");
-    expect(opened.alarm).toBe((opened.lastUsed ?? 0) + BROWSER_IDLE_MS);
+      expect(now.lastUsed).toBeTypeOf("number");
+      expect(now.alarm).toBe((now.lastUsed ?? 0) + BROWSER_IDLE_MS);
+
+      return now;
+    });
 
     owner.send({ type: "owner_tab_view", id: "b-2", open: false });
     expect(await owner.next(answerTo("b-2"))).toMatchObject({

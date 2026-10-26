@@ -32,7 +32,7 @@ export const conversationScope = (conversationId: number): string =>
  * The store keys `agents/browser` keeps a browser and a scope under. They are private to the package
  * (`namedBrowserSessionKey` and `browserScopeKeyPrefix`, in `agents` 0.28.1, the version pinned in `package.json`), so
  * `tab.test.ts` creates the records through a real `Browser` and fails when an upgrade changes them: check it, and these
- * two functions, whenever `agents` is upgraded.
+ * two functions and `scopesLockKey` (the lock key, `browserScopeKeyPrefix` too), whenever `agents` is upgraded.
  */
 export const browserKey = (name: string): string => `browser:session:${name}`;
 

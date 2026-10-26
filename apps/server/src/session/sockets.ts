@@ -457,9 +457,19 @@ export const sessionSocketsLayer = (
           // The Browser Pane's links, answered to this socket alone the same way. An Owner tab it opened is a use of the
           // browser: settling arms the wake for its idle close, which an idle Session would otherwise not have.
           case "owner_tab_view":
-            return browserPane
-              .view(message.open)
-              .pipe(Effect.tap((links) => (links.opened ? host.settle : Effect.void)));
+            return browserPane.view(message.open).pipe(
+              // In the background and best effort: the answer neither waits on the settle nor loses its links to it.
+              Effect.tap((links) =>
+                links.opened
+                  ? host.settle.pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("Settling after an Owner tab opened failed", cause),
+                      ),
+                      Effect.forkIn(scope),
+                    )
+                  : Effect.void,
+              ),
+            );
 
           case "command": {
             const { type: _type, id: _id, ...command } = message;
