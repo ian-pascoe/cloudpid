@@ -116,6 +116,10 @@ _Avoid_: Diff (for the whole set), working copy, pending edits
 A branch's or pull request's changes against its base.
 _Avoid_: Branch diff, PR diff (for the thing itself)
 
+**Run diff**:
+The change one Run made to the files in its Workspace's Repos, from its start to its end, whoever wrote them.
+_Avoid_: Turn diff, last turn (for the thing)
+
 **Call diff**:
 The change one file-writing tool call made to one file, as recorded when it ran. Unlike Changes, it never changes afterwards.
 _Avoid_: Per-call diff, edit diff
