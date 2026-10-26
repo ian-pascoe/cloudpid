@@ -541,7 +541,7 @@ export const lifecycleTools = ({
     variables: Schema.optionalKey(
       Schema.Record(Schema.String, Schema.String).annotate({
         description:
-          "The whole map of variables (NAME to value), replacing the Environment's; plain, under the same rules as environment_variable_set",
+          "The whole map of the Environment's own variables (NAME to value), replacing them; plain, under the same rules as environment_variable_set. The variables kept for every Environment still apply under it, and the 50 counts both",
       }),
     ),
     setup_script: Schema.optionalKey(

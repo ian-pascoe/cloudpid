@@ -5,6 +5,7 @@ import {
   INSTANCE_TYPES,
   containerOverridesFrom,
   type ContainerSettings,
+  resolveEveryEnvironmentSettings,
 } from "@cloudpid/config";
 import {
   type AgentChange,
@@ -18,6 +19,7 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { describe, expect, it } from "@effect/vitest";
@@ -48,6 +50,10 @@ import {
   environmentDraftAtom,
   environmentNamesAtom,
   environmentSettingsAtom,
+  everyEnvironmentSettingsAtom,
+  everyVariablesAtom,
+  everyVariablesDraftAtom,
+  saveEveryVariablesAtom,
   environmentListAtom,
   environmentsAtom,
   newEnvironmentNameAtom,
@@ -1223,6 +1229,11 @@ describe("an Environment's Build", () => {
   );
 });
 
+/** The variables kept for every Environment before a test changes them. */
+const API_URL_ONLY = Result.getOrThrow(
+  resolveEveryEnvironmentSettings({ variables: { API_URL: "https://api.test" } }),
+);
+
 describe("the Agent changes", () => {
   const change = (id: number, revertedBy: number | null = null): AgentChange => ({
     id,
@@ -1336,6 +1347,45 @@ describe("the Agent changes", () => {
       }),
   );
 
+  it.effect(
+    "of the variables kept for every Environment load by the scope *, and a revert loads them again",
+    () =>
+      Effect.gen(function* () {
+        let held = API_URL_ONLY.variables;
+        let asked = 0;
+
+        const registry = registryWith({
+          listAgentChanges: () => Effect.succeed([{ ...change(1), scope: "*" }]),
+          revertAgentChange: () =>
+            Effect.sync(() => {
+              held = {};
+
+              return { ...change(2), scope: "*", actor: "owner" as const, reverts: 1 };
+            }),
+          getEveryEnvironmentSettings: () =>
+            Effect.sync(() => {
+              asked += 1;
+
+              return { settings: { variables: held }, overrides: { variables: held } };
+            }),
+          listBuilds: () => Effect.succeed([]),
+        });
+
+        registry.mount(everyEnvironmentSettingsAtom);
+        yield* settled(registry, everyEnvironmentSettingsAtom);
+        expect(registry.get(everyVariablesAtom)).toEqual({ API_URL: "https://api.test" });
+
+        registry.mount(revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        registry.set(revertAgentChangeAtom(EVERY_ENVIRONMENT), 1);
+        yield* settled(registry, revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        yield* settled(registry, everyEnvironmentSettingsAtom);
+
+        expect(asked).toBe(2);
+        expect(registry.get(everyVariablesAtom)).toEqual({});
+        registry.dispose();
+      }),
+  );
+
   it.effect("say why a revert was refused", () =>
     Effect.gen(function* () {
       const registry = registryWith({
@@ -1351,6 +1401,107 @@ describe("the Agent changes", () => {
       expect(settledFailureOf(yield* settled(registry, revertAgentChangeAtom("work")))).toBe(
         'variables.API_URL has changed since: it is "x" now, so the change is not reverted',
       );
+      registry.dispose();
+    }),
+  );
+});
+
+describe("the variables kept for every Environment", () => {
+  /** A Registry keeping them in memory, and the overrides it was asked to keep. */
+  const keeping = () => {
+    let held = API_URL_ONLY.variables;
+    const saved: unknown[] = [];
+    let builds = 0;
+
+    const registry = registryWith({
+      getEveryEnvironmentSettings: () =>
+        Effect.sync(() => ({ settings: { variables: held }, overrides: { variables: held } })),
+      updateEveryEnvironmentSettings: ({ overrides }) =>
+        JSON.stringify(overrides).includes("TOO_MANY")
+          ? refused("variables: with the 50 variables it would have 51")
+          : Effect.sync(() => {
+              saved.push(overrides);
+              held = Result.getOrThrow(resolveEveryEnvironmentSettings(overrides)).variables;
+
+              return { settings: { variables: held }, overrides };
+            }),
+      listBuilds: () =>
+        Effect.sync(() => {
+          builds += 1;
+
+          return [];
+        }),
+    });
+
+    return { registry, saved, builds: () => builds };
+  };
+
+  it.effect("load as the Registry has them, and what is typed stays apart from them", () =>
+    Effect.gen(function* () {
+      const { registry } = keeping();
+
+      registry.mount(everyEnvironmentSettingsAtom);
+
+      yield* settled(registry, everyEnvironmentSettingsAtom);
+      expect(registry.get(everyVariablesAtom)).toEqual({ API_URL: "https://api.test" });
+      expect(registry.get(everyVariablesDraftAtom)).toBeUndefined();
+
+      registry.set(everyVariablesDraftAtom, "A=1");
+      registry.refresh(everyEnvironmentSettingsAtom);
+      yield* settled(registry, everyEnvironmentSettingsAtom);
+      expect(registry.get(everyVariablesDraftAtom)).toBe("A=1");
+      registry.dispose();
+    }),
+  );
+
+  it.effect(
+    "are saved as the overrides, then loaded again with the Builds, and the typed text clears",
+    () =>
+      Effect.gen(function* () {
+        const { registry, saved, builds } = keeping();
+
+        registry.mount(everyEnvironmentSettingsAtom);
+        registry.mount(buildsAtom);
+        yield* settled(registry, everyEnvironmentSettingsAtom);
+        yield* settled(registry, buildsAtom);
+        registry.set(everyVariablesDraftAtom, "NODE_ENV=test");
+        registry.mount(saveEveryVariablesAtom);
+        registry.set(saveEveryVariablesAtom, { NODE_ENV: "test" });
+        yield* settled(registry, saveEveryVariablesAtom);
+        yield* settled(registry, everyEnvironmentSettingsAtom);
+
+        expect(saved).toEqual([{ variables: { NODE_ENV: "test" } }]);
+        expect(registry.get(everyVariablesAtom)).toEqual({ NODE_ENV: "test" });
+        expect(registry.get(everyVariablesDraftAtom)).toBeUndefined();
+        expect(builds()).toBe(2);
+        registry.dispose();
+      }),
+  );
+
+  it.effect("are saved as no overrides when none is left", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = keeping();
+
+      registry.mount(saveEveryVariablesAtom);
+      registry.set(saveEveryVariablesAtom, {});
+      yield* settled(registry, saveEveryVariablesAtom);
+
+      expect(saved).toEqual([{}]);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("say why a save was refused", () =>
+    Effect.gen(function* () {
+      const { registry, saved } = keeping();
+
+      registry.mount(saveEveryVariablesAtom);
+      registry.set(saveEveryVariablesAtom, { TOO_MANY: "1" });
+
+      expect(settledFailureOf(yield* settled(registry, saveEveryVariablesAtom))).toBe(
+        "variables: with the 50 variables it would have 51",
+      );
+      expect(saved).toEqual([]);
       registry.dispose();
     }),
   );

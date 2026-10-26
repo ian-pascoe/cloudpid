@@ -16,6 +16,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
@@ -75,6 +76,11 @@ import {
   environmentListAtom,
   environmentSettingsAtom,
   environmentsErrorAtom,
+  everyEnvironmentSettingsAtom,
+  everyEnvironmentSettingsErrorAtom,
+  everyVariablesAtom,
+  everyVariablesDraftAtom,
+  saveEveryVariablesAtom,
   newEnvironmentNameAtom,
   rebuildEnvironmentAtom,
   removeRepoAtom,
@@ -98,6 +104,8 @@ import {
   deleteConfirmed,
   EVERY_ENVIRONMENT,
   inheritedSecrets,
+  type InheritedVariables,
+  inheritedVariables,
   secretDraftProblems,
   secretDraftReady,
   secretVariable,
@@ -439,6 +447,45 @@ const SecretRow = ({
 };
 
 /**
+ * The names of Environment `id`'s own variables, then those it gets from every Environment, as `SecretsSection` names
+ * the Secrets it gets: the values are in the Edit dialog.
+ */
+const VariablesSummary = ({ id }: { id: string }) => {
+  const loaded = useAtomValue(environmentSettingsAtom(id));
+  const every = useAtomValue(everyVariablesAtom);
+
+  const own = loaded.pipe(
+    AsyncResult.value,
+    Option.map((state) => state.settings.variables),
+  );
+
+  const loadError = settledFailureOf(loaded);
+
+  if (Option.isNone(own)) {
+    return loadError === null ? null : <DialogProblem problem={loadError} />;
+  }
+
+  const { inherited } = inheritedVariables(own.value, every);
+  const names = Record.keys(own.value).toSorted();
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">Variables</h3>
+      {names.length === 0 ? (
+        <p className="text-xs text-muted-foreground">None set for this environment.</p>
+      ) : (
+        <p className="font-mono text-xs">{names.join(", ")}</p>
+      )}
+      {inherited.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Also from every environment: <span className="font-mono">{inherited.join(", ")}</span>
+        </p>
+      )}
+    </div>
+  );
+};
+
+/**
  * The Secrets kept in section `sectionKey` (an Environment's id, or `EVERY_ENVIRONMENT`), with the form that keeps
  * another. An Environment's section names the Secrets it gets from every Environment, and which of its own win.
  */
@@ -513,6 +560,61 @@ const SecretsSection = ({
   );
 };
 
+/**
+ * The variables kept for every Environment, a `NAME=value` line each, with the form that saves them. They are plain, as
+ * an Environment's own are: an Environment's own variable of the same name wins.
+ */
+const EveryVariablesSection = () => {
+  const loaded = useAtomValue(everyEnvironmentSettingsAtom);
+  const loadError = useAtomValue(everyEnvironmentSettingsErrorAtom);
+  const saved = useAtomValue(everyVariablesAtom);
+  const [draft, setDraft] = useAtom(everyVariablesDraftAtom);
+  const [kept, save] = useAtom(saveEveryVariablesAtom);
+  // Until the variables in force are known, `saved` is empty and a save would wipe them.
+  const ready = loaded.pipe(AsyncResult.value, Option.isSome);
+  const text = draft ?? variablesText(saved);
+  const parsed = parseVariables(text);
+  const problem = Result.isFailure(parsed) ? parsed.failure : null;
+  const typed = Result.getOrElse(parsed, () => ({}));
+  const changed = variablesText(typed) !== variablesText(saved);
+  const saving = kept.waiting;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!ready || problem !== null || saving || !changed) return;
+
+    save(typed);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-2">
+      <CodeField
+        id="variables-every-environment"
+        label="Variables for every environment (NAME=value, one per line)"
+        rows={3}
+        value={text}
+        placeholder={"NODE_ENV=development\nCI=1"}
+        problem={problem}
+        hint="Every command, Setup Script and Start Script of every environment gets them, at its next container start. They are plain: the agent can read them, so keep a secret value as a secret instead. An environment's own variable of the same name wins."
+        onChange={setDraft}
+      />
+      <div className="flex items-center justify-end gap-2">
+        {!ready && loadError === null && <p className="text-xs text-muted-foreground">Loading…</p>}
+        <Button
+          type="submit"
+          variant="outline"
+          disabled={saving || !ready || problem !== null || !changed}
+        >
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      </div>
+      <DialogProblem problem={loadError} />
+      <DialogProblem problem={settledFailureOf(kept)} />
+    </form>
+  );
+};
+
 /** The look of the Edit dialog's monospace text areas. */
 const CODE_FIELD =
   "min-w-0 rounded-md border border-input bg-background px-2.5 py-2 font-mono text-sm focus-visible:outline-2 focus-visible:outline-ring";
@@ -579,11 +681,14 @@ const StartupFields = ({
   id,
   draft,
   variablesProblem,
+  inherited,
   onChange,
 }: {
   id: string;
   draft: StartupDraft;
   variablesProblem: string | null;
+  /** The variables kept for every Environment that this one gets, and those of its own that override one. */
+  inherited: InheritedVariables;
   onChange: (change: Partial<StartupDraft>) => void;
 }) => (
   <fieldset className="flex min-w-0 flex-col gap-3">
@@ -614,6 +719,18 @@ const StartupFields = ({
         onChange({ variables });
       }}
     />
+    {inherited.inherited.length > 0 && (
+      <p className="text-xs text-muted-foreground">
+        Also from every environment:{" "}
+        <span className="font-mono">{inherited.inherited.join(", ")}</span>
+      </p>
+    )}
+    {inherited.overridden.length > 0 && (
+      <p className="text-xs text-muted-foreground">
+        Overriding the one for every environment:{" "}
+        <span className="font-mono">{inherited.overridden.join(", ")}</span>
+      </p>
+    )}
     <CodeField
       id={`setup-${id}`}
       label="Setup Script (bash)"
@@ -842,7 +959,8 @@ const EditEnvironmentDialog = ({
 
   const renamed = name.trim() !== environment.name;
   const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
-  const parsedVariables = parseVariables(variables ?? "");
+  const everyVariables = useAtomValue(everyVariablesAtom);
+  const parsedVariables = parseVariables(variables ?? "", everyVariables);
   const variablesProblem = Result.isFailure(parsedVariables) ? parsedVariables.failure : null;
   const typedVariables = Result.getOrElse(parsedVariables, () => ({}));
 
@@ -949,6 +1067,7 @@ const EditEnvironmentDialog = ({
               startScript: startScript ?? "",
             }}
             variablesProblem={variablesProblem}
+            inherited={inheritedVariables(typedVariables, everyVariables)}
             onChange={(change) => {
               setDraft((current) => ({ ...current, ...change }));
             }}
@@ -1729,6 +1848,7 @@ const EnvironmentCard = ({
       </div>
       <AddRepoForm id={id} />
       <DialogProblem problem={reposError} />
+      <VariablesSummary id={id} />
       <SecretsSection sectionKey={id} title="Secrets" empty="None kept for this environment." />
       <BuildStatus id={id} />
       <AgentChangesSection id={id} sessions={sessions} />
@@ -1865,14 +1985,17 @@ export const EnvironmentsPage = () => {
         </p>
         <NewEnvironmentForm names={(environments ?? []).map((known) => known.name)} />
         <section
-          aria-label="Secrets for every environment"
+          aria-label="For every environment"
           className="flex flex-col gap-2 rounded-lg border p-4"
         >
+          <EveryVariablesSection />
           <p className="text-xs text-muted-foreground">
             A secret kept here or on an environment is used by reference in that environment's
             sessions, as one the agent asked for is, but never expires. Its value is not shown
             again, and is taken out of command output and of what the model is sent. An
-            environment's own secret of the same name wins.
+            environment's own secret of the same name wins. A value that is not secret (an email, a
+            URL) belongs in the variables above: a kept secret found on a container's disk stops its
+            snapshot.
           </p>
           <SecretsSection
             sectionKey={EVERY_ENVIRONMENT}

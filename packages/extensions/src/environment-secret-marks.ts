@@ -19,10 +19,10 @@ import {
 } from "./environment.ts";
 import { secretEnvName } from "./secrets/references.ts";
 
-/** The id that addresses the Secrets kept for every Environment. */
+/** The id that addresses the variables and Secrets kept for every Environment. */
 export const EVERY_ENVIRONMENT_ID = "*";
 
-/** The name the Agent changes of the Secrets kept for every Environment give their scope. */
+/** The name the Agent changes of the variables and Secrets kept for every Environment give their scope. */
 export const EVERY_ENVIRONMENT_NAME = "every Environment";
 
 /** How the Build mark of a kept Secret was changed. */

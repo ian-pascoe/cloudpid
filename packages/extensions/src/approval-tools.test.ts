@@ -67,6 +67,7 @@ const details = (id: string, name: string, settings = {}): EnvironmentDetails =>
   build: { status: "none" },
   settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
   secrets: [],
+  everyVariables: {},
 });
 
 /** What a fake recorded being asked to do. */
@@ -165,6 +166,7 @@ const setUp = async ({
         current: Effect.succeed(current),
         list: Effect.succeed([]),
         get: (id) => Effect.succeed(held[id] ?? null),
+        every: Effect.succeed({ variables: {}, secrets: [] }),
         change: ({ environment, change: { field, value }, expected, author }) =>
           Effect.sync(() => {
             calls.environments.push({
@@ -608,6 +610,20 @@ describe("settings_subagent_workspaces_set", () => {
 });
 
 describe("environment_container_size_limit_set", () => {
+  it("refuses, asking nothing, the id * of the variables and Secrets kept for every Environment", async () => {
+    const { call, asked } = await setUp();
+
+    const { result, text } = await call("environment_container_size_limit_set", {
+      id: "*",
+      size: "cpu-3",
+      reason: "More",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain('The id "*" names the variables and Secrets kept for every Environment');
+    expect(asked).toEqual([]);
+  });
+
   it("refuses, asking nothing, a limit below the Environment's size", async () => {
     const { call, asked } = await setUp({
       held: {

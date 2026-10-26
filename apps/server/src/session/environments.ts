@@ -1,8 +1,10 @@
 // The Session's `Environments` (`@cloudpid/extensions/environment`, `docs/spec.md` → Agent changes): the Registry's
-// Environments, read and changed for the agent. A change is applied and recorded by the Registry (`changeEnvironment`),
-// as the owner's save is applied; then, as after that save, the Builds' upkeep runs for the Environment, and a change to
-// the Session's own Environment is handed to its Workspace at once (`updateContainerSettings`), which applies it at its
-// next Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's.
+// Environments, read and changed for the agent. A change is applied and recorded by the Registry (`changeEnvironment`,
+// and `changeEveryEnvironment` for a variable kept for every Environment), as the owner's save is applied; then, as
+// after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),
+// and a change that reaches the Session's own Environment is handed to its Workspace at once
+// (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
+// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's.
 import type {
   AppliedChange,
   EnvironmentDetails,
@@ -10,7 +12,11 @@ import type {
   EnvironmentsService,
   KeptSecretListing,
 } from "@cloudpid/extensions/environment";
-import { EnvironmentsError, EVERY_ENVIRONMENT_ID } from "@cloudpid/extensions/environment";
+import {
+  EnvironmentsError,
+  EVERY_ENVIRONMENT_ID,
+  EVERY_ENVIRONMENT_NAME,
+} from "@cloudpid/extensions/environment";
 import type { BuildView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -30,6 +36,9 @@ export type EnvironmentsRegistry = Pick<
   | "getEnvironmentSettings"
   | "listEnvironmentSecrets"
   | "changeEnvironment"
+  | "changeEveryEnvironment"
+  | "getEveryEnvironmentSettings"
+  | "workspaceOverrides"
   | "agentMarkSecretBuild"
   | "getWorkspace"
 >;
@@ -73,13 +82,16 @@ const keptFor = (
 /** An Environment as a change names it: its id and name. */
 const changedEnvironment = ({ id, name }: EnvironmentRecord) => ({ id, name });
 
+/** Every Environment as a change names it. */
+const EVERY_ENVIRONMENT = { id: EVERY_ENVIRONMENT_ID, name: EVERY_ENVIRONMENT_NAME };
+
 /**
- * The Builds' upkeep after a kept Secret changed (its Build mark, or one more kept), as the main Worker runs it after the
- * owner's: the Builds the Secret may reach are looked at again, each Environment's for one kept for every Environment
- * (`*`).
+ * The Builds' upkeep after a kept Secret changed (its Build mark, or one more kept) or a variable kept for every
+ * Environment did, as the main Worker runs it after the owner's: the Builds it may reach are looked at again, each
+ * Environment's for one kept for every Environment (`*`).
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off
-export const buildsAfterSecret = (
+export const buildsAfterScope = (
   registry: Pick<RegistryMethods, "listEnvironments">,
   builds: Pick<Builds, "of">,
   environment: string,
@@ -129,6 +141,33 @@ export const sessionEnvironments = ({
     return found;
   });
 
+  /**
+   * Hand the overrides `read` gives to the Session's own Workspace `object` (none: nothing); a Workspace that cannot be
+   * reached, or overrides that cannot be read, leave the change to the Workspace's next readying.
+   */
+  const handToWorkspace = (object: string, read: Effect.Effect<Schema.Json | null>) =>
+    read.pipe(
+      Effect.flatMap((overrides) =>
+        overrides === null
+          ? Effect.void
+          : Effect.tryPromise(() => handOver(object, overrides)).pipe(
+              Effect.flatMap((written) =>
+                written.ok
+                  ? Effect.void
+                  : Effect.logWarning(
+                      `The Session's Workspace refused an Agent change: ${written.message}`,
+                    ),
+              ),
+            ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "Handing an Agent change to the Session's Workspace failed; it takes it at its next readying",
+          cause,
+        ),
+      ),
+    );
+
   const buildsById = Effect.map(
     registry.listBuilds(),
     (builds) => new Map(Arr.map(builds, ({ environment, build }) => [environment, build] as const)),
@@ -157,6 +196,7 @@ export const sessionEnvironments = ({
 
         const byId = yield* buildsById;
         const secrets = yield* registry.listEnvironmentSecrets();
+        const every = yield* registry.getEveryEnvironmentSettings();
 
         return {
           id,
@@ -166,8 +206,21 @@ export const sessionEnvironments = ({
           settings: state.settings,
           problem: state.problem,
           secrets: keptFor(id, secrets),
+          everyVariables: every.settings.variables,
         } satisfies EnvironmentDetails;
       }),
+    every: Effect.gen(function* () {
+      const { settings } = yield* registry.getEveryEnvironmentSettings();
+      const secrets = yield* registry.listEnvironmentSecrets();
+
+      return {
+        variables: settings.variables,
+        secrets: Arr.map(
+          Arr.filter(secrets, (record) => record.environment === null),
+          ({ name, build }): KeptSecretListing => ({ name, scope: "every", build }),
+        ),
+      };
+    }),
     markSecret: ({ environment, name, build, author }) =>
       Effect.gen(function* () {
         if (session === undefined) {
@@ -185,7 +238,7 @@ export const sessionEnvironments = ({
 
         // As after the owner's switch: the Secrets marked for the Build are part of what a Build is made with.
         if (marked.status === "changed") {
-          yield* buildsAfterSecret(registry, builds, environment);
+          yield* buildsAfterScope(registry, builds, environment);
         }
 
         return marked;
@@ -196,6 +249,52 @@ export const sessionEnvironments = ({
           return yield* EnvironmentsError.make({
             message: "This Session is not one the Registry lists, so it changes no Environment.",
           });
+        }
+
+        const own = yield* where;
+
+        if (environment === EVERY_ENVIRONMENT_ID) {
+          const everywhere = yield* registry.changeEveryEnvironment({
+            change,
+            author: { session, ...author },
+            environment: own?.environment,
+          });
+
+          switch (everywhere.status) {
+            case "rejected":
+              return everywhere;
+            case "unchanged":
+              return {
+                status: "unchanged",
+                environment: EVERY_ENVIRONMENT,
+                value: everywhere.value,
+              };
+            case "changed":
+              break;
+          }
+
+          // The Session's own Workspace takes it now unless its Environment has a variable of its own by that name.
+          if (own !== null && everywhere.own === true) {
+            yield* handToWorkspace(
+              own.object,
+              registry.workspaceOverrides({ environment: own.environment }),
+            );
+          }
+
+          // As after the owner's save: every Environment's Build is made with the variables.
+          yield* buildsAfterScope(registry, builds, EVERY_ENVIRONMENT_ID);
+
+          return {
+            status: "changed",
+            environment: EVERY_ENVIRONMENT,
+            change: everywhere.change,
+            newBuild: everywhere.newBuilds.length > 0,
+            every: {
+              overriddenIn: everywhere.overriddenIn,
+              newBuilds: everywhere.newBuilds,
+              own: everywhere.own === true,
+            },
+          } satisfies AppliedChange;
         }
 
         const answer = yield* registry.changeEnvironment({
@@ -220,23 +319,15 @@ export const sessionEnvironments = ({
             break;
         }
 
-        const own = yield* where;
-
         // The Session's own Workspace takes it now, not at its next readying; one that cannot be reached gets it then.
+        // What it is handed has the variables kept for every Environment merged in, which the change may not have
+        // touched.
         if (own?.environment === environment) {
-          yield* Effect.tryPromise(() => handOver(own.object, answer.state.overrides)).pipe(
-            Effect.flatMap((written) =>
-              written.ok
-                ? Effect.void
-                : Effect.logWarning(
-                    `The Session's Workspace refused an Agent change: ${written.message}`,
-                  ),
-            ),
-            Effect.catchCause((cause) =>
-              Effect.logWarning(
-                "Handing an Agent change to the Session's Workspace failed; it takes it at its next readying",
-                cause,
-              ),
+          yield* handToWorkspace(
+            own.object,
+            Effect.map(
+              registry.workspaceOverrides({ environment }),
+              (handed) => handed ?? answer.state.overrides,
             ),
           );
         }

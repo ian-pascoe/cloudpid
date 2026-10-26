@@ -43,6 +43,7 @@ import {
   type ChangedEnvironment,
   DeployCredentials,
   describeApplied,
+  refuseEveryEnvironment,
   Environments,
   EnvironmentsError,
   MAX_CHANGE_REASON,
@@ -285,6 +286,8 @@ export const ApprovalTools: Effect.Effect<
   /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
   const target = (id: string | undefined) =>
     Effect.gen(function* () {
+      yield* refuseEveryEnvironment(id);
+
       const current = yield* environments.current;
       const environment = id ?? current;
 

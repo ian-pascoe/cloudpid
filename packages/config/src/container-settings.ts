@@ -6,6 +6,7 @@
 // Environment, and each Workspace DO holds a copy, which it reads at each Container launch.
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -325,6 +326,12 @@ const VariableValue = Schema.String.check(
   Schema.makeFilter((value: string) => (hasNul(value) ? "contains a NUL character" : undefined)),
 );
 
+/** An Environment's variables, and the ones kept for every Environment (`EveryEnvironmentSettings`): the same rules. */
+export const ContainerVariables = Schema.Record(Schema.String, VariableValue).check(
+  Schema.isMaxProperties(MAX_VARIABLES),
+  Schema.makeFilter(variableNamesProblem),
+);
+
 /**
  * The largest Setup or Start Script, in bytes of UTF-8. The bootstrap passes one to the Container base64-encoded in the
  * text of a bash command, and Linux takes one argument of at most 128 KiB.
@@ -386,11 +393,10 @@ export const ContainerSettings = Schema.Struct({
     .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /**
    * Environment variables every command on the Container gets, and its bootstrap and scripts, under the Container's own
-   * (`toolchainEnv`) and what a caller passes. Plain: the agent can read them.
+   * (`toolchainEnv`) and what a caller passes. Plain: the agent can read them. A Workspace is handed them merged with
+   * the ones kept for every Environment (`withEveryEnvironmentVariables`), so its copy of these settings holds both.
    */
-  variables: Schema.Record(Schema.String, VariableValue)
-    .check(Schema.isMaxProperties(MAX_VARIABLES), Schema.makeFilter(variableNamesProblem))
-    .pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
+  variables: ContainerVariables.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
   /** The Environment's own Setup Script (bash), run in `/workspace` before the repos' when it is due. Empty: none. */
   setupScript: Script.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
   /** The Environment's Start Script (bash), run in `/workspace` at each Container start before the repos'. Empty: none. */
@@ -406,6 +412,19 @@ export type ContainerSettings = typeof ContainerSettings.Type;
 
 /** What is stored: the settings that differ from the defaults. */
 export type ContainerSettingsOverrides = typeof ContainerSettings.Encoded;
+
+/**
+ * The settings kept for every Environment, under each Environment's own (`withEveryEnvironmentVariables`): the
+ * variables, for now. A struct so another setting can join them. Like the rest, every field has a decoding default.
+ */
+export const EveryEnvironmentSettings = Schema.Struct({
+  variables: ContainerVariables.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
+});
+
+export type EveryEnvironmentSettings = typeof EveryEnvironmentSettings.Type;
+
+/** What is stored: the settings that differ from the defaults. */
+export type EveryEnvironmentSettingsOverrides = typeof EveryEnvironmentSettings.Encoded;
 
 export class ContainerSettingsError extends Schema.TaggedError<
   ContainerSettingsError,
@@ -449,24 +468,42 @@ const withCurrentInstanceNames = (overrides: Schema.Json): Schema.Json =>
 const decodeOverrides = (overrides: Schema.Json) =>
   decodeCurrentOverrides(withCurrentInstanceNames(overrides));
 
+const decodeEveryOverrides = Schema.decodeUnknownResult(EveryEnvironmentSettings, {
+  onExcessProperty: "error",
+  errors: "all",
+});
+
+const settingsError = (error: Schema.SchemaError): ContainerSettingsError =>
+  ContainerSettingsError.make({
+    message: Arr.join(
+      Arr.map(problemsOf(error), (problem) => problem.line),
+      "\n",
+    ),
+  });
+
 /** The settings `overrides` give over the defaults, or why they are not valid settings, one problem per line. */
 export const resolveContainerSettings = (
   overrides: Schema.Json,
 ): Result.Result<ContainerSettings, ContainerSettingsError> =>
-  Result.mapError(decodeOverrides(overrides), (error) =>
-    ContainerSettingsError.make({
-      message: Arr.join(
-        Arr.map(problemsOf(error), (problem) => problem.line),
-        "\n",
-      ),
-    }),
-  );
+  Result.mapError(decodeOverrides(overrides), settingsError);
+
+/** The settings kept for every Environment that `overrides` give, or why they are not valid, one problem per line. */
+export const resolveEveryEnvironmentSettings = (
+  overrides: Schema.Json,
+): Result.Result<EveryEnvironmentSettings, ContainerSettingsError> =>
+  Result.mapError(decodeEveryOverrides(overrides), settingsError);
 
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
 export const DEFAULT_CONTAINER_SETTINGS: ContainerSettings = Schema.decodeSync(ContainerSettings)(
   {},
 );
+
+/** The settings kept for every Environment with every field at its default. */
+// @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
+export const DEFAULT_EVERY_ENVIRONMENT_SETTINGS: EveryEnvironmentSettings = Schema.decodeSync(
+  EveryEnvironmentSettings,
+)({});
 
 /** The overrides that make the defaults into `settings`: only what differs. What a settings form saves. */
 export const containerOverridesFrom = (settings: ContainerSettings): ContainerSettingsOverrides => {
@@ -499,12 +536,23 @@ export const containerOverridesFrom = (settings: ContainerSettings): ContainerSe
   return overrides;
 };
 
+/** The overrides that make the defaults into `settings`: `{}` when there are no variables. What the Registry stores. */
+export const everyEnvironmentOverridesFrom = (
+  settings: EveryEnvironmentSettings,
+): EveryEnvironmentSettingsOverrides =>
+  Record.isEmptyRecord(settings.variables) ? {} : { variables: settings.variables };
+
 /** Settings resolved from overrides that may be partly stale, and what was left out to do it. */
-export type LenientContainerSettings = {
-  readonly settings: ContainerSettings;
-  /** One line per override dropped, as `resolveContainerSettings` words it. */
+type Lenient<Settings> = {
+  readonly settings: Settings;
+  /** One line per override dropped, as the strict resolve words it. */
   readonly dropped: ReadonlyArray<string>;
 };
+
+/**
+ * An Environment's Container settings resolved from overrides that may be partly stale, and what was left out to do it.
+ */
+export type LenientContainerSettings = Lenient<ContainerSettings>;
 
 /**
  * `settings` with the size limit raised to the size where it is smaller: an Environment saved with a size above the
@@ -516,18 +564,20 @@ const withLimitAtLeastSize = (settings: ContainerSettings): ContainerSettings =>
     : { ...settings, maxInstance: settings.instance };
 
 /**
- * The settings `overrides` give once every override that does not resolve is dropped, so a value a later release stops
- * accepting (an instance type Cloudflare retires) costs only itself. Reading what was saved is lenient and writing is
- * strict (`resolveContainerSettings`), as for the global settings. A size limit below the size is raised to it
- * (`withLimitAtLeastSize`).
+ * The settings kept for every Environment, resolved from overrides that may be partly stale, and what was left out to
+ * do it.
  */
-export const resolveContainerSettingsLeniently = (
+export type LenientEveryEnvironmentSettings = Lenient<EveryEnvironmentSettings>;
+
+const resolveLeniently = <Settings>(
+  decode: (overrides: Schema.Json) => Result.Result<Settings, Schema.SchemaError>,
+  defaults: Settings,
   overrides: Schema.Json,
-): LenientContainerSettings => {
+): Lenient<Settings> => {
   if (!isJsonObject(overrides)) {
     return {
-      settings: DEFAULT_CONTAINER_SETTINGS,
-      dropped: Result.isSuccess(decodeOverrides(overrides)) ? [] : ["not an object"],
+      settings: defaults,
+      dropped: Result.isSuccess(decode(overrides)) ? [] : ["not an object"],
     };
   }
 
@@ -536,10 +586,9 @@ export const resolveContainerSettingsLeniently = (
 
   // Dropping a key settles its problem; a round per key, and one for what is left, covers a document with several.
   for (let round = 0; round <= Record.size(overrides); round += 1) {
-    const result = decodeOverrides(rest);
+    const result = decode(rest);
 
-    if (Result.isSuccess(result))
-      return { settings: withLimitAtLeastSize(result.success), dropped };
+    if (Result.isSuccess(result)) return { settings: result.success, dropped };
 
     const problems = problemsOf(result.failure);
 
@@ -552,5 +601,79 @@ export const resolveContainerSettingsLeniently = (
     rest = Record.filter(rest, (_, key) => !bad.has(key));
   }
 
-  return { settings: DEFAULT_CONTAINER_SETTINGS, dropped };
+  return { settings: defaults, dropped };
+};
+
+/**
+ * The settings `overrides` give once every override that does not resolve is dropped, so a value a later release stops
+ * accepting (an instance type Cloudflare retires) costs only itself. Reading what was saved is lenient and writing is
+ * strict (`resolveContainerSettings`), as for the global settings. A size limit below the size is raised to it
+ * (`withLimitAtLeastSize`).
+ */
+export const resolveContainerSettingsLeniently = (
+  overrides: Schema.Json,
+): LenientContainerSettings => {
+  const { settings, dropped } = resolveLeniently(
+    decodeOverrides,
+    DEFAULT_CONTAINER_SETTINGS,
+    overrides,
+  );
+
+  return { settings: withLimitAtLeastSize(settings), dropped };
+};
+
+/**
+ * The settings kept for every Environment that `overrides` give once every override that does not resolve is dropped:
+ * lenient like `resolveContainerSettingsLeniently`.
+ */
+export const resolveEveryEnvironmentSettingsLeniently = (
+  overrides: Schema.Json,
+): LenientEveryEnvironmentSettings =>
+  resolveLeniently(decodeEveryOverrides, DEFAULT_EVERY_ENVIRONMENT_SETTINGS, overrides);
+
+/**
+ * Why an Environment with the variables `own` cannot also have the ones kept for every Environment, `every`, or
+ * undefined when it can: a Workspace is handed both as one set (`withEveryEnvironmentVariables`), and the Workspace DO
+ * refuses more than `MAX_VARIABLES` of them. Counts each name once: an Environment's own wins over the one for every
+ * Environment. The words go after a prefix the caller adds.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a check for callers' own messages, not a combinator.
+export const mergedVariablesProblem = (
+  own: Readonly<Record<string, string>>,
+  every: Readonly<Record<string, string>>,
+): string | undefined => {
+  const inherited = Arr.filter(Record.keys(every), (name) => !Record.has(own, name)).length;
+  const total = Record.size(own) + inherited;
+
+  return total > MAX_VARIABLES
+    ? `with the ${inherited} ${inherited === 1 ? "variable" : "variables"} for every Environment it does not override, it would have ${total}: at most ${MAX_VARIABLES}`
+    : undefined;
+};
+
+/**
+ * `settings` with the variables kept for every Environment under its own: what a Workspace and a Build are handed. An
+ * Environment's variable of the same name wins. At most `MAX_VARIABLES` are kept, the Environment's own first and then
+ * the others by name, for a set that `mergedVariablesProblem` refuses (a save never makes one). Answers `settings`
+ * itself when `every` is empty.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- called with both arguments at the places that hand settings over.
+export const withEveryEnvironmentVariables = (
+  settings: ContainerSettings,
+  every: Readonly<Record<string, string>>,
+): ContainerSettings => {
+  if (Record.isEmptyRecord(every)) return settings;
+
+  const inherited = Arr.sort(
+    Arr.filter(Record.keys(every), (name) => !Record.has(settings.variables, name)),
+    Order.String,
+  );
+
+  const kept = new Set(
+    Arr.take(inherited, Math.max(0, MAX_VARIABLES - Record.size(settings.variables))),
+  );
+
+  return {
+    ...settings,
+    variables: { ...Record.filter(every, (_, name) => kept.has(name)), ...settings.variables },
+  };
 };

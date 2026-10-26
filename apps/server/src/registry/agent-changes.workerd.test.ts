@@ -3,17 +3,24 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT, MAX_AGENT_CHANGES, variableField } from "@cloudpid/protocol";
+import {
+  DEFAULT_ENVIRONMENT,
+  EVERY_ENVIRONMENT_SCOPE,
+  MAX_AGENT_CHANGES,
+  variableField,
+} from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   type AgentChangeAuthor,
   changeEnvironment,
+  changeEveryEnvironment,
   type ContainerFieldChange,
   openAgentChanges,
   revertAgentChange,
 } from "./agent-changes.ts";
+import { everyVariablesOf, readEveryEnvironment } from "./every-environment.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
 
@@ -32,6 +39,10 @@ const inRegistry = <A>(
       at?: number,
       environment?: string,
     ) => ReturnType<typeof changeEnvironment>;
+    readonly changeEvery: (
+      change: ContainerFieldChange,
+      at?: number,
+    ) => ReturnType<typeof changeEveryEnvironment>;
     readonly revert: (
       id: number,
       at?: number,
@@ -52,6 +63,8 @@ const inRegistry = <A>(
       changes,
       change: (change, at = 1_000, environment = DEFAULT_ENVIRONMENT) =>
         changeEnvironment(state.storage, store, changes, { environment, change, author }, at),
+      changeEvery: (change, at = 1_000) =>
+        changeEveryEnvironment(state.storage, store, changes, { change, author }, at),
       revert: (id, at = 2_000, environment = DEFAULT_ENVIRONMENT) =>
         revertAgentChange(state.storage, store, changes, { environment, id }, at),
     });
@@ -317,6 +330,223 @@ describe("an Agent change to an Environment", () => {
     });
 
     expect(listed).toEqual([]);
+  });
+});
+
+const manyVariables = (count: number, prefix = "V") =>
+  Object.fromEntries(Array.from({ length: count }, (_, index) => [`${prefix}${index}`, "x"]));
+
+describe("an Agent change to the variables kept for every Environment", () => {
+  it("sets and unsets a variable, recorded under the scope * with the values before and after", async () => {
+    const [set, unset, kept, listed] = await inRegistry(({ changeEvery, store, changes }) => [
+      changeEvery(setVariable("EMAIL", "me@test")),
+      changeEvery(setVariable("EMAIL", null), 2_000),
+      readEveryEnvironment(store),
+      changes.list(EVERY_ENVIRONMENT_SCOPE),
+    ]);
+
+    expect(set).toMatchObject({
+      status: "changed",
+      name: "EMAIL",
+      previous: {},
+      variables: { EMAIL: "me@test" },
+      change: {
+        scope: "*",
+        actor: "agent",
+        session: "s-1",
+        tool: "environment_variable_set",
+        field: "variables.EMAIL",
+        before: null,
+        after: "me@test",
+      },
+    });
+    expect(unset).toMatchObject({
+      status: "changed",
+      previous: { EMAIL: "me@test" },
+      variables: {},
+      change: { before: "me@test", after: null },
+    });
+    expect(kept).toEqual({ settings: { variables: {} }, overrides: {} });
+    expect(listed.map(({ id, field }) => ({ id, field }))).toEqual([
+      { id: 2, field: "variables.EMAIL" },
+      { id: 1, field: "variables.EMAIL" },
+    ]);
+  });
+
+  it("records nothing for a variable unset that was not set, or set to the value it has", async () => {
+    const [unset, same, listed] = await inRegistry(({ changeEvery, changes }) => {
+      const first = changeEvery(setVariable("GONE", null));
+
+      changeEvery(setVariable("A", "1"));
+
+      return [first, changeEvery(setVariable("A", "1")), changes.list(EVERY_ENVIRONMENT_SCOPE)];
+    });
+
+    expect(unset).toEqual({ status: "unchanged", value: null });
+    expect(same).toEqual({ status: "unchanged", value: "1" });
+    expect(listed).toHaveLength(1);
+  });
+
+  it("refuses a field that is not a variable, and what the owner's save refuses, saving and recording nothing", async () => {
+    const [setting, reserved, listed, kept] = await inRegistry(
+      ({ changeEvery, changes, store }) => [
+        changeEvery({ field: "idleMinutes", value: 5 }),
+        changeEvery(setVariable("PATH", "/bin")),
+        changes.list(EVERY_ENVIRONMENT_SCOPE),
+        readEveryEnvironment(store),
+      ],
+    );
+
+    expect(setting).toEqual({
+      status: "rejected",
+      message: "idleMinutes: only variables are kept for every Environment",
+    });
+    expect(reserved).toEqual({
+      status: "rejected",
+      message: expect.stringContaining('"PATH" is reserved'),
+    });
+    expect(listed).toEqual([]);
+    expect(kept.overrides).toEqual({});
+  });
+
+  it("is refused when some Environment would be left with more than 50 variables, naming it", async () => {
+    const [refused, listed, kept] = await inRegistry(({ changeEvery, changes, store }) => {
+      store.createEnvironment("0000abcd", "Web", 1_000);
+      store.putEnvironmentSettings("0000abcd", { variables: manyVariables(50) });
+
+      return [
+        changeEvery(setVariable("ONE_MORE", "x")),
+        changes.list(EVERY_ENVIRONMENT_SCOPE),
+        readEveryEnvironment(store),
+      ];
+    });
+
+    expect(refused).toEqual({
+      status: "rejected",
+      message:
+        'variables: environment "Web" (0000abcd) with the 1 variable for every Environment it does not override, it would have 51: at most 50; unset some there or here',
+    });
+    expect(listed).toEqual([]);
+    expect(kept.overrides).toEqual({});
+  });
+
+  it("does not count a name the Environment overrides", async () => {
+    const outcome = await inRegistry(({ changeEvery, store }) => {
+      store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, { variables: manyVariables(50) });
+
+      return changeEvery(setVariable("V0", "shared"));
+    });
+
+    expect(outcome).toMatchObject({ status: "changed" });
+  });
+
+  it("refuses an Environment's own change that, with the variables kept for every Environment, would pass 50", async () => {
+    const [refused, saved] = await inRegistry(({ change, changeEvery, store }) => {
+      store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, { variables: manyVariables(49) });
+      changeEvery(setVariable("E1", "x"));
+
+      return [change(setVariable("MORE", "x")), store.getEnvironmentSettings(DEFAULT_ENVIRONMENT)];
+    });
+
+    expect(refused).toEqual({
+      status: "rejected",
+      message:
+        "variables: with the 1 variable for every Environment it does not override, it would have 51: at most 50",
+    });
+    expect(saved).toEqual({ variables: manyVariables(49) });
+  });
+
+  it("stays when an Environment is deleted, as the Secrets' history does", async () => {
+    const [listed, kept] = await inRegistry(({ changeEvery, changes, store }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+      changeEvery(setVariable("A", "1"));
+      store.deleteEnvironment("0000abcd");
+
+      return [changes.list(EVERY_ENVIRONMENT_SCOPE), everyVariablesOf(store)];
+    });
+
+    expect(listed).toHaveLength(1);
+    expect(kept).toEqual({ A: "1" });
+  });
+});
+
+describe("the owner's revert of an Agent change to a variable kept for every Environment", () => {
+  it("writes the value before back, recorded as the owner's change under the scope *", async () => {
+    const [reverted, kept, listed] = await inRegistry(({ changeEvery, revert, store, changes }) => {
+      changeEvery(setVariable("A", "1"));
+      changeEvery(setVariable("A", "2"));
+
+      return [
+        revert(2, 3_000, EVERY_ENVIRONMENT_SCOPE),
+        everyVariablesOf(store),
+        changes.list(EVERY_ENVIRONMENT_SCOPE),
+      ];
+    });
+
+    expect(reverted).toMatchObject({
+      status: "reverted",
+      change: {
+        id: 3,
+        scope: "*",
+        actor: "owner",
+        field: "variables.A",
+        before: "2",
+        after: "1",
+        reverts: 2,
+      },
+    });
+    expect(kept).toEqual({ A: "1" });
+    expect(listed.map(({ id, revertedBy }) => ({ id, revertedBy }))).toEqual([
+      { id: 3, revertedBy: null },
+      { id: 2, revertedBy: 3 },
+      { id: 1, revertedBy: null },
+    ]);
+  });
+
+  it("unsets a variable the change set", async () => {
+    const kept = await inRegistry(({ changeEvery, revert, store }) => {
+      changeEvery(setVariable("NEW", "x"));
+      revert(1, 2_000, EVERY_ENVIRONMENT_SCOPE);
+
+      return readEveryEnvironment(store);
+    });
+
+    expect(kept).toEqual({ settings: { variables: {} }, overrides: {} });
+  });
+
+  it("is refused, showing the value now, when the variable has changed since, and a second time", async () => {
+    const [moved, once, again] = await inRegistry(({ changeEvery, revert }) => {
+      changeEvery(setVariable("A", "1"));
+      changeEvery(setVariable("A", "2"));
+
+      const moved = revert(1, 3_000, EVERY_ENVIRONMENT_SCOPE);
+      const once = revert(2, 3_000, EVERY_ENVIRONMENT_SCOPE);
+
+      return [moved, once, revert(2, 4_000, EVERY_ENVIRONMENT_SCOPE)];
+    });
+
+    expect(moved).toEqual({ status: "changed-since", field: "variables.A", current: "2" });
+    expect(once).toMatchObject({ status: "reverted" });
+    expect(again).toEqual({
+      status: "refused",
+      message: "Change 2 was reverted already, by change 3",
+    });
+  });
+
+  it("is refused when writing the value back would leave an Environment with more than 50 variables", async () => {
+    const [refused, kept] = await inRegistry(({ changeEvery, revert, store }) => {
+      changeEvery(setVariable("GONE", "was"));
+      changeEvery(setVariable("GONE", null));
+      store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, { variables: manyVariables(50) });
+
+      return [revert(2, 3_000, EVERY_ENVIRONMENT_SCOPE), everyVariablesOf(store)];
+    });
+
+    expect(refused).toMatchObject({
+      status: "refused",
+      message: expect.stringContaining("would have 51"),
+    });
+    expect(kept).toEqual({});
   });
 });
 

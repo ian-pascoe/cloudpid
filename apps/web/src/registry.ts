@@ -15,8 +15,9 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
 /**
  * What a query listens to and a mutation invalidates: the Session list, the Environment list (with each one's Repos),
- * the Workspaces, an Environment's own Container settings and Agent changes by id, the kept Secrets (names only), the
- * Environments' Builds, the settings, and this browser's push subscription.
+ * the Workspaces, an Environment's own Container settings and Agent changes by id, the settings kept for every
+ * Environment, the kept Secrets (names only), the Environments' Builds, the settings, and this browser's push
+ * subscription.
  */
 export type RegistryKey =
   | "sessions"
@@ -24,6 +25,7 @@ export type RegistryKey =
   | "workspaces"
   | `environment-settings:${string}`
   | `agent-changes:${string}`
+  | "every-environment"
   | "environment-secrets"
   | "builds"
   | "settings"

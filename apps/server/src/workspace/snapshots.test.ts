@@ -162,6 +162,22 @@ describe("ContainerSnapshots and the Environment's Secrets", () => {
     expect(leaked).toMatchObject({ outcome: "skipped" });
     expect(JSON.stringify(leaked)).toContain("/app/.env");
     expect(JSON.stringify(leaked)).not.toContain(kept.value);
+    // It says where a value that is not secret belongs.
+    expect(leaked).toMatchObject({
+      reason: expect.stringContaining(
+        "belongs in the variables (kept for the Environment or for every Environment)",
+      ),
+    });
+  });
+
+  it("does not send a leak of the token alone to the variables", async () => {
+    const { state, snapshots } = open();
+
+    state.leaks = ["/root/.netrc"];
+
+    const leaked = await snapshots.capture("idle", IMAGE);
+
+    expect(leaked).toEqual({ outcome: "skipped", reason: "the GitHub token is in /root/.netrc" });
   });
 
   it("searches for them also where there is no token", async () => {

@@ -8,6 +8,7 @@ import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
+  EVERY_ENVIRONMENT_SCOPE,
   fieldRepo,
   fieldVariable,
   forkTitle,
@@ -31,6 +32,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
@@ -44,6 +46,7 @@ import type { WorkspaceLookups } from "../session/lookups.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
+import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -67,9 +70,33 @@ const fakeRegistries = () => {
   const environments: EnvironmentRecord[] = [
     { id: DEFAULT_ENVIRONMENT, name: "Default", repos: [], createdAt: 0 },
   ];
-  /** The Container settings overrides saved per Environment. */
+  /** The Container settings overrides saved per Environment, and under `*` the settings kept for every Environment. */
 
   const overridesOf = new Map<string, Schema.Json>();
+
+  /** The variables kept for every Environment. */
+  const everyVariables = (): Readonly<Record<string, string>> =>
+    // SAFETY: the tests only save overrides of the settings' own shape.
+    (overridesOf.get(EVERY_ENVIRONMENT_SCOPE) as { variables?: Record<string, string> } | undefined)
+      ?.variables ?? {};
+
+  /**
+   * What `environment`'s Workspaces are handed: the Registry's own merge (`workspaceOverridesOf`) over the fake's saved
+   * overrides.
+   */
+  const handedOverrides = (environment: string): Schema.Json =>
+    workspaceOverridesOf(
+      {
+        getDocument: (name) =>
+          name === EVERY_ENVIRONMENT_DOCUMENT
+            ? JSON.stringify(overridesOf.get(EVERY_ENVIRONMENT_SCOPE) ?? {})
+            : null,
+        putDocument: () => undefined,
+        getEnvironmentSettings: (id) => overridesOf.get(id) ?? {},
+      },
+      environment,
+    )?.overrides ?? {};
+
   /** What is left from before Environments, to wipe. */
   const legacyObjects: LegacyObject[] = [];
   const names: string[] = [];
@@ -630,8 +657,30 @@ const fakeRegistries = () => {
           },
         };
       }),
+    getEveryEnvironmentSettings: () =>
+      Effect.sync(() => ({
+        settings: { variables: everyVariables() },
+        overrides: overridesOf.get(EVERY_ENVIRONMENT_SCOPE) ?? {},
+      })),
+    updateEveryEnvironmentSettings: ({ overrides }) =>
+      Effect.sync(() => {
+        calls.push("updateEveryEnvironmentSettings");
+
+        if (overrides === null) {
+          return { status: "rejected" as const, message: "variables: Expected an object" };
+        }
+
+        overridesOf.set(EVERY_ENVIRONMENT_SCOPE, overrides);
+
+        return {
+          status: "saved" as const,
+          state: { settings: { variables: everyVariables() }, overrides },
+        };
+      }),
+    workspaceOverrides: () => Effect.die("The endpoint hands no Workspace its overrides"),
     // The Session DO makes Agent changes, never the endpoint.
     changeEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    changeEveryEnvironment: () => Effect.die("The endpoint makes no Agent change"),
     agentCreateEnvironment: () => Effect.die("The endpoint makes no Agent change"),
     agentRenameEnvironment: () => Effect.die("The endpoint makes no Agent change"),
     agentAddRepo: () => Effect.die("The endpoint makes no Agent change"),
@@ -745,7 +794,7 @@ const fakeRegistries = () => {
           branch,
           base,
           repos: [],
-          settings: overridesOf.get(environment) ?? {},
+          settings: handedOverrides(environment),
           build: buildRecords.get(environment)?.build ?? null,
           secrets: keptFor(environment),
         };
@@ -795,7 +844,7 @@ const fakeRegistries = () => {
             branch: "cloudpid/spare",
             base: null,
             repos: found.value.repos,
-            settings: overridesOf.get(environment) ?? {},
+            settings: handedOverrides(environment),
             build: buildRecords.get(environment)?.build ?? null,
             secrets: keptFor(environment),
           });
@@ -813,6 +862,7 @@ const fakeRegistries = () => {
             environment: item.id,
             repos: item.repos,
             settings: overridesOf.get(item.id) ?? {},
+            everyVariables: everyVariables(),
             recorded: buildRecords.get(item.id) ?? NO_BUILD,
             secrets: buildDigestOf(item.id),
           }),
@@ -2358,6 +2408,52 @@ it("fails overrides the Registry rejects with its readable message, saving nothi
   ).toMatchObject({ overrides: {} });
 });
 
+it("saves the settings kept for every Environment and keeps every Environment's Build current after the answer", async () => {
+  const fake = fakeRegistries();
+  const other = await makeEnvironment(fake, "Other");
+
+  await fake.runBackground();
+
+  const saved = await call(fake, (registry) =>
+    registry.updateEveryEnvironmentSettings({ overrides: { variables: { SHARED: "all" } } }),
+  );
+
+  const read = await call(fake, (registry) => registry.getEveryEnvironmentSettings());
+
+  expect(saved).toEqual({
+    settings: { variables: { SHARED: "all" } },
+    overrides: { variables: { SHARED: "all" } },
+  });
+  expect(read).toEqual(saved);
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).toContain(`buildWork:${other}`);
+  expect(fake.calls).not.toContain("buildWork:*");
+});
+
+it("fails settings kept for every Environment that the Registry rejects with its readable message, saving nothing", async () => {
+  const fake = fakeRegistries();
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.updateEveryEnvironmentSettings({ overrides: null })),
+  );
+
+  expect(error).toBeInstanceOf(EnvironmentError);
+  expect(error.message).toBe("variables: Expected an object");
+  expect(await call(fake, (registry) => registry.getEveryEnvironmentSettings())).toEqual({
+    settings: { variables: {} },
+    overrides: {},
+  });
+
+  await fake.runBackground();
+
+  // No Build is looked at again for a save that was refused.
+  expect(fake.calls).toEqual(["updateEveryEnvironmentSettings"]);
+});
+
 it("refuses the settings of an Environment the Registry does not list", async () => {
   const fake = fakeRegistries();
 
@@ -2433,6 +2529,29 @@ it("lists the Agent changes of the Secrets kept for every Environment under the 
   );
 
   expect(error.message).toBe('Environment "*" has no change 9');
+});
+
+it("reverts an Agent change to a variable kept for every Environment, and keeps every Environment's Build current, not a Build of the scope *", async () => {
+  const fake = fakeRegistries();
+  const other = await makeEnvironment(fake, "Other");
+
+  await fake.runBackground();
+  fake.overridesOf.set(EVERY_ENVIRONMENT_SCOPE, { variables: { SHARED: "2" } });
+  fake.agentChanges.push(agentChange(1, "SHARED", "1", "2", EVERY_ENVIRONMENT_SCOPE));
+
+  const reverted = await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: EVERY_ENVIRONMENT_SCOPE, change: 1 }),
+  );
+
+  expect(reverted).toMatchObject({ actor: "owner", before: "2", after: "1", reverts: 1 });
+  expect(fake.overridesOf.get(EVERY_ENVIRONMENT_SCOPE)).toEqual({ variables: { SHARED: "1" } });
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).toContain(`buildWork:${other}`);
+  expect(fake.calls).not.toContain("buildWork:*");
 });
 
 it("reverts an Agent change, answers the owner's change, and keeps the Build current after the answer", async () => {
@@ -3193,6 +3312,49 @@ describe("a Test Build", () => {
     expect(fake.buildRecords.get(environment)?.status).toMatchObject({ status: "building" });
   });
 
+  it("gives a Test Build the variables kept for every Environment under the proposed ones, and refuses more than 50 in all", async () => {
+    const { fake, environment } = await saved();
+
+    fake.overridesOf.set(EVERY_ENVIRONMENT_SCOPE, { variables: { SHARED: "all", CI: "0" } });
+
+    await ok(
+      fake.buildUpkeep.test.start({
+        environment,
+        id: "s-1/7",
+        proposed: { variables: { CI: "1" } },
+      }),
+    );
+
+    const request = fake.buildRequests.get(`test-build:${environment}`);
+
+    expect(request?.settings).toMatchObject({ variables: { SHARED: "all", CI: "1" } });
+    expect(request?.key).toBe(
+      await buildKey({
+        repos: [{ name: "app", url: "https://github.com/acme/app.git" }],
+        settings: {
+          ...DEFAULT_CONTAINER_SETTINGS,
+          setupScript: "make deps",
+          variables: { SHARED: "all", CI: "1" },
+        },
+        image: "img-1",
+      }),
+    );
+
+    const many = Record.fromEntries(Arr.makeBy(50, (i) => [`V${i}`, "x"]));
+
+    expect(
+      await refused(
+        fake.buildUpkeep.test.start({
+          environment,
+          id: "s-1/8",
+          proposed: { variables: many },
+        }),
+      ),
+    ).toBe(
+      "The proposed settings are refused: variables: with the 2 variables for every Environment it does not override, it would have 52: at most 50",
+    );
+  });
+
   it("takes the proposed Repos as the whole list", async () => {
     const { fake, environment } = await saved();
     const repos = [{ name: "web", url: "https://github.com/acme/web.git" }];
@@ -3315,6 +3477,63 @@ it("asks for a Build again when the settings a Build uses change, and not for a 
   ]);
   // The last good one is still what Workspaces start from meanwhile.
   expect(fake.buildRecords.get(environment)?.build).toEqual(good);
+});
+
+it("makes a Build with the variables kept for every Environment under the Environment's own, and keeps the request and key of one that overrides every name", async () => {
+  const fake = fakeRegistries();
+  const shadowing = await makeEnvironment(fake, "Shadowing");
+  const inheriting = await makeEnvironment(fake, "Inheriting");
+  const overriding = await makeEnvironment(fake, "Overriding");
+  const repos = [{ name: "app", url: "https://github.com/acme/app.git" }];
+
+  fake.overridesOf.set(shadowing, { variables: { SHARED: "its", OTHER: "own" } });
+  fake.overridesOf.set(overriding, { variables: { SHARED: "mine" } });
+
+  for (const environment of [shadowing, inheriting, overriding]) {
+    await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+  }
+
+  await fake.runBackground();
+
+  // Nothing kept for every Environment: the request and key are the Environment's own.
+  for (const environment of [shadowing, inheriting, overriding]) {
+    expect(fake.buildRequests.get(`build:${environment}`)).toMatchObject({
+      key: await keyOf(fake, environment),
+      settings: fake.overridesOf.get(environment) ?? {},
+    });
+  }
+
+  const before = fake.buildRequests.get(`build:${overriding}`);
+  const shadowed = fake.buildRequests.get(`build:${shadowing}`);
+
+  fake.overridesOf.set(EVERY_ENVIRONMENT_SCOPE, { variables: { SHARED: "all", OTHER: "x" } });
+
+  for (const environment of [shadowing, inheriting, overriding]) {
+    await Effect.runPromise(fake.buildUpkeep.of(environment));
+  }
+
+  const merged = await buildKey({
+    repos,
+    settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: { SHARED: "all", OTHER: "x" } },
+    image: "img-1",
+  });
+
+  expect(fake.buildRequests.get(`build:${inheriting}`)).toEqual({
+    key: merged,
+    repos,
+    settings: { variables: { SHARED: "all", OTHER: "x" } },
+    check: false,
+  });
+
+  // It overrides every name kept for every Environment, so its request and key are what they were.
+  expect(fake.buildRequests.get(`build:${shadowing}`)).toEqual(shadowed);
+  expect(shadowed?.settings).toEqual({ variables: { SHARED: "its", OTHER: "own" } });
+
+  // Its own SHARED wins, so it gets OTHER alone more.
+  expect(fake.buildRequests.get(`build:${overriding}`)).toMatchObject({
+    settings: { variables: { SHARED: "mine", OTHER: "x" } },
+  });
+  expect(fake.buildRequests.get(`build:${overriding}`)?.key).not.toBe(before?.key);
 });
 
 it("asks for a Build when a deploy changed the image", async () => {

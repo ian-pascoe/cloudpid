@@ -12,7 +12,7 @@ import * as Effect from "effect/Effect";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import { type RemovalObjects, type RemovalRegistry, removals } from "../registry/removal.ts";
-import { buildsAfterSecret } from "./environments.ts";
+import { buildsAfterScope } from "./environments.ts";
 
 /** What the deletes read and change in the Registry. */
 export type EnvironmentRemovalRegistry = RemovalRegistry &
@@ -104,7 +104,7 @@ export const sessionEnvironmentRemoval = ({
 
         // As after the owner's delete: the Secrets a Build gets are part of what it is made with.
         if (deleted.status === "deleted") {
-          yield* buildsAfterSecret(registry, builds, environment);
+          yield* buildsAfterScope(registry, builds, environment);
         }
 
         return deleted;
