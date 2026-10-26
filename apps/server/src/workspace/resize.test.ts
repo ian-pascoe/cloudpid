@@ -65,87 +65,108 @@ const open = (
 
 describe("a Container resize", () => {
   it("snapshots a running Container, records the size, then stops it", async () => {
-    const { state, resizes } = open({}, { launched: "custom-1" });
+    const { state, resizes } = open({}, { launched: "cpu-1" });
 
-    expect(await resizes.resize("custom-2")).toEqual({
+    expect(await resizes.resize("cpu-2")).toEqual({
       outcome: "resized",
       wasRunning: true,
-      previous: "custom-1",
-      next: "custom-2",
-      environment: "custom-1",
+      previous: "cpu-1",
+      next: "cpu-2",
+      environment: "cpu-1",
       snapshotted: true,
     });
-    expect(state.events).toEqual(["snapshot", "record custom-2", "stop"]);
-    expect(await resizes.recorded()).toBe("custom-2");
+    expect(state.events).toEqual(["snapshot", "record cpu-2", "stop"]);
+    expect(await resizes.recorded()).toBe("cpu-2");
   });
 
   it("still stops the Container when the snapshot could not be taken, and says so", async () => {
-    const { state, resizes } = open({}, { launched: "custom-1" });
+    const { state, resizes } = open({}, { launched: "cpu-1" });
 
     state.snapshot = "failed";
 
-    expect(await resizes.resize("custom-2")).toMatchObject({
+    expect(await resizes.resize("cpu-2")).toMatchObject({
       outcome: "resized",
       wasRunning: true,
       snapshotted: false,
     });
-    expect(state.events).toEqual(["snapshot", "record custom-2", "stop"]);
+    expect(state.events).toEqual(["snapshot", "record cpu-2", "stop"]);
   });
 
   it("refuses a size above the Environment's size limit, and stops and records nothing", async () => {
-    const { state, resizes } = open({ maxInstance: "custom-2" }, { launched: "custom-1" });
+    const { state, resizes } = open({ maxInstance: "cpu-2" }, { launched: "cpu-1" });
 
-    expect(await resizes.resize("standard-3")).toEqual({ outcome: "refused", limit: "custom-2" });
+    expect(await resizes.resize("standard-3")).toEqual({ outcome: "refused", limit: "cpu-2" });
     expect(state.events).toEqual([]);
     expect(state.running).toBe(true);
   });
 
-  it("orders the sizes by memory, then vCPU: standard-2 fits under custom-2, standard-1 does not under custom-1", async () => {
-    expect(await open({ maxInstance: "custom-2" }).resizes.resize("standard-2")).toMatchObject({
+  it("orders the sizes by memory, then vCPU: standard-2 fits under cpu-2, standard-1 does not under cpu-1", async () => {
+    expect(await open({ maxInstance: "cpu-2" }).resizes.resize("standard-2")).toMatchObject({
       outcome: "resized",
     });
-    expect(await open({ maxInstance: "custom-1" }).resizes.resize("standard-1")).toEqual({
+    expect(await open({ maxInstance: "cpu-1" }).resizes.resize("standard-1")).toEqual({
       outcome: "refused",
-      limit: "custom-1",
+      limit: "cpu-1",
     });
   });
 
-  it("puts custom-3 (9 GiB) above the default limit and standard-3, and under a custom-3 or standard-4 limit", async () => {
-    expect(await open().resizes.resize("custom-3")).toEqual({
+  it("puts cpu-3 (9 GiB) above the default limit and standard-3, and under a cpu-3 or standard-4 limit", async () => {
+    expect(await open().resizes.resize("cpu-3")).toEqual({
       outcome: "refused",
-      limit: "custom-2",
+      limit: "cpu-2",
     });
-    expect(await open({ maxInstance: "standard-3" }).resizes.resize("custom-3")).toEqual({
+    expect(await open({ maxInstance: "standard-3" }).resizes.resize("cpu-3")).toEqual({
       outcome: "refused",
       limit: "standard-3",
     });
 
-    for (const maxInstance of ["custom-3", "standard-4"] as const) {
-      expect(await open({ maxInstance }).resizes.resize("custom-3")).toMatchObject({
+    for (const maxInstance of ["cpu-3", "standard-4"] as const) {
+      expect(await open({ maxInstance }).resizes.resize("cpu-3")).toMatchObject({
         outcome: "resized",
-        next: "custom-3",
+        next: "cpu-3",
       });
     }
   });
 
-  it("leaves a Container that already runs on the size running, keeping the size for a restart", async () => {
-    const { state, resizes } = open({}, { launched: "custom-2" });
+  it("puts mem-4 above standard-1, mem-8 above cpu-2 and mem-12 above cpu-3, under the next standard size", async () => {
+    expect(await open({ maxInstance: "standard-1" }).resizes.resize("mem-4")).toEqual({
+      outcome: "refused",
+      limit: "standard-1",
+    });
+    expect(await open({ maxInstance: "standard-2" }).resizes.resize("mem-4")).toMatchObject({
+      outcome: "resized",
+    });
+    expect(await open().resizes.resize("mem-8")).toEqual({ outcome: "refused", limit: "cpu-2" });
+    expect(await open({ maxInstance: "standard-3" }).resizes.resize("mem-8")).toMatchObject({
+      outcome: "resized",
+    });
+    expect(await open({ maxInstance: "cpu-3" }).resizes.resize("mem-12")).toEqual({
+      outcome: "refused",
+      limit: "cpu-3",
+    });
+    expect(await open({ maxInstance: "standard-4" }).resizes.resize("mem-12")).toMatchObject({
+      outcome: "resized",
+    });
+  });
 
-    expect(await resizes.resize("custom-2")).toEqual({ outcome: "unchanged", size: "custom-2" });
-    expect(state.events).toEqual(["record custom-2"]);
+  it("leaves a Container that already runs on the size running, keeping the size for a restart", async () => {
+    const { state, resizes } = open({}, { launched: "cpu-2" });
+
+    expect(await resizes.resize("cpu-2")).toEqual({ outcome: "unchanged", size: "cpu-2" });
+    expect(state.events).toEqual(["record cpu-2"]);
     expect(state.running).toBe(true);
   });
 
   it("goes back to the Environment's size by forgetting the recorded one", async () => {
-    const { state, resizes } = open({}, { launched: "custom-2" });
+    const { state, resizes } = open({}, { launched: "cpu-2" });
 
-    state.recorded = "custom-2";
+    state.recorded = "cpu-2";
 
-    expect(await resizes.resize("custom-1")).toMatchObject({
+    expect(await resizes.resize("cpu-1")).toMatchObject({
       outcome: "resized",
-      previous: "custom-2",
-      next: "custom-1",
-      environment: "custom-1",
+      previous: "cpu-2",
+      next: "cpu-1",
+      environment: "cpu-1",
     });
     expect(state.events).toEqual(["snapshot", "clear", "stop"]);
     expect(await resizes.recorded()).toBeUndefined();
@@ -157,23 +178,23 @@ describe("a Container resize", () => {
     expect(await resizes.resize("standard-2")).toEqual({
       outcome: "resized",
       wasRunning: false,
-      previous: "custom-1",
+      previous: "cpu-1",
       next: "standard-2",
-      environment: "custom-1",
+      environment: "cpu-1",
       snapshotted: false,
     });
     expect(state.events).toEqual(["record standard-2"]);
 
-    expect(await resizes.resize("custom-2")).toMatchObject({ previous: "standard-2" });
+    expect(await resizes.resize("cpu-2")).toMatchObject({ previous: "standard-2" });
   });
 
   it("is forgotten when the idle stop stops a Container, and kept when its alarm finds none running", async () => {
     const { state, resizes } = open();
 
-    await resizes.resize("custom-2");
+    await resizes.resize("cpu-2");
     await resizes.stopIdle();
 
-    expect(await resizes.recorded()).toBe("custom-2");
+    expect(await resizes.recorded()).toBe("cpu-2");
 
     // The next command started a Container on that size, which the idle stop then stops. The size is forgotten before
     // the stop, so a resize that lands while the Container is being destroyed is kept.
@@ -189,7 +210,7 @@ describe("a Container resize", () => {
   it("is forgotten by the owner's restart, whatever runs", async () => {
     const { resizes } = open();
 
-    await resizes.resize("custom-2");
+    await resizes.resize("cpu-2");
     await resizes.forget();
 
     expect(await resizes.recorded()).toBeUndefined();

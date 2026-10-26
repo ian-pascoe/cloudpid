@@ -27,9 +27,9 @@ const fakeContainer = (
   resized: ContainerResizeOutcome = {
     outcome: "resized",
     wasRunning,
-    previous: "custom-1",
-    next: "custom-2",
-    environment: "custom-1",
+    previous: "cpu-1",
+    next: "cpu-2",
+    environment: "cpu-1",
     snapshotted: wasRunning,
   },
 ) => {
@@ -116,7 +116,7 @@ describe("the container extension", () => {
     await run(await toolOver(container.control, "container_restart"), { reason: "hung" });
     await run(await toolOver(container.control, "container_resize"), {
       reason: "memory",
-      size: "custom-2",
+      size: "cpu-2",
     });
 
     expect(container.targets).toEqual(["child", "child"]);
@@ -219,12 +219,15 @@ describe("container_resize", () => {
           enum: [
             "lite",
             "basic",
+            "cpu-1",
             "standard-1",
-            "custom-1",
+            "mem-4",
             "standard-2",
-            "custom-2",
+            "cpu-2",
+            "mem-8",
             "standard-3",
-            "custom-3",
+            "cpu-3",
+            "mem-12",
             "standard-4",
           ],
         },
@@ -232,12 +235,13 @@ describe("container_resize", () => {
       },
     });
     // Each size with what it offers, smallest memory first.
-    expect(tool.description).toMatch(/custom-1: 1 vCPU, 3 GiB memory/);
-    expect(tool.description).toMatch(/custom-3: 3 vCPU, 9 GiB memory, 12 GB disk/);
+    expect(tool.description).toMatch(/cpu-1: 1 vCPU, 3 GiB memory/);
+    expect(tool.description).toMatch(/cpu-3: 3 vCPU, 9 GiB memory, 12 GB disk/);
+    expect(tool.description).toMatch(/mem-12: 2 vCPU, 12 GiB memory, 12 GB disk/);
     expect(tool.description.indexOf("standard-3:")).toBeLessThan(
-      tool.description.indexOf("custom-3:"),
+      tool.description.indexOf("cpu-3:"),
     );
-    expect(tool.description.indexOf("custom-1:")).toBeLessThan(
+    expect(tool.description.indexOf("cpu-1:")).toBeLessThan(
       tool.description.indexOf("standard-1:"),
     );
     expect(tool.description).toMatch(/memory guard/);
@@ -251,23 +255,23 @@ describe("container_resize", () => {
     const container = fakeContainer(true);
     const tool = await resizeOver(container.control);
 
-    const result = await run(tool, { size: "custom-2", reason: "tsc ran out of memory" });
+    const result = await run(tool, { size: "cpu-2", reason: "tsc ran out of memory" });
 
-    expect(container.resizes).toEqual([{ size: "custom-2" }]);
+    expect(container.resizes).toEqual([{ size: "cpu-2" }]);
     expect(result.isError).toBeUndefined();
     expect(text(result)).toMatch(
-      /^Stopped the container \(it ran on custom-1\): the commands that were running there have ended, other Sessions' in this Workspace too/,
+      /^Stopped the container \(it ran on cpu-1\): the commands that were running there have ended, other Sessions' in this Workspace too/,
     );
-    expect(text(result)).toMatch(/starts a new container on custom-2 \(2 vCPU, 6 GiB memory/);
+    expect(text(result)).toMatch(/starts a new container on cpu-2 \(2 vCPU, 6 GiB memory/);
     expect(text(result)).toMatch(/from the snapshot just taken/);
-    expect(text(result)).toMatch(/until the container is stopped for being idle.*custom-1/s);
+    expect(text(result)).toMatch(/until the container is stopped for being idle.*cpu-1/s);
     expect(result.details).toEqual({
-      size: "custom-2",
+      size: "cpu-2",
       outcome: "resized",
       wasRunning: true,
-      previous: "custom-1",
-      next: "custom-2",
-      environment: "custom-1",
+      previous: "cpu-1",
+      next: "cpu-2",
+      environment: "cpu-1",
       snapshotted: true,
     });
   });
@@ -277,14 +281,14 @@ describe("container_resize", () => {
       fakeContainer(true, undefined, {
         outcome: "resized",
         wasRunning: true,
-        previous: "custom-1",
-        next: "custom-2",
-        environment: "custom-1",
+        previous: "cpu-1",
+        next: "cpu-2",
+        environment: "cpu-1",
         snapshotted: false,
       }).control,
     );
 
-    const result = await run(tool, { size: "custom-2", reason: "more memory" });
+    const result = await run(tool, { size: "cpu-2", reason: "more memory" });
 
     expect(text(result)).toMatch(/snapshot could not be taken/);
     expect(text(result)).not.toMatch(/snapshot just taken/);
@@ -293,10 +297,10 @@ describe("container_resize", () => {
   it("only records the size when no container runs", async () => {
     const tool = await resizeOver(fakeContainer(false).control);
 
-    const result = await run(tool, { size: "custom-2", reason: "the build needs 5 GB" });
+    const result = await run(tool, { size: "cpu-2", reason: "the build needs 5 GB" });
 
     expect(text(result)).toMatch(
-      /^No container was running, so none was stopped\. The next container command starts a new container on custom-2/,
+      /^No container was running, so none was stopped\. The next container command starts a new container on cpu-2/,
     );
   });
 
@@ -305,16 +309,16 @@ describe("container_resize", () => {
       fakeContainer(true, undefined, {
         outcome: "resized",
         wasRunning: true,
-        previous: "custom-2",
-        next: "custom-1",
-        environment: "custom-1",
+        previous: "cpu-2",
+        next: "cpu-1",
+        environment: "cpu-1",
         snapshotted: true,
       }).control,
     );
 
-    const result = await run(tool, { size: "custom-1", reason: "the build is done" });
+    const result = await run(tool, { size: "cpu-1", reason: "the build is done" });
 
-    expect(text(result)).toMatch(/custom-1 is the Environment's own size/);
+    expect(text(result)).toMatch(/cpu-1 is the Environment's own size/);
     expect(text(result)).not.toMatch(/idle/);
   });
 
@@ -323,40 +327,40 @@ describe("container_resize", () => {
       fakeContainer(true, undefined, {
         outcome: "resized",
         wasRunning: true,
-        previous: "custom-2",
+        previous: "cpu-2",
         next: "standard-1",
-        environment: "custom-1",
+        environment: "cpu-1",
         snapshotted: true,
       }).control,
     );
 
     const result = await run(tool, { size: "standard-1", reason: "cheaper" });
 
-    expect(text(result)).toMatch(/standard-1's disk \(8 GB\) is smaller than custom-2's \(12 GB\)/);
+    expect(text(result)).toMatch(/standard-1's disk \(8 GB\) is smaller than cpu-2's \(12 GB\)/);
     expect(text(result)).toMatch(/from the image/);
   });
 
   it("does not stop a container that already runs on that size, and says so", async () => {
     const tool = await resizeOver(
-      fakeContainer(true, undefined, { outcome: "unchanged", size: "custom-2" }).control,
+      fakeContainer(true, undefined, { outcome: "unchanged", size: "cpu-2" }).control,
     );
 
-    const result = await run(tool, { size: "custom-2", reason: "more memory" });
+    const result = await run(tool, { size: "cpu-2", reason: "more memory" });
 
     expect(result.isError).toBeUndefined();
-    expect(text(result)).toMatch(/already runs on custom-2/);
+    expect(text(result)).toMatch(/already runs on cpu-2/);
     expect(text(result)).toMatch(/not stopped/);
   });
 
   it("refuses a size above the Environment's size limit, naming the limit and who can raise it", async () => {
     const tool = await resizeOver(
-      fakeContainer(true, undefined, { outcome: "refused", limit: "custom-2" }).control,
+      fakeContainer(true, undefined, { outcome: "refused", limit: "cpu-2" }).control,
     );
 
     const result = await run(tool, { size: "standard-4", reason: "more memory" });
 
     expect(result.isError).toBe(true);
-    expect(text(result)).toMatch(/standard-4 is above this Environment's size limit, custom-2/);
+    expect(text(result)).toMatch(/standard-4 is above this Environment's size limit, cpu-2/);
     expect(text(result)).toMatch(/owner can raise/);
     expect(text(result)).toMatch(/Nothing was stopped/);
   });
@@ -364,7 +368,7 @@ describe("container_resize", () => {
   it("answers an error the model can read when the Workspace cannot be reached", async () => {
     const tool = await resizeOver(fakeContainer(true, new Error("Workspace unavailable")).control);
 
-    const result = await run(tool, { size: "custom-2", reason: "more memory" });
+    const result = await run(tool, { size: "cpu-2", reason: "more memory" });
 
     expect(result.isError).toBe(true);
     expect(text(result)).toBe("Could not resize the container: Workspace unavailable");
@@ -377,9 +381,9 @@ describe("container_resize", () => {
     for (const args of [
       { reason: "more" },
       { size: "huge", reason: "more" },
-      { size: "custom-2" },
-      { size: "custom-2", reason: "" },
-      { size: "custom-2", reason: "x".repeat(MAX_CONTAINER_REASON + 1) },
+      { size: "cpu-2" },
+      { size: "cpu-2", reason: "" },
+      { size: "cpu-2", reason: "x".repeat(MAX_CONTAINER_REASON + 1) },
     ]) {
       const result = await run(tool, args);
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { sumContainerUsage } from "./container-cost.ts";
 
 const usage = (overrides: Partial<ContainerUsage> = {}): ContainerUsage => ({
-  instance: "custom-2",
+  instance: "cpu-2",
   runSeconds: 100,
   cpuSeconds: 10,
   egressBytes: 1000,
@@ -24,13 +24,21 @@ describe("the cost of a Session's Containers, its Subagent Workspaces' included"
   it("is the Session's Workspace's alone when it has no Subagent Workspace", () => {
     const own = usage();
 
-    expect(sumContainerUsage([own])).toBe(own);
+    expect(sumContainerUsage([own])).toEqual(own);
     expect(sumContainerUsage([])).toBeNull();
+  });
+
+  it("names the size as it is now when a Workspace DO from before the rename reports an old name", () => {
+    // SAFETY: what a Workspace DO still running the release before the rename answers over RPC.
+    const old = usage({ instance: "custom-2" as ContainerUsage["instance"] });
+
+    expect(sumContainerUsage([old])?.instance).toBe("cpu-2");
+    expect(sumContainerUsage([old, usage({ instance: "mem-8" })])?.instance).toBe("cpu-2");
   });
 
   it("sums the amounts, and grows at the rates of the Containers that still run", () => {
     const summed = sumContainerUsage([
-      usage({ instance: "custom-1" }),
+      usage({ instance: "cpu-1" }),
       usage({
         asOf: 8_000,
         running: true,
@@ -42,7 +50,7 @@ describe("the cost of a Session's Containers, its Subagent Workspaces' included"
     ]);
 
     expect(summed).toMatchObject({
-      instance: "custom-1",
+      instance: "cpu-1",
       asOf: 10_000,
       // The second ran 2 s more at its rates before the first's reading.
       runSeconds: 202,

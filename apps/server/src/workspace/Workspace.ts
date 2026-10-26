@@ -37,7 +37,7 @@ import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import type { InstructionFile } from "@cloudpid/extensions/agents-md-discovery";
 import type { ContainerUsage } from "@cloudpid/protocol";
-import type { InstanceType } from "@cloudpid/config";
+import { currentInstanceName, type InstanceType, type StoredInstanceType } from "@cloudpid/config";
 import type { ContainerResizeOutcome } from "@cloudpid/extensions/container";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -48,8 +48,13 @@ import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import { IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
-import { ContainerUsageLedger, type ContainerUsageRecord } from "./container-usage.ts";
-import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
+import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
+import {
+  ContainerLaunch,
+  containerIgnore,
+  currentLaunchRecord,
+  type StoredLaunchRecord,
+} from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
 import { ContainerResizes } from "./resize.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
@@ -257,6 +262,10 @@ export class Workspace extends ContainerHost {
       info: (message) => console.info(message),
     }));
 
+    // A launch record or a resize kept before the sizes were renamed names an old one: each is read as its new name.
+    const launchRecord = async () =>
+      currentLaunchRecord(await ctx.storage.get<StoredLaunchRecord>(LAUNCH_KEY));
+
     // The size, idle time and Container-only paths of each launch are the Workspace's settings at that moment (the size
     // the agent's resize recorded instead of theirs), and a snapshot is restored.
     const launch = new ContainerLaunch({
@@ -278,7 +287,7 @@ export class Workspace extends ContainerHost {
         failed: (id) => this.#environmentBuild.failed(id),
       },
       image: () => ctx.container?.images[WORKSPACE_CONTAINER],
-      load: () => ctx.storage.get<LaunchRecord>(LAUNCH_KEY),
+      load: launchRecord,
       save: (record) => ctx.storage.put(LAUNCH_KEY, record),
       running: () => ctx.container?.running === true,
       now: () => Date.now(),
@@ -300,11 +309,11 @@ export class Workspace extends ContainerHost {
         : undefined;
 
     const usage = (this.#usage = new ContainerUsageLedger({
-      load: () => ctx.storage.kv.get<ContainerUsageRecord>(USAGE_KEY),
+      load: () => ctx.storage.kv.get<StoredUsageRecord>(USAGE_KEY),
       save: (record) => ctx.storage.kv.put(USAGE_KEY, record),
       running: () => ctx.container?.running === true,
       launch: async () => {
-        const record = await ctx.storage.get<LaunchRecord>(LAUNCH_KEY);
+        const record = await launchRecord();
 
         return record === undefined
           ? undefined
@@ -332,8 +341,12 @@ export class Workspace extends ContainerHost {
     const resizes = (this.#resizes = new ContainerResizes({
       settings: async () => (await this.#settings.read()).settings,
       running: () => ctx.container?.running === true,
-      launched: async () => (await ctx.storage.get<LaunchRecord>(LAUNCH_KEY))?.instance,
-      load: () => ctx.storage.get<InstanceType>(RESIZE_KEY),
+      launched: async () => (await launchRecord())?.instance,
+      load: async () => {
+        const size = await ctx.storage.get<StoredInstanceType>(RESIZE_KEY);
+
+        return size === undefined ? undefined : currentInstanceName(size);
+      },
       save: (size) => ctx.storage.put(RESIZE_KEY, size),
       clear: async () => {
         await ctx.storage.delete(RESIZE_KEY);

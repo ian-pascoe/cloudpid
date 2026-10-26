@@ -1,5 +1,6 @@
 // What a Session's Containers cost together (`docs/spec.md` → Operations → Container cost): its Workspace's, and its
 // Subagent Workspaces', each read by its own Workspace DO, summed into the one `ContainerUsage` the Session header shows.
+import { currentInstanceName } from "@cloudpid/config";
 import type { ContainerUsage } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 
@@ -25,14 +26,17 @@ const broughtTo = (usage: ContainerUsage, asOf: number): ContainerUsage => {
 /**
  * The Containers of `usages` as one: amounts summed as of the latest reading, the rates of those that still run summed
  * (CPU's of those a command runs on), and running until the last of them stops. The size is the first's: the Session's
- * own Workspace's. Null for none.
+ * own Workspace's, under the name it has now, since a Workspace DO still running a release from before the sizes were
+ * renamed reports an old one (`custom-2`), which the client would not decode. Null for none.
  */
 export const sumContainerUsage = (usages: ReadonlyArray<ContainerUsage>): ContainerUsage | null => {
   const [first, ...rest] = usages;
 
   if (first === undefined) return null;
 
-  if (rest.length === 0) return first;
+  const instance = currentInstanceName(first.instance);
+
+  if (rest.length === 0) return { ...first, instance };
 
   const asOf = Math.max(...Arr.map(usages, (usage) => usage.asOf));
   const now = Arr.map(usages, (usage) => broughtTo(usage, asOf));
@@ -44,7 +48,7 @@ export const sumContainerUsage = (usages: ReadonlyArray<ContainerUsage>): Contai
   const reported = Arr.map(now, (usage) => usage.reportedThrough);
 
   return {
-    instance: first.instance,
+    instance,
     runSeconds: sum((usage) => usage.runSeconds),
     cpuSeconds: sum((usage) => usage.cpuSeconds),
     egressBytes: sum((usage) => usage.egressBytes),

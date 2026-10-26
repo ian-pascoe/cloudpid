@@ -333,7 +333,7 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
         },
       };
 
-      // The Environment's size is the default, custom-1, under the default size limit, custom-2.
+      // The Environment's size is the default, cpu-1, under the default size limit, cpu-2.
       const settings = async () => DEFAULT_CONTAINER_SETTINGS;
 
       const launch: ContainerLaunch = new ContainerLaunch({
@@ -399,14 +399,14 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
       expect(starts[0]?.instance).toEqual(custom1);
 
       // A size above the limit stops nothing.
-      expect(await resizes.resize("standard-3")).toEqual({ outcome: "refused", limit: "custom-2" });
+      expect(await resizes.resize("standard-3")).toEqual({ outcome: "refused", limit: "cpu-2" });
       expect(running).toBe(true);
 
       // The agent resizes: the Container is snapshotted and stopped, and the next command's launch restores it larger.
-      expect(await resizes.resize("custom-2")).toMatchObject({
+      expect(await resizes.resize("cpu-2")).toMatchObject({
         outcome: "resized",
         wasRunning: true,
-        previous: "custom-1",
+        previous: "cpu-1",
         snapshotted: true,
       });
       expect(running).toBe(false);
@@ -415,7 +415,7 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
       expect(starts[1]).toMatchObject({ instance: custom2, containerSnapshot: { id: "snap-1" } });
 
       // A resize to the size it already runs on stops nothing.
-      expect(await resizes.resize("custom-2")).toEqual({ outcome: "unchanged", size: "custom-2" });
+      expect(await resizes.resize("cpu-2")).toEqual({ outcome: "unchanged", size: "cpu-2" });
       expect(running).toBe(true);
 
       // `container_restart` stops it without a snapshot: the next launch keeps the size.
@@ -784,7 +784,7 @@ describe("restarting a Workspace's Container", () => {
         refreshedAt: 1,
       });
     });
-    expect(await workspace.resizeContainer({ size: "custom-2" })).toMatchObject({
+    expect(await workspace.resizeContainer({ size: "cpu-2" })).toMatchObject({
       outcome: "resized",
     });
 
@@ -848,9 +848,9 @@ describe("restarting a Workspace's Container", () => {
     expect(await workspace.resizeContainer({ size: "standard-3" })).toEqual({
       outcome: "resized",
       wasRunning: false,
-      previous: "custom-1",
+      previous: "cpu-1",
       next: "standard-3",
-      environment: "custom-1",
+      environment: "cpu-1",
       snapshotted: false,
     });
     expect(await resized()).toBe("standard-3");
@@ -863,9 +863,9 @@ describe("restarting a Workspace's Container", () => {
     expect(await resized()).toBe("standard-3");
 
     // Back to the Environment's own size: nothing is recorded.
-    expect(await workspace.resizeContainer({ size: "custom-1" })).toMatchObject({
+    expect(await workspace.resizeContainer({ size: "cpu-1" })).toMatchObject({
       previous: "standard-3",
-      next: "custom-1",
+      next: "cpu-1",
     });
     expect(await resized()).toBeUndefined();
   });

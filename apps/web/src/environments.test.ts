@@ -186,19 +186,22 @@ describe("repoNameProblem", () => {
 
 describe("instanceLabel", () => {
   it("names the size and what it offers, and marks the default one", () => {
-    expect(instanceLabel("custom-1")).toBe("custom-1: 1 vCPU, 3 GiB memory, 12 GB disk (default)");
-    expect(instanceLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk");
+    expect(instanceLabel("cpu-1")).toBe("cpu-1: 1 vCPU, 3 GiB memory, 12 GB disk (default)");
+    expect(instanceLabel("cpu-2")).toBe("cpu-2: 2 vCPU, 6 GiB memory, 12 GB disk");
     expect(instanceLabel("standard-2")).toBe("standard-2: 1 vCPU, 6 GiB memory, 12 GB disk");
-    expect(instanceLabel("custom-3")).toBe("custom-3: 3 vCPU, 9 GiB memory, 12 GB disk");
+    expect(instanceLabel("cpu-3")).toBe("cpu-3: 3 vCPU, 9 GiB memory, 12 GB disk");
+    expect(instanceLabel("mem-4")).toBe("mem-4: 1 vCPU, 4 GiB memory, 12 GB disk");
+    expect(instanceLabel("mem-12")).toBe("mem-12: 2 vCPU, 12 GiB memory, 12 GB disk");
   });
 
-  it("offers custom-3 between standard-3 and standard-4, in the size and the size limit pickers", () => {
+  it("offers cpu-3 and mem-12 between standard-3 and standard-4, in the size and the size limit pickers", () => {
     expect(INSTANCE_TYPES.slice(INSTANCE_TYPES.indexOf("standard-3"))).toEqual([
       "standard-3",
-      "custom-3",
+      "cpu-3",
+      "mem-12",
       "standard-4",
     ]);
-    expect(sizeLimitLabel("custom-3")).toBe("custom-3: 3 vCPU, 9 GiB memory, 12 GB disk");
+    expect(sizeLimitLabel("cpu-3")).toBe("cpu-3: 3 vCPU, 9 GiB memory, 12 GB disk");
   });
 
   it("marks exactly one of the offered sizes", () => {
@@ -209,10 +212,10 @@ describe("instanceLabel", () => {
 });
 
 describe("sizeLimitLabel", () => {
-  it("marks custom-2, the default size limit", () => {
-    expect(sizeLimitLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
+  it("marks cpu-2, the default size limit", () => {
+    expect(sizeLimitLabel("cpu-2")).toBe("cpu-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
     expect(INSTANCE_TYPES.filter((type) => sizeLimitLabel(type).endsWith("(default)"))).toEqual([
-      "custom-2",
+      "cpu-2",
     ]);
   });
 });

@@ -611,12 +611,12 @@ describe("environment_container_size_limit_set", () => {
   it("refuses, asking nothing, a limit below the Environment's size", async () => {
     const { call, asked } = await setUp({
       held: {
-        default: details("default", "Default", { instance: "standard-3", maxInstance: "custom-3" }),
+        default: details("default", "Default", { instance: "standard-3", maxInstance: "cpu-3" }),
       },
     });
 
     const { result, text } = await call("environment_container_size_limit_set", {
-      size: "custom-2",
+      size: "cpu-2",
       reason: "Cheaper",
     });
 
@@ -629,7 +629,7 @@ describe("environment_container_size_limit_set", () => {
     const { call, calls, asked, logged } = await setUp();
 
     const { result, text } = await call("environment_container_size_limit_set", {
-      size: "custom-3",
+      size: "cpu-3",
       reason: "The build needs 9 GiB",
     });
 
@@ -637,23 +637,23 @@ describe("environment_container_size_limit_set", () => {
       tool: "environment_container_size_limit_set",
       target: 'Environment "Default"',
       change: "Size limit",
-      before: "custom-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
-      after: "custom-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
-      expected: "custom-2",
+      before: "cpu-2 (2 vCPU, 6 GiB memory, 12 GB disk)",
+      after: "cpu-3 (3 vCPU, 9 GiB memory, 12 GB disk)",
+      expected: "cpu-2",
     });
     expect(calls.environments).toMatchObject([
       {
         environment: "default",
         field: "maxInstance",
-        value: "custom-3",
-        expected: "custom-2",
+        value: "cpu-3",
+        expected: "cpu-2",
         author: { approved: true },
       },
     ]);
     expect(text).toContain("The user approved");
     expect(result.details).toMatchObject({
       approval: { approved: true },
-      agentChange: { field: "maxInstance", before: "custom-2", after: "custom-3" },
+      agentChange: { field: "maxInstance", before: "cpu-2", after: "cpu-3" },
     });
     expect(logged).toEqual([
       {

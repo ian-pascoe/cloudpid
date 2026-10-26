@@ -79,8 +79,8 @@ describe("an Agent change the owner approved", () => {
         changes,
         {
           environment: DEFAULT_ENVIRONMENT,
-          change: { field: "maxInstance", value: "custom-3" },
-          expected: { value: "custom-2" },
+          change: { field: "maxInstance", value: "cpu-3" },
+          expected: { value: "cpu-2" },
           author: approved,
         },
         1_000,
@@ -90,7 +90,7 @@ describe("an Agent change the owner approved", () => {
 
     expect(outcome).toMatchObject({
       status: "changed",
-      change: { field: "maxInstance", before: "custom-2", after: "custom-3", approved: true },
+      change: { field: "maxInstance", before: "cpu-2", after: "cpu-3", approved: true },
     });
     expect(listed).toMatchObject([{ field: "maxInstance", approved: true }]);
   });
@@ -107,8 +107,8 @@ describe("an Agent change the owner approved", () => {
           changes,
           {
             environment: DEFAULT_ENVIRONMENT,
-            change: { field: "maxInstance", value: "custom-3" },
-            expected: { value: "custom-2" },
+            change: { field: "maxInstance", value: "cpu-3" },
+            expected: { value: "cpu-2" },
             author: approved,
           },
           1_000,
@@ -121,6 +121,67 @@ describe("an Agent change the owner approved", () => {
     expect(outcome).toEqual({ status: "changed-since", current: "standard-4" });
     expect(saved).toEqual({ maxInstance: "standard-4" });
     expect(listed).toEqual([]);
+  });
+
+  it("is made when it was asked for before the sizes were renamed, under the old names", async () => {
+    const [outcome, saved] = await inRegistry(({ store, storage, changes }) => [
+      changeEnvironment(
+        storage,
+        store,
+        changes,
+        {
+          environment: DEFAULT_ENVIRONMENT,
+          change: { field: "maxInstance", value: "custom-3" },
+          expected: { value: "custom-2" },
+          author: approved,
+        },
+        1_000,
+      ),
+      store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+    ]);
+
+    expect(outcome).toMatchObject({
+      status: "changed",
+      change: { field: "maxInstance", before: "cpu-2", after: "cpu-3" },
+    });
+    expect(saved).toEqual({ maxInstance: "cpu-3" });
+  });
+});
+
+describe("an Agent change recorded before the sizes were renamed", () => {
+  it("lists its sizes under their new names, and is reverted to the size it named", async () => {
+    const [listed, outcome, saved] = await inRegistry(({ store, changes, revert }) => {
+      // What a release before the rename saved and recorded: a size limit raised from custom-2 to custom-3.
+      store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, { maxInstance: "custom-3" });
+
+      const recorded = changes.record({
+        scope: DEFAULT_ENVIRONMENT,
+        at: 1_000,
+        actor: "agent",
+        session: "s-1",
+        conversation: 1,
+        tool: "environment_container_size_limit_set",
+        reason: "The build needs more memory",
+        field: "maxInstance",
+        before: "custom-2",
+        after: "custom-3",
+        reverts: null,
+      });
+
+      return [
+        changes.list(DEFAULT_ENVIRONMENT),
+        revert(recorded.id),
+        store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+      ];
+    });
+
+    expect(listed).toMatchObject([{ field: "maxInstance", before: "cpu-2", after: "cpu-3" }]);
+    expect(outcome).toMatchObject({
+      status: "reverted",
+      change: { field: "maxInstance", before: "cpu-3", after: "cpu-2" },
+    });
+    // cpu-2 is the default limit, so nothing is kept for it.
+    expect(saved).toEqual({});
   });
 });
 
@@ -357,7 +418,7 @@ describe("an Agent change to each of the other Container settings", () => {
     readonly after: Schema.Json;
     readonly saved: Schema.Json;
   }> = [
-    { field: "instance", before: "custom-1", after: "custom-2", saved: { instance: "custom-2" } },
+    { field: "instance", before: "cpu-1", after: "cpu-2", saved: { instance: "cpu-2" } },
     { field: "idleMinutes", before: 2, after: 30, saved: { idleMinutes: 30 } },
     { field: "setupScript", before: "", after: SCRIPT, saved: { setupScript: SCRIPT } },
     { field: "startScript", before: "", after: SCRIPT, saved: { startScript: SCRIPT } },
@@ -411,7 +472,7 @@ describe("an Agent change to each of the other Container settings", () => {
 
     expect(outcome).toEqual({
       status: "rejected",
-      message: expect.stringContaining("size limit custom-2"),
+      message: expect.stringContaining("size limit cpu-2"),
     });
     expect(listed).toEqual([]);
   });
