@@ -1,0 +1,39 @@
+diff --git a/dist/components/File.js b/dist/components/File.js
+index 2ac57c54403465ffba3f825dd7bd353018ce69e7..a9b7ce8c852c243bc2ce36fc5cfe1541911af82d 100644
+--- a/dist/components/File.js
++++ b/dist/components/File.js
+@@ -1221,7 +1221,7 @@ var File = class {
+ 	}
+ };
+ function shouldRenderCode(pre, file, collapsed = false) {
+-	return !collapsed && pre == null && file != null;
++	return !collapsed && (pre == null || pre.firstElementChild == null) && file != null;
+ }
+ function shouldRenderHeader(headerElement, file, disableFileHeader = false) {
+ 	return headerElement == null && file != null && !disableFileHeader;
+diff --git a/dist/components/FileDiff.js b/dist/components/FileDiff.js
+index 12f4f8949f3a1907ac9877f83937b53a966c9411..63a7ab0f63d9c2b66e5ac8046db2ead5b920d07c 100644
+--- a/dist/components/FileDiff.js
++++ b/dist/components/FileDiff.js
+@@ -2102,7 +2102,7 @@ function hasDiffHeaderContent({ fileDiff, oldFile, newFile }) {
+ 	return fileDiff != null || oldFile != null || newFile != null;
+ }
+ function shouldRenderCode(pre, hasContent, collapsed = false) {
+-	return !collapsed && pre == null && hasContent;
++	return !collapsed && (pre == null || pre.firstElementChild == null) && hasContent;
+ }
+ function shouldRenderHeader(headerElement, hasContent, disableFileHeader = false) {
+ 	return headerElement == null && hasContent && !disableFileHeader;
+diff --git a/dist/components/UnresolvedFile.js b/dist/components/UnresolvedFile.js
+index ccee793cce0b56e67f9014306078c3ea25852ce1..285ce53b16bdededde3eaa647d23608adcd854ff 100644
+--- a/dist/components/UnresolvedFile.js
++++ b/dist/components/UnresolvedFile.js
+@@ -404,7 +404,7 @@ function shiftMergeConflictRegion(conflict, lineDelta) {
+ 	};
+ }
+ function shouldRenderCode(pre, fileDiff, collapsed = false) {
+-	return !collapsed && pre == null && fileDiff != null;
++	return !collapsed && (pre == null || pre.firstElementChild == null) && fileDiff != null;
+ }
+ function shouldRenderHeader(headerElement, fileDiff, disableFileHeader = false) {
+ 	return headerElement == null && fileDiff != null && !disableFileHeader;

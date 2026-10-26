@@ -66,6 +66,61 @@
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
+/*
+ * The CSS-variables theme of @pierre/diffs (`cloudpid`, registered in chat/patch-view.tsx), in the notebook skin
+ * (apps/web/DESIGN.md): the tokens above for surfaces and ink, low-chroma syntax colors of their own (slate for punctuation and parameters, a
+ * hue each for keywords, strings, functions and constants), and Run Green and Brick Red
+ * as the additions' and deletions' colors, which the library washes over the surface itself (a wash of its own in
+ * light and dark), as the Agent change diff (change-diff.tsx) washes them. Inherited into each diff's shadow root, so
+ * the tokens' dark values apply with no theme switch of the library's.
+ */
+:root {
+  --diffs-font-family: var(--font-mono);
+  --diffs-header-font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --diffs-font-size: 12px;
+  --diffs-line-height: 18px;
+  --diffs-background: var(--background);
+  --diffs-foreground: var(--foreground);
+  --diffs-token-comment: oklch(0.55 0.02 250);
+  --diffs-token-keyword: oklch(0.42 0.13 265);
+  --diffs-token-string-expression: oklch(0.47 0.09 195);
+  --diffs-token-string: oklch(0.47 0.09 195);
+  --diffs-token-function: oklch(0.45 0.12 300);
+  --diffs-token-constant: oklch(0.5 0.11 55);
+  --diffs-token-parameter: oklch(0.35 0.03 250);
+  --diffs-token-punctuation: oklch(0.5 0.02 250);
+  --diffs-token-link: var(--ring);
+  --diffs-addition-color-override: var(--success);
+  --diffs-deletion-color-override: var(--destructive);
+  --diffs-bg-context-override: var(--background);
+  --diffs-bg-context-gutter-override: var(--background);
+  --diffs-bg-separator-override: var(--muted);
+  --diffs-bg-buffer-override: var(--muted);
+  --diffs-bg-hover-override: var(--accent);
+  --diffs-fg-number-override: var(--muted-foreground);
+  --diffs-bg-selection-override: color-mix(in oklab, var(--ring) 18%, var(--background));
+  --diffs-bg-selection-number-override: color-mix(in oklab, var(--ring) 30%, var(--background));
+}
+
+/* The library marks a CSS-variables theme dark (`color-scheme: dark` on the diff's host), which would make its
+   `light-dark()` washes the dark ones in a light page. An author rule outside the shadow root beats the host's. */
+diffs-container {
+  color-scheme: inherit;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --diffs-token-comment: oklch(0.62 0.02 250);
+    --diffs-token-keyword: oklch(0.78 0.1 265);
+    --diffs-token-string-expression: oklch(0.8 0.08 195);
+    --diffs-token-string: oklch(0.8 0.08 195);
+    --diffs-token-function: oklch(0.8 0.1 300);
+    --diffs-token-constant: oklch(0.8 0.1 60);
+    --diffs-token-parameter: oklch(0.88 0.02 250);
+    --diffs-token-punctuation: oklch(0.7 0.02 250);
+  }
+}
+
 @layer base {
   * {
     border-color: var(--border);

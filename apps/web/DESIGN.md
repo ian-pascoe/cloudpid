@@ -176,7 +176,7 @@ A single cool, blue-slate family, light or dark by the system setting, with thre
 
 **The One Hue Rule.** Every neutral is tinted to hue 250. A pure gray (`zinc`, `neutral`, `#888`) does not belong on any surface.
 
-**The Signals Mean Something Rule.** Green is only "running", red only "failed or destroys". Neither is decoration, and neither is used for emphasis.
+**The Signals Mean Something Rule.** Green is only "running", red only "failed or destroys". Neither is decoration, and neither is used for emphasis. The one exception is a diff, where they mean added and removed: the washes and marks on its lines (the Agent change diff's, and the `@pierre/diffs` theme's) and the `+n −m` on a tool card.
 
 ## Typography
 
@@ -310,7 +310,7 @@ The Secret request and Browser Handoff: a bordered 10 px card with a small shado
 ### Don't:
 
 - **Don't** add shadows to anything that is not waiting on the owner.
-- **Don't** use Run Green or Brick Red for emphasis or decoration.
+- **Don't** use Run Green or Brick Red for emphasis or decoration. A diff's added and removed lines and its `+n −m` are not decoration.
 - **Don't** use raw Tailwind palette colors (`amber-500`, `zinc-*`): add a token in `styles.css` with light and dark values instead. The context ring's `amber` "near the spend limit" border is a known exception still to be turned into a warning token.
 - **Don't** reference a color utility with no token behind it. `bg-card` is used by the Waiting-On-You cards but `--card` is not defined, so they currently render with no fill; define the token before relying on it.
 - **Don't** let a header's controls push its title off screen on a phone: keep the Session header to its title and a few icon buttons; what steers the next request (model, thinking level) lives in the composer's toolbar.
