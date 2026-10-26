@@ -10,7 +10,7 @@ import {
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import type { EnvironmentSecretRecord, SessionRecord } from "@cloudpid/protocol";
+import type { AgentChange, EnvironmentSecretRecord, SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_SECRET_DRAFT,
@@ -23,6 +23,10 @@ import {
   secretVariable,
   secretWrite,
   buildLine,
+  changeByline,
+  changeFieldText,
+  changeValueText,
+  revertible,
   deleteConfirmed,
   environmentNameProblem,
   groupByEnvironment,
@@ -359,6 +363,46 @@ describe("buildLine", () => {
     ).toBe(
       "Build failed 1 hour ago: exit 1: npm ERR!. Meanwhile new workspaces start from the build of yesterday",
     );
+  });
+});
+
+describe("an Agent change", () => {
+  const NOW = 1_000_000_000_000;
+
+  const change: AgentChange = {
+    id: 3,
+    scope: "work",
+    at: NOW - 5 * 60_000,
+    actor: "agent",
+    session: "s-1",
+    conversation: 1,
+    tool: "environment_variable_set",
+    reason: "The tests read it",
+    field: "variables.API_URL",
+    before: null,
+    after: "https://api.test",
+    reverts: null,
+    revertedBy: null,
+  };
+
+  it("shows its values in full, a variable's as written and none as not set", () => {
+    expect(changeValueText(null)).toBe("not set");
+    expect(changeValueText("a\nb")).toBe("a\nb");
+    expect(changeValueText(30)).toBe("30");
+    expect(changeFieldText("variables.API_URL")).toBe("Variable API_URL");
+    expect(changeFieldText("idleMinutes")).toBe("idleMinutes");
+  });
+
+  it("says who made it and when, and can be reverted while it is the agent's and not reverted yet", () => {
+    expect(changeByline(change, NOW)).toBe(
+      "The agent, 5 minutes ago, with environment_variable_set",
+    );
+    expect(
+      changeByline({ ...change, actor: "owner", tool: null, session: null, reverts: 2 }, NOW),
+    ).toBe("You reverted change 2, 5 minutes ago");
+    expect(revertible(change)).toBe(true);
+    expect(revertible({ ...change, revertedBy: 4 })).toBe(false);
+    expect(revertible({ ...change, actor: "owner", reverts: 2 })).toBe(false);
   });
 });
 

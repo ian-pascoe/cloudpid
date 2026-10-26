@@ -318,6 +318,36 @@ export const environmentSettingsAtom = Atom.family((id: string) =>
 );
 
 /**
+ * Environment `id`'s Agent changes (`docs/spec.md` → Agent changes), newest first, asked again every few seconds while
+ * its history is shown and the page is visible: a Session's agent makes them, which the page hears of no other way.
+ */
+export const agentChangesAtom = Atom.family((id: string) =>
+  RegistryClient.query(
+    "listAgentChanges",
+    { environment: id },
+    { reactivityKeys: [`agent-changes:${id}`] },
+  ).pipe(Atom.makeRefreshOnSignal(visibleTickAtom)),
+);
+
+/**
+ * Revert one of Environment `id`'s Agent changes, by its id: its value before is written back, as the owner's change.
+ * The Registry refuses one whose field has changed since, saying what it is now. The history, the settings and the
+ * Builds ask again either way.
+ */
+export const revertAgentChangeAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    (change: number) =>
+      RegistryClient.use((registry) =>
+        registry("revertAgentChange", { environment: id, change }),
+      ).pipe(
+        Effect.asVoid,
+        changing([`agent-changes:${id}`, `environment-settings:${id}`, "builds"]),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/**
  * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables,
  * scripts and Toolchains as typed.
  */

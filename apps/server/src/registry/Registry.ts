@@ -7,6 +7,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
+  AgentChange,
   EnvironmentBuildState,
   EnvironmentSecretRecord,
   PushState,
@@ -14,6 +15,16 @@ import type {
   SessionOrigin,
 } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
+import {
+  type AgentChangeAuthor,
+  type AgentChangeRevert,
+  changeEnvironment,
+  type ContainerFieldChange,
+  type EnvironmentChange,
+  openAgentChanges,
+  revertAgentChange,
+  wantsNewBuild,
+} from "./agent-changes.ts";
 import {
   buildSecretsOf,
   keepSecret,
@@ -85,6 +96,20 @@ export type EnvironmentSettingsUpdate =
   | { readonly status: "saved"; readonly state: EnvironmentSettingsState }
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
+
+/**
+ * How an Agent change to an Environment went (`changeEnvironment`): as `EnvironmentChange` says, a change also saying
+ * whether the Build upkeep after it asks for a new Build (`wantsNewBuild`).
+ */
+export type EnvironmentChangeAnswer =
+  | {
+      readonly status: "changed";
+      readonly environment: EnvironmentRecord;
+      readonly change: AgentChange;
+      readonly state: EnvironmentSettingsState;
+      readonly newBuild: boolean;
+    }
+  | Exclude<EnvironmentChange, { readonly status: "changed" }>;
 
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
@@ -170,6 +195,25 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly overrides: Schema.Json;
   }) => Effect.Effect<EnvironmentSettingsUpdate>;
+  /**
+   * An Agent change (`docs/spec.md` → Agent changes): give one of `environment`'s Container settings a new value, by the
+   * rules of `updateEnvironmentSettings`, and record it with its `author`. Says the values before and after and whether
+   * a new Build is wanted; a field that already has the value records nothing. The caller runs the Build upkeep after.
+   */
+  readonly changeEnvironment: (input: {
+    readonly environment: string;
+    readonly change: ContainerFieldChange;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<EnvironmentChangeAnswer>;
+  /** An Environment's Agent changes, newest first; null when it is not registered. */
+  readonly listAgentChanges: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<ReadonlyArray<AgentChange> | null>;
+  /** The owner's revert of an Agent change, unless its field has changed since. */
+  readonly revertAgentChange: (input: {
+    readonly environment: string;
+    readonly change: number;
+  }) => Effect.Effect<AgentChangeRevert>;
   /** The Workspace registered under `id`, or null. */
   readonly getWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceRecord | null>;
   /**
@@ -301,6 +345,7 @@ export const RegistryLive = Registry.make(
     Effect.map(({ state, push, secrets }) =>
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
+        const changes = openAgentChanges(state.raw.storage);
         const notify = pushNotifier({ store, vapid: push.vapid });
 
         // The kept Secrets' key, derived once, on first use: a malformed master key fails the calls that need it, not
@@ -424,6 +469,44 @@ export const RegistryLive = Registry.make(
 
               return { status: "saved", state: saved.success };
             }),
+          changeEnvironment: ({ environment, change, author }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+
+              const outcome = changeEnvironment(
+                state.raw.storage,
+                store,
+                changes,
+                { environment, change, author },
+                now,
+              );
+
+              if (outcome.status !== "changed") return outcome;
+
+              const { previous, ...changed } = outcome;
+
+              const newBuild = yield* Effect.promise(() =>
+                wantsNewBuild(outcome.environment.repos, previous, outcome.state.settings),
+              );
+
+              return { ...changed, newBuild } satisfies EnvironmentChangeAnswer;
+            }),
+          listAgentChanges: ({ environment }) =>
+            Effect.sync(() =>
+              store.getEnvironment(environment) === null ? null : changes.list(environment),
+            ),
+          revertAgentChange: ({ environment, change }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                revertAgentChange(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, id: change },
+                  now,
+                ),
+              ),
+            ),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
           getWorkspaceSetup: ({ id }) =>
             Effect.suspend(() => {

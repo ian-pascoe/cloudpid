@@ -2,6 +2,7 @@
 
 import { INSTANCE_TYPES, instanceLimitProblem, type InstanceType } from "@cloudpid/config";
 import {
+  type AgentChange,
   DEFAULT_ENVIRONMENT,
   MAX_ENVIRONMENT_NAME_LENGTH,
   MAX_REPO_NAME_LENGTH,
@@ -26,6 +27,7 @@ import {
   Play,
   RotateCw,
   Trash2,
+  Undo2,
 } from "lucide-react";
 import {
   useAtom,
@@ -40,6 +42,7 @@ import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
+import { cn } from "./lib/utils.ts";
 import { navigate } from "./router.ts";
 import { SessionLink } from "./sidebar.tsx";
 import { failureOf, settledFailureOf } from "./registry.ts";
@@ -47,6 +50,8 @@ import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import {
   addRepoAtom,
   addRepoNameAtom,
+  agentChangesAtom,
+  revertAgentChangeAtom,
   addRepoSourceAtom,
   createEnvironmentAtom,
   deleteEnvironmentAtom,
@@ -78,6 +83,10 @@ import {
 } from "./environments-state.ts";
 import {
   buildLine,
+  changeByline,
+  changeFieldText,
+  changeValueText,
+  revertible,
   deleteConfirmed,
   EVERY_ENVIRONMENT,
   inheritedSecrets,
@@ -1120,6 +1129,118 @@ const BuildStatus = ({ id }: { id: string }) => {
   );
 };
 
+/** A value before or after an Agent change, in full: a variable's can be long, so it scrolls. */
+const ChangeValue = ({ label, value }: { label: string; value: AgentChange["before"] }) => (
+  <div className="flex min-w-0 flex-col gap-0.5">
+    <span className="text-xs text-muted-foreground">{label}</span>
+    <pre
+      className={cn(
+        "max-h-40 overflow-auto rounded bg-muted px-2 py-1 font-mono text-xs break-all whitespace-pre-wrap",
+        value === null && "text-muted-foreground italic",
+      )}
+    >
+      {changeValueText(value)}
+    </pre>
+  </div>
+);
+
+/** One Agent change: the setting, its values before and after, who made it and why, and a revert while it is the agent's. */
+const AgentChangeRow = ({
+  change,
+  session,
+  reverting,
+  onRevert,
+}: {
+  change: AgentChange;
+  /** The Session that made it, when it is still listed. */
+  session: SessionRecord | undefined;
+  reverting: boolean;
+  onRevert: () => void;
+}) => (
+  <li className="flex flex-col gap-1.5 rounded-md border p-2">
+    <div className="flex items-start justify-between gap-2">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="font-mono text-sm break-all">{changeFieldText(change.field)}</span>
+        <span className="text-xs text-muted-foreground">
+          {/* A change's time is read against the wall clock as the card renders. */}
+          {/* @effect-diagnostics-next-line globalDate:off */}
+          {changeByline(change, Date.now())}
+          {change.actor === "agent" && change.session !== null && session === undefined
+            ? ", in a session that is gone"
+            : null}
+        </span>
+        {session !== undefined && (
+          <SessionLink session={session} active={false} className="-ml-2 text-xs" />
+        )}
+      </div>
+      {revertible(change) ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={reverting}
+          aria-label={`Revert change ${change.id}: ${changeFieldText(change.field)}`}
+          onClick={onRevert}
+        >
+          <Undo2 aria-hidden />
+          Revert
+        </Button>
+      ) : change.revertedBy !== null ? (
+        <span className="shrink-0 text-xs text-muted-foreground">Reverted</span>
+      ) : null}
+    </div>
+    {change.reason !== "" && <p className="text-sm break-words">{change.reason}</p>}
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <ChangeValue label="Before" value={change.before} />
+      <ChangeValue label="After" value={change.after} />
+    </div>
+  </li>
+);
+
+/**
+ * Environment `id`'s Agent changes, newest first (`docs/spec.md` → Agent changes), each with the Session that made it
+ * and a revert. A revert the Registry refuses (its field has changed since) says why.
+ */
+const AgentChangesSection = ({
+  id,
+  sessions,
+}: {
+  id: string;
+  /** Every Session made in the Environment, archived ones included. */
+  sessions: readonly SessionRecord[];
+}) => {
+  const loaded = useAtomValue(agentChangesAtom(id));
+  const [reverted, revert] = useAtom(revertAgentChangeAtom(id));
+  const changes = loaded.pipe(AsyncResult.value, Option.getOrNull);
+  const loadError = failureOf(loaded);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">Agent changes</h3>
+      {changes === null ? (
+        <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
+      ) : changes.length === 0 ? (
+        <p className="text-xs text-muted-foreground">The agent has changed nothing here.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {changes.map((change) => (
+            <AgentChangeRow
+              key={change.id}
+              change={change}
+              session={sessions.find((session) => session.id === change.session)}
+              reverting={reverted.waiting}
+              onRevert={() => {
+                revert(change.id);
+              }}
+            />
+          ))}
+        </ul>
+      )}
+      <DialogProblem problem={settledFailureOf(reverted)} />
+    </div>
+  );
+};
+
 /** Confirm restarting a Workspace's Container, after saying what it keeps and what it loses. */
 const RestartContainerDialog = ({ id, workspace }: { id: string; workspace: WorkspaceRecord }) => {
   const [restarted, run] = useAtom(restartContainerAtom(id));
@@ -1438,6 +1559,7 @@ const EnvironmentCard = ({
       <DialogProblem problem={reposError} />
       <SecretsSection sectionKey={id} title="Secrets" empty="None kept for this environment." />
       <BuildStatus id={id} />
+      <AgentChangesSection id={id} sessions={sessions} />
       <div className="flex flex-col gap-2">
         <h3 className="text-xs font-medium text-muted-foreground">Workspaces</h3>
         {workspaces.length === 0 ? (

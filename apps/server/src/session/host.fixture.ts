@@ -19,6 +19,12 @@ import {
   type LiveViewLinks,
   makeBrowserSession,
 } from "@cloudpid/extensions/browser";
+import {
+  type AgentChangeLog,
+  DeployCredentials,
+  Environments,
+  EnvironmentTools,
+} from "@cloudpid/extensions/environment";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
@@ -65,6 +71,7 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { testEnvironments } from "./environments.fixture.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
@@ -256,16 +263,18 @@ const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef"
 export class TestSession extends DurableObject {
   /**
    * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
-   * tools, the browser tools over a test browser host, and `todo`; and, for a Session whose name starts with
+   * tools, the browser tools over a test browser host, and `todo`; for a Session whose name starts with
+   * `environment-`, the `environment_*` tools over `testEnvironments`; and, for one whose name starts with
    * `tool-search-`, `tool_search` over the Registry's offered tools, which is installed again when they change.
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | SessionSettings
+    Harness | Secrets | BrowserHandoffs | SessionSettings | AgentChangeLog
   > {
     const { kv } = this.ctx.storage;
     const searching = this.#searching();
+    const changing = this.ctx.id.name?.startsWith("environment-") === true;
 
     return Effect.gen(function* () {
       const tool = yield* Echo;
@@ -277,7 +286,22 @@ export class TestSession extends DurableObject {
         Effect.provideService(BrowserSession, makeBrowserSession({ host, storage: kv })),
       );
 
-      const extensions = [echo, yield* secretsExtension([tool]), browser, yield* Todo];
+      const environment = changing
+        ? [
+            yield* EnvironmentTools.pipe(
+              Effect.provideService(Environments, testEnvironments(kv)),
+              Effect.provideService(DeployCredentials, { values: [] }),
+            ),
+          ]
+        : [];
+
+      const extensions = [
+        echo,
+        ...environment,
+        yield* secretsExtension([tool]),
+        browser,
+        yield* Todo,
+      ];
 
       if (!searching) return extensions;
 

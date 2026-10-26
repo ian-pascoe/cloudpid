@@ -10,6 +10,8 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
+import { changeFieldText, changeValueText } from "../environments.ts";
+import { changeOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
 
@@ -128,7 +130,21 @@ const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
   </div>
 );
 
-/** A tool call: its name and state on one line, its arguments, streamed output, and result when opened. */
+/** The Agent change a call made: the Environment and field, and its value before and after, in full. */
+const Change = ({ change }: { change: ShownChange }) => (
+  <div className="mt-2 first:mt-0">
+    <div className="text-xs font-medium text-muted-foreground">
+      {changeFieldText(change.field)} in {change.environment.name}
+    </div>
+    <Output label="Before" text={changeValueText(change.before)} />
+    <Output label="After" text={changeValueText(change.after)} />
+  </div>
+);
+
+/**
+ * A tool call: its name and state on one line, its arguments, the Agent change it made, streamed output, and result
+ * when opened.
+ */
 export const ToolCallCard: ToolCallMessagePartComponent = ({
   toolName,
   args,
@@ -154,6 +170,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   );
 
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
+  const change = changeOf(artifact);
 
   // The screenshots a call returned, which show beside its card rather than inside it.
   const images = Option.getOrElse(
@@ -184,6 +201,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       }
     >
       <Output label="Arguments" text={shownArgs} />
+      {change !== undefined && <Change change={change} />}
       {calls.length > 0 && <NestedCalls calls={calls} />}
       {streamed !== undefined && result === undefined && <Output label="Output" text={streamed} />}
       {result !== undefined && (

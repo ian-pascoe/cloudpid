@@ -99,6 +99,14 @@ export const referencedSecretNames = (value: JsonValue): Set<string> => {
   return names;
 };
 
+/** Whether `text` holds a placeholder (the double-brace form) that no backslash escapes, whatever name it gives. */
+export const holdsPlaceholder = (text: string): boolean =>
+  Array.from(text.matchAll(REFERENCE)).some((found) => {
+    const match = matchOf(found.slice(1), text, found.index);
+
+    return match !== undefined && match.form === "placeholder" && !match.escaped;
+  });
+
 const rewriteText = (text: string, resolve: (name: string) => string): string => {
   let rewritten = "";
   let last = 0;

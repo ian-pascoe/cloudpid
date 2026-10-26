@@ -31,7 +31,12 @@ import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
 import { workspaceLookups } from "./session/lookups.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
-import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
+import {
+  GitHubTokenConfigLive,
+  ModelProxyConfigLive,
+  Session,
+  SessionLive,
+} from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
@@ -230,7 +235,14 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(
       SessionLive.pipe(
-        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
+        Layer.provide(
+          Layer.mergeAll(
+            ModelProxyConfigLive,
+            GitHubTokenConfigLive,
+            SecretsConfigLive,
+            WebConfigLive,
+          ),
+        ),
         Layer.provideMerge(
           RegistryLive.pipe(Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive))),
         ),

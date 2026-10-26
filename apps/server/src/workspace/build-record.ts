@@ -89,6 +89,16 @@ type KeyedBuild = {
 };
 
 /**
+ * Whether an Environment has a Build: one with no Repo, no Setup Script and no Toolchains has nothing a Build would
+ * hold beyond the image.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const buildWanted = (
+  repos: ReadonlyArray<unknown>,
+  settings: Pick<ContainerSettings, "setupScript" | "toolchains">,
+): boolean => repos.length > 0 || settings.setupScript !== "" || settings.toolchains !== "";
+
+/**
  * The key of the Build `repos`, `settings`, `image` and `secrets` make: a digest of what a Build depends on, so a Build
  * of another key is not current. That is the Repos (names and addresses, in any order), the variables, the
  * Environment's Setup Script, its Toolchains (with none, the key is what it was before Builds installed them), the

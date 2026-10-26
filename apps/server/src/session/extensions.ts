@@ -9,6 +9,12 @@ import {
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContainerTools, WorkspaceContainer } from "@cloudpid/extensions/container";
 import { ContextManagement } from "@cloudpid/extensions/context";
+import {
+  type AgentChangeLog,
+  type DeployCredentials,
+  EnvironmentTools,
+  type Environments,
+} from "@cloudpid/extensions/environment";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
@@ -39,8 +45,10 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * (`@cloudpid/extensions/agents-md`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
  * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
- * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
- * `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
+ * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through);
+ * the `environment_*` tools, which read and change the Registry's Environments (`Environments`), refuse values that hold
+ * a Secret (`Secrets`) or the GitHub token (`DeployCredentials`), and keep each change for the Run's Notification
+ * (`AgentChangeLog`), the root conversation's only (`docs/spec.md` → Agent changes); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
@@ -60,6 +68,9 @@ export const sessionExtensions: Effect.Effect<
   | BrowserHost
   | BrowserSession
   | BrowserHandoffs
+  | Environments
+  | DeployCredentials
+  | AgentChangeLog
 > = Effect.all([
   CodingTools,
   Files,
@@ -73,6 +84,7 @@ export const sessionExtensions: Effect.Effect<
   // Before the secrets extension, whose wraps then run first: a path's Secret references are resolved when it looks.
   AgentsMd,
   ContainerTools,
+  EnvironmentTools,
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),
 ]).pipe(

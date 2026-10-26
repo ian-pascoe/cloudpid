@@ -1,10 +1,13 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
+import type { AgentChangeRevert } from "./agent-changes.ts";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import {
+  type AgentChange,
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
+  fieldVariable,
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
   MAX_TITLE_LENGTH,
@@ -25,6 +28,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
@@ -72,6 +76,8 @@ const fakeRegistries = () => {
   const calls: string[] = [];
   /** The kept Secrets, values included, as the Registry DO would open them. */
   const keptSecrets: Array<EnvironmentSecretRecord & { readonly value: string }> = [];
+  /** The Agent changes recorded, oldest first. */
+  const agentChanges: AgentChange[] = [];
 
   /** What `environment` uses: its own over those kept for every Environment, by name. */
   const keptFor = (environment: string): ReadonlyArray<KeptSecret> => {
@@ -565,6 +571,75 @@ const fakeRegistries = () => {
           },
         };
       }),
+    // The Session DO makes Agent changes, never the endpoint.
+    changeEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    listAgentChanges: ({ environment }) =>
+      Effect.sync(() =>
+        Arr.some(environments, (item) => item.id === environment)
+          ? Arr.filter(agentChanges, (change) => change.scope === environment).toReversed()
+          : null,
+      ),
+    // A revert of a variable, over the saved overrides, as the Registry DO's (`revertAgentChange`).
+    revertAgentChange: ({ environment, change }) =>
+      Effect.sync((): AgentChangeRevert => {
+        calls.push(`revertAgentChange:${change}`);
+
+        const found = Arr.findFirst(
+          agentChanges,
+          (item) => item.scope === environment && item.id === change,
+        );
+
+        if (Option.isNone(found)) return { status: "missing" };
+
+        if (found.value.actor === "owner")
+          return { status: "refused", message: "A revert is not undone" };
+
+        const name = fieldVariable(found.value.field) ?? found.value.field;
+
+        // SAFETY: the tests only save overrides of the settings' own shape.
+        const overrides = (overridesOf.get(environment) ?? {}) as {
+          readonly variables?: Readonly<Record<string, string>>;
+        };
+
+        const { [name]: now = null, ...others } = overrides.variables ?? {};
+
+        if (now !== found.value.after) {
+          return { status: "changed-since", field: found.value.field, current: now };
+        }
+
+        // The tests revert variables only, whose values are strings.
+        const before = Option.getOrNull(
+          Option.liftPredicate(found.value.before, Predicate.isString),
+        );
+
+        const variables = before === null ? others : { ...others, [name]: before };
+
+        overridesOf.set(environment, { ...overrides, variables });
+
+        const revert: AgentChange = {
+          ...found.value,
+          id: agentChanges.length + 1,
+          actor: "owner",
+          session: null,
+          conversation: null,
+          tool: null,
+          reason: `Reverted change ${change}`,
+          before: now,
+          after: found.value.before,
+          reverts: change,
+        };
+
+        agentChanges.push(revert);
+
+        return {
+          status: "reverted",
+          change: revert,
+          state: {
+            settings: { ...DEFAULT_CONTAINER_SETTINGS, variables },
+            overrides: { variables },
+          },
+        };
+      }),
     getWorkspace: ({ id }) =>
       Effect.sync(() =>
         Option.getOrNull(Arr.findFirst(workspaces, (workspace) => workspace.id === id)),
@@ -833,6 +908,7 @@ const fakeRegistries = () => {
     sessions,
     workspaces,
     environments,
+    agentChanges,
     sessionObjects,
     workspaceObjects,
     breakSession: (id: string, message: string) => {
@@ -2040,6 +2116,87 @@ it("refuses the settings of an Environment the Registry does not list", async ()
     expect(error).toBeInstanceOf(EnvironmentError);
     expect(error.message).toBe('Environment "0000beef" does not exist');
   }
+});
+
+/** An Agent change that set variable `name` of `environment` from `before` to `after`, as the Registry records it. */
+const agentChange = (
+  id: number,
+  name: string,
+  before: string | null,
+  after: string | null,
+  environment = DEFAULT_ENVIRONMENT,
+): AgentChange => ({
+  id,
+  scope: environment,
+  at: id * 1_000,
+  actor: "agent",
+  session: "s-1",
+  conversation: 1,
+  tool: "environment_variable_set",
+  reason: "For the tests",
+  field: `variables.${name}`,
+  before,
+  after,
+  reverts: null,
+  revertedBy: null,
+});
+
+it("lists an Environment's Agent changes, newest first, and refuses an Environment it does not list", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push(agentChange(1, "A", null, "1"), agentChange(2, "B", null, "2"));
+
+  const listed = await call(fake, (registry) =>
+    registry.listAgentChanges({ environment: DEFAULT_ENVIRONMENT }),
+  );
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.listAgentChanges({ environment: "0000beef" })),
+  );
+
+  expect(Arr.map(listed, (change) => change.id)).toEqual([2, 1]);
+  expect(error.message).toBe('Environment "0000beef" does not exist');
+});
+
+it("reverts an Agent change, answers the owner's change, and keeps the Build current after the answer", async () => {
+  const fake = fakeRegistries();
+
+  fake.overridesOf.set(DEFAULT_ENVIRONMENT, { variables: { A: "2" } });
+  fake.agentChanges.push(agentChange(1, "A", "1", "2"));
+
+  const reverted = await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  expect(reverted).toMatchObject({ actor: "owner", before: "2", after: "1", reverts: 1 });
+  expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "1" } });
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("refuses to revert an Agent change whose variable changed since, showing its value now", async () => {
+  const fake = fakeRegistries();
+
+  fake.overridesOf.set(DEFAULT_ENVIRONMENT, { variables: { A: "3" } });
+  fake.agentChanges.push(agentChange(1, "A", "1", "2"), agentChange(2, "B", "x", null));
+
+  const changed = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 })),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 9 })),
+  );
+
+  expect(changed).toBeInstanceOf(EnvironmentError);
+  expect(changed.message).toBe(
+    'variables.A has changed since: it is "3" now, so the change is not reverted',
+  );
+  expect(missing.message).toBe('Environment "default" has no change 9');
+  expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "3" } });
 });
 
 it("lists Workspaces of every Environment, newest first", async () => {

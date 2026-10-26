@@ -635,6 +635,26 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("ALTER TABLE sessions ADD COLUMN origin TEXT");
     sql.exec("ALTER TABLE sessions ADD COLUMN origin_kind TEXT");
   },
+  // 17: the Agent changes (ADR-0019), each Environment's (`scope` its id) and the Settings', with the owner's reverts of
+  // them (`reverts`), the values before and after as JSON (null: none). None before.
+  (sql) => {
+    sql.exec(`CREATE TABLE agent_changes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      actor TEXT NOT NULL,
+      session TEXT,
+      conversation INTEGER,
+      tool TEXT,
+      reason TEXT NOT NULL,
+      field TEXT NOT NULL,
+      before TEXT,
+      after TEXT,
+      reverts INTEGER
+    ) STRICT`);
+    sql.exec("CREATE INDEX agent_changes_by_scope ON agent_changes (scope, id DESC)");
+    sql.exec("CREATE INDEX agent_changes_by_reverts ON agent_changes (reverts)");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -902,8 +922,9 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       }
 
       sql.exec("DELETE FROM environments WHERE id = ?", id);
-      // Its Secrets go with it; those kept for every Environment stay.
+      // Its Secrets go with it; those kept for every Environment stay. So do its Agent changes.
       sql.exec("DELETE FROM environment_secrets WHERE scope = ?", id);
+      sql.exec("DELETE FROM agent_changes WHERE scope = ?", id);
 
       return "deleted";
     },

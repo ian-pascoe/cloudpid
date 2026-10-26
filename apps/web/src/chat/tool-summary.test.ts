@@ -54,6 +54,14 @@ describe("toolSummary", () => {
     ).toBe("tsc ran out (to custom-2)");
     // A call made before the rename, in a transcript.
     expect(toolSummary("restart_container", { reason: "echo hung" })).toBe("echo hung");
+    expect(toolSummary("environment_get", { id: "0000abcd" })).toBe("0000abcd");
+    expect(toolSummary("environment_get", {})).toBeUndefined();
+    expect(toolSummary("environment_variable_set", { name: "API_URL", value: "x" })).toBe(
+      "API_URL",
+    );
+    expect(toolSummary("environment_variable_unset", { id: "0000abcd", name: "MODE" })).toBe(
+      "MODE in 0000abcd",
+    );
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");
