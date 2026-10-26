@@ -546,6 +546,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "approvalRequests"
         | "browserHandoffRequests"
         | "ownerTabs"
+        | "ownerTabDrivers"
         | "taskGraph"
         | "usage"
         | "todos"
@@ -725,12 +726,14 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       thread.commandId = null;
     }
 
-    // The next socket says again which Secret requests, Approval requests and Browser Handoffs wait.
+    // The next socket says again which Secret requests, Approval requests and Browser Handoffs wait, and which runs drive
+    // Owner tabs.
     current = {
       ...current,
       secretRequests: [],
       approvalRequests: [],
       browserHandoffRequests: null,
+      ownerTabDrivers: [],
     };
 
     if (stopped) return;
@@ -828,6 +831,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       }
 
+      case "owner_tab_drivers":
+        update({ ownerTabDrivers: message.drivers });
+
+        return;
       case "approval_requests":
         update({ approvalRequests: message.requests });
 

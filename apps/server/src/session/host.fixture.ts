@@ -20,6 +20,7 @@ import {
   type LiveViewLinks,
   makeBrowserSession,
   OWNER_TAB_GONE,
+  type OwnerTabDrivers,
   type OwnerTabLinks,
   type OwnerTabListing,
 } from "@cloudpid/extensions/browser";
@@ -83,6 +84,7 @@ import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
+import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
@@ -207,7 +209,12 @@ const roundWaiters = new Map<string, () => void>();
  */
 const testBrowserHost = (kv: Kv): BrowserHostService => ({
   describe: Effect.succeed("Drives a browser."),
-  run: () => Effect.succeed({ output: [{ type: "text", text: "ok" }] }),
+  run: (input) =>
+    Effect.sync(() => {
+      kv.put("browser-runs", [...(kv.get<unknown[]>("browser-runs") ?? []), input]);
+
+      return { output: [{ type: "text", text: "ok" }] };
+    }),
   close: Effect.sync(() => {
     kv.put("browser-closes", (kv.get<number>("browser-closes") ?? 0) + 1);
 
@@ -393,6 +400,7 @@ export class TestSession extends DurableObject {
     | Harness
     | Secrets
     | BrowserHandoffs
+    | OwnerTabDrivers
     | SessionSettings
     | AgentChangeLog
     | SettingsReload
@@ -621,6 +629,7 @@ export class TestSession extends DurableObject {
               ),
             ),
           ),
+          Layer.provideMerge(sessionOwnerTabDriversLayer(ctx)),
           Layer.provideMerge(
             sessionChangesLayer(this.#changesSource(), { debounceMs: CHANGES_TEST_DEBOUNCE_MS }),
           ),
@@ -1165,6 +1174,11 @@ export class TestSession extends DurableObject {
   /** The handoffs the test browser host minted Live View links for, oldest first. */
   liveViews(): readonly string[] {
     return this.ctx.storage.kv.get<string[]>("live-views") ?? [];
+  }
+
+  /** The runs the test browser host was asked for, oldest first. */
+  browserRuns(): readonly unknown[] {
+    return this.ctx.storage.kv.get<unknown[]>("browser-runs") ?? [];
   }
 
   /** Whether each `ownerTabView` the test browser host was sent asked to open, oldest first. */

@@ -561,6 +561,31 @@ describe("a Session connection", () => {
     );
   });
 
+  describe("runs driving Owner tabs", () => {
+    const driver = { ownerTabId: "a", conversationId: 3 };
+
+    it.effect(
+      "shows which runs drive the Owner tabs until the Session says none do, or the socket closes",
+      () =>
+        Effect.gen(function* () {
+          const { latest, state } = yield* setup();
+
+          expect(state().ownerTabDrivers).toEqual([]);
+
+          yield* watching(latest());
+          yield* latest().say({ type: "owner_tab_drivers", drivers: [driver] });
+          expect(state().ownerTabDrivers).toEqual([driver]);
+
+          yield* latest().say({ type: "owner_tab_drivers", drivers: [] });
+          expect(state().ownerTabDrivers).toEqual([]);
+
+          yield* latest().say({ type: "owner_tab_drivers", drivers: [driver] });
+          yield* latest().drop();
+          expect(state().ownerTabDrivers).toEqual([]);
+        }),
+    );
+  });
+
   it.effect("shows why a configure failed", () =>
     Effect.gen(function* () {
       const { client, latest, state } = yield* setup();

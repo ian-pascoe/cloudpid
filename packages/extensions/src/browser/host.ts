@@ -31,10 +31,12 @@ export {
   type LiveViewTarget,
   type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
+  MAX_OWNER_TAB_TITLE,
   OWNER_TAB_GONE,
   type OwnerTabEntry,
   type OwnerTabLinks,
   type OwnerTabListing,
+  SHOWN_OWNER_TAB,
 } from "./contract.ts";
 
 /** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
@@ -48,11 +50,14 @@ export type BrowserHostService = {
   readonly describe: Effect.Effect<string, BrowserError>;
   /**
    * Run `code`, an async arrow function over the `cdp` global, in the tab of conversation `conversationId`: each
-   * conversation has an active tab of its own in the Session's one browser, while cookies and logins are shared.
+   * conversation has an active tab of its own in the Session's one browser, while cookies and logins are shared. Given
+   * `ownerTabId`, it runs in that Owner tab instead, leaving the conversation's tab and the Owner tab's size as they are;
+   * an Owner tab that is not open, or closes during the run, makes the run an error result that says so.
    */
   readonly run: (input: {
     readonly code: string;
     readonly conversationId: number;
+    readonly ownerTabId?: string;
   }) => Effect.Effect<BrowserRun, BrowserError>;
   /** Close the Session's browser; says whether there was one. The next `run` starts a new browser. */
   readonly close: Effect.Effect<boolean, BrowserError>;

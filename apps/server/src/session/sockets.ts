@@ -33,6 +33,8 @@ import {
   type BrowserHandoffRequest,
   BrowserHandoffs,
   BrowserPane,
+  type OwnerTabDriver,
+  OwnerTabDrivers,
 } from "@cloudpid/extensions/browser";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -155,6 +157,16 @@ export const ownerTabsMessage = (tabs: OwnerTabListing): ServerMessage => ({
   ...tabs,
 });
 
+/** The `owner_tab_drivers` message for `drivers`, which every client is sent: which runs work in Owner tabs now. */
+export const ownerTabDrivers = (drivers: ReadonlyArray<OwnerTabDriver>): ServerMessage => ({
+  type: "owner_tab_drivers",
+  drivers: Arr.map(drivers, (driver) => ({
+    ownerTabId: driver.ownerTabId,
+    // SAFETY: a driver's conversation is the running call's, a pi-durable conversation ID.
+    conversationId: driver.conversationId as ConversationId,
+  })),
+});
+
 /**
  * The `approval_requests` message for `requests`, which every client is sent: each request as the card shows it, without
  * the value the call checks once approved.
@@ -249,7 +261,13 @@ export const sessionSocketsLayer = (
 ): Layer.Layer<
   SessionSockets,
   never,
-  SessionHost | SessionChanges | Secrets | BrowserHandoffs | BrowserPane | Approvals
+  | SessionHost
+  | SessionChanges
+  | Secrets
+  | BrowserHandoffs
+  | BrowserPane
+  | OwnerTabDrivers
+  | Approvals
 > =>
   Layer.effect(
     SessionSockets,
@@ -259,6 +277,7 @@ export const sessionSocketsLayer = (
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
       const browserPane = yield* BrowserPane;
+      const drivers = yield* OwnerTabDrivers;
       const approvals = yield* Approvals;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
@@ -703,6 +722,9 @@ export const sessionSocketsLayer = (
         // So are Browser Handoffs, which wait for the owner for up to 30 minutes. Sent when none waits too, so a client
         // can tell "none waits" (a Live View Pane whose handoff is gone closes) from "not heard yet".
         yield* send(server, browserHandoffRequests(yield* handoffs.pending));
+
+        // Which runs drive the owner's Owner tabs, an empty list too: a client that reconnects drops what it showed.
+        yield* send(server, ownerTabDrivers(yield* drivers.current));
 
         // Approval requests wait with no deadline; sent when none waits too, so a client clears the cards it held.
         yield* send(server, approvalRequests(yield* approvals.pending));

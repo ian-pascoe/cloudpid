@@ -27,7 +27,8 @@ export const remoteBrowserHost = (
 
   return {
     describe: call("describe", (host) => host.describe()),
-    run: ({ code, conversationId }) => call("run", (host) => host.run(code, conversationId)),
+    run: ({ code, conversationId, ownerTabId }) =>
+      call("run", (host) => host.run(code, conversationId, ownerTabId)),
     close: call("close", (host) => host.close()),
     startHandoff: (input) => call("startHandoff", (host) => host.startHandoff(input)),
     liveView: (requestId) => call("liveView", (host) => host.liveView(requestId)),

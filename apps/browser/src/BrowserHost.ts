@@ -26,10 +26,22 @@ import {
 } from "agents/browser";
 import { browserTool, type PiBrowserTool } from "agents/browser/pi";
 import { DurableObject } from "cloudflare:workers";
+import * as Predicate from "effect/Predicate";
 import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
+import { confinedToOwnerTabs, runInOwnerTab } from "./owner-tab-agent.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
-import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabStatesIn, tabsIn } from "./tab.ts";
+import {
+  adoptTab,
+  conversationScope,
+  forgetScope,
+  openTab,
+  type TabLookup,
+  tabIn,
+  tabOf,
+  tabStatesIn,
+  tabsIn,
+} from "./tab.ts";
 
 /** How long closing the browser waits to note where the Owner tabs are, at most. */
 const RECORD_BEFORE_CLOSE_MS = 2_000;
@@ -41,18 +53,25 @@ export type BrowserHostEnv = {
 };
 
 /**
- * `browserTool` as the host calls it: the one thing it reads of a call is its conversation, whose tab (`conversation:<id>`,
- * the `scope` option's default) the code runs in. Its result is plain data: text and image parts and JSON details. It
- * holds them as `output` from agents 0.29, which follows pi-durable 1.3, and as `content` before.
+ * `browserTool` as the host calls it: the one thing it reads of a call is the scope the code runs in (`scopeOf`): a
+ * conversation's tab (`conversation:<id>`) or an Owner tab (`owner-tab:<id>`). Its result is plain data: text and image
+ * parts and JSON details. It holds them as `output` from agents 0.29, which follows pi-durable 1.3, and as `content`
+ * before.
  */
-type ConversationTool = {
+type ScopedTool = {
   execute(
     args: { code: string },
-    api: { conversationId: number },
+    api: { conversationId: number; scope: string },
   ): Promise<
     Omit<BrowserRun, "output"> & Partial<Record<"output" | "content", BrowserRun["output"]>>
   >;
 };
+
+/** The scope a call to `browserTool` runs in: the one the host gave it, else its conversation's. */
+const scopeOf = (api: object & { readonly conversationId: unknown }): string =>
+  Predicate.hasProperty(api, "scope") && Predicate.isString(api.scope)
+    ? api.scope
+    : conversationScope(Number(api.conversationId));
 
 export class BrowserHost extends DurableObject<BrowserHostEnv> implements BrowserHostRpc {
   readonly #store: DurableBrowserSessionStore;
@@ -68,7 +87,13 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
       provider: browserRun(env.BROWSER, { keepAliveMs: BROWSER_KEEP_ALIVE_MS }),
       store: this.#store,
     });
-    this.#tool = browserTool({ ctx, browser: this.#browser, loader: env.LOADER });
+    // One tool for every scope: it builds a scope's connector when first asked, and runs each scope's calls in turn.
+    this.#tool = browserTool({
+      ctx,
+      browser: confinedToOwnerTabs(this.#browser),
+      loader: env.LOADER,
+      scope: scopeOf,
+    });
     this.#handoffs = new HandoffHost({
       records: ctx.storage.kv,
       schedule: (at) => this.#wakeAt(at),
@@ -84,15 +109,9 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     this.#ownerTabs = new OwnerTabs({
       records: ctx.storage.kv,
       browser: {
-        tabOf: (scope) =>
-          tabIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scope),
-        tabsOf: (scopes) =>
-          tabsIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scopes),
-        statesOf: (scopes) =>
-          tabStatesIn(
-            { name: this.#browser.name, store: this.#store, binding: env.BROWSER },
-            scopes,
-          ),
+        tabOf: (scope) => tabIn(this.#lookup, scope),
+        tabsOf: (scopes) => tabsIn(this.#lookup, scopes),
+        statesOf: (scopes) => tabStatesIn(this.#lookup, scopes),
         adoptTab: (scope, targetId, browserSessionId) =>
           adoptTab(
             { name: this.#browser.name, store: this.#store },
@@ -105,6 +124,11 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
       },
     });
+  }
+
+  /** Where the stored records say the scopes' tabs are, read without starting anything. */
+  get #lookup(): TabLookup {
+    return { name: this.#browser.name, store: this.#store, binding: this.env.BROWSER };
   }
 
   /** Wake this object at `at` (epoch milliseconds) or sooner, to drop expired handoffs (`alarm`). */
@@ -130,14 +154,26 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   }
 
   /**
-   * Run `code` in conversation `conversationId`'s tab. The result is the tool result `browserTool` makes: its output as
-   * text, a screenshot as an image part, and its details.
+   * Run `code` in conversation `conversationId`'s tab or, given `ownerTabId`, in that Owner tab (`runInOwnerTab`). The
+   * result is the tool result `browserTool` makes: its output as text, a screenshot as an image part, and its details.
    */
-  async run(code: string, conversationId: number): Promise<BrowserRun> {
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: `browserTool` takes no Chord context and reads only `api.conversationId`; see `ConversationTool`.
-    const tool = this.#tool as unknown as ConversationTool;
+  run(code: string, conversationId: number, ownerTabId?: string): Promise<BrowserRun> {
+    if (ownerTabId === undefined) {
+      return this.#runIn(code, conversationId, conversationScope(conversationId));
+    }
 
-    const { output, content, ...rest } = await tool.execute({ code }, { conversationId });
+    return runInOwnerTab(
+      ownerTabId,
+      { list: () => this.#ownerTabs.list(), tabOf: (scope) => tabIn(this.#lookup, scope) },
+      (scope) => this.#runIn(code, conversationId, scope),
+    );
+  }
+
+  async #runIn(code: string, conversationId: number, scope: string): Promise<BrowserRun> {
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: `browserTool` takes no Chord context and reads only `api.conversationId` and the `scope` `scopeOf` reads; see `ScopedTool`.
+    const tool = this.#tool as unknown as ScopedTool;
+
+    const { output, content, ...rest } = await tool.execute({ code }, { conversationId, scope });
 
     return { ...rest, output: output ?? content ?? [] };
   }

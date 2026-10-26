@@ -10,6 +10,7 @@ import {
   type HandoffStartInput,
   type HandoffStatus,
   type LiveViewLinks,
+  type OwnerTabListing,
 } from "./host.ts";
 
 /** The credential in every Live View link the fake host mints, to look for where it must not be. */
@@ -45,6 +46,8 @@ export const fakeHandoffHost = (
   options: {
     readonly describe?: string;
     readonly run?: (code: string) => Effect.Effect<BrowserRun, BrowserError>;
+    /** The Owner tabs `ownerTabs` lists: one blank tab, shown, unless given. */
+    readonly ownerTabs?: OwnerTabListing;
     readonly start?: (input: HandoffStartInput) => Effect.Effect<HandoffStarted, BrowserError>;
     readonly now?: () => number;
     /** The origins of the windows the tab leaves open, which ending a handoff says. */
@@ -77,7 +80,9 @@ export const fakeHandoffHost = (
       }),
     ownerTabView: () =>
       Effect.succeed({ ownerTabId: "owner-1", ...LIVE_VIEW_LINKS, opened: false, replaced: false }),
-    ownerTabs: Effect.succeed({ tabs: [{ id: "owner-1", title: "" }], shown: "owner-1" }),
+    ownerTabs: Effect.succeed(
+      options.ownerTabs ?? { tabs: [{ id: "owner-1", title: "" }], shown: "owner-1" },
+    ),
     openOwnerTab: Effect.succeed({ tabs: [{ id: "owner-1", title: "" }], shown: "owner-1" }),
     showOwnerTab: () => Effect.succeed({ tabs: [{ id: "owner-1", title: "" }], shown: "owner-1" }),
     closeOwnerTab: () => Effect.succeed({ tabs: [] }),

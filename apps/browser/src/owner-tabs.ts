@@ -28,6 +28,7 @@
 // `reopened`), in order, with the one that was shown shown.
 import {
   OWNER_TAB_GONE,
+  type OwnerTabEntry,
   type OwnerTabLinks,
   type OwnerTabListing,
 } from "@cloudpid/extensions/browser/contract";
@@ -549,14 +550,15 @@ export class OwnerTabs {
       order.filter((id) => !record.has(id) && stored.tabs.some((tab) => tab.id === id)),
     );
 
-    const titles = new Map(pages.map((page) => [page.targetId, page.title]));
+    const byTarget = new Map(pages.map((page) => [page.targetId, page]));
 
     const entries = tabs
       .filter(({ id }) => keep.has(id))
-      .map(({ id }) => ({
-        id,
-        title: titles.get(targets.get(id) ?? "") ?? "",
-      }));
+      .map(({ id }): OwnerTabEntry => {
+        const page = byTarget.get(targets.get(id) ?? "");
+
+        return page === undefined ? { id, title: "" } : { id, title: page.title, url: page.url };
+      });
 
     return shown === undefined ? { tabs: entries } : { tabs: entries, shown };
   }

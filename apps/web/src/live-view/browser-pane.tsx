@@ -6,7 +6,9 @@
 // none; closing it leaves the tab open in the browser, so opening it again shows the same page. When the Owner tab is
 // gone (closed, or its browser closed or replaced), it says so and offers to open a new Owner tab, and a new one says it
 // replaced the one that is gone. An archived Session's Pane opens nothing: it shows an Owner tab still there, if any. It
-// opens only from the New pane (or the URL or the Session's layout); it never opens on its own.
+// opens only from the New pane (or the URL or the Session's layout); it never opens on its own. While a `browser` run
+// works in an Owner tab, the tab strip marks it, and over the screen the Pane says the agent (or which subagent) is
+// driving the one shown.
 //
 // While it is in view (shown in the Pane area, the area not hidden, the page visible) its poll of the Owner tabs is the
 // heartbeat that keeps the Session's browser (#240); out of view the poll says nothing of it, and the browser closes once
@@ -14,8 +16,10 @@
 // open at once, which reopens every Owner tab at its address (no history, scroll, form state or logins) and says so.
 
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Arr from "effect/Array";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { ArrowLeft, ArrowRight, Globe, RotateCw, X } from "lucide-react";
+import type { OwnerTabDriver } from "@cloudpid/protocol";
+import { ArrowLeft, ArrowRight, Bot, Globe, RotateCw, X } from "lucide-react";
 import {
   use,
   useEffect,
@@ -33,6 +37,8 @@ import { Input } from "../components/ui/input.tsx";
 import { BROWSER_PANE } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
 import { settledFailureOf } from "../registry.ts";
+import { agentLabel } from "../session/agents.ts";
+import { ownerTabDriversAtom, taskGraphAtom } from "../session/atoms.ts";
 import { addressOf } from "./address.ts";
 import { liveViewStateAtom } from "./atoms.ts";
 import {
@@ -49,6 +55,7 @@ import {
   ownerTabReplacedAtom,
   ownerTabsReopenedAtom,
 } from "./browser-pane-atoms.ts";
+import { drivingNote } from "./driving.ts";
 import { keepFocus, LiveScreen } from "./live-screen.tsx";
 import { OwnerTabStrip } from "./owner-tab-strip.tsx";
 
@@ -346,6 +353,55 @@ const useReopenWhenInView = (pane: BrowserPaneKey, ended: boolean, inView: boole
   }, [ended, inView, onRecord, pane.archived, reopen]);
 };
 
+/** Who drives the Owner tab shown, named from the task graph, which is watched only while a run drives it. */
+const DrivingNote = ({
+  pane,
+  drivers,
+  ownerTabId,
+}: {
+  pane: BrowserPaneKey;
+  drivers: readonly OwnerTabDriver[];
+  ownerTabId: string;
+}) => {
+  const graph = useAtomValue(taskGraphAtom(pane.sessionId));
+
+  const note = drivingNote(drivers, ownerTabId, (conversationId) =>
+    agentLabel(graph, conversationId),
+  );
+
+  if (note === null) return null;
+
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-2 border-b bg-primary/10 px-3 py-1.5 text-xs font-medium"
+    >
+      <Bot className="size-3.5 shrink-0 animate-pulse" aria-hidden />
+      <p className="flex-1">{note}</p>
+    </div>
+  );
+};
+
+/** That the agent is driving the Owner tab shown (`shown`), while a `browser` run works in it. */
+const Driving = ({
+  pane,
+  shown: ownerTabId,
+}: {
+  pane: BrowserPaneKey;
+  shown: string | undefined;
+}) => {
+  const drivers = useAtomValue(ownerTabDriversAtom(pane.sessionId));
+
+  if (
+    ownerTabId === undefined ||
+    !Arr.some(drivers, (driver) => driver.ownerTabId === ownerTabId)
+  ) {
+    return null;
+  }
+
+  return <DrivingNote pane={pane} drivers={drivers} ownerTabId={ownerTabId} />;
+};
+
 /** The Browser Pane `pane`. */
 const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
   const view = browserPaneViewAtom(pane);
@@ -377,6 +433,7 @@ const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
       ) : (
         <>
           <Replaced pane={pane} />
+          <Driving pane={pane} shown={shown} />
           <LiveScreen view={view} label="Owner tab" />
         </>
       )}

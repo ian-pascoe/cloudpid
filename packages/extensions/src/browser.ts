@@ -1,13 +1,16 @@
 // The `browser` extension (`docs/spec.md` → Browser, ADR-0007): the model-facing `browser` tool, which drives the
-// Session's one browser over CDP with a tab per conversation, and the keep-alive that closes the browser once the
+// Session's one browser over CDP with a tab per conversation or in one of the owner's Owner tabs, `browser_owner_tabs`,
+// which lists those, `browser_handoff`, and the keep-alive that closes the browser once the
 // Session has been idle past it. The browser itself is hosted by the `apps/browser` Worker (`./browser/host.ts`).
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
+import { OwnerTabDrivers } from "./browser/drivers.ts";
 import { BrowserHost } from "./browser/host.ts";
 import { BrowserHandoffs } from "./browser/handoff.ts";
 import { BrowserSession } from "./browser/session.ts";
 import {
   browserHandoffTool,
+  browserOwnerTabsTool,
   browserTool,
   describeBrowser,
   FALLBACK_DESCRIPTION,
@@ -33,11 +36,22 @@ export {
   type LiveViewTarget,
   type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
+  MAX_OWNER_TAB_TITLE,
   OWNER_TAB_GONE,
   type OwnerTabEntry,
   type OwnerTabLinks,
   type OwnerTabListing,
+  SHOWN_OWNER_TAB,
 } from "./browser/host.ts";
+
+export {
+  makeOwnerTabDrivers,
+  type OwnerTabDriver,
+  OwnerTabDrivers,
+  ownerTabDriversLayer,
+  type OwnerTabDriversOptions,
+  type OwnerTabDriversService,
+} from "./browser/drivers.ts";
 
 export {
   type BrowserSessionOptions,
@@ -78,7 +92,12 @@ export {
   SNAPSHOT_IMAGES,
 } from "./browser/images.ts";
 
-export { describeBrowser, describeOutcome } from "./browser/tool.ts";
+export {
+  describeBrowser,
+  describeOutcome,
+  describeOwnerTabs,
+  NO_OWNER_TABS,
+} from "./browser/tool.ts";
 
 /** How long the host may take to describe the tool before the Session starts without its description. */
 const DESCRIBE_TIMEOUT = "5 seconds";
@@ -90,11 +109,12 @@ const DESCRIBE_TIMEOUT = "5 seconds";
 export const Browser: Effect.Effect<
   Extension,
   never,
-  BrowserHost | BrowserSession | BrowserHandoffs
+  BrowserHost | BrowserSession | BrowserHandoffs | OwnerTabDrivers
 > = Effect.gen(function* () {
   const host = yield* BrowserHost;
   const session = yield* BrowserSession;
   const handoffs = yield* BrowserHandoffs;
+  const drivers = yield* OwnerTabDrivers;
 
   const description = yield* host.describe.pipe(
     Effect.timeout(DESCRIBE_TIMEOUT),
@@ -109,12 +129,15 @@ export const Browser: Effect.Effect<
   const tool = yield* browserTool(description).pipe(
     Effect.provideService(BrowserHost, host),
     Effect.provideService(BrowserSession, session),
+    Effect.provideService(OwnerTabDrivers, drivers),
   );
+
+  const ownerTabs = yield* browserOwnerTabsTool.pipe(Effect.provideService(BrowserHost, host));
 
   const handoff = yield* browserHandoffTool.pipe(
     Effect.provideService(BrowserSession, session),
     Effect.provideService(BrowserHandoffs, handoffs),
   );
 
-  return defineExtension({ name: extensionName, tools: [tool, handoff] });
+  return defineExtension({ name: extensionName, tools: [tool, ownerTabs, handoff] });
 });

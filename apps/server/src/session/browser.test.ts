@@ -6,15 +6,15 @@ import { describe, expect, it } from "vitest";
 import { remoteBrowserHost } from "./browser.ts";
 
 describe("the Session's browser host", () => {
-  it("runs code in the object named for the Session, in the conversation's tab", async () => {
+  it("runs code in the object named for the Session, in the conversation's tab or an Owner tab", async () => {
     const calls: unknown[] = [];
 
     const host = remoteBrowserHost(
       {
         getByName: (name) => ({
           describe: () => Promise.resolve("described"),
-          run: (code, conversationId) => {
-            calls.push({ name, code, conversationId });
+          run: (code, conversationId, ownerTabId) => {
+            calls.push({ name, code, conversationId, ownerTabId });
 
             return Promise.resolve({ output: [{ type: "text", text: "ok" }] });
           },
@@ -36,7 +36,13 @@ describe("the Session's browser host", () => {
     expect(await Effect.runPromise(host.run({ code: "async () => 1", conversationId: 3 }))).toEqual(
       { output: [{ type: "text", text: "ok" }] },
     );
-    expect(calls).toEqual([{ name: "session-1", code: "async () => 1", conversationId: 3 }]);
+    await Effect.runPromise(
+      host.run({ code: "async () => 2", conversationId: 3, ownerTabId: "a" }),
+    );
+    expect(calls).toEqual([
+      { name: "session-1", code: "async () => 1", conversationId: 3, ownerTabId: undefined },
+      { name: "session-1", code: "async () => 2", conversationId: 3, ownerTabId: "a" },
+    ]);
   });
 
   it("fails with a BrowserError that names the call when the object cannot be reached", async () => {
