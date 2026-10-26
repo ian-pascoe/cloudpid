@@ -18,6 +18,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -43,6 +44,9 @@ import { resolveTools } from "./subagents/toolsets.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 
+/** The variables kept for every Environment at the start of a test. */
+const EVERY = { SHARED: "all", NODE_ENV: "prod" };
+
 const DEFAULT: EnvironmentDetails = {
   id: "default",
   name: "Default",
@@ -53,6 +57,7 @@ const DEFAULT: EnvironmentDetails = {
     { name: "API_KEY", scope: "environment", build: true },
     { name: "NPM_TOKEN", scope: "every", build: false },
   ],
+  everyVariables: EVERY,
 };
 
 const OTHER: EnvironmentDetails = {
@@ -67,7 +72,10 @@ const OTHER: EnvironmentDetails = {
   },
   settings: DEFAULT_CONTAINER_SETTINGS,
   secrets: [],
+  everyVariables: EVERY,
 };
+
+const EVERY_ENVIRONMENT = { id: "*", name: "every Environment" };
 
 const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
@@ -94,14 +102,76 @@ const fakeEnvironments = (current: string | null = "default") => {
 
   let next = 1;
 
+  /** The variables kept for every Environment. */
+  const every: Record<string, string> = { ...EVERY };
+
   const service: EnvironmentsService = {
     ...unusedLifecycle,
     ...unusedSecretMarks,
     current: Effect.succeed(current),
     list: Effect.sync(() => [...details.values()]),
-    get: (id) => Effect.sync(() => details.get(id) ?? null),
+    get: (id) =>
+      Effect.sync(() => {
+        const found = details.get(id);
+
+        return found === undefined ? null : { ...found, everyVariables: { ...every } };
+      }),
+    every: Effect.sync(() => ({
+      variables: { ...every },
+      secrets: [{ name: "NPM_TOKEN", scope: "every" as const, build: false }],
+    })),
     change: ({ environment, change, author }) =>
       Effect.sync((): AppliedChange => {
+        // A variable kept for every Environment: the Environments with one of their own by the name do not get it.
+        if (environment === EVERY_ENVIRONMENT.id) {
+          const name = fieldVariable(change.field) ?? change.field;
+          const before = every[name] ?? null;
+
+          if (sameJson(before, change.value)) {
+            return { status: "unchanged", environment: EVERY_ENVIRONMENT, value: before };
+          }
+
+          if (!Predicate.isString(change.value)) delete every[name];
+          else every[name] = change.value;
+
+          changes.push({ environment, change, tool: author.tool, reason: author.reason });
+
+          const overriding = Arr.filter([...details.values()], (each) =>
+            Record.has(each.settings.variables, name),
+          );
+
+          const inheriting = Arr.filter(
+            [...details.values()],
+            (each) => !Record.has(each.settings.variables, name) && each.repos.length > 0,
+          );
+
+          return {
+            status: "changed",
+            environment: EVERY_ENVIRONMENT,
+            change: {
+              id: next++,
+              scope: "*",
+              at: 1_000,
+              actor: "agent",
+              session: "s-1",
+              conversation: author.conversation,
+              tool: author.tool,
+              reason: author.reason,
+              field: change.field,
+              before,
+              after: every[name] ?? null,
+              reverts: null,
+              revertedBy: null,
+            },
+            newBuild: inheriting.length > 0,
+            every: {
+              overriddenIn: Arr.map(overriding, ({ id, name: each }) => ({ id, name: each })),
+              newBuilds: Arr.map(inheriting, ({ id, name: each }) => ({ id, name: each })),
+              own: current !== null && !Arr.some(overriding, (each) => each.id === current),
+            },
+          };
+        }
+
         const found = details.get(environment);
 
         if (found === undefined) return { status: "missing" };
@@ -291,8 +361,8 @@ describe("the environment tools", () => {
     const shown = text(await run(tool("environment_get"), {}));
 
     expect(shown).toContain('Environment "Default" (id default, the Environment of this Session)');
-    expect(shown).toContain("Container size: custom-1");
-    expect(shown).toMatch(/Size limit \(.*\): custom-2/);
+    expect(shown).toContain("Container size: cpu-1");
+    expect(shown).toMatch(/Size limit \(.*\): cpu-2/);
     expect(shown).toContain("Idle time: 2 minutes");
     expect(shown).toContain("NODE_ENV=test");
     expect(shown).toContain(
@@ -468,6 +538,189 @@ describe("environment_variable_set", () => {
   });
 });
 
+describe("the variables kept for every Environment", () => {
+  it("are counted by environment_list, which points to environment_get with id *", async () => {
+    const tool = await toolsOver(fakeEnvironments().service);
+
+    expect(text(await run(tool("environment_list"), {}))).toContain(
+      'Variables for every Environment: 2 (environment_get with id "*")',
+    );
+  });
+
+  it("are shown by environment_get after the Environment's own, with the ones its own override named", async () => {
+    const tool = await toolsOver(fakeEnvironments().service);
+    const shown = text(await run(tool("environment_get"), {}));
+
+    expect(shown).toContain(
+      'Variables for every Environment (id "*"; the Environment\'s own of the same name win):',
+    );
+    expect(shown).toContain("SHARED=all");
+    expect(shown).toContain("overridden here: NODE_ENV");
+    // Its own NODE_ENV is test; the one for every Environment is not listed as a value it gets.
+    expect(shown).toContain("NODE_ENV=test");
+    expect(shown).not.toContain("NODE_ENV=prod");
+
+    const other = text(await run(tool("environment_get"), { id: "0000abcd" }));
+
+    expect(other).toContain("SHARED=all");
+    expect(other).toContain("NODE_ENV=prod");
+    expect(other).not.toContain("overridden here");
+  });
+
+  it("are shown by environment_get with id *, with the names of the Secrets kept for every Environment", async () => {
+    const tool = await toolsOver(fakeEnvironments().service);
+    const result = await run(tool("environment_get"), { id: "*" });
+    const shown = text(result);
+
+    expect(shown).toContain('Kept for every Environment (id "*")');
+    expect(shown).toContain("SHARED=all");
+    expect(shown).toContain("NODE_ENV=prod");
+    expect(shown).toContain("NPM_TOKEN (kept for every Environment;");
+    expect(shown).not.toContain("API_KEY");
+    expect(result.details).toMatchObject({ environment: { id: "*" }, current: false });
+  });
+
+  it("are set by environment_variable_set with id *, naming the Builds asked for and applying to this Session's Workspace", async () => {
+    const environments = fakeEnvironments();
+    const logged: RunChange[] = [];
+    const tool = await toolsOver(environments.service, { logged });
+
+    const result = await run(tool("environment_variable_set"), {
+      id: "*",
+      name: "API_URL",
+      value: "https://api.test",
+      reason: "Every Environment reads it",
+    });
+
+    expect(environments.changes).toEqual([
+      {
+        environment: "*",
+        change: { field: "variables.API_URL", value: "https://api.test" },
+        tool: "environment_variable_set",
+        reason: "Every Environment reads it",
+      },
+    ]);
+
+    const said = text(result);
+
+    expect(said).toContain(
+      'Set API_URL for every Environment: it was not set, and is "https://api.test" now.',
+    );
+    expect(said).toContain("No Environment has a variable of its own with that name");
+    expect(said).toContain("next Container start of each Workspace of every Environment");
+    expect(said).toContain("This Session's Workspace has the change already: container_restart");
+    expect(said).toContain('a new Build was asked for in Environment "Default" (default)');
+    expect(result.details).toMatchObject({
+      agentChange: { environment: { id: "*" }, field: "variables.API_URL" },
+      own: true,
+      newBuild: true,
+    });
+    expect(logged).toEqual([
+      {
+        tool: "environment_variable_set",
+        environmentName: "every Environment",
+        field: "variables.API_URL",
+      },
+    ]);
+  });
+
+  it("name the Environments that override the variable, which it does not reach, session's own included", async () => {
+    const environments = fakeEnvironments();
+    const tool = await toolsOver(environments.service);
+
+    const said = text(
+      await run(tool("environment_variable_set"), {
+        id: "*",
+        name: "NODE_ENV",
+        value: "staging",
+        reason: "r",
+      }),
+    );
+
+    expect(said).toContain('it does not reach Environment "Default" (default)');
+    expect(said).not.toContain("container_restart");
+    expect(said).not.toContain("Build was asked for");
+  });
+
+  it("are unset by environment_variable_unset with id *, and say when one is not set", async () => {
+    const environments = fakeEnvironments();
+    const logged: RunChange[] = [];
+    const tool = await toolsOver(environments.service, { logged });
+
+    const unset = text(
+      await run(tool("environment_variable_unset"), { id: "*", name: "SHARED", reason: "r" }),
+    );
+
+    expect(environments.changes[0]).toMatchObject({
+      environment: "*",
+      change: { field: "variables.SHARED", value: null },
+    });
+    expect(unset).toContain('Unset SHARED for every Environment: it was "all", and is not set now');
+
+    const again = text(
+      await run(tool("environment_variable_unset"), { id: "*", name: "SHARED", reason: "r" }),
+    );
+
+    expect(again).toContain("SHARED is not set for every Environment: nothing changed");
+    expect(logged).toHaveLength(1);
+  });
+
+  it("are refused a value holding a Secret, the GitHub token or a Secret Reference, saving nothing, and the refusal says to delete a Secret kept only for sharing", async () => {
+    const environments = fakeEnvironments();
+    const logged: RunChange[] = [];
+
+    const tool = await toolsOver(environments.service, {
+      held: { CLOUDFLARE_EMAIL: "me@example.test" },
+      logged,
+    });
+
+    for (const value of ["me@example.test", GITHUB_TOKEN]) {
+      expect(
+        await failure(
+          run(tool("environment_variable_set"), { id: "*", name: "EMAIL", value, reason: "r" }),
+        ),
+      ).toContain("ask the user to delete that Secret first");
+    }
+
+    expect(
+      await failure(
+        run(tool("environment_variable_set"), {
+          id: "*",
+          name: "EMAIL",
+          value: secretReference("CLOUDFLARE_EMAIL"),
+          reason: "r",
+        }),
+      ),
+    ).toContain("holds a Secret Reference");
+    expect(environments.changes).toEqual([]);
+    expect(logged).toEqual([]);
+  });
+
+  it("are the only thing id * names for a setting tool: every other one refuses it, saying which take it", async () => {
+    const environments = fakeEnvironments();
+    const tool = await toolsOver(environments.service);
+
+    for (const [name, args] of [
+      ["environment_container_resize", { size: "cpu-2" }],
+      ["environment_idle_time_set", { minutes: 5 }],
+      ["environment_setup_script_set", { script: "make" }],
+      ["environment_start_script_set", { script: "make" }],
+      ["environment_toolchains_set", { mise_toml: "[tools]" }],
+      ["environment_ignore_set", { patterns: ["/data"] }],
+      ["environment_rename", { name: "New" }],
+      ["environment_repo_add", { url: "acme/app" }],
+      ["environment_repo_remove", { name: "app" }],
+      ["environment_rebuild", { proposed: { variables: { A: "1" } } }],
+    ] as const) {
+      expect(await failure(run(tool(name), { id: "*", reason: "r", ...args })), name).toContain(
+        'The id "*" names the variables and Secrets kept for every Environment',
+      );
+    }
+
+    expect(environments.changes).toEqual([]);
+  });
+});
+
 describe("a subagent", () => {
   const ceiling = ["bash", "environment_list", "environment_get", "environment_variable_set"];
 
@@ -519,23 +772,23 @@ describe("environment_container_resize", () => {
     const tool = await toolsOver(environments.service, { logged });
 
     const result = await run(tool("environment_container_resize"), {
-      size: "custom-2",
+      size: "cpu-2",
       reason: "The tests need 6 GiB",
     });
 
     expect(environments.changes[0]).toMatchObject({
       environment: "default",
-      change: { field: "instance", value: "custom-2" },
+      change: { field: "instance", value: "cpu-2" },
       tool: "environment_container_resize",
     });
-    expect(text(result)).toContain("it was custom-1, and is custom-2 now");
+    expect(text(result)).toContain("it was cpu-1, and is cpu-2 now");
     expect(text(result)).toContain("every Workspace of the Environment");
     expect(text(result)).toContain(
       "container_resize changes only this Workspace's current Container",
     );
     expect(text(result)).toContain("holds through container_restart until the idle stop");
     expect(result.details).toMatchObject({
-      agentChange: { field: "instance", before: "custom-1", after: "custom-2" },
+      agentChange: { field: "instance", before: "cpu-1", after: "cpu-2" },
     });
     expect(logged).toEqual([
       { tool: "environment_container_resize", environmentName: "Default", field: "instance" },
@@ -548,7 +801,8 @@ describe("environment_container_resize", () => {
 
     expect(description).toContain("environment_container_size_limit_set");
     expect(description).toContain("container_resize");
-    expect(description).toContain("- custom-3: 3 vCPU, 9 GiB memory");
+    expect(description).toContain("- cpu-3: 3 vCPU, 9 GiB memory");
+    expect(description).toContain("- mem-12: 2 vCPU, 12 GiB memory");
   });
 
   it("refuses a size above the size limit, naming it and the tool that raises it, and records nothing", async () => {
@@ -561,7 +815,7 @@ describe("environment_container_resize", () => {
     );
 
     expect(message).toContain("size limit");
-    expect(message).toContain("custom-2");
+    expect(message).toContain("cpu-2");
     expect(message).toContain("environment_container_size_limit_set");
     expect(environments.changes).toEqual([]);
     expect(logged).toEqual([]);
@@ -571,13 +825,10 @@ describe("environment_container_resize", () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service);
 
-    await run(tool("environment_container_resize"), { size: "custom-2", reason: "r" });
+    await run(tool("environment_container_resize"), { size: "cpu-2", reason: "r" });
     await run(tool("environment_container_resize"), { size: "basic", reason: "r" });
 
-    expect(Arr.map(environments.changes, ({ change }) => change.value)).toEqual([
-      "custom-2",
-      "basic",
-    ]);
+    expect(Arr.map(environments.changes, ({ change }) => change.value)).toEqual(["cpu-2", "basic"]);
   });
 
   it("says so of the size the Environment has, and records nothing", async () => {
@@ -585,11 +836,11 @@ describe("environment_container_resize", () => {
     const tool = await toolsOver(environments.service);
 
     const result = await run(tool("environment_container_resize"), {
-      size: "custom-1",
+      size: "cpu-1",
       reason: "r",
     });
 
-    expect(text(result)).toContain("custom-1 already");
+    expect(text(result)).toContain("cpu-1 already");
     expect(environments.changes).toEqual([]);
   });
 
@@ -599,7 +850,7 @@ describe("environment_container_resize", () => {
 
     const result = await run(tool("environment_container_resize"), {
       id: "0000abcd",
-      size: "custom-2",
+      size: "cpu-2",
       reason: "r",
     });
 
@@ -617,8 +868,8 @@ describe("environment_idle_time_set", () => {
 
     expect(environments.changes[0]?.change).toEqual({ field: "idleMinutes", value: 10 });
     expect(text(result)).toContain("it was 2 minutes, and is 10 now");
-    // custom-1: 3 GiB of memory at $0.0000025 a GiB-second is $0.00045 a minute.
-    expect(text(result)).toContain("at custom-1 (3 GiB) about $0.00045 a minute");
+    // cpu-1: 3 GiB of memory at $0.0000025 a GiB-second is $0.00045 a minute.
+    expect(text(result)).toContain("at cpu-1 (3 GiB) about $0.00045 a minute");
     expect(text(result)).toContain("up to $0.0045 for each idle stretch of 10 minutes");
   });
 

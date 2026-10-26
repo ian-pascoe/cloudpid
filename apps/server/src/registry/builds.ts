@@ -4,7 +4,12 @@
 // the Repos, the Container settings a Build uses, the image) is neither the last good one nor under way, or once a day
 // to look at the Repos' default branches. What the Build object answers is recorded in the Registry, which hands the
 // last good Build to each new Workspace and shows where each stands (`listBuilds`).
-import { containerOverridesFrom, resolveContainerSettingsLeniently } from "@cloudpid/config";
+import {
+  containerOverridesFrom,
+  mergedVariablesProblem,
+  resolveContainerSettingsLeniently,
+  withEveryEnvironmentVariables,
+} from "@cloudpid/config";
 import type { BuildView, EnvironmentRepo } from "@cloudpid/protocol";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import * as Clock from "effect/Clock";
@@ -29,8 +34,10 @@ import type { BuildRecord } from "./store.ts";
 export type BuildWork = {
   readonly environment: string;
   readonly repos: ReadonlyArray<EnvironmentRepo>;
-  /** The Environment's Container settings overrides. */
+  /** The Environment's own Container settings overrides. */
   readonly settings: Schema.Json;
+  /** The variables kept for every Environment, which a Build gets under the Environment's own. */
+  readonly everyVariables: Readonly<Record<string, string>>;
   readonly recorded: BuildRecord;
   /**
    * A keyed digest of the Secrets that reach the Build (`buildSecretsDigest`), null when none does: their values are
@@ -184,7 +191,18 @@ export const buildUpkeep = (
       const registry = registries.getByName(REGISTRY_NAME);
       const name = buildObjectName(work.environment);
       let state = yield* Effect.promise(() => workspaces.buildState(name));
-      const { settings } = resolveContainerSettingsLeniently(work.settings);
+
+      const own = resolveContainerSettingsLeniently(work.settings).settings;
+      const cut = mergedVariablesProblem(own.variables, work.everyVariables);
+
+      if (cut !== undefined) {
+        yield* Effect.logWarning(
+          `Environment ${work.environment}'s Build variables are cut to fit: ${cut}`,
+        );
+      }
+
+      const settings = withEveryEnvironmentVariables(own, work.everyVariables);
+
       const wanted = buildWanted(work.repos, settings);
 
       const key = wanted
@@ -203,7 +221,12 @@ export const buildUpkeep = (
         state = yield* Effect.promise(() =>
           workspaces.startBuild(
             name,
-            { key, repos: work.repos, settings: work.settings, check: asked === "check" },
+            {
+              key,
+              repos: work.repos,
+              settings: containerOverridesFrom(settings),
+              check: asked === "check",
+            },
             secrets,
           ),
         );
@@ -342,6 +365,7 @@ const testBuilds = (
           toolchains: proposed.toolchains ?? saved.toolchains,
           ignore: proposed.ignore ?? saved.ignore,
         }),
+        work.everyVariables,
       );
 
       if (Result.isFailure(written)) {
@@ -349,7 +373,8 @@ const testBuilds = (
       }
 
       const repos = proposed.repos ?? work.repos;
-      const { settings, overrides } = written.success;
+      // The variables kept for every Environment still apply under the proposed ones, as they will once it is saved.
+      const settings = withEveryEnvironmentVariables(written.success.settings, work.everyVariables);
 
       if (!buildWanted(repos, settings)) {
         return yield* Effect.fail(
@@ -378,7 +403,11 @@ const testBuilds = (
         );
 
       const state = yield* onTestObject("Could not ask for the Test Build", () =>
-        workspaces.startBuild(name, { key, repos, settings: overrides, test: id }, secrets),
+        workspaces.startBuild(
+          name,
+          { key, repos, settings: containerOverridesFrom(settings), test: id },
+          secrets,
+        ),
       );
 
       // The Environment deleted meanwhile (its objects wiped) is not made anew by the request.

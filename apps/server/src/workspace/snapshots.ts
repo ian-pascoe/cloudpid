@@ -205,9 +205,16 @@ export class ContainerSnapshots {
                 ? "the GitHub token is"
                 : "the GitHub token or a Secret kept for the Environment is";
 
+            // A value that is not secret is a variable, not a Secret: only the message says so, not what the scan
+            // finds.
+            const hint =
+              held.secrets.length === 0
+                ? ""
+                : "; a value that is not secret belongs in the variables (kept for the Environment or for every Environment)";
+
             return {
               leaked: true,
-              reason: `${what} in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}`,
+              reason: `${what} in ${leaks.slice(0, 5).join(", ")}${leaks.length > 5 ? ` and ${leaks.length - 5} more` : ""}${hint}`,
             } as const;
           }
         }

@@ -1,6 +1,11 @@
 // The Registry operations (`docs/spec.md` → Client and protocol): listing and creating Sessions, Environments and
 // Workspaces. They hold no stream, so they are an Effect `RpcGroup` over HTTP, served by the main Worker at `RPC_PATH`.
-import { Settings, SettingsError, ContainerSettings } from "@cloudpid/config";
+import {
+  Settings,
+  SettingsError,
+  ContainerSettings,
+  EveryEnvironmentSettings,
+} from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -41,8 +46,8 @@ export const EnvironmentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z
 export const SecretScope = Schema.NullOr(EnvironmentId);
 
 /**
- * The scope of the Agent changes of the Secrets kept for every Environment (`docs/spec.md` → Agent changes), where an
- * Environment's are kept under its id. No Environment id can be it.
+ * The scope of the Agent changes of the Secrets and variables kept for every Environment (`docs/spec.md` → Agent
+ * changes), where an Environment's are kept under its id. No Environment id can be it.
  */
 export const EVERY_ENVIRONMENT_SCOPE = "*";
 
@@ -263,6 +268,19 @@ export const ContainerSettingsState = Schema.Struct({
 
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
 
+/**
+ * The settings kept for every Environment in force (`docs/spec.md` → Container and Toolchains → Container settings),
+ * and the overrides they come from. Each Workspace of every Environment applies them at its next Container launch.
+ */
+export const EveryEnvironmentSettingsState = Schema.Struct({
+  settings: EveryEnvironmentSettings,
+  overrides: Schema.Json,
+  /** Why the saved overrides were only partly used, when some no longer resolve: the rest still apply. */
+  problem: Schema.optionalKey(Schema.String),
+});
+
+export type EveryEnvironmentSettingsState = typeof EveryEnvironmentSettingsState.Type;
+
 const VARIABLE_FIELD = "variables.";
 
 /** An Agent change's field for one of the variables: `variables.<NAME>`. Any other field is a setting's name. */
@@ -289,7 +307,7 @@ export const SETTINGS_SCOPE = "settings";
 export const AgentChange = Schema.Struct({
   /** Its number, which grows with each change in the Registry. */
   id: Schema.Finite,
-  /** The Environment's id. */
+  /** The Environment's id, or `EVERY_ENVIRONMENT_SCOPE` for a Secret or variable kept for every Environment. */
   scope: Schema.String,
   at: Schema.Finite,
   /** Who made it: the agent, or the owner reverting an Agent change. */
@@ -532,6 +550,18 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("updateEnvironmentSettings", {
     payload: { environment: EnvironmentId, overrides: Schema.Json },
     success: ContainerSettingsState,
+    error: EnvironmentError,
+  }),
+  /** The settings kept for every Environment in force (the variables), and their overrides. */
+  Rpc.make("getEveryEnvironmentSettings", { success: EveryEnvironmentSettingsState }),
+  /**
+   * Replace the saved overrides of the settings kept for every Environment. Overrides that do not resolve, or that
+   * would give any Environment more than 50 variables with its own, fail with an `EnvironmentError` whose message lists
+   * each problem, and nothing is saved. Each Workspace applies them at its next Container start.
+   */
+  Rpc.make("updateEveryEnvironmentSettings", {
+    payload: { overrides: Schema.Json },
+    success: EveryEnvironmentSettingsState,
     error: EnvironmentError,
   }),
   /**

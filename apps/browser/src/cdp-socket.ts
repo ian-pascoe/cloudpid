@@ -5,7 +5,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { BrowserBinding } from "agents/browser";
-import { BrowserGoneError, type CdpEvent, type CdpParams, type CdpTransport } from "./handoff.ts";
+import { BrowserGoneError, type CdpEvent, type CdpParams, type CdpTransport } from "./cdp.ts";
 
 /** How long a command may take. */
 const COMMAND_TIMEOUT_MS = 10_000;

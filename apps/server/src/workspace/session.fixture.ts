@@ -131,6 +131,7 @@ export class TestWorkspaceSession extends TestSession {
         close: Effect.succeed(false),
         startHandoff: () => Effect.die("No browser"),
         liveView: () => Effect.die("No browser"),
+        ownerTabView: () => Effect.die("No browser"),
         waitHandoff: () => Effect.die("No browser"),
         endHandoff: () => Effect.succeed({ windowOrigins: [] }),
       }),

@@ -62,14 +62,14 @@ describe("container_resize in a Session", () => {
 
     const results = await sessionOn(slug).run([
       loadResize,
-      call("container_resize", { size: "custom-2", reason: "tsc was stopped at 2.6 GB" }),
+      call("container_resize", { size: "cpu-2", reason: "tsc was stopped at 2.6 GB" }),
       call("container_resize", { size: "standard-4", reason: "more still" }),
     ]);
 
     expect(results.at(-2)).toMatch(
-      /^No container was running, so none was stopped\. The next container command starts a new container on custom-2/,
+      /^No container was running, so none was stopped\. The next container command starts a new container on cpu-2/,
     );
-    expect(results.at(-1)).toMatch(/standard-4 is above this Environment's size limit, custom-2/);
-    expect(await stored(slug, RESIZE_KEY)).toBe("custom-2");
+    expect(results.at(-1)).toMatch(/standard-4 is above this Environment's size limit, cpu-2/);
+    expect(await stored(slug, RESIZE_KEY)).toBe("cpu-2");
   });
 });

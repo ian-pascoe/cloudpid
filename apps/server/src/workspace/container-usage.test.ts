@@ -5,6 +5,8 @@ import type { AnalyticsWindow } from "./container-analytics.ts";
 import {
   ContainerUsageLedger,
   type ContainerUsageRecord,
+  currentUsageRecord,
+  type StoredUsageRecord,
   REFRESH_MS,
   REPORT_LAG_MS,
   SETTLE_AFTER_MS,
@@ -58,7 +60,7 @@ const harness = (
     at: (offset: number) => {
       now = START + offset;
     },
-    launch: (instance: InstanceType = "custom-2") => {
+    launch: (instance: InstanceType = "cpu-2") => {
       running = true;
       launch = { instance, launchedAt: now };
     },
@@ -86,10 +88,10 @@ describe("ContainerUsageLedger without analytics", () => {
     h.at(10 * MINUTE);
 
     const usage = await h.ledger.read();
-    const rates = containerRates("custom-2");
+    const rates = containerRates("cpu-2");
 
     expect(usage).toMatchObject({
-      instance: "custom-2",
+      instance: "cpu-2",
       running: true,
       busy: false,
       runSeconds: 600,
@@ -119,7 +121,7 @@ describe("ContainerUsageLedger without analytics", () => {
     const usage = await h.ledger.read();
 
     expect(usage).toMatchObject({ busy: false, cpuSeconds: 240 });
-    expect(usage!.cpu).toBeCloseTo(120 * containerRates("custom-2").cpu, 12);
+    expect(usage!.cpu).toBeCloseTo(120 * containerRates("cpu-2").cpu, 12);
   });
 
   it("ends a run when the Container is stopped, and keeps it across an eviction", async () => {
@@ -160,15 +162,15 @@ describe("ContainerUsageLedger without analytics", () => {
     h.die();
     await h.ledger.stopped();
     h.at(30 * MINUTE);
-    h.launch("custom-2");
+    h.launch("cpu-2");
     await h.ledger.seen();
     h.at(40 * MINUTE);
 
     const usage = await h.ledger.read();
 
-    expect(usage).toMatchObject({ instance: "custom-2", runSeconds: 1200 });
+    expect(usage).toMatchObject({ instance: "cpu-2", runSeconds: 1200 });
     expect(usage!.memory).toBeCloseTo(
-      600 * containerRates("standard-2").memory + 600 * containerRates("custom-2").memory,
+      600 * containerRates("standard-2").memory + 600 * containerRates("cpu-2").memory,
       12,
     );
   });
@@ -213,7 +215,7 @@ describe("ContainerUsageLedger with analytics", () => {
     await settle();
 
     const usage = await h.ledger.read();
-    const rates = containerRates("custom-2");
+    const rates = containerRates("cpu-2");
     const since = REPORT_LAG_MS / 1000;
 
     expect(usage).toMatchObject({
@@ -294,5 +296,58 @@ describe("ContainerUsageLedger with analytics", () => {
 
     expect(h.warnings).toHaveLength(1);
     expect(await h.ledger.read()).toMatchObject({ reportedThrough: null, runSeconds: 1320 });
+  });
+});
+
+describe("a usage record kept before the sizes were renamed", () => {
+  const legacy: StoredUsageRecord = {
+    runMs: { "custom-2": 60_000, "cpu-2": 30_000, "standard-2": 10_000 },
+    busyMs: { "custom-2": 6_000 },
+    runs: [{ instance: "custom-3", start: START, end: START + MINUTE }],
+    busy: [{ instance: "custom-3", start: START, end: START + 1000 }],
+    last: "custom-1",
+  };
+
+  it("reads every size under its name now, an old name's time added to its new one's", () => {
+    expect(currentUsageRecord(legacy)).toEqual({
+      runMs: { "cpu-2": 90_000, "standard-2": 10_000 },
+      busyMs: { "cpu-2": 6_000 },
+      runs: [{ instance: "cpu-3", start: START, end: START + MINUTE }],
+      busy: [{ instance: "cpu-3", start: START, end: START + 1000 }],
+      open: undefined,
+      last: "cpu-1",
+    });
+    expect(currentUsageRecord(undefined)).toBeUndefined();
+  });
+
+  it("renames the open run's size", () => {
+    const open = {
+      instance: "custom-2" as const,
+      launchedAt: START,
+      startedAt: START,
+      seenAt: START,
+    };
+
+    expect(currentUsageRecord({ ...legacy, open })?.open).toEqual({ ...open, instance: "cpu-2" });
+  });
+
+  it("prices and counts the old sizes' runs as their new names'", async () => {
+    const ledger = new ContainerUsageLedger({
+      load: () => legacy,
+      save: () => {},
+      running: () => false,
+      launch: async () => undefined,
+      until: async () => null,
+      now: () => START + 2 * MINUTE,
+      warn: () => {},
+    });
+
+    const usage = await ledger.read();
+    const cpu2 = containerRates("cpu-2");
+    const standard2 = containerRates("standard-2");
+
+    expect(usage).toMatchObject({ instance: "cpu-1", runSeconds: 100, running: false });
+    expect(usage!.memory).toBeCloseTo(90 * cpu2.memory + 10 * standard2.memory, 12);
+    expect(usage!.cpu).toBeCloseTo(6 * cpu2.cpu, 12);
   });
 });

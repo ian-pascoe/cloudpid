@@ -1,6 +1,6 @@
 // Session details (GLOSSARY.md → Session details): a small panel over the top right of the chat with what the owner
 // follows of the Session while reading, in sections: the root agent's Todo List and the Session's subagents, each
-// subagent opening the Subagents Pane at it. An icon button in the Session's header opens and closes it, whatever there
+// subagent opening its Subagent Pane. An icon button in the Session's header opens and closes it, whatever there
 // is to show; whether it is open is kept in the Session's layout.
 
 import type { GraphAgent, TodoTask } from "@cloudpid/protocol";
@@ -10,13 +10,12 @@ import { PanelRightOpen, SquareMenu } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
-import { SUBAGENTS_PANE } from "../panes.ts";
+import { SUBAGENTS_PANE, subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
 import { sessionStatusAtom, taskGraphAtom, todosAtom } from "../session/atoms.ts";
 import { detailsOpenAtom } from "../session-layout-state.ts";
 import { useShownSessionId } from "./conversation.ts";
 import { AgentStatus } from "./subagent-card.tsx";
-import { showAgentAtom } from "./subagents-state.ts";
 import { TodoList } from "./todo-list.tsx";
 
 /** The panel's element, which the header's button controls: a Session page has one. */
@@ -81,18 +80,18 @@ export const SessionDetailsButton = () => {
   );
 };
 
-/** A subagent in Session details: opens the Subagents Pane with its row open and in sight. */
+/** A subagent in Session details: opens its Subagent Pane, or shows it where it is open. */
 const AgentButton = ({ agent }: { agent: GraphAgent }) => {
-  const show = useAtomSet(showAgentAtom(useShownSessionId()));
+  const actOnPanes = useAtomSet(panesAtom);
 
   return (
     <li>
       <button
         type="button"
         onClick={() => {
-          show(agent.conversationId);
+          actOnPanes({ type: "open", key: subagentPaneKey(agent.conversationId) });
         }}
-        title={`Open ${agent.id} in the Subagents pane`}
+        title={`Open ${agent.id}`}
         className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-accent"
       >
         <span className="min-w-0 truncate font-mono text-[0.8125rem]">{agent.id}</span>

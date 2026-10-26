@@ -339,6 +339,11 @@ export type SessionHostService = {
   readonly alarm: Effect.Effect<void, SessionError>;
   /** Whether no task is live and no submission is unsettled. Reads only: it never starts work. */
   readonly idle: Effect.Effect<boolean, SessionError>;
+  /**
+   * Reconcile the alarm and the Registry with what is live now, as the end of a Run does: for a change outside a Run to
+   * when the object must wake (the Browser Pane's use of the browser, which moves its idle close).
+   */
+  readonly settle: Effect.Effect<void, SessionError>;
   /** The root conversation's ID; the root is created when absent. */
   readonly root: Effect.Effect<ConversationId, SessionError>;
   /** The active branch's conversation ID (GLOSSARY.md → Session branch); the root is created when absent. */
@@ -1847,6 +1852,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     idle: inspect.pipe(
       Effect.map(({ tasks, submissions }) => tasks.length === 0 && submissions.length === 0),
     ),
+    settle,
     root: Effect.map(root, (conversation) => conversation.id),
     activeBranch: Effect.map(active, (conversation) => conversation.id),
     copying: forks.filling,

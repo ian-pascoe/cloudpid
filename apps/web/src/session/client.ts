@@ -20,6 +20,7 @@ import {
   Navigated,
   SessionTree,
   LiveViewLinks,
+  OwnerTabLinks,
   reduceEvents,
   withEarlier,
   SESSION_DELETED_CLOSE_CODE,
@@ -253,6 +254,12 @@ export interface SessionClient {
    * is over" once it has ended.
    */
   readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, SessionCommandError>;
+  /**
+   * Fresh Live View links to the Owner tab the Browser Pane shows and to each window it opened, for this client alone, as
+   * `liveView`'s. With `open` (the Pane opening), the Session's browser is started when none runs and an Owner tab
+   * opened when the owner has none. Fails as `catalog` does, and with the Session's "the Owner tab is gone" when it is.
+   */
+  readonly ownerTabView: (open: boolean) => Effect.Effect<OwnerTabLinks, SessionCommandError>;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -291,7 +298,10 @@ interface PendingSubmit {
 /** What a `result` carries. */
 type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
 
-/** A request whose answer an Effect waits for: `catalog`, `files`, `command`, `history` and `live_view`. */
+/**
+ * A request whose answer an Effect waits for: `catalog`, `files`, `command`, `history`, `live_view` and
+ * `owner_tab_view`.
+ */
 interface PendingRequest {
   readonly answer: Deferred.Deferred<ResultValue, SessionCommandError>;
   /** Whether it changes the Session, so one whose answer was lost may have run all the same. */
@@ -325,6 +335,8 @@ const decodeSessionTree = Schema.decodeUnknownOption(SessionTree);
 const decodeNavigated = Schema.decodeUnknownOption(Navigated);
 
 const decodeLiveViewLinks = Schema.decodeUnknownOption(LiveViewLinks);
+
+const decodeOwnerTabLinks = Schema.decodeUnknownOption(OwnerTabLinks);
 
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
@@ -1336,6 +1348,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ),
     liveView: (requestId) =>
       request((id) => ({ type: "live_view", id, requestId }), decodeLiveViewLinks),
+    ownerTabView: (open) =>
+      request((id) => ({ type: "owner_tab_view", id, open }), decodeOwnerTabLinks),
   };
 
   return client;

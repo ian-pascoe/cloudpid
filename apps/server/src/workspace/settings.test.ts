@@ -54,10 +54,23 @@ describe("workspaceSettingsStore", () => {
     });
   });
 
+  it("reads a copy saved before the sizes were renamed as the new names, with nothing dropped", async () => {
+    const { store } = open({ instance: "custom-3", maxInstance: "custom-3" });
+
+    const answer = await store.read();
+
+    expect(answer.settings).toEqual({
+      ...DEFAULT_CONTAINER_SETTINGS,
+      instance: "cpu-3",
+      maxInstance: "cpu-3",
+    });
+    expect(answer).not.toHaveProperty("problem");
+  });
+
   it("keeps only what differs from the defaults, so a setting left alone follows later defaults", async () => {
     const { store, kept } = open();
 
-    await store.write({ instance: "custom-1", idleMinutes: 15 });
+    await store.write({ instance: "cpu-1", idleMinutes: 15 });
 
     expect(kept.get("cloudpid:workspace-settings")).toEqual({ idleMinutes: 15 });
   });
@@ -71,16 +84,16 @@ describe("workspaceSettingsStore", () => {
     expect((await store.read()).settings.instance).toBe("standard-2");
   });
 
-  it("keeps custom-2 and a 5-minute idle time, the former defaults, as saved values once they are chosen", async () => {
+  it("keeps cpu-2 and a 5-minute idle time, the former defaults, as saved values once they are chosen", async () => {
     const { store, kept } = open();
 
-    await store.write({ instance: "custom-2", idleMinutes: 5 });
+    await store.write({ instance: "cpu-2", idleMinutes: 5 });
 
     expect(kept.get("cloudpid:workspace-settings")).toEqual({
-      instance: "custom-2",
+      instance: "cpu-2",
       idleMinutes: 5,
     });
-    expect((await store.read()).settings).toMatchObject({ instance: "custom-2", idleMinutes: 5 });
+    expect((await store.read()).settings).toMatchObject({ instance: "cpu-2", idleMinutes: 5 });
   });
 
   it("refuses overrides that do not resolve, one problem per line, and saves nothing", async () => {

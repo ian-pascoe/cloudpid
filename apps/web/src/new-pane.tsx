@@ -1,14 +1,15 @@
 // The New pane: the tab the Pane area's button opens when no Pane is open, and the tab bar's + opens beside the others.
 // It offers the Pane types the owner can open; picking one puts that Pane in this tab (or shows it where it is open
-// already). A Live View is not offered: it opens by itself when the agent hands over its browser.
+// already). A Live View is not offered: it opens by itself when the agent hands over its browser. The Browser Pane is the
+// owner's own way into that browser, at any time.
 
 import { useAtom } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { Bot, Network, type LucideIcon } from "lucide-react";
+import { Bot, Globe, Network, type LucideIcon } from "lucide-react";
 import { use } from "react";
 import { TreeBarScope } from "./chat/tree-actions.ts";
 import { useSubagentsWorking } from "./chat/subagents-pane.tsx";
-import { NEW_PANE, SUBAGENTS_PANE, TREE_PANE } from "./panes.ts";
+import { BROWSER_PANE, NEW_PANE, SUBAGENTS_PANE, TREE_PANE } from "./panes.ts";
 import { panesAtom } from "./panes-state.ts";
 
 /** One Pane the New pane offers. */
@@ -24,7 +25,7 @@ interface Choice {
 /** The New pane: the Panes the owner can open, the ones open already marked so. */
 export const NewPane = () => {
   const [{ open }, act] = useAtom(panesAtom);
-  // An archived Session cannot move in its tree, so it offers none, as it has no `/tree`.
+  // An archived Session cannot move in its tree, so it offers none, as it has no `/tree`; nor does it start a browser.
   const archived = use(TreeBarScope)?.archived === true;
   const working = useSubagentsWorking();
 
@@ -32,7 +33,7 @@ export const NewPane = () => {
     {
       key: SUBAGENTS_PANE,
       name: "Subagents",
-      description: "The subagents, each opening into its thread, and background work.",
+      description: "The subagents, each opening in a pane of its own, and background work.",
       icon: Bot,
       status: working > 0 ? `${working} working` : undefined,
     },
@@ -44,6 +45,13 @@ export const NewPane = () => {
             name: "Session tree",
             description: "Every branch of the conversation; go back to any message.",
             icon: Network,
+          },
+          {
+            key: BROWSER_PANE,
+            name: "Browser",
+            description:
+              "The Session's browser, in a tab of your own: browse and sign in, with the agent's cookies and logins.",
+            icon: Globe,
           },
         ]),
   ];

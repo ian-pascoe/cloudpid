@@ -12,7 +12,7 @@ import * as Option from "effect/Option";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { RunChanges } from "./agent-changes.ts";
-import { buildsAfterSecret } from "./environments.ts";
+import { buildsAfterScope } from "./environments.ts";
 
 /** What keeping Secrets uses of the Registry. */
 export type KeepingRegistry = Pick<RegistryMethods, "keepAskedSecrets" | "listEnvironments">;
@@ -85,7 +85,7 @@ export const sessionKeepSecrets =
       // As after the owner's form, in the background: the answer does not wait for the Builds to be looked at.
       if (kept.length > 0) {
         yield* Effect.forkDetach(
-          buildsAfterSecret(registry, builds, answer.environment.id).pipe(
+          buildsAfterScope(registry, builds, answer.environment.id).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("The Builds' upkeep after a Secret was kept failed", cause),
             ),

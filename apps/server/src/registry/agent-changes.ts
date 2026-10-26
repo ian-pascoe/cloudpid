@@ -7,7 +7,9 @@
 import {
   type ContainerSettings,
   containerOverridesFrom,
+  currentFieldValue,
   DEFAULT_CONTAINER_SETTINGS,
+  withEveryEnvironmentVariables,
 } from "@cloudpid/config";
 import {
   type AgentChange,
@@ -31,6 +33,7 @@ import {
 import type { EnvironmentRepo } from "@cloudpid/protocol";
 import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
+import { everyVariablesOf, writeEveryEnvironment } from "./every-environment.ts";
 import { revertSecretBuild } from "./secret-changes.ts";
 import {
   type EnvironmentRecord,
@@ -80,6 +83,22 @@ export type EnvironmentChange =
   | { readonly status: "changed-since"; readonly current: Schema.Json | null }
   | { readonly status: "missing" };
 
+/** How an Agent change to the variables kept for every Environment went. */
+export type EveryEnvironmentChange =
+  | {
+      readonly status: "changed";
+      readonly change: AgentChange;
+      /** The variable's name. */
+      readonly name: string;
+      /** The variables kept for every Environment before it, and in force now. */
+      readonly previous: Readonly<Record<string, string>>;
+      readonly variables: Readonly<Record<string, string>>;
+    }
+  /** The variable already had the value (one unset that was not set): nothing was saved or recorded. */
+  | { readonly status: "unchanged"; readonly value: Schema.Json | null }
+  /** The value is not one a variable takes, or some Environment would have too many variables: nothing was saved. */
+  | { readonly status: "rejected"; readonly message: string };
+
 /** How the owner's revert of an Agent change went. */
 export type AgentChangeRevert =
   | {
@@ -128,6 +147,17 @@ export const fieldValue = (settings: ContainerSettings, field: string): Schema.J
   return isSetting(field) ? settings[field] : null;
 };
 
+/** `variables` with `name` set to `value`, or taken out for null. */
+const withVariable = (
+  variables: Readonly<Record<string, string>>,
+  name: string,
+  value: Schema.Json | null,
+): Record<string, Schema.Json> => {
+  const { [name]: _replaced, ...others } = variables;
+
+  return value === null ? others : { ...others, [name]: value };
+};
+
 /** The overrides that make `settings` into ones where `field` is `value` (null: its default, or a variable unset). */
 const overridesWith = (
   settings: ContainerSettings,
@@ -138,9 +168,7 @@ const overridesWith = (
   const name = fieldVariable(field);
 
   if (name !== null) {
-    const { [name]: _replaced, ...others } = settings.variables;
-
-    overrides.variables = value === null ? others : { ...others, [name]: value };
+    overrides.variables = withVariable(settings.variables, name, value);
   } else if (value === null) {
     delete overrides[field];
   } else {
@@ -175,6 +203,13 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
 const valueOf = (text: string | null): Schema.Json | null =>
   text === null ? null : Option.getOrNull(decodeJson(text));
 
+/**
+ * The stored value of `field`: as `valueOf` reads it, with a size since renamed (`custom-2`) under its name now, so a
+ * change from before the rename shows, and is reverted, as the size it named.
+ */
+const storedFieldValue = (field: string, text: string | null): Schema.Json | null =>
+  currentFieldValue(field, valueOf(text));
+
 const toChange = (row: AgentChangeRow): AgentChange => {
   const change: AgentChange = {
     id: row.id,
@@ -186,8 +221,8 @@ const toChange = (row: AgentChangeRow): AgentChange => {
     tool: row.tool,
     reason: row.reason,
     field: row.field,
-    before: valueOf(row.before),
-    after: valueOf(row.after),
+    before: storedFieldValue(row.field, row.before),
+    after: storedFieldValue(row.field, row.after),
     reverts: row.reverts,
     revertedBy: row.reverted_by,
   };
@@ -305,6 +340,64 @@ export const wantsNewBuild = async (
   return wanted !== null && wanted !== (await key(previous));
 };
 
+/** An Environment as an Agent change to the variables kept for every Environment sees it. */
+export type ReachedEnvironment = {
+  readonly id: string;
+  readonly name: string;
+  readonly repos: ReadonlyArray<EnvironmentRepo>;
+  readonly settings: ContainerSettings;
+};
+
+/** Where an Agent change to a variable kept for every Environment goes. */
+export type EveryChangeReach = {
+  /** The Environments whose own variable of the name wins, so the change does not reach them. */
+  readonly overriddenIn: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+  /** The Environments it reaches that want a Build of another key (`wantsNewBuild`). */
+  readonly newBuilds: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+  /** Whether it reaches the Environment `caller` names; undefined when none is named. */
+  readonly own: boolean | undefined;
+};
+
+/**
+ * Where a change of variable `name` kept for every Environment, from the variables `previous` to `variables`, goes: an
+ * Environment with its own variable of the name is not reached, and one that is reached wants a new Build when its
+ * Build key changes with the merged variables.
+ */
+export const everyChangeReach = async (
+  environments: ReadonlyArray<ReachedEnvironment>,
+  name: string,
+  previous: Readonly<Record<string, string>>,
+  variables: Readonly<Record<string, string>>,
+  caller: string | undefined,
+): Promise<EveryChangeReach> => {
+  const overriding = Arr.filter(environments, ({ settings }) =>
+    Record.has(settings.variables, name),
+  );
+
+  const reached = Arr.filter(environments, ({ settings }) => !Record.has(settings.variables, name));
+
+  const wantsBuild = await Promise.all(
+    Arr.map(reached, ({ repos, settings }) =>
+      wantsNewBuild(
+        repos,
+        withEveryEnvironmentVariables(settings, previous),
+        withEveryEnvironmentVariables(settings, variables),
+      ),
+    ),
+  );
+
+  const listed = ({ id, name: listedName }: ReachedEnvironment) => ({ id, name: listedName });
+
+  return {
+    overriddenIn: Arr.map(overriding, listed),
+    newBuilds: Arr.map(
+      Arr.filter(reached, (_, index) => wantsBuild[index] === true),
+      listed,
+    ),
+    own: caller === undefined ? undefined : !Arr.some(overriding, ({ id }) => id === caller),
+  };
+};
+
 /** The settings in force for `environment`, and its record; null when it is not registered. */
 const current = (store: RegistryStore, environment: string) => {
   const record = store.getEnvironment(environment);
@@ -349,15 +442,22 @@ export const changeEnvironment = (
 
     const before = fieldValue(known.settings, change.field);
 
-    if (sameJson(before, change.value)) {
+    // An Approval asked for before the sizes were renamed may name an old one (`currentFieldValue`).
+    if (sameJson(before, currentFieldValue(change.field, change.value))) {
       return { status: "unchanged", environment: known.record, value: before };
     }
 
-    if (expected !== undefined && !sameJson(before, expected.value)) {
+    if (
+      expected !== undefined &&
+      !sameJson(before, currentFieldValue(change.field, expected.value))
+    ) {
       return { status: "changed-since", current: before };
     }
 
-    const saved = writeEnvironmentSettings(overridesWith(known.settings, change));
+    const saved = writeEnvironmentSettings(
+      overridesWith(known.settings, change),
+      everyVariablesOf(store),
+    );
 
     if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
 
@@ -388,6 +488,108 @@ export const changeEnvironment = (
   });
 
 /**
+ * Apply the agent's `change` of one variable kept for every Environment as the owner's save does
+ * (`writeEveryEnvironment`: the same rules, and no Environment may be left with too many variables), and record it as
+ * an Agent change by `author` under the scope `*`. A variable that already has the value records nothing.
+ */
+export const changeEveryEnvironment = (
+  storage: RegistryStorage,
+  store: RegistryStore,
+  changes: AgentChanges,
+  { change, author }: { readonly change: ContainerFieldChange; readonly author: AgentChangeAuthor },
+  now: number,
+): EveryEnvironmentChange =>
+  storage.transactionSync((): EveryEnvironmentChange => {
+    const name = fieldVariable(change.field);
+
+    if (name === null) {
+      return {
+        status: "rejected",
+        message: `${change.field}: only variables are kept for every Environment`,
+      };
+    }
+
+    const previous = everyVariablesOf(store);
+    const before = previous[name] ?? null;
+
+    if (sameJson(before, change.value)) return { status: "unchanged", value: before };
+
+    const saved = writeEveryEnvironment(
+      store,
+      { variables: withVariable(previous, name, change.value) },
+      now,
+    );
+
+    if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure };
+
+    const variables = saved.success.settings.variables;
+
+    const recorded = changes.record({
+      scope: EVERY_ENVIRONMENT_SCOPE,
+      at: now,
+      actor: "agent",
+      session: author.session,
+      conversation: author.conversation,
+      tool: author.tool,
+      reason: author.reason,
+      field: change.field,
+      before,
+      after: variables[name] ?? null,
+      reverts: null,
+      approved: author.approved,
+    });
+
+    return { status: "changed", change: recorded, name, previous, variables };
+  });
+
+/** What an owner's revert of `change` says it undid. */
+const revertReason = (change: AgentChange): string =>
+  `Reverted change ${change.id}${Predicate.isNotNull(change.tool) ? ` (${change.tool})` : ""}`;
+
+/**
+ * The owner's revert of Agent change `change` of the variable `name` kept for every Environment: its `before` value
+ * written back, if the variable still has the change's `after` value.
+ */
+const revertEveryVariable = (
+  store: RegistryStore,
+  changes: AgentChanges,
+  change: AgentChange,
+  name: string,
+  now: number,
+): AgentChangeRevert => {
+  const variables = everyVariablesOf(store);
+  const value = variables[name] ?? null;
+
+  if (!sameJson(value, change.after)) {
+    return { status: "changed-since", field: change.field, current: value };
+  }
+
+  const saved = writeEveryEnvironment(
+    store,
+    { variables: withVariable(variables, name, change.before) },
+    now,
+  );
+
+  if (Result.isFailure(saved)) return { status: "refused", message: saved.failure };
+
+  const recorded = changes.record({
+    scope: EVERY_ENVIRONMENT_SCOPE,
+    at: now,
+    actor: "owner",
+    session: null,
+    conversation: null,
+    tool: null,
+    reason: revertReason(change),
+    field: change.field,
+    before: value,
+    after: saved.success.settings.variables[name] ?? null,
+    reverts: change.id,
+  });
+
+  return { status: "reverted", change: recorded };
+};
+
+/**
  * The owner's revert of Agent change `id` of `environment`: its `before` value written back and recorded as the owner's
  * change. Refused, saying what the field is now, when it no longer has the change's `after` value; and for a revert,
  * which is not undone.
@@ -400,7 +602,7 @@ export const revertAgentChange = (
   now: number,
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {
-    // The Secrets kept for every Environment have a history of their own, in the scope `*`.
+    // The Secrets and variables kept for every Environment have a history of their own, in the scope `*`.
     const every = environment === EVERY_ENVIRONMENT_SCOPE;
     const known = every ? null : current(store, environment);
     const change = changes.get(environment, id);
@@ -430,6 +632,11 @@ export const revertAgentChange = (
       return revertSecretBuild(store, changes, environment, change, now);
     }
 
+    const variable = fieldVariable(change.field);
+
+    if (every && variable !== null)
+      return revertEveryVariable(store, changes, change, variable, now);
+
     if (known === null) return { status: "missing" };
 
     if (isLifecycleField(change.field)) {
@@ -448,6 +655,7 @@ export const revertAgentChange = (
 
     const saved = writeEnvironmentSettings(
       overridesWith(known.settings, { field: change.field, value: change.before }),
+      everyVariablesOf(store),
     );
 
     if (Result.isFailure(saved)) return { status: "refused", message: saved.failure };
@@ -461,7 +669,7 @@ export const revertAgentChange = (
       session: null,
       conversation: null,
       tool: null,
-      reason: `Reverted change ${change.id}${Predicate.isNotNull(change.tool) ? ` (${change.tool})` : ""}`,
+      reason: revertReason(change),
       field: change.field,
       before: value,
       after: fieldValue(saved.success.settings, change.field),

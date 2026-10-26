@@ -135,7 +135,7 @@ _Avoid_: Feedback, comment batch, code review (for the message)
 ## Environments, Repos and Workspaces
 
 **Environment**:
-What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Container settings, Setup and Start Scripts). Every Workspace is made from one.
+What the owner, or the agent for the owner, sets up for Sessions to work in, under a name of its choosing: its Repos (none or several) and their configuration (Toolchains, variables, Secrets, Container settings, Setup and Start Scripts). Every Workspace is made from one. Variables and Secrets can also be kept for every Environment; an Environment's own of the same name wins.
 _Avoid_: Project, template, Machine, sandbox
 
 **Repo**:
@@ -197,11 +197,11 @@ An interactive shell the owner runs on a Workspace's Container from a Session, i
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), the Session tree, a Terminal, a Live View, the diffs (the Diff pane), an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the Browser Pane, the diffs (the Diff pane), an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Session details**:
-A small panel over the top right of a Session's chat with what the owner follows of the Session while reading, one section each: for now the root agent's Todo List and the Session's subagents, each subagent opening the Subagents Pane at it. An icon button in the Session's header, always there, opens and closes it; with nothing to show it says so.
+A small panel over the top right of a Session's chat with what the owner follows of the Session while reading, one section each: for now the root agent's Todo List and the Session's subagents, each subagent opening its Subagent Pane. An icon button in the Session's header, always there, opens and closes it; with nothing to show it says so.
 _Avoid_: Activity card, Activity overlay, Session preview (a preview is a pull request's preview stage), popover, todo panel
 
 **Session layout**:
@@ -295,3 +295,11 @@ _Avoid_: Handoff (alone), takeover, live view (for the act)
 **Live View**:
 A Pane that shows an agent's browser tab, and the windows it opened, live and lets the owner use it, open while a Browser Handoff waits.
 _Avoid_: Viewer, screencast, hosted Live View (that is Browser Run's own page)
+
+**Browser Pane**:
+A Pane, one per Session, that shows the Session's browser for the owner to use at any time, in an Owner tab, with a URL bar, apart from any Browser Handoff. It shares the Live View's screen and input, and opens only when the owner opens it.
+_Avoid_: Browser (alone, for the Pane, in prose and code; its tab label is "Browser", as the Session tree Pane's is "Tree"), Live View (for this Pane or its connection)
+
+**Owner tab**:
+A tab of the Session's shared browser that the owner opened in the Browser Pane, apart from the conversations' tabs but sharing their cookies and logins. The owner may have several; the Browser Pane shows one of them. It lasts as long as the browser it is in, or until it is closed.
+_Avoid_: User tab, the owner's tab (for a conversation's tab the owner took over in a Browser Handoff)

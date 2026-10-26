@@ -5,9 +5,10 @@
 // with no atoms and no React (`session-layout-state.ts` keeps it).
 //
 // It holds the Pane area (the Panes open, the one shown, whether the area is hidden), whether the Session details are
-// open, which subagents are open in the Subagents Pane and in the transcript's cards, which of the transcript's
-// disclosures (tool cards, thinking, Skills, notices) are open, and the Session tree Pane's filter. Only the Sessions
-// shown last are kept (`MAX_LAYOUTS`): a Session not opened for that long starts afresh.
+// open, which of the transcript's subagent cards are open, which of the transcript's disclosures (tool cards,
+// thinking, Skills, notices) are open, and the Session tree Pane's filter. A subagent open in a Pane of its own is one
+// of the Panes. Only the Sessions shown last are kept (`MAX_LAYOUTS`): a Session not opened for that long starts
+// afresh.
 
 import * as Schema from "effect/Schema";
 import { NO_PANES, paneAreaOf, searchWithPaneArea, type PaneArea } from "./panes.ts";
@@ -18,8 +19,6 @@ export interface SessionLayout {
   readonly panes: PaneArea;
   /** Whether the Session details are open: the owner opens and closes them from the header. */
   readonly detailsOpen: boolean;
-  /** The conversations of the subagents open in the Subagents Pane. */
-  readonly openAgents: readonly number[];
   /** The conversations of the subagent cards open in the transcript. */
   readonly openCards: readonly number[];
   /** The transcript's disclosures open (`disclosureKey`). */
@@ -31,7 +30,6 @@ export interface SessionLayout {
 export const DEFAULT_LAYOUT: SessionLayout = {
   panes: NO_PANES,
   detailsOpen: false,
-  openAgents: [],
   openCards: [],
   openDisclosures: [],
   treeFilter: "default",
@@ -45,7 +43,8 @@ const MAX_OPEN = 100;
 
 /**
  * A layout as it is stored. Every field may be missing, so a layout stored before a field was added reads with its
- * default; the Pane keys are checked against the Pane types when read (`layoutOf`), as a URL's are.
+ * default; the Pane keys are checked against the Pane types when read (`layoutOf`), as a URL's are. A field it no longer
+ * has (`openAgents`, the rows once open in the Subagents Pane) is dropped when read, and so when written again.
  */
 const StoredLayout = Schema.Struct({
   panes: Schema.optional(
@@ -56,7 +55,6 @@ const StoredLayout = Schema.Struct({
     }),
   ),
   detailsOpen: Schema.optional(Schema.Boolean),
-  openAgents: Schema.Array(Schema.Finite).pipe(Schema.optional),
   openCards: Schema.Array(Schema.Finite).pipe(Schema.optional),
   openDisclosures: Schema.Array(Schema.String).pipe(Schema.optional),
   treeFilter: Schema.optional(Schema.Literals(TREE_FILTER_VALUES)),
@@ -91,7 +89,6 @@ export const layoutOf = (stored: StoredLayouts, sessionId: string): SessionLayou
   return {
     panes: checkedPanes(found.panes),
     detailsOpen: found.detailsOpen ?? false,
-    openAgents: found.openAgents ?? [],
     openCards: found.openCards ?? [],
     openDisclosures: found.openDisclosures ?? [],
     treeFilter: found.treeFilter ?? "default",

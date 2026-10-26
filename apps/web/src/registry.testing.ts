@@ -36,6 +36,8 @@ const UNEXPECTED: Handlers = {
   removeRepo: unexpected("removeRepo"),
   getEnvironmentSettings: unexpected("getEnvironmentSettings"),
   updateEnvironmentSettings: unexpected("updateEnvironmentSettings"),
+  getEveryEnvironmentSettings: unexpected("getEveryEnvironmentSettings"),
+  updateEveryEnvironmentSettings: unexpected("updateEveryEnvironmentSettings"),
   listAgentChanges: unexpected("listAgentChanges"),
   revertAgentChange: unexpected("revertAgentChange"),
   listEnvironmentSecrets: unexpected("listEnvironmentSecrets"),

@@ -4,7 +4,13 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT, MAX_ENVIRONMENT_SECRETS, SPARE_BRANCH } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
+import {
+  EVERY_ENVIRONMENT_DOCUMENT,
+  readEveryEnvironment,
+  writeEveryEnvironment,
+} from "./every-environment.ts";
 import { MIGRATIONS, migrate, openRegistryStore, type StoredWorkspaceChoice } from "./store.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 
@@ -168,6 +174,29 @@ describe("the Registry store", () => {
     await evictDurableObject(registry);
 
     expect(await registry.getDocument("settings")).toBe('{"a":1}');
+  });
+
+  it("keeps the variables for every Environment in a document, across an eviction, with no migration of its own", async () => {
+    const registry = fresh();
+
+    await runInDurableObject(registry, (_: TestRegistry, state) => {
+      const store = openRegistryStore(state.storage);
+
+      Result.getOrThrow(writeEveryEnvironment(store, { variables: { EMAIL: "me@test" } }, 1_000));
+    });
+    await evictDurableObject(registry);
+
+    await runInDurableObject(registry, (_: TestRegistry, state) => {
+      const store = openRegistryStore(state.storage);
+
+      expect(readEveryEnvironment(store)).toEqual({
+        settings: { variables: { EMAIL: "me@test" } },
+        overrides: { variables: { EMAIL: "me@test" } },
+      });
+      expect(store.getDocument(EVERY_ENVIRONMENT_DOCUMENT)).toBe(
+        '{"variables":{"EMAIL":"me@test"}}',
+      );
+    });
   });
 
   it("keeps a Web Push subscription by endpoint, replacing it when its keys change", async () => {

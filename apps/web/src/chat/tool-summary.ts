@@ -71,12 +71,15 @@ const resize = (args: Args): Option.Option<string> =>
     }),
   );
 
-/** The variable an `environment_*` call changes, in the Environment its `id` names when it names one. */
+/**
+ * The variable or Secret an `environment_*` call changes, in the Environment its `id` names when it names one, or for
+ * every Environment when that is `*`.
+ */
 const variable = (args: Args): Option.Option<string> =>
   Option.map(text(args, "name"), (name) =>
     Option.match(text(args, "id"), {
       onNone: () => name,
-      onSome: (id) => `${name} in ${id}`,
+      onSome: (id) => (id === "*" ? `${name} for every environment` : `${name} in ${id}`),
     }),
   );
 

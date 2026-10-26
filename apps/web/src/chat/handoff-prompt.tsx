@@ -6,7 +6,7 @@ import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { ExternalLink, Hand, MonitorPlay } from "lucide-react";
 import { Button } from "../components/ui/button.tsx";
-import { mintLiveViewAtom } from "../live-view/atoms.ts";
+import { mintLiveViewAtom } from "../live-view/handoff-atoms.ts";
 import { timeOfDay } from "../lib/time.ts";
 import { hostedLiveViewUrl } from "../live-view/hosted.ts";
 import { panesAtom } from "../panes-state.ts";

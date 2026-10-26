@@ -50,8 +50,8 @@ describe("toolSummary", () => {
       "echo hung (fresh)",
     );
     expect(
-      toolSummary("container_resize", { size: "custom-2", reason: "tsc ran out\nof memory" }),
-    ).toBe("tsc ran out (to custom-2)");
+      toolSummary("container_resize", { size: "cpu-2", reason: "tsc ran out\nof memory" }),
+    ).toBe("tsc ran out (to cpu-2)");
     // A call made before the rename, in a transcript.
     expect(toolSummary("restart_container", { reason: "echo hung" })).toBe("echo hung");
     expect(toolSummary("environment_get", { id: "0000abcd" })).toBe("0000abcd");
@@ -64,10 +64,13 @@ describe("toolSummary", () => {
     );
     expect(
       toolSummary("environment_secret_build", { id: "*", name: "NPM_TOKEN", build: true }),
-    ).toBe("NPM_TOKEN in *");
+    ).toBe("NPM_TOKEN for every environment");
     expect(
-      toolSummary("environment_container_resize", { size: "custom-2", reason: "needs 6 GiB" }),
-    ).toBe("needs 6 GiB (to custom-2)");
+      toolSummary("environment_variable_set", { id: "*", name: "CLOUDFLARE_EMAIL", value: "x" }),
+    ).toBe("CLOUDFLARE_EMAIL for every environment");
+    expect(
+      toolSummary("environment_container_resize", { size: "cpu-2", reason: "needs 6 GiB" }),
+    ).toBe("needs 6 GiB (to cpu-2)");
     expect(
       toolSummary("environment_idle_time_set", { id: "0000abcd", minutes: 10, reason: "warm" }),
     ).toBe("0000abcd: warm (10 min)");
@@ -128,11 +131,11 @@ describe("toolSummary", () => {
       "limit 5",
     );
     expect(
-      toolSummary("environment_container_size_limit_set", { id: "0000abcd", size: "custom-3" }),
-    ).toBe("0000abcd: limit custom-3");
+      toolSummary("environment_container_size_limit_set", { id: "0000abcd", size: "cpu-3" }),
+    ).toBe("0000abcd: limit cpu-3");
     expect(toolSummary("environment_delete", { id: "0000abcd", reason: "r" })).toBe("0000abcd");
     expect(toolSummary("environment_secret_delete", { id: "*", name: "NPM_TOKEN" })).toBe(
-      "NPM_TOKEN in *",
+      "NPM_TOKEN for every environment",
     );
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");

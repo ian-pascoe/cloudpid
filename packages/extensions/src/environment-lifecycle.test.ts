@@ -48,6 +48,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
+    every: Effect.succeed({ variables: {}, secrets: [] }),
     change: () => Effect.die("not used here"),
   };
 
@@ -639,7 +640,7 @@ describe("environment_rebuild with proposed changes (a Test Build)", () => {
   it("does not take what a Build does not use: the Start Script, the size, the idle time", async () => {
     const { tool, tests } = await setUp();
 
-    for (const proposed of [{ start_script: "x" }, { size: "custom-2" }, { idle_minutes: 5 }]) {
+    for (const proposed of [{ start_script: "x" }, { size: "cpu-2" }, { idle_minutes: 5 }]) {
       expect((await run(tool("environment_rebuild"), { reason: "r", proposed })).isError).toBe(
         true,
       );

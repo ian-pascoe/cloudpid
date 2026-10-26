@@ -11,7 +11,13 @@ import {
 } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
 import type { EnvironmentBuild } from "./build-record.ts";
-import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
+import {
+  ContainerLaunch,
+  containerIgnore,
+  currentLaunchRecord,
+  type LaunchRecord,
+  type StoredLaunchRecord,
+} from "./launch.ts";
 
 type Spec = Parameters<IWorkspaceContainerAPI["start"]>[0];
 
@@ -215,16 +221,16 @@ describe("a launch", () => {
     await container.start(SPEC);
 
     expect(state.starts[0]?.instance).toEqual({ vcpu: 1, memoryMib: 3072, diskMb: 12_000 });
-    expect(state.record?.instance).toBe("custom-1");
+    expect(state.record?.instance).toBe("cpu-1");
   });
 
-  it("keeps a Workspace that saved custom-2, the former default, on it, as resources", async () => {
-    const { state, container } = open({ instance: "custom-2" });
+  it("keeps a Workspace that saved cpu-2, the former default, on it, as resources", async () => {
+    const { state, container } = open({ instance: "cpu-2" });
 
     await container.start(SPEC);
 
     expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
-    expect(state.record?.instance).toBe("custom-2");
+    expect(state.record?.instance).toBe("cpu-2");
   });
 
   it("keeps a Workspace that saved standard-2 on it, as the named type", async () => {
@@ -258,6 +264,50 @@ describe("a launch", () => {
     ]);
     expect(state.restarts[0]?.instance).toBe("standard-2");
     expect(state.record?.instance).toBe("standard-2");
+  });
+
+  it("reads a launch record kept before the sizes were renamed under the new name", () => {
+    const stored: StoredLaunchRecord = {
+      instance: "custom-2",
+      idleMinutes: 2,
+      needsSnapshot: false,
+      restoredFrom: undefined,
+      image: "img-1",
+      launchedAt: 1,
+    };
+
+    expect(currentLaunchRecord(stored)).toEqual({ ...stored, instance: "cpu-2" });
+    expect(currentLaunchRecord({ ...stored, instance: "mem-8" })?.instance).toBe("mem-8");
+    expect(currentLaunchRecord(undefined)).toBeUndefined();
+  });
+
+  it("adopts a Container launched on custom-2 before the rename with cpu-2's resources, so it is not relaunched", async () => {
+    const { state, container } = open({ instance: "cpu-2" });
+
+    state.record = currentLaunchRecord({
+      instance: "custom-2",
+      idleMinutes: 2,
+      needsSnapshot: false,
+      restoredFrom: undefined,
+      image: "img-1",
+      ignore: [...BUILT_IN],
+      launchedAt: 1,
+    });
+    state.running = true;
+    state.outcome = "adopted";
+    await container.start(specFor(BUILT_IN));
+
+    expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
+    expect(state.record?.instance).toBe("cpu-2");
+  });
+
+  it("starts on a mem- size as its resources", async () => {
+    const { state, container } = open({ instance: "mem-12", maxInstance: "mem-12" });
+
+    await container.start(SPEC);
+
+    expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 12_288, diskMb: 12_000 });
+    expect(state.record?.instance).toBe("mem-12");
   });
 
   it("restores a snapshot taken on standard-2 on the new default size", async () => {
@@ -362,31 +412,31 @@ describe("a launch", () => {
 
 describe("a launch after the agent's resize", () => {
   it("starts on the size the resize recorded instead of the settings', and records it", async () => {
-    const { state, container } = open({ instance: "custom-1" });
+    const { state, container } = open({ instance: "cpu-1" });
 
-    state.resized = "custom-2";
+    state.resized = "cpu-2";
     state.restorable = { id: "snap-resize", image: "img-1" };
     await container.start(SPEC);
 
     expect(state.starts[0]?.instance).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
     expect(state.starts[0]?.containerSnapshot).toEqual({ id: "snap-resize" });
-    expect(state.record?.instance).toBe("custom-2");
+    expect(state.record?.instance).toBe("cpu-2");
   });
 
   it("keeps the size the running Container launched with on a reconnect, whatever was recorded since", async () => {
-    const { state, container } = open({ instance: "custom-1" });
+    const { state, container } = open({ instance: "cpu-1" });
 
     await container.start(SPEC);
     state.running = true;
     state.outcome = "adopted";
-    state.resized = "custom-2";
+    state.resized = "cpu-2";
     await container.start(SPEC);
 
     expect(state.starts[1]?.instance).toEqual({ vcpu: 1, memoryMib: 3072, diskMb: 12_000 });
   });
 
   it("uses the recorded size for computer's restart of a launch with no record", async () => {
-    const { state, container } = open({ instance: "custom-1" });
+    const { state, container } = open({ instance: "cpu-1" });
 
     state.resized = "standard-3";
     state.settings = { ...state.settings, maxInstance: "standard-4" };
@@ -396,12 +446,12 @@ describe("a launch after the agent's resize", () => {
   });
 
   it("ignores a recorded size above the size limit the settings have now", async () => {
-    const { state, container } = open({ instance: "custom-1", maxInstance: "custom-1" });
+    const { state, container } = open({ instance: "cpu-1", maxInstance: "cpu-1" });
 
-    state.resized = "custom-2";
+    state.resized = "cpu-2";
     await container.start(SPEC);
 
-    expect(state.record?.instance).toBe("custom-1");
+    expect(state.record?.instance).toBe("cpu-1");
   });
 });
 

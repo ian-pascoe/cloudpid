@@ -1,5 +1,6 @@
 // A subagent's live thread: its conversation, watched on the Session's socket, with a composer to steer or queue input
 // and to stop it. It is a nested assistant-ui runtime of its own, so it has its own messages, running state and queue.
+// A transcript's card shows it in a box of its own height; a Subagent Pane, filling the Pane (`fill`).
 
 import {
   AssistantRuntimeProvider,
@@ -9,6 +10,7 @@ import {
 } from "@assistant-ui/react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useRef, type ReactNode } from "react";
+import { cn } from "../lib/utils.ts";
 import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import {
   abortAtom,
@@ -33,12 +35,15 @@ const LiveChildThread = ({
   conversationId,
   thread,
   messages,
+  fill,
 }: {
   sessionId: string;
   conversationId: number;
   thread: ThreadState;
   /** The transcript's messages, rendered inside this thread's own runtime. */
   messages: ReactNode;
+  /** Whether it takes the height of its column (a Subagent Pane) rather than a box of its own (a card). */
+  fill: boolean;
 }) => {
   const submit = useAtomSet(submitAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));
@@ -78,8 +83,16 @@ const LiveChildThread = ({
       {/* Its disclosures are kept apart from the root thread's, whose messages' IDs it may share. */}
       <ThreadConversation value={conversationId}>
         <AssistantRuntimeProvider runtime={runtime}>
-          <ThreadPrimitive.Root ref={dropZone} className="flex flex-col">
-            <ThreadPrimitive.Viewport className="max-h-96 min-h-16 overflow-y-auto">
+          <ThreadPrimitive.Root
+            ref={dropZone}
+            className={cn("flex flex-col", fill && "min-h-0 flex-1")}
+          >
+            <ThreadPrimitive.Viewport
+              className={cn(
+                "min-h-16 overflow-y-auto",
+                fill ? "flex-1 overscroll-y-contain" : "max-h-96",
+              )}
+            >
               <div className="flex flex-col gap-4 py-2">
                 <ThreadPrimitive.Empty>
                   <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
@@ -117,13 +130,18 @@ const LiveChildThread = ({
   );
 };
 
-/** The live thread of the subagent that runs conversation `conversationId`; watched while this is shown. */
+/**
+ * The live thread of the subagent that runs conversation `conversationId`; watched while this is shown. With `fill`, it
+ * takes the height of the column it is in, its composer at the bottom.
+ */
 export const ChildThread = ({
   conversationId,
   messages,
+  fill = false,
 }: {
   conversationId: number;
   messages: ReactNode;
+  fill?: boolean;
 }) => {
   const sessionId = useShownSessionId();
   // Reading the thread watches it on the Session's socket, for as long as this is shown.
@@ -147,6 +165,7 @@ export const ChildThread = ({
       conversationId={conversationId}
       thread={thread}
       messages={messages}
+      fill={fill}
     />
   );
 };

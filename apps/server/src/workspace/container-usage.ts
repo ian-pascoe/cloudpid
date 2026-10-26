@@ -15,18 +15,22 @@ import {
   addUsageSums,
   type ContainerUsageSums,
   containerRates,
+  currentInstanceName,
   INSTANCE_RESOURCES,
   INSTANCE_TYPES,
   type InstanceType,
   NO_USAGE_SUMS,
+  RENAMED_INSTANCE_TYPES,
+  type StoredInstanceType,
   usageSumsCost,
 } from "@cloudpid/config";
 import type { ContainerUsage } from "@cloudpid/protocol";
+import * as Record from "effect/Record";
 import type { AnalyticsWindow, ContainerAnalytics } from "./container-analytics.ts";
 
 /** The run of the Container that runs now, until it is closed. */
-type OpenRun = {
-  readonly instance: InstanceType;
+type OpenRun<Size = InstanceType> = {
+  readonly instance: Size;
   /** The launch record's `launchedAt`, which tells this launch from the next. */
   readonly launchedAt: number;
   /** Epoch milliseconds it is counted from. */
@@ -36,7 +40,11 @@ type OpenRun = {
 };
 
 /** Epoch milliseconds, `end` excluded, on a Container of size `instance`. */
-type Span = { readonly instance: InstanceType; readonly start: number; readonly end: number };
+type Span<Size = InstanceType> = {
+  readonly instance: Size;
+  readonly start: number;
+  readonly end: number;
+};
 
 type Reported = {
   /** What the analytics reported from the ledger's start to `settledThrough`, asked once. */
@@ -46,24 +54,27 @@ type Reported = {
   readonly fresh?: { readonly sums: ContainerUsageSums; readonly through: number } | undefined;
 };
 
-export type ContainerUsageRecord = {
+export type ContainerUsageRecord<Size extends string = InstanceType> = {
   /** Milliseconds of closed runs, per size, since the ledger began. */
-  readonly runMs: Partial<Record<InstanceType, number>>;
+  readonly runMs: Partial<Record<Size, number>>;
   /** Milliseconds commands ran on closed runs, per size. */
-  readonly busyMs: Partial<Record<InstanceType, number>>;
+  readonly busyMs: Partial<Record<Size, number>>;
   /** Closed runs and busy spans the estimate may still need. */
-  readonly runs: ReadonlyArray<Span>;
-  readonly busy: ReadonlyArray<Span>;
-  readonly open?: OpenRun | undefined;
+  readonly runs: ReadonlyArray<Span<Size>>;
+  readonly busy: ReadonlyArray<Span<Size>>;
+  readonly open?: OpenRun<Size> | undefined;
   /** The size of the last run, once one ended and none runs. */
-  readonly last?: InstanceType | undefined;
+  readonly last?: Size | undefined;
   /** When the first run the ledger saw started: where the analytics are asked from. */
   readonly since?: number | undefined;
   readonly reported?: Reported | undefined;
 };
 
+/** The record as storage holds it: one kept before the sizes were renamed may name an old one (`custom-2`). */
+export type StoredUsageRecord = ContainerUsageRecord<StoredInstanceType>;
+
 export type ContainerUsageDeps = {
-  readonly load: () => ContainerUsageRecord | undefined;
+  readonly load: () => StoredUsageRecord | undefined;
   readonly save: (record: ContainerUsageRecord) => void;
   /** Whether a Container runs now. */
   readonly running: () => boolean;
@@ -123,6 +134,54 @@ const plus = (
   ...totals,
   [instance]: (totals[instance] ?? 0) + ms,
 });
+
+/** Every name a size may be stored under: those of today, and the old names of renamed ones. */
+const STORED_SIZES: ReadonlyArray<StoredInstanceType> = [
+  ...INSTANCE_TYPES,
+  ...Record.keys(RENAMED_INSTANCE_TYPES),
+];
+
+/** `totals` with each size under the name it has now, an old name's added to its new one's. */
+const currentTotals = (
+  totals: Partial<Record<StoredInstanceType, number>>,
+): Partial<Record<InstanceType, number>> => {
+  let current: Partial<Record<InstanceType, number>> = {};
+
+  for (const size of STORED_SIZES) {
+    const ms = totals[size];
+
+    if (ms !== undefined) current = plus(current, currentInstanceName(size), ms);
+  }
+
+  return current;
+};
+
+const currentSpan = (span: Span<StoredInstanceType>): Span => ({
+  ...span,
+  instance: currentInstanceName(span.instance),
+});
+
+/**
+ * The record `stored`, with every size under the name it has now (the resources are the same), so the runs of a size
+ * since renamed are priced, and their time counted, as before.
+ */
+export const currentUsageRecord = (
+  stored: StoredUsageRecord | undefined,
+): ContainerUsageRecord | undefined =>
+  stored === undefined
+    ? undefined
+    : {
+        ...stored,
+        runMs: currentTotals(stored.runMs),
+        busyMs: currentTotals(stored.busyMs),
+        runs: stored.runs.map(currentSpan),
+        busy: stored.busy.map(currentSpan),
+        open:
+          stored.open === undefined
+            ? undefined
+            : { ...stored.open, instance: currentInstanceName(stored.open.instance) },
+        last: stored.last === undefined ? undefined : currentInstanceName(stored.last),
+      };
 
 export class ContainerUsageLedger {
   readonly #deps: ContainerUsageDeps;
@@ -360,7 +419,12 @@ export class ContainerUsageLedger {
   }
 
   #current(): ContainerUsageRecord {
-    this.#record ??= this.#deps.load() ?? { runMs: {}, busyMs: {}, runs: [], busy: [] };
+    this.#record ??= currentUsageRecord(this.#deps.load()) ?? {
+      runMs: {},
+      busyMs: {},
+      runs: [],
+      busy: [],
+    };
 
     return this.#record;
   }
@@ -464,7 +528,7 @@ export class ContainerUsageLedger {
       ...closed,
       since: closed.since ?? startedAt,
       open: {
-        instance: launch?.instance ?? closed.last ?? "custom-2",
+        instance: launch?.instance ?? closed.last ?? "cpu-2",
         launchedAt,
         startedAt,
         seenAt: now,

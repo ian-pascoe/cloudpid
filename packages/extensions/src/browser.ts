@@ -33,6 +33,8 @@ export {
   type LiveViewTarget,
   type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
+  OWNER_TAB_GONE,
+  type OwnerTabLinks,
 } from "./browser/host.ts";
 
 export {
@@ -43,6 +45,14 @@ export {
   type BrowserStorage,
   makeBrowserSession,
 } from "./browser/session.ts";
+
+export {
+  BrowserPane,
+  browserPaneLayer,
+  type BrowserPaneOptions,
+  type BrowserPaneService,
+  makeBrowserPane,
+} from "./browser/pane.ts";
 
 export {
   BrowserHandoffs,

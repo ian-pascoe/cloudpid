@@ -62,6 +62,18 @@ describe("the browser Worker", () => {
     expect(String(failure)).toContain("the handoff is over");
   });
 
+  it("says the Owner tab is gone over RPC, starting no browser, when the Browser Pane asks again and the owner has none", async () => {
+    // Starting a browser would reach the binding, which fails with a 503 here: this answer is from the stored records.
+    const failure = await env.BROWSER_HOST.getByName("no-owner-tab")
+      .ownerTabView(false)
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+
+    expect(String(failure)).toContain("the Owner tab is gone");
+  });
+
   it("answers an HTTP request with 404", async () => {
     const response = await SELF.fetch("https://browser.example/");
 

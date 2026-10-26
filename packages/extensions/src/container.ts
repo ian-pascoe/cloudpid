@@ -162,6 +162,7 @@ const resizeDescription = Arr.join(
   [
     "Restart this Workspace's container (where `bash` runs with the `container` backend) at another size. Use it when commands need more memory than the container has (the memory guard stopped a process, and running less at once is not enough), or to go back to a smaller size once that work is done.",
     `Sizes, by memory, then vCPU:\n${SIZE_LINES}`,
+    "cpu-N sizes have the most vCPU for their memory; mem-N sizes (N GiB) have more memory on fewer vCPU, for work that needs memory more than cores, such as a single-threaded tsc or a tool that starts a worker per core. CPU is billed only while busy, so fewer vCPU do not make a size cheaper to keep running.",
     "The Environment's size limit bounds the size; a size above it is refused (only the owner can raise the limit).",
     "A running container is snapshotted and stopped: every command running there ends, other Sessions' in this Workspace too, and so do the services its Start Scripts started. The files in /workspace stay. The next container command starts a new container on the new size from that snapshot, so dependency directories, build output and caches come back, and the Start Scripts run again. With no container running, the size is only recorded for the next one.",
     "The size lasts until the container is stopped for being idle: the one after that has the Environment's own size again. `container_restart` keeps it. Resizing to the Environment's own size goes back to it at once.",

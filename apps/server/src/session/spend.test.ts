@@ -142,7 +142,7 @@ describe("usageMessage", () => {
 
   it("carries the Containers' usage when known, apart from the models' cost", () => {
     const container = {
-      instance: "custom-2",
+      instance: "cpu-2",
       runSeconds: 60,
       cpuSeconds: 5,
       egressBytes: 0,

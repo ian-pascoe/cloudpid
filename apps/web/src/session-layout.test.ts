@@ -23,9 +23,8 @@ describe("a Session's layout on this device", () => {
 
   it("reads back as it was kept", () => {
     const kept = layout({
-      panes: { open: ["subagents", "tree"], shown: "tree", hidden: true },
+      panes: { open: ["subagents", "subagent:3", "tree"], shown: "tree", hidden: true },
       detailsOpen: true,
-      openAgents: [3],
       openCards: [3, 4],
       openDisclosures: ["root/tool:call-1"],
       treeFilter: "user-only",
@@ -46,6 +45,17 @@ describe("a Session's layout on this device", () => {
         "a",
       ),
     ).toEqual(layout({ panes: { open: ["subagents"], shown: "subagents", hidden: false } }));
+  });
+
+  it("reads a layout kept with rows open in the Subagents Pane, which open no more, and drops them", () => {
+    const stored = [
+      { sessionId: "a", layout: { detailsOpen: true, openAgents: [3], openCards: [4] } },
+    ];
+
+    const read = layoutOf(stored, "a");
+
+    expect(read).toEqual(layout({ detailsOpen: true, openCards: [4] }));
+    expect(withLayout(stored, "a", read)[0]?.layout).not.toHaveProperty("openAgents");
   });
 
   it("keeps the Session shown last first, and only the last ones shown", () => {
