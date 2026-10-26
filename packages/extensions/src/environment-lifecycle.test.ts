@@ -1,7 +1,7 @@
 // The `environment` extension's tools for an Environment's record (docs/spec.md → Agent changes): making an Environment,
 // renaming it, adding and removing Repos, asking for a Build. Over fake Environments that apply each as the Registry does.
 // @effect-diagnostics asyncFunction:off
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
   ROOT_CONVERSATION_ID,
   type ToolExecutionApi,
@@ -11,7 +11,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AgentChangeLog,
   DeployCredentials,
@@ -74,14 +74,29 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
   return { tool, logged, ...lifecycle };
 };
 
-// SAFETY: the tools read only the calling conversation from the invocation's API.
-const api = { conversationId: ROOT_CONVERSATION_ID } as ToolExecutionApi;
+/** A call's API: its conversation, its task, and its memo, which a rerun of the call (the same `memos`) finds again. */
+const callApi = (task = 1, memos = new Map<string, unknown>()): ToolExecutionApi =>
+  // SAFETY: the tools read only the calling conversation, the call's task and its memo from the invocation's API.
+  ({
+    conversationId: ROOT_CONVERSATION_ID,
+    taskId: task,
+    memo: async (name: string, ...rest: unknown[]) => {
+      if (rest.length === 2 && !memos.has(name)) memos.set(name, rest[0]);
+
+      return memos.get(name);
+    },
+  }) as ToolExecutionApi;
 
 type Result = Awaited<ReturnType<ToolRegistration["execute"]>>;
 
-const run = (tool: ToolRegistration, args: Readonly<Record<string, unknown>>): Promise<Result> =>
+const run = (
+  tool: ToolRegistration,
+  args: Readonly<Record<string, unknown>>,
+  api: ToolExecutionApi = callApi(),
+  context = BACKGROUND_CONTEXT,
+): Promise<Result> =>
   // SAFETY: the arguments are the tool's JSON parameters.
-  tool.execute(args as never, api, BACKGROUND_CONTEXT);
+  tool.execute(args as never, api, context);
 
 const text = (result: Result): string =>
   Arr.join(
@@ -98,7 +113,7 @@ const failure = async (call: Promise<Result>) => {
 };
 
 describe("the lifecycle tools", () => {
-  it("are five, each run alone and kept from a rerun after an eviction", async () => {
+  it("are five, each run alone; all but environment_rebuild are kept from a rerun after an eviction", async () => {
     const { tool } = await setUp();
 
     for (const name of [
@@ -106,11 +121,14 @@ describe("the lifecycle tools", () => {
       "environment_rename",
       "environment_repo_add",
       "environment_repo_remove",
-      "environment_rebuild",
     ]) {
       expect(tool(name).replay).toBe("unsafe");
       expect(tool(name).executionMode).toBe("sequential");
     }
+
+    // A Test Build's wait is found again by the rerun, and a Build of the saved settings is asked for once.
+    expect(tool("environment_rebuild").replay).toBe("safe");
+    expect(tool("environment_rebuild").executionMode).toBe("sequential");
   });
 
   it("are the root conversation's only", () => {
@@ -379,5 +397,264 @@ describe("environment_rebuild", () => {
       await failure(run(tool("environment_rebuild"), { id: "0000abcd", reason: "r" })),
     ).toContain("there is nothing to build");
     expect(logged).toEqual([]);
+  });
+
+  it("asks for nothing again when the call is run again after an eviction", async () => {
+    const { tool, calls, logged } = await setUp();
+    const api = callApi(4);
+
+    await run(tool("environment_rebuild"), { reason: "The base image moved" }, api);
+
+    const rerun = await run(tool("environment_rebuild"), { reason: "The base image moved" }, api);
+
+    expect(text(rerun)).toContain("asks for nothing again");
+    expect(Arr.filter(calls, (call) => call.op === "rebuild")).toHaveLength(1);
+    expect(logged).toHaveLength(1);
+  });
+});
+
+describe("environment_rebuild with proposed changes (a Test Build)", () => {
+  it("makes a Test Build of them, waits for it, and says how long it took and which tools save them, recording nothing", async () => {
+    const { tool, testBuilds, tests, calls, logged } = await setUp();
+
+    tests.rounds = [
+      { status: "building", startedAt: 1_000 },
+      { status: "building", startedAt: 1_000 },
+      { status: "succeeded", startedAt: 1_000, finishedAt: 151_000 },
+    ];
+
+    const result = await run(
+      tool("environment_rebuild"),
+      {
+        reason: "Check the Postgres client installs",
+        proposed: { setup_script: "apt-get install -y postgresql-client", variables: { CI: "1" } },
+      },
+      callApi(7),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(text(result)).toContain(
+      'The Test Build of Environment "Default" (default) with the proposed variables, setup_script succeeded in 2 min 30 s',
+    );
+    expect(text(result)).toContain("Nothing was saved or recorded");
+    expect(text(result)).toContain("setup_script: environment_setup_script_set");
+    expect(text(result)).toContain(
+      "variables: environment_variable_set and environment_variable_unset",
+    );
+    expect(result.details).toEqual({
+      testBuild: {
+        environment: { id: "default", name: "Default" },
+        status: "succeeded",
+        tookMs: 150_000,
+        proposed: ["variables", "setup_script"],
+      },
+    });
+    expect(testBuilds.get("7")).toMatchObject({
+      environment: "default",
+      proposed: { setupScript: "apt-get install -y postgresql-client", variables: { CI: "1" } },
+    });
+    expect(tests.roundsAsked).toBe(3);
+    // Not an Agent change: nothing is recorded, nor in the Run's Notification.
+    expect(calls).toEqual([]);
+    expect(logged).toEqual([]);
+  });
+
+  it("fails with the failing step and the end of its output", async () => {
+    const { tool, tests } = await setUp();
+
+    tests.rounds = [
+      {
+        status: "failed",
+        startedAt: 1_000,
+        finishedAt: 41_000,
+        reason: "The environment's Setup Script failed (exit 1): apt: not found",
+      },
+    ];
+
+    const message = await failure(
+      run(tool("environment_rebuild"), { reason: "r", proposed: { setup_script: "exit 1" } }),
+    );
+
+    expect(message).toContain(
+      "with the proposed setup_script failed after 40 s: The environment's Setup Script failed (exit 1): apt: not found",
+    );
+    expect(message).toContain("Nothing was saved");
+  });
+
+  it("waits for the same Test Build when the call is run again after an eviction", async () => {
+    const { tool, tests } = await setUp();
+
+    tests.hold = true;
+
+    const controller = new AbortController();
+    const memos = new Map<string, unknown>();
+
+    // The first run is cut off while it waits (the eviction runs no finalizer: here, its wait is left hanging).
+    void run(
+      tool("environment_rebuild"),
+      { reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
+      callApi(9, memos),
+      withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+    ).catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(tests.starts).toBe(1);
+    });
+
+    tests.hold = false;
+
+    const rerun = await run(
+      tool("environment_rebuild"),
+      { reason: "r", proposed: { toolchains: '[tools]\nnode = "22"\n' } },
+      callApi(9, memos),
+    );
+
+    expect(text(rerun)).toContain(
+      'The Test Build of Environment "Default" (default) with the proposed toolchains succeeded',
+    );
+    expect(tests.starts).toBe(1);
+    expect(tests.cancelled).toEqual([]);
+    controller.abort();
+  });
+
+  it("says so when the rerun after an eviction finds its Test Build gone", async () => {
+    const { tool, tests } = await setUp();
+
+    tests.hold = true;
+
+    const controller = new AbortController();
+    const memos = new Map<string, unknown>();
+
+    void run(
+      tool("environment_rebuild"),
+      { reason: "r", proposed: { setup_script: "make" } },
+      callApi(9, memos),
+      withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+    ).catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(tests.starts).toBe(1);
+    });
+
+    tests.hold = false;
+    tests.rounds = [{ status: "gone" }];
+
+    const message = await failure(
+      run(
+        tool("environment_rebuild"),
+        { reason: "r", proposed: { setup_script: "make" } },
+        callApi(9, memos),
+      ),
+    );
+
+    expect(message).toContain(
+      'The Test Build of Environment "Default" (default) is no longer known',
+    );
+    expect(tests.starts).toBe(1);
+    controller.abort();
+  });
+
+  it("cancels the Test Build when the call is stopped", async () => {
+    const { tool, tests, testBuilds } = await setUp();
+
+    tests.hold = true;
+
+    const controller = new AbortController();
+
+    const stopped = run(
+      tool("environment_rebuild"),
+      { reason: "r", proposed: { setup_script: "sleep 600" } },
+      callApi(11),
+      withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+    ).catch(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(tests.starts).toBe(1);
+    });
+    controller.abort();
+    await stopped;
+
+    await vi.waitFor(() => {
+      expect(tests.cancelled).toEqual(["11"]);
+    });
+    expect(testBuilds.get("11")?.progress.status).toBe("cancelled");
+  });
+
+  it("is refused while another Test Build of the Environment runs, saying so", async () => {
+    const { tool, tests } = await setUp();
+
+    tests.hold = true;
+
+    const controller = new AbortController();
+
+    void run(
+      tool("environment_rebuild"),
+      { reason: "r", proposed: {} },
+      callApi(1),
+      withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+    ).catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(tests.starts).toBe(1);
+    });
+
+    expect(
+      await failure(run(tool("environment_rebuild"), { reason: "r", proposed: {} }, callApi(2))),
+    ).toBe(
+      "Nothing was built: Another Test Build of the environment is under way, and one runs at a time: wait for it to end, then ask again",
+    );
+    controller.abort();
+  });
+
+  it("refuses proposed values the saving tools refuse, saying why", async () => {
+    const { tool, tests } = await setUp();
+
+    expect(
+      await failure(
+        run(tool("environment_rebuild"), { reason: "r", proposed: { setup_script: "a\u0000b" } }),
+      ),
+    ).toContain("Nothing was built: The proposed settings are refused: setupScript");
+    expect(tests.starts).toBe(0);
+  });
+
+  it("refuses a proposal that holds a Secret's value or the GitHub token, building nothing", async () => {
+    const { tool, tests } = await setUp({ NPM_TOKEN: "npm_0123456789abcdef" });
+
+    expect(
+      await failure(
+        run(tool("environment_rebuild"), {
+          reason: "r",
+          proposed: { variables: { NPM_TOKEN: "npm_0123456789abcdef" } },
+        }),
+      ),
+    ).toContain("Nothing was built: the value of NPM_TOKEN holds the value of a Secret");
+    expect(
+      await failure(
+        run(tool("environment_rebuild"), {
+          reason: "r",
+          proposed: { setup_script: `git clone https://${GITHUB_TOKEN}@github.com/o/x` },
+        }),
+      ),
+    ).toContain("Nothing was built: the Setup Script holds");
+    expect(tests.starts).toBe(0);
+  });
+
+  it("does not take what a Build does not use: the Start Script, the size, the idle time", async () => {
+    const { tool, tests } = await setUp();
+
+    for (const proposed of [{ start_script: "x" }, { size: "custom-2" }, { idle_minutes: 5 }]) {
+      expect((await run(tool("environment_rebuild"), { reason: "r", proposed })).isError).toBe(
+        true,
+      );
+    }
+
+    expect(tests.starts).toBe(0);
+  });
+
+  it("refuses an unknown Environment, pointing to environment_list", async () => {
+    const { tool } = await setUp();
+
+    expect(
+      await failure(
+        run(tool("environment_rebuild"), { id: "0000beef", reason: "r", proposed: {} }),
+      ),
+    ).toContain("environment_list");
   });
 });

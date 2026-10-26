@@ -33,6 +33,8 @@ export type LifecycleHost = {
   startBuild(request: BuildRequest, secrets: ReadonlyArray<KeptSecret>): Promise<BuildState>;
   /** The Build object's Builds, and the image a launch would run now. */
   buildState(): Promise<BuildState>;
+  /** Stop Test Build `id` (a Test Build object's), if it is the one under way; answers the state then. */
+  cancelBuild(id: string): Promise<BuildState>;
   /**
    * Push the object's clones of `repos` to their remotes as `branch`, uncommitted Changes included, for a Fork or Clone
    * in a new Workspace on `branch` to start from. Rejects with why when any could not be; nothing is left pushed then.
@@ -56,6 +58,8 @@ export type WorkspaceObjects = {
   ) => Promise<BuildState>;
   /** Build object `name`'s Builds (`LifecycleHost.buildState`). */
   readonly buildState: (name: string) => Promise<BuildState>;
+  /** Stop Test Build `id` of Test Build object `name` (`testBuildObjectName`; `LifecycleHost.cancelBuild`). */
+  readonly cancelBuild: (name: string, id: string) => Promise<BuildState>;
   /** Carry object `name`'s clones of `repos` to a new Workspace on `branch` (`LifecycleHost.carry`). */
   readonly carry: (name: string, branch: string, repos: ReadonlyArray<string>) => Promise<void>;
 };
@@ -79,6 +83,7 @@ export const workspaceObjectsRemote = (namespace: {
     prepareSpare: (name, setup) => namespace.getByName(name).prepareSpare(setup),
     startBuild: (name, request, secrets) => namespace.getByName(name).startBuild(request, secrets),
     buildState: (name) => namespace.getByName(name).buildState(),
+    cancelBuild: (name, id) => namespace.getByName(name).cancelBuild(id),
     carry: (name, branch, repos) => namespace.getByName(name).carry(branch, repos),
   };
 };

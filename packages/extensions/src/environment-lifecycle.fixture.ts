@@ -13,7 +13,11 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type { ChangeAuthor } from "./environment.ts";
-import type { EnvironmentLifecycle } from "./environment-lifecycle.ts";
+import type {
+  EnvironmentLifecycle,
+  ProposedChanges,
+  TestBuildProgress,
+} from "./environment-lifecycle.ts";
 
 type Held = { id: string; name: string; repos: EnvironmentRepo[] };
 
@@ -24,6 +28,26 @@ export const unusedLifecycle: EnvironmentLifecycle = {
   addRepo: () => Effect.die("addRepo is not used here"),
   removeRepo: () => Effect.die("removeRepo is not used here"),
   rebuild: () => Effect.die("rebuild is not used here"),
+  startTestBuild: () => Effect.die("startTestBuild is not used here"),
+  testBuildRound: () => Effect.die("testBuildRound is not used here"),
+  cancelTestBuild: () => Effect.die("cancelTestBuild is not used here"),
+};
+
+/** How the fake's Test Builds go: what each round of waiting answers next (the last repeats), and what was asked. */
+export type FakeTestBuilds = {
+  rounds: TestBuildProgress[];
+  /** Rounds of waiting never end while this holds: the call waits until it is stopped. */
+  hold: boolean;
+  starts: number;
+  roundsAsked: number;
+  cancelled: string[];
+};
+
+/** A Test Build the fake holds: its Environment, what it was asked to try, and how it stands. */
+export type HeldTestBuild = {
+  readonly environment: string;
+  readonly proposed: ProposedChanges;
+  progress: TestBuildProgress;
 };
 
 /** What a fake operation was asked, by operation. */
@@ -46,6 +70,18 @@ export const fakeLifecycle = () => {
   const calls: LifecycleCall[] = [];
   // The Environments whose Build was asked for: a second request finds it under way.
   const building = new Set<string>();
+
+  /** The Test Builds, by call; what each round of waiting answers next (the last repeats), and the calls cancelled. */
+  const testBuilds = new Map<string, HeldTestBuild>();
+
+  const tests: FakeTestBuilds = {
+    rounds: [{ status: "succeeded", startedAt: 1_000, finishedAt: 151_000 }],
+    hold: false,
+    starts: 0,
+    roundsAsked: 0,
+    cancelled: [],
+  };
+
   let next = 1;
   let made = 0;
 
@@ -231,7 +267,79 @@ export const fakeLifecycle = () => {
           change: record(environment, author, BUILD_FIELD, null, BUILD_ASKED),
         };
       }),
+    startTestBuild: ({ environment, call, proposed }) =>
+      Effect.sync(() => {
+        const found = held.get(environment);
+
+        if (found === undefined) return { status: "missing" as const };
+
+        const known = testBuilds.get(call);
+        const asEnvironment = { id: found.id, name: found.name };
+
+        if (known !== undefined) {
+          return {
+            status: "started" as const,
+            environment: asEnvironment,
+            progress: known.progress,
+          };
+        }
+
+        const running = Arr.some(
+          [...testBuilds.values()],
+          (each) => each.environment === environment && each.progress.status === "building",
+        );
+
+        if (running) {
+          return {
+            status: "rejected" as const,
+            message:
+              "Another Test Build of the environment is under way, and one runs at a time: wait for it to end, then ask again",
+          };
+        }
+
+        if (proposed.setupScript !== undefined && proposed.setupScript.includes("\0")) {
+          return {
+            status: "rejected" as const,
+            message: "The proposed settings are refused: setupScript: contains a NUL character",
+          };
+        }
+
+        tests.starts += 1;
+
+        const progress: TestBuildProgress = { status: "building", startedAt: 1_000 };
+
+        testBuilds.set(call, { environment, proposed, progress });
+
+        return { status: "started" as const, environment: asEnvironment, progress };
+      }),
+    testBuildRound: ({ call }) =>
+      tests.hold
+        ? Effect.never
+        : Effect.sync(() => {
+            const known = testBuilds.get(call);
+
+            if (known === undefined) return { status: "gone" as const };
+
+            const progress = tests.rounds[Math.min(tests.roundsAsked, tests.rounds.length - 1)] ?? {
+              status: "gone" as const,
+            };
+
+            tests.roundsAsked += 1;
+            known.progress = progress;
+
+            return progress;
+          }),
+    cancelTestBuild: ({ call }) =>
+      Effect.sync(() => {
+        tests.cancelled.push(call);
+
+        const known = testBuilds.get(call);
+
+        if (known?.progress.status === "building") {
+          known.progress = { status: "cancelled", startedAt: 1_000, finishedAt: 2_000 };
+        }
+      }),
   };
 
-  return { service, calls, held };
+  return { service, calls, held, testBuilds, tests };
 };

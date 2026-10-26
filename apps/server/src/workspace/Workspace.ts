@@ -705,8 +705,9 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s): it is
-   * kept and begun at the alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
+   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s), or
+   * its Test Build of a request marked `test` (the object is `testBuildObjectName`'s): it is kept and begun at the
+   * alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
    * Environment's, are kept sealed apart from the request: those for the Build reach its Setup Scripts, and every one is
    * searched for before its snapshot.
    */
@@ -719,9 +720,20 @@ export class Workspace extends ContainerHost {
     return this.#builds.request(request);
   }
 
-  /** This Build object's last good Build, the one in progress or the last failure, and the image a launch would run now. */
+  /**
+   * This Build object's last good Build, the one in progress or the last failure, and the image a launch would run now;
+   * a Test Build object's latest Test Build.
+   */
   buildState(): Promise<BuildState> {
     return this.#builds.state();
+  }
+
+  /**
+   * Stop Test Build `id` (a Test Build object's, `testBuildObjectName`: its call was stopped): one under way has its
+   * Container stopped, and one that waits never begins (`BuildRunner.cancel`).
+   */
+  cancelBuild(id: string): Promise<BuildState> {
+    return this.#builds.cancel(id);
   }
 
   /**

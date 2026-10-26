@@ -34,7 +34,7 @@ import {
   type ForkSourceRequest,
 } from "../session/fork.ts";
 import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
-import { buildObjectName, workspaceObjectName } from "../workspace/binding.ts";
+import { buildObjectName, testBuildObjectName, workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
 import { noEnvironment, noRepo, nameTaken, reason, repoTaken, thenSaying } from "./messages.ts";
@@ -416,10 +416,19 @@ export const serveRegistryRpc = <R = never>(
         );
       });
 
-    /** Remove an Environment's Build object (`buildObjectName`): its Container, its Builds' records. */
+    /**
+     * Remove an Environment's Build object (`buildObjectName`) and its Test Build object (`testBuildObjectName`): their
+     * Containers, their Builds' records.
+     */
     const removeBuild = (environment: string) =>
       inWorkspace("Could not delete the environment's Build", () =>
         workspaces.destroy(buildObjectName(environment)),
+      ).pipe(
+        Effect.andThen(
+          inWorkspace("Could not delete the environment's Test Build", () =>
+            workspaces.destroy(testBuildObjectName(environment)),
+          ),
+        ),
       );
 
     /** The Environment a naming gave, or why there is none. */

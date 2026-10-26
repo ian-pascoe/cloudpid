@@ -2,6 +2,7 @@ import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 
 /** The longest summary shown, in characters. */
 const MAX_LENGTH = 80;
@@ -103,6 +104,23 @@ const lifecycle = (toolName: string, args: Args): Option.Option<string> =>
     }),
   );
 
+/**
+ * What an `environment_rebuild` call builds: a Test Build of the fields it proposes (`proposed`), or the Environment it
+ * names.
+ */
+const rebuild = (args: Args): Option.Option<string> => {
+  const proposed = args["proposed"];
+
+  if (!Predicate.isObject(proposed) || Arr.isArray(proposed)) return text(args, "id");
+
+  const fields = Record.keys(proposed);
+
+  return inEnvironment(
+    args,
+    Option.some(fields.length === 0 ? "Test Build" : `Test Build of ${Arr.join(fields, ", ")}`),
+  );
+};
+
 /** What a `settings_model_set` call sets: the model, the thinking level, or both. */
 const defaultAgent = (args: Args): Option.Option<string> => {
   const parts = Arr.getSomes([text(args, "model"), text(args, "thinking_level")]);
@@ -165,8 +183,9 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "todo":
         return todo(args);
       case "environment_get":
-      case "environment_rebuild":
         return text(args, "id");
+      case "environment_rebuild":
+        return rebuild(args);
       case "environment_create":
         return text(args, "name");
       case "environment_rename":

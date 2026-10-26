@@ -8,6 +8,7 @@ import type {
   RecordChanged,
   RecordMade,
   RecordOutcome,
+  TestBuildProgress,
 } from "@cloudpid/extensions/environment-lifecycle";
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import {
@@ -16,9 +17,12 @@ import {
   MAX_REPO_NAME_LENGTH,
   parseRepoSource,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type { Builds } from "../registry/builds.ts";
+import type { TestBuildState } from "../workspace/build-record.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { Spares } from "../registry/rpc.ts";
 import type {
@@ -43,10 +47,35 @@ export type SessionLifecycleOptions = {
   readonly registry: LifecycleRegistry;
   /** The Session's id in the Registry; undefined when unknown, for a Session that then changes no Environment. */
   readonly session: string | undefined;
-  /** The upkeep of the Builds: kept current after a change, and asked for a Build by `rebuild`. */
-  readonly builds: Pick<Builds, "of" | "rebuild">;
+  /** The upkeep of the Builds: kept current after a change, asked for a Build by `rebuild`, and the Test Builds. */
+  readonly builds: Pick<Builds, "of" | "rebuild" | "test">;
   /** The upkeep of the spare Workspaces, run after the Repos change. */
   readonly spares: Pick<Spares, "of">;
+  /** How long one round of waiting for a Test Build lasts at most, and how often it looks; for tests. */
+  readonly rounds?: { readonly roundMs: number; readonly pollMs: number } | undefined;
+};
+
+/** How long one round of waiting for a Test Build lasts at most: short, so no round depends on outliving an eviction. */
+const TEST_BUILD_ROUND_MS = 25_000;
+
+/** How often a round of waiting asks the Test Build object how its Test Build stands. */
+const TEST_BUILD_POLL_MS = 5_000;
+
+/** A Test Build's state as the agent's tool reads it; none held (null): gone. */
+const testProgress = (state: TestBuildState | null): TestBuildProgress => {
+  if (state === null) return { status: "gone" };
+
+  const { startedAt } = state;
+
+  switch (state.status) {
+    case "building":
+      return { status: "building", startedAt };
+    case "failed":
+      return { status: "failed", startedAt, finishedAt: state.finishedAt, reason: state.reason };
+    case "succeeded":
+    case "cancelled":
+      return { status: state.status, startedAt, finishedAt: state.finishedAt };
+  }
 };
 
 /** An Environment as a change names it: its id and name. */
@@ -80,6 +109,7 @@ export const sessionLifecycle = ({
   session,
   builds,
   spares,
+  rounds = { roundMs: TEST_BUILD_ROUND_MS, pollMs: TEST_BUILD_POLL_MS },
 }: SessionLifecycleOptions): EnvironmentLifecycle => {
   /** The Session's id, or why it changes no Environment. */
   const author = Effect.fromNullishOr(session).pipe(
@@ -89,6 +119,13 @@ export const sessionLifecycle = ({
       }),
     ),
   );
+
+  /** The Test Build object's id of call `call`'s Test Build: the Session's, as the call's task is only within it. */
+  const testId = (call: string) => Effect.map(author, (owner) => `${owner}/${call}`);
+
+  /** A failed call to a Test Build, as the model sees it. */
+  const testFailed = (message: string) =>
+    EnvironmentsError.make({ message: `${message}. Try again.` });
 
   /** The spare Workspace and the Build of `environment`, kept current as after the owner's change to its Repos. */
   const keepCurrent = (environment: string) =>
@@ -196,6 +233,73 @@ export const sessionLifecycle = ({
         return recordedChange(
           yield* registry.recordRebuild({ environment, author: { session: owner, ...by } }),
         );
+      }),
+    startTestBuild: ({ environment, call, proposed }) =>
+      Effect.gen(function* () {
+        const id = yield* testId(call);
+        const found = yield* registry.getEnvironment({ id: environment });
+
+        if (found === null) return { status: "missing" as const };
+
+        // Each proposed Repo as the owner's `addRepo` reads one; two in one directory cannot both be cloned.
+        let repos: EnvironmentRepo[] | undefined;
+
+        if (proposed.repos !== undefined) {
+          repos = [];
+
+          for (const { url, name } of proposed.repos) {
+            const repo = repoOf(url, name);
+
+            if (Result.isFailure(repo)) {
+              return { status: "rejected" as const, message: `${url}: ${repo.failure}` };
+            }
+
+            if (Arr.some(repos, (each) => each.name === repo.success.name)) {
+              return {
+                status: "rejected" as const,
+                message: `Two repos would be cloned into ${repo.success.name}: give one another directory with name`,
+              };
+            }
+
+            repos.push(repo.success);
+          }
+        }
+
+        const started = yield* builds.test
+          .start({ environment, id, proposed: { ...proposed, repos } })
+          .pipe(
+            Effect.map((state) => ({
+              status: "started" as const,
+              environment: changedEnvironment(found),
+              progress: testProgress(state),
+            })),
+            Effect.catch((message) => Effect.succeed({ status: "rejected" as const, message })),
+          );
+
+        return started;
+      }),
+    testBuildRound: ({ environment, call }) =>
+      Effect.gen(function* () {
+        const id = yield* testId(call);
+        const until = (yield* Clock.currentTimeMillis) + rounds.roundMs;
+
+        while (true) {
+          const progress = testProgress(
+            yield* builds.test.state({ environment, id }).pipe(Effect.mapError(testFailed)),
+          );
+
+          const now = yield* Clock.currentTimeMillis;
+
+          if (progress.status !== "building" || now >= until) return progress;
+
+          yield* Effect.sleep(Math.min(rounds.pollMs, until - now));
+        }
+      }),
+    cancelTestBuild: ({ environment, call }) =>
+      Effect.gen(function* () {
+        const id = yield* testId(call);
+
+        yield* builds.test.cancel({ environment, id }).pipe(Effect.mapError(testFailed));
       }),
   };
 };

@@ -86,6 +86,15 @@ describe("toolSummary", () => {
     expect(toolSummary("environment_rebuild", {})).toBeUndefined();
     expect(toolSummary("environment_rebuild", { id: "0000abcd" })).toBe("0000abcd");
     expect(
+      toolSummary("environment_rebuild", {
+        reason: "r",
+        proposed: { setup_script: "x", toolchains: "" },
+      }),
+    ).toBe("Test Build of setup_script, toolchains");
+    expect(toolSummary("environment_rebuild", { id: "0000abcd", reason: "r", proposed: {} })).toBe(
+      "0000abcd: Test Build",
+    );
+    expect(
       toolSummary("settings_model_set", {
         model: "anthropic/claude-sonnet-5-5",
         thinking_level: "low",
