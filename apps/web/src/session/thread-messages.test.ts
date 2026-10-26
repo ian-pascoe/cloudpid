@@ -458,6 +458,41 @@ describe("the thread messages of a view", () => {
     );
   });
 
+  it("puts the patch a finished edit recorded on its card, and none for a failed edit or another tool", () => {
+    const called = (name: string, error: boolean, details: Record<string, string>) =>
+      toThreadMessages(
+        view({
+          messages: [
+            user("1", "change it"),
+            assistant("2", [{ type: "tool-call", id: "c1", name, arguments: { path: "a.ts" } }]),
+            {
+              id: "r",
+              role: "tool",
+              timestamp: 3,
+              parts: [
+                {
+                  type: "tool-result",
+                  id: "c1",
+                  name,
+                  content: [{ type: "text", text: "done" }],
+                  error,
+                  details,
+                },
+              ],
+            },
+          ],
+        }),
+      )[1]?.content[0];
+
+    const details = { patch: "--- a.ts\n+++ a.ts\n@@ -1 +1 @@\n-a\n+b\n", diff: "shown" };
+
+    expect(called("edit", false, details)).toMatchObject({ artifact: { patch: details.patch } });
+    expect(called("edit", true, details)).not.toHaveProperty("artifact");
+    expect(called("write", false, details)).not.toHaveProperty("artifact");
+    // An edit from before the patch was recorded.
+    expect(called("edit", false, { diff: "shown" })).not.toHaveProperty("artifact");
+  });
+
   it("puts the screenshots of a finished tool call on its card, besides its text", () => {
     const [, message] = toThreadMessages(
       view({

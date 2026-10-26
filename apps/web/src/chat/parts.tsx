@@ -19,6 +19,7 @@ import { useShownSessionId, useThreadConversation } from "./conversation.ts";
 import { ChangeDiff } from "../change-diff.tsx";
 import { changeTitleText, fieldValueText } from "../environments.ts";
 import { changeDiff } from "../line-diff.ts";
+import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
@@ -49,7 +50,8 @@ export const KeptDetails = ({
   disclosure: DistributiveOmit<TranscriptDisclosure, "conversationId">;
   held?: boolean | undefined;
   className?: string | undefined;
-  children: ReactNode;
+  /** A function is given whether the details are open, for content that is only worth mounting while they are. */
+  children: ReactNode | ((open: boolean) => ReactNode);
 }) => {
   const conversationId = useThreadConversation();
 
@@ -68,7 +70,7 @@ export const KeptDetails = ({
       }}
       className={className}
     >
-      {children}
+      {Predicate.isFunction(children) ? children(open) : children}
     </details>
   );
 };
@@ -85,14 +87,23 @@ const Disclosure = ({
   disclosure: DistributiveOmit<TranscriptDisclosure, "conversationId">;
   summary: ReactNode;
   held?: boolean | undefined;
-  children: ReactNode;
+  children: ReactNode | ((open: boolean) => ReactNode);
 }) => (
   <KeptDetails disclosure={disclosure} held={held} className="group my-2 rounded-md border">
-    <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
-      <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
-      {summary}
-    </summary>
-    <div className="border-t px-3 py-2">{children}</div>
+    {(open) => (
+      <>
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
+          <ChevronRight
+            className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+            aria-hidden
+          />
+          {summary}
+        </summary>
+        <div className="border-t px-3 py-2">
+          {Predicate.isFunction(children) ? children(open) : children}
+        </div>
+      </>
+    )}
   </KeptDetails>
 );
 
@@ -139,6 +150,10 @@ const Output = ({ label, text, error }: { label: string; text: string; error?: b
 const StreamedOutput = Schema.Struct({ output: Schema.NonEmptyString });
 
 const decodeStreamedOutput = Schema.decodeUnknownOption(StreamedOutput);
+
+const decodePatch = Schema.decodeUnknownOption(Schema.Struct({ patch: Schema.NonEmptyString }));
+
+const decodePath = Schema.decodeUnknownOption(Schema.Struct({ path: Schema.String }));
 
 const decodeImages = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -255,10 +270,34 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
   const changes = changesOf(artifact);
 
+  // The Call diff of an `edit` that finished: only a call with a result has one.
+  const patch = Option.getOrUndefined(Option.map(decodePatch(artifact), (found) => found.patch));
+
+  const path = Option.getOrUndefined(Option.map(decodePath(args), (found) => found.path));
+
   // The screenshots a call returned, which show beside its card rather than inside it.
   const images = Option.getOrElse(
     Option.map(decodeImages(artifact), (found) => found.images),
     () => [],
+  );
+
+  // The card's arguments, the changes it made, the calls it made, and its output and result.
+  const call = (
+    <>
+      <Output label="Arguments" text={shownArgs} />
+      {Arr.map(changes, (change) => (
+        <Change key={change.field} change={change} />
+      ))}
+      {calls.length > 0 && <NestedCalls calls={calls} />}
+      {streamed !== undefined && result === undefined && <Output label="Output" text={streamed} />}
+      {result !== undefined && (
+        <Output
+          label={isError === true ? "Error" : "Result"}
+          text={Predicate.isString(result) ? result : JSON.stringify(result, null, 2)}
+          error={isError === true}
+        />
+      )}
+    </>
   );
 
   const card = (
@@ -281,22 +320,16 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
           {summary !== undefined && (
             <span className="min-w-0 truncate font-mono text-xs">{summary}</span>
           )}
+          {patch !== undefined && <CallDiffStats patch={patch} />}
         </>
       }
     >
-      <Output label="Arguments" text={shownArgs} />
-      {Arr.map(changes, (change) => (
-        <Change key={change.field} change={change} />
-      ))}
-      {calls.length > 0 && <NestedCalls calls={calls} />}
-      {streamed !== undefined && result === undefined && <Output label="Output" text={streamed} />}
-      {result !== undefined && (
-        <Output
-          label={isError === true ? "Error" : "Result"}
-          text={Predicate.isString(result) ? result : JSON.stringify(result, null, 2)}
-          error={isError === true}
-        />
-      )}
+      {(open) => {
+        if (patch === undefined) return call;
+
+        // Mounted only while the card is open: the diff is drawn when the owner looks at it.
+        return open ? <CallDiffBody patch={patch} path={path} call={call} /> : null;
+      }}
     </Disclosure>
   );
 

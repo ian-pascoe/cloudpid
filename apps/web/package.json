@@ -17,6 +17,7 @@
     "@cloudpid/protocol": "workspace:*",
     "@effect/atom-react": "4.0.5",
     "@effect/platform-browser": "4.0.5",
+    "@pierre/diffs": "1.6.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "effect": "^4.0.5",
