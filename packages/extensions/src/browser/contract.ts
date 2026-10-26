@@ -84,6 +84,26 @@ export const originOf = (url: string): string => {
 /** The longest Owner tab title the agent is told (`browser_owner_tabs`); the page's own words. */
 export const MAX_OWNER_TAB_TITLE = 200;
 
+/** The bounds a page's URL, title and selected text are cut to when the owner attaches it to a message, and the host's read guard. */
+export {
+  MAX_PAGE_SELECTION,
+  MAX_PAGE_SELECTION_READ,
+  MAX_PAGE_TITLE,
+  MAX_PAGE_URL,
+} from "@cloudpid/protocol/live-view";
+
+/**
+ * What the host read of an Owner tab the owner attached to a message: its URL and title now and the text selected in it,
+ * for the Owner tab shown only (at most `MAX_PAGE_SELECTION_READ` units; the Session redacts and cuts it). All of it comes from the page, so it is untrusted: the Session fences it before the model
+ * sees it. No `selection` when nothing is selected or it could not be read.
+ */
+export type OwnerTabPageRead = {
+  readonly ownerTabId: string;
+  readonly url: string;
+  readonly title: string;
+  readonly selection?: string;
+};
+
 /**
  * How a Browser Handoff was left: the origins (never the URLs) of the windows the tab opened that are still open, or no
  * `windowOrigins` when the host could not tell.
@@ -155,6 +175,11 @@ export type BrowserHostRpc = {
   showOwnerTab(id: string): Promise<OwnerTabListing>;
   /** Close Owner tab `id` and the windows it opened; answers the list after it. A tab already gone is not an error. */
   closeOwnerTab(id: string): Promise<OwnerTabListing>;
+  /**
+   * Read the Owner tabs `ids` for a message they are attached to: URL, title and selected text, in the order asked.
+   * Fails with `OWNER_TAB_GONE` when one is not still there, reading none.
+   */
+  readOwnerTabPages(ids: ReadonlyArray<string>): Promise<OwnerTabPageRead[]>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus>;
   /**

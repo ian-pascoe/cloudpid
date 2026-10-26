@@ -25,13 +25,16 @@ import { useCall } from "../calls.ts";
 import { AttachmentTiles } from "./attachment-tiles.tsx";
 import {
   addAttachmentsAtom,
+  addPageAtom,
   attachmentsAtom,
   removeAttachmentAtom,
+  removePageAtom,
   sendAttachedAtom,
   sentAttachments,
   waitingFor,
 } from "./attachments-state.ts";
 import { catalogAtom } from "./catalog.ts";
+import { AttachPageButton, PageChips } from "./page-chips.tsx";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu } from "./completion-menu.tsx";
 import {
@@ -153,13 +156,15 @@ const ComposerBox = ({
   const attachments = useAtomValue(attachmentsAtom(key));
   const addAttachments = useAtomSet(addAttachmentsAtom(key));
   const removeAttachment = useAtomSet(removeAttachmentAtom(key));
+  const addPage = useAtomSet(addPageAtom(key));
+  const removePage = useAtomSet(removePageAtom(key));
   const sendAttached = useCall(sendAttachedAtom(key));
 
   useFileDropZone(dropZone, key);
 
   const dragging = useAtomValue(fileDragAtom(key));
-  const attached = attachments.items.length > 0;
-  // Attachments alone make a message.
+  const attached = attachments.items.length > 0 || attachments.pages.length > 0;
+  // Attachments and attached pages alone make a message.
   const hasMessage = canSend || attached;
   // Why Send waits, shown under the box while no other note is.
   const waiting = attached ? waitingFor(attachments) : null;
@@ -401,8 +406,10 @@ const ComposerBox = ({
           />
         )}
         <div className={composerBox(dragging)}>
+          <PageChips state={attachments} onRemove={removePage} />
           <AttachmentTiles
-            items={attachments.items}
+            // A page's screen shows on its chip.
+            items={attachments.items.filter((item) => item.screenOf === undefined)}
             fits={attachments.fits}
             onRemove={removeAttachment}
           />
@@ -441,6 +448,12 @@ const ComposerBox = ({
             <div className="flex min-w-0 flex-1 items-center gap-0.5">{tools}</div>
             <div className="flex shrink-0 items-center gap-1">
               {status}
+              <AttachPageButton
+                sessionId={key.sessionId}
+                attached={new Set(attachments.pages.map((chip) => chip.ownerTabId))}
+                onAttach={addPage}
+                onDetach={removePage}
+              />
               <AttachButton onAttach={addAttachments} />
               {running && hasMessage && (
                 <button

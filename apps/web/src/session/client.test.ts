@@ -1844,6 +1844,34 @@ describe("the catalog and Slash commands", () => {
       }),
   );
 
+  it.effect("sends the pages a message attaches, only when it has some", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* watching(latest());
+
+      const outcomes: Array<string | null> = [];
+
+      yield* submitTold(client, outcomes, {
+        input: "What is this?",
+        display: "What is this?",
+        pages: [{ ownerTabId: "tab-1", screen: true }],
+      });
+      yield* submitTold(client, outcomes, "No page");
+
+      const [withPage, without] = latest()
+        .commands()
+        .filter((command) => command.type === "submit");
+
+      expect(withPage).toMatchObject({
+        type: "submit",
+        input: "What is this?",
+        pages: [{ ownerTabId: "tab-1", screen: true }],
+      });
+      expect(without).not.toHaveProperty("pages");
+    }),
+  );
+
   it.effect(
     "loads a page of earlier History into the view of the conversation it was asked for",
     () =>

@@ -5,6 +5,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over an entry's JSON and its text.
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { AttachedPage } from "./attached-pages.ts";
 
 /** The kind of an owner's message the Session expanded. */
 export const USER_ENTRY_KIND = "cloudpid.user";
@@ -14,10 +15,15 @@ export const ExpandedSkill = Schema.Struct({ name: Schema.String, location: Sche
 
 export type ExpandedSkill = typeof ExpandedSkill.Type;
 
-/** The data of a `cloudpid.user` entry: the text the owner typed, and the Skills expanded into the model's message. */
+/**
+ * The data of a `cloudpid.user` entry: the text the owner typed (`display`, empty when they typed none), the Skills
+ * expanded into the model's message, and the pages attached to it (`pages`, what the Session read of them; the model
+ * got them as a block of page content, which the transcript shows as chips instead).
+ */
 export const UserEntryData = Schema.Struct({
   display: Schema.String,
   skills: Schema.Array(ExpandedSkill),
+  pages: AttachedPage.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type UserEntryData = typeof UserEntryData.Type;

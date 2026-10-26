@@ -36,6 +36,7 @@ const setup = (nextExpiry?: number) => {
     openOwnerTab: Effect.die("no Browser Pane"),
     showOwnerTab: () => Effect.die("no Browser Pane"),
     closeOwnerTab: () => Effect.die("no Browser Pane"),
+    readOwnerTabPages: () => Effect.die("no Browser Pane"),
     waitHandoff: () => Effect.die("no handoff"),
     endHandoff: () => Effect.succeed({ windowOrigins: [] }),
     close: Effect.sync(() => {

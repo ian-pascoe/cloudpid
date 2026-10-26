@@ -12,6 +12,7 @@ import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { WorkspaceChanges } from "./changes.ts";
+import { PageRef } from "./attached-pages.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 
 /**
@@ -68,7 +69,11 @@ const CommandId = Schema.optionalKey(Schema.String);
  * `conversationId` names it (a conversation that is neither fails the command). Input to a subagent is the owner
  * talking to it directly: the agent sees it as a user message, and its answer is not reported to the agent that started
  * it. Submitting the same `requestId` again finds the first submission, so a client may resend a submit it saw no
- * result for. Answered with `{ submissionId }`.
+ * result for. `pages` attaches Owner tabs to the message (GLOSSARY.md → Attached page): the Session reads each one's URL,
+ * title and selected text from the browser and gives them to the model as a block of page content, apart from the
+ * owner's words; a tab that is gone fails the command. The screen of a shown tab travels as an image of `input`, after
+ * the typed text and the Attachments' paths and before the Attachments' images, in the order of `pages`. Answered with
+ * `{ submissionId }`.
  */
 export const Submit = Schema.Struct({
   type: Schema.Literal("submit"),
@@ -77,6 +82,7 @@ export const Submit = Schema.Struct({
   input: UserInput,
   whenBusy: Schema.optionalKey(WhenBusy),
   requestId: Schema.optionalKey(Schema.String),
+  pages: PageRef.pipe(Schema.Array, Schema.optionalKey),
 });
 
 /**

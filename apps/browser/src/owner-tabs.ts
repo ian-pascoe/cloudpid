@@ -27,12 +27,17 @@
 // Owner tab at its address (`view(true)`: no history, scroll, form state or sign-ins come back, which the answer says:
 // `reopened`), in order, with the one that was shown shown.
 import {
+  MAX_PAGE_SELECTION_READ,
   OWNER_TAB_GONE,
   type OwnerTabEntry,
   type OwnerTabLinks,
   type OwnerTabListing,
+  type OwnerTabPageRead,
 } from "@cloudpid/extensions/browser/contract";
+import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import {
+  ask,
   BrowserGoneError,
   type CdpTransport,
   isNoTarget,
@@ -117,6 +122,56 @@ const KEY = "owner-tabs";
  * (`MAX_BROWSER_SCOPES`, which the conversations share). Pages past it are left alone.
  */
 export const MAX_OWNER_TABS = 20;
+
+/**
+ * The text selected in the page, as the page reports it: what is selected in a field the owner is typing in, else the
+ * document's selection, and nothing at all from a field whose value is masked (a password, a one-time code or a card
+ * number by its `autocomplete`, or text shown as dots by `-webkit-text-security`). Run in the page, so all it returns is
+ * the page's to say; at most `MAX_PAGE_SELECTION_READ` UTF-16 units, without a split surrogate pair: the Session cuts it
+ * to its bound, after redacting it.
+ */
+export const SELECTION = `(() => {
+  const masked = (element) => {
+    if (element === null || element === undefined) return false;
+
+    if (String(element.type ?? "").toLowerCase() === "password") return true;
+
+    if (/(^|\\s)(current-password|new-password|one-time-code|cc-[a-z-]+)(\\s|$)/.test(String(element.autocomplete ?? "").toLowerCase())) return true;
+
+    const security = window.getComputedStyle(element).getPropertyValue("-webkit-text-security");
+
+    return security !== "" && security !== "none";
+  };
+
+  const bounded = (text) => {
+    const cut = text.slice(0, ${MAX_PAGE_SELECTION_READ});
+    const last = cut.charCodeAt(cut.length - 1);
+
+    return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+  };
+
+  const field = document.activeElement;
+  const inField = field !== null && typeof field.selectionStart === "number" && typeof field.value === "string";
+
+  if (inField && masked(field)) return "";
+
+  if (inField && field.selectionStart !== field.selectionEnd) {
+    return bounded(field.value.slice(field.selectionStart, field.selectionEnd));
+  }
+
+  const selection = window.getSelection();
+  const anchor = selection === null ? null : selection.anchorNode;
+  const element = anchor === null ? null : anchor.nodeType === 1 ? anchor : anchor.parentElement;
+
+  return masked(element) ? "" : bounded(String(selection));
+})()`;
+
+const Attached = Schema.Struct({ sessionId: Schema.String });
+
+/** `Runtime.evaluate`'s answer for a string: anything else (an exception, an object) fails the read of the selection. */
+const Evaluated = Schema.Struct({
+  result: Schema.Struct({ value: Schema.optionalKey(Schema.String) }),
+});
 
 const EMPTY: OwnerTabList = { tabs: [] };
 
@@ -635,6 +690,111 @@ export class OwnerTabs {
         await this.#browser.forget(ownerTabScope(id));
       } catch (error) {
         console.warn(`Forgetting an Owner tab that is gone failed: ${String(error)}`);
+      }
+    }
+  }
+
+  /**
+   * Read the Owner tabs `ids` for a message they are attached to: each one's URL and title now and the text selected in it
+   * (the Owner tab shown only, at most `MAX_PAGE_SELECTION_READ` units: the Session cuts it), in the order asked. A tab that is not still there fails the call with `OWNER_TAB_GONE`
+   * before anything is read. A selection that cannot be read is left out: the page still goes with its URL and title.
+   */
+  async read(ids: ReadonlyArray<string>): Promise<OwnerTabPageRead[]> {
+    const asked = [...new Set(ids)];
+    // Only the owner's own Owner tabs are read, whatever an ID names.
+    const { tabs, shown } = this.list();
+    const known = new Set(tabs.map(({ id }) => id));
+
+    if (asked.some((id) => !known.has(id))) throw new Error(OWNER_TAB_GONE);
+
+    const there = await this.#browser.tabsOf(asked.map((id) => ownerTabScope(id)));
+
+    const alive = asked.map((id): Present => {
+      const tab = there.get(ownerTabScope(id));
+
+      if (tab === undefined) throw new Error(OWNER_TAB_GONE);
+
+      return { id, tab };
+    });
+
+    // On one connection to each browser the tabs are in (normally one).
+    const read: OwnerTabPageRead[] = [];
+
+    for (const session of new Set(alive.map(({ tab }) => tab.browserSessionId))) {
+      const here = alive.filter(({ tab }) => tab.browserSessionId === session);
+      const first = here[0];
+
+      if (first === undefined) continue;
+
+      try {
+        const pages = await this.#withBrowser(first.tab, async (transport, targets) => {
+          const reading: OwnerTabPageRead[] = [];
+
+          for (const { id, tab } of here) {
+            const target = targets.find((candidate) => candidate.targetId === tab.targetId);
+
+            if (target === undefined) throw new Error(OWNER_TAB_GONE);
+
+            // Only the tab the Pane shows has its selection read: the others go with their URL and title alone.
+            const selection =
+              id === shown ? await this.#selectionOf(transport, tab.targetId) : undefined;
+
+            const page: Types.Mutable<OwnerTabPageRead> = {
+              ownerTabId: id,
+              url: target.url,
+              title: target.title,
+            };
+
+            if (selection !== undefined && selection !== "") page.selection = selection;
+
+            reading.push(page);
+          }
+
+          return reading;
+        });
+
+        // Its browser went while this read.
+        if (pages === undefined) throw new Error(OWNER_TAB_GONE);
+
+        read.push(...pages);
+      } catch (error) {
+        if (isNoTarget(error)) throw new Error(OWNER_TAB_GONE, { cause: error });
+
+        throw error;
+      }
+    }
+
+    return asked.flatMap((id) => read.filter((page) => page.ownerTabId === id));
+  }
+
+  /** The text selected in page `targetId`, or undefined when it has none or the page would not say. */
+  async #selectionOf(transport: CdpTransport, targetId: string): Promise<string | undefined> {
+    let sessionId: string | undefined;
+
+    try {
+      ({ sessionId } = await ask(
+        { transport, cdpSessionId: undefined },
+        "Target.attachToTarget",
+        { targetId, flatten: true },
+        Attached,
+      ));
+
+      const { result } = await ask(
+        { transport, cdpSessionId: sessionId },
+        "Runtime.evaluate",
+        { expression: SELECTION, returnByValue: true },
+        Evaluated,
+      );
+
+      return result.value;
+    } catch (error) {
+      // The page is not there: the Owner tab is gone. Any other failure only costs the selection.
+      if (isNoTarget(error)) throw new Error(OWNER_TAB_GONE, { cause: error });
+
+      return undefined;
+    } finally {
+      if (sessionId !== undefined) {
+        await transport.send("Target.detachFromTarget", { sessionId }).catch(() => undefined);
       }
     }
   }

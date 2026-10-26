@@ -17,6 +17,7 @@ import {
   type LiveViewLinks,
   type OwnerTabLinks,
   type OwnerTabListing,
+  type OwnerTabPageRead,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -222,6 +223,14 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   /** Close Owner tab `id` and the windows it opened; the conversations' tabs are never touched. */
   closeOwnerTab(id: string): Promise<OwnerTabListing> {
     return this.#ownerTabs.close(id);
+  }
+
+  /**
+   * Read the Owner tabs `ids` for a message they are attached to: URL, title and selected text, all of it the page's to
+   * say. Fails with `OWNER_TAB_GONE` when one is not still there.
+   */
+  readOwnerTabPages(ids: ReadonlyArray<string>): Promise<OwnerTabPageRead[]> {
+    return this.#ownerTabs.read(ids);
   }
 
   /** Wait up to `maxMs` for the handoff `requestId` to end, and say where it stands. */

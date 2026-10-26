@@ -42,6 +42,7 @@ export {
   type OwnerTabLinks,
   type OwnerTabListing,
   SHOWN_OWNER_TAB,
+  type OwnerTabPageRead,
 } from "./browser/host.ts";
 
 export {
@@ -63,6 +64,7 @@ export {
 } from "./browser/session.ts";
 
 export {
+  ATTACHED_PAGE_GONE,
   BrowserPane,
   browserPaneLayer,
   type BrowserPaneOptions,

@@ -39,7 +39,12 @@ import {
   type ContextUsage,
   type TaskGraphSummary,
   type TodoTask,
+  type AttachedPage,
+  clampPage,
+  pageBlock,
+  UPLOADS_ROOT,
   USER_ENTRY_KIND,
+  userEntryData,
 } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, Usage } from "@earendil-works/pi-ai";
@@ -280,6 +285,14 @@ export type Prompt = {
   /** Submitting the same `requestId` again finds the first submission. */
   readonly requestId?: string;
   readonly input: UserInput;
+  /**
+   * Reads the Owner tabs the owner attached (`BrowserPane.attach`, redacted of held Secrets): run as the message is
+   * admitted, in arrival order and only when it is new (a resent `requestId` finds the first submission without reading
+   * again), so that a later message is not admitted first and a page that closed since cannot fail a message already
+   * admitted. What it reads reaches the model as a block of page content after the typed text and the Attachments'
+   * paths, and the owner's entry keeps it for the chip.
+   */
+  readonly attachPages?: Effect.Effect<ReadonlyArray<AttachedPage>, SessionError>;
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
 };
@@ -547,6 +560,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const settings = yield* SessionSettings;
   const scope = yield* Scope.Scope;
   const services = yield* Effect.context<R>();
+
   const models = Effect.isEffect(options.models) ? yield* options.models : options.models;
 
   /** When the object must wake although no work is live. */
@@ -1198,6 +1212,50 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           Option.getOrUndefined,
         );
 
+  /**
+   * What the owner typed, when `input` has pages attached: its first text part, unless that is the Attachments' paths
+   * (they are a part of their own and come after the typed text, which is left out when empty).
+   */
+  const typedBeside = (input: UserInput): string => {
+    const typed = typedText(input);
+
+    return typed === undefined || typed.startsWith(`@${UPLOADS_ROOT}/`) ? "" : typed;
+  };
+
+  const withPages = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    pages: ReadonlyArray<AttachedPage>,
+  ): InputSubmissionDraft => {
+    const block = { type: "text" as const, text: pageBlock(pages) };
+
+    const parts = Predicate.isString(draft.content)
+      ? draft.content === ""
+        ? []
+        : [{ type: "text" as const, text: draft.content }]
+      : [...draft.content];
+
+    const at = Option.getOrElse(
+      Arr.findFirstIndex(parts, (part) => part.type === "image"),
+      () => parts.length,
+    );
+
+    const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+
+    return {
+      ...draft,
+      content: [...parts.slice(0, at), block, ...parts.slice(at)],
+      entry: {
+        kind: USER_ENTRY_KIND,
+        data: {
+          display: data?.display ?? typedBeside(input),
+          skills: [...(data?.skills ?? [])],
+          pages: Arr.map(pages, (page) => clampPage(page)),
+        },
+      },
+    };
+  };
+
   /** `input` with its typed text replaced by `content`. */
   const withText = (input: UserInput, content: string): UserInput => {
     if (Predicate.isString(input)) return content;
@@ -1215,8 +1273,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * (docs/adr/0001-expand-skills-and-prompt-templates-at-submit.md). A message the Workspace cannot be asked about
    * goes as typed.
    */
-  const draftOf = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> => {
-    const { conversationId, input, ...rest } = prompt;
+  const expandedDraft = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> => {
+    const { conversationId, input, attachPages: _attachPages, ...rest } = prompt;
     const typed = typedText(input);
     const plain: InputSubmissionDraft = { type: "input", content: input, ...rest };
 
@@ -1281,6 +1339,46 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               },
             },
       ),
+    );
+  };
+
+  /**
+   * `draft` with the pages attached to `prompt`: their block of page content as a text part of its own, before the first
+   * image (the pages' screens, then the Attachments' pictures), apart from the owner's words, and the entry that keeps
+   * what was read of them for the transcript's chips (`docs/spec.md` → Attached pages).
+   */
+  const draftOf = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> =>
+    expandedDraft(prompt).pipe(
+      Effect.flatMap((draft) =>
+        attachedPages(prompt).pipe(
+          Effect.map((pages) =>
+            pages.length === 0 ? draft : withPages(draft, prompt.input, pages),
+          ),
+        ),
+      ),
+    );
+
+  /**
+   * The pages `prompt` attaches, read now. Not read for a `requestId` the conversation has already admitted: that
+   * submit finds the first submission, whatever the pages are now.
+   */
+  const attachedPages = (
+    prompt: Prompt,
+  ): Effect.Effect<ReadonlyArray<AttachedPage>, SessionError> => {
+    const { attachPages, requestId } = prompt;
+
+    if (attachPages === undefined) return Effect.succeed([]);
+
+    if (requestId === undefined) return attachPages;
+
+    return addressed(prompt.conversationId).pipe(
+      Effect.flatMap((conversation) =>
+        // A commit that writes nothing is discarded: a read through pi-durable's own path.
+        attempt("submissionByRequest", () =>
+          conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context),
+        ),
+      ),
+      Effect.flatMap((admitted) => (admitted === undefined ? attachPages : Effect.succeed([]))),
     );
   };
 

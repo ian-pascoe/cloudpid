@@ -106,6 +106,10 @@ _Avoid_: Prompt, snippet, macro
 A file the owner gives with a message, stored in the Session's Workspace and pointed at by its path; an attached image is also shown to the model.
 _Avoid_: Upload (for the file), file mention
 
+**Attached page**:
+An Owner tab the owner gives with a message, so the agent sees what they see without a browser run: its URL, title and Owner tab ID and, for the tab the Browser Pane shows, the text the owner had selected in it and its screen as an image. What the page supplied reaches the model as untrusted page content, apart from the owner's words; the transcript shows a chip.
+_Avoid_: Page Attachment (an Attachment is a file), tab attachment
+
 ## Diffs and review
 
 **Changes**:

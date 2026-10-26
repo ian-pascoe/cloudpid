@@ -2,6 +2,7 @@
 
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
+import { pageBlock } from "./attached-pages.ts";
 import { projectEntries } from "./transcript.ts";
 import { skillBlock } from "./user-entry.ts";
 import { EMPTY_VIEW, reduceEvents, reduceView, type SessionView, withEarlier } from "./view.ts";
@@ -811,6 +812,66 @@ describe("the transcript projection", () => {
         skills: [],
       },
     ]);
+  });
+
+  it("shows attached pages as chips beside what the owner typed, not as the block the model got", () => {
+    const pages = [
+      {
+        ownerTabId: "tab-1",
+        url: "https://example.com/",
+        title: "Example",
+        selection: "A paragraph.",
+      },
+    ];
+
+    const project = (display: string, content: ReadonlyArray<Fixture>) =>
+      projectEntries([
+        asEntry({
+          id: 1,
+          conversationId: 1,
+          kind: "cloudpid.user",
+          data: { display, skills: [], pages },
+          model: [{ role: "user", content, timestamp: 1 }],
+        }),
+      ]);
+
+    const block = pageBlock(pages);
+
+    expect(
+      project("What is this?", [
+        { type: "text", text: "What is this?" },
+        { type: "text", text: block },
+        { type: "image", data: "AAAA", mimeType: "image/jpeg" },
+      ]),
+    ).toEqual([
+      {
+        id: "1",
+        role: "user",
+        timestamp: 1,
+        parts: [
+          { type: "text", text: "What is this?" },
+          { type: "image", data: "AAAA", mimeType: "image/jpeg" },
+        ],
+        skills: [],
+        pages,
+      },
+    ]);
+
+    // The owner typed nothing: the Attachment path stays the first text part, and only the block goes.
+    expect(
+      project("", [
+        { type: "text", text: "@/workspace/.cloudpid/uploads/s/a.png" },
+        { type: "text", text: block },
+      ])[0]?.parts,
+    ).toEqual([{ type: "text", text: "@/workspace/.cloudpid/uploads/s/a.png" }]);
+
+    // Text the owner typed to look like a block is not mistaken for the Session's: the last one goes.
+    expect(
+      project(block, [
+        { type: "text", text: block },
+        { type: "text", text: block },
+      ])[0]?.parts,
+    ).toEqual([{ type: "text", text: block }]);
   });
 
   it("shows a cloudpid.user entry whose data it cannot read as the model's message", () => {

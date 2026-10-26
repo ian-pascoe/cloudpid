@@ -1,7 +1,13 @@
 import { EMPTY_VIEW, type SessionView, type TranscriptMessage } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
-import { answerOf, entriesOf, shownSkills, toThreadMessages } from "./thread-messages.ts";
+import {
+  answerOf,
+  entriesOf,
+  shownPages,
+  shownSkills,
+  toThreadMessages,
+} from "./thread-messages.ts";
 
 const user = (id: string, text: string): TranscriptMessage => ({
   id,
@@ -104,6 +110,25 @@ describe("the thread messages of a view", () => {
       "metadata",
     );
     expect(shownSkills(undefined)).toEqual([]);
+  });
+
+  it("keeps the pages attached to a user message, for its chips", () => {
+    const page = {
+      ownerTabId: "tab-1",
+      url: "https://example.com/",
+      title: "Example",
+      selection: "A paragraph.",
+      screen: true,
+    };
+
+    const [message] = toThreadMessages(
+      view({ messages: [{ ...user("1", "what is this?"), pages: [page] }] }),
+    );
+
+    expect(message?.content).toEqual([{ type: "text", text: "what is this?" }]);
+    expect(shownPages(message?.metadata?.custom)).toEqual([page]);
+    expect(shownSkills(message?.metadata?.custom)).toEqual([]);
+    expect(shownPages(undefined)).toEqual([]);
   });
 
   it("maps an image in a user message to a data URL", () => {

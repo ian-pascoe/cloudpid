@@ -147,6 +147,7 @@ export class TestWorkspaceSession extends TestSession {
         openOwnerTab: Effect.die("No browser"),
         showOwnerTab: () => Effect.die("No browser"),
         closeOwnerTab: () => Effect.die("No browser"),
+        readOwnerTabPages: () => Effect.die("No browser"),
         waitHandoff: () => Effect.die("No browser"),
         endHandoff: () => Effect.succeed({ windowOrigins: [] }),
       }),

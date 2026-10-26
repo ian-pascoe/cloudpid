@@ -8,12 +8,20 @@ import {
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import * as Arr from "effect/Array";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Globe } from "lucide-react";
 import * as Predicate from "effect/Predicate";
 import { KeptDetails, MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent.ts";
-import { answerOf, entriesOf, type ShownSkill, shownSkills } from "../session/thread-messages.ts";
+import {
+  answerOf,
+  entriesOf,
+  type ShownSkill,
+  shownPages,
+  shownSkills,
+} from "../session/thread-messages.ts";
+import type { AttachedPage } from "@cloudpid/protocol";
+import { pageHost, pageLabel } from "./attached-pages.ts";
 import { entryIdOf } from "../session/tree.ts";
 import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
 
@@ -31,6 +39,42 @@ const SkillDisclosure = ({ skill, messageId }: { skill: ShownSkill; messageId: s
       {skill.text}
     </pre>
   </KeptDetails>
+);
+
+/**
+ * A page the owner attached, as the transcript shows it: a chip with its title and host, and, if they had text selected
+ * in it, that text under a closed disclosure. What the model got is a block of page content the Session added; the chip
+ * stands for it (docs/spec.md → Attached pages).
+ */
+const PageChip = ({ page }: { page: AttachedPage }) => (
+  <li className="rounded-md border bg-background px-2.5 py-1.5 text-sm whitespace-normal">
+    <div className="flex items-center gap-2">
+      <Globe className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0">
+        <span className="block truncate" title={page.url}>
+          {pageLabel(page)}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">
+          {pageHost(page.url)}
+          {page.screen === true ? " · with its screen" : ""}
+        </span>
+      </span>
+    </div>
+    {page.selection !== undefined && (
+      <details className="group mt-1">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
+          <ChevronRight
+            className="size-3.5 transition-transform group-open:rotate-90"
+            aria-hidden
+          />
+          Selected text
+        </summary>
+        <pre className="mt-1.5 max-h-48 overflow-auto rounded-md border bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+          {page.selection}
+        </pre>
+      </details>
+    )}
+  </li>
 );
 
 /** An image in the owner's message (an Attachment's), at most 256 px high. */
@@ -54,11 +98,19 @@ const UserMessage = () => {
   const custom = useAuiState((state) => state.message.metadata.custom);
   const id = useAuiState((state) => state.message.id);
   const skills = shownSkills(custom);
+  const pages = shownPages(custom);
 
   return (
     <MessagePrimitive.Root className="group/message flex flex-col items-end gap-1">
       <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
         <MessagePrimitive.Parts components={USER_PARTS} />
+        {pages.length > 0 && (
+          <ul aria-label="Attached pages" className="mt-1.5 flex flex-col gap-1.5">
+            {Arr.map(pages, (page) => (
+              <PageChip key={page.ownerTabId} page={page} />
+            ))}
+          </ul>
+        )}
         {Arr.map(skills, (skill) => (
           <SkillDisclosure key={skill.name} skill={skill} messageId={id} />
         ))}

@@ -1,13 +1,19 @@
 // The Session's side of the Browser Pane: an archived Session opens nothing, the host's "the Owner tab is gone" reaches
 // the client in its own words, and an ask that opened an Owner tab is a use of the browser for its idle close.
-// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off
+// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off preferEffectArray:off
 import { OWNER_TAB_GONE } from "@cloudpid/protocol/live-view";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
 import { fakeHandoffHost, LIVE_VIEW_LINKS } from "./host.fixture.ts";
-import { BROWSER_IDLE_MS, BrowserError, type BrowserHostService } from "./host.ts";
-import { ARCHIVED_OPENS_NO_OWNER_TAB, makeBrowserPane } from "./pane.ts";
+import {
+  BROWSER_IDLE_MS,
+  BrowserError,
+  type BrowserHostService,
+  type OwnerTabPageRead,
+} from "./host.ts";
+import { ARCHIVED_OPENS_NO_OWNER_TAB, ATTACHED_PAGE_GONE, makeBrowserPane } from "./pane.ts";
+import { readingOwnerTabPages } from "./pages.testing.ts";
 import { makeBrowserSession, WATCH_WRITE_MS } from "./session.ts";
 
 /** A Durable Object's key-value storage, in memory. */
@@ -73,8 +79,27 @@ const fakeHost = (gone = false) => {
   return { host, asked, opens: () => opens, listed };
 };
 
-const setup = (options: { readonly archived?: boolean; readonly gone?: boolean } = {}) => {
-  const { host, asked, opens, listed } = fakeHost(options.gone);
+const setup = (
+  options: {
+    readonly archived?: boolean;
+    readonly gone?: boolean;
+    readonly pages?: readonly OwnerTabPageRead[];
+  } = {},
+) => {
+  const { host: base, asked, opens, listed } = fakeHost(options.gone);
+  const reads: Array<ReadonlyArray<string>> = [];
+  const open = options.pages ?? [];
+
+  const host: BrowserHostService = {
+    ...base,
+    readOwnerTabPages: readingOwnerTabPages({
+      open: () => open,
+      reading: (ids) => {
+        reads.push(ids);
+      },
+    }),
+  };
+
   const session = makeBrowserSession({ host, storage: memoryStorage() });
 
   const pane = makeBrowserPane(
@@ -82,7 +107,7 @@ const setup = (options: { readonly archived?: boolean; readonly gone?: boolean }
     session,
   );
 
-  return { pane, session, asked, opens, listed };
+  return { pane, session, asked, opens, listed, reads };
 };
 
 const test = (name: string, body: () => Effect.Effect<void, unknown>) =>
@@ -206,5 +231,38 @@ describe("the Session's Browser Pane", () => {
 
       expect((yield* pane.watchedTabs).arm).toBe(true);
       expect((yield* pane.watchedTabs).arm).toBe(false);
+    }));
+
+  test("reads the pages attached to a message in the order asked, with whether each carries its screen, and uses no browser", () =>
+    Effect.gen(function* () {
+      const pages = [
+        { ownerTabId: "a", url: "https://a.example/", title: "A", selection: "text" },
+        { ownerTabId: "b", url: "https://b.example/", title: "B" },
+      ];
+
+      const { pane, session, asked, reads } = setup({ pages });
+
+      expect(yield* pane.attach([{ ownerTabId: "b" }, { ownerTabId: "a", screen: true }])).toEqual([
+        pages[1],
+        { ...pages[0], screen: true },
+      ]);
+
+      expect(reads).toEqual([["b", "a"]]);
+      expect(asked).toEqual([]);
+      expect(yield* session.closeAt).toBeUndefined();
+      expect(yield* pane.attach([])).toEqual([]);
+      expect(reads).toHaveLength(1);
+    }));
+
+  test("fails an attached page that is gone, in words the owner can act on, and refuses too many", () =>
+    Effect.gen(function* () {
+      const { pane, reads } = setup({ pages: [] });
+
+      expect(yield* failure(pane.attach([{ ownerTabId: "a" }]))).toBe(ATTACHED_PAGE_GONE);
+
+      const many = Array.from({ length: 11 }, (_, at) => ({ ownerTabId: `tab-${at}` }));
+
+      expect(yield* failure(pane.attach(many))).toMatch(/at most 10 pages/);
+      expect(reads).toHaveLength(1);
     }));
 });

@@ -5,9 +5,15 @@
 // composer of the conversation reads them: when it goes, the uploads in progress stop, and what was stored stays. The
 // draft of a new Session has Attachments of its own, which upload once Send has made the Session.
 
-// @effect-diagnostics preferEffectArray:off -- the bookkeeping of one composer's uploads: native arrays and sets mutated in place, one synchronous step at a time.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- the bookkeeping of one composer's uploads: native arrays and sets mutated in place, one synchronous step at a time.
 
-import { MAX_ATTACHMENT_BYTES, type StoredAttachment, type WhenBusy } from "@cloudpid/protocol";
+import {
+  MAX_ATTACHED_PAGES,
+  MAX_ATTACHMENT_BYTES,
+  type PageRef,
+  type StoredAttachment,
+  type WhenBusy,
+} from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -22,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type * as Types from "effect/Types";
 import { messageOf } from "../registry.ts";
 import { replying } from "../calls.ts";
 import { appRuntime } from "../runtime.ts";
@@ -32,6 +39,7 @@ import {
   outgoingMessage,
   requestedName,
   type SentAttachment,
+  type SentPage,
 } from "./attachments.ts";
 import type { ConversationKey } from "./conversation.ts";
 import { type Fit, fitImages, UNPREPARED } from "./image-budget.ts";
@@ -61,18 +69,43 @@ export interface AttachmentItem {
   readonly stored: StoredAttachment | undefined;
   /** Why it did not upload. */
   readonly error: string | undefined;
+  /**
+   * The Owner tab whose screen this is: the picture of an attached page. It is fitted into the message's image budget
+   * as any picture is, but is never uploaded, goes inline only, and shows on its page's chip instead of a tile.
+   */
+  readonly screenOf?: string | undefined;
+}
+
+/** An Owner tab attached to the message being written: what the composer listed of it when it was attached. */
+export interface PageChipState {
+  readonly ownerTabId: string;
+  readonly title: string;
+  /** Whether the Browser Pane showed it then. */
+  readonly shown: boolean;
+  /** The Attachment item holding its screen, if the Pane had a frame to give. */
+  readonly screenId: string | undefined;
+}
+
+/** The Owner tab to attach, with the Browser Pane's current frame as a picture when it is the one shown. */
+export interface PageToAttach {
+  readonly ownerTabId: string;
+  readonly title: string;
+  readonly shown: boolean;
+  readonly screen?: File | undefined;
 }
 
 /** What the composer shows of its Attachments. */
 export interface AttachmentsState {
   readonly items: readonly AttachmentItem[];
+  /** The Owner tabs attached to the message, in the order they were attached. */
+  readonly pages: readonly PageChipState[];
   /** How each picture goes, by its ID: inline, or as a file only and why. Absent while it is being prepared. */
   readonly fits: ReadonlyMap<string, Fit>;
   /** The pictures `fits` was made for (`picturesOf`): a set that changed since is being fitted again. */
   readonly fitted: string;
 }
 
-const EMPTY: AttachmentsState = { items: [], fits: new Map(), fitted: "" };
+const EMPTY: AttachmentsState = { items: [], pages: [], fits: new Map(), fitted: "" };
 
 /** The pictures among `items`, as one key that changes when the set does. */
 const picturesOf = (items: readonly AttachmentItem[]): string =>
@@ -122,6 +155,9 @@ export const sentAttachments = (state: AttachmentsState): readonly SentAttachmen
   const message: SentAttachment[] = [];
 
   for (const item of state.items) {
+    // A page's screen goes with its page (`sentPages`), not as a file.
+    if (item.screenOf !== undefined) continue;
+
     if (item.stored === undefined) return undefined;
 
     const fit = state.fits.get(item.id);
@@ -134,6 +170,33 @@ export const sentAttachments = (state: AttachmentsState): readonly SentAttachmen
   }
 
   return message;
+};
+
+/**
+ * The attached pages as the message sends them: each Owner tab, and its screen when the Pane gave one and it fits the
+ * message's image budget (else the message carries the page without it).
+ */
+export const sentPages = (state: AttachmentsState): readonly SentPage[] =>
+  state.pages.map((chip) => {
+    const fit = chip.screenId === undefined ? undefined : state.fits.get(chip.screenId);
+    const screen = fit?.kind === "inline" ? fit.encoded : undefined;
+
+    const ref: Types.Mutable<PageRef> = { ownerTabId: chip.ownerTabId };
+
+    if (screen !== undefined) ref.screen = true;
+
+    return { ref, title: chip.title, screen };
+  });
+
+/** Why a page's screen does not go with it, once it is known; undefined while it is being fitted, or when it goes. */
+export const screenNote = (state: AttachmentsState, chip: PageChipState): string | undefined => {
+  if (chip.screenId === undefined) return undefined;
+
+  const fit = state.fits.get(chip.screenId);
+
+  return fit?.kind === "file"
+    ? "Its screen is left out: there is no room for it beside the other images."
+    : undefined;
 };
 
 /** Attachments taken off the composer while their message is submitted. */
@@ -150,6 +213,10 @@ export interface Attachments {
   readonly add: (files: Iterable<File>) => Effect.Effect<void>;
   /** Take one off the message: its upload is stopped, or its stored file deleted. */
   readonly remove: (id: string) => Effect.Effect<void>;
+  /** Attach an Owner tab to the message, with its screen as a picture to fit; one already attached stays as it is. */
+  readonly addPage: (page: PageToAttach) => Effect.Effect<void>;
+  /** Take an attached Owner tab off the message, with its screen. */
+  readonly removePage: (ownerTabId: string) => Effect.Effect<void>;
   /** Take them all off the composer while their message is submitted; their names stay taken until released. */
   readonly hold: Effect.Effect<Held>;
 }
@@ -368,8 +435,61 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
       );
     });
 
+  const addPage = (page: PageToAttach): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (
+        current.pages.length >= MAX_ATTACHED_PAGES ||
+        current.pages.some((chip) => chip.ownerTabId === page.ownerTabId)
+      ) {
+        return Effect.void;
+      }
+
+      ids += 1;
+
+      const screenId = page.screen === undefined ? undefined : `attachment-${ids}`;
+
+      const screen: AttachmentItem[] =
+        page.screen === undefined || screenId === undefined
+          ? []
+          : [
+              {
+                id: screenId,
+                file: page.screen,
+                name: "screen",
+                picture: true,
+                preview: URL.createObjectURL(page.screen),
+                status: "uploaded",
+                progress: 1,
+                stored: undefined,
+                error: undefined,
+                screenOf: page.ownerTabId,
+              },
+            ];
+
+      const { ownerTabId, title, shown } = page;
+
+      return step((before) => ({
+        ...before,
+        items: [...before.items, ...screen],
+        pages: [...before.pages, { ownerTabId, title, shown, screenId }],
+      }));
+    });
+
+  const removePage = (ownerTabId: string): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const chip = current.pages.find((candidate) => candidate.ownerTabId === ownerTabId);
+
+      if (chip === undefined) return Effect.void;
+
+      return step((before) => ({
+        ...before,
+        pages: before.pages.filter((candidate) => candidate.ownerTabId !== ownerTabId),
+      })).pipe(Effect.andThen(chip.screenId === undefined ? Effect.void : remove(chip.screenId)));
+    });
+
   const hold = Effect.suspend(() => {
     const taken = current.items;
+    const takenPages = current.pages;
 
     for (const item of taken) held.add(item);
 
@@ -377,17 +497,36 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
       for (const item of taken) held.delete(item);
     });
 
-    return step((before) => ({ ...before, items: [] })).pipe(
+    return step((before) => ({ ...before, items: [], pages: [] })).pipe(
       Effect.as<Held>({
         restore: unhold.pipe(
-          Effect.andThen(step((before) => ({ ...before, items: [...taken, ...before.items] }))),
+          // A page attached again meanwhile gives way to the one that was refused, screen and all: the screen it
+          // took is let go (its preview released), so none is left without a chip.
+          Effect.andThen(
+            Effect.suspend(() => {
+              const asked = new Set(takenPages.map((chip) => chip.ownerTabId));
+
+              const stale = current.items.filter(
+                (item) => item.screenOf !== undefined && asked.has(item.screenOf),
+              );
+
+              return step((before) => ({
+                ...before,
+                items: [...taken, ...before.items.filter((item) => !stale.includes(item))],
+                pages: [
+                  ...takenPages,
+                  ...before.pages.filter((chip) => !asked.has(chip.ownerTabId)),
+                ],
+              })).pipe(Effect.andThen(Effect.forEach(stale, forget, { discard: true })));
+            }),
+          ),
         ),
         release: unhold.pipe(Effect.andThen(Effect.forEach(taken, forget, { discard: true }))),
       }),
     );
   });
 
-  return { state, add, remove, hold } satisfies Attachments;
+  return { state, add, remove, addPage, removePage, hold } satisfies Attachments;
 });
 
 /** The atom of a composer's Attachments (`makeAttachments`), which the atoms below read and write through. */
@@ -418,6 +557,22 @@ const removeFrom = (program: AttachmentsProgram) =>
     { concurrent: true },
   );
 
+/** Attach an Owner tab to `program`'s message. */
+const addPageTo = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (page: PageToAttach, get) =>
+      get.result(program).pipe(Effect.flatMap((attachments) => attachments.addPage(page))),
+    { concurrent: true },
+  );
+
+/** Take an attached Owner tab off `program`'s message, by its ID. */
+const removePageFrom = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (ownerTabId: string, get) =>
+      get.result(program).pipe(Effect.flatMap((attachments) => attachments.removePage(ownerTabId))),
+    { concurrent: true },
+  );
+
 /** The conversation's Attachments, while a composer of it reads them. */
 const attachmentsProgramAtom = Atom.family((key: ConversationKey) =>
   appRuntime.atom(makeAttachments(Effect.succeed(key.sessionId))),
@@ -436,6 +591,16 @@ export const addAttachmentsAtom = Atom.family((key: ConversationKey) =>
 /** Take an Attachment off the conversation's message, by its ID. */
 export const removeAttachmentAtom = Atom.family((key: ConversationKey) =>
   removeFrom(attachmentsProgramAtom(key)),
+);
+
+/** Attach an Owner tab to the conversation's message (`docs/spec.md` → Attached pages). */
+export const addPageAtom = Atom.family((key: ConversationKey) =>
+  addPageTo(attachmentsProgramAtom(key)),
+);
+
+/** Take an attached Owner tab off the conversation's message. */
+export const removePageAtom = Atom.family((key: ConversationKey) =>
+  removePageFrom(attachmentsProgramAtom(key)),
 );
 
 /** Why a message with Attachments was not sent: they were not ready, or the Session refused it. */
@@ -473,7 +638,11 @@ export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
         const held = yield* attachments.hold;
 
         yield* client
-          .submitAndAwait(outgoingMessage(typed, sent), whenBusy, key.conversationId)
+          .submitAndAwait(
+            outgoingMessage(typed, sent, sentPages(ready)),
+            whenBusy,
+            key.conversationId,
+          )
           .pipe(
             Effect.tapError(() => held.restore),
             Effect.mapError((error) => SendError.make({ message: error.message })),

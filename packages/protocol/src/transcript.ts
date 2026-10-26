@@ -36,6 +36,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
+import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
 import { skillBlocksIn, userEntryData } from "./user-entry.ts";
 
 /**
@@ -81,6 +82,8 @@ export type TranscriptMessage = {
   readonly error?: string;
   /** The Skills the Session expanded into an owner's message, which shows the typed text instead. */
   readonly skills?: readonly TranscriptSkill[];
+  /** The pages attached to an owner's message, which shows a chip for each instead of the block the model got. */
+  readonly pages?: readonly AttachedPage[];
 };
 
 const userParts = (content: UserMessage["content"]): TranscriptPart[] =>
@@ -164,8 +167,20 @@ const noticeTitle = (entry: EntryRecord): string | undefined => {
 };
 
 /**
- * An owner's message the Session expanded, as the owner typed it: the typed text in place of the expansion, which is the
- * message's first text part, its other parts as they were, and each expanded Skill with the block the model got.
+ * `parts` without the block of attached pages the Session added (the last text part shaped like one: the owner's own
+ * text comes before it).
+ */
+const withoutPageBlock = (parts: readonly TranscriptPart[]): TranscriptPart[] => {
+  const at = parts.findLastIndex((part) => part.type === "text" && isPageBlock(part.text));
+
+  return parts.filter((_, index) => index !== at);
+};
+
+/**
+ * An owner's message the Session expanded or attached pages to, as the owner typed it: the typed text in place of the
+ * expansion, which is the message's first text part (left as it is when the owner typed none), its other parts as they
+ * were but for the block of page content, which a chip per page replaces, and each expanded Skill with the block the
+ * model got.
  */
 const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
   const data = userEntryData(entry);
@@ -173,23 +188,31 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
 
   if (data === undefined || message?.role !== "user") return undefined;
 
-  const parts = userParts(message.content);
+  const all = userParts(message.content);
+  const parts = data.pages === undefined ? all : withoutPageBlock(all);
   const first = parts.findIndex((part) => part.type === "text");
   const expanded = parts[first];
   const blocks = skillBlocksIn(expanded?.type === "text" ? expanded.text : "", data);
+  const typed: TranscriptPart = { type: "text", text: data.display };
 
-  return {
+  const shown =
+    data.display === ""
+      ? parts
+      : first === -1
+        ? [typed, ...parts]
+        : parts.map((part, index) => (index === first ? typed : part));
+
+  const projected: TranscriptMessage = {
     id: String(entry.id),
     role: "user",
-    parts:
-      first === -1
-        ? [{ type: "text", text: data.display }, ...parts]
-        : parts.map((part, index) =>
-            index === first ? { type: "text" as const, text: data.display } : part,
-          ),
+    parts: shown,
     timestamp: message.timestamp,
     skills: data.skills.map((skill, index) => ({ ...skill, text: blocks[index] ?? "" })),
   };
+
+  return data.pages === undefined || data.pages.length === 0
+    ? projected
+    : { ...projected, pages: data.pages };
 };
 
 /**
