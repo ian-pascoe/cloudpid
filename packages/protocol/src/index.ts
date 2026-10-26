@@ -1,6 +1,8 @@
 // The client ↔ server contract (`docs/spec.md` → Client and protocol), shared by the server and the web app.
 export * from "./attachments.ts";
 
+export * from "./changes.ts";
+
 export * from "./environment-secrets.ts";
 
 export * from "./lifecycle-changes.ts";
