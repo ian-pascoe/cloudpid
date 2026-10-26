@@ -924,24 +924,32 @@ describe("a Changes watch", () => {
 
     const first = await connect(stub);
     const second = await connect(stub);
+    const third = await connect(stub);
 
     first.send({ type: "watch_changes", id: "watch" });
     second.send({ type: "watch_changes", id: "watch" });
+    third.send({ type: "watch_changes", id: "watch" });
     expect(await first.answer("watch")).toEqual({ type: "result", id: "watch", result: null });
     await second.answer("watch");
+    await third.answer("watch");
 
     const sent = { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false };
 
-    expect(
-      changeLists(await first.until((messages) => changeLists(messages).length === 1)),
-    ).toEqual([sent]);
-    expect(
-      changeLists(await second.until((messages) => changeLists(messages).length === 1)),
-    ).toEqual([sent]);
-    // The second watch came while the first listing ran: one more after it, for both, and never one per client.
-    await first.until((messages) => changeLists(messages).length === 2);
+    for (const client of [first, second, third]) {
+      expect(
+        changeLists(await client.until((messages) => changeLists(messages).length === 1)),
+      ).toEqual([sent]);
+    }
+
+    // The second and third watches came while the first listing ran: one more after it, for all three, where one
+    // listing per client would make three.
+    for (const client of [first, second, third]) {
+      await client.until((messages) => changeLists(messages).length === 2);
+    }
+
     expect(await changesCalls(stub)).toEqual([false, false]);
     expect(await recordedWatches(stub)).toEqual([
+      { watches: [], changes: true },
       { watches: [], changes: true },
       { watches: [], changes: true },
     ]);
@@ -956,6 +964,7 @@ describe("a Changes watch", () => {
 
     await first.until(listsB);
     await second.until(listsB);
+    await third.until(listsB);
     expect(await changesCalls(stub)).toEqual([false, false, false]);
 
     second.send({ type: "unwatch_changes", id: "unwatch" });

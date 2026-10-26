@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import type { ChangeFileRequest } from "../workspace/changes.ts";
 import { SessionError } from "./errors.ts";
 
 export type ChangesMessage = Extract<ServerMessage, { type: "changes" }>;
@@ -28,18 +29,11 @@ export const CHANGES_DEBOUNCE_MS = 1_000;
 /** The tools whose calls may change the Workspace's files, so the Changes are listed again after them. */
 export const WRITING_TOOLS: ReadonlySet<string> = new Set(["edit", "write", "bash", "codemode"]);
 
-/** One changed file, as a client asks for its two sides. */
-export type ChangeFileQuery = {
-  readonly repo: string;
-  readonly path: string;
-  readonly oldPath?: string;
-};
-
 /** Where the Changes come from: the Session's Workspace, in the directory the Session works in. */
 export type ChangesSource = {
   /** The Changes, the Container started for a repo that needs it only with `startContainer`; null with no Workspace. */
   readonly list: (startContainer: boolean) => Promise<WorkspaceChanges | null>;
-  readonly file: (query: ChangeFileQuery) => Promise<ChangeFile>;
+  readonly file: (query: ChangeFileRequest) => Promise<ChangeFile>;
 };
 
 /** What a watcher is sent: a list, or why a listing failed (the last list stands). */
@@ -62,16 +56,10 @@ export class ChangesBroadcast {
   /** A refresh asked for while one runs: one more after it, manual if any of those asks was. */
   #again: { readonly manual: boolean } | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
-  #listings = 0;
 
   constructor(source: ChangesSource, options: ChangesBroadcastOptions) {
     this.#source = source;
     this.#options = options;
-  }
-
-  /** How many listings ran. */
-  get listings(): number {
-    return this.#listings;
   }
 
   /** Whether anyone watches the Changes. */
@@ -118,7 +106,7 @@ export class ChangesBroadcast {
     }, this.#options.debounceMs ?? CHANGES_DEBOUNCE_MS);
   }
 
-  file(query: ChangeFileQuery): Promise<ChangeFile> {
+  file(query: ChangeFileRequest): Promise<ChangeFile> {
     return this.#source.file(query);
   }
 
@@ -142,7 +130,6 @@ export class ChangesBroadcast {
     try {
       const listed = await this.#source.list(manual);
 
-      this.#listings++;
       this.#latest = { type: "changes", repos: listed?.repos ?? [], startingContainer: false };
       this.#send({ kind: "changes", message: this.#latest });
     } catch (cause) {
@@ -172,9 +159,7 @@ export type SessionChangesService = {
   /** An agent may have changed the files: list them again shortly. */
   readonly written: () => void;
   /** One changed file's two sides; it never starts the Container. */
-  readonly file: (query: ChangeFileQuery) => Effect.Effect<ChangeFile, SessionError>;
-  /** How many listings ran, for the tests. */
-  readonly listings: Effect.Effect<number>;
+  readonly file: (query: ChangeFileRequest) => Effect.Effect<ChangeFile, SessionError>;
 };
 
 /** The Session's Changes, which every client that watches them shares. */
@@ -229,7 +214,6 @@ export const sessionChangesLayer = (
                 message: cause instanceof Error ? cause.message : String(cause),
               }),
           }),
-        listings: Effect.sync(() => broadcast.listings),
       } satisfies SessionChangesService;
     }),
   );
