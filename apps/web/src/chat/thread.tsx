@@ -430,7 +430,7 @@ export const Thread = ({
       {/* Session details float over the transcript's top right, outside the scroller so they stay put as it scrolls. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <SessionDetails />
-        <ThreadPrimitive.Viewport className="relative min-h-0 flex-1 overflow-y-auto">
+        <ThreadPrimitive.Viewport className="relative min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
             <ThreadPrimitive.Empty>
               <p className="py-16 text-center text-muted-foreground">

@@ -219,7 +219,7 @@ const Picker = ({
         onKeyDown={onKeyDown}
         className={cn(
           popoverPanel,
-          "max-h-[70vh] w-[min(18rem,calc(100vw-1rem))] gap-1 overflow-y-auto sm:w-[30rem] [&:popover-open]:flex",
+          "max-h-[70vh] w-[min(18rem,calc(100vw-1rem))] gap-1 overflow-y-auto overscroll-y-contain sm:w-[30rem] [&:popover-open]:flex",
         )}
       >
         <div

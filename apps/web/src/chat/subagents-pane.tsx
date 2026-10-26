@@ -121,7 +121,7 @@ export const SubagentsPane = () => {
   }, [revealed, graph, setRevealed]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-3">
       {stoppable && (
         <div className="mb-3 flex justify-end">
           <Button

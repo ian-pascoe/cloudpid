@@ -421,7 +421,7 @@ export const SettingsPage = () => {
   const error = failureOf(update) ?? loadError;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
       <div className="mx-auto w-full max-w-3xl px-4 py-6">
         <div className="flex items-center gap-2">
           <button

@@ -49,7 +49,7 @@ export const NewPane = () => {
   ];
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4">
       <h3 className="text-sm font-semibold">Open a pane</h3>
       <ul className="mt-3 flex flex-col gap-2">
         {Arr.map(choices, ({ key, name, description, icon: Icon, status }) => (

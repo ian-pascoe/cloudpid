@@ -285,7 +285,7 @@ const ChooserFields = ({ close }: { close: () => void }) => {
           <ul
             role="radiogroup"
             aria-label="Your messages"
-            className="flex max-h-80 flex-col overflow-y-auto"
+            className="flex max-h-80 flex-col overflow-y-auto overscroll-y-contain"
           >
             {messages.map((node) => (
               <li key={node.id}>

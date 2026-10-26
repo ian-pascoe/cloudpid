@@ -128,7 +128,11 @@ export const Menu = ({
           event.preventDefault();
           next.focus();
         }}
-        className={cn(popoverPanel, "max-h-[70vh] min-w-44 overflow-y-auto", menuClassName)}
+        className={cn(
+          popoverPanel,
+          "max-h-[70vh] min-w-44 overflow-y-auto overscroll-y-contain",
+          menuClassName,
+        )}
       >
         {children}
       </div>

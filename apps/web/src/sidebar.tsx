@@ -514,7 +514,7 @@ export const Sidebar = ({
             {error}
           </p>
         )}
-        <div className="flex-1 overflow-y-auto px-2 pb-3">
+        <div className="flex-1 overflow-y-auto overscroll-y-contain px-2 pb-3">
           {sessions === null ? (
             <p className="px-3 py-2 text-sm text-muted-foreground">Loading…</p>
           ) : (
