@@ -418,6 +418,20 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
 );
 
 /**
+ * Dismiss one of Environment `id`'s Agent changes, by its id: it leaves the history, and what it changed stays. The
+ * history asks again either way.
+ */
+export const dismissAgentChangeAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    (change: number) =>
+      RegistryClient.use((registry) =>
+        registry("dismissAgentChange", { environment: id, change }),
+      ).pipe(changing([`agent-changes:${id}`])),
+    { concurrent: true },
+  ),
+);
+
+/**
  * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables,
  * scripts and Toolchains as typed.
  */

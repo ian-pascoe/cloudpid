@@ -716,6 +716,11 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("ALTER TABLE workspaces ADD COLUMN subagent TEXT");
     sql.exec("CREATE INDEX workspaces_by_session ON workspaces (session, subagent)");
   },
+  // 20: whether the owner dismissed an Agent change from its list (`docs/spec.md` → Agent changes): 1 once dismissed,
+  // 0 for every other, all of those stored before. A dismissed change stays recorded, and what it changed stays.
+  (sql) => {
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */

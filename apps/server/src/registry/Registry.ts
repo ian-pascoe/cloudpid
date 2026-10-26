@@ -397,6 +397,14 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly change: number;
   }) => Effect.Effect<AgentChangeRevert>;
+  /**
+   * Take an Agent change of an Environment (or of `*`) out of its list, leaving what it changed and its record; false
+   * when the scope has no such change.
+   */
+  readonly dismissAgentChange: (input: {
+    readonly environment: string;
+    readonly change: number;
+  }) => Effect.Effect<boolean>;
   /** The Workspace registered under `id`, or null. */
   readonly getWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceRecord | null>;
   /**
@@ -520,6 +528,8 @@ export type RegistryMethods = {
   readonly revertSettingsChange: (input: {
     readonly change: number;
   }) => Effect.Effect<SettingsChangeRevert>;
+  /** Take a Settings change out of its list, leaving what it changed; false when there is no such change. */
+  readonly dismissSettingsChange: (input: { readonly change: number }) => Effect.Effect<boolean>;
   /**
    * The VAPID public key to subscribe with, and whether a subscription at `endpoint` is kept. Pushes to a browser the
    * push service dropped are deleted on the next one, so a client asks before it trusts its own subscription.
@@ -924,6 +934,8 @@ export const RegistryLive = Registry.make(
                 ),
               ),
             ),
+          dismissAgentChange: ({ environment, change }) =>
+            Effect.sync(() => changes.dismiss(environment, change)),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
           getWorkspaceSetup: ({ id }) =>
             Effect.suspend(() => {
@@ -1060,6 +1072,8 @@ export const RegistryLive = Registry.make(
                 revertSettingsChange(state.raw.storage, store, changes, { id: change }, now),
               ),
             ),
+          dismissSettingsChange: ({ change }) =>
+            Effect.sync(() => changes.dismiss(SETTINGS_SCOPE, change)),
           getPush: ({ endpoint }) =>
             Effect.sync(() => ({
               publicKey: push.vapid.publicKey,

@@ -794,6 +794,13 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
+      dismissAgentChange: ({ environment, change }) =>
+        registry.dismissAgentChange({ environment, change }).pipe(
+          Effect.filterOrFail(Predicate.isTruthy, () =>
+            failed(`Environment "${environment}" has no change ${change}`),
+          ),
+          Effect.asVoid,
+        ),
       listBuilds: () =>
         registry.listBuilds().pipe(
           // The Environments page asks again while a Build is under way, which records it once it ends.
@@ -925,6 +932,13 @@ export const serveRegistryRpc = <R = never>(
                 );
             }
           }),
+        ),
+      dismissSettingsChange: ({ change }) =>
+        registry.dismissSettingsChange({ change }).pipe(
+          Effect.filterOrFail(Predicate.isTruthy, () =>
+            SettingsError.make({ message: `The Settings have no change ${change}` }),
+          ),
+          Effect.asVoid,
         ),
     });
 

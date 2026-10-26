@@ -570,8 +570,8 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("listEnvironmentSecrets", { success: Schema.Array(EnvironmentSecretRecord) }),
   /**
-   * An Environment's Agent changes (`docs/spec.md` → Agent changes), newest first: the last `MAX_AGENT_CHANGES`, the
-   * owner's reverts among them.
+   * An Environment's Agent changes (`docs/spec.md` → Agent changes), newest first: those of the last
+   * `MAX_AGENT_CHANGES` the owner has not dismissed, the owner's reverts among them.
    */
   Rpc.make("listAgentChanges", {
     payload: { environment: AgentChangeScope },
@@ -586,6 +586,14 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("revertAgentChange", {
     payload: { environment: AgentChangeScope, change: Schema.Finite },
     success: AgentChange,
+    error: EnvironmentError,
+  }),
+  /**
+   * Dismiss Agent change `change` of `environment`: `listAgentChanges` no longer lists it. What it changed stays, and so
+   * does its record. Fails with an `EnvironmentError` when `environment` has no such change.
+   */
+  Rpc.make("dismissAgentChange", {
+    payload: { environment: AgentChangeScope, change: Schema.Finite },
     error: EnvironmentError,
   }),
   /**
@@ -703,8 +711,8 @@ export class RegistryRpcs extends RpcGroup.make(
     error: SettingsError,
   }),
   /**
-   * The Settings' Agent changes (`docs/spec.md` → Agent changes), newest first: the last `MAX_AGENT_CHANGES`, the
-   * owner's reverts among them. Each one's `field` names a setting (`model`, `roles.small.model`, `tools.offered`,
+   * The Settings' Agent changes (`docs/spec.md` → Agent changes), newest first: those of the last `MAX_AGENT_CHANGES`
+   * the owner has not dismissed, the owner's reverts among them. Each one's `field` names a setting (`model`, `roles.small.model`, `tools.offered`,
    * `extensions.<extension>.<key>`).
    */
   Rpc.make("listSettingsChanges", { success: Schema.Array(AgentChange) }),
@@ -716,6 +724,14 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("revertSettingsChange", {
     payload: { change: Schema.Finite },
     success: AgentChange,
+    error: SettingsError,
+  }),
+  /**
+   * Dismiss Settings change `change`: `listSettingsChanges` no longer lists it. What it changed stays. Fails with a
+   * `SettingsError` when there is no such change.
+   */
+  Rpc.make("dismissSettingsChange", {
+    payload: { change: Schema.Finite },
     error: SettingsError,
   }),
   /**

@@ -20,6 +20,7 @@ import {
   RPC_PATH,
   SessionActionError,
   SessionNotFound,
+  SETTINGS_SCOPE,
   workspaceDirectory,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -110,6 +111,21 @@ const fakeRegistries = () => {
   const agentChanges: AgentChange[] = [];
   /** The Settings' Agent changes recorded, oldest first. */
   const settingsChanges: AgentChange[] = [];
+  /** The Agent changes the owner dismissed, each as `<scope>:<id>`. */
+  const dismissedChanges = new Set<string>();
+  const listed = (change: AgentChange) => !dismissedChanges.has(`${change.scope}:${change.id}`);
+
+  /** Dismiss change `id` of `scope` among `changes`, as the Registry DO's: false when there is none. */
+  const dismiss = (changes: ReadonlyArray<AgentChange>, scope: string, id: number) =>
+    Effect.sync(() => {
+      calls.push(`dismiss:${scope}:${id}`);
+
+      const known = Arr.some(changes, (item) => item.scope === scope && item.id === id);
+
+      if (known) dismissedChanges.add(`${scope}:${id}`);
+
+      return known;
+    });
 
   /** What `environment` uses: its own over those kept for every Environment, by name. */
   const keptFor = (environment: string): ReadonlyArray<KeptSecret> => {
@@ -692,9 +708,13 @@ const fakeRegistries = () => {
     listAgentChanges: ({ environment }) =>
       Effect.sync(() =>
         environment === "*" || Arr.some(environments, (item) => item.id === environment)
-          ? Arr.filter(agentChanges, (change) => change.scope === environment).toReversed()
+          ? Arr.filter(
+              agentChanges,
+              (change) => change.scope === environment && listed(change),
+            ).toReversed()
           : null,
       ),
+    dismissAgentChange: ({ environment, change }) => dismiss(agentChanges, environment, change),
     // A revert of a variable, over the saved overrides, as the Registry DO's (`revertAgentChange`).
     revertAgentChange: ({ environment, change }) =>
       Effect.sync((): AgentChangeRevert => {
@@ -1021,7 +1041,8 @@ const fakeRegistries = () => {
     notify: () => Effect.void,
     // The Session DO makes Agent changes, never the endpoint.
     changeSettings: () => Effect.die("The endpoint makes no Agent change"),
-    listSettingsChanges: () => Effect.sync(() => settingsChanges.toReversed()),
+    listSettingsChanges: () => Effect.sync(() => Arr.filter(settingsChanges, listed).toReversed()),
+    dismissSettingsChange: ({ change }) => dismiss(settingsChanges, SETTINGS_SCOPE, change),
     // A revert of the model, as the Registry DO's (`revertSettingsChange`).
     revertSettingsChange: ({ change }) =>
       Effect.sync((): SettingsChangeRevert => {
@@ -2615,6 +2636,30 @@ it("refuses to revert an Agent change whose variable changed since, showing its 
   expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "3" } });
 });
 
+it("dismisses an Agent change from the list, leaving what it changed, and refuses one that is not there", async () => {
+  const fake = fakeRegistries();
+
+  fake.overridesOf.set(DEFAULT_ENVIRONMENT, { variables: { A: "2" } });
+  fake.agentChanges.push(agentChange(1, "A", "1", "2"), agentChange(2, "B", null, "x"));
+
+  await call(fake, (registry) =>
+    registry.dismissAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  const listed = await call(fake, (registry) =>
+    registry.listAgentChanges({ environment: DEFAULT_ENVIRONMENT }),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.dismissAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 9 })),
+  );
+
+  expect(Arr.map(listed, (change) => change.id)).toEqual([2]);
+  expect(missing).toBeInstanceOf(EnvironmentError);
+  expect(missing.message).toBe('Environment "default" has no change 9');
+  expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "2" } });
+});
+
 /** A Settings change that set the model from `before` to `after`, as the Registry records it. */
 const settingsChange = (id: number, before: string, after: string): AgentChange => ({
   id,
@@ -2679,6 +2724,24 @@ it("refuses to revert a Settings change whose setting changed since, or one that
   expect(changed.message).toBe(
     `model has changed since: it is "${DEFAULT_SETTINGS.model}" now, so the change is not reverted`,
   );
+  expect(missing.message).toBe("The Settings have no change 9");
+});
+
+it("dismisses a Settings change from the list, and refuses one that is not there", async () => {
+  const fake = fakeRegistries();
+
+  fake.settingsChanges.push(settingsChange(1, "a/b", "c/d"), settingsChange(2, "c/d", "e/f"));
+
+  await call(fake, (registry) => registry.dismissSettingsChange({ change: 2 }));
+
+  const listed = await call(fake, (registry) => registry.listSettingsChanges());
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.dismissSettingsChange({ change: 9 })),
+  );
+
+  expect(Arr.map(listed, (change) => change.id)).toEqual([1]);
+  expect(missing).toBeInstanceOf(SettingsError);
   expect(missing.message).toBe("The Settings have no change 9");
 });
 

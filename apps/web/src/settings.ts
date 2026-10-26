@@ -115,3 +115,15 @@ export const revertSettingsChangeAtom = appRuntime.fn(
     ),
   { concurrent: true },
 );
+
+/**
+ * Dismiss one of the Settings' Agent changes, by its id: it leaves the history, and the setting keeps the value it has.
+ * The history asks again either way.
+ */
+export const dismissSettingsChangeAtom = appRuntime.fn(
+  (change: number) =>
+    RegistryClient.use((registry) => registry("dismissSettingsChange", { change })).pipe(
+      changing(["settings-changes"]),
+    ),
+  { concurrent: true },
+);

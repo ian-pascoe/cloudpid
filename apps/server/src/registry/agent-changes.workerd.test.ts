@@ -743,3 +743,40 @@ describe("an Agent change to each of the other Container settings", () => {
     expect(outcome).toMatchObject({ status: "unchanged", value: 2 });
   });
 });
+
+describe("the owner's dismissal of an Agent change", () => {
+  it("takes it out of the list, leaving what it changed and the change itself", async () => {
+    const [dismissed, again, listed, kept, stored] = await inRegistry(
+      ({ change, changes, store }) => {
+        change(setVariable("A", "1"));
+        change(setVariable("B", "2"));
+
+        return [
+          changes.dismiss(DEFAULT_ENVIRONMENT, 1),
+          changes.dismiss(DEFAULT_ENVIRONMENT, 1),
+          changes.list(DEFAULT_ENVIRONMENT).map(({ id }) => id),
+          changes.get(DEFAULT_ENVIRONMENT, 1),
+          store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(dismissed).toBe(true);
+    // A second dismissal changes nothing, and is not refused.
+    expect(again).toBe(true);
+    expect(listed).toEqual([2]);
+    expect(kept).toMatchObject({ id: 1, field: "variables.A", after: "1" });
+    expect(stored).toEqual({ variables: { A: "1", B: "2" } });
+  });
+
+  it("answers false for a change the scope does not have", async () => {
+    const [unknown, otherScope] = await inRegistry(({ change, changes }) => {
+      change(setVariable("A", "1"));
+
+      return [changes.dismiss(DEFAULT_ENVIRONMENT, 9), changes.dismiss(EVERY_ENVIRONMENT_SCOPE, 1)];
+    });
+
+    expect(unknown).toBe(false);
+    expect(otherScope).toBe(false);
+  });
+});

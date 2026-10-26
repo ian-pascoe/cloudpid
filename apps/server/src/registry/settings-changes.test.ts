@@ -37,9 +37,13 @@ const documents = (initial: Record<string, string> = {}) => {
   return { store, text, writes };
 };
 
-/** Agent changes in memory: a revert marks the change it reverts, and a scope keeps its newest `MAX_AGENT_CHANGES`. */
+/**
+ * Agent changes in memory: a revert marks the change it reverts, a dismissed change leaves the list, and a scope keeps
+ * its newest `MAX_AGENT_CHANGES`.
+ */
 const memoryChanges = (): AgentChanges => {
   const rows: AgentChange[] = [];
+  const dismissed = new Set<number>();
 
   const withReverts = (row: AgentChange): AgentChange => ({
     ...row,
@@ -63,7 +67,7 @@ const memoryChanges = (): AgentChanges => {
       Arr.take(
         Arr.reverse(
           Arr.map(
-            Arr.filter(rows, (row) => row.scope === scope),
+            Arr.filter(rows, (row) => row.scope === scope && !dismissed.has(row.id)),
             withReverts,
           ),
         ),
@@ -76,6 +80,13 @@ const memoryChanges = (): AgentChanges => {
           withReverts,
         ),
       ),
+    dismiss: (scope, id) => {
+      const known = Arr.some(rows, (row) => row.scope === scope && row.id === id);
+
+      if (known) dismissed.add(id);
+
+      return known;
+    },
   };
 };
 
