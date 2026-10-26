@@ -5,10 +5,10 @@ import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest
 const workerd = "src/**/*.workerd.test.ts";
 
 /**
- * Workspace DO tests run in their own test Worker, which hosts the Workspace DO and the Worker Shell's loader: the
- * environment conformance cases and the Changes (over repos real git made, `changes.setup.ts`).
+ * Tests of the Workspace DO alone, in a test Worker that hosts it and the Worker Shell's loader: the environment
+ * conformance cases and the Changes (over repos real git made, `changes.setup.ts`).
  */
-const workspaceEnv = [
+const workspaceOnly = [
   "src/workspace/env.workerd.test.ts",
   "src/workspace/changes*.workerd.test.ts",
 ];
@@ -64,7 +64,7 @@ export default defineConfig({
         ],
         test: {
           name: "workerd-workspace",
-          include: workspaceEnv,
+          include: workspaceOnly,
           testTimeout,
           // Real git makes the repos the Changes tests read, in Node (`inject("changesRepos")`).
           globalSetup: ["./src/workspace/changes.setup.ts"],
@@ -95,7 +95,7 @@ export default defineConfig({
           name: "workerd-session",
           testTimeout,
           include: [onWorkspace],
-          exclude: [...configDefaults.exclude, ...workspaceEnv],
+          exclude: [...configDefaults.exclude, ...workspaceOnly],
         },
       }),
     ],

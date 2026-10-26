@@ -6,7 +6,7 @@
 // what the isolate's memory limit is held to. A collection costs time, so not every sample has one.
 //
 //   node scripts/heap-poll.mjs [target id] [interval ms] [gc every] > heap.log
-const target = process.argv[2] ?? "core:user:vitest-plugin-runner-workerd-session";
+const target = process.argv[2] ?? "core:user:vitest-plugin-runner-workerd-workspace";
 const interval = Number(process.argv[3] ?? 20);
 const collectEvery = Number(process.argv[4] ?? 0);
 const url = `ws://127.0.0.1:9229/${target}`;
