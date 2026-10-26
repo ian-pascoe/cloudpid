@@ -153,6 +153,21 @@ const attributed = () =>
 /** A repo of one committed file and no changes. */
 const tiny = () => repo({ "README.md": "# tiny\n" }, () => {});
 
+/** A repo of 600 tracked files, one of them edited: long enough a listing for other calls to come in during it. */
+const many = () => {
+  const head: Record<string, string> = {};
+
+  for (let index = 0; index < 600; index++) {
+    const [path, content] = benchFile(index);
+
+    head[path] = content;
+  }
+
+  return repo(head, ({ write }) => {
+    write(benchFile(0)[0], benchEdit(0));
+  });
+};
+
 /** A measured repo of `count` tracked files, `BENCH_EDITED` of them edited: its `.git` alone. */
 const bench = (count: number) => {
   const head: Record<string, string> = {};
@@ -182,6 +197,7 @@ export default function setup(project: TestProject) {
     basic: basic(),
     attributed: attributed(),
     tiny: tiny(),
+    many: many(),
     ...Object.fromEntries(measured),
   });
 }

@@ -17,7 +17,7 @@ declare module "vitest" {
 export const lines = (count: number, prefix = "line"): string =>
   Array.from({ length: count }, (_, index) => `${prefix} ${index}\n`).join("");
 
-/** How many lines the rewritten file has: past what lining up does in a second, when every line changes. */
+/** How many lines the rewritten file has: every line changes, far more edits than lining up looks for. */
 export const REWRITE_LINES = 6_000;
 
 /** The tracked-file counts the measurements use. */

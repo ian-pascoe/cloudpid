@@ -77,7 +77,7 @@ describe("the Workspace DO's Changes", () => {
             deletions: 0,
           },
           { path: "new.txt", status: "added", additions: 2, deletions: 0 },
-          // Too many changes to line up in a second: whole-file numbers, "≈".
+          // More edits than lining up looks for (`MAX_COUNT_EDITS`): whole-file numbers, "≈".
           {
             path: "rewrite.txt",
             status: "modified",
@@ -214,6 +214,31 @@ describe("the Workspace DO's Changes", () => {
       stale: true,
       error: expect.stringContaining("no Container"),
     });
+  });
+
+  it("lets the Workspace DO's other calls in while it lists", async () => {
+    const stub = workspace();
+
+    await place(stub, "many");
+
+    const order: string[] = [];
+
+    const listing = stub
+      .changes({ directory: "/workspace/many", startContainer: false })
+      .then((listed) => {
+        order.push("listing");
+
+        return listed;
+      });
+
+    // Sent after the listing started: answered in one of its pauses, before it ends. Without them, the listing would
+    // hold the object from start to end (the files are synchronous SQLite under their promises).
+    await stub.fileBytes("/workspace/many/.git/HEAD").then(() => order.push("read"));
+
+    expect((await listing).repos[0]?.files).toEqual([
+      { path: "src/d0/f0.ts", status: "modified", additions: 1, deletions: 0 },
+    ]);
+    expect(order).toEqual(["read", "listing"]);
   });
 
   it("sends a repo whose packs are over 16 MB to the Container", async () => {

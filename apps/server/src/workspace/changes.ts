@@ -9,7 +9,7 @@
 //   16 MB, root `.gitattributes` rules git applies when it compares (`text`, `eol`, `binary`, `filter`), or one
 //   isomorphic-git fails on. Only a call that may start the Container does so: otherwise a running Container is used,
 //   and a stopped one leaves the repo's last list, kept in storage, marked "may be out of date".
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off
 import {
   BINARY_SNIFF_BYTES,
   type ChangeEntry,
@@ -37,24 +37,47 @@ import * as Predicate from "effect/Predicate";
 import type * as Types from "effect/Types";
 import * as git from "isomorphic-git";
 import { type LinguistFlags, readAttributes, type RootAttributes } from "./attributes.ts";
-import { MAX_PACK_BYTES } from "./git.ts";
+import { MAX_PACK_BYTES, packfileBytes } from "./git.ts";
 
 /**
  * The most tracked files a repo may have for the Workspace DO to list its Changes itself; past it, the Container's git
- * does. A listing reads and hashes every tracked file, about 1.2 ms and 5 KB of heap each in workerd, while nothing else
- * runs in the Workspace DO: 2,000 is about 2.5 s and 10 MB (docs/spec.md → Known risks and spikes → Changes in the
- * Workspace DO).
+ * does. A listing reads and hashes every tracked file, about 1.2 ms and 5 KB of heap each in workerd: 2,000 is about
+ * 2.5 s and 10 MB (docs/spec.md → Known risks and spikes → Changes in the Workspace DO), during which the listing lets
+ * the Workspace DO's other calls in every `YIELD_EVERY` reads.
  */
 export const MAX_TRACKED_FILES = 2_000;
 
-/** How long lining up one file's two sides for its `+a −d` may take, before the counts are whole-file numbers ("≈"). */
-export const COUNT_BUDGET_MS = 1_000;
+/**
+ * How many reads of the files a listing makes between two pauses, in which the Workspace DO serves its other calls (the
+ * agent's file tools): the reads are synchronous SQLite under their promises, so without a pause a listing would hold
+ * the object for its whole length. 50 reads are about 60 ms.
+ */
+export const YIELD_EVERY = 50;
 
 /**
- * How long lining up all of a listing's files may take: past it, the files left get whole-file numbers too, so a
- * listing of many big rewrites is not 2,000 seconds of the Workspace DO's time.
+ * The most edits lining up one file's two sides looks for (jsdiff's `maxEditLength`) before its counts are whole-file
+ * numbers ("≈"). The work of lining up grows with the square of the edits, so 500 is about 70 ms at worst.
  */
-export const LISTING_COUNT_BUDGET_MS = 10_000;
+export const MAX_COUNT_EDITS = 500;
+
+/**
+ * The work lining up one file may take, in lines times the edits looked for: a file of many lines is looked at for
+ * fewer edits, so a 15,000-line rewrite is about 30 ms, not the 50 s an unbounded lining up takes.
+ */
+export const COUNT_WORK = 5_000_000;
+
+/**
+ * The work lining up all of a listing's files may take, counted as `COUNT_WORK` is: the files past it get whole-file
+ * numbers without being lined up, so many big rewrites are at most about half a second. It is counted, not timed, as
+ * workerd's clock stands still while code runs.
+ */
+export const LISTING_COUNT_WORK = 25_000_000;
+
+/**
+ * A second guard on one file's lining up, by the clock (jsdiff's `timeout`). It only fires where the clock moves while
+ * code runs (Node, the local tests), never deployed: the bounds above are what hold there.
+ */
+const COUNT_TIMEOUT_MS = 1_000;
 
 /** How many pairs' counts are kept, by their blob ids, so an unchanged pair is never lined up twice. */
 const COUNTS_CACHED = 10_000;
@@ -108,12 +131,7 @@ export type ChangesOptions = {
   };
   readonly warn: (message: string) => void;
   /** Defaults to `MAX_TRACKED_FILES`. */
-  readonly maxTrackedFiles?: number;
-  /** Defaults to `COUNT_BUDGET_MS`. */
-  readonly countBudgetMs?: number;
-  /** Defaults to `MAX_CHANGED_FILES`. */
-  readonly maxFiles?: number;
-  readonly now?: () => number;
+  readonly maxTrackedFiles?: number | undefined;
 };
 
 export type ChangesRequest = {
@@ -121,27 +139,50 @@ export type ChangesRequest = {
   readonly directory: string;
   /** Whether the Container may be started for a repo that needs it (the owner's Refresh). */
   readonly startContainer: boolean;
-  /** Only these repos (by directory name); all that `directory` covers when absent. */
-  readonly repos?: ReadonlyArray<string>;
 };
 
+/** One changed file, as a client asks for its two sides: `path` in `repo`, and `oldPath` for a rename. */
 export type ChangeFileRequest = {
   readonly repo: string;
   readonly path: string;
   readonly oldPath?: string;
 };
 
+/** A turn of the event loop, in which the Workspace DO's other calls run. */
+const pause = () =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
 /**
- * `files` with each call's failure a rejection: computer's provider throws some synchronously (a path it cannot
- * resolve), and isomorphic-git takes a file system whose `readFile()` throws for a callback one, whose calls never end.
+ * `files` with each call's failure a rejection, and a pause every `YIELD_EVERY` calls. computer's provider throws some
+ * synchronously (a path it cannot resolve), and isomorphic-git takes a file system whose `readFile()` throws for a
+ * callback one, whose calls never end.
  */
 const settled = (files: ChangesFiles): ChangesFiles => {
+  let calls = 0;
+  // The pause every call waits for while it lasts: isomorphic-git reads a directory's files at once, so a pause of one
+  // read alone would leave the others running and the Workspace DO as busy as before.
+  let paused: Promise<void> | undefined;
+
+  const paced = async <A>(read: () => Promise<A>): Promise<A> => {
+    if (++calls % YIELD_EVERY === 0 && paused === undefined) {
+      paused = pause().then(() => {
+        paused = undefined;
+      });
+    }
+
+    if (paused !== undefined) await paused;
+
+    return read();
+  };
+
   const wrapped: Types.Mutable<ChangesFiles> = {
-    readFile: async (path, options) => files.readFile(path, options),
-    stat: async (path) => files.stat(path),
-    lstat: async (path) => files.lstat(path),
-    readdir: async (path) => files.readdir(path),
-    readlink: async (path) => files.readlink(path),
+    readFile: (path, options) => paced(() => files.readFile(path, options)),
+    stat: (path) => paced(() => files.stat(path)),
+    lstat: (path) => paced(() => files.lstat(path)),
+    readdir: (path) => paced(() => files.readdir(path)),
+    readlink: (path) => paced(() => files.readlink(path)),
   };
 
   if (files.readRangeSync !== undefined) wrapped.readRangeSync = files.readRangeSync.bind(files);
@@ -250,16 +291,22 @@ type Counted = {
   readonly approximate?: boolean;
 };
 
-/** Why a repo needs the Container's git, or undefined when the Workspace DO can list it. */
-type Fallback = { readonly reason: string };
+/** The Workspace DO's own listing of a repo: its first entries by path, and how many changed files it did not read. */
+type OwnListing = { readonly files: ChangeEntry[]; readonly more: number };
 
 type RepoPlan = {
   readonly repo: string;
   readonly head: RepoHead;
   readonly attributes: RootAttributes;
-  /** The Workspace DO's own listing, or why the Container's git must list the repo. */
-  readonly listed: { readonly files: ChangeEntry[]; readonly total: number } | Fallback;
+  /** The Workspace DO's own listing, or null when the Container's git must list the repo. */
+  readonly listed: OwnListing | null;
 };
+
+/** What is left of a listing's lining-up work (`LISTING_COUNT_WORK`). */
+type CountBudget = { left: number };
+
+/** One side as read: its facts, and its bytes while the file is being counted (none past `MAX_CHANGE_SIDE_BYTES`). */
+type ReadSide = { readonly bytes?: Uint8Array; readonly facts: SideFacts };
 
 export class WorkspaceChangesModule {
   readonly #options: ChangesOptions;
@@ -271,14 +318,6 @@ export class WorkspaceChangesModule {
 
   #files(): ChangesFiles {
     return settled(this.#options.files());
-  }
-
-  get #maxFiles() {
-    return this.#options.maxFiles ?? MAX_CHANGED_FILES;
-  }
-
-  #now() {
-    return (this.#options.now ?? Date.now)();
   }
 
   /** The repos `directory` covers: its own repo, or every repo directly below the Workspace's root. */
@@ -312,27 +351,21 @@ export class WorkspaceChangesModule {
 
   /** The Changes of the repos `request` covers, in order of name, at most `maxFiles` across them. */
   async list(request: ChangesRequest): Promise<WorkspaceChanges> {
-    const covered = await this.#repos(request.directory);
-
-    const repos =
-      request.repos === undefined
-        ? covered
-        : covered.filter((repo) => request.repos?.includes(repo));
-
+    const repos = await this.#repos(request.directory);
     const containerOnly = await this.#options.containerOnly();
-    const deadline = this.#now() + LISTING_COUNT_BUDGET_MS;
+    const budget: CountBudget = { left: LISTING_COUNT_WORK };
     const plans: RepoPlan[] = [];
 
-    for (const repo of repos) plans.push(await this.#plan(repo, containerOnly, deadline));
+    for (const repo of repos) plans.push(await this.#plan(repo, containerOnly, budget));
 
-    const fallback = Arr.flatMap(plans, (plan) => ("reason" in plan.listed ? [plan.repo] : []));
+    const fallback = Arr.flatMap(plans, (plan) => (plan.listed === null ? [plan.repo] : []));
 
     const container =
       fallback.length > 0 && (request.startContainer || this.#options.running())
         ? await this.#onContainer(fallback)
         : new Map<string, ContainerRepoChanges>();
 
-    let room = this.#maxFiles;
+    let room = MAX_CHANGED_FILES;
     const listed: RepoChanges[] = [];
 
     for (const plan of plans) {
@@ -347,7 +380,7 @@ export class WorkspaceChangesModule {
   }
 
   /** Where `repo` stands and how it is listed: by the Workspace DO itself, or by the Container's git and why. */
-  async #plan(repo: string, containerOnly: ContainerOnly, deadline: number): Promise<RepoPlan> {
+  async #plan(repo: string, containerOnly: ContainerOnly, budget: CountBudget): Promise<RepoPlan> {
     const files = this.#files();
     const fs = readOnly(files);
     const dir = `${WORKSPACE_ROOT}/${repo}`;
@@ -357,57 +390,51 @@ export class WorkspaceChangesModule {
       await files.readFile(`${dir}/.gitattributes`, "utf8").then(toText, () => undefined),
     );
 
-    const fallback = await this.#fallbackReason(files, dir, attributes);
-
-    if (fallback !== undefined) return { repo, head, attributes, listed: fallback };
+    if (await this.#needsContainer(files, dir, attributes)) {
+      return { repo, head, attributes, listed: null };
+    }
 
     try {
       return {
         repo,
         head,
         attributes,
-        listed: await this.#listOwn(fs, dir, head, attributes, containerOnly, deadline),
+        listed: await this.#listOwn(fs, dir, head, attributes, containerOnly, budget),
       };
     } catch (cause) {
       this.#options.warn(`changes: isomorphic-git failed in ${repo}: ${errorText(cause)}`);
 
-      return {
-        repo,
-        head,
-        attributes,
-        listed: { reason: `isomorphic-git failed: ${errorText(cause)}` },
-      };
+      return { repo, head, attributes, listed: null };
     }
   }
 
-  async #fallbackReason(
+  /** Whether the repo at `dir` is the Container's git's to list: rules git applies, a big pack, or many files. */
+  async #needsContainer(
     files: ChangesFiles,
     dir: string,
     attributes: RootAttributes,
-  ): Promise<Fallback | undefined> {
-    if (attributes.compares) return { reason: "its .gitattributes has rules git applies" };
+  ): Promise<boolean> {
+    if (attributes.compares) return true;
 
-    const pack = await packBytes(files, `${dir}/.git`);
-
-    if (pack > MAX_PACK_BYTES) return { reason: `its packs are ${pack} bytes` };
+    if ((await packfileBytes(files, `${dir}/.git`).catch(() => 0)) > MAX_PACK_BYTES) return true;
 
     const tracked = await trackedFiles(files, `${dir}/.git/index`);
-    const guard = this.#options.maxTrackedFiles ?? MAX_TRACKED_FILES;
 
-    if (tracked > guard) return { reason: `it tracks ${tracked} files` };
-
-    return undefined;
+    return tracked > (this.#options.maxTrackedFiles ?? MAX_TRACKED_FILES);
   }
 
-  /** The Workspace DO's own listing of the repo at `dir`: the first `maxFiles` changed files by path, and how many. */
+  /**
+   * The Workspace DO's own listing of the repo at `dir`: its changed files by path, read until they make
+   * `MAX_CHANGED_FILES` entries (a rename is one), and how many it did not read.
+   */
   async #listOwn(
     fs: Fs,
     dir: string,
     head: RepoHead,
     attributes: RootAttributes,
     containerOnly: ContainerOnly,
-    deadline: number,
-  ): Promise<{ readonly files: ChangeEntry[]; readonly total: number }> {
+    budget: CountBudget,
+  ): Promise<OwnListing> {
     const cache: GitCache = {};
     const matrix = await git.statusMatrix({ fs, dir, cache, refresh: false });
 
@@ -429,26 +456,33 @@ export class WorkspaceChangesModule {
       .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
     const rows: Row[] = [];
+    const renames = new RenameCount();
 
     // Each file is read, counted and let go before the next; only what the list says of it is kept.
-    for (const { path, status } of changed.slice(0, this.#maxFiles)) {
+    for (const { path, status } of changed) {
+      if (rows.length - renames.pairs >= MAX_CHANGED_FILES) break;
+
       const old =
         status === "added" ? undefined : await this.#headSide(fs, dir, head.commit, path, cache);
 
       const now = status === "deleted" ? undefined : await this.#workingSide(fs, dir, path);
 
-      rows.push({
+      const row: Row = {
         path,
         status,
         old: old?.facts,
         new: now?.facts,
-        ...this.#counted(old, now, deadline),
-      });
+        ...this.#counted(old, now, budget),
+      };
+
+      renames.add(row);
+      rows.push(row);
     }
 
     return {
       files: withRenames(rows).map((entry) => withFlags(entry, attributes)),
-      total: changed.length,
+      // A rename among the files not read counts as two: pairing them would mean reading them.
+      more: changed.length - rows.length,
     };
   }
 
@@ -460,43 +494,44 @@ export class WorkspaceChangesModule {
     return this.#facts(blob);
   }
 
-  async #workingSide(fs: Fs, dir: string, path: string) {
-    const full = `${dir}/${path}`;
-    const stat = await fs.promises.lstat(full);
+  async #workingSide(fs: Fs, dir: string, path: string): Promise<ReadSide> {
+    const read = await readWorking(fs, `${dir}/${path}`);
 
-    if (stat.isSymbolicLink()) return this.#facts(encoder.encode(await fs.promises.readlink(full)));
+    if ("tooLarge" in read) return { facts: { bytes: read.tooLarge, binary: false, lines: 0 } };
 
-    if (stat.size > MAX_CHANGE_SIDE_BYTES) {
-      return { facts: { bytes: stat.size, binary: false, lines: 0 } satisfies SideFacts };
-    }
-
-    return this.#facts(toBytes(await fs.promises.readFile(full)));
+    return this.#facts(read.bytes);
   }
 
-  async #facts(bytes: Uint8Array) {
+  /** `bytes`' facts, and the bytes themselves unless they are too large to count (a HEAD side read whole). */
+  async #facts(bytes: Uint8Array): Promise<ReadSide> {
     const binary = isBinary(bytes);
 
-    return {
-      bytes,
-      facts: {
-        bytes: bytes.length,
-        id: await blobId(bytes),
-        binary,
-        lines: binary ? 0 : lineCount(bytes),
-      } satisfies SideFacts,
+    const facts: SideFacts = {
+      bytes: bytes.length,
+      id: await blobId(bytes),
+      binary,
+      lines: binary ? 0 : lineCount(bytes),
     };
+
+    return bytes.length > MAX_CHANGE_SIDE_BYTES ? { facts } : { bytes, facts };
   }
 
-  /** `+a −d` of a pair, lined up within the budget, or whole-file numbers ("≈") past it; null when not known. */
+  /**
+   * `+a −d` of a pair, lined up within the bounds (`MAX_COUNT_EDITS`, `COUNT_WORK`, what is left of the listing's
+   * `budget`), or whole-file numbers ("≈") past them; null when not known (binary, or a side too large).
+   */
   #counted(
-    old: { readonly bytes?: Uint8Array; readonly facts: SideFacts } | undefined,
-    now: { readonly bytes?: Uint8Array; readonly facts: SideFacts } | undefined,
-    deadline: number,
+    old: ReadSide | undefined,
+    now: ReadSide | undefined,
+    budget: CountBudget,
   ): Pick<Row, "additions" | "deletions" | "approximate"> {
     const unknown = { additions: null, deletions: null };
     const sides = [old?.facts, now?.facts].filter((side) => side !== undefined);
 
-    if (sides.some((side) => side.binary || side.id === undefined)) return unknown;
+    const uncountable = (side: SideFacts) =>
+      side.binary || side.id === undefined || side.bytes > MAX_CHANGE_SIDE_BYTES;
+
+    if (sides.some(uncountable)) return unknown;
 
     if (old === undefined) return { additions: now?.facts.lines ?? 0, deletions: 0 };
 
@@ -514,12 +549,20 @@ export class WorkspaceChangesModule {
     }
 
     const whole = { additions: now.facts.lines, deletions: old.facts.lines, approximate: true };
-    const left = Math.min(this.#options.countBudgetMs ?? COUNT_BUDGET_MS, deadline - this.#now());
+    const lines = old.facts.lines + now.facts.lines;
+    const maxEditLength = Math.min(MAX_COUNT_EDITS, Math.floor(COUNT_WORK / Math.max(lines, 1)));
+    // At most `lines` edits are ever looked for, whatever the bound.
+    const work = lines * Math.min(maxEditLength, lines);
 
-    const lined =
-      left <= 0 || old.bytes === undefined || now.bytes === undefined
-        ? undefined
-        : diffLines(decoder.decode(old.bytes), decoder.decode(now.bytes), { timeout: left });
+    // Past the listing's budget: whole-file numbers, not kept, as the next listing may line the pair up.
+    if (work > budget.left || old.bytes === undefined || now.bytes === undefined) return whole;
+
+    budget.left -= work;
+
+    const lined = diffLines(decoder.decode(old.bytes), decoder.decode(now.bytes), {
+      maxEditLength,
+      timeout: COUNT_TIMEOUT_MS,
+    });
 
     let counted: Counted = whole;
 
@@ -591,15 +634,7 @@ export class WorkspaceChangesModule {
   ): Promise<RepoChanges> {
     const { repo, head } = plan;
 
-    if (!("reason" in plan.listed)) {
-      return {
-        repo,
-        head,
-        files: plan.listed.files,
-        more: plan.listed.total - Math.min(plan.listed.total, this.#maxFiles),
-        stale: false,
-      };
-    }
+    if (plan.listed !== null) return { repo, head, ...plan.listed, stale: false };
 
     const kept = await this.#options.kept.load(repo).catch(() => undefined);
 
@@ -626,7 +661,7 @@ export class WorkspaceChangesModule {
 
     const listed: ChangeEntry[] = [];
 
-    for (const file of entries.slice(0, this.#maxFiles)) {
+    for (const file of entries.slice(0, MAX_CHANGED_FILES)) {
       const newBytes =
         file.status === "deleted"
           ? null
@@ -697,7 +732,7 @@ export class WorkspaceChangesModule {
 
     if (head.commit === null) return null;
 
-    if ((await packBytes(files, `${dir}/.git`)) <= MAX_PACK_BYTES) {
+    if ((await packfileBytes(files, `${dir}/.git`).catch(() => 0)) <= MAX_PACK_BYTES) {
       try {
         const { blob } = await git.readBlob({ fs, dir, oid: head.commit, filepath: path });
 
@@ -727,27 +762,61 @@ export class WorkspaceChangesModule {
   }
 
   async #workingFile(fs: Fs, dir: string, path: string): Promise<ChangeSide | null> {
-    const full = `${dir}/${path}`;
-
     try {
-      const stat = await fs.promises.lstat(full);
+      const read = await readWorking(fs, `${dir}/${path}`);
 
-      if (stat.isSymbolicLink()) {
-        const target = encoder.encode(await fs.promises.readlink(full));
-
-        return sideOf(target, target.length);
-      }
-
-      if (stat.size > MAX_CHANGE_SIDE_BYTES) return { kind: "too_large", bytes: stat.size };
-
-      const bytes = toBytes(await fs.promises.readFile(full));
-
-      return sideOf(bytes, bytes.length);
+      return "tooLarge" in read
+        ? { kind: "too_large", bytes: read.tooLarge }
+        : sideOf(read.bytes, read.bytes.length);
     } catch (cause) {
       if (isNotFound(cause)) return null;
 
       throw cause;
     }
+  }
+}
+
+/**
+ * The working side at `full`: a symbolic link's target, or the file's bytes, or only its size when it is over
+ * `MAX_CHANGE_SIDE_BYTES`. It rejects for a file that is not there.
+ */
+const readWorking = async (
+  fs: Fs,
+  full: string,
+): Promise<{ readonly bytes: Uint8Array } | { readonly tooLarge: number }> => {
+  const stat = await fs.promises.lstat(full);
+
+  if (stat.isSymbolicLink()) return { bytes: encoder.encode(await fs.promises.readlink(full)) };
+
+  if (stat.size > MAX_CHANGE_SIDE_BYTES) return { tooLarge: stat.size };
+
+  return { bytes: toBytes(await fs.promises.readFile(full)) };
+};
+
+/**
+ * How many deletions and additions of the same blob a listing has read so far, paired as renames: the entries its rows
+ * make are the rows less the pairs.
+ */
+class RenameCount {
+  readonly #added = new Map<string, number>();
+  readonly #deleted = new Map<string, number>();
+  pairs = 0;
+
+  add(row: Row): void {
+    if (row.status === "added") this.#count(row.new?.id, this.#added, this.#deleted);
+
+    if (row.status === "deleted") this.#count(row.old?.id, this.#deleted, this.#added);
+  }
+
+  /** One more of blob `id` in `mine`: a pair if `theirs` has one of it left unpaired. */
+  #count(id: string | undefined, mine: Map<string, number>, theirs: Map<string, number>): void {
+    if (id === undefined) return;
+
+    const count = mine.get(id) ?? 0;
+
+    if (count < (theirs.get(id) ?? 0)) this.pairs++;
+
+    mine.set(id, count + 1);
   }
 }
 
@@ -774,19 +843,6 @@ const readHead = async (fs: Fs, dir: string): Promise<RepoHead> => {
   const branch = await git.currentBranch({ fs, dir, fullname: false }).catch(() => undefined);
 
   return { commit, branch: branch ?? null };
-};
-
-/** The bytes of the repo's packfiles. */
-const packBytes = async (files: ChangesFiles, gitdir: string): Promise<number> => {
-  const pack = `${gitdir}/objects/pack`;
-  const names = namesOf(await files.readdir(pack).catch(() => []));
-  let bytes = 0;
-
-  for (const name of names) {
-    if (name.endsWith(".pack")) bytes += (await files.stat(`${pack}/${name}`)).size;
-  }
-
-  return bytes;
 };
 
 /** How many entries the index holds, from its header (`DIRC`, version, count); 0 without one. */
