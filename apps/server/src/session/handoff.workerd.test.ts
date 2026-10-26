@@ -1,7 +1,8 @@
 // Browser Handoffs over the Session socket, against real Durable Object storage: the agent's request reaches every client
 // without a Live View link, the owner's client mints links with `live_view` and is the only one that sees them, the
-// owner finishing in Live View resumes the tool, and a pending handoff survives an eviction. No link is stored, pushed,
-// broadcast, or let into the transcript or a model request.
+// owner finishing in Live View resumes the tool, and a pending handoff survives an eviction. The Browser Pane mints its
+// own with `owner_tab_view`, answered the same way. No link is stored, pushed, broadcast, or let into the transcript or a
+// model request.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
@@ -10,6 +11,7 @@ import {
   type ClientMessage,
   type BrowserHandoffRequest,
   LIVE_VIEW_HANDOFF_OVER,
+  OWNER_TAB_GONE,
   ServerMessageJson,
   type ServerMessage,
 } from "@cloudpid/protocol";
@@ -17,7 +19,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import { describeEvent } from "../push/notification.ts";
-import { LIVE_VIEW_LINKS, LIVE_VIEW_TOKEN, type TestSession } from "./host.fixture.ts";
+import {
+  LIVE_VIEW_LINKS,
+  LIVE_VIEW_TOKEN,
+  OWNER_TAB_LINKS,
+  type TestSession,
+} from "./host.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -178,6 +185,15 @@ describe("Browser Handoffs over the Session socket", () => {
       [request.id],
     );
 
+    // The owner opens the Browser Pane meanwhile: it mints links to the Owner tab the same way, for them alone.
+    owner.send({ type: "owner_tab_view", id: "otv-1", open: true });
+
+    expect(await owner.next(answerTo("otv-1"))).toEqual({
+      type: "result",
+      id: "otv-1",
+      result: OWNER_TAB_LINKS,
+    });
+
     // A handoff the Session does not have gets none.
     owner.send({ type: "live_view", id: "lv-x", requestId: "nope" });
     expect(await owner.next(answerTo("lv-x"))).toEqual({
@@ -216,10 +232,8 @@ describe("Browser Handoffs over the Session socket", () => {
 
     // A link reached the one answer to the asking client, and nothing else: no other message to any client, no push,
     // nothing the object stores, nor the transcript or the model's requests.
-    const elsewhere = [
-      ...owner.received.filter((message) => !answerTo("lv-1")(message)),
-      ...other.received,
-    ];
+    const asked = (message: ServerMessage) => answerTo("lv-1")(message) || answerTo("otv-1")(message);
+    const elsewhere = [...owner.received.filter((message) => !asked(message)), ...other.received];
 
     const surfaces = await runInDurableObject(stub, async (instance: TestSession) => [
       JSON.stringify(elsewhere),
@@ -232,6 +246,7 @@ describe("Browser Handoffs over the Session socket", () => {
     ]);
 
     expect(JSON.stringify(owner.received.filter(answerTo("lv-1")))).toContain(TOKEN);
+    expect(JSON.stringify(owner.received.filter(answerTo("otv-1")))).toContain(TOKEN);
 
     for (const surface of surfaces) {
       expect(surface).not.toContain(TOKEN);
@@ -385,5 +400,69 @@ describe("Browser Handoffs over the Session socket", () => {
     expect(client.received.filter(isRequests)).toEqual([
       { type: "browser_handoff_requests", requests: [] },
     ]);
+  });
+});
+
+describe("the Browser Pane over the Session socket", () => {
+  it("mints links to the Owner tab for the client that asks alone, opening one only when the Pane opens, and says when it is gone", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    const owner = await connect(stub);
+    const other = await connect(stub);
+
+    // A reconnect before any Pane opened one: nothing to show, and nothing opened.
+    owner.send({ type: "owner_tab_view", id: "b-0", open: false });
+    expect(await owner.next(answerTo("b-0"))).toEqual({
+      type: "error",
+      id: "b-0",
+      message: OWNER_TAB_GONE,
+    });
+
+    owner.send({ type: "owner_tab_view", id: "b-1", open: true });
+    expect(await owner.next(answerTo("b-1"))).toEqual({
+      type: "result",
+      id: "b-1",
+      result: OWNER_TAB_LINKS,
+    });
+
+    owner.send({ type: "owner_tab_view", id: "b-2", open: false });
+    expect(await owner.next(answerTo("b-2"))).toMatchObject({ type: "result", id: "b-2" });
+
+    // The browser was closed or replaced: the Pane is told so, until the owner opens a new Owner tab.
+    await runInDurableObject(stub, (instance: TestSession) => instance.loseOwnerTab());
+    owner.send({ type: "owner_tab_view", id: "b-3", open: false });
+    expect(await owner.next(answerTo("b-3"))).toEqual({
+      type: "error",
+      id: "b-3",
+      message: OWNER_TAB_GONE,
+    });
+
+    owner.send({ type: "owner_tab_view", id: "b-4", open: true });
+    expect(await owner.next(answerTo("b-4"))).toMatchObject({ type: "result", id: "b-4" });
+
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.ownerTabViews()),
+    ).toEqual([false, true, false, false, true]);
+
+    // The links reached the answers to the asking client, and nothing else.
+    const answers = new Set(["b-1", "b-2", "b-4"]);
+    const elsewhere = [
+      ...owner.received.filter(
+        (message) => !((message.type === "result" && answers.has(message.id)) || false),
+      ),
+      ...other.received,
+    ];
+
+    const surfaces = await runInDurableObject(stub, async (instance: TestSession) => [
+      JSON.stringify(elsewhere),
+      JSON.stringify(instance.notified()),
+      instance.kvDump(),
+      instance.harnessDump(),
+      JSON.stringify(await instance.snapshot()),
+    ]);
+
+    for (const surface of surfaces) {
+      expect(surface).not.toContain(TOKEN);
+      expect(surface).not.toContain("live.browser.run");
+    }
   });
 });

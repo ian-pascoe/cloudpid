@@ -33,6 +33,8 @@ export {
   type LiveViewTarget,
   type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
+  OWNER_TAB_GONE,
+  type OwnerTabLinks,
 } from "./browser/host.ts";
 
 export {

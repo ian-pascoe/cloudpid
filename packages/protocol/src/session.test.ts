@@ -129,6 +129,16 @@ describe("the Session socket messages", () => {
     );
   });
 
+  it("read a Browser Pane's request for links to the shown Owner tab, opening it or not", async () => {
+    expect(await readClient('{"type":"owner_tab_view","id":"c1","open":true}')).toEqual(
+      Option.some({ type: "owner_tab_view", id: "c1", open: true }),
+    );
+    expect(await readClient('{"type":"owner_tab_view","id":"c2","open":false}')).toEqual(
+      Option.some({ type: "owner_tab_view", id: "c2", open: false }),
+    );
+    expect(await readClient('{"type":"owner_tab_view","id":"c3"}')).toEqual(Option.none());
+  });
+
   it("read the owner's answer to a Secret request, or its cancellation", async () => {
     expect(
       await readClient(

@@ -31,6 +31,7 @@ const setup = (nextExpiry?: number) => {
     run: () => Effect.succeed({ output: [] }),
     startHandoff: () => Effect.die("no handoff"),
     liveView: () => Effect.die("no handoff"),
+    ownerTabView: () => Effect.die("no Browser Pane"),
     waitHandoff: () => Effect.die("no handoff"),
     endHandoff: () => Effect.succeed({ windowOrigins: [] }),
     close: Effect.sync(() => {

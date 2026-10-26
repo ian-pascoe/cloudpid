@@ -13,6 +13,7 @@ import {
   type SessionTree,
   HEARTBEAT,
   type LiveViewLinks,
+  type OwnerTabLinks,
   type ClientMessage,
   type ServerMessage,
   ServerMessageJson,
@@ -26,9 +27,11 @@ import {
 } from "@cloudpid/extensions/secrets";
 import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/extensions/approvals";
 import {
-  type BrowserError,
+  BrowserError,
   type BrowserHandoffRequest,
   BrowserHandoffs,
+  BrowserHost,
+  OWNER_TAB_GONE,
 } from "@cloudpid/extensions/browser";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -222,13 +225,18 @@ type WatchKey = ConversationId | typeof TASK_GRAPH | typeof USAGE;
  */
 export const sessionSocketsLayer = (
   state: SocketState,
-): Layer.Layer<SessionSockets, never, SessionHost | Secrets | BrowserHandoffs | Approvals> =>
+): Layer.Layer<
+  SessionSockets,
+  never,
+  SessionHost | Secrets | BrowserHandoffs | BrowserHost | Approvals
+> =>
   Layer.effect(
     SessionSockets,
     Effect.gen(function* () {
       const host = yield* SessionHost;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
+      const browser = yield* BrowserHost;
       const approvals = yield* Approvals;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
@@ -404,6 +412,7 @@ export const sessionSocketsLayer = (
         | SessionTree
         | Navigated
         | LiveViewLinks
+        | OwnerTabLinks
         | null,
         SessionError | SecretsError | BrowserError | ApprovalsError
       > => {
@@ -445,6 +454,17 @@ export const sessionSocketsLayer = (
           // Answered to this socket alone, as every command is: the links are never stored or sent to other clients.
           case "live_view":
             return handoffs.liveView(message.requestId);
+
+          // The Browser Pane's links, answered to this socket alone the same way.
+          case "owner_tab_view":
+            return browser.ownerTabView(message.open).pipe(
+              // The host's word for it, as the client reads it, without the call it came through.
+              Effect.mapError((error) =>
+                error.message.includes(OWNER_TAB_GONE)
+                  ? BrowserError.make({ message: OWNER_TAB_GONE })
+                  : error,
+              ),
+            );
 
           case "command": {
             const { type: _type, id: _id, ...command } = message;

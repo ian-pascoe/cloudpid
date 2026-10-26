@@ -575,6 +575,8 @@ export const SessionLive = Session.make(
             Layer.provideMerge(sessionApprovals),
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),
+            // The sockets mint the Browser Pane's links through it (`owner_tab_view`).
+            Layer.provideMerge(Layer.succeed(BrowserHost, browser)),
             Layer.provide(Layer.mergeAll(registry, settings)),
             // Last, so the object's own Effects (those the host and the sockets run) make their spans there too.
             Layer.provideMerge(telemetryLayer(telemetry)),

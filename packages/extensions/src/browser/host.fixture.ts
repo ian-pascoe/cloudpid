@@ -75,6 +75,7 @@ export const fakeHandoffHost = (
 
         return LIVE_VIEW_LINKS;
       }),
+    ownerTabView: () => Effect.succeed({ ownerTabId: "owner-1", ...LIVE_VIEW_LINKS }),
     waitHandoff: (requestId, maxMs) =>
       Effect.suspend((): Effect.Effect<HandoffStatus, BrowserError> => {
         calls.waits.push({ requestId, maxMs });

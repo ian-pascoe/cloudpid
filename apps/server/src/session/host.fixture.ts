@@ -18,6 +18,8 @@ import {
   LIVE_VIEW_HANDOFF_OVER,
   type LiveViewLinks,
   makeBrowserSession,
+  OWNER_TAB_GONE,
+  type OwnerTabLinks,
 } from "@cloudpid/extensions/browser";
 import {
   type AgentChangeLog,
@@ -139,6 +141,23 @@ export const LIVE_VIEW_LINKS: LiveViewLinks = {
   ],
 };
 
+/** The Browser Pane's links the test browser host mints, to the Owner tab and a window it opened: recognisable too. */
+export const OWNER_TAB_LINKS: OwnerTabLinks = {
+  ownerTabId: "owner-1",
+  tab: {
+    targetId: "owner-tab-1",
+    link: `wss://live.browser.run/api/devtools/browser/s/page/owner-tab-1?jwt=${LIVE_VIEW_TOKEN}`,
+  },
+  windows: [
+    {
+      targetId: "owner-popup-1",
+      openerId: "owner-tab-1",
+      title: "Sign in",
+      link: `wss://live.browser.run/api/devtools/browser/s/page/owner-popup-1?jwt=${LIVE_VIEW_TOKEN}`,
+    },
+  ],
+};
+
 /** How long one round of waiting on the test browser host lasts at most, and how long a call may wait past a deadline. */
 const HANDOFF_ROUND_MS = 10_000;
 const HANDOFF_GRACE_MS = 50;
@@ -201,6 +220,17 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
           });
         }),
     ),
+  ownerTabView: (open) =>
+    Effect.suspend(() => {
+      kv.put("owner-tab-views", [...(kv.get<boolean[]>("owner-tab-views") ?? []), open]);
+
+      // The Owner tab is there once a Pane opened it, until the test says its browser is gone.
+      if (open) kv.put("owner-tab", true);
+
+      return kv.get<boolean>("owner-tab") === true
+        ? Effect.succeed(OWNER_TAB_LINKS)
+        : Effect.fail(BrowserError.make({ message: `ownerTabView: Error: ${OWNER_TAB_GONE}` }));
+    }),
   endHandoff: (requestId) =>
     Effect.sync(() => {
       kv.put("handoff-ended", [...(kv.get<string[]>("handoff-ended") ?? []), requestId]);
@@ -459,6 +489,7 @@ export class TestSession extends DurableObject {
               ),
             ),
           ),
+          Layer.provideMerge(Layer.succeed(BrowserHost, testBrowserHost(ctx.storage.kv))),
           Layer.provideMerge(
             sessionBrowserHandoffsLayer({
               host: testBrowserHost(ctx.storage.kv),
@@ -974,6 +1005,16 @@ export class TestSession extends DurableObject {
   /** The handoffs the test browser host minted Live View links for, oldest first. */
   liveViews(): readonly string[] {
     return this.ctx.storage.kv.get<string[]>("live-views") ?? [];
+  }
+
+  /** Whether each `ownerTabView` the test browser host was sent asked to open, oldest first. */
+  ownerTabViews(): readonly boolean[] {
+    return this.ctx.storage.kv.get<boolean[]>("owner-tab-views") ?? [];
+  }
+
+  /** The Owner tab's browser is gone: closed or replaced. */
+  loseOwnerTab(): void {
+    this.ctx.storage.kv.delete("owner-tab");
   }
 
   /** The origins of the windows the test browser host says a handoff left open when it ends. */

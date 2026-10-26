@@ -21,6 +21,7 @@ describe("the Session's browser host", () => {
           close: () => Promise.resolve(true),
           startHandoff: () => Promise.reject(new Error("not here")),
           liveView: () => Promise.reject(new Error("not here")),
+          ownerTabView: () => Promise.reject(new Error("not here")),
           waitHandoff: () => Promise.reject(new Error("not here")),
           endHandoff: () => Promise.reject(new Error("not here")),
         }),
@@ -43,6 +44,7 @@ describe("the Session's browser host", () => {
           close: () => Promise.reject(new Error("overloaded")),
           startHandoff: () => Promise.reject(new Error("overloaded")),
           liveView: () => Promise.reject(new Error("overloaded")),
+          ownerTabView: () => Promise.reject(new Error("overloaded")),
           waitHandoff: () => Promise.reject(new Error("overloaded")),
           endHandoff: () => Promise.reject(new Error("overloaded")),
         }),
@@ -77,6 +79,7 @@ describe("the Session's browser host", () => {
               windows: [],
             });
           },
+          ownerTabView: () => Promise.reject(new Error("not here")),
           waitHandoff: (requestId, maxMs) => {
             calls.push({ name, wait: [requestId, maxMs] });
 
@@ -123,6 +126,7 @@ describe("the Session's browser host", () => {
           close: () => Promise.resolve(true),
           startHandoff: () => Promise.reject(new Error("This conversation has no open tab")),
           liveView: () => Promise.reject(new Error("the handoff is over")),
+          ownerTabView: () => Promise.reject(new Error("the Owner tab is gone")),
           waitHandoff: () => Promise.resolve({ state: "waiting" }),
           endHandoff: () => Promise.resolve({ windowOrigins: [] }),
         }),
@@ -137,5 +141,45 @@ describe("the Session's browser host", () => {
     );
 
     expect(error.message).toContain("startHandoff: Error: This conversation has no open tab");
+  });
+
+  it("mints the Browser Pane's links in the object named for the Session, opening an Owner tab only when asked", async () => {
+    const calls: unknown[] = [];
+    const links = {
+      ownerTabId: "owner-1",
+      tab: { targetId: "tab-9", link: "wss://live.example/o" },
+      windows: [],
+    };
+
+    const host = remoteBrowserHost(
+      {
+        getByName: (name) => ({
+          describe: () => Promise.resolve(""),
+          run: () => Promise.resolve({ output: [] }),
+          close: () => Promise.resolve(true),
+          startHandoff: () => Promise.reject(new Error("not here")),
+          liveView: () => Promise.reject(new Error("not here")),
+          ownerTabView: (open) => {
+            calls.push({ name, open });
+
+            return open
+              ? Promise.resolve(links)
+              : Promise.reject(new Error("the Owner tab is gone"));
+          },
+          waitHandoff: () => Promise.reject(new Error("not here")),
+          endHandoff: () => Promise.reject(new Error("not here")),
+        }),
+      },
+      "session-1",
+    );
+
+    expect(await Effect.runPromise(host.ownerTabView(true))).toEqual(links);
+    expect((await Effect.runPromise(host.ownerTabView(false).pipe(Effect.flip))).message).toBe(
+      "ownerTabView: Error: the Owner tab is gone",
+    );
+    expect(calls).toEqual([
+      { name: "session-1", open: true },
+      { name: "session-1", open: false },
+    ]);
   });
 });

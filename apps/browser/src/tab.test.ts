@@ -1,7 +1,8 @@
 // The tab lookup (`./tab.ts`) against records a real `agents/browser` `Browser` makes: it reads them under keys that are
-// private to `agents` (0.28.1), so this fails when an upgrade changes how they are stored.
+// private to `agents` (0.28.1), so this fails when an upgrade changes how they are stored. And opening an Owner tab
+// through that `Browser`, which starts a browser only when none runs.
 // workerd's WebSocketPair and the stores' Promise API are not Effect.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off preferSchemaOverJson:off
 import {
   Browser,
   type BrowserBinding,
@@ -10,7 +11,7 @@ import {
   type StoredBrowserSession,
 } from "agents/browser";
 import { describe, expect, it } from "vitest";
-import { tabOf } from "./tab.ts";
+import { openTab, tabIn, tabOf } from "./tab.ts";
 
 const memoryStore = (): ListableBrowserSessionStore & {
   readonly records: Map<string, StoredBrowserSession>;
@@ -33,9 +34,17 @@ const memoryStore = (): ListableBrowserSessionStore & {
   };
 };
 
-/** A Browser Run that creates sessions `s1`, `s2`, ... and lists the tabs a test sets for each. */
+/**
+ * A Browser Run that creates sessions `s1`, `s2`, ... and lists the tabs a test sets for each; a CDP connection to one
+ * answers `Target.createTarget` with a new tab, `opened-1`, `opened-2`, ..., listed from then on.
+ */
 const fakeBrowserRun = () => {
-  const state = { created: 0, tabs: new Map<string, string[]>(), gone: new Set<string>() };
+  const state = {
+    created: 0,
+    opened: 0,
+    tabs: new Map<string, string[]>(),
+    gone: new Set<string>(),
+  };
   const requests: string[] = [];
 
   const binding: BrowserBinding = {
@@ -68,8 +77,21 @@ const fakeBrowserRun = () => {
       }
 
       const pair = new WebSocketPair();
+      const server = pair[1];
 
-      pair[1].accept();
+      server.accept();
+      server.addEventListener("message", (event) => {
+        const command: { id: number; method: string } = JSON.parse(String(event.data));
+
+        if (command.method !== "Target.createTarget") return;
+
+        state.opened += 1;
+
+        const targetId = `opened-${state.opened}`;
+
+        state.tabs.set(id, [...(state.tabs.get(id) ?? []), targetId]);
+        server.send(JSON.stringify({ id: command.id, result: { targetId } }));
+      });
 
       return Promise.resolve(new Response(null, { status: 101, webSocket: pair[0] }));
     },
@@ -153,5 +175,42 @@ describe("the tab a conversation works in", () => {
 
     expect(await tabOf(lookup, 5)).toBeUndefined();
     expect(await tabOf(lookup, 6)).toEqual({ browserSessionId: sessionId, targetId: "tab-9" });
+  });
+});
+
+describe("opening an Owner tab", () => {
+  it("opens it in the browser that runs, starting none, as its scope's tab, apart from the conversations' tabs", async () => {
+    const { browser, lookup, run, work } = setup();
+    const sessionId = await work(5, "tab-1");
+
+    expect(await openTab(browser, "owner-tab:a")).toEqual({
+      browserSessionId: sessionId,
+      targetId: "opened-1",
+    });
+    expect(run.state.created).toBe(1);
+    expect(await tabIn(lookup, "owner-tab:a")).toEqual({
+      browserSessionId: sessionId,
+      targetId: "opened-1",
+    });
+    expect(await tabOf(lookup, 5)).toEqual({ browserSessionId: sessionId, targetId: "tab-1" });
+  });
+
+  it("starts a browser when none runs, and once the browser is closed the tab is gone until another opens", async () => {
+    const { browser, lookup, run } = setup();
+
+    const first = await openTab(browser, "owner-tab:a");
+
+    expect(run.state.created).toBe(1);
+    expect(await tabIn(lookup, "owner-tab:a")).toEqual(first);
+
+    expect(await browser.close()).toBe(true);
+    expect(await tabIn(lookup, "owner-tab:a")).toBeUndefined();
+
+    const second = await openTab(browser, "owner-tab:b");
+
+    expect(run.state.created).toBe(2);
+    expect(second.browserSessionId).not.toBe(first.browserSessionId);
+    expect(await tabIn(lookup, "owner-tab:a")).toBeUndefined();
+    expect(await tabIn(lookup, "owner-tab:b")).toEqual(second);
   });
 });
