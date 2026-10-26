@@ -168,7 +168,7 @@ export const SessionDetails = () => {
         </p>
       )}
       {items.length === 0 && agents.length === 0 && (
-        <p className="text-sm text-muted-foreground">No todos or subagents yet.</p>
+        <p className="text-sm text-muted-foreground">Nothing to show yet.</p>
       )}
       {items.length > 0 && <TodoList tasks={items} />}
       {agents.length > 0 && <SubagentsSection agents={agents} />}
