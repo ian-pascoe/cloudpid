@@ -1,15 +1,16 @@
-// The Browser Pane (#238, ADR-0013): the Session's browser for the owner, in an Owner tab, at any time. It is a URL bar
-// (back, forward, reload, and the tab's URL, which Enter navigates) around the screen it shares with the Live View
+// The Browser Pane (#238, ADR-0013): the Session's browser for the owner, in Owner tabs, at any time. It is a tab strip
+// (`owner-tab-strip.tsx`: each Owner tab by title, close, and **+**), a URL bar (back, forward, reload, and the tab's
+// URL, which Enter navigates) and the screen it shares with the Live View
 // (`live-screen.tsx`), over links the Session's `owner_tab_view` mints. Opening it opens an Owner tab when the owner has
 // none; closing it leaves the tab open in the browser, so opening it again shows the same page. When the Owner tab is
 // gone (closed, or its browser closed or replaced), it says so and offers to open a new Owner tab, and a new one says it
 // replaced the one that is gone. An archived Session's Pane opens nothing: it shows an Owner tab still there, if any. It
 // opens only from the New pane (or the URL or the Session's layout); it never opens on its own.
 
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { ArrowLeft, ArrowRight, Globe, RotateCw, X } from "lucide-react";
-import { use, useId, useState, type FormEvent } from "react";
+import { use, useEffect, useId, useRef, useState, type FormEvent, type RefObject } from "react";
 import { useShownSessionId } from "../chat/conversation.ts";
 import { TreeBarScope } from "../chat/tree-actions.ts";
 import { Button } from "../components/ui/button.tsx";
@@ -22,14 +23,27 @@ import {
   type BrowserPaneKey,
   browserPaneViewAtom,
   dismissReplacedAtom,
+  followOwnerTabAtom,
   ownerTabActionAtom,
+  ownerTabCommandAtom,
+  ownerTabListAtom,
   ownerTabPageAtom,
   ownerTabReplacedAtom,
 } from "./browser-pane-atoms.ts";
 import { keepFocus, LiveScreen } from "./live-screen.tsx";
+import { OwnerTabStrip } from "./owner-tab-strip.tsx";
 
-/** Back, forward, reload and the URL bar, over the Owner tab. */
-const UrlBar = ({ pane }: { pane: BrowserPaneKey }) => {
+/**
+ * Back, forward, reload and the URL bar, over the Owner tab. `focusWhenLive` says the owner asked for a new Owner tab:
+ * the field takes the focus once the tab is shown, and the flag is cleared.
+ */
+const UrlBar = ({
+  pane,
+  focusWhenLive,
+}: {
+  pane: BrowserPaneKey;
+  focusWhenLive: RefObject<boolean>;
+}) => {
   const page = useAtomValue(ownerTabPageAtom(pane));
 
   const live = useAtomValue(
@@ -48,6 +62,14 @@ const UrlBar = ({ pane }: { pane: BrowserPaneKey }) => {
   const [typed, setTyped] = useState<string | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   const noteId = useId();
+  const field = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!live || !focusWhenLive.current) return;
+
+    focusWhenLive.current = false;
+    field.current?.focus();
+  }, [live, focusWhenLive]);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -120,6 +142,7 @@ const UrlBar = ({ pane }: { pane: BrowserPaneKey }) => {
           <RotateCw aria-hidden />
         </Button>
         <Input
+          ref={field}
           name="address"
           type="text"
           inputMode="url"
@@ -157,11 +180,13 @@ const UrlBar = ({ pane }: { pane: BrowserPaneKey }) => {
 };
 
 /** Why the Owner tab is gone, as the Pane says it. */
-const GONE = "The Owner tab is gone: it was closed, or the browser was closed or replaced.";
+const GONE =
+  "No Owner tab is open: the last was closed, or the browser it was in was closed or replaced.";
 
 /** What the Pane shows once the Owner tab is gone: why, and a new Owner tab, unless the Session is archived. */
 const Gone = ({ pane }: { pane: BrowserPaneKey }) => {
-  const reopen = useAtomRefresh(browserPaneViewAtom(pane));
+  // Through the Session, like **+**: every device is told, and each Pane follows to the new Owner tab.
+  const open = useAtomSet(ownerTabCommandAtom(pane.sessionId));
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
@@ -177,7 +202,12 @@ const Gone = ({ pane }: { pane: BrowserPaneKey }) => {
             A browser that was closed takes its pages and sign-ins with it. A new Owner tab opens in
             the Session's browser, starting one if none runs.
           </p>
-          <Button size="sm" onClick={reopen}>
+          <Button
+            size="sm"
+            onClick={() => {
+              open({ type: "open" });
+            }}
+          >
             Open a new Owner tab
           </Button>
         </>
@@ -219,10 +249,25 @@ const Replaced = ({ pane }: { pane: BrowserPaneKey }) => {
 const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
   const view = browserPaneViewAtom(pane);
   const ended = useAtomValue(liveViewStateAtom(view), (state) => state.status === "ended");
+  const focusWhenLive = useRef(false);
+
+  // The Owner tab shown is the Session's, so every device shows the same: this one's connection moves to it.
+  const shown = useAtomValue(ownerTabListAtom(pane.sessionId), (listing) => listing?.shown);
+  const follow = useAtomSet(followOwnerTabAtom(pane));
+
+  useEffect(() => {
+    follow(shown);
+  }, [shown, follow]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <UrlBar pane={pane} />
+      <OwnerTabStrip
+        pane={pane}
+        onNew={() => {
+          focusWhenLive.current = true;
+        }}
+      />
+      <UrlBar pane={pane} focusWhenLive={focusWhenLive} />
       {ended ? (
         <Gone pane={pane} />
       ) : (

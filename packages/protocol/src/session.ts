@@ -380,6 +380,48 @@ export const OwnerTabViewRequest = Schema.Struct({
   open: Schema.Boolean,
 });
 
+/**
+ * List the Owner tabs of the Browser Pane (`docs/spec.md` → Browser → Browser Pane): each by its title, and the one
+ * shown. Answered with an `OwnerTabListing`, to the asking client. The browser host also finds here the tabs a page
+ * opened (a link with `target=_blank`) and adds them to the list, so a Pane asks again now and then while it is open.
+ * Starts nothing: with no browser running the list is empty.
+ */
+export const OwnerTabListRequest = Schema.Struct({
+  type: Schema.Literal("owner_tab_list"),
+  id: CommandId,
+});
+
+/**
+ * Open a new, blank Owner tab and show it (the tab strip's **+**), starting the Session's browser when none runs. Refused
+ * for an archived Session. Answered with the `OwnerTabListing` after it, and sent to every client as `owner_tabs`.
+ */
+export const OwnerTabOpenRequest = Schema.Struct({
+  type: Schema.Literal("owner_tab_open"),
+  id: CommandId,
+});
+
+/**
+ * Show Owner tab `ownerTabId` (the host's `id` for it: `OwnerTabEntry`'s): the one shown is the host's, so every device
+ * shows it. Answered with the `OwnerTabListing` after it, and sent to every client as `owner_tabs`; fails with
+ * `OWNER_TAB_GONE` when the tab is not there.
+ */
+export const OwnerTabShowRequest = Schema.Struct({
+  type: Schema.Literal("owner_tab_show"),
+  id: CommandId,
+  ownerTabId: Schema.String,
+});
+
+/**
+ * Close Owner tab `ownerTabId` and the windows it opened; the one shown, if it was that, becomes its neighbour in the
+ * list. Closing the last leaves none. Answered with the `OwnerTabListing` after it, and sent to every client as
+ * `owner_tabs`. Closing a tab that is not there is not an error.
+ */
+export const OwnerTabCloseRequest = Schema.Struct({
+  type: Schema.Literal("owner_tab_close"),
+  id: CommandId,
+  ownerTabId: Schema.String,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   TreeRequest,
@@ -387,6 +429,10 @@ export const ClientMessage = Schema.Union([
   SwitchBranch,
   LiveViewRequest,
   OwnerTabViewRequest,
+  OwnerTabListRequest,
+  OwnerTabOpenRequest,
+  OwnerTabShowRequest,
+  OwnerTabCloseRequest,
   Submit,
   Abort,
   CatalogRequest,
@@ -928,6 +974,40 @@ export const OwnerTabLinks = Schema.Struct({
 
 export type OwnerTabLinks = typeof OwnerTabLinks.Type;
 
+/**
+ * An Owner tab as the tab strip lists it. `id` is the browser host's name for it (`OwnerTabLinks.ownerTabId`), which
+ * outlives the page's CDP target. The entry is meant to grow: more fields can be added to it without a client that
+ * ignores them noticing.
+ */
+export const OwnerTabEntry = Schema.Struct({
+  id: Schema.String,
+  /** The page's title as the browser reports it: page content, shown as text; empty for a page without one. */
+  title: Schema.String,
+});
+
+export type OwnerTabEntry = typeof OwnerTabEntry.Type;
+
+/**
+ * The Owner tabs of the Browser Pane, in the order they were opened, and the one shown (`shown`, an `id` of `tabs`;
+ * absent when there are none). It is the browser host's, so every device shows the same tab. It holds no Live View link:
+ * those answer `owner_tab_view`, to the one client that asked.
+ */
+export const OwnerTabListing = Schema.Struct({
+  tabs: Schema.Array(OwnerTabEntry),
+  shown: Schema.optionalKey(Schema.String),
+});
+
+export type OwnerTabListing = typeof OwnerTabListing.Type;
+
+/**
+ * The Owner tabs after a client opened, showed or closed one: sent to every client so that they follow (a second device
+ * switches with the first). Like the answer to `owner_tabs` it holds no link.
+ */
+export const OwnerTabsMessage = Schema.Struct({
+  type: Schema.Literal("owner_tabs"),
+  ...OwnerTabListing.fields,
+});
+
 /** A file a Slash command hands the owner, such as `/export`'s transcript, for the client to download. */
 export const CommandFile = Schema.Struct({
   name: Schema.String,
@@ -1005,6 +1085,7 @@ export const ServerMessage = Schema.Union([
   SecretRequests,
   ApprovalRequests,
   BrowserHandoffRequests,
+  OwnerTabsMessage,
   TaskGraphMessage,
   UsageMessage,
   ChangesMessage,

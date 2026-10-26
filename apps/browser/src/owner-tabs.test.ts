@@ -21,8 +21,10 @@ const ownerTabsOver = (
   store = records(),
   tabs = new Map<string, Tab>(),
   unreachable?: Error,
+  adoptFails = false,
 ) => {
   const opened: string[] = [];
+  const adopted: Array<readonly [string, string]> = [];
   const connected: string[] = [];
   const forgotten: string[] = [];
   let ids = 0;
@@ -32,6 +34,28 @@ const ownerTabsOver = (
     newId: () => `id-${++ids}`,
     browser: {
       tabOf: (scope) => Promise.resolve(tabs.get(scope)),
+      tabsOf: (scopes) =>
+        Promise.resolve(
+          new Map(
+            scopes.flatMap((scope) => {
+              const tab = tabs.get(scope);
+
+              return tab === undefined ? [] : [[scope, tab] as const];
+            }),
+          ),
+        ),
+      adoptTab: (scope, targetId) => {
+        if (adoptFails)
+          return Promise.reject(new Error("The browser was closed while the tab was recorded"));
+
+        adopted.push([scope, targetId]);
+
+        const tab = { browserSessionId: "browser-1", targetId };
+
+        tabs.set(scope, tab);
+
+        return Promise.resolve(tab);
+      },
       openTab: async (scope) => {
         opened.push(scope);
         // Opening takes a moment, so two opens at once would both see no tab.
@@ -63,7 +87,7 @@ const ownerTabsOver = (
     },
   });
 
-  return { ownerTabs, store, tabs, opened, connected, forgotten };
+  return { ownerTabs, store, tabs, opened, adopted, connected, forgotten };
 };
 
 /** The targets of a browser with Owner tab `owner-1` and a pop-up it opened, which opened one of its own. */
@@ -73,8 +97,8 @@ const withWindows = () =>
       targetInfos: [
         page("owner-1"),
         page("conversation-tab"),
-        page("popup-1", { openerId: "owner-1", title: "Sign in" }),
-        page("popup-2", { openerId: "popup-1", title: "Consent" }),
+        page("popup-1", { openerId: "owner-1", canAccessOpener: true, title: "Sign in" }),
+        page("popup-2", { openerId: "popup-1", canAccessOpener: true, title: "Consent" }),
       ],
     },
   });
@@ -219,8 +243,8 @@ describe("the Browser Pane's Owner tabs", () => {
       "Target.getTargets": {
         targetInfos: [
           page("owner-1"),
-          page("popup-1", { openerId: "owner-1", title: "Sign in" }),
-          page("popup-2", { openerId: "owner-1", title: "Help" }),
+          page("popup-1", { openerId: "owner-1", canAccessOpener: true, title: "Sign in" }),
+          page("popup-2", { openerId: "owner-1", canAccessOpener: true, title: "Help" }),
         ],
       },
       "Cloudflare.getLiveView": (params) => {
@@ -273,5 +297,343 @@ describe("the Browser Pane's Owner tabs", () => {
 
     expect(JSON.stringify([...store.list({ prefix: "" })])).not.toContain(TOKEN);
     expect(JSON.stringify([...store.list({ prefix: "" })])).not.toContain("live.browser.run");
+  });
+});
+
+describe("the Browser Pane's several Owner tabs", () => {
+  /**
+   * Owner tabs `a`, `b` and `c` (targets `owner-a`...) unless `ids` says, shown `shown`, over a browser whose pages are
+   * `targets`: each connection the host opens is the next of `reads`, all listing the same pages.
+   */
+  const withTabs = (targets: ReturnType<typeof page>[], shown = "a", ids = ["a", "b", "c"]) => {
+    const store = records();
+    const tabs = new Map<string, Tab>();
+
+    for (const id of ids) {
+      tabs.set(ownerTabScope(id), { browserSessionId: "browser-1", targetId: `owner-${id}` });
+    }
+
+    store.put("owner-tabs", { tabs: ids.map((id) => ({ id })), shown });
+
+    const reads = Array.from({ length: 8 }, () =>
+      fakeTransport({ "Target.getTargets": { targetInfos: targets } }),
+    );
+
+    return { ...ownerTabsOver([...reads], store, tabs), reads };
+  };
+
+  const owners = ["a", "b", "c"].map((id) =>
+    page(`owner-${id}`, { title: `Tab ${id.toUpperCase()}` }),
+  );
+
+  const closed = (cdp: ReturnType<typeof fakeTransport>) =>
+    cdp.sent
+      .filter((command) => command.method === "Target.closeTarget")
+      .map((command) => command.params);
+
+  it("lists the Owner tabs in the order they were opened, by title, with the one shown, and not a conversation's tab", async () => {
+    const { ownerTabs } = withTabs([...owners, page("conversation-tab", { title: "Agent's" })]);
+
+    expect(await ownerTabs.tabs()).toEqual({
+      tabs: [
+        { id: "a", title: "Tab A" },
+        { id: "b", title: "Tab B" },
+        { id: "c", title: "Tab C" },
+      ],
+      shown: "a",
+    });
+  });
+
+  it("lists none, connecting to nothing, when the owner has none or the browser is gone", async () => {
+    const { ownerTabs, connected } = ownerTabsOver([]);
+
+    expect(await ownerTabs.tabs()).toEqual({ tabs: [] });
+    expect(connected).toEqual([]);
+
+    const lost = withTabs(owners);
+
+    lost.tabs.clear();
+    expect(await lost.ownerTabs.tabs()).toEqual({ tabs: [] });
+    // The list is kept, for the Pane to say the Owner tab was replaced.
+    expect(lost.ownerTabs.list().tabs).toHaveLength(3);
+    expect(lost.connected).toEqual([]);
+  });
+
+  it("opens a blank Owner tab and shows it, after the others", async () => {
+    const { ownerTabs, opened } = withTabs([...owners, page("owner-1", { title: "" })]);
+
+    // The fake browser opens `owner-<n>`.
+    const listing = await ownerTabs.open();
+
+    expect(opened).toEqual([ownerTabScope("id-1")]);
+    expect(listing.shown).toBe("id-1");
+    expect(listing.tabs.map(({ id }) => id)).toEqual(["a", "b", "c", "id-1"]);
+    expect(ownerTabs.list().shown).toBe("id-1");
+  });
+
+  it("shows another Owner tab, as the host's shown one", async () => {
+    const { ownerTabs } = withTabs(owners);
+
+    expect((await ownerTabs.show("c")).shown).toBe("c");
+    expect(ownerTabs.list().shown).toBe("c");
+  });
+
+  it("does not show a tab that is not there", async () => {
+    const { ownerTabs, tabs } = withTabs(owners);
+
+    await gone(ownerTabs.show("nope"));
+
+    tabs.delete(ownerTabScope("b"));
+    await gone(ownerTabs.show("b"));
+    expect(ownerTabs.list().shown).toBe("a");
+  });
+
+  it("closes an Owner tab with the windows it opened, and the one shown gives way to its neighbour", async () => {
+    const { ownerTabs, reads, forgotten, tabs } = withTabs(
+      [
+        ...owners,
+        page("popup-b", { openerId: "owner-b", canAccessOpener: true }),
+        page("popup-of-popup-b", { openerId: "popup-b", canAccessOpener: true }),
+        // A tab a link of `b` opened is an Owner tab of its own: it stays.
+        page("link-page", { openerId: "owner-b", canAccessOpener: false }),
+        page("conversation-tab"),
+      ],
+      "b",
+    );
+
+    const listing = await ownerTabs.close("b");
+
+    // Its pop-ups close, the innermost first, then the tab; no other page is touched.
+    expect(reads.flatMap(closed)).toEqual([
+      { targetId: "popup-of-popup-b" },
+      { targetId: "popup-b" },
+      { targetId: "owner-b" },
+    ]);
+    expect(listing.tabs.map(({ id }) => id)).toEqual(["a", "c", "id-1"]);
+    // The tab its link opened was shown, and stays so.
+    expect(listing.shown).toBe("id-1");
+    expect(forgotten).toEqual([ownerTabScope("b")]);
+    expect(tabs.has(ownerTabScope("b"))).toBe(false);
+  });
+
+  it("lists a tab a link opened before closing anything, so a close that fails leaves no scope in no list", async () => {
+    const targets = [
+      ...owners,
+      page("popup-b", { openerId: "owner-b", canAccessOpener: true }),
+      page("link-page", { openerId: "owner-b", canAccessOpener: false }),
+    ];
+
+    const store = records();
+    const tabs = new Map<string, Tab>();
+
+    for (const id of ["a", "b", "c"]) {
+      tabs.set(ownerTabScope(id), { browserSessionId: "browser-1", targetId: `owner-${id}` });
+    }
+
+    store.put("owner-tabs", { tabs: [{ id: "a" }, { id: "b" }, { id: "c" }], shown: "a" });
+
+    const failing = fakeTransport({
+      "Target.getTargets": { targetInfos: targets },
+      "Target.closeTarget": () => {
+        throw new Error("Browser Run is not answering");
+      },
+    });
+
+    const first = ownerTabsOver([failing], store, tabs);
+
+    await expect(first.ownerTabs.close("b")).rejects.toThrow(/not answering/);
+    expect(first.adopted).toEqual([[ownerTabScope("id-1"), "link-page"]]);
+    expect(first.ownerTabs.list().tabs.map(({ id }) => id)).toEqual(["a", "b", "c", "id-1"]);
+
+    // The next look finds the page already listed: it is not recorded again under a new ID.
+    const second = ownerTabsOver(
+      [fakeTransport({ "Target.getTargets": { targetInfos: targets } })],
+      store,
+      tabs,
+    );
+
+    await second.ownerTabs.tabs();
+    expect(second.adopted).toEqual([]);
+  });
+
+  it("shows the neighbour on the right of the Owner tab shown when it closes, else on the left", async () => {
+    const { ownerTabs } = withTabs(owners, "b");
+
+    expect((await ownerTabs.close("b")).shown).toBe("c");
+    expect((await ownerTabs.close("c")).shown).toBe("a");
+  });
+
+  it("closing the last Owner tab leaves none, and an Owner tab not in the list is closed all the same", async () => {
+    const { ownerTabs, tabs, store } = withTabs([page("owner-a")], "a", ["a"]);
+
+    expect(await ownerTabs.close("a")).toEqual({ tabs: [] });
+    expect(store.get("owner-tabs")).toEqual({ tabs: [] });
+    expect(tabs.size).toBe(0);
+
+    expect(await ownerTabs.close("a")).toEqual({ tabs: [] });
+  });
+
+  it("never closes a conversation's tab", async () => {
+    const { ownerTabs, reads } = withTabs([...owners, page("conversation-tab")]);
+
+    expect((await ownerTabs.close("conversation-tab")).shown).toBe("a");
+    expect(reads.flatMap(closed)).toEqual([]);
+  });
+
+  it("makes a page an Owner tab opened with a link an Owner tab of its own, and keeps a pop-up a window", async () => {
+    const { ownerTabs, adopted, tabs } = withTabs([
+      ...owners,
+      page("link-page", { openerId: "owner-b", canAccessOpener: false, title: "Docs" }),
+      page("popup", { openerId: "owner-b", canAccessOpener: true, title: "Sign in" }),
+      page("conversation-tab"),
+      // Opened by a conversation's tab, not by an Owner tab.
+      page("agent-link-page", { openerId: "conversation-tab", canAccessOpener: false }),
+    ]);
+
+    const listing = await ownerTabs.tabs();
+
+    expect(listing.tabs).toEqual([
+      { id: "a", title: "Tab A" },
+      { id: "b", title: "Tab B" },
+      { id: "c", title: "Tab C" },
+      { id: "id-1", title: "Docs" },
+    ]);
+    expect(adopted).toEqual([[ownerTabScope("id-1"), "link-page"]]);
+    expect(tabs.get(ownerTabScope("id-1"))?.targetId).toBe("link-page");
+    // Opened from `b`, which is not the tab shown: it joins the list, and `a` stays shown.
+    expect(listing.shown).toBe("a");
+
+    // Read again, nothing more joins.
+    expect((await ownerTabs.tabs()).tabs).toHaveLength(4);
+    expect(adopted).toHaveLength(1);
+  });
+
+  it("shows a tab a link opened from the tab shown, also through its pop-up, and lists it once when read at once", async () => {
+    const { ownerTabs, adopted } = withTabs([
+      ...owners,
+      page("link-page", { openerId: "owner-a", canAccessOpener: false, title: "Docs" }),
+      page("popup", { openerId: "owner-a", canAccessOpener: true }),
+      page("deep-link-page", { openerId: "popup", canAccessOpener: false, title: "Deep" }),
+    ]);
+
+    const [first] = await Promise.all([ownerTabs.tabs(), ownerTabs.tabs()]);
+
+    expect(first.tabs.map(({ id }) => id)).toEqual(["a", "b", "c", "id-1", "id-2"]);
+    expect(first.shown).toBe("id-2");
+    expect(adopted).toEqual([
+      [ownerTabScope("id-1"), "link-page"],
+      [ownerTabScope("id-2"), "deep-link-page"],
+    ]);
+  });
+
+  it("leaves a page that would be the twenty-first Owner tab alone", async () => {
+    const ids = Array.from({ length: 20 }, (_, index) => `t${index}`);
+
+    const { ownerTabs, adopted } = withTabs(
+      [
+        ...ids.map((id) => page(`owner-${id}`)),
+        page("link-page", { openerId: "owner-t0", canAccessOpener: false }),
+      ],
+      "t0",
+      ids,
+    );
+
+    expect((await ownerTabs.tabs()).tabs).toHaveLength(20);
+    expect(adopted).toEqual([]);
+    await expect(ownerTabs.open()).rejects.toThrow(/20 Owner tabs/);
+  });
+
+  it("mints links to the pop-ups of the tab shown, not to a tab a link opened", async () => {
+    const { ownerTabs } = withTabs([
+      ...owners,
+      page("link-page", { openerId: "owner-a", canAccessOpener: false }),
+      page("popup", { openerId: "owner-a", canAccessOpener: true, title: "Sign in" }),
+      page("link-page-popup", { openerId: "link-page", canAccessOpener: true }),
+    ]);
+
+    const links = await ownerTabs.view(false);
+
+    expect(links.windows.map(({ targetId }) => targetId)).toEqual(["popup"]);
+  });
+
+  it("moves to a neighbour when the shown Owner tab closes itself, and mints links to it", async () => {
+    const { ownerTabs, tabs } = withTabs(owners, "b");
+
+    tabs.delete(ownerTabScope("b"));
+
+    const links = await ownerTabs.view(false);
+
+    expect(links.ownerTabId).toBe("c");
+    expect(ownerTabs.list()).toEqual({ tabs: [{ id: "a" }, { id: "c" }], shown: "c" });
+  });
+
+  it("leaves a page alone, starting no browser, when the browser closed before it could be recorded, and records it next time", async () => {
+    const targets = [
+      ...owners,
+      page("link-page", { openerId: "owner-b", canAccessOpener: false, title: "Docs" }),
+    ];
+
+    const store = records();
+    const tabs = new Map<string, Tab>();
+
+    for (const id of ["a", "b", "c"]) {
+      tabs.set(ownerTabScope(id), { browserSessionId: "browser-1", targetId: `owner-${id}` });
+    }
+
+    store.put("owner-tabs", { tabs: [{ id: "a" }, { id: "b" }, { id: "c" }], shown: "a" });
+
+    const reads = () =>
+      Array.from({ length: 4 }, () =>
+        fakeTransport({ "Target.getTargets": { targetInfos: targets } }),
+      );
+
+    const closed = ownerTabsOver(reads(), store, tabs, undefined, true);
+
+    expect((await closed.ownerTabs.tabs()).tabs.map(({ id }) => id)).toEqual(["a", "b", "c"]);
+    expect(closed.opened).toEqual([]);
+    expect(closed.adopted).toEqual([]);
+
+    const later = ownerTabsOver(reads(), store, tabs);
+
+    expect((await later.ownerTabs.tabs()).tabs.map(({ title }) => title)).toEqual([
+      "Tab A",
+      "Tab B",
+      "Tab C",
+      "Docs",
+    ]);
+  });
+
+  it("counts the Owner tabs that are there against the twenty, not stored ones that are gone", async () => {
+    const stale = Array.from({ length: 25 }, (_, index) => `old${index}`);
+    const { ownerTabs, store, opened } = withTabs(owners);
+
+    store.put("owner-tabs", {
+      tabs: [...stale.map((id) => ({ id })), { id: "a" }, { id: "b" }, { id: "c" }],
+      shown: "a",
+    });
+
+    const listing = await ownerTabs.open();
+
+    expect(opened).toEqual([ownerTabScope("id-1")]);
+    expect(listing.tabs.map(({ id }) => id)).toEqual(["a", "b", "c", "id-1"]);
+  });
+
+  it("answers listings asked while one waits with a single listing", async () => {
+    const { ownerTabs, connected } = withTabs(owners);
+
+    await Promise.all(Array.from({ length: 6 }, () => ownerTabs.tabs()));
+
+    // The first runs at once and the five asked meanwhile share the next.
+    expect(connected.length).toBeLessThanOrEqual(2);
+  });
+
+  it("closes an Owner tab on one connection", async () => {
+    const { ownerTabs, connected } = withTabs([
+      ...owners,
+      page("popup", { openerId: "owner-b", canAccessOpener: true }),
+    ]);
+
+    await ownerTabs.close("b");
+    expect(connected).toHaveLength(1);
   });
 });

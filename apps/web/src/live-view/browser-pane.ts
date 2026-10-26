@@ -8,12 +8,18 @@
 // one that finds the Owner tab gone ends the connection, for the Pane to offer a new one. An ask that opened says
 // whether the Owner tab shown before was gone (`replaced`), for the Pane to say why it shows another. The connection
 // knows none of this, nor do the handoff's files.
+//
+// Which Owner tab is shown is the browser host's, so it is not this view's to choose: the Pane's tab strip tells the
+// Session to show another (`SessionClient.showOwnerTab`), and every device's view, this one included, `follow`s the tab
+// the Session says is shown by connecting afresh, to the tab the next ask mints links for. A page hearing
+// `Page.windowOpen` may have opened a tab of its own, which the Session lists, so the Pane is told (`windowOpened`).
 
 import { OWNER_TAB_GONE, type OwnerTabLinks } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { LiveViewError } from "./cdp-socket.ts";
+import { coalesced } from "./coalesced.ts";
 import {
   LiveViewOver,
   make,
@@ -64,6 +70,12 @@ export interface BrowserPaneView extends LiveView {
    */
   readonly replaced: SubscriptionRef.SubscriptionRef<boolean>;
   readonly dismiss: Effect.Effect<void>;
+  /**
+   * Follow the Owner tab the Session says is shown (`undefined`: none): when it is not the one this view is connected to,
+   * connect afresh, which mints links for the one shown; and when the view ended (its Owner tab was gone) and one is shown
+   * now, resume. Nothing before the first links, or while it already shows it.
+   */
+  readonly follow: (shown: string | undefined) => Effect.Effect<void>;
   /** Open `url` in the tab (an address the URL bar took: `address.ts`); fails with why the page could not be opened. */
   readonly navigate: (url: string) => Effect.Effect<void, LiveViewError>;
   /** Back and forward in the tab's history; nothing when there is nowhere to go. */
@@ -86,16 +98,30 @@ const pageOf = (history: NavigationHistory): OwnerTabPage => ({
  */
 export const openBrowserPaneView = Effect.fnUntraced(function* (
   mint: (open: boolean) => Effect.Effect<OwnerTabLinks, { readonly message: string }>,
-  { opens = true }: { readonly opens?: boolean } = {},
+  {
+    opens = true,
+    windowOpened = Effect.void,
+  }: {
+    readonly opens?: boolean;
+    /**
+     * Run when a page of the Owner tab opened a window: it may be a tab of its own, which the Session lists. Coalesced
+     * (`coalesced`): at most one running and one waiting.
+     */
+    readonly windowOpened?: Effect.Effect<void>;
+  } = {},
 ) {
+  const windowOpenedOnce = coalesced(windowOpened);
   const page = yield* SubscriptionRef.make(INITIAL_OWNER_TAB_PAGE);
   const replaced = yield* SubscriptionRef.make(false);
   let opened = !opens;
+  /** The Owner tab the last links were minted for. */
+  let connectedTab: string | undefined;
 
   const links: LinkSource = Effect.suspend(() => mint(!opened)).pipe(
     Effect.tap((answer) => (answer.replaced ? SubscriptionRef.set(replaced, true) : Effect.void)),
-    Effect.map(({ tab, windows }) => {
+    Effect.map(({ tab, windows, ownerTabId }) => {
       opened = true;
+      connectedTab = ownerTabId;
 
       return { tab, windows };
     }),
@@ -122,6 +148,7 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
         frame.parentId === undefined ? refresh(tab) : Effect.void,
       );
       tab.on("Page.navigatedWithinDocument", Ignored, () => refresh(tab));
+      tab.on("Page.windowOpen", Ignored, () => windowOpenedOnce);
 
       yield* refresh(tab);
     });
@@ -146,6 +173,14 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
     page,
     replaced,
     dismiss: SubscriptionRef.set(replaced, false),
+    follow: (shown) =>
+      Effect.suspend(() => {
+        if (shown === undefined) return Effect.void;
+
+        if (SubscriptionRef.getUnsafe(view.state).status === "ended") return view.resume;
+
+        return connectedTab === undefined || shown === connectedTab ? Effect.void : view.reconnect;
+      }),
     navigate: (url) =>
       view.withTab((tab) =>
         tab

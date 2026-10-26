@@ -5,6 +5,7 @@ import {
   EMPTY_VIEW,
   type ApprovalRequest,
   type BrowserHandoffRequest,
+  type OwnerTabListing,
   type ClientMessage,
   type SecretRequest,
   type SessionUsage,
@@ -107,6 +108,11 @@ export interface SessionState {
    * socket has listed them: a Pane closes for a handoff missing from a list it was sent, not from one not sent yet.
    */
   readonly browserHandoffRequests: readonly BrowserHandoffRequest[] | null;
+  /**
+   * The Browser Pane's Owner tabs and the one shown, as of the last answer or message about them (the Session sends them
+   * to every client when one changes them); null until the Pane has asked. They hold no Live View link.
+   */
+  readonly ownerTabs: OwnerTabListing | null;
   /** The subagent threads being watched, by conversation ID. */
   readonly threads: Readonly<Record<string, ThreadState>>;
   /** The Session's subagents and background work, as of the last summary; null until it sends one. */
@@ -138,6 +144,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   secretLifetimeMinutes: 15,
   approvalRequests: [],
   browserHandoffRequests: null,
+  ownerTabs: null,
   threads: {},
   taskGraph: null,
   usage: null,

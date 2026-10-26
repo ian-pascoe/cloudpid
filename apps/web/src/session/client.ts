@@ -21,6 +21,7 @@ import {
   SessionTree,
   LiveViewLinks,
   OwnerTabLinks,
+  OwnerTabListing,
   reduceEvents,
   withEarlier,
   SESSION_DELETED_CLOSE_CODE,
@@ -260,6 +261,17 @@ export interface SessionClient {
    * opened when the owner has none. Fails as `catalog` does, and with the Session's "the Owner tab is gone" when it is.
    */
   readonly ownerTabView: (open: boolean) => Effect.Effect<OwnerTabLinks, SessionCommandError>;
+  /**
+   * The Owner tabs of the Browser Pane by title, and the one shown (`SessionState.ownerTabs` follows every answer). The
+   * Session also finds the tabs a page opened with a link here, so the Pane asks now and then while it is open.
+   */
+  readonly ownerTabs: Effect.Effect<OwnerTabListing, SessionCommandError>;
+  /** Open a blank Owner tab and show it (the tab strip's **+**). Fails for an archived Session. */
+  readonly openOwnerTab: Effect.Effect<OwnerTabListing, SessionCommandError>;
+  /** Show Owner tab `id` on every device. Fails with the Session's "the Owner tab is gone" when it is. */
+  readonly showOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, SessionCommandError>;
+  /** Close Owner tab `id` and the windows it opened. */
+  readonly closeOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, SessionCommandError>;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -299,8 +311,8 @@ interface PendingSubmit {
 type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
 
 /**
- * A request whose answer an Effect waits for: `catalog`, `files`, `command`, `history`, `live_view` and
- * `owner_tab_view`.
+ * A request whose answer an Effect waits for: `catalog`, `files`, `command`, `history`, `live_view`,
+ * `owner_tab_view` and the `owner_tab_*` commands.
  */
 interface PendingRequest {
   readonly answer: Deferred.Deferred<ResultValue, SessionCommandError>;
@@ -337,6 +349,8 @@ const decodeNavigated = Schema.decodeUnknownOption(Navigated);
 const decodeLiveViewLinks = Schema.decodeUnknownOption(LiveViewLinks);
 
 const decodeOwnerTabLinks = Schema.decodeUnknownOption(OwnerTabLinks);
+
+const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
 
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
@@ -529,6 +543,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "secretLifetimeMinutes"
         | "approvalRequests"
         | "browserHandoffRequests"
+        | "ownerTabs"
         | "taskGraph"
         | "usage"
         | "todos"
@@ -803,6 +818,14 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         update({ browserHandoffRequests: message.requests });
 
         return;
+      case "owner_tabs": {
+        const { type: _type, ...tabs } = message;
+
+        update({ ownerTabs: tabs });
+
+        return;
+      }
+
       case "approval_requests":
         update({ approvalRequests: message.requests });
 
@@ -1001,6 +1024,15 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         ),
       );
     });
+
+  /** A request answered with the Owner tabs, which are then the Session's as this client knows them. */
+  const ownerTabsRequest = (
+    message: (id: string) => ClientMessage,
+    acts = false,
+  ): Effect.Effect<OwnerTabListing, SessionCommandError> =>
+    request(message, decodeOwnerTabListing, acts).pipe(
+      Effect.tap((ownerTabs) => Effect.sync(() => update({ ownerTabs }))),
+    );
 
   /** Address a request's message to `conversationId` when it names a subagent's conversation. */
   const addressTo = (
@@ -1350,6 +1382,14 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       request((id) => ({ type: "live_view", id, requestId }), decodeLiveViewLinks),
     ownerTabView: (open) =>
       request((id) => ({ type: "owner_tab_view", id, open }), decodeOwnerTabLinks),
+    ownerTabs: Effect.suspend(() => ownerTabsRequest((id) => ({ type: "owner_tab_list", id }))),
+    openOwnerTab: Effect.suspend(() =>
+      ownerTabsRequest((id) => ({ type: "owner_tab_open", id }), true),
+    ),
+    showOwnerTab: (ownerTabId) =>
+      ownerTabsRequest((id) => ({ type: "owner_tab_show", id, ownerTabId }), true),
+    closeOwnerTab: (ownerTabId) =>
+      ownerTabsRequest((id) => ({ type: "owner_tab_close", id, ownerTabId }), true),
   };
 
   return client;

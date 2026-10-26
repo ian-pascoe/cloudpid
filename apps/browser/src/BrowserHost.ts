@@ -16,6 +16,7 @@ import {
   type HandoffStatus,
   type LiveViewLinks,
   type OwnerTabLinks,
+  type OwnerTabListing,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -28,7 +29,7 @@ import { DurableObject } from "cloudflare:workers";
 import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
-import { forgetScope, openTab, tabIn, tabOf } from "./tab.ts";
+import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabsIn } from "./tab.ts";
 
 /** What the browser Worker binds (`resource.ts`). */
 export type BrowserHostEnv = {
@@ -82,6 +83,15 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
       browser: {
         tabOf: (scope) =>
           tabIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scope),
+        tabsOf: (scopes) =>
+          tabsIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scopes),
+        adoptTab: (scope, targetId, browserSessionId) =>
+          adoptTab(
+            { name: this.#browser.name, store: this.#store },
+            scope,
+            targetId,
+            browserSessionId,
+          ),
         openTab: (scope) => openTab(this.#browser, scope),
         forget: (scope) => forgetScope({ name: this.#browser.name, store: this.#store }, scope),
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
@@ -144,6 +154,29 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    */
   ownerTabView(open: boolean): Promise<OwnerTabLinks> {
     return this.#ownerTabs.view(open);
+  }
+
+  /**
+   * The Owner tabs by title and the one shown, as the browser has them now. A link a page opened in a new tab joins the
+   * list; a pop-up stays a window of its tab. Starts nothing: with no browser running the list is empty.
+   */
+  ownerTabs(): Promise<OwnerTabListing> {
+    return this.#ownerTabs.tabs();
+  }
+
+  /** Open a blank Owner tab and show it, starting the browser when none runs. */
+  openOwnerTab(): Promise<OwnerTabListing> {
+    return this.#ownerTabs.open();
+  }
+
+  /** Show Owner tab `id`, on every device (the one shown is this object's). */
+  showOwnerTab(id: string): Promise<OwnerTabListing> {
+    return this.#ownerTabs.show(id);
+  }
+
+  /** Close Owner tab `id` and the windows it opened; the conversations' tabs are never touched. */
+  closeOwnerTab(id: string): Promise<OwnerTabListing> {
+    return this.#ownerTabs.close(id);
   }
 
   /** Wait up to `maxMs` for the handoff `requestId` to end, and say where it stands. */

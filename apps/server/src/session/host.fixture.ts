@@ -21,6 +21,7 @@ import {
   makeBrowserSession,
   OWNER_TAB_GONE,
   type OwnerTabLinks,
+  type OwnerTabListing,
 } from "@cloudpid/extensions/browser";
 import {
   type AgentChangeLog,
@@ -193,6 +194,10 @@ const HANDOFF_GRACE_MS = 50;
 /** The object's key-value storage, as the test browser host uses it. */
 type Kv = DurableObjectStorage["kv"];
 
+/** The Owner tabs of the test browser host, in the object's storage. */
+const ownerTabListing = (kv: Kv): OwnerTabListing =>
+  kv.get<OwnerTabListing>("owner-tab-list") ?? { tabs: [] };
+
 /** Rounds of waiting on a handoff, which end early when the test completes it. */
 const roundWaiters = new Map<string, () => void>();
 
@@ -264,6 +269,41 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
       return kv.get<boolean>("owner-tab") === true
         ? Effect.succeed({ ...OWNER_TAB_LINKS, opened, replaced })
         : Effect.fail(BrowserError.make({ message: `ownerTabView: Error: ${OWNER_TAB_GONE}` }));
+    }),
+  ownerTabs: Effect.sync(() => ownerTabListing(kv)),
+  openOwnerTab: Effect.sync(() => {
+    const { tabs } = ownerTabListing(kv);
+    const id = `owner-tab-${tabs.length + 1}`;
+
+    kv.put("owner-tab-list", { tabs: [...tabs, { id, title: "" }], shown: id });
+
+    return ownerTabListing(kv);
+  }),
+  showOwnerTab: (id) =>
+    Effect.suspend(() => {
+      const { tabs } = ownerTabListing(kv);
+
+      if (!tabs.some((tab) => tab.id === id)) {
+        return Effect.fail(
+          BrowserError.make({ message: `showOwnerTab: Error: ${OWNER_TAB_GONE}` }),
+        );
+      }
+
+      kv.put("owner-tab-list", { tabs, shown: id });
+
+      return Effect.succeed(ownerTabListing(kv));
+    }),
+  closeOwnerTab: (id) =>
+    Effect.sync(() => {
+      const { tabs, shown } = ownerTabListing(kv);
+      const left = tabs.filter((tab) => tab.id !== id);
+
+      kv.put(
+        "owner-tab-list",
+        shown === undefined || shown === id ? { tabs: left } : { tabs: left, shown },
+      );
+
+      return ownerTabListing(kv);
     }),
   endHandoff: (requestId) =>
     Effect.sync(() => {

@@ -27,6 +27,7 @@ import * as Socket from "effect/socket/Socket";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { CdpCommand } from "./cdp.ts";
 import { LiveViewError, openPage, type CdpPage } from "./cdp-socket.ts";
+import { coalesced } from "./coalesced.ts";
 import type { DeviceMetrics, ScreencastSize } from "./viewport.ts";
 import { selectWindow, stripOf, windowClosed, type WindowStrip } from "./windows.ts";
 
@@ -161,6 +162,19 @@ export interface LiveView {
   readonly returned: Effect.Effect<void>;
   /** Try again after the Live View was lost. */
   readonly retry: Effect.Effect<void>;
+  /**
+   * Connect afresh now, with new links and the viewport applied again: the link source shows another tab than the one
+   * connected (a Browser Pane following the Owner tab another device switched to). It runs in the Live View's own fiber,
+   * so a caller that is interrupted after it began (a newer switch replacing it) does not leave the Live View closed and
+   * unconnected. Nothing once the Live View is over.
+   */
+  readonly reconnect: Effect.Effect<void>;
+  /**
+   * Connect afresh after the link source ended the Live View, when it has links again: a Browser Pane whose Owner tab was
+   * gone and another is shown now. The Live View is `connecting` again, and ends again if the source says it is over.
+   * Nothing once the scope is closed.
+   */
+  readonly resume: Effect.Effect<void>;
   /** Run `use` with the tab's connection; fails when it is not connected. */
   readonly withTab: <A>(
     use: (tab: TabHandle) => Effect.Effect<A, LiveViewError>,
@@ -407,7 +421,8 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
       }),
     );
 
-  const windowOpened: Effect.Effect<void> = Effect.ignore(refresh(true));
+  /** A page opened a window; however often pages say so, one look runs and one waits. */
+  const windowOpened: Effect.Effect<void> = coalesced(refresh(true).pipe(Effect.ignore));
 
   /**
    * The window shown lost its connection: back to its opener, and the windows are read again. The host decides whether
@@ -507,6 +522,11 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
       yield* Effect.sleep(Duration.millis(RECONNECT_DELAY_MS));
     }
   });
+
+  /** Close the connections and connect afresh. */
+  const switchTab: Effect.Effect<void> = lock
+    .withPermits(1)(Effect.sync(closeAll))
+    .pipe(Effect.andThen(reconnect));
 
   const answers = (page: CdpPage) =>
     page.call("Cloudflare.getSessionId", {}, Ignored, RETURN_PING_MS).pipe(
@@ -637,6 +657,15 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
       }
     }).pipe(Effect.scoped),
     retry: Effect.suspend(() => (current.status === "lost" ? reconnect : Effect.void)),
+    reconnect: Effect.sync(() => {
+      if (!isOver()) run(switchTab);
+    }),
+    resume: Effect.sync(() => {
+      if (closing) return;
+
+      over = false;
+      run(switchTab);
+    }),
     withTab: (use) =>
       Effect.suspend(() =>
         tab === null

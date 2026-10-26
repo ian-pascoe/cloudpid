@@ -13,6 +13,7 @@ import type {
   HandoffStatus,
   LiveViewLinks,
   OwnerTabLinks,
+  OwnerTabListing,
 } from "./contract.ts";
 
 export {
@@ -31,7 +32,9 @@ export {
   type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
   OWNER_TAB_GONE,
+  type OwnerTabEntry,
   type OwnerTabLinks,
+  type OwnerTabListing,
 } from "./contract.ts";
 
 /** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
@@ -70,6 +73,17 @@ export type BrowserHostService = {
    * and `open` is false.
    */
   readonly ownerTabView: (open: boolean) => Effect.Effect<OwnerTabLinks, BrowserError>;
+  /**
+   * The Owner tabs by title and the one shown. A link a page opened in a new tab joins the list; a pop-up stays a window
+   * of its tab. Starts nothing: with no browser running the list is empty.
+   */
+  readonly ownerTabs: Effect.Effect<OwnerTabListing, BrowserError>;
+  /** Open a blank Owner tab and show it, starting the browser when none runs; the list after it. */
+  readonly openOwnerTab: Effect.Effect<OwnerTabListing, BrowserError>;
+  /** Show Owner tab `id`; the list after it. Fails (its message holds `OWNER_TAB_GONE`) when there is no such tab. */
+  readonly showOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
+  /** Close Owner tab `id` and the windows it opened; the list after it. A tab already gone is not an error. */
+  readonly closeOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   readonly waitHandoff: (
     requestId: string,
