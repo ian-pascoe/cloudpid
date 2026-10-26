@@ -2,6 +2,7 @@
 // What the browser host says to Browser Run over CDP for the owner's Live Views (ADR-0013), a Browser Handoff's
 // (`./handoff.ts`) and the Browser Pane's (`./owner-tabs.ts`) alike: the connection it speaks over, the pages a tab
 // opened, and the 60-second links that open them. Nothing here keeps or logs a link.
+import type { LiveViewLinks, LiveViewWindow } from "@cloudpid/extensions/browser/contract";
 import * as Schema from "effect/Schema";
 
 /** What a CDP command takes: JSON. */
@@ -39,6 +40,15 @@ export const LIVE_VIEW_MS = 60_000;
 
 const LiveView = Schema.Struct({ webSocketDebuggerUrl: Schema.String });
 
+/** A page a tab opened, as `windowsOf` finds it. */
+export type OpenedWindow = {
+  readonly targetId: string;
+  readonly type: string;
+  readonly title: string;
+  readonly url: string;
+  readonly openerId: string;
+};
+
 const Targets = Schema.Struct({
   targetInfos: Schema.Array(
     Schema.Struct({
@@ -52,8 +62,8 @@ const Targets = Schema.Struct({
 });
 
 /**
- * Send `method` and read the fields `reply` names of its answer: an answer without them fails. It goes in CDP session
- * `cdpSessionId`, or to the browser itself when that is undefined.
+ * Send `method` and read the fields `reply` names of its answer: an answer without them fails, and any other field is
+ * ignored. It goes in CDP session `cdpSessionId`, or to the browser itself when that is undefined.
  */
 export const ask = async <A>(
   live: { readonly transport: CdpTransport; readonly cdpSessionId: string | undefined },
@@ -89,7 +99,10 @@ export const mintLink = async (
  * and new tabs, `noopener` ones included, all name their opener (`openerId`, the spike, #152). A page with no opener (a
  * tab the agent made with `Target.createTarget`, another conversation's) is not one of them.
  */
-export const windowsOf = async (transport: CdpTransport, tabId: string) => {
+export const windowsOf = async (
+  transport: CdpTransport,
+  tabId: string,
+): Promise<OpenedWindow[]> => {
   const { targetInfos } = await ask(
     { transport, cdpSessionId: undefined },
     "Target.getTargets",
@@ -98,7 +111,7 @@ export const windowsOf = async (transport: CdpTransport, tabId: string) => {
   );
 
   const pages = targetInfos.filter((target) => target.type === "page");
-  const found: Array<(typeof pages)[number] & { readonly openerId: string }> = [];
+  const found: OpenedWindow[] = [];
   const openers = [tabId];
 
   // Breadth first, so a window comes after the one that opened it; a page is taken once, whatever its opener says.
@@ -116,4 +129,40 @@ export const windowsOf = async (transport: CdpTransport, tabId: string) => {
   }
 
   return found;
+};
+
+/**
+ * Fresh links to tab `tab.targetId` (sent in CDP session `tab.cdpSessionId`, or to the browser) and to every window it
+ * opened (`windowsOf`), each minted on the browser. `noting` sees the windows found before their links are minted. A
+ * window that closes before its link is minted is left out, as one that closed before the listing is; Browser Run saying
+ * the tab itself is not there fails the call (`isNoTarget`), for the caller to say what is gone.
+ */
+export const mintViewLinks = async (
+  transport: CdpTransport,
+  tab: { readonly targetId: string; readonly cdpSessionId?: string | undefined },
+  noting?: (windows: ReadonlyArray<OpenedWindow>) => Promise<void>,
+): Promise<LiveViewLinks> => {
+  const [link, found] = await Promise.all([
+    mintLink(transport, tab.targetId, tab.cdpSessionId),
+    windowsOf(transport, tab.targetId),
+  ]);
+
+  await noting?.(found);
+
+  const minted = await Promise.all(
+    found.map(async ({ targetId, openerId, title }): Promise<LiveViewWindow | undefined> => {
+      try {
+        return { targetId, openerId, title, link: await mintLink(transport, targetId) };
+      } catch (error) {
+        if (isNoTarget(error)) return undefined;
+
+        throw error;
+      }
+    }),
+  );
+
+  return {
+    tab: { targetId: tab.targetId, link },
+    windows: minted.filter((window) => window !== undefined),
+  };
 };

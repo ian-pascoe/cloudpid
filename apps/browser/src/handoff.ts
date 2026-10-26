@@ -27,7 +27,6 @@ import {
   type HandoffStatus,
   LIVE_VIEW_HANDOFF_OVER,
   type LiveViewLinks,
-  type LiveViewWindow,
 } from "@cloudpid/extensions/browser/contract";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -36,7 +35,7 @@ import {
   BrowserGoneError,
   type CdpTransport,
   isNoTarget,
-  mintLink,
+  mintViewLinks,
   windowsOf,
 } from "./cdp.ts";
 
@@ -516,24 +515,12 @@ export class HandoffHost {
 
     const live = await this.#connection(record);
 
-    const [tab, found] = await Promise.all([
-      // The tab's in its own session, as the handoff's other commands; the windows' on the browser.
-      mintLink(live.transport, record.targetId, live.cdpSessionId),
-      windowsOf(live.transport, record.targetId),
-    ]);
-
-    await this.#noteWindowSizes(requestId, live, found);
-
-    const windows = await Promise.all(
-      found.map(async ({ targetId, openerId, title }): Promise<LiveViewWindow> => ({
-        targetId,
-        openerId,
-        title,
-        link: await mintLink(live.transport, targetId),
-      })),
+    // The tab's in its own session, as the handoff's other commands; the windows' on the browser.
+    return mintViewLinks(
+      live.transport,
+      { targetId: record.targetId, cdpSessionId: live.cdpSessionId },
+      (found) => this.#noteWindowSizes(requestId, live, found),
     );
-
-    return { tab: { targetId: record.targetId, link: tab }, windows };
   }
 
   /** Note the size of each of `windows` the record has none for yet; a window that cannot be read is left out. */

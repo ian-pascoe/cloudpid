@@ -3,6 +3,7 @@
 // event, and finds a handoff again after the host restarts (a second `HandoffHost` over the same records).
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
 import type { Schema } from "effect";
+import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { BrowserGoneError, type CdpEvent } from "./cdp.ts";
 import {
@@ -442,6 +443,35 @@ describe("Live View links", () => {
     });
     // A link is the client's: it is not kept.
     expect(JSON.stringify([...store.list({ prefix: "" })])).not.toContain(TOKEN);
+  });
+
+  it("leaves out a window that closes between the listing and its link", async () => {
+    const cdp = fakeTransport({
+      "Target.getTargets": {
+        targetInfos: [
+          page("tab-1", { attached: true }),
+          page("popup-1", { openerId: "tab-1", title: "Sign in" }),
+          page("popup-2", { openerId: "tab-1", title: "Help" }),
+        ],
+      },
+      "Cloudflare.getLiveView": (params) => {
+        const asked = params?.["targetId"];
+        const targetId = Predicate.isString(asked) ? asked : "";
+
+        if (targetId === "popup-1") throw new Error("No target with given id found");
+
+        return { webSocketDebuggerUrl: linkTo(targetId) };
+      },
+    });
+
+    const { host } = hostOver([cdp]);
+
+    await host.start(REQUEST);
+
+    expect(await host.liveView("7")).toEqual({
+      tab: { targetId: "tab-1", link: linkTo("tab-1") },
+      windows: [{ targetId: "popup-2", openerId: "tab-1", title: "Help", link: linkTo("popup-2") }],
+    });
   });
 
   it("mints anew each time it is asked, on a new connection after the host restarted", async () => {
