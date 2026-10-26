@@ -8,6 +8,7 @@ import {
   type OwnerTabDriver,
   type OwnerTabListing,
   type ClientMessage,
+  type RepoChanges,
   type SecretRequest,
   type SessionUsage,
   type SessionView,
@@ -75,6 +76,20 @@ export interface ThreadState {
   readonly failure: string | null;
 }
 
+/**
+ * The Changes of the Session's Workspace (GLOSSARY.md → Changes), as the last `changes` message listed them, watched while
+ * the page is open (`watch_changes`).
+ */
+export interface ChangesState {
+  readonly repos: readonly RepoChanges[];
+  /** The owner's Refresh is starting the Container for the repos marked "may be out of date". */
+  readonly startingContainer: boolean;
+  /** How many lists this client has had: a file loaded from an earlier one may have changed since. */
+  readonly listing: number;
+  /** Why the last listing failed, until the next list; the list shown is the one before. */
+  readonly failure: string | null;
+}
+
 /** What an abort reaches: the root by default; see the `abort` command. */
 export interface AbortTarget {
   /** The subagent's conversation to abort. */
@@ -122,6 +137,8 @@ export interface SessionState {
   readonly taskGraph: TaskGraphSummary | null;
   /** What the Session has spent and its spend limit, as of the last message; null until it sends one. */
   readonly usage: SessionUsage | null;
+  /** The Changes, as of the last list; null until the Session sends one. */
+  readonly changes: ChangesState | null;
   /** The active branch's Todo List, as of the last one the Session sent; empty until it sends one. */
   readonly todos: readonly TodoTask[];
   /**
@@ -152,6 +169,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   threads: {},
   taskGraph: null,
   usage: null,
+  changes: null,
   todos: [],
   activeBranch: null,
   treeVersion: 0,

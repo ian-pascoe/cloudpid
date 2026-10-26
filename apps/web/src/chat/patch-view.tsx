@@ -3,22 +3,18 @@
 //
 // The seam for Annotations (a later slice): the `options` here are where the gutter selection (`enableLineSelection`,
 // `onGutterUtilityClick`) is switched on, and `FileDiff` takes `lineAnnotations` and `renderAnnotation` beside them.
-import { parsePatchFiles, registerCustomCSSVariableTheme } from "@pierre/diffs";
+import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useMemo } from "react";
 import type { DiffStyle } from "../call-diff.ts";
-
-/** The CSS-variables theme of the notebook skin: its `--diffs-*` variables are in `styles.css`. */
-const THEME = "cloudpid";
-
-registerCustomCSSVariableTheme(THEME, {});
+import { DIFF_THEME } from "../diff-theme.ts";
 
 const PatchView = ({ patch, diffStyle }: { patch: string; diffStyle: DiffStyle }) => {
   const file = useMemo(() => parsePatchFiles(patch)[0]?.files[0], [patch]);
 
   const options = useMemo(
     () => ({
-      theme: THEME,
+      theme: DIFF_THEME,
       diffStyle,
       disableFileHeader: true,
       overflow: "wrap" as const,

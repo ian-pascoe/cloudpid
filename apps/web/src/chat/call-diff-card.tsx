@@ -1,17 +1,16 @@
 // The Call diff on an `edit` or `write` card, and on the calls a `codemode` card lists (`docs/spec.md` → Diffs and
-// review): `+n −m` on the line, and, opened, the diff in place of the arguments.
+// review): `+n −m` on the line, and, opened, the diff in place of the arguments, with "Open in Diff pane".
 
-import {
-  lazy,
-  Suspense,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Arr from "effect/Array";
+import { lazy, Suspense, useId, useMemo, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
+import { useShownChanges } from "../diff-pane/changes-summary.tsx";
+import { findChange } from "../diff-pane/changes.ts";
+import { openDiffPaneAtom } from "../diff-pane/target.ts";
+import { taskGraphAtom } from "../session/atoms.ts";
+import { useWidth } from "../use-width.ts";
+import { useShownSessionId, useThreadConversation } from "./conversation.ts";
 import {
   type CallDiff,
   callDiffCounts,
@@ -61,34 +60,6 @@ export const CallDiffStats = ({ diff }: { diff: CallDiff }) => {
   );
 };
 
-/** The width of an element, measured before it is first painted and kept up to date; undefined until then. */
-const useWidth = () => {
-  const ref = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState<number>();
-
-  useLayoutEffect(() => {
-    const element = ref.current;
-
-    if (element === null) return undefined;
-
-    setWidth(element.getBoundingClientRect().width);
-
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-
-      if (entry !== undefined) setWidth(entry.contentRect.width);
-    });
-
-    observer.observe(element);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
-
-  return { ref, width };
-};
-
 /** What the opened diff shows in its box: the patch, or why there is none. */
 const DiffBox = ({
   diff,
@@ -117,6 +88,54 @@ const DiffBox = ({
     <Suspense fallback={<p className="p-2 text-sm text-muted-foreground">Loading the diff…</p>}>
       <PatchView patch={patch} diffStyle={diffStyleFor(width)} />
     </Suspense>
+  );
+};
+
+/**
+ * "Open in Diff pane": the Changes at the file the call wrote, while it still has Changes; otherwise it says it has none.
+ * A subagent in a Subagent Workspace wrote to that Workspace, whose Changes the Diff pane does not show: it has none.
+ */
+const OpenInDiffPane = ({ path }: { path: string }) => {
+  const sessionId = useShownSessionId();
+  const changes = useShownChanges();
+  const open = useAtomSet(openDiffPaneAtom(sessionId));
+  const conversationId = useThreadConversation();
+
+  const elsewhere = useAtomValue(
+    taskGraphAtom(sessionId),
+    (graph) =>
+      conversationId !== undefined &&
+      Arr.some(
+        graph?.agents ?? [],
+        (agent) => agent.conversationId === conversationId && agent.branch !== undefined,
+      ),
+  );
+
+  const [none, setNone] = useState(false);
+
+  if (elsewhere) return null;
+
+  return (
+    <>
+      <span role="status" className="shrink-0 text-xs text-muted-foreground empty:hidden">
+        {none ? "No Changes in this file now" : ""}
+      </span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-xs text-muted-foreground"
+        onClick={() => {
+          const file = findChange(changes?.repos ?? [], path);
+
+          setNone(file === undefined);
+
+          if (file !== undefined) open(file.id);
+        }}
+      >
+        Open in Diff pane
+      </Button>
+    </>
   );
 };
 
@@ -152,6 +171,7 @@ export const CallDiffBody = ({
         {diff.created === true && (
           <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">new file</span>
         )}
+        {path !== undefined && <OpenInDiffPane path={path} />}
         {call !== undefined && (
           <Button
             type="button"

@@ -6,6 +6,7 @@ import {
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { ReactNode } from "react";
+import { ChangesChip, useChangesWatch } from "../diff-pane/changes-summary.tsx";
 import { drainFirstMessageAtom } from "../draft-state.ts";
 import { PaneArea, PaneAreaToggle } from "../pane-area.tsx";
 import { canStopAllBelow } from "../session/agents.ts";
@@ -96,6 +97,8 @@ const LiveSession = ({
   useAtomMount(showLayoutAtom(sessionId));
 
   useAtomMount(usageAtom(sessionId));
+  // The Changes, for the chip, the Session details and the Diff pane: asked again as the page regains focus.
+  useChangesWatch(sessionId);
   // Deleted (here or elsewhere): its socket closed saying so, and the page leaves it.
   useAtomMount(leaveWhenDeletedAtom(sessionId));
   // A first message written in the draft is sent now that the Session's client is built.
@@ -155,6 +158,7 @@ const LiveSession = ({
                 actions={
                   <>
                     {menu}
+                    <ChangesChip />
                     <SessionDetailsButton />
                     <PaneAreaToggle />
                   </>

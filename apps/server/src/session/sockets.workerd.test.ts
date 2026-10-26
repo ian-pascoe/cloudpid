@@ -1054,6 +1054,7 @@ describe("a Changes watch", () => {
 
     const failed = {
       type: "error",
+      changes: true,
       message: "Listing the Changes failed: The Workspace is unreachable",
     };
 

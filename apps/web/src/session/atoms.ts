@@ -10,6 +10,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import { replying } from "../calls.ts";
 import { appRuntime } from "../runtime.ts";
 import { make } from "./client.ts";
 import {
@@ -134,6 +135,61 @@ export const usageAtom = Atom.family((sessionId: string) =>
 
     return get(usageFieldAtom(sessionId));
   }),
+);
+
+/** Watches the Changes of the Session's Workspace while mounted (a new socket asks again). */
+const watchingChangesAtom = Atom.family((sessionId: string) =>
+  appRuntime.atom((get) =>
+    get.result(sessionClientAtom(sessionId)).pipe(Effect.flatMap((client) => client.watchChanges)),
+  ),
+);
+
+const changesFieldAtom = slice((state) => state.changes);
+
+/**
+ * The Changes of the Session's Workspace, null until the Session lists them; asks the Session to send them while read.
+ * The Session's page reads them for as long as it is open, for the Changes chip.
+ */
+export const changesAtom = Atom.family((sessionId: string) =>
+  Atom.make((get) => {
+    get.mount(watchingChangesAtom(sessionId));
+
+    return get(changesFieldAtom(sessionId));
+  }),
+);
+
+/**
+ * Ask Session `sessionId` to list its Changes again: `true` for the owner's Refresh, which may start a stopped Container;
+ * `false` for the page regaining focus or the Diff pane opening. Each call answers its own caller (`useCall`).
+ */
+export const refreshChangesAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    replying((manual: boolean, get: Atom.FnContext) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.refreshChanges(manual))),
+    ),
+    { concurrent: true },
+  ),
+);
+
+/** What `change_file` asks for: a file of a repo, and a rename's old path. */
+export interface ChangeFileQuery {
+  readonly repo: string;
+  readonly path: string;
+  readonly oldPath?: string;
+}
+
+/** Ask Session `sessionId` for one changed file's two sides; each call answers its own caller (`useCall`). */
+export const changeFileAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    replying((query: ChangeFileQuery, get: Atom.FnContext) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.changeFile(query))),
+    ),
+    { concurrent: true },
+  ),
 );
 
 /** A subagent's conversation in a Session. */
