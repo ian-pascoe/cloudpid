@@ -160,7 +160,7 @@ export const SessionDetails = () => {
       id={PANEL_ID}
       aria-label="Session details"
       onKeyDown={onKeyDown}
-      className="absolute top-3 right-3 z-10 flex max-h-[min(28rem,60vh)] w-80 max-w-[calc(100%-1.5rem)] flex-col divide-y overflow-y-auto rounded-lg border bg-background/95 shadow-lg backdrop-blur-sm *:px-3 *:py-2.5"
+      className="absolute top-3 right-3 z-10 flex max-h-[min(28rem,60vh)] w-80 max-w-[calc(100%-1.5rem)] flex-col divide-y overflow-y-auto overscroll-y-contain rounded-lg border bg-background/95 shadow-lg backdrop-blur-sm *:px-3 *:py-2.5"
     >
       {!live && (
         <p role="status" className="text-xs text-muted-foreground">

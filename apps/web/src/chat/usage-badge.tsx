@@ -368,7 +368,7 @@ export const UsageBadge = () => {
         onToggle={(event) => setOpen(event.newState === "open")}
         // A tap inside leaves the focus on the badge, so its blur does not close the breakdown being read.
         onMouseDown={(event) => event.preventDefault()}
-        className="fixed m-0 max-h-[min(70vh,36rem)] w-80 max-w-[calc(100vw-8px)] overflow-y-auto rounded-lg border bg-background p-3 text-xs text-foreground shadow-sm"
+        className="fixed m-0 max-h-[min(70vh,36rem)] w-80 max-w-[calc(100vw-8px)] overflow-y-auto overscroll-y-contain rounded-lg border bg-background p-3 text-xs text-foreground shadow-sm"
       >
         <Breakdown usage={usage} container={container} />
       </div>

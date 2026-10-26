@@ -475,7 +475,7 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
   const status = fieldProblem ?? (uploading ? "Uploading the attachments…" : waiting);
 
   return (
-    <div ref={page} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+    <div ref={page} className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">
       <div className="flex items-center gap-2 px-2 pt-2 md:hidden">
         <button
           type="button"
