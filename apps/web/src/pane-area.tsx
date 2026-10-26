@@ -26,7 +26,7 @@ import { SubagentsPane, useSubagentsWorking } from "./chat/subagents-pane.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { cn } from "./lib/utils.ts";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
-import { handoffAgentsAtom } from "./live-view/atoms.ts";
+import { handoffAgentsAtom } from "./live-view/handoff-atoms.ts";
 import { NewPane } from "./new-pane.tsx";
 import {
   NEW_PANE,

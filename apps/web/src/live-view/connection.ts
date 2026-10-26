@@ -1,21 +1,20 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a page or two over native arrays and maps; and a plain constructor of a Live View.
 
-// One Live View's connections (#154, ADR-0013), as an Effect program that lives in a scope: the Pane's. It asks the
-// Session for Live View links (`live_view`, links good for 60 s) when it opens, on every reconnect, when a page hears
-// `Page.windowOpen`, and when a window's connection closes, and connects straight to Browser Run with them: frames never
-// cross the Session.
+// One Live View's connections (#154, ADR-0013), as an Effect program that lives in a scope: the Pane's. It asks its link
+// source (`LinkSource`: for a Browser Handoff, the Session's `live_view`; links good for 60 s) for links when it opens,
+// on every reconnect, when a page hears `Page.windowOpen`, and when a window's connection closes, and connects straight
+// to Browser Run with them: frames never cross the Session. It knows nothing of what the links are for: a Pane that has
+// more to say to the tab (the handoff's: `handoff.ts`) hooks the tab's connection with `AttachTab`.
 //
-// The handed-over tab's connection stays open while the Live View is: it reads the handoff's deadline
-// (`Cloudflare.getHandoffState`), hears `Cloudflare.handoffComplete` (from this device or another, which ends the Live
-// View), and sends Done or Failed. The page shown (the tab, or one of its windows: `windows.ts`) gets the viewport, the
-// screencast (`Page.bringToFront` too: a page not in front sends no frames) and the owner's input.
+// The tab's connection stays open while the Live View is. The page shown (the tab, or one of its windows: `windows.ts`)
+// gets the viewport, the screencast (`Page.bringToFront` too: a page not in front sends no frames) and the owner's input.
 //
 // iOS kills a socket within ~20 s in the background without a close event, and it still reads as open. So on return
 // (`returned`, called for `visibilitychange` to visible and `pageshow`) each connection is pinged with
 // `Cloudflare.getSessionId`; one that does not answer in `RETURN_PING_MS` is dropped and the Live View reconnects with
 // fresh links, the viewport applied again.
 
-import { LIVE_VIEW_HANDOFF_OVER, type LiveViewLinks } from "@cloudpid/protocol";
+import type { LiveViewLinks } from "@cloudpid/protocol";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -58,16 +57,12 @@ export type LiveViewStatus =
   | "reconnecting"
   /** Connecting failed: `failure` says why, and `retry` tries again. */
   | "lost"
-  /** The handoff ended (Done, Failed, Stop, timeout, or another device): the Pane closes. */
+  /** The link source is over (a handoff ended: Done, Failed, Stop, timeout, or another device): the Pane closes. */
   | "ended";
 
 export interface LiveViewState {
   readonly status: LiveViewStatus;
   readonly failure: string | null;
-  /** What the agent asked for, from the handoff's state. */
-  readonly instructions: string | null;
-  /** When the handoff times out, in ms since the epoch, from the handoff's state. */
-  readonly deadline: number | null;
   /** The tab, its windows, and the page shown; null until connected. */
   readonly strip: WindowStrip | null;
 }
@@ -75,8 +70,6 @@ export interface LiveViewState {
 export const INITIAL_LIVE_VIEW_STATE: LiveViewState = {
   status: "connecting",
   failure: null,
-  instructions: null,
-  deadline: null,
   strip: null,
 };
 
@@ -105,14 +98,6 @@ export interface Frame {
   readonly metadata: FrameMetadata;
 }
 
-/** `Cloudflare.getHandoffState`'s answer: `timeout - durationMs` is the time left. */
-const HandoffState = Schema.Struct({
-  active: Schema.Boolean,
-  instructions: Schema.optional(Schema.String),
-  timeout: Schema.optional(Schema.Finite),
-  durationMs: Schema.optional(Schema.Finite),
-});
-
 const Ignored = Schema.Unknown;
 
 const Evaluation = Schema.Struct({
@@ -120,9 +105,34 @@ const Evaluation = Schema.Struct({
   exceptionDetails: Schema.optional(Schema.Unknown),
 });
 
+/** Where a Live View gets its links: fresh ones for the tab and its windows on each call (good for 60 s). */
+export type LinkSource = Effect.Effect<LiveViewLinks, LiveViewError>;
+
+/** What a link source fails with once it is over for good (a handoff that ended): the Live View ends instead of retrying. */
+export const liveViewOver = LiveViewError.make({ message: "The Live View is over." });
+
+/** The tab's connection, as a Pane that puts more on it than the screen does sees it. */
+export interface TabHandle {
+  readonly call: CdpPage["call"];
+  /** Hear event `method` of the tab on each connection; `handler` runs in the Live View's scope. */
+  readonly on: <A>(
+    method: string,
+    schema: Schema.Decoder<A>,
+    handler: (params: A) => Effect.Effect<void>,
+  ) => void;
+  /** End the Live View: its connections close and its status is `ended`. */
+  readonly end: Effect.Effect<void>;
+}
+
+/**
+ * Run on every connection of the tab, once its domains are enabled and before the Live View is `live`. Failing with
+ * `liveViewOver` ends the Live View; any other failure fails the connection (it is tried again).
+ */
+export type AttachTab = (tab: TabHandle) => Effect.Effect<void, LiveViewError>;
+
 /** A Live View, for as long as its scope is open. */
 export interface LiveView {
-  /** Its status, the handoff's instructions and deadline, and the window strip: the same object until one changes. */
+  /** Its status and the window strip: the same object until one changes. */
   readonly state: SubscriptionRef.SubscriptionRef<LiveViewState>;
   /** Hear the frames of the page shown; returns how to stop. */
   readonly frames: (listener: (frame: Frame) => void) => () => void;
@@ -141,11 +151,10 @@ export interface LiveView {
   readonly returned: Effect.Effect<void>;
   /** Try again after the Live View was lost. */
   readonly retry: Effect.Effect<void>;
-  /**
-   * Done (`success`) or Failed with an optional `reason`: the viewport is cleared, then `Cloudflare.handoffComplete` is
-   * sent on the tab's connection, as the hosted page does. The Live View ends.
-   */
-  readonly finish: (success: boolean, reason?: string) => Effect.Effect<void, LiveViewError>;
+  /** Run `use` with the tab's connection; fails when it is not connected. */
+  readonly withTab: <A>(
+    use: (tab: TabHandle) => Effect.Effect<A, LiveViewError>,
+  ) => Effect.Effect<A, LiveViewError>;
   /** Clear the viewport the Live View set, best effort: the page is going away (`pagehide`). */
   readonly clearViewport: () => void;
   /**
@@ -155,17 +164,12 @@ export interface LiveView {
   readonly run: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
 }
 
-/** The handoff ended: a sentinel failure that stops whatever was connecting. */
-const ended = LiveViewError.make({ message: LIVE_VIEW_HANDOFF_OVER });
-
 /**
- * The Live View of a Browser Handoff, for as long as the scope is open, with `mint` asking the Session for fresh links
- * (`SessionClient.liveView`). It connects at once. Closing the scope clears the viewport (best effort) and closes its
- * connections; it does not end the handoff.
+ * A Live View of the browser tab `source` mints links for, for as long as the scope is open, with `attach` (if any) run
+ * on each connection of the tab. It connects at once. Closing the scope clears the viewport (best effort) and closes
+ * its connections; whatever the links are for goes on.
  */
-export const make = Effect.fnUntraced(function* (
-  mint: Effect.Effect<LiveViewLinks, { readonly message: string }>,
-) {
+export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: AttachTab) {
   const makeWebSocket = yield* Socket.WebSocketConstructor;
   const state = yield* SubscriptionRef.make(INITIAL_LIVE_VIEW_STATE);
   const lock = Semaphore.makeUnsafe(1);
@@ -231,15 +235,10 @@ export const make = Effect.fnUntraced(function* (
     return update({ status: "ended" });
   });
 
-  /** Fresh links, without the windows that closed in the last `GONE_GRACE_MS`; the Live View ends when the handoff has. */
+  /** Fresh links, without the windows that closed in the last `GONE_GRACE_MS`; the Live View ends when the source is over. */
   const links = Effect.gen(function* () {
-    const minted = yield* mint.pipe(
-      Effect.mapError((error) =>
-        error.message === LIVE_VIEW_HANDOFF_OVER
-          ? ended
-          : LiveViewError.make({ message: error.message }),
-      ),
-      Effect.tapError((error) => (error === ended ? end : Effect.void)),
+    const minted = yield* source.pipe(
+      Effect.tapError((error) => (error === liveViewOver ? end : Effect.void)),
     );
 
     const now = yield* Clock.currentTimeMillis;
@@ -288,7 +287,7 @@ export const make = Effect.fnUntraced(function* (
     });
 
   /** Hear a page's frames (the shown one's go to the listeners) and the windows it opens. */
-  const attach = (page: CdpPage) => {
+  const listen = (page: CdpPage) => {
     page.on("Page.screencastFrame", ScreencastFrame, (frame) => {
       page.send("Page.screencastFrameAck", { sessionId: frame.sessionId });
 
@@ -302,6 +301,17 @@ export const make = Effect.fnUntraced(function* (
       run(windowOpened);
     });
   };
+
+  /** `page`, the tab's connection, as `attach` sees it. */
+  const tabHandle = (page: CdpPage): TabHandle => ({
+    call: page.call,
+    on: (method, schema, handler) => {
+      page.on(method, schema, (params) => {
+        run(handler(params));
+      });
+    },
+    end,
+  });
 
   /** Make `page` the page shown: the last one's screencast stops (and a window's connection closes). */
   const display = (page: CdpPage) =>
@@ -349,7 +359,7 @@ export const make = Effect.fnUntraced(function* (
         return;
       }
 
-      attach(page);
+      listen(page);
       run(
         page.closed.pipe(
           Effect.andThen(() =>
@@ -414,7 +424,7 @@ export const make = Effect.fnUntraced(function* (
       run(recheck);
     });
 
-  /** Connect afresh: new links, the tab's connection, the handoff's state, and the page shown. */
+  /** Connect afresh: new links, the tab's connection, what `attach` does with it, and the page shown. */
   const connect = lock.withPermits(1)(
     Effect.gen(function* () {
       if (isOver()) return;
@@ -431,10 +441,7 @@ export const make = Effect.fnUntraced(function* (
       }
 
       tab = page;
-      attach(page);
-      page.on("Cloudflare.handoffComplete", Ignored, () => {
-        run(end);
-      });
+      listen(page);
       run(
         page.closed.pipe(
           Effect.andThen(() =>
@@ -445,16 +452,13 @@ export const make = Effect.fnUntraced(function* (
 
       yield* enableDomains(page);
 
-      const handoff = yield* page.call("Cloudflare.getHandoffState", {}, HandoffState);
+      if (attach !== undefined) {
+        yield* attach(tabHandle(page)).pipe(
+          Effect.tapError((error) => (error === liveViewOver ? end : Effect.void)),
+        );
+      }
 
-      if (!handoff.active) return yield* Effect.fail(ended).pipe(Effect.tapError(() => end));
-
-      const now = yield* Clock.currentTimeMillis;
-
-      const deadline =
-        handoff.timeout === undefined ? null : now + handoff.timeout - (handoff.durationMs ?? 0);
-
-      // The handoff ended while this connected.
+      // The source ended while this connected.
       if (isOver()) {
         drop(page);
 
@@ -466,8 +470,6 @@ export const make = Effect.fnUntraced(function* (
       yield* update({
         status: "live",
         failure: null,
-        instructions: handoff.instructions ?? null,
-        deadline,
         strip,
       });
       yield* showTarget(strip.shown, minted);
@@ -629,22 +631,12 @@ export const make = Effect.fnUntraced(function* (
       }
     }).pipe(Effect.scoped),
     retry: Effect.suspend(() => (current.status === "lost" ? reconnect : Effect.void)),
-    finish: (success, reason) =>
-      Effect.gen(function* () {
-        if (tab === null) {
-          return yield* LiveViewError.make({ message: "The Live View is not connected." });
-        }
-
-        // Best effort: the browser host gives the agent its viewport back when the handoff ends anyway.
-        clearViewport();
-
-        yield* tab.call(
-          "Cloudflare.handoffComplete",
-          reason === undefined || reason === "" ? { success } : { success, reason },
-          Ignored,
-        );
-        yield* end;
-      }),
+    withTab: (use) =>
+      Effect.suspend(() =>
+        tab === null
+          ? Effect.fail(LiveViewError.make({ message: "The Live View is not connected." }))
+          : use(tabHandle(tab)),
+      ),
     clearViewport,
     run: (effect) => runPromise(effect),
   };

@@ -1,226 +1,53 @@
 // @effect-diagnostics preferEffectArray:off preferSchemaOverJson:off strictEffectProvide:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Live View.
 
-import { LIVE_VIEW_HANDOFF_OVER, type LiveViewLinks } from "@cloudpid/protocol";
+import type { LiveViewLinks } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Socket from "effect/socket/Socket";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
-import { settle, type Value } from "../session/client.testing.ts";
+import { settle } from "../session/client.testing.ts";
 import { keyPress } from "./cdp.ts";
+import { fakeBrowser, frame, link } from "./connection.testing.ts";
 import { GONE_GRACE_MS, make, RETURN_PING_MS, type Frame } from "./connection.ts";
 import { deviceMetrics } from "./viewport.ts";
 
-type Listener = (event: Socket.WebSocketEvent) => void;
-
-interface Sent {
-  readonly id: number;
-  readonly method: string;
-  readonly params: { readonly [key: string]: Value };
-}
-
-/** How the fake browser answers a command: a result, or nothing (a socket iOS killed). */
-type Answer = { readonly [key: string]: Value } | "silent";
-
-/** A page's CDP socket in a fake Browser Run: it opens at once and answers every command, as `answer` says. */
-class FakePage implements Socket.WebSocketLike {
-  readyState = 0;
-  readonly sent: Sent[] = [];
-  private readonly listeners = new Map<string, Set<Listener>>();
-
-  constructor(
-    readonly url: string,
-    private readonly answer: (method: string) => Answer,
-  ) {}
-
-  addEventListener(type: string, listener: Listener) {
-    const set = this.listeners.get(type) ?? new Set();
-
-    set.add(listener);
-    this.listeners.set(type, set);
-
-    if (type === "open") {
-      queueMicrotask(() => {
-        if (this.readyState !== 0) return;
-
-        this.readyState = 1;
-        this.dispatch("open", { type: "open" });
-      });
-    }
-  }
-
-  removeEventListener(type: string, listener: Listener) {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  send(data: string | Uint8Array<ArrayBuffer>) {
-    const command: Sent = JSON.parse(String(data));
-
-    this.sent.push(command);
-
-    const result = this.answer(command.method);
-
-    if (result === "silent") return;
-
-    queueMicrotask(() => {
-      this.dispatch("message", {
-        type: "message",
-        data: JSON.stringify({ id: command.id, result }),
-      });
-    });
-  }
-
-  close() {
-    if (this.readyState === 3) return;
-
-    this.readyState = 3;
-    this.dispatch("close", { type: "close", code: 1000 });
-  }
-
-  /** The page sends an event. */
-  event(method: string, params: { readonly [key: string]: Value }) {
-    return Effect.sync(() => {
-      this.dispatch("message", { type: "message", data: JSON.stringify({ method, params }) });
-    }).pipe(Effect.andThen(settle));
-  }
-
-  /** The browser closes the socket (the window closed). */
-  drop() {
-    return Effect.sync(() => {
-      this.close();
-    }).pipe(Effect.andThen(settle));
-  }
-
-  methods(): string[] {
-    return this.sent.map((command) => command.method);
-  }
-
-  last(method: string): Sent | undefined {
-    return this.sent.findLast((command) => command.method === method);
-  }
-
-  private dispatch(type: string, event: Socket.WebSocketEvent) {
-    for (const listener of Array.from(this.listeners.get(type) ?? [])) listener(event);
-  }
-}
-
-const HANDOFF = {
-  targetId: "T",
-  active: true,
-  handoffId: "h1",
-  instructions: "Sign in, then press Done",
-  timeout: 300_000,
-  durationMs: 60_000,
-};
-
-const link = (targetId: string, n: number) => `wss://live.example/page/${targetId}?jwt=${n}`;
-
-/** A fake Browser Run and Session: what `live_view` answers, and every page socket opened. */
-const setup = (options: { readonly windows?: () => LiveViewLinks["windows"] } = {}) =>
+/** A Live View over a fake Browser Run, its links from a fake link source that knows nothing of handoffs. */
+const setup = (options: Parameters<typeof fakeBrowser>[0] = {}) =>
   Effect.gen(function* () {
-    const pages: FakePage[] = [];
-    const silent = new Set<string>();
-    let mints = 0;
-    let over = false;
-
-    const answer = (url: string) => (method: string) => {
-      if (silent.has(url) || (method === "Cloudflare.getSessionId" && silent.has("*"))) {
-        return "silent" as const;
-      }
-
-      if (method === "Runtime.evaluate") return { result: { type: "number", value: 2 } };
-
-      return method === "Cloudflare.getHandoffState" ? HANDOFF : {};
-    };
-
-    const layer = Layer.succeed(Socket.WebSocketConstructor)((url: string) => {
-      const page = new FakePage(url, answer(url));
-
-      pages.push(page);
-
-      return page;
-    });
-
-    const mint = Effect.suspend(() => {
-      mints += 1;
-
-      if (over) return Effect.fail({ message: LIVE_VIEW_HANDOFF_OVER });
-
-      const windows = (options.windows?.() ?? []).map((window) => ({
-        ...window,
-        link: link(window.targetId, mints),
-      }));
-
-      return Effect.succeed({ tab: { targetId: "T", link: link("T", mints) }, windows });
-    });
-
-    const view = yield* make(mint).pipe(Effect.provide(layer));
+    const fake = fakeBrowser(options);
+    const view = yield* make(fake.source).pipe(Effect.provide(fake.layer));
 
     yield* settle;
 
-    return {
-      view,
-      pages,
-      mints: () => mints,
-      state: () => SubscriptionRef.getUnsafe(view.state),
-      /** The page sockets opened to `targetId`, oldest first. */
-      to: (targetId: string) => pages.filter((page) => page.url.includes(`/page/${targetId}?`)),
-      handoffOver: () => {
-        over = true;
-      },
-      /** Every socket open now stops answering, as iOS leaves one after the background. */
-      killAll: () => {
-        for (const page of pages) silent.add(page.url);
-      },
-    };
+    return { ...fake, view, state: () => SubscriptionRef.getUnsafe(view.state) };
   });
 
-const frame = (sessionId: number) => ({
-  data: "jpeg",
-  sessionId,
-  metadata: {
-    deviceWidth: 390,
-    deviceHeight: 700,
-    offsetTop: 0,
-    pageScaleFactor: 1,
-    scrollOffsetX: 0,
-    scrollOffsetY: 0,
-  },
-});
-
 describe("a Live View's connection", () => {
-  it.effect(
-    "connects to the tab with a fresh link, reads the deadline, and starts the screencast",
-    () =>
-      Effect.gen(function* () {
-        const { pages, state, mints } = yield* setup();
+  it.effect("connects to the tab with a fresh link and starts the screencast", () =>
+    Effect.gen(function* () {
+      const { pages, state, mints } = yield* setup();
 
-        expect(mints()).toBe(1);
-        expect(pages.map((page) => page.url)).toEqual([link("T", 1)]);
+      expect(mints()).toBe(1);
+      expect(pages.map((page) => page.url)).toEqual([link("T", 1)]);
 
-        const tab = pages[0];
+      const tab = pages[0];
 
-        expect(tab?.methods()).toEqual([
-          "Page.enable",
-          "Runtime.enable",
-          "Cloudflare.getHandoffState",
-          "Page.enable",
-          "Runtime.enable",
-          "Page.startScreencast",
-          "Page.bringToFront",
-        ]);
-        expect(tab?.last("Page.startScreencast")?.params).toMatchObject({ format: "jpeg" });
-        expect(state()).toMatchObject({
-          status: "live",
-          instructions: "Sign in, then press Done",
-          // The time left is timeout - durationMs, from now (the test clock's 0).
-          deadline: 240_000,
-          strip: { tab: "T", windows: [], shown: "T" },
-        });
-      }).pipe(Effect.scoped),
+      expect(tab?.methods()).toEqual([
+        "Page.enable",
+        "Runtime.enable",
+        "Page.enable",
+        "Runtime.enable",
+        "Page.startScreencast",
+        "Page.bringToFront",
+      ]);
+      expect(tab?.last("Page.startScreencast")?.params).toMatchObject({ format: "jpeg" });
+      expect(state()).toMatchObject({
+        status: "live",
+        strip: { tab: "T", windows: [], shown: "T" },
+      });
+    }).pipe(Effect.scoped),
   );
 
   it.effect("passes the shown page's frames on, and acknowledges each", () =>
@@ -278,21 +105,11 @@ describe("a Live View's connection", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("ends when the handoff completes, from this device or another", () =>
+  it.effect("ends when the link source is over", () =>
     Effect.gen(function* () {
-      const { to, state } = yield* setup();
+      const { view, finish, killAll, state } = yield* setup();
 
-      yield* to("T")[0]!.event("Cloudflare.handoffComplete", { success: true });
-
-      expect(state().status).toBe("ended");
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("ends when the Session says the handoff is over", () =>
-    Effect.gen(function* () {
-      const { view, handoffOver, killAll, state } = yield* setup();
-
-      handoffOver();
+      finish();
       killAll();
 
       const returned = yield* Effect.forkChild(view.returned);
@@ -480,30 +297,7 @@ describe("a Live View's connection", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect(
-    "clears the viewport, then sends Done or Failed on the tab's connection, and ends",
-    () =>
-      Effect.gen(function* () {
-        const { view, to, state } = yield* setup();
-
-        yield* view.finish(false, "No account");
-
-        const methods = to("T")[0]?.methods() ?? [];
-
-        expect(methods.slice(-3)).toEqual([
-          "Emulation.clearDeviceMetricsOverride",
-          "Emulation.setTouchEmulationEnabled",
-          "Cloudflare.handoffComplete",
-        ]);
-        expect(to("T")[0]?.last("Cloudflare.handoffComplete")?.params).toEqual({
-          success: false,
-          reason: "No account",
-        });
-        expect(state().status).toBe("ended");
-      }).pipe(Effect.scoped),
-  );
-
-  it.effect("clears the viewport and closes when the Pane closes, without ending the handoff", () =>
+  it.effect("clears the viewport and closes when the Pane closes", () =>
     Effect.gen(function* () {
       const pages = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -517,7 +311,6 @@ describe("a Live View's connection", () => {
         "Emulation.clearDeviceMetricsOverride",
         "Emulation.setTouchEmulationEnabled",
       ]);
-      expect(pages[0]?.methods()).not.toContain("Cloudflare.handoffComplete");
       expect(pages[0]?.readyState).toBe(3);
     }),
   );
