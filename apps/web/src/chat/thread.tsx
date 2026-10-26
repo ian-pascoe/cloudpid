@@ -5,13 +5,14 @@ import { isModelId, THINKING_LEVELS } from "@cloudpid/config";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
-import { Archive, ArchiveRestore, ArrowLeft } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowLeft } from "lucide-react";
 import { type ForkKind, MAX_TITLE_LENGTH, type SessionView } from "@cloudpid/protocol";
 import { panesAtom } from "../panes-state.ts";
 import { TREE_PANE } from "../panes.ts";
 import { forkChooserAtom } from "./tree-state.ts";
 import { type ReactNode, type RefObject, useRef } from "react";
-import { Button } from "../components/ui/button.tsx";
+import { Button, buttonVariants } from "../components/ui/button.tsx";
+import { cn } from "../lib/utils.ts";
 import { isLevel, modelChoices, modelName } from "../models.ts";
 import { navigate, SETTINGS_PATH } from "../router.ts";
 import {
@@ -27,6 +28,7 @@ import type { ConfigureChange } from "../session/state.ts";
 import type { ComposerCommand } from "./commands.ts";
 import { Composer } from "./composer.tsx";
 import { conversationKey, useShownSessionId } from "./conversation.ts";
+import { SessionDetails } from "./session-details.tsx";
 import { EarlierHistory } from "./earlier-history.tsx";
 import { ModelPicker, type PickerHandle } from "./model-picker.tsx";
 import { UsageBadge } from "./usage-badge.tsx";
@@ -79,6 +81,27 @@ const ArchivedBanner = ({ archived }: { archived: Archived }) => (
   <Unarchiving.Provider>
     <Banner archived={archived} />
   </Unarchiving.Provider>
+);
+
+/**
+ * A round button floating over the bottom of the transcript that scrolls to the latest message. assistant-ui disables
+ * it while the transcript is already at the bottom, which fades it out of sight (and out of the tab order).
+ */
+const ScrollToBottom = () => (
+  <ThreadPrimitive.ViewportFooter className="pointer-events-none sticky bottom-0 h-0">
+    <ThreadPrimitive.ScrollToBottom
+      behavior="smooth"
+      aria-label="Scroll to the latest message"
+      title="Scroll to the latest message"
+      className={cn(
+        buttonVariants({ variant: "outline", size: "icon" }),
+        "pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full shadow-md transition-all duration-200",
+        "disabled:invisible disabled:translate-y-2 disabled:opacity-0",
+      )}
+    >
+      <ArrowDown />
+    </ThreadPrimitive.ScrollToBottom>
+  </ThreadPrimitive.ViewportFooter>
 );
 
 /** The Session's title (renamed from its "⋯" menu, among the `actions`), its origin under it, and the actions. */
@@ -404,31 +427,36 @@ export const Thread = ({
           `sr-only` statuses): without it they are placed against the document at their spot in the long thread, which
           makes the document itself scrollable under the app, and focus going back to a bar's button when a dialog
           closes then scrolls the whole app up, leaving a blank strip below. */}
-      <ThreadPrimitive.Viewport className="relative min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
-          <ThreadPrimitive.Empty>
-            <p className="py-16 text-center text-muted-foreground">
-              {live ? "Send a message to start the conversation." : null}
-            </p>
-          </ThreadPrimitive.Empty>
-          <EarlierHistory
-            conversation={conversationKey(sessionId, undefined)}
-            before={view.before}
-          />
-          <Messages />
-          {view.retry !== null && (
-            <p role="status" className="text-sm text-muted-foreground">
-              The model failed ({view.retry.error}). Retrying…
-            </p>
-          )}
-          {working && (
-            <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-              <span className="pulse-dot size-1.5 rounded-full bg-success" aria-hidden />
-              Working…
-            </p>
-          )}
-        </div>
-      </ThreadPrimitive.Viewport>
+      {/* Session details float over the transcript's top right, outside the scroller so they stay put as it scrolls. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <SessionDetails />
+        <ThreadPrimitive.Viewport className="relative min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
+            <ThreadPrimitive.Empty>
+              <p className="py-16 text-center text-muted-foreground">
+                {live ? "Send a message to start the conversation." : null}
+              </p>
+            </ThreadPrimitive.Empty>
+            <EarlierHistory
+              conversation={conversationKey(sessionId, undefined)}
+              before={view.before}
+            />
+            <Messages />
+            {view.retry !== null && (
+              <p role="status" className="text-sm text-muted-foreground">
+                The model failed ({view.retry.error}). Retrying…
+              </p>
+            )}
+            {working && (
+              <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span className="pulse-dot size-1.5 rounded-full bg-success" aria-hidden />
+                Working…
+              </p>
+            )}
+          </div>
+          <ScrollToBottom />
+        </ThreadPrimitive.Viewport>
+      </div>
       {problem !== null && (
         <p role="alert" className="mx-auto w-full max-w-3xl px-4 pb-2 text-sm text-destructive">
           {problem}

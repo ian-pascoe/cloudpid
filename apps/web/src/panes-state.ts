@@ -1,7 +1,8 @@
 // @effect-diagnostics missingPipeableSignature:off -- a plain function of a width and a key.
 
-// The Pane area as atoms: the Panes open and the one shown are the URL's query, and the area's width is a view
-// preference kept on this device.
+// The Pane area as atoms: the Panes open and the one shown are the URL's query, also kept in the Session's layout on
+// this device (`session-layout-state.ts`) so the Session shows them again when it is opened without them; the area's
+// width is a view preference kept on this device.
 
 import * as Match from "effect/Match";
 import * as Atom from "effect/reactivity/Atom";
@@ -9,34 +10,88 @@ import * as Schema from "effect/Schema";
 import {
   applyPaneAction,
   paneAreaOf,
+  samePaneArea,
   searchWithPaneArea,
   type PaneAction,
   type PaneArea,
 } from "./panes.ts";
-import { searchAtom } from "./router.ts";
+import { paneParamsOf, searchAtom, sessionIdAtom } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
+import { sessionLayoutAtom } from "./session-layout-state.ts";
+
+/** Whether `search` names any Pane: then it says what is open, else the Session's layout does. */
+const namesPanes = (search: string): boolean => paneParamsOf(search).keys.length > 0;
 
 /**
- * The Panes open and the one shown, read from the page's query. Writing a `PaneAction` opens, closes or switches a Pane
- * by replacing the history entry's query (Back leaves the Session, not the Pane: `router.ts` says why).
+ * The Panes open and the one shown: the page's query when it names any (a link, a reload, a push tap), else the Panes
+ * the Session shown was left with (going to a Session drops the query). Writing a `PaneAction` opens, closes or
+ * switches a Pane by replacing the history entry's query (Back leaves the Session, not the Pane: `router.ts` says why),
+ * and keeps the area in the Session's layout.
  */
 export const panesAtom = Atom.writable(
-  (get): PaneArea => paneAreaOf(get(searchAtom)),
-  (ctx, action: PaneAction) => {
-    const search = ctx.get(searchAtom);
-    const area = paneAreaOf(search);
+  (get): PaneArea => {
+    const search = get(searchAtom);
+    const sessionId = get(sessionIdAtom);
 
+    if (sessionId === undefined || namesPanes(search)) return paneAreaOf(search);
+
+    return get(sessionLayoutAtom(sessionId)).panes;
+  },
+  (ctx, action: PaneAction) => {
+    const area = ctx.get(panesAtom);
     const next = applyPaneAction(area, action);
 
-    if (next !== area) ctx.set(searchAtom, searchWithPaneArea(search, next));
+    if (next === area) return;
+
+    ctx.set(searchAtom, searchWithPaneArea(ctx.get(searchAtom), next));
+
+    const sessionId = ctx.get(sessionIdAtom);
+
+    if (sessionId === undefined) return;
+
+    ctx.set(sessionLayoutAtom(sessionId), { panes: next });
   },
+);
+
+/**
+ * Keeps the Panes a query names in the layout of Session `sessionId` while it is shown, so the ones a link or a push tap
+ * opened are there when the owner comes back from another Session. Mounted by the Session's page.
+ */
+export const rememberPanesAtom = Atom.family((sessionId: string) =>
+  Atom.make((get) => {
+    get.subscribe(
+      searchAtom,
+      (search) => {
+        if (get.once(sessionIdAtom) !== sessionId || !namesPanes(search)) return;
+
+        const area = paneAreaOf(search);
+        const layout = sessionLayoutAtom(sessionId);
+
+        if (!samePaneArea(get.once(layout).panes, area)) get.set(layout, { panes: area });
+      },
+      { immediate: true },
+    );
+  }),
 );
 
 /** The narrowest the Pane area is dragged to on a wide screen, in px. */
 export const MIN_PANE_WIDTH = 288;
 
-/** The widest it is dragged to, in px. */
-export const MAX_PANE_WIDTH = 720;
+/**
+ * The widest it is kept at, in px. The chat beside it keeps `MIN_CHAT_WIDTH` whatever the width, so on most screens
+ * that is the bound: the area may take everything else.
+ */
+export const MAX_PANE_WIDTH = 2400;
+
+/** The narrowest the chat gets beside the Pane area, in px: 20 rem, a phone's width. */
+export const MIN_CHAT_WIDTH = 320;
+
+/**
+ * The widest the Pane area can be shown in a page `room` px wide (the chat and the area together): all of it but the
+ * chat's `MIN_CHAT_WIDTH`, and never under the narrowest.
+ */
+export const widestPaneIn = (room: number): number =>
+  Math.min(MAX_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, Math.floor(room - MIN_CHAT_WIDTH)));
 
 /** Its width until it is dragged: 24 rem, as the Tasks panel was. */
 export const DEFAULT_PANE_WIDTH = 384;
@@ -72,16 +127,22 @@ const KEY_STEP_LARGE = 64;
 
 /**
  * The width a keyboard key sets from `width` when the resize handle has the focus, or undefined for any other key. The
- * column grows to the left, so the left arrow widens it; Home and End go to the narrowest and the widest.
+ * column grows to the left, so the left arrow widens it; Home and End go to the narrowest and `widest` (the widest the
+ * page has room for).
  */
-export const paneWidthForKey = (width: number, key: string, large: boolean): number | undefined => {
+export const paneWidthForKey = (
+  width: number,
+  key: string,
+  large: boolean,
+  widest: number = MAX_PANE_WIDTH,
+): number | undefined => {
   const step = large ? KEY_STEP_LARGE : KEY_STEP;
 
   return Match.value(key).pipe(
-    Match.when("ArrowLeft", () => width + step),
+    Match.when("ArrowLeft", () => Math.min(widest, width + step)),
     Match.when("ArrowRight", () => width - step),
     Match.when("Home", () => MIN_PANE_WIDTH),
-    Match.when("End", () => MAX_PANE_WIDTH),
+    Match.when("End", () => widest),
     Match.orElse(() => undefined),
   );
 };

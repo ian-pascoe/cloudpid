@@ -5,7 +5,7 @@
 //
 // A **Pane type** is a registration in `PANE_TYPES`: its `id` (what a key starts with in the URL), whether it `multiple`
 // may be open more than once, and its tab `label`. A Pane is open under a **key**: the type's `id` alone for a type
-// that may be open once (`tasks`), else `<id>:<argument>` (`live-view:<requestId>`, from `@cloudpid/protocol`'s
+// that may be open once (`subagents`), else `<id>:<argument>` (`live-view:<requestId>`, from `@cloudpid/protocol`'s
 // `liveViewPaneKey`, which a push's link opens too; `terminal:<tab>`), the argument
 // telling the Panes of one type apart. The component a type shows is in `pane-area.tsx`, so these rules stay testable
 // without React; a type with no component there fails to typecheck.
@@ -31,7 +31,7 @@ export type AgentOfHandoff = (requestId: string) => string | undefined;
 
 /** One kind of Pane. */
 export interface PaneType {
-  /** What a key starts with in the URL: `tasks`, later `live-view` and `terminal`. */
+  /** What a key starts with in the URL: `subagents`, `live-view`, later `terminal`. */
   readonly id: string;
   /** Whether it may be open more than once, each under its own argument (`id:argument`). */
   readonly multiple: boolean;
@@ -47,13 +47,13 @@ const liveViewLabel = (argument: string | undefined, agentOfHandoff: AgentOfHand
 };
 
 /**
- * The Pane types: the New pane, the Tasks Pane and the Session tree Pane, one each per Session, and a Live View per
+ * The Pane types: the New pane, the Subagents Pane and the Session tree Pane, one each per Session, and a Live View per
  * Browser Handoff waiting (`live-view:<requestId>`). The Terminal (#139) joins them here, and in the New pane's choices
  * (`new-pane.tsx`) if the owner opens it.
  */
 export const PANE_TYPES = [
   { id: "new", multiple: false, label: () => ({ name: "New pane" }) },
-  { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
+  { id: "subagents", multiple: false, label: () => ({ name: "Subagents" }) },
   { id: "tree", multiple: false, label: () => ({ name: "Tree" }) },
   { id: "live-view", multiple: true, label: liveViewLabel },
 ] as const satisfies readonly PaneType[];
@@ -64,8 +64,18 @@ export type PaneTypeId = (typeof PANE_TYPES)[number]["id"];
 /** The key of the New pane, which offers the Pane types to open and becomes the one picked. */
 export const NEW_PANE = "new";
 
-/** The key of the Tasks Pane. */
-export const TASKS_PANE = "tasks";
+/** The key of the Subagents Pane. */
+export const SUBAGENTS_PANE = "subagents";
+
+/**
+ * Keys a Pane was once opened under, and the key it has now: the Tasks Pane (`tasks`) became the Subagents Pane when
+ * the Todo List moved to the Session details, so an old link or stored layout opens it.
+ */
+const RENAMED_KEYS: ReadonlyMap<string, string> = new Map([["tasks", SUBAGENTS_PANE]]);
+
+/** `key` under its new name when no type of `types` opens it and it was renamed, else as it is. */
+const currentKey = (key: string, types: readonly PaneType[]): string =>
+  paneKeyOf(key, types) === undefined ? (RENAMED_KEYS.get(key) ?? key) : key;
 
 /** The key of the Session tree Pane. */
 export const TREE_PANE = "tree";
@@ -90,6 +100,13 @@ export interface PaneArea {
 
 /** No Pane open: the Pane area is closed. */
 export const NO_PANES: PaneArea = { open: [], shown: undefined, hidden: false };
+
+/** Whether two areas have the same Panes open, in the same order, the same one shown, and are both hidden or not. */
+export const samePaneArea = (one: PaneArea, other: PaneArea): boolean =>
+  one.shown === other.shown &&
+  one.hidden === other.hidden &&
+  one.open.length === other.open.length &&
+  one.open.every((key, index) => other.open[index] === key);
 
 /** A Pane key, taken apart. */
 export interface PaneKey {
@@ -124,18 +141,19 @@ const areaOf = (open: readonly string[], shown: string | undefined, hidden = fal
     : { open, shown: shown !== undefined && open.includes(shown) ? shown : open[0], hidden };
 
 /**
- * The area a query holds. A key no type can open is dropped, so is a repeat of one already open, and a `shown` that is
- * not open falls back to the first: a stale or hand-edited link opens what it can.
+ * The area a query holds. A renamed key reads as its new name (`RENAMED_KEYS`), a key no type can open is dropped, so is
+ * a repeat of one already open, and a `shown` that is not open falls back to the first: a stale or hand-edited link
+ * opens what it can.
  */
 export const paneAreaOf = (search: string, types: readonly PaneType[] = PANE_TYPES): PaneArea => {
   const { keys, shown, hidden } = paneParamsOf(search);
   const open: string[] = [];
 
-  for (const key of keys) {
+  for (const key of keys.map((written) => currentKey(written, types))) {
     if (paneKeyOf(key, types) !== undefined && !open.includes(key)) open.push(key);
   }
 
-  return areaOf(open, shown, hidden);
+  return areaOf(open, shown === undefined ? undefined : currentKey(shown, types), hidden);
 };
 
 /** `search` with `area` in place of the Panes it held, and everything else in it kept. */

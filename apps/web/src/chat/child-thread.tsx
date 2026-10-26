@@ -19,7 +19,7 @@ import {
 } from "../session/atoms.ts";
 import { type ThreadState } from "../session/state.ts";
 import { Composer } from "./composer.tsx";
-import { conversationKey, useShownSessionId } from "./conversation.ts";
+import { conversationKey, ThreadConversation, useShownSessionId } from "./conversation.ts";
 import { EarlierHistory } from "./earlier-history.tsx";
 import { TreeBarScope } from "./tree-actions.ts";
 import { textOf } from "./queue-adapter.ts";
@@ -75,41 +75,44 @@ const LiveChildThread = ({
   return (
     // A subagent's thread is not the Session tree's: its messages have no bar.
     <TreeBarScope.Provider value={null}>
-      <AssistantRuntimeProvider runtime={runtime}>
-        <ThreadPrimitive.Root ref={dropZone} className="flex flex-col">
-          <ThreadPrimitive.Viewport className="max-h-96 min-h-16 overflow-y-auto">
-            <div className="flex flex-col gap-4 py-2">
-              <ThreadPrimitive.Empty>
-                <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
-              </ThreadPrimitive.Empty>
-              <EarlierHistory conversation={key} before={thread.view.before} />
-              {messages}
-            </div>
-          </ThreadPrimitive.Viewport>
-          {problem !== null && (
-            <p role="alert" className="pb-2 text-sm text-destructive">
-              {problem}
-            </p>
-          )}
-          <TodoList tasks={thread.todos} stale={!live} className="border-t pt-2" />
-          <Composer
-            compact
-            who={agent?.id ?? "the agent"}
-            conversationId={conversationId}
-            dropZone={dropZone}
-            steerLane={thread.queue.steer}
-            followUpLane={thread.queue.followUp}
-            sending={thread.sending}
-            onStopAll={
-              stopAll
-                ? () => {
-                    abort({ conversationId, subagents: true });
-                  }
-                : undefined
-            }
-          />
-        </ThreadPrimitive.Root>
-      </AssistantRuntimeProvider>
+      {/* Its disclosures are kept apart from the root thread's, whose messages' IDs it may share. */}
+      <ThreadConversation value={conversationId}>
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadPrimitive.Root ref={dropZone} className="flex flex-col">
+            <ThreadPrimitive.Viewport className="max-h-96 min-h-16 overflow-y-auto">
+              <div className="flex flex-col gap-4 py-2">
+                <ThreadPrimitive.Empty>
+                  <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
+                </ThreadPrimitive.Empty>
+                <EarlierHistory conversation={key} before={thread.view.before} />
+                {messages}
+              </div>
+            </ThreadPrimitive.Viewport>
+            {problem !== null && (
+              <p role="alert" className="pb-2 text-sm text-destructive">
+                {problem}
+              </p>
+            )}
+            <TodoList tasks={thread.todos} stale={!live} className="border-t pt-2" />
+            <Composer
+              compact
+              who={agent?.id ?? "the agent"}
+              conversationId={conversationId}
+              dropZone={dropZone}
+              steerLane={thread.queue.steer}
+              followUpLane={thread.queue.followUp}
+              sending={thread.sending}
+              onStopAll={
+                stopAll
+                  ? () => {
+                      abort({ conversationId, subagents: true });
+                    }
+                  : undefined
+              }
+            />
+          </ThreadPrimitive.Root>
+        </AssistantRuntimeProvider>
+      </ThreadConversation>
     </TreeBarScope.Provider>
   );
 };

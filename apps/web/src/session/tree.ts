@@ -17,8 +17,11 @@ export const pointOf = (node: TreeNode): TreePoint => ({
   position: isOwnerNode(node) ? "before" : "at",
 });
 
+/** The filters of the Session tree Pane, in the order its menu lists them. */
+export const TREE_FILTER_VALUES = ["default", "no-tools", "user-only", "all"] as const;
+
 /** What the Session tree Pane shows: the owner's messages and the answers that end a Run, everything but tool results, the owner's messages, or all. */
-export type TreeFilter = "default" | "no-tools" | "user-only" | "all";
+export type TreeFilter = (typeof TREE_FILTER_VALUES)[number];
 
 export const TREE_FILTERS: ReadonlyArray<{ readonly value: TreeFilter; readonly label: string }> = [
   { value: "default", label: "Messages and answers" },

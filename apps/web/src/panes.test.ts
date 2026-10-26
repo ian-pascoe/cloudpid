@@ -7,6 +7,7 @@ import {
   NO_PANES,
   paneAreaOf,
   paneKeyOf,
+  samePaneArea,
   searchWithPaneArea,
   tabForKey,
   type PaneAction,
@@ -14,7 +15,7 @@ import {
   type PaneType,
 } from "./panes.ts";
 
-/** The types the later Panes will register, with the New pane and the Tasks Pane that exist. */
+/** Pane types for the rules, apart from the app's: the New pane, one open once (`tasks`), two open more than once. */
 const TYPES: readonly PaneType[] = [
   { id: "new", multiple: false, label: () => ({ name: "New pane" }) },
   { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
@@ -60,9 +61,9 @@ describe("a Pane key", () => {
     expect(paneKeyOf("", TYPES)).toBeUndefined();
   });
 
-  it("knows the Tasks Pane by default", () => {
-    expect(paneKeyOf("tasks")?.type.label(undefined, () => undefined)).toEqual({
-      name: "Tasks",
+  it("knows the Subagents Pane by default", () => {
+    expect(paneKeyOf("subagents")?.type.label(undefined, () => undefined)).toEqual({
+      name: "Subagents",
     });
     expect(paneKeyOf("terminal:1")).toBeUndefined();
   });
@@ -84,10 +85,29 @@ describe("a Pane key", () => {
   });
 });
 
+describe("two areas", () => {
+  it("are the same with the same Panes in the same order, the same one shown, and both hidden or not", () => {
+    const open = area(["tasks", "terminal:1"], "terminal:1");
+
+    expect(samePaneArea(open, area(["tasks", "terminal:1"], "terminal:1"))).toBe(true);
+    expect(samePaneArea(open, area(["terminal:1", "tasks"], "terminal:1"))).toBe(false);
+    expect(samePaneArea(open, area(["tasks", "terminal:1"], "tasks"))).toBe(false);
+    expect(samePaneArea(open, area(["tasks", "terminal:1"], "terminal:1", true))).toBe(false);
+    expect(samePaneArea(open, area(["tasks"], "terminal:1"))).toBe(false);
+  });
+});
+
 describe("the area a query holds", () => {
   it("is closed for a query with no Pane", () => {
     expect(paneAreaOf("", TYPES)).toEqual(NO_PANES);
     expect(paneAreaOf("?x=1", TYPES)).toEqual(NO_PANES);
+  });
+
+  it("opens the Subagents Pane for a link to the Tasks Pane it replaced", () => {
+    expect(paneAreaOf("?pane=tree&pane=tasks&shown=tasks")).toEqual(
+      area(["tree", "subagents"], "subagents"),
+    );
+    expect(paneAreaOf("?pane=tasks&pane=subagents")).toEqual(area(["subagents"]));
   });
 
   it("shows the only Pane, or the first when none is named", () => {

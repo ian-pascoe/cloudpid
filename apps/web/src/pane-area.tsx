@@ -5,13 +5,15 @@
 // none picks its own edge. One button in the Session's header (`PaneAreaToggle`) opens the area on the New pane, which
 // offers the Pane types, and hides and shows it after; the tab bar's + opens another New pane.
 
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import { PanelRightClose, PanelRightOpen, Plus, X } from "lucide-react";
 import {
+  useEffect,
   useId,
   useRef,
+  useState,
   type ComponentType,
   type CSSProperties,
   type KeyboardEvent,
@@ -20,7 +22,7 @@ import {
 } from "react";
 import { useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
-import { TasksPane, useTasksSummary } from "./chat/tasks-pane.tsx";
+import { SubagentsPane, useSubagentsWorking } from "./chat/subagents-pane.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { cn } from "./lib/utils.ts";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
@@ -29,7 +31,7 @@ import { NewPane } from "./new-pane.tsx";
 import {
   NEW_PANE,
   paneKeyOf,
-  TASKS_PANE,
+  SUBAGENTS_PANE,
   tabForKey,
   type AgentOfHandoff,
   type PaneProps,
@@ -38,16 +40,19 @@ import {
 import {
   DEFAULT_PANE_WIDTH,
   MAX_PANE_WIDTH,
+  MIN_CHAT_WIDTH,
   MIN_PANE_WIDTH,
   paneWidthAtom,
   paneWidthForKey,
   panesAtom,
+  rememberPanesAtom,
+  widestPaneIn,
 } from "./panes-state.ts";
 
 /** The component each Pane type shows. A type in `PANE_TYPES` with none is a type error. */
 const PANE_COMPONENTS = {
   new: NewPane,
-  tasks: TasksPane,
+  subagents: SubagentsPane,
   tree: SessionTreePane,
   "live-view": LiveViewPane,
 } satisfies {
@@ -56,6 +61,32 @@ const PANE_COMPONENTS = {
 
 const componentOf = (id: string): ComponentType<PaneProps> | undefined =>
   Option.getOrUndefined(Record.get<string, ComponentType<PaneProps>>(PANE_COMPONENTS, id));
+
+/**
+ * The width in px of the element `area` is in (the chat and the Pane area together), as it changes; undefined until it
+ * is laid out.
+ */
+const useRoom = (area: RefObject<HTMLElement | null>): number | undefined => {
+  const [room, setRoom] = useState<number>();
+
+  useEffect(() => {
+    const page = area.current?.parentElement;
+
+    if (page === null || page === undefined) return;
+
+    const observer = new ResizeObserver(() => {
+      setRoom(page.clientWidth);
+    });
+
+    observer.observe(page);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [area]);
+
+  return room;
+};
 
 /** The strip between the Pane area and the chat: drag it, or focus it and use the arrow keys, Home and End. */
 const ResizeHandle = ({
@@ -66,9 +97,14 @@ const ResizeHandle = ({
   controls: string;
 }) => {
   const [width, setWidth] = useAtom(paneWidthAtom);
+  // The area may take all of the page's room but the chat's least width.
+  const room = useRoom(area);
+  const widest = room === undefined ? MAX_PANE_WIDTH : widestPaneIn(room);
+  // A width kept from a wider window shows as the widest this one has room for, and the keys move from there.
+  const shown = Math.min(width, widest);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const next = paneWidthForKey(width, event.key, event.shiftKey);
+    const next = paneWidthForKey(shown, event.key, event.shiftKey, widest);
 
     if (next === undefined) return;
 
@@ -81,7 +117,7 @@ const ResizeHandle = ({
 
     const right = area.current?.getBoundingClientRect().right;
 
-    if (right !== undefined) setWidth(right - event.clientX);
+    if (right !== undefined) setWidth(Math.min(widest, right - event.clientX));
   };
 
   return (
@@ -91,8 +127,8 @@ const ResizeHandle = ({
       aria-label="Resize panes"
       aria-controls={controls}
       aria-valuemin={MIN_PANE_WIDTH}
-      aria-valuemax={MAX_PANE_WIDTH}
-      aria-valuenow={width}
+      aria-valuemax={widest}
+      aria-valuenow={shown}
       tabIndex={0}
       onKeyDown={onKeyDown}
       onPointerDown={(event) => {
@@ -121,14 +157,14 @@ const PANE_AREA_ID = "pane-area";
 
 /**
  * The header's button for the Pane area: it opens the New pane while no Pane is open, else hides the area or shows it
- * again. While subagents work and the Tasks Pane is not in sight, it says how many.
+ * again. While subagents work and the Subagents Pane is not in sight, it says how many.
  */
 export const PaneAreaToggle = () => {
   const [{ open, shown, hidden }, act] = useAtom(panesAtom);
-  const { working } = useTasksSummary();
+  const working = useSubagentsWorking();
   const visible = open.length > 0 && !hidden;
   const label = visible ? "Hide panes" : open.length > 0 ? "Show panes" : "Open a pane";
-  const badge = working > 0 && !(visible && shown === TASKS_PANE);
+  const badge = working > 0 && !(visible && shown === SUBAGENTS_PANE);
 
   return (
     <Button
@@ -159,9 +195,12 @@ export const PaneAreaToggle = () => {
 
 /**
  * The Pane area of the Session shown: nothing while no Pane is open. Hidden, it keeps its Panes mounted, so a Live View
- * stays connected and every Pane comes back as it was.
+ * stays connected and every Pane comes back as it was. What it has open is kept in the Session's layout, so it opens
+ * again as it was when the owner comes back to the Session.
  */
 export const PaneArea = () => {
+  useAtomMount(rememberPanesAtom(useShownSessionId()));
+
   const [{ open, shown, hidden }, act] = useAtom(panesAtom);
   const agentOfHandoff = useAgentOfHandoff();
   const [width] = useAtom(paneWidthAtom);
@@ -171,7 +210,11 @@ export const PaneArea = () => {
 
   if (shown === undefined) return null;
 
-  const style: CSSProperties & Record<`--${string}`, string> = { "--pane-width": `${width}px` };
+  const style: CSSProperties & Record<`--${string}`, string> = {
+    "--pane-width": `${width}px`,
+    "--min-chat-width": `${MIN_CHAT_WIDTH}px`,
+  };
+
   const tabId = (key: string) => `${base}-tab-${open.indexOf(key)}`;
   const panelId = (key: string) => `${base}-panel-${open.indexOf(key)}`;
 
@@ -197,7 +240,7 @@ export const PaneArea = () => {
       aria-label="Panes"
       hidden={hidden}
       style={style}
-      className="fixed inset-0 z-20 flex flex-col bg-background md:relative md:inset-auto md:z-auto md:w-(--pane-width) md:max-w-[calc(100%-20rem)] md:min-w-72 md:shrink-0 md:border-l"
+      className="fixed inset-0 z-20 flex flex-col bg-background md:relative md:inset-auto md:z-auto md:w-(--pane-width) md:max-w-[calc(100%-var(--min-chat-width))] md:min-w-72 md:shrink-0 md:border-l"
     >
       <ResizeHandle area={area} controls={PANE_AREA_ID} />
       <header className="flex items-center gap-1 border-b px-2 py-1.5">
