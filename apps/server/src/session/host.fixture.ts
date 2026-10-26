@@ -12,6 +12,7 @@ import {
   type BrowserHostService,
   BrowserSession,
   BrowserHandoffs,
+  browserPaneLayer,
   type HandoffStartInput,
   type HandoffStatus,
   imageLimitedModels,
@@ -100,6 +101,7 @@ import {
 import type { NavigateRequest } from "./branches.ts";
 import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
+import { wakeAt } from "./wake.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
@@ -156,6 +158,8 @@ export const OWNER_TAB_LINKS: OwnerTabLinks = {
       link: `wss://live.browser.run/api/devtools/browser/s/page/owner-popup-1?jwt=${LIVE_VIEW_TOKEN}`,
     },
   ],
+  opened: false,
+  replaced: false,
 };
 
 /** How long one round of waiting on the test browser host lasts at most, and how long a call may wait past a deadline. */
@@ -224,11 +228,17 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
     Effect.suspend(() => {
       kv.put("owner-tab-views", [...(kv.get<boolean[]>("owner-tab-views") ?? []), open]);
 
-      // The Owner tab is there once a Pane opened it, until the test says its browser is gone.
-      if (open) kv.put("owner-tab", true);
+      // The Owner tab is there once a Pane opened it, until the test says its browser is gone; a new one replaces it.
+      const opened = open && kv.get<boolean>("owner-tab") !== true;
+      const replaced = opened && kv.get<boolean>("owner-tab-lost") === true;
+
+      if (opened) {
+        kv.put("owner-tab", true);
+        kv.delete("owner-tab-lost");
+      }
 
       return kv.get<boolean>("owner-tab") === true
-        ? Effect.succeed(OWNER_TAB_LINKS)
+        ? Effect.succeed({ ...OWNER_TAB_LINKS, opened, replaced })
         : Effect.fail(BrowserError.make({ message: `ownerTabView: Error: ${OWNER_TAB_GONE}` }));
     }),
   endHandoff: (requestId) =>
@@ -446,7 +456,16 @@ export class TestSession extends DurableObject {
               // lands, which would count it failed and report it again.
               reportTimeout:
                 ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
-              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
+              // As the Session DO's: a held Secret's expiry, or the browser's idle close.
+              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) =>
+                wakeAt(
+                  held,
+                  makeBrowserSession({
+                    host: testBrowserHost(ctx.storage.kv),
+                    storage: ctx.storage.kv,
+                  }),
+                ),
+              ),
               onIdle: Effect.flatMap(
                 Effect.all([
                   Effect.service(Secrets),
@@ -489,7 +508,22 @@ export class TestSession extends DurableObject {
               ),
             ),
           ),
-          Layer.provideMerge(Layer.succeed(BrowserHost, testBrowserHost(ctx.storage.kv))),
+          Layer.provideMerge(
+            browserPaneLayer({
+              host: testBrowserHost(ctx.storage.kv),
+              archived: Effect.sync(() => ctx.storage.kv.get<boolean>("archived") === true),
+            }).pipe(
+              Layer.provide(
+                Layer.succeed(
+                  BrowserSession,
+                  makeBrowserSession({
+                    host: testBrowserHost(ctx.storage.kv),
+                    storage: ctx.storage.kv,
+                  }),
+                ),
+              ),
+            ),
+          ),
           Layer.provideMerge(
             sessionBrowserHandoffsLayer({
               host: testBrowserHost(ctx.storage.kv),
@@ -1015,6 +1049,20 @@ export class TestSession extends DurableObject {
   /** The Owner tab's browser is gone: closed or replaced. */
   loseOwnerTab(): void {
     this.ctx.storage.kv.delete("owner-tab");
+    this.ctx.storage.kv.put("owner-tab-lost", true);
+  }
+
+  /** The Registry says the Session is archived (or not): the Browser Pane may open nothing then. */
+  setArchived(archived: boolean): void {
+    this.ctx.storage.kv.put("archived", archived);
+  }
+
+  /** When the browser was last used, as the Session's keep-alive keeps it, and when the object's alarm is set. */
+  async browserUse(): Promise<{ readonly lastUsed?: number; readonly alarm: number | null }> {
+    const lastUsed = this.ctx.storage.kv.get<number>("browser-last-used");
+    const alarm = await this.ctx.storage.getAlarm();
+
+    return lastUsed === undefined ? { alarm } : { lastUsed, alarm };
   }
 
   /** The origins of the windows the test browser host says a handoff left open when it ends. */

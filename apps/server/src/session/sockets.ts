@@ -30,8 +30,7 @@ import {
   BrowserError,
   type BrowserHandoffRequest,
   BrowserHandoffs,
-  BrowserHost,
-  OWNER_TAB_GONE,
+  BrowserPane,
 } from "@cloudpid/extensions/browser";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -228,7 +227,7 @@ export const sessionSocketsLayer = (
 ): Layer.Layer<
   SessionSockets,
   never,
-  SessionHost | Secrets | BrowserHandoffs | BrowserHost | Approvals
+  SessionHost | Secrets | BrowserHandoffs | BrowserPane | Approvals
 > =>
   Layer.effect(
     SessionSockets,
@@ -236,7 +235,7 @@ export const sessionSocketsLayer = (
       const host = yield* SessionHost;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
-      const browser = yield* BrowserHost;
+      const browserPane = yield* BrowserPane;
       const approvals = yield* Approvals;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
@@ -455,16 +454,12 @@ export const sessionSocketsLayer = (
           case "live_view":
             return handoffs.liveView(message.requestId);
 
-          // The Browser Pane's links, answered to this socket alone the same way.
+          // The Browser Pane's links, answered to this socket alone the same way. An Owner tab it opened is a use of the
+          // browser: settling arms the wake for its idle close, which an idle Session would otherwise not have.
           case "owner_tab_view":
-            return browser.ownerTabView(message.open).pipe(
-              // The host's word for it, as the client reads it, without the call it came through.
-              Effect.mapError((error) =>
-                error.message.includes(OWNER_TAB_GONE)
-                  ? BrowserError.make({ message: OWNER_TAB_GONE })
-                  : error,
-              ),
-            );
+            return browserPane
+              .view(message.open)
+              .pipe(Effect.tap((links) => (links.opened ? host.settle : Effect.void)));
 
           case "command": {
             const { type: _type, id: _id, ...command } = message;

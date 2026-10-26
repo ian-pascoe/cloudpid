@@ -47,6 +47,14 @@ export {
 } from "./browser/session.ts";
 
 export {
+  BrowserPane,
+  browserPaneLayer,
+  type BrowserPaneOptions,
+  type BrowserPaneService,
+  makeBrowserPane,
+} from "./browser/pane.ts";
+
+export {
   BrowserHandoffs,
   HANDOFF_POLL_MS,
   type BrowserHandoffOutcome,

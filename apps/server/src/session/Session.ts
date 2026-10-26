@@ -1,8 +1,10 @@
 import { BROWSER_HOST_BINDING } from "@cloudpid/browser/binding";
 import { CODEMODE_SANDBOX_BINDING } from "@cloudpid/codemode-sandbox/binding";
 import {
+  BrowserError,
   BrowserHost,
   BrowserHandoffs,
+  browserPaneLayer,
   BrowserSession,
   browserSessionLayer,
   imageLimitedModels,
@@ -482,6 +484,26 @@ export const SessionLive = Session.make(
           ),
         );
 
+        // The Browser Pane's links (`owner_tab_view`). An archived Session opens nothing in the browser: the Registry
+        // says whether it is, for each ask to open; one it does not list is not.
+        const sessionBrowserPane = browserPaneLayer({
+          host: browser,
+          archived:
+            name === undefined
+              ? Effect.succeed(false)
+              : registries
+                  .getByName(REGISTRY_NAME)
+                  .getSession({ id: name })
+                  .pipe(
+                    Effect.map((session) => session !== null && session.archivedAt !== null),
+                    Effect.mapError((error) =>
+                      BrowserError.make({
+                        message: `Could not tell whether the Session is archived: ${String(error)}`,
+                      }),
+                    ),
+                  ),
+        }).pipe(Layer.provide(sessionBrowser));
+
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
@@ -576,7 +598,7 @@ export const SessionLive = Session.make(
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),
             // The sockets mint the Browser Pane's links through it (`owner_tab_view`).
-            Layer.provideMerge(Layer.succeed(BrowserHost, browser)),
+            Layer.provideMerge(sessionBrowserPane),
             Layer.provide(Layer.mergeAll(registry, settings)),
             // Last, so the object's own Effects (those the host and the sockets run) make their spans there too.
             Layer.provideMerge(telemetryLayer(telemetry)),

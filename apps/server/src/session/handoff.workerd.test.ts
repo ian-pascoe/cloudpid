@@ -15,6 +15,7 @@ import {
   ServerMessageJson,
   type ServerMessage,
 } from "@cloudpid/protocol";
+import { BROWSER_IDLE_MS } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
@@ -191,7 +192,7 @@ describe("Browser Handoffs over the Session socket", () => {
     expect(await owner.next(answerTo("otv-1"))).toEqual({
       type: "result",
       id: "otv-1",
-      result: OWNER_TAB_LINKS,
+      result: { ...OWNER_TAB_LINKS, opened: true, replaced: false },
     });
 
     // A handoff the Session does not have gets none.
@@ -419,15 +420,32 @@ describe("the Browser Pane over the Session socket", () => {
       message: OWNER_TAB_GONE,
     });
 
+    const use = () => runInDurableObject(stub, (instance: TestSession) => instance.browserUse());
+
+    expect((await use()).lastUsed).toBeUndefined();
+
     owner.send({ type: "owner_tab_view", id: "b-1", open: true });
     expect(await owner.next(answerTo("b-1"))).toEqual({
       type: "result",
       id: "b-1",
-      result: OWNER_TAB_LINKS,
+      result: { ...OWNER_TAB_LINKS, opened: true, replaced: false },
     });
 
+    // Opening it was a use of the browser: the idle Session wakes to close the browser once it has sat idle since.
+    const opened = await use();
+
+    expect(opened.lastUsed).toBeTypeOf("number");
+    expect(opened.alarm).toBe((opened.lastUsed ?? 0) + BROWSER_IDLE_MS);
+
     owner.send({ type: "owner_tab_view", id: "b-2", open: false });
-    expect(await owner.next(answerTo("b-2"))).toMatchObject({ type: "result", id: "b-2" });
+    expect(await owner.next(answerTo("b-2"))).toMatchObject({
+      type: "result",
+      id: "b-2",
+      result: { opened: false, replaced: false },
+    });
+
+    // A reconnect opens nothing, and is no use of the browser.
+    expect((await use()).lastUsed).toBe(opened.lastUsed);
 
     // The browser was closed or replaced: the Pane is told so, until the owner opens a new Owner tab.
     await runInDurableObject(stub, (instance: TestSession) => instance.loseOwnerTab());
@@ -438,8 +456,13 @@ describe("the Browser Pane over the Session socket", () => {
       message: OWNER_TAB_GONE,
     });
 
+    // A new one, said to replace the one that is gone.
     owner.send({ type: "owner_tab_view", id: "b-4", open: true });
-    expect(await owner.next(answerTo("b-4"))).toMatchObject({ type: "result", id: "b-4" });
+    expect(await owner.next(answerTo("b-4"))).toMatchObject({
+      type: "result",
+      id: "b-4",
+      result: { opened: true, replaced: true },
+    });
 
     expect(
       await runInDurableObject(stub, (instance: TestSession) => instance.ownerTabViews()),
@@ -467,5 +490,28 @@ describe("the Browser Pane over the Session socket", () => {
       expect(surface).not.toContain(TOKEN);
       expect(surface).not.toContain("live.browser.run");
     }
+  });
+
+  it("opens nothing for an archived Session: an ask to open is asked without, and the Pane is told there is none", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.setArchived(true));
+
+    const owner = await connect(stub);
+
+    owner.send({ type: "owner_tab_view", id: "b-1", open: true });
+    expect(await owner.next(answerTo("b-1"))).toEqual({
+      type: "error",
+      id: "b-1",
+      message: OWNER_TAB_GONE,
+    });
+
+    const [asked, use] = await runInDurableObject(stub, async (instance: TestSession) => [
+      instance.ownerTabViews(),
+      await instance.browserUse(),
+    ]);
+
+    expect(asked).toEqual([false]);
+    expect(use).toEqual({ alarm: null });
   });
 });
