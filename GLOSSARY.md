@@ -113,7 +113,7 @@ A Workspace's uncommitted work in each of its Repos against their HEAD, shared b
 _Avoid_: Diff (for the whole set), working copy, pending edits
 
 **Comparison**:
-A branch's or pull request's changes against its base.
+A branch's or pull request's commits against the point where it left its base branch.
 _Avoid_: Branch diff, PR diff (for the thing itself)
 
 **Call diff**:
