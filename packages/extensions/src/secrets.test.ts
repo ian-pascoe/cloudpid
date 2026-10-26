@@ -122,7 +122,7 @@ describe("secrets", () => {
     expect(session.recorded).toEqual([]);
   });
 
-  it("lets an environment tool save a reference as the text it is, held or not", async () => {
+  it("passes an environment tool's reference through unresolved, held or not, for the tool to refuse", async () => {
     const saved: string[] = [];
 
     const session = await openSecretsHarness([

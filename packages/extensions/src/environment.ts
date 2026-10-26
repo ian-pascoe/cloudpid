@@ -3,8 +3,8 @@
 // Agent change: the Registry applies it as the owner's save is applied and records it, the Session hands a change to its
 // own Environment to its Workspace at once, and the Run's end notifies the owner of the changes it made
 // (`AgentChangeLog`). They are the root conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values
-// are plain: a change is refused when its value holds a Secret the Session holds or the GitHub token, and a Secret
-// Reference in it is saved as the text it is, since these tools are not wrapped to resolve one.
+// are plain: a change is refused when its value holds a Secret the Session holds or the GitHub token, or a Secret
+// Reference's placeholder, which these tools do not resolve and no command would.
 // @effect-diagnostics missingPipeableSignature:off
 import type { ContainerSettings } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
@@ -23,7 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { Redactions } from "./secrets/redaction.ts";
-import { secretEnvName } from "./secrets/references.ts";
+import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 
 export const extensionName = "environment";
@@ -274,7 +274,7 @@ const VariableName = Schema.String.check(Schema.isMinLength(1)).annotate({
 });
 
 const PLAIN_VALUES =
-  "Variables are plain: every command, and you, can read them, and they are not taken out of output. Never put a credential in one: a value holding a Secret this Session holds, or the GitHub token, is refused. The value is saved as written: a Secret Reference in it is not resolved.";
+  "Variables are plain: every command, and you, can read them, and they are not taken out of output. Never put a credential in one: a value holding a Secret this Session holds, or the GitHub token, is refused, and so is a Secret Reference, which is not resolved here.";
 
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
 // SAFETY: the two types describe the same values; the details are never mutated.
@@ -350,6 +350,14 @@ export const EnvironmentTools: Effect.Effect<
         return yield* EnvironmentsError.make({
           message:
             "Nothing was saved: the value holds the value of a Secret this Session holds, or of the GitHub token. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.",
+        });
+      }
+
+      // Not resolved here, and no command would: the placeholder's text would be the variable's value.
+      if (value !== null && holdsPlaceholder(value)) {
+        return yield* EnvironmentsError.make({
+          message:
+            "Nothing was saved: the value holds a Secret Reference, which these tools do not resolve, so the variable would hold the reference's text and not the Secret. Variables are plain; a Secret cannot be one. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.",
         });
       }
 
