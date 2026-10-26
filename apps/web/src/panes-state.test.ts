@@ -21,6 +21,7 @@ import { RegistryClient } from "./registry.ts";
 import { fakeRegistryLayer } from "./registry.testing.ts";
 import { navigate } from "./router.ts";
 import { stubWindow } from "./router.testing.ts";
+import { sessionLayoutAtom } from "./session-layout-state.ts";
 import { keyValueStoreLayer } from "./storage.ts";
 
 /** A `Storage` over a map, which outlives the registries a test makes over it, as `localStorage` outlives a reload. */
@@ -176,6 +177,28 @@ describe("the Panes open, as atoms over the URL", () => {
     registry.set(panesAtom, { type: "close", key: "subagents" });
 
     expect(browser.history().entries).toEqual(["/sessions/a?x=1"]);
+  });
+});
+
+describe("the layouts kept on this device", () => {
+  it("read back after a reload, a field left at nothing included", () => {
+    const storage = memoryStorage();
+
+    stubWindow("/sessions/a");
+    const first = registryOver(storage);
+
+    first.mount(panesAtom);
+    // Session a: no Pane open (none shown), the card's choice not made, the tree filter picked.
+    first.set(sessionLayoutAtom("a"), { treeFilter: "all" });
+    navigate("/sessions/b");
+    first.set(panesAtom, { type: "open", key: "subagents" });
+    vi.unstubAllGlobals();
+
+    stubWindow("/sessions/b");
+    const second = registryOver(storage);
+
+    expect(second.get(panesAtom)).toEqual(SUBAGENTS);
+    expect(second.get(sessionLayoutAtom("a")).treeFilter).toBe("all");
   });
 });
 

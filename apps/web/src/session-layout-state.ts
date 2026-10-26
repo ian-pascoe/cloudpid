@@ -3,13 +3,17 @@
 // The Session pages' layouts as atoms (`session-layout.ts` has the rules): kept on this device, in the runtime's
 // key-value store, so a Session shows again as it was left, after another Session or a reload.
 
+import * as Arr from "effect/Array";
 import * as Atom from "effect/reactivity/Atom";
 import { appRuntime } from "./runtime.ts";
 import {
+  disclosureKey,
   layoutOf,
   StoredLayouts,
   withLayout,
   withOpen,
+  withShown,
+  type TranscriptDisclosure,
   type SessionLayout,
 } from "./session-layout.ts";
 import type { TreeFilter } from "./session/tree.ts";
@@ -23,42 +27,62 @@ const storedLayoutsAtom = Atom.kvs({
 }).pipe(Atom.keepAlive);
 
 /**
- * Session `sessionId`'s layout. Writing one keeps it on this device, with the Session first as the one shown last.
+ * Session `sessionId`'s layout. Writing some of its fields keeps them, the others as they were, on this device, with
+ * the Session first as the one shown last.
  */
 export const sessionLayoutAtom = Atom.family((sessionId: string) =>
   Atom.writable(
     (get): SessionLayout => layoutOf(get(storedLayoutsAtom), sessionId),
-    (ctx, layout: SessionLayout) => {
-      ctx.set(storedLayoutsAtom, withLayout(ctx.get(storedLayoutsAtom), sessionId, layout));
+    (ctx, change: Partial<SessionLayout>) => {
+      const stored = ctx.get(storedLayoutsAtom);
+
+      ctx.set(
+        storedLayoutsAtom,
+        withLayout(stored, sessionId, { ...layoutOf(stored, sessionId), ...change }),
+      );
     },
   ),
 );
 
-/** Which list of open subagents in a layout: the Subagents Pane's rows, or the transcript's cards. */
-type OpenList = "openAgents" | "openCards";
+/**
+ * Puts Session `sessionId` first among the layouts kept, as the one shown last, so a Session the owner reads but changes
+ * nothing on is kept as long as one they change. Mounted by the Session's page.
+ */
+export const showLayoutAtom = Atom.family((sessionId: string) =>
+  Atom.make((get) => {
+    const stored = get.once(storedLayoutsAtom);
+    const shown = withShown(stored, sessionId);
+
+    if (shown !== stored) get.set(storedLayoutsAtom, shown);
+  }),
+);
+
+/** A list of things open in a layout, kept by `withOpen`. */
+type OpenList = "openAgents" | "openCards" | "openDisclosures";
 
 /**
- * Per Session, then per subagent conversation: whether the subagent is open in `list` of the Session's layout; writing
- * it opens or closes it there.
+ * Per Session, then per thing in `list`: whether it is open in the Session's layout; writing it opens or closes it
+ * there.
  */
-const openSubagentFamily = (list: OpenList) =>
+const openFamily = <List extends OpenList>(list: List) =>
   Atom.family((sessionId: string) => {
     const layout = sessionLayoutAtom(sessionId);
 
-    return Atom.family((conversationId: number) =>
+    return Atom.family((id: SessionLayout[List][number]) =>
       Atom.writable(
-        (get) => get(layout)[list].includes(conversationId),
+        (get) => Arr.some(get(layout)[list], (known: string | number) => known === id),
         (ctx, open: boolean) => {
-          const current = ctx.get(layout);
+          const ids: readonly (string | number)[] = ctx.get(layout)[list];
 
-          ctx.set(layout, { ...current, [list]: withOpen(current[list], conversationId, open) });
+          ctx.set(layout, { [list]: withOpen(ids, id, open) });
         },
       ),
     );
   });
 
-const agentRows = openSubagentFamily("openAgents");
-const subagentCards = openSubagentFamily("openCards");
+const agentRows = openFamily("openAgents");
+const subagentCards = openFamily("openCards");
+const disclosures = openFamily("openDisclosures");
 
 /** Whether a subagent's row is open into its thread in Session `sessionId`'s Subagents Pane. */
 export const agentRowOpenAtom = (sessionId: string, conversationId: number) =>
@@ -68,6 +92,10 @@ export const agentRowOpenAtom = (sessionId: string, conversationId: number) =>
 export const subagentCardOpenAtom = (sessionId: string, conversationId: number) =>
   subagentCards(sessionId)(conversationId);
 
+/** Whether a disclosure of Session `sessionId`'s transcript (or a subagent's thread in it) is open. */
+export const disclosureOpenAtom = (sessionId: string, disclosure: TranscriptDisclosure) =>
+  disclosures(sessionId)(disclosureKey(disclosure));
+
 /** The filter Session `sessionId`'s tree Pane shows with; writing it keeps the new one in the layout. */
 export const treeFilterAtom = Atom.family((sessionId: string) => {
   const layout = sessionLayoutAtom(sessionId);
@@ -75,27 +103,7 @@ export const treeFilterAtom = Atom.family((sessionId: string) => {
   return Atom.writable(
     (get): TreeFilter => get(layout).treeFilter,
     (ctx, treeFilter: TreeFilter) => {
-      ctx.set(layout, { ...ctx.get(layout), treeFilter });
+      ctx.set(layout, { treeFilter });
     },
   );
-});
-
-const WIDE_QUERY = "(min-width: 768px)";
-
-/** Whether the screen is `md` or wider, where the Pane area is a column beside the chat (it covers it on a phone). */
-export const mdScreenAtom = Atom.readable((get) => {
-  if (!("window" in globalThis)) return true;
-
-  const query = window.matchMedia(WIDE_QUERY);
-
-  const changed = () => {
-    get.setSelf(query.matches);
-  };
-
-  query.addEventListener("change", changed);
-  get.addFinalizer(() => {
-    query.removeEventListener("change", changed);
-  });
-
-  return query.matches;
 });

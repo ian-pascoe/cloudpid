@@ -4,13 +4,13 @@
 // this device (`session-layout-state.ts`) so the Session shows them again when it is opened without them; the area's
 // width is a view preference kept on this device.
 
-import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
 import {
   applyPaneAction,
   paneAreaOf,
+  samePaneArea,
   searchWithPaneArea,
   type PaneAction,
   type PaneArea,
@@ -49,9 +49,7 @@ export const panesAtom = Atom.writable(
 
     if (sessionId === undefined) return;
 
-    const layout = sessionLayoutAtom(sessionId);
-
-    ctx.set(layout, { ...ctx.get(layout), panes: next });
+    ctx.set(sessionLayoutAtom(sessionId), { panes: next });
   },
 );
 
@@ -68,16 +66,8 @@ export const rememberPanesAtom = Atom.family((sessionId: string) =>
 
         const area = paneAreaOf(search);
         const layout = sessionLayoutAtom(sessionId);
-        const current = get.once(layout);
-        const kept = current.panes;
 
-        if (
-          kept.hidden !== area.hidden ||
-          kept.shown !== area.shown ||
-          Arr.join(kept.open, "\n") !== Arr.join(area.open, "\n")
-        ) {
-          get.set(layout, { ...current, panes: area });
-        }
+        if (!samePaneArea(get.once(layout).panes, area)) get.set(layout, { panes: area });
       },
       { immediate: true },
     );

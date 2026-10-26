@@ -7,6 +7,7 @@ import {
   NO_PANES,
   paneAreaOf,
   paneKeyOf,
+  samePaneArea,
   searchWithPaneArea,
   tabForKey,
   type PaneAction,
@@ -14,7 +15,7 @@ import {
   type PaneType,
 } from "./panes.ts";
 
-/** The types the later Panes will register, with the New pane and the Tasks Pane that exist. */
+/** Pane types for the rules, apart from the app's: the New pane, one open once (`tasks`), two open more than once. */
 const TYPES: readonly PaneType[] = [
   { id: "new", multiple: false, label: () => ({ name: "New pane" }) },
   { id: "tasks", multiple: false, label: () => ({ name: "Tasks" }) },
@@ -81,6 +82,18 @@ describe("a Pane key", () => {
     // The root agent's handoff, or one the page does not know (yet): no agent.
     expect(pane?.type.label("call-1", agentOfHandoff)).toEqual({ name: "Live View" });
     expect(paneKeyOf("live-view")).toBeUndefined();
+  });
+});
+
+describe("two areas", () => {
+  it("are the same with the same Panes in the same order, the same one shown, and both hidden or not", () => {
+    const open = area(["tasks", "terminal:1"], "terminal:1");
+
+    expect(samePaneArea(open, area(["tasks", "terminal:1"], "terminal:1"))).toBe(true);
+    expect(samePaneArea(open, area(["terminal:1", "tasks"], "terminal:1"))).toBe(false);
+    expect(samePaneArea(open, area(["tasks", "terminal:1"], "tasks"))).toBe(false);
+    expect(samePaneArea(open, area(["tasks", "terminal:1"], "terminal:1", true))).toBe(false);
+    expect(samePaneArea(open, area(["tasks"], "terminal:1"))).toBe(false);
   });
 });
 

@@ -21,6 +21,7 @@ import {
 import type { ConnectionStatus } from "../session/state.ts";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
+import { showLayoutAtom } from "../session-layout-state.ts";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
 import { TreeBarScope, useForkNotice } from "./tree-actions.ts";
 import { TreeDialogs } from "./tree-dialogs.tsx";
@@ -86,9 +87,12 @@ const LiveSession = ({
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
   const queue = useAtomValue(threadQueueAtom(root));
-  // The cards, the Activity card and the Subagents Pane read the task graph, and the composer's context ring its usage: their atoms watch them
-  // for as long as the Session is shown.
+  // The cards, the Activity card and the Subagents Pane read the task graph, and the composer's context ring its usage:
+  // their atoms watch them for as long as the Session is shown.
   const taskGraph = useAtomValue(taskGraphAtom(sessionId));
+
+  // The Session's layout is kept as the one shown last, so it outlives the Sessions shown less lately.
+  useAtomMount(showLayoutAtom(sessionId));
 
   useAtomMount(usageAtom(sessionId));
   // Deleted (here or elsewhere): its socket closed saying so, and the page leaves it.

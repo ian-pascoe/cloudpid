@@ -10,8 +10,10 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import { PanelRightClose, PanelRightOpen, Plus, X } from "lucide-react";
 import {
+  useEffect,
   useId,
   useRef,
+  useState,
   type ComponentType,
   type CSSProperties,
   type KeyboardEvent,
@@ -38,6 +40,7 @@ import {
 import {
   DEFAULT_PANE_WIDTH,
   MAX_PANE_WIDTH,
+  MIN_CHAT_WIDTH,
   MIN_PANE_WIDTH,
   paneWidthAtom,
   paneWidthForKey,
@@ -59,6 +62,32 @@ const PANE_COMPONENTS = {
 const componentOf = (id: string): ComponentType<PaneProps> | undefined =>
   Option.getOrUndefined(Record.get<string, ComponentType<PaneProps>>(PANE_COMPONENTS, id));
 
+/**
+ * The width in px of the element `area` is in (the chat and the Pane area together), as it changes; undefined until it
+ * is laid out.
+ */
+const useRoom = (area: RefObject<HTMLElement | null>): number | undefined => {
+  const [room, setRoom] = useState<number>();
+
+  useEffect(() => {
+    const page = area.current?.parentElement;
+
+    if (page === null || page === undefined) return;
+
+    const observer = new ResizeObserver(() => {
+      setRoom(page.clientWidth);
+    });
+
+    observer.observe(page);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [area]);
+
+  return room;
+};
+
 /** The strip between the Pane area and the chat: drag it, or focus it and use the arrow keys, Home and End. */
 const ResizeHandle = ({
   area,
@@ -68,8 +97,8 @@ const ResizeHandle = ({
   controls: string;
 }) => {
   const [width, setWidth] = useAtom(paneWidthAtom);
-  // The page's room for the chat and the area together; the area may take all of it but the chat's least width.
-  const room = area.current?.parentElement?.clientWidth;
+  // The area may take all of the page's room but the chat's least width.
+  const room = useRoom(area);
   const widest = room === undefined ? MAX_PANE_WIDTH : widestPaneIn(room);
   // A width kept from a wider window shows as the widest this one has room for, and the keys move from there.
   const shown = Math.min(width, widest);
@@ -181,7 +210,11 @@ export const PaneArea = () => {
 
   if (shown === undefined) return null;
 
-  const style: CSSProperties & Record<`--${string}`, string> = { "--pane-width": `${width}px` };
+  const style: CSSProperties & Record<`--${string}`, string> = {
+    "--pane-width": `${width}px`,
+    "--min-chat-width": `${MIN_CHAT_WIDTH}px`,
+  };
+
   const tabId = (key: string) => `${base}-tab-${open.indexOf(key)}`;
   const panelId = (key: string) => `${base}-panel-${open.indexOf(key)}`;
 
@@ -207,7 +240,7 @@ export const PaneArea = () => {
       aria-label="Panes"
       hidden={hidden}
       style={style}
-      className="fixed inset-0 z-20 flex flex-col bg-background md:relative md:inset-auto md:z-auto md:w-(--pane-width) md:max-w-[calc(100%-20rem)] md:min-w-72 md:shrink-0 md:border-l"
+      className="fixed inset-0 z-20 flex flex-col bg-background md:relative md:inset-auto md:z-auto md:w-(--pane-width) md:max-w-[calc(100%-var(--min-chat-width))] md:min-w-72 md:shrink-0 md:border-l"
     >
       <ResizeHandle area={area} controls={PANE_AREA_ID} />
       <header className="flex items-center gap-1 border-b px-2 py-1.5">

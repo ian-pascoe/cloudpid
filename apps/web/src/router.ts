@@ -4,9 +4,9 @@
 //
 // The path says which page is shown. The query holds what the page's view has open, today the Session page's Panes:
 //
-// - `?pane=subagents`: one open Pane. Several are repeated values of `pane`, in tab order (`?pane=subagents&pane=terminal:1`),
-//   not one comma-separated value: a Pane's key is free to hold a comma later, a repeated key needs no escaping rule of
-//   its own, and each `pane` reads as one tab. A key's `:` is written as it is, not as `%3A`, so a link stays readable.
+// - `?pane=subagents`: one open Pane. Several are repeated values of `pane`, in tab order
+//   (`?pane=subagents&pane=terminal:1`), not one comma-separated value: a Pane's key is free to hold a comma later, a
+//   repeated key needs no escaping rule of its own, and each `pane` reads as one tab. A key's `:` is written as it is, not as `%3A`, so a link stays readable.
 // - `shown=<key>` names the Pane shown when it is not the first `pane`. Without it (or when it names a Pane that is not
 //   open) the first is shown, so the common link, one Pane, has no `shown`.
 // - `panes=hidden`: the Pane area is hidden, its Panes still open. Written only beside an open Pane.

@@ -101,6 +101,13 @@ export interface PaneArea {
 /** No Pane open: the Pane area is closed. */
 export const NO_PANES: PaneArea = { open: [], shown: undefined, hidden: false };
 
+/** Whether two areas have the same Panes open, in the same order, the same one shown, and are both hidden or not. */
+export const samePaneArea = (one: PaneArea, other: PaneArea): boolean =>
+  one.shown === other.shown &&
+  one.hidden === other.hidden &&
+  one.open.length === other.open.length &&
+  one.open.every((key, index) => other.open[index] === key);
+
 /** A Pane key, taken apart. */
 export interface PaneKey {
   readonly type: PaneType;

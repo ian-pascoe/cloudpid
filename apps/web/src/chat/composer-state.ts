@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import { replying } from "../calls.ts";
 import { refusedFirstMessagesAtom } from "../draft-state.ts";
+import { mediaQueryAtom } from "../media-query.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
 import { addAttachmentsAtom } from "./attachments-state.ts";
@@ -19,23 +20,8 @@ import type { ConversationKey } from "./conversation.ts";
 import { searchFilesAtom } from "./file-search.ts";
 import { composerPrefillAtom } from "./tree-state.ts";
 
-const WIDE_QUERY = "(min-width: 640px)";
-
 /** Whether the screen has room for the composer's long placeholder; on a phone it would wrap. */
-export const wideAtom = Atom.readable((get) => {
-  const query = window.matchMedia(WIDE_QUERY);
-
-  const changed = () => {
-    get.setSelf(query.matches);
-  };
-
-  query.addEventListener("change", changed);
-  get.addFinalizer(() => {
-    query.removeEventListener("change", changed);
-  });
-
-  return query.matches;
-});
+export const wideAtom = mediaQueryAtom("(min-width: 640px)");
 
 /** Put `text` on the clipboard (`/copy`); fails when the browser does not allow it. */
 export const copyAtom = appRuntime.fn(

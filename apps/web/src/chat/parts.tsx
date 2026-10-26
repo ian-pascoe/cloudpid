@@ -1,7 +1,10 @@
-import type {
-  ReasoningMessagePartComponent,
-  ToolCallMessagePartComponent,
+import {
+  useAuiState,
+  type ReasoningMessagePartComponent,
+  type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
+import { useAtom } from "@effect/atom-react";
+import type { ReactNode } from "react";
 import * as Arr from "effect/Array";
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
 import { Check, ChevronRight, Loader, X } from "lucide-react";
@@ -10,6 +13,9 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
+import type { TranscriptDisclosure } from "../session-layout.ts";
+import { disclosureOpenAtom } from "../session-layout-state.ts";
+import { useShownSessionId, useThreadConversation } from "./conversation.ts";
 import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
 
@@ -26,33 +32,91 @@ export const MarkdownText = () => (
   />
 );
 
-const Disclosure = ({
-  summary,
-  open,
+/**
+ * A `details` of a thread whose open state is kept in the Session's layout, so it is open again when the owner comes
+ * back to the Session. `held` holds it open whatever was kept, as while what it shows streams.
+ */
+export const KeptDetails = ({
+  disclosure,
+  held = false,
+  className,
   children,
 }: {
-  summary: React.ReactNode;
-  open?: boolean | undefined;
-  children: React.ReactNode;
+  disclosure: DistributiveOmit<TranscriptDisclosure, "conversationId">;
+  held?: boolean | undefined;
+  className?: string | undefined;
+  children: ReactNode;
+}) => {
+  const conversationId = useThreadConversation();
+
+  const [kept, setKept] = useAtom(
+    disclosureOpenAtom(useShownSessionId(), { ...disclosure, conversationId }),
+  );
+
+  const open = held || kept;
+
+  return (
+    <details
+      open={open}
+      onToggle={(event) => {
+        // A `details` rendered open fires a toggle too; only a change is kept.
+        if (event.currentTarget.open !== open) setKept(event.currentTarget.open);
+      }}
+      className={className}
+    >
+      {children}
+    </details>
+  );
+};
+
+/** `Omit` over each member of a union, so each keeps its own fields. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+const Disclosure = ({
+  disclosure,
+  summary,
+  held,
+  children,
+}: {
+  disclosure: DistributiveOmit<TranscriptDisclosure, "conversationId">;
+  summary: ReactNode;
+  held?: boolean | undefined;
+  children: ReactNode;
 }) => (
-  <details open={open} className="group my-2 rounded-md border">
+  <KeptDetails disclosure={disclosure} held={held} className="group my-2 rounded-md border">
     <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
       <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
       {summary}
     </summary>
     <div className="border-t px-3 py-2">{children}</div>
-  </details>
+  </KeptDetails>
 );
 
-/** The model's thinking: open while it streams, folded away once it is done. */
-export const ReasoningPart: ReasoningMessagePartComponent = ({ text, status }) => (
-  <Disclosure
-    open={status.type === "running" ? true : undefined}
-    summary={status.type === "running" ? "Thinking…" : "Thought"}
-  >
-    <p className="text-sm whitespace-pre-wrap text-muted-foreground">{text}</p>
-  </Disclosure>
-);
+/** The model's thinking: open while it streams, then as the owner left it (folded away until they open it). */
+export const ReasoningPart: ReasoningMessagePartComponent = ({ text, status }) => {
+  const messageId = useAuiState((state) => state.message.id);
+
+  // Its place among the message's parts tells it from the message's other thinking.
+  const index = useAuiState((state) =>
+    Option.getOrElse(
+      Arr.findFirstIndex(
+        [...state.message.content],
+        (part) => part.type === "reasoning" && part.text === text,
+      ),
+      () => 0,
+    ),
+  );
+
+  return (
+    <Disclosure
+      disclosure={{ kind: "thinking", messageId, index }}
+      held={status.type === "running"}
+      summary={status.type === "running" ? "Thinking…" : "Thought"}
+    >
+      <p className="text-sm whitespace-pre-wrap text-muted-foreground">{text}</p>
+    </Disclosure>
+  );
+};
 
 const Output = ({ label, text, error }: { label: string; text: string; error?: boolean }) => (
   <div className="mt-2 first:mt-0">
@@ -130,6 +194,7 @@ const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
 
 /** A tool call: its name and state on one line, its arguments, streamed output, and result when opened. */
 export const ToolCallCard: ToolCallMessagePartComponent = ({
+  toolCallId,
   toolName,
   args,
   argsText,
@@ -163,8 +228,9 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
 
   const card = (
     <Disclosure
+      disclosure={{ kind: "tool", callId: toolCallId }}
       // The calls of a script that is running show as they start.
-      open={running && calls.length > 0 ? true : undefined}
+      held={running && calls.length > 0}
       summary={
         <>
           {running ? (

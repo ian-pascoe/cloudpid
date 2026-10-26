@@ -10,7 +10,7 @@ import {
 import * as Arr from "effect/Array";
 import { ChevronRight } from "lucide-react";
 import * as Predicate from "effect/Predicate";
-import { MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
+import { KeptDetails, MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent.ts";
 import { answerOf, entriesOf, type ShownSkill, shownSkills } from "../session/thread-messages.ts";
@@ -21,8 +21,8 @@ import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
  * A Skill the Session expanded into the owner's message: closed, under the typed text, so what the model got beyond it
  * stays in sight (docs/adr/0001-expand-skills-and-prompt-templates-at-submit.md).
  */
-const SkillDisclosure = ({ skill }: { skill: ShownSkill }) => (
-  <details className="group mt-1.5">
+const SkillDisclosure = ({ skill, messageId }: { skill: ShownSkill; messageId: string }) => (
+  <KeptDetails disclosure={{ kind: "skill", messageId, name: skill.name }} className="group mt-1.5">
     <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
       <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
       Skill · {skill.name}
@@ -30,7 +30,7 @@ const SkillDisclosure = ({ skill }: { skill: ShownSkill }) => (
     <pre className="mt-1.5 max-h-72 overflow-auto rounded-md border bg-background px-3 py-2 font-mono text-xs whitespace-pre-wrap">
       {skill.text}
     </pre>
-  </details>
+  </KeptDetails>
 );
 
 /** An image in the owner's message (an Attachment's), at most 256 px high. */
@@ -60,7 +60,7 @@ const UserMessage = () => {
       <div className="max-w-[85%] rounded-lg bg-muted px-4 py-2 break-words whitespace-pre-wrap">
         <MessagePrimitive.Parts components={USER_PARTS} />
         {Arr.map(skills, (skill) => (
-          <SkillDisclosure key={skill.name} skill={skill} />
+          <SkillDisclosure key={skill.name} skill={skill} messageId={id} />
         ))}
       </div>
       <OwnerMessageBar messageId={id} />
@@ -140,7 +140,8 @@ const NoticeMessage = () => {
     ),
   );
 
-  const id = useAuiState((state) => entryIdOf(state.message.id));
+  const messageId = useAuiState((state) => state.message.id);
+  const id = entryIdOf(messageId);
 
   return (
     <MessagePrimitive.Root className="group/message flex items-center gap-3 text-xs text-muted-foreground">
@@ -149,12 +150,12 @@ const NoticeMessage = () => {
       {text === "" ? (
         <span>{title}</span>
       ) : (
-        <details className="max-w-[85%] min-w-0">
+        <KeptDetails disclosure={{ kind: "notice", messageId }} className="max-w-[85%] min-w-0">
           <summary className="cursor-pointer text-center select-none">{title}</summary>
           <p className="mt-2 rounded-md bg-muted px-3 py-2 text-left text-sm break-words whitespace-pre-wrap text-foreground">
             {text}
           </p>
-        </details>
+        </KeptDetails>
       )}
       <span className="h-px flex-1 bg-border" aria-hidden />
     </MessagePrimitive.Root>

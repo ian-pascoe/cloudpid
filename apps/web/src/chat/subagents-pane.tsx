@@ -4,7 +4,6 @@
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
-import * as Atom from "effect/reactivity/Atom";
 import { Square } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
@@ -15,18 +14,11 @@ import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
 import { AgentStatus, shortModel } from "./subagent-card.tsx";
+import { revealedAgentAtom } from "./subagents-state.ts";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
 const kindLabel = (kind: string): string =>
   kind === "pi.compaction" ? "Compacting context" : kind;
-
-/**
- * The conversation of the subagent the Subagents Pane of Session `sessionId` is asked to bring into sight (the Activity
- * card asks it, opening the agent's row); its row scrolls to itself and clears it.
- */
-export const revealedAgentAtom = Atom.family((_sessionId: string) =>
-  Atom.make<number | null>(null),
-);
 
 type RowProps = { agent: GraphAgent; depth: number };
 
@@ -110,6 +102,19 @@ export const SubagentsPane = () => {
   const graph = useAtomValue(taskGraphAtom(sessionId));
   const running = useAtomValue(sessionViewAtom(sessionId), (view) => view.running);
   const stoppable = canStopAllBelow(graph, "root", running);
+  const [revealed, setRevealed] = useAtom(revealedAgentAtom(sessionId));
+
+  // An agent asked to be brought into sight that has no row (it is gone) is forgotten, so its row, if it comes back,
+  // does not scroll to itself unasked.
+  useEffect(() => {
+    if (
+      revealed !== null &&
+      graph !== null &&
+      !Arr.some(graph.agents, (agent) => agent.conversationId === revealed)
+    ) {
+      setRevealed(null);
+    }
+  }, [revealed, graph, setRevealed]);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">

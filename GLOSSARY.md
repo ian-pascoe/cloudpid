@@ -85,7 +85,7 @@ The flat list of Todo Items an agent keeps in its conversation to track what it 
 _Avoid_: Plan, checklist, task list
 
 **Todo Item**:
-One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Tasks Pane lists.
+One entry of a Todo List: a title, an optional description, and a status (`pending`, `active` or `completed`). The `todo` tool, its parameters and the socket's `todos` message call it a "Task", as pi-todo does; that is the same thing, and not a background task of pi-durable, which the web app's Subagents Pane lists.
 _Avoid_: Task (alone, in prose about the product), to-do
 
 ## Messages
@@ -185,8 +185,16 @@ An interactive shell the owner runs on a Workspace's Container from a Session, i
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), the Session tree, a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session's layout on the device, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is on the **Activity card**, a small card over the top right of the chat that also lists the subagents, each opening the Subagents Pane.
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), the Session tree, a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is on the Activity card.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
+
+**Activity card**:
+A small card over the top right of a Session's chat that follows the root agent's Todo List and the Session's subagents while the owner reads: a pill with the progress when collapsed, the list and the subagents when expanded, each subagent opening the Subagents Pane at it.
+_Avoid_: Popover, plan overlay, todo panel
+
+**Session layout**:
+What the owner opened, collapsed and picked on a Session's page (its Panes, the Activity card, open subagents and disclosures, the Session tree's filter), kept per Session on the device so the Session shows again as it was left.
+_Avoid_: View state, UI state
 
 **Offered tool**:
 A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, and `secret_ask` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.
