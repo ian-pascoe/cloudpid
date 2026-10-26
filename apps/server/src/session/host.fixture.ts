@@ -295,10 +295,13 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
     }),
   closeOwnerTab: (id) =>
     Effect.sync(() => {
-      const tabs = ownerTabListing(kv).tabs.filter((tab) => tab.id !== id);
-      const shown = ownerTabListing(kv).shown;
+      const { tabs, shown } = ownerTabListing(kv);
+      const left = tabs.filter((tab) => tab.id !== id);
 
-      kv.put("owner-tab-list", { tabs, ...(shown === id || shown === undefined ? {} : { shown }) });
+      kv.put(
+        "owner-tab-list",
+        shown === undefined || shown === id ? { tabs: left } : { tabs: left, shown },
+      );
 
       return ownerTabListing(kv);
     }),
