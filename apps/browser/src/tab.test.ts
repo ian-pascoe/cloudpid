@@ -11,7 +11,7 @@ import {
   type StoredBrowserSession,
 } from "agents/browser";
 import { describe, expect, it } from "vitest";
-import { forgetScope, openTab, tabIn, tabOf } from "./tab.ts";
+import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabsIn } from "./tab.ts";
 
 const memoryStore = (): ListableBrowserSessionStore & {
   readonly records: Map<string, StoredBrowserSession>;
@@ -221,6 +221,45 @@ describe("opening an Owner tab", () => {
     expect(second.browserSessionId).not.toBe(first.browserSessionId);
     expect(await tabIn(lookup, "owner-tab:a")).toBeUndefined();
     expect(await tabIn(lookup, "owner-tab:b")).toEqual(second);
+  });
+
+  it("records a page a tab opened as its scope's tab, in the browser that runs and starting none", async () => {
+    const { browser, lookup, run, work } = setup();
+    const sessionId = await work(5, "tab-1");
+
+    run.state.tabs.set(sessionId, ["tab-1", "link-page"]);
+
+    expect(await adoptTab(browser, "owner-tab:a", "link-page")).toEqual({
+      browserSessionId: sessionId,
+      targetId: "link-page",
+    });
+    expect(run.state.created).toBe(1);
+    expect(await tabIn(lookup, "owner-tab:a")).toEqual({
+      browserSessionId: sessionId,
+      targetId: "link-page",
+    });
+    expect(await tabOf(lookup, 5)).toEqual({ browserSessionId: sessionId, targetId: "tab-1" });
+  });
+
+  it("finds several scopes' tabs asking Browser Run once, leaving out those that are gone", async () => {
+    const { browser, lookup, run } = setup();
+
+    const a = await openTab(browser, "owner-tab:a");
+    const b = await openTab(browser, "owner-tab:b");
+
+    await openTab(browser, "owner-tab:c");
+    run.state.tabs.set(a.browserSessionId, [a.targetId, b.targetId]);
+    run.requests.length = 0;
+
+    expect(
+      await tabsIn(lookup, ["owner-tab:a", "owner-tab:b", "owner-tab:c", "owner-tab:d"]),
+    ).toEqual(
+      new Map([
+        ["owner-tab:a", a],
+        ["owner-tab:b", b],
+      ]),
+    );
+    expect(run.requests).toHaveLength(1);
   });
 
   it("forgets an Owner tab's scope record under the scope records' lock, leaving the others", async () => {

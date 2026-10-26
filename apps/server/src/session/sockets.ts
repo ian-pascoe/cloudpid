@@ -15,6 +15,7 @@ import {
   HEARTBEAT,
   type LiveViewLinks,
   type OwnerTabLinks,
+  type OwnerTabListing,
   type ClientMessage,
   type ServerMessage,
   ServerMessageJson,
@@ -146,6 +147,12 @@ export const browserHandoffRequests = (
     // SAFETY: a handoff's conversation is the asking call's, a pi-durable conversation ID.
     conversationId: request.conversationId as ConversationId,
   })),
+});
+
+/** The `owner_tabs` message for `tabs`, which every client is sent when one changes them. It holds no Live View link. */
+export const ownerTabsMessage = (tabs: OwnerTabListing): ServerMessage => ({
+  type: "owner_tabs",
+  ...tabs,
 });
 
 /**
@@ -460,6 +467,7 @@ export const sessionSocketsLayer = (
         | Navigated
         | LiveViewLinks
         | OwnerTabLinks
+        | OwnerTabListing
         | null,
         SessionError | SecretsError | BrowserError | ApprovalsError
       > => {
@@ -505,19 +513,23 @@ export const sessionSocketsLayer = (
           // The Browser Pane's links, answered to this socket alone the same way. An Owner tab it opened is a use of the
           // browser: settling arms the wake for its idle close, which an idle Session would otherwise not have.
           case "owner_tab_view":
-            return browserPane.view(message.open).pipe(
-              // In the background and best effort: the answer neither waits on the settle nor loses its links to it.
-              Effect.tap((links) =>
-                links.opened
-                  ? host.settle.pipe(
-                      Effect.catchCause((cause) =>
-                        Effect.logWarning("Settling after an Owner tab opened failed", cause),
-                      ),
-                      Effect.forkIn(scope),
-                    )
-                  : Effect.void,
-              ),
+            return browserPane
+              .view(message.open)
+              .pipe(Effect.tap((links) => (links.opened ? settleInBackground : Effect.void)));
+
+          // The Owner tabs hold no link, so a change goes to every client: a second device shows the tab the first
+          // switched to, and sees the tabs it opened and closed.
+          case "owner_tab_list":
+            return browserPane.tabs;
+          case "owner_tab_open":
+            return browserPane.open.pipe(
+              Effect.tap(() => settleInBackground),
+              Effect.tap(announceOwnerTabs),
             );
+          case "owner_tab_show":
+            return browserPane.show(message.ownerTabId).pipe(Effect.tap(announceOwnerTabs));
+          case "owner_tab_close":
+            return browserPane.close(message.ownerTabId).pipe(Effect.tap(announceOwnerTabs));
 
           case "command": {
             const { type: _type, id: _id, ...command } = message;
@@ -633,6 +645,21 @@ export const sessionSocketsLayer = (
           (socket) => send(socket, { type: "active_branch", conversationId }),
           { discard: true },
         );
+
+      /** Tell every connected client the Owner tabs of the Browser Pane, which one of them changed. */
+      const announceOwnerTabs = (tabs: OwnerTabListing) =>
+        Effect.forEach(state.getWebSockets(), (socket) => send(socket, ownerTabsMessage(tabs)), {
+          discard: true,
+        });
+
+      /** In the background and best effort: an answer neither waits on the settle nor loses its result to it. */
+      const settleInBackground = host.settle.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Settling after an Owner tab opened failed", cause),
+        ),
+        Effect.forkIn(scope),
+        Effect.asVoid,
+      );
 
       /** Tell `socket`, or every connected client, which of the model and thinking level the Session picked. */
       const announcePicks = host.picks.pipe(

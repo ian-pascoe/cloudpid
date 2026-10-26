@@ -32,6 +32,10 @@ export const remoteBrowserHost = (
     startHandoff: (input) => call("startHandoff", (host) => host.startHandoff(input)),
     liveView: (requestId) => call("liveView", (host) => host.liveView(requestId)),
     ownerTabView: (open) => call("ownerTabView", (host) => host.ownerTabView(open)),
+    ownerTabs: call("ownerTabs", (host) => host.ownerTabs()),
+    openOwnerTab: call("openOwnerTab", (host) => host.openOwnerTab()),
+    showOwnerTab: (id) => call("showOwnerTab", (host) => host.showOwnerTab(id)),
+    closeOwnerTab: (id) => call("closeOwnerTab", (host) => host.closeOwnerTab(id)),
     waitHandoff: (requestId, maxMs) =>
       call("waitHandoff", (host) => host.waitHandoff(requestId, maxMs)),
     endHandoff: (requestId) => call("endHandoff", (host) => host.endHandoff(requestId)),

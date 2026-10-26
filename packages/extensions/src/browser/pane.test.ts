@@ -7,7 +7,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
 import { fakeHandoffHost, LIVE_VIEW_LINKS } from "./host.fixture.ts";
 import { BROWSER_IDLE_MS, BrowserError, type BrowserHostService } from "./host.ts";
-import { makeBrowserPane } from "./pane.ts";
+import { ARCHIVED_OPENS_NO_OWNER_TAB, makeBrowserPane } from "./pane.ts";
 import { makeBrowserSession } from "./session.ts";
 
 /** A Durable Object's key-value storage, in memory. */
@@ -29,9 +29,18 @@ const memoryStorage = () => {
 const fakeHost = (gone = false) => {
   const asked: boolean[] = [];
   let tab = false;
+  let opens = 0;
 
   const host: BrowserHostService = {
     ...fakeHandoffHost().host,
+    openOwnerTab: Effect.sync(() => {
+      tab = true;
+      opens += 1;
+
+      return { tabs: [{ id: "owner-2", title: "" }], shown: "owner-2" };
+    }),
+    showOwnerTab: () =>
+      Effect.fail(BrowserError.make({ message: `showOwnerTab: Error: ${OWNER_TAB_GONE}` })),
     ownerTabView: (open) =>
       Effect.suspend(() => {
         asked.push(open);
@@ -55,11 +64,11 @@ const fakeHost = (gone = false) => {
       }),
   };
 
-  return { host, asked };
+  return { host, asked, opens: () => opens };
 };
 
 const setup = (options: { readonly archived?: boolean; readonly gone?: boolean } = {}) => {
-  const { host, asked } = fakeHost(options.gone);
+  const { host, asked, opens } = fakeHost(options.gone);
   const session = makeBrowserSession({ host, storage: memoryStorage() });
 
   const pane = makeBrowserPane(
@@ -67,7 +76,7 @@ const setup = (options: { readonly archived?: boolean; readonly gone?: boolean }
     session,
   );
 
-  return { pane, session, asked };
+  return { pane, session, asked, opens };
 };
 
 const test = (name: string, body: () => Effect.Effect<void, unknown>) =>
@@ -111,5 +120,32 @@ describe("the Session's Browser Pane", () => {
       expect(yield* failure(pane.view(false))).toBe(OWNER_TAB_GONE);
       expect(yield* failure(pane.view(true))).toBe(OWNER_TAB_GONE);
       expect(asked).toEqual([false, true]);
+    }));
+
+  test("opens a new Owner tab for the tab strip, a use of the browser, unless the Session is archived", () =>
+    Effect.gen(function* () {
+      const { pane, session, opens } = setup();
+
+      yield* TestClock.adjust(1_000);
+      expect((yield* pane.open).shown).toBe("owner-2");
+      expect(opens()).toBe(1);
+      expect(yield* session.closeAt).toBe(1_000 + BROWSER_IDLE_MS);
+
+      const archived = setup({ archived: true });
+
+      expect(yield* failure(archived.pane.open)).toBe(ARCHIVED_OPENS_NO_OWNER_TAB);
+      expect(archived.opens()).toBe(0);
+      expect(yield* archived.session.closeAt).toBeUndefined();
+    }));
+
+  test("lists, shows and closes Owner tabs through the host, with the host's gone in its own words", () =>
+    Effect.gen(function* () {
+      const { pane, session } = setup();
+
+      expect((yield* pane.tabs).shown).toBe("owner-1");
+      expect(yield* pane.close("owner-1")).toEqual({ tabs: [] });
+      expect(yield* failure(pane.show("nope"))).toBe(OWNER_TAB_GONE);
+      // None of these is a use of the browser.
+      expect(yield* session.closeAt).toBeUndefined();
     }));
 });

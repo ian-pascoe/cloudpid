@@ -520,3 +520,95 @@ describe("the Browser Pane over the Session socket", () => {
     expect(use).toEqual({ alarm: null });
   });
 });
+
+describe("the Browser Pane's Owner tabs over the Session socket", () => {
+  const isTabs = (
+    message: ServerMessage,
+  ): message is Extract<ServerMessage, { type: "owner_tabs" }> => message.type === "owner_tabs";
+
+  it("opens, shows and closes Owner tabs for every client: the asker is answered, and each client is sent the tabs", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    const owner = await connect(stub);
+    const phone = await connect(stub);
+
+    owner.send({ type: "owner_tab_list", id: "t-0" });
+    expect(await owner.next(answerTo("t-0"))).toEqual({
+      type: "result",
+      id: "t-0",
+      result: { tabs: [] },
+    });
+
+    owner.send({ type: "owner_tab_open", id: "t-1" });
+    owner.send({ type: "owner_tab_open", id: "t-2" });
+
+    const two = {
+      tabs: [
+        { id: "owner-tab-1", title: "" },
+        { id: "owner-tab-2", title: "" },
+      ],
+      shown: "owner-tab-2",
+    };
+
+    expect(await owner.next(answerTo("t-2"))).toEqual({ type: "result", id: "t-2", result: two });
+
+    // Opening a tab is a use of the browser, for its idle close; listing is not.
+    await vi.waitFor(async () => {
+      const now = await runInDurableObject(stub, (instance: TestSession) => instance.browserUse());
+
+      expect(now.lastUsed).toBeTypeOf("number");
+    });
+
+    // The second device follows the first: it is sent the tabs, with the one shown.
+    const sent = await phone.next(
+      (message): message is Extract<ServerMessage, { type: "owner_tabs" }> =>
+        isTabs(message) && message.tabs.length === 2,
+    );
+
+    expect(sent).toEqual({ type: "owner_tabs", ...two });
+
+    phone.send({ type: "owner_tab_show", id: "s-1", ownerTabId: "owner-tab-1" });
+    await phone.next(answerTo("s-1"));
+    expect(
+      await owner.next(
+        (message): message is Extract<ServerMessage, { type: "owner_tabs" }> =>
+          isTabs(message) && message.tabs.length === 2 && message.shown === "owner-tab-1",
+      ),
+    ).toEqual({ type: "owner_tabs", ...two, shown: "owner-tab-1" });
+
+    phone.send({ type: "owner_tab_show", id: "s-2", ownerTabId: "nope" });
+    expect(await phone.next(answerTo("s-2"))).toEqual({
+      type: "error",
+      id: "s-2",
+      message: OWNER_TAB_GONE,
+    });
+
+    owner.send({ type: "owner_tab_close", id: "c-1", ownerTabId: "owner-tab-1" });
+    await owner.next(answerTo("c-1"));
+    expect(
+      await phone.next(
+        (message): message is Extract<ServerMessage, { type: "owner_tabs" }> =>
+          isTabs(message) && message.tabs.length === 1 && message.tabs[0]?.id === "owner-tab-2",
+      ),
+    ).toEqual({ type: "owner_tabs", tabs: [{ id: "owner-tab-2", title: "" }] });
+
+    // No link is among them.
+    for (const message of [...owner.received, ...phone.received]) {
+      expect(JSON.stringify(message)).not.toContain(TOKEN);
+    }
+  });
+
+  it("opens no Owner tab in an archived Session, and says so", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.setArchived(true));
+
+    const owner = await connect(stub);
+
+    owner.send({ type: "owner_tab_open", id: "t-1" });
+    expect(await owner.next(answerTo("t-1"))).toMatchObject({ type: "error", id: "t-1" });
+    expect(owner.received.some(isTabs)).toBe(false);
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.browserUse()),
+    ).toEqual({ alarm: null });
+  });
+});

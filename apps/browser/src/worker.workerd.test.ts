@@ -74,6 +74,21 @@ describe("the browser Worker", () => {
     expect(String(failure)).toContain("the Owner tab is gone");
   });
 
+  it("lists no Owner tabs over RPC, starting no browser, and cannot show or close one the owner does not have", async () => {
+    // As above: none of these may reach the binding, which fails with a 503 here.
+    const host = env.BROWSER_HOST.getByName("no-owner-tabs");
+
+    expect(await host.ownerTabs()).toEqual({ tabs: [] });
+    expect(await host.closeOwnerTab("nope")).toEqual({ tabs: [] });
+
+    const failure = await host.showOwnerTab("nope").then(
+      () => undefined,
+      (error: Error) => error,
+    );
+
+    expect(String(failure)).toContain("the Owner tab is gone");
+  });
+
   it("answers an HTTP request with 404", async () => {
     const response = await SELF.fetch("https://browser.example/");
 

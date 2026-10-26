@@ -12,7 +12,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { OWNER_TAB_GONE } from "@cloudpid/protocol/live-view";
-import type { OwnerTabLinks } from "./contract.ts";
+import type { OwnerTabLinks, OwnerTabListing } from "./contract.ts";
 import { BrowserError, type BrowserHostService } from "./host.ts";
 import { BrowserSession, type BrowserSessionService } from "./session.ts";
 
@@ -24,7 +24,25 @@ export type BrowserPaneService = {
    * opened.
    */
   readonly view: (open: boolean) => Effect.Effect<OwnerTabLinks, BrowserError>;
+  /** The Owner tabs by title and the one shown; starts nothing. */
+  readonly tabs: Effect.Effect<OwnerTabListing, BrowserError>;
+  /**
+   * Open a blank Owner tab and show it (the tab strip's **+**), starting the browser when none runs: a use of the browser,
+   * as an ask to `view` that opened one is. Fails for an archived Session, which opens nothing.
+   */
+  readonly open: Effect.Effect<OwnerTabListing, BrowserError>;
+  /** Show Owner tab `id`, for every device. Fails with `OWNER_TAB_GONE` when it is not there. */
+  readonly show: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
+  /** Close Owner tab `id` and the windows it opened. */
+  readonly close: (id: string) => Effect.Effect<OwnerTabListing, BrowserError>;
 };
+
+/** What `open` fails with in an archived Session. */
+export const ARCHIVED_OPENS_NO_OWNER_TAB = "An archived session opens no Owner tab";
+
+/** The host's "the Owner tab is gone" in its own words, without the call it came through. */
+const gone = (error: BrowserError): BrowserError =>
+  error.message.includes(OWNER_TAB_GONE) ? BrowserError.make({ message: OWNER_TAB_GONE }) : error;
 
 /** The Session's Browser Pane links. */
 export class BrowserPane extends Context.Service<BrowserPane, BrowserPaneService>()(
@@ -45,19 +63,25 @@ export const makeBrowserPane = (
     Effect.gen(function* () {
       const opening = open && !(yield* archived);
 
-      const links = yield* host.ownerTabView(opening).pipe(
-        // The host's word for it, as the client reads it, without the call it came through.
-        Effect.mapError((error) =>
-          error.message.includes(OWNER_TAB_GONE)
-            ? BrowserError.make({ message: OWNER_TAB_GONE })
-            : error,
-        ),
-      );
+      // The host's word for it, as the client reads it, without the call it came through.
+      const links = yield* host.ownerTabView(opening).pipe(Effect.mapError(gone));
 
       if (links.opened) yield* session.touch;
 
       return links;
     }),
+  tabs: host.ownerTabs,
+  open: Effect.gen(function* () {
+    if (yield* archived) return yield* BrowserError.make({ message: ARCHIVED_OPENS_NO_OWNER_TAB });
+
+    const tabs = yield* host.openOwnerTab;
+
+    yield* session.touch;
+
+    return tabs;
+  }),
+  show: (id) => host.showOwnerTab(id).pipe(Effect.mapError(gone)),
+  close: (id) => host.closeOwnerTab(id),
 });
 
 /** The Session's `BrowserPane` over its host; needs the Session's `BrowserSession`. */

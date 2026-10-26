@@ -22,6 +22,10 @@ describe("the Session's browser host", () => {
           startHandoff: () => Promise.reject(new Error("not here")),
           liveView: () => Promise.reject(new Error("not here")),
           ownerTabView: () => Promise.reject(new Error("not here")),
+          ownerTabs: () => Promise.reject(new Error("not here")),
+          openOwnerTab: () => Promise.reject(new Error("not here")),
+          showOwnerTab: () => Promise.reject(new Error("not here")),
+          closeOwnerTab: () => Promise.reject(new Error("not here")),
           waitHandoff: () => Promise.reject(new Error("not here")),
           endHandoff: () => Promise.reject(new Error("not here")),
         }),
@@ -45,6 +49,10 @@ describe("the Session's browser host", () => {
           startHandoff: () => Promise.reject(new Error("overloaded")),
           liveView: () => Promise.reject(new Error("overloaded")),
           ownerTabView: () => Promise.reject(new Error("overloaded")),
+          ownerTabs: () => Promise.reject(new Error("overloaded")),
+          openOwnerTab: () => Promise.reject(new Error("overloaded")),
+          showOwnerTab: () => Promise.reject(new Error("overloaded")),
+          closeOwnerTab: () => Promise.reject(new Error("overloaded")),
           waitHandoff: () => Promise.reject(new Error("overloaded")),
           endHandoff: () => Promise.reject(new Error("overloaded")),
         }),
@@ -80,6 +88,10 @@ describe("the Session's browser host", () => {
             });
           },
           ownerTabView: () => Promise.reject(new Error("not here")),
+          ownerTabs: () => Promise.reject(new Error("not here")),
+          openOwnerTab: () => Promise.reject(new Error("not here")),
+          showOwnerTab: () => Promise.reject(new Error("not here")),
+          closeOwnerTab: () => Promise.reject(new Error("not here")),
           waitHandoff: (requestId, maxMs) => {
             calls.push({ name, wait: [requestId, maxMs] });
 
@@ -127,6 +139,10 @@ describe("the Session's browser host", () => {
           startHandoff: () => Promise.reject(new Error("This conversation has no open tab")),
           liveView: () => Promise.reject(new Error("the handoff is over")),
           ownerTabView: () => Promise.reject(new Error("the Owner tab is gone")),
+          ownerTabs: () => Promise.reject(new Error("the Owner tab is gone")),
+          openOwnerTab: () => Promise.reject(new Error("the Owner tab is gone")),
+          showOwnerTab: () => Promise.reject(new Error("the Owner tab is gone")),
+          closeOwnerTab: () => Promise.reject(new Error("the Owner tab is gone")),
           waitHandoff: () => Promise.resolve({ state: "waiting" }),
           endHandoff: () => Promise.resolve({ windowOrigins: [] }),
         }),
@@ -169,6 +185,10 @@ describe("the Session's browser host", () => {
               ? Promise.resolve(links)
               : Promise.reject(new Error("the Owner tab is gone"));
           },
+          ownerTabs: () => Promise.reject(new Error("not here")),
+          openOwnerTab: () => Promise.reject(new Error("not here")),
+          showOwnerTab: () => Promise.reject(new Error("not here")),
+          closeOwnerTab: () => Promise.reject(new Error("not here")),
           waitHandoff: () => Promise.reject(new Error("not here")),
           endHandoff: () => Promise.reject(new Error("not here")),
         }),
@@ -183,6 +203,60 @@ describe("the Session's browser host", () => {
     expect(calls).toEqual([
       { name: "session-1", open: true },
       { name: "session-1", open: false },
+    ]);
+  });
+
+  it("lists, opens, shows and closes the Owner tabs in the object named for the Session", async () => {
+    const calls: unknown[] = [];
+    const listing = { tabs: [{ id: "a", title: "Docs" }], shown: "a" };
+
+    const host = remoteBrowserHost(
+      {
+        getByName: (name) => ({
+          describe: () => Promise.resolve(""),
+          run: () => Promise.resolve({ output: [] }),
+          close: () => Promise.resolve(true),
+          startHandoff: () => Promise.reject(new Error("not here")),
+          liveView: () => Promise.reject(new Error("not here")),
+          ownerTabView: () => Promise.reject(new Error("not here")),
+          ownerTabs: () => {
+            calls.push({ name, call: "list" });
+
+            return Promise.resolve(listing);
+          },
+          openOwnerTab: () => {
+            calls.push({ name, call: "open" });
+
+            return Promise.resolve(listing);
+          },
+          showOwnerTab: (id) => {
+            calls.push({ name, call: "show", id });
+
+            return Promise.reject(new Error("the Owner tab is gone"));
+          },
+          closeOwnerTab: (id) => {
+            calls.push({ name, call: "close", id });
+
+            return Promise.resolve({ tabs: [] });
+          },
+          waitHandoff: () => Promise.reject(new Error("not here")),
+          endHandoff: () => Promise.reject(new Error("not here")),
+        }),
+      },
+      "session-1",
+    );
+
+    expect(await Effect.runPromise(host.ownerTabs)).toEqual(listing);
+    expect(await Effect.runPromise(host.openOwnerTab)).toEqual(listing);
+    expect((await Effect.runPromise(host.showOwnerTab("b").pipe(Effect.flip))).message).toBe(
+      "showOwnerTab: Error: the Owner tab is gone",
+    );
+    expect(await Effect.runPromise(host.closeOwnerTab("a"))).toEqual({ tabs: [] });
+    expect(calls).toEqual([
+      { name: "session-1", call: "list" },
+      { name: "session-1", call: "open" },
+      { name: "session-1", call: "show", id: "b" },
+      { name: "session-1", call: "close", id: "a" },
     ]);
   });
 });

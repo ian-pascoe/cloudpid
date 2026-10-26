@@ -1,7 +1,7 @@
 // What the Session and its browser host (`apps/browser`) agree on, in plain data a Durable Object RPC carries and
 // without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and of
 // `@cloudpid/protocol` only types and its import-free `live-view` module.
-import type { LiveViewLinks, OwnerTabLinks } from "@cloudpid/protocol";
+import type { LiveViewLinks, OwnerTabLinks, OwnerTabListing } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 
 /**
@@ -58,7 +58,7 @@ export { LIVE_VIEW_HANDOFF_OVER } from "@cloudpid/protocol/live-view";
  * `owner_tab_view`'s answer (`@cloudpid/protocol`'s `OwnerTabLinks`): the Owner tab the Browser Pane shows, with fresh
  * Live View links to it and its windows, minted as `liveView`'s are and for the asking client alone.
  */
-export type { OwnerTabLinks } from "@cloudpid/protocol";
+export type { OwnerTabEntry, OwnerTabLinks, OwnerTabListing } from "@cloudpid/protocol";
 
 /** What `ownerTabView` fails with when the Owner tab shown, or its browser, is gone, exactly. */
 export { OWNER_TAB_GONE } from "@cloudpid/protocol/live-view";
@@ -119,6 +119,17 @@ export type BrowserHostRpc = {
    * Fails with `OWNER_TAB_GONE` when the tab or its browser is gone and `open` is false.
    */
   ownerTabView(open: boolean): Promise<OwnerTabLinks>;
+  /**
+   * The Owner tabs by title and the one shown (`owner_tab_list`'s answer), as the browser has them now; a page an Owner
+   * tab opened with a link joins the list. Starts nothing: with no browser running the list is empty.
+   */
+  ownerTabs(): Promise<OwnerTabListing>;
+  /** Open a blank Owner tab and show it, starting the browser when none runs; answers the list after it. */
+  openOwnerTab(): Promise<OwnerTabListing>;
+  /** Show Owner tab `id`; answers the list after it. Fails with `OWNER_TAB_GONE` when there is no such tab. */
+  showOwnerTab(id: string): Promise<OwnerTabListing>;
+  /** Close Owner tab `id` and the windows it opened; answers the list after it. A tab already gone is not an error. */
+  closeOwnerTab(id: string): Promise<OwnerTabListing>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus>;
   /**

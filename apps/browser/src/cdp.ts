@@ -40,14 +40,23 @@ export const LIVE_VIEW_MS = 60_000;
 
 const LiveView = Schema.Struct({ webSocketDebuggerUrl: Schema.String });
 
-/** A page a tab opened, as `windowsOf` finds it. */
-export type OpenedWindow = {
+/** A page target of the browser, as `Target.getTargets` lists it. */
+export type PageTarget = {
   readonly targetId: string;
   readonly type: string;
   readonly title: string;
   readonly url: string;
-  readonly openerId: string;
+  readonly openerId?: string;
+  /**
+   * Whether the page can still reach the page that opened it (`window.opener`). False for a link that opens a new tab
+   * (`target=_blank` is `noopener` by default) and for `window.open(..., "noopener")`; true for a pop-up. Absent when
+   * the browser does not say.
+   */
+  readonly canAccessOpener?: boolean;
 };
+
+/** A page a tab opened, as `windowsOf` finds it. */
+export type OpenedWindow = PageTarget & { readonly openerId: string };
 
 const Targets = Schema.Struct({
   targetInfos: Schema.Array(
@@ -57,9 +66,22 @@ const Targets = Schema.Struct({
       title: Schema.String,
       url: Schema.String,
       openerId: Schema.optionalKey(Schema.String),
+      canAccessOpener: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 });
+
+/** The pages of the browser, as `Target.getTargets` on a browser-level connection lists them. */
+export const pagesOf = async (transport: CdpTransport): Promise<PageTarget[]> => {
+  const { targetInfos } = await ask(
+    { transport, cdpSessionId: undefined },
+    "Target.getTargets",
+    {},
+    Targets,
+  );
+
+  return targetInfos.filter((target) => target.type === "page");
+};
 
 /**
  * Send `method` and read the fields `reply` names of its answer: an answer without them fails, and any other field is
@@ -97,20 +119,14 @@ export const mintLink = async (
 /**
  * The pages tab `tabId` opened, directly or through a page it opened, from Browser Run's targets on the browser: pop-ups
  * and new tabs, `noopener` ones included, all name their opener (`openerId`, the spike, #152). A page with no opener (a
- * tab the agent made with `Target.createTarget`, another conversation's) is not one of them.
+ * tab the agent made with `Target.createTarget`, another conversation's) is not one of them. A page `except` names is
+ * left out, and so is what it opened: it is not a window of this tab (an Owner tab a link opened has windows of its own).
  */
-export const windowsOf = async (
-  transport: CdpTransport,
+export const windowsAmong = (
+  pages: ReadonlyArray<PageTarget>,
   tabId: string,
-): Promise<OpenedWindow[]> => {
-  const { targetInfos } = await ask(
-    { transport, cdpSessionId: undefined },
-    "Target.getTargets",
-    {},
-    Targets,
-  );
-
-  const pages = targetInfos.filter((target) => target.type === "page");
+  except: (target: PageTarget) => boolean = () => false,
+): OpenedWindow[] => {
   const found: OpenedWindow[] = [];
   const openers = [tabId];
 
@@ -120,6 +136,7 @@ export const windowsOf = async (
       if (
         target.openerId === next &&
         target.targetId !== tabId &&
+        !except(target) &&
         !found.some((window) => window.targetId === target.targetId)
       ) {
         found.push({ ...target, openerId: next });
@@ -131,20 +148,29 @@ export const windowsOf = async (
   return found;
 };
 
+/** `windowsAmong` the browser's pages now. */
+export const windowsOf = async (
+  transport: CdpTransport,
+  tabId: string,
+  except?: (target: PageTarget) => boolean,
+): Promise<OpenedWindow[]> => windowsAmong(await pagesOf(transport), tabId, except);
+
 /**
  * Fresh links to tab `tab.targetId` (sent in CDP session `tab.cdpSessionId`, or to the browser) and to every window it
  * opened (`windowsOf`), each minted on the browser. `noting` sees the windows found before their links are minted. A
  * window that closes before its link is minted is left out, as one that closed before the listing is; Browser Run saying
- * the tab itself is not there fails the call (`isNoTarget`), for the caller to say what is gone.
+ * the tab itself is not there fails the call (`isNoTarget`), for the caller to say what is gone. `except` names pages
+ * that are not windows (`windowsAmong`).
  */
 export const mintViewLinks = async (
   transport: CdpTransport,
   tab: { readonly targetId: string; readonly cdpSessionId?: string | undefined },
   noting?: (windows: ReadonlyArray<OpenedWindow>) => Promise<void>,
+  except?: (target: PageTarget) => boolean,
 ): Promise<LiveViewLinks> => {
   const [link, found] = await Promise.all([
     mintLink(transport, tab.targetId, tab.cdpSessionId),
-    windowsOf(transport, tab.targetId),
+    windowsOf(transport, tab.targetId, except),
   ]);
 
   await noting?.(found);

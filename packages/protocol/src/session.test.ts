@@ -78,6 +78,23 @@ describe("the Session socket messages", () => {
     );
   });
 
+  it("carry the Owner tabs after one was opened, shown or closed, by title and with the one shown", async () => {
+    const text = JSON.stringify({
+      type: "owner_tabs",
+      tabs: [
+        { id: "a", title: "Docs" },
+        { id: "b", title: "" },
+      ],
+      shown: "b",
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+
+    const none = JSON.stringify({ type: "owner_tabs", tabs: [] });
+
+    expect(await readServer(none)).toEqual(JSON.parse(none));
+  });
+
   it("carry the Secret requests waiting for the owner, never a value", async () => {
     const text = JSON.stringify({
       type: "secret_requests",
@@ -137,6 +154,22 @@ describe("the Session socket messages", () => {
       Option.some({ type: "owner_tab_view", id: "c2", open: false }),
     );
     expect(await readClient('{"type":"owner_tab_view","id":"c3"}')).toEqual(Option.none());
+  });
+
+  it("read the Browser Pane's commands on its Owner tabs: list, open, show and close", async () => {
+    expect(await readClient('{"type":"owner_tab_list","id":"c1"}')).toEqual(
+      Option.some({ type: "owner_tab_list", id: "c1" }),
+    );
+    expect(await readClient('{"type":"owner_tab_open","id":"c2"}')).toEqual(
+      Option.some({ type: "owner_tab_open", id: "c2" }),
+    );
+    expect(await readClient('{"type":"owner_tab_show","id":"c3","ownerTabId":"a"}')).toEqual(
+      Option.some({ type: "owner_tab_show", id: "c3", ownerTabId: "a" }),
+    );
+    expect(await readClient('{"type":"owner_tab_close","id":"c4","ownerTabId":"a"}')).toEqual(
+      Option.some({ type: "owner_tab_close", id: "c4", ownerTabId: "a" }),
+    );
+    expect(await readClient('{"type":"owner_tab_show","id":"c5"}')).toEqual(Option.none());
   });
 
   it("read the owner's answer to a Secret request, or its cancellation", async () => {
