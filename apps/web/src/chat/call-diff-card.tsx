@@ -44,15 +44,17 @@ export const CallDiffStats = ({ diff }: { diff: CallDiff }) => {
   return (
     <>
       {diff.created === true && (
-        <span className="shrink-0 text-xs whitespace-nowrap">new file</span>
+        <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">new file</span>
       )}
       {diff.unavailable === true ? (
-        <span className="min-w-0 truncate text-xs">{UNAVAILABLE}</span>
+        <span className="min-w-0 truncate text-xs text-muted-foreground">{UNAVAILABLE}</span>
       ) : counts !== undefined ? (
         <DiffTally counts={counts} />
       ) : (
         diff.created !== true && (
-          <span className="shrink-0 text-xs whitespace-nowrap">No change</span>
+          <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">
+            No change
+          </span>
         )
       )}
     </>

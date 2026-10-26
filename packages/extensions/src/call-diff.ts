@@ -1,50 +1,63 @@
 // The Call diff of `write`, and of the `edit` and `write` calls a `codemode` script makes (`docs/spec.md` → Diffs and
-// review). A Call diff is what a result's `details` record of a change: a unified patch with four lines of context, as
-// `edit` records, and flags where there is none to record:
+// review). A Call diff is what a result's `details` record of a change (`RecordedDiff`, `@cloudpid/protocol/call-diff`): a
+// unified patch with four lines of context, as `edit` records, and flags where there is none to record:
 //
 // - `created`: the file did not exist.
 // - `binary`: the old file has a NUL in its first 8,000 bytes, or could not be read.
-// - `tooLarge`: the two texts together pass 1 MiB, the patch passes 512 KiB, or lining the texts up took more than 1 s.
+// - `tooLarge`: the two texts together pass 1 MiB, the patch passes 512 KiB, or lining the texts up took too long.
 //
 // The result is one SQLite row (2 MB), so a patch is bounded before it is stored; the write itself is never held back by
 // it. These are plain functions over text (`writeDetails`, `capturedDiffs`) and over a file system (`oldFile`).
+//
+// Lining the texts up has two bounds. jsdiff's `timeout` reads `Date.now()`, which does not advance while synchronous
+// code runs in workerd (the Session DO), so it cannot stop a long line-up there: `maxEditLength`, a bound on the lines
+// that differ, does not depend on a clock. The line-up costs about the square of it, so the bound is what keeps the
+// worst case (every line of a large file differs) near a second at most. The timeout stays as a second guard.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off -- plain functions over text and native arrays.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { decodeRecordedDiff, type RecordedDiff } from "@cloudpid/protocol/call-diff";
 import * as Diff from "diff";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 
 /** The most the old and the new text of a call may weigh together (UTF-8 bytes) for a patch to be made. */
 export const MAX_DIFF_INPUT_BYTES = 1024 * 1024;
 
-/** The longest patch (UTF-8 bytes) a result records. */
+/**
+ * The longest patch a result records, as it is stored: JSON-escaped (a quote or backslash takes two bytes, a control
+ * character six), in UTF-8 bytes.
+ */
 export const MAX_PATCH_BYTES = 512 * 1024;
 
-/** How long lining two texts up may take, in ms: jsdiff's `timeout`. */
+/** How long lining two texts up may take, in ms: jsdiff's `timeout`, which only a runtime whose clock advances honours. */
 export const LINE_UP_BUDGET_MS = 1000;
+
+/**
+ * The most lines added and removed together that a line-up looks for in a change in the middle of a file: jsdiff's
+ * `maxEditLength`, which needs no clock. The work grows with its square: about 0.35 s of Node's time at this bound for a
+ * file whose every line differs. A change at the end of a file (a new file, an append, a truncation) costs only its
+ * length, so it is not held to it.
+ */
+export const MAX_EDIT_LENGTH = 2000;
 
 /** The bytes at the start of a file searched for a NUL, which marks it binary (git's rule). */
 export const BINARY_SCAN_BYTES = 8000;
 
 /**
- * The patches the nested calls of one `codemode` result record, together (UTF-8 bytes). The result is one row, with room
- * for the text of the script's output and its images (`images/results.ts`), so a script that changes many files cannot
- * fill it: the calls past this are `tooLarge`.
+ * The patches the nested calls of one `codemode` result record, together (as stored, see `MAX_PATCH_BYTES`). The result
+ * is one row, with room for the text of the script's output and its images (`images/results.ts`), so a script that
+ * changes many files cannot fill it: the calls past this are `tooLarge`.
  */
 export const MAX_CODEMODE_DIFF_BYTES = 256 * 1024;
-
-/** What a result's `details` record of a change; the fields that are absent are false. */
-export type CallDiffDetails = {
-  patch?: string;
-  created?: true;
-  tooLarge?: true;
-  binary?: true;
-};
 
 const encoder = new TextEncoder();
 
 export const byteLength = (text: string): number => encoder.encode(text).length;
+
+/** What `text` weighs in a stored result: its JSON string, quotes included, in UTF-8 bytes. */
+export const storedBytes = (text: string): number => byteLength(JSON.stringify(text));
 
 /** What a `write` finds at its path. */
 export type OldFile =
@@ -58,47 +71,76 @@ export type OldFile =
  * The Call diff of writing `content` over `old`, at `path`. The patch is `edit`'s: both headers name `path`, four lines
  * of context. A write that leaves the file as it was has a patch of its headers alone.
  */
-export const writeDetails = (path: string, old: OldFile, content: string): CallDiffDetails => {
-  if (old.kind === "binary" || old.kind === "unreadable") return { binary: true };
+export const writeDetails = (path: string, old: OldFile, content: string): RecordedDiff => {
+  if (old.kind === "binary" || old.kind === "unreadable") return { path, binary: true };
 
-  if (old.kind === "tooLarge") return { tooLarge: true };
+  if (old.kind === "tooLarge") return { path, tooLarge: true };
 
   const created = old.kind === "missing" ? ({ created: true } as const) : {};
   const before = old.kind === "text" ? old.text : "";
 
   if (byteLength(before) + byteLength(content) > MAX_DIFF_INPUT_BYTES) {
-    return { ...created, tooLarge: true };
+    return { path, ...created, tooLarge: true };
   }
 
-  // `undefined` when the budget ran out.
-  const patch = Diff.createTwoFilesPatch(path, path, before, content, undefined, undefined, {
+  // A new file, an append and a truncation have one run of lines that differ at the end, which the line-up passes in
+  // linear time however long it is (30,000 lines in about 40 ms); it is a change in the middle of a file that costs the
+  // square of its length. So the first are not held to the bound on lines that differ.
+  const atEnd = content.startsWith(before) || before.startsWith(content);
+
+  // `undefined` when a bound was passed.
+  const options = {
     context: 4,
     headerOptions: Diff.FILE_HEADERS_ONLY,
     timeout: LINE_UP_BUDGET_MS,
-  });
+  };
 
-  if (patch === undefined || byteLength(patch) > MAX_PATCH_BYTES) {
-    return { ...created, tooLarge: true };
+  const patch = Diff.createTwoFilesPatch(
+    path,
+    path,
+    before,
+    content,
+    undefined,
+    undefined,
+    atEnd ? options : { ...options, maxEditLength: MAX_EDIT_LENGTH },
+  );
+
+  if (patch === undefined || storedBytes(patch) > MAX_PATCH_BYTES) {
+    return { path, ...created, tooLarge: true };
   }
 
-  return { ...created, patch };
+  return { path, ...created, patch };
 };
 
 /**
  * What `env` holds at `path` before a write of `bytes` bytes. A file that the two together would pass the cap with is not
- * read. A path the file system cannot answer for, or a file it cannot read, is `unreadable`; one it does not have is
- * `missing`.
+ * read, and a symbolic link is judged by what it points to. A path the file system cannot answer for, or a file it cannot
+ * read, is `unreadable`; one it does not have is `missing`.
  */
 export const oldFile = async (
-  env: Pick<ExecutionEnv, "fileInfo" | "readBinaryFile">,
+  env: Pick<ExecutionEnv, "fileInfo" | "readBinaryFile" | "canonicalPath">,
   path: string,
   bytes: number,
   context: Context,
 ): Promise<OldFile> => {
-  const info = await env.fileInfo(path, context);
+  let info = await env.fileInfo(path, context);
 
-  if (!info.ok)
+  if (info.ok && info.value.kind === "symlink") {
+    // The size is the link's own; the file read is its target's.
+    const target = await env.canonicalPath(path, context);
+
+    if (!target.ok) {
+      return target.error.code === "not_found" ? { kind: "missing" } : { kind: "unreadable" };
+    }
+
+    info = await env.fileInfo(target.value, context);
+  }
+
+  if (!info.ok) {
     return info.error.code === "not_found" ? { kind: "missing" } : { kind: "unreadable" };
+  }
+
+  if (info.value.kind !== "file") return { kind: "unreadable" };
 
   if (info.value.size + bytes > MAX_DIFF_INPUT_BYTES) return { kind: "tooLarge" };
 
@@ -106,25 +148,38 @@ export const oldFile = async (
 
   if (!read.ok) return { kind: "unreadable" };
 
+  // The file may have grown since it was measured.
+  if (read.value.byteLength + bytes > MAX_DIFF_INPUT_BYTES) return { kind: "tooLarge" };
+
   if (read.value.subarray(0, BINARY_SCAN_BYTES).includes(0)) return { kind: "binary" };
 
   return { kind: "text", text: new TextDecoder().decode(read.value) };
 };
 
-const decodeRecorded = Schema.decodeUnknownOption(
-  Schema.Struct({
-    patch: Schema.optional(Schema.String),
-    created: Schema.optional(Schema.Boolean),
-    tooLarge: Schema.optional(Schema.Boolean),
-    binary: Schema.optional(Schema.Boolean),
-  }),
-);
+/** The path a patch names in its `+++` header; undefined for a patch that has none. */
+const patchPath = (patch: string): string | undefined => {
+  const header = patch.split("\n").find((line) => line.startsWith("+++ "));
 
-/** The Call diff fields in a nested call's `details`; none for details that carry none. */
-export const callDiffOf = (details: JsonValue | undefined): CallDiffDetails | undefined =>
+  return header === undefined ? undefined : header.slice(4);
+};
+
+/**
+ * The Call diff in a nested call's `details`, with the path it was made at: a `write` records it, an `edit`'s patch names
+ * it. None for details that carry no diff.
+ */
+export const recordedDiffOf = (details: JsonValue | undefined): RecordedDiff | undefined =>
   Option.getOrUndefined(
-    Option.flatMap(decodeRecorded(details), (recorded) => {
-      const found: CallDiffDetails = {};
+    Option.flatMap(decodeRecordedDiff(details), (recorded) => {
+      if (recorded.patch === undefined && recorded.tooLarge !== true && recorded.binary !== true) {
+        return Option.none();
+      }
+
+      const path =
+        recorded.path ?? (recorded.patch === undefined ? undefined : patchPath(recorded.patch));
+
+      const found: Types.Mutable<RecordedDiff> = {};
+
+      if (path !== undefined) found.path = path;
 
       if (recorded.patch !== undefined) found.patch = recorded.patch;
 
@@ -134,9 +189,7 @@ export const callDiffOf = (details: JsonValue | undefined): CallDiffDetails | un
 
       if (recorded.binary === true) found.binary = true;
 
-      return found.patch === undefined && found.tooLarge === undefined && found.binary === undefined
-        ? Option.none()
-        : Option.some(found);
+      return Option.some(found);
     }),
   );
 
@@ -154,27 +207,27 @@ const DIFFING_TOOLS: ReadonlySet<string> = new Set(["edit", "write"]);
 
 /**
  * The Call diffs of the `edit` and `write` calls a `codemode` result lists in its `details`, keyed by the call's number
- * in the script (the `id` of its row): the patch fields of each call that finished, from `detailsOf` its number. A
- * patch past 512 KiB, or past the budget the result's patches share, is recorded as `tooLarge`.
+ * in the script (the `id` of its row): the diff of each call that finished, from `detailsOf` its number. A patch past
+ * 512 KiB, or past the budget the result's patches share, is recorded as `tooLarge`.
  */
 export const capturedDiffs = (
   details: JsonValue | undefined,
   detailsOf: (id: number) => Promise<JsonValue | undefined>,
-): Promise<Record<string, CallDiffDetails>> =>
+): Promise<Record<string, RecordedDiff>> =>
   Option.match(decodeListed(details), {
     onNone: () => Promise.resolve({}),
     onSome: async ({ calls }) => {
-      const diffs: Record<string, CallDiffDetails> = {};
+      const diffs: Record<string, RecordedDiff> = {};
       let spent = 0;
 
       for (const call of calls) {
         if (!DIFFING_TOOLS.has(call.name) || call.status !== "ok") continue;
 
-        const found = callDiffOf(await detailsOf(call.id));
+        const found = recordedDiffOf(await detailsOf(call.id));
 
         if (found === undefined) continue;
 
-        const size = found.patch === undefined ? 0 : byteLength(found.patch);
+        const size = found.patch === undefined ? 0 : storedBytes(found.patch);
 
         if (
           found.patch !== undefined &&

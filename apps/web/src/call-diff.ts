@@ -4,14 +4,18 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, called from React.
 import * as Arr from "effect/Array";
 import type { TranscriptPart } from "@cloudpid/protocol";
+import { decodeRecordedDiff, type RecordedDiff } from "@cloudpid/protocol/call-diff";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 
 /**
  * What a card shows of a call's change: its patch, or that there is none to show (`unavailable`: the files were too
- * large, or the old one binary or unreadable), and whether the call made a new file (`created`).
+ * large, or the old one binary or unreadable), and whether the call made a new file (`created`). `path` is the file's,
+ * as a `write` recorded it or its patch names it.
  */
 export const CallDiff = Schema.Struct({
+  path: Schema.optional(Schema.String),
   patch: Schema.optional(Schema.NonEmptyString),
   created: Schema.optional(Schema.Literal(true)),
   unavailable: Schema.optional(Schema.Literal(true)),
@@ -22,35 +26,34 @@ export type CallDiff = typeof CallDiff.Type;
 /** Decodes a card's artifact, which carries its Call diff as `diff`. */
 export const decodeCardDiff = Schema.decodeUnknownOption(Schema.Struct({ diff: CallDiff }));
 
-/** What a tool records in its result's `details`: `edit` a `patch`, `write` and the `codemode` calls these and flags. */
-const Recorded = Schema.Struct({
-  patch: Schema.optional(Schema.String),
-  created: Schema.optional(Schema.Boolean),
-  tooLarge: Schema.optional(Schema.Boolean),
-  binary: Schema.optional(Schema.Boolean),
-});
-
-/** Decodes what a result's `details`, or a `codemode` result's entry for a nested call, record of a change. */
-export const decodeRecorded = Schema.decodeUnknownOption(Recorded);
+export { decodeRecordedDiff };
 
 /** The Call diff of recorded details: none where they record no patch and no reason for there being none. */
-export const toCallDiff = (recorded: typeof Recorded.Type): Option.Option<CallDiff> => {
-  const created = recorded.created === true ? ({ created: true } as const) : {};
+export const toCallDiff = (recorded: RecordedDiff): Option.Option<CallDiff> => {
+  const diff: Types.Mutable<CallDiff> = {};
+
+  if (recorded.path !== undefined) diff.path = recorded.path;
+
+  if (recorded.created === true) diff.created = true;
 
   if (recorded.patch !== undefined && recorded.patch !== "") {
-    return Option.some({ ...created, patch: recorded.patch });
+    diff.patch = recorded.patch;
+
+    return Option.some(diff);
   }
 
-  return recorded.tooLarge === true || recorded.binary === true
-    ? Option.some({ ...created, unavailable: true })
-    : Option.none();
+  if (recorded.tooLarge !== true && recorded.binary !== true) return Option.none();
+
+  diff.unavailable = true;
+
+  return Option.some(diff);
 };
 
 type ResultDetails = Extract<TranscriptPart, { type: "tool-result" }>["details"];
 
 /** The Call diff in a tool result's `details`. */
 export const callDiffFrom = (details: ResultDetails): CallDiff | undefined =>
-  Option.getOrUndefined(Option.flatMap(decodeRecorded(details), toCallDiff));
+  Option.getOrUndefined(Option.flatMap(decodeRecordedDiff(details), toCallDiff));
 
 /** The most diff lines a card shows before "Show all n lines". */
 export const CALL_DIFF_LINE_CAP = 2000;

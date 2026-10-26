@@ -7,11 +7,14 @@ import { err, type ExecutionEnv, FileError, ok } from "@earendil-works/pi-durabl
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BINARY_SCAN_BYTES,
+  byteLength,
   capturedDiffs,
   MAX_CODEMODE_DIFF_BYTES,
   MAX_DIFF_INPUT_BYTES,
+  MAX_EDIT_LENGTH,
   MAX_PATCH_BYTES,
   oldFile,
+  storedBytes,
   writeDetails,
 } from "./call-diff.ts";
 
@@ -27,6 +30,7 @@ describe("writeDetails", () => {
     const details = writeDetails("src/a.txt", { kind: "missing" }, "one\ntwo\n");
 
     expect(details).toEqual({
+      path: "src/a.txt",
       created: true,
       patch: "--- src/a.txt\n+++ src/a.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n",
     });
@@ -61,35 +65,49 @@ describe("writeDetails", () => {
 
   it("records the headers alone for a write that left the file as it was", () => {
     expect(writeDetails("a.txt", { kind: "text", text: "same\n" }, "same\n")).toEqual({
+      path: "a.txt",
       patch: "--- a.txt\n+++ a.txt\n",
     });
   });
 
   it("records only `binary` for an old file that is binary, and for one that could not be read", () => {
-    expect(writeDetails("a.bin", { kind: "binary" }, "text")).toEqual({ binary: true });
-    expect(writeDetails("a.bin", { kind: "unreadable" }, "text")).toEqual({ binary: true });
+    expect(writeDetails("a.bin", { kind: "binary" }, "text")).toEqual({
+      path: "a.bin",
+      binary: true,
+    });
+    expect(writeDetails("a.bin", { kind: "unreadable" }, "text")).toEqual({
+      path: "a.bin",
+      binary: true,
+    });
   });
 
   it("records only `tooLarge` for an old file too large to read", () => {
-    expect(writeDetails("a.txt", { kind: "tooLarge" }, "text")).toEqual({ tooLarge: true });
+    expect(writeDetails("a.txt", { kind: "tooLarge" }, "text")).toEqual({
+      path: "a.txt",
+      tooLarge: true,
+    });
   });
 
   it("records `tooLarge`, and `created` for a new file, when the two texts pass 1 MiB together", () => {
     const half = "x".repeat(MAX_DIFF_INPUT_BYTES / 2);
 
     expect(writeDetails("a.txt", { kind: "text", text: `${half}\n` }, `${half}y`)).toEqual({
+      path: "a.txt",
       tooLarge: true,
     });
     expect(
       writeDetails("a.txt", { kind: "missing" }, "x".repeat(MAX_DIFF_INPUT_BYTES + 1)),
-    ).toEqual({ created: true, tooLarge: true });
+    ).toEqual({ path: "a.txt", created: true, tooLarge: true });
   });
 
   it("counts the texts in bytes, not characters", () => {
     // 400,000 characters of 3 bytes each.
     const text = "€".repeat(400_000);
 
-    expect(writeDetails("a.txt", { kind: "text", text }, text)).toEqual({ tooLarge: true });
+    expect(writeDetails("a.txt", { kind: "text", text }, text)).toEqual({
+      path: "a.txt",
+      tooLarge: true,
+    });
   });
 
   it("records `tooLarge` when the patch passes 512 KiB, though the texts are within 1 MiB", () => {
@@ -99,7 +117,20 @@ describe("writeDetails", () => {
 
     const details = writeDetails("a.txt", { kind: "missing" }, content);
 
-    expect(details).toEqual({ created: true, tooLarge: true });
+    expect(details).toEqual({ path: "a.txt", created: true, tooLarge: true });
+  });
+
+  it("counts a patch as it is stored, JSON-escaped: quotes take two bytes", () => {
+    // Half of the lines' bytes are quotes, so the patch is under 512 KiB raw and over it as stored.
+    const quoted = (count: number) => `${'"'.repeat(60)}\n`.repeat(count);
+
+    const within = writeDetails("q.txt", { kind: "missing" }, quoted(4_000));
+    const past = writeDetails("q.txt", { kind: "missing" }, quoted(4_400));
+
+    expect(within.patch).toBeDefined();
+    expect(storedBytes(within.patch!)).toBeLessThanOrEqual(MAX_PATCH_BYTES);
+    expect(past.patch).toBeUndefined();
+    expect(past).toEqual({ path: "q.txt", created: true, tooLarge: true });
   });
 
   it("keeps a patch just within 512 KiB", () => {
@@ -119,7 +150,7 @@ describe("writeDetails", () => {
 
     const slow = writeDetails("a.txt", { kind: "text", text: lines(50) }, lines(50, "other"));
 
-    expect(slow).toEqual({ tooLarge: true });
+    expect(slow).toEqual({ path: "a.txt", tooLarge: true });
 
     vi.restoreAllMocks();
 
@@ -128,14 +159,81 @@ describe("writeDetails", () => {
       writeDetails("a.txt", { kind: "text", text: lines(50) }, lines(50, "other")).patch,
     ).toBeDefined();
   });
+
+  it("bounds the line-up without a clock: a large file whose every line differs is too large, and quickly", () => {
+    // workerd's `Date.now()` stands still while code runs, so only the bound on the lines that differ stops this.
+    const old = lines(30_000, "old line");
+    const next = lines(30_000, "new line");
+
+    expect(byteLength(old) + byteLength(next)).toBeLessThan(MAX_DIFF_INPUT_BYTES);
+    expect(old.split("\n").length + next.split("\n").length).toBeGreaterThan(MAX_EDIT_LENGTH);
+
+    const started = performance.now();
+    const details = writeDetails("a.txt", { kind: "text", text: old }, next);
+    const took = performance.now() - started;
+
+    expect(details).toEqual({ path: "a.txt", tooLarge: true });
+    // About a third of a second here; the bound is what keeps it from being minutes.
+    expect(took).toBeLessThan(3_000);
+  });
+
+  it("bounds a change in the middle of a file by the lines that differ, however its text is arranged", () => {
+    const head = lines(5_000, "x");
+    const tail = lines(5_000, "y");
+
+    const started = performance.now();
+
+    const details = writeDetails(
+      "a.txt",
+      { kind: "text", text: head + tail },
+      head + lines(4_000, "z") + tail,
+    );
+
+    expect(details).toEqual({ path: "a.txt", tooLarge: true });
+    expect(performance.now() - started).toBeLessThan(3_000);
+  });
+
+  it("does not hold a new file, an append or a truncation to that bound: they cost only their length", () => {
+    const base = lines(10_000, "x");
+
+    expect(
+      writeDetails("a.txt", { kind: "text", text: base }, base + lines(5_000, "y")).patch,
+    ).toBeDefined();
+    expect(
+      writeDetails("a.txt", { kind: "text", text: base }, lines(3_000, "x")).patch,
+    ).toBeDefined();
+    expect(writeDetails("a.txt", { kind: "missing" }, lines(20_000, "n")).patch).toBeDefined();
+    expect(writeDetails("a.txt", { kind: "text", text: base }, "").patch).toBeDefined();
+  });
+
+  it("still shows a rewrite of a file of a thousand lines", () => {
+    const details = writeDetails(
+      "a.txt",
+      { kind: "text", text: lines(900, "old") },
+      lines(900, "new"),
+    );
+
+    expect(details.patch).toBeDefined();
+  });
 });
 
-type Files = Pick<ExecutionEnv, "fileInfo" | "readBinaryFile">;
+type Files = Pick<ExecutionEnv, "fileInfo" | "readBinaryFile" | "canonicalPath">;
 
-/** A file system holding `files`, which records the paths it was asked to read. */
-const filesOf = (files: Readonly<Record<string, Uint8Array>>, reads: string[] = []): Files => ({
+/**
+ * A file system holding `files`, which records the paths it was asked to read. `links` are symbolic links to them: a
+ * link's own size is that of its path, as `lstat` has it.
+ */
+const filesOf = (
+  files: Readonly<Record<string, Uint8Array>>,
+  reads: string[] = [],
+  links: Readonly<Record<string, string>> = {},
+): Files => ({
   fileInfo: async (path) => {
     const bytes = files[path];
+
+    if (path in links) {
+      return ok({ name: path, path, kind: "symlink" as const, size: path.length, mtimeMs: 0 });
+    }
 
     return bytes === undefined
       ? err(new FileError("not_found", "No such file", path))
@@ -147,10 +245,19 @@ const filesOf = (files: Readonly<Record<string, Uint8Array>>, reads: string[] = 
           mtimeMs: 0,
         });
   },
+  canonicalPath: async (path) => {
+    const target = links[path];
+
+    return target === undefined
+      ? ok(path)
+      : target in files
+        ? ok(target)
+        : err(new FileError("not_found", "No such file", target));
+  },
   readBinaryFile: async (path) => {
     reads.push(path);
 
-    const bytes = files[path];
+    const bytes = files[links[path] ?? path];
 
     return bytes === undefined ? err(new FileError("not_found", "No such file", path)) : ok(bytes);
   },
@@ -186,6 +293,7 @@ describe("oldFile", () => {
 
   it("calls a file it cannot read unreadable", async () => {
     const denied: Files = {
+      ...filesOf({}),
       fileInfo: async (path) => err(new FileError("permission_denied", "No", path)),
       readBinaryFile: async (path) => err(new FileError("permission_denied", "No", path)),
     };
@@ -209,6 +317,49 @@ describe("oldFile", () => {
     });
     expect(reads).toEqual([]);
   });
+
+  it("judges a symbolic link by the file it points to, not by its own size", async () => {
+    const reads: string[] = [];
+    const big = new Uint8Array(MAX_DIFF_INPUT_BYTES - 5).fill(97);
+    const files = { "/big": big, "/small": text("ok\n") };
+    const links = { "/to-big": "/big", "/to-small": "/small", "/dangling": "/gone" };
+
+    expect(await oldFile(filesOf(files, reads, links), "/to-big", 10, context)).toEqual({
+      kind: "tooLarge",
+    });
+    expect(reads).toEqual([]);
+    expect(await oldFile(filesOf(files, reads, links), "/to-small", 10, context)).toEqual({
+      kind: "text",
+      text: "ok\n",
+    });
+    expect(await oldFile(filesOf(files, reads, links), "/dangling", 10, context)).toEqual({
+      kind: "missing",
+    });
+  });
+
+  it("does not trust a size that is out of date: a file that grew is too large once read", async () => {
+    const big = new Uint8Array(MAX_DIFF_INPUT_BYTES - 5).fill(97);
+
+    const grown: Files = {
+      ...filesOf({ "/a": big }),
+      fileInfo: async (path) =>
+        ok({ name: path, path, kind: "file" as const, size: 3, mtimeMs: 0 }),
+    };
+
+    expect(MAX_DIFF_INPUT_BYTES).toBeGreaterThan(0);
+
+    expect(await oldFile(grown, "/a", 10, context)).toEqual({ kind: "tooLarge" });
+  });
+
+  it("calls something that is not a file unreadable", async () => {
+    const directory: Files = {
+      ...filesOf({}),
+      fileInfo: async (path) =>
+        ok({ name: path, path, kind: "directory" as const, size: 0, mtimeMs: 0 }),
+    };
+
+    expect(await oldFile(directory, "/d", 10, context)).toEqual({ kind: "unreadable" });
+  });
 });
 
 describe("capturedDiffs", () => {
@@ -221,9 +372,9 @@ describe("capturedDiffs", () => {
   it("keys the diffs of the finished edit and write calls by their number in the script", async () => {
     const results = new Map<number, JsonValue>([
       [1, { patch: "--- a\n+++ a\n@@ -1 +1 @@\n-x\n+y\n", diff: "ignored", firstChangedLine: 1 }],
-      [2, { patch: "--- b\n+++ b\n@@ -0,0 +1 @@\n+z\n", created: true }],
-      [3, { tooLarge: true, created: true }],
-      [4, { binary: true }],
+      [2, { path: "b", patch: "--- b\n+++ b\n@@ -0,0 +1 @@\n+z\n", created: true }],
+      [3, { path: "c.txt", tooLarge: true, created: true }],
+      [4, { path: "d.bin", binary: true }],
       [5, { patch: "--- c\n+++ c\n" }],
     ]);
 
@@ -238,11 +389,12 @@ describe("capturedDiffs", () => {
       async (id) => results.get(id),
     );
 
+    // An `edit` records no path: its patch's header names the file.
     expect(diffs).toEqual({
-      1: { patch: "--- a\n+++ a\n@@ -1 +1 @@\n-x\n+y\n" },
-      2: { patch: "--- b\n+++ b\n@@ -0,0 +1 @@\n+z\n", created: true },
-      3: { tooLarge: true, created: true },
-      4: { binary: true },
+      1: { path: "a", patch: "--- a\n+++ a\n@@ -1 +1 @@\n-x\n+y\n" },
+      2: { path: "b", patch: "--- b\n+++ b\n@@ -0,0 +1 @@\n+z\n", created: true },
+      3: { path: "c.txt", tooLarge: true, created: true },
+      4: { path: "d.bin", binary: true },
     });
   });
 
@@ -273,13 +425,32 @@ describe("capturedDiffs", () => {
     expect(await capturedDiffs(undefined, async () => ({ patch: "x" }))).toEqual({});
   });
 
-  it("records a patch past 512 KiB as too large, keeping `created`", async () => {
+  it("records a patch past 512 KiB as too large, keeping `created` and the path", async () => {
     const diffs = await capturedDiffs(listed([1, "write", "ok"]), async () => ({
+      path: "big.txt",
       patch: "x".repeat(MAX_PATCH_BYTES + 1),
       created: true,
     }));
 
-    expect(diffs).toEqual({ 1: { created: true, tooLarge: true } });
+    expect(diffs).toEqual({ 1: { path: "big.txt", created: true, tooLarge: true } });
+  });
+
+  it("keeps an edit's path when its patch is dropped as too large", async () => {
+    const diffs = await capturedDiffs(listed([1, "edit", "ok"]), async () => ({
+      patch: `--- src/a.ts\n+++ src/a.ts\n${"x".repeat(MAX_PATCH_BYTES)}`,
+    }));
+
+    expect(diffs).toEqual({ 1: { path: "src/a.ts", tooLarge: true } });
+  });
+
+  it("counts a patch as it is stored: JSON-escaped", async () => {
+    // Under 512 KiB raw, over it with every quote escaped.
+    const patch = `"`.repeat(MAX_PATCH_BYTES - 1000);
+
+    expect(byteLength(patch)).toBeLessThan(MAX_PATCH_BYTES);
+    expect(await capturedDiffs(listed([1, "write", "ok"]), async () => ({ patch }))).toEqual({
+      1: { tooLarge: true },
+    });
   });
 
   it("holds the patches of one result to a budget they share, in call order", async () => {

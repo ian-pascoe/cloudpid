@@ -7,7 +7,7 @@ import type { NestedTool, TranscriptPart } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { CallDiff, decodeRecorded, toCallDiff } from "../call-diff.ts";
+import { CallDiff, decodeRecordedDiff, toCallDiff } from "../call-diff.ts";
 
 /** A nested call as the card shows it. */
 export const NestedCall = Schema.Struct({
@@ -85,7 +85,7 @@ export const settledCalls = (
         if (listed.error !== undefined) call.error = listed.error;
 
         const diff = Option.getOrUndefined(
-          Option.flatMap(decodeRecorded(diffs?.[String(listed.id)]), toCallDiff),
+          Option.flatMap(decodeRecordedDiff(diffs?.[String(listed.id)]), toCallDiff),
         );
 
         if (diff !== undefined) call.diff = diff;

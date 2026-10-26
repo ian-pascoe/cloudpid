@@ -153,7 +153,8 @@ const writeTool = () => {
       if (before === undefined) return result;
 
       try {
-        const details: JsonObject = writeDetails(args.path, before, args.content);
+        // SAFETY: a `RecordedDiff` holds strings and booleans only, and leaves out the fields it does not have.
+        const details = writeDetails(args.path, before, args.content) as JsonObject;
 
         return { ...result, details };
       } catch {
@@ -410,18 +411,23 @@ const CodemodeDiffs = hook(ToolTask, {
       return undefined;
     }
 
-    const diffs = await capturedDiffs(result.details, async (id) => {
-      const nested = await api.snapshot(NestedCallDoc, api.taskId, `c${id}`, context);
+    // The diffs are an extra: a failure to read them leaves the script's result as it is, and never fails the call.
+    try {
+      const diffs = await capturedDiffs(result.details, async (id) => {
+        const nested = await api.snapshot(NestedCallDoc, api.taskId, `c${id}`, context);
 
-      return nested?.result?.details;
-    });
+        return nested?.result?.details;
+      });
 
-    if (Record.isEmptyRecord(diffs)) return undefined;
+      if (Record.isEmptyRecord(diffs)) return undefined;
 
-    // SAFETY: `result.details` is a JSON object here (`capturedDiffs` read its `calls`), and the diffs hold JSON values.
-    const details = { ...(result.details as JsonObject), diffs } as JsonObject;
+      // SAFETY: `result.details` is a JSON object here (`capturedDiffs` read its `calls`), and the diffs hold JSON values.
+      const details = { ...(result.details as JsonObject), diffs } as JsonObject;
 
-    return { ...result, details };
+      return { ...result, details };
+    } catch {
+      return undefined;
+    }
   },
 });
 

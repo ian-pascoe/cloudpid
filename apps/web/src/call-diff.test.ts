@@ -149,6 +149,18 @@ describe("callDiffOf", () => {
     });
   });
 
+  it("keeps the path a write recorded", () => {
+    expect(callDiffOf("write", { path: "src/a.ts", patch: "p", created: true }, false)).toEqual({
+      path: "src/a.ts",
+      patch: "p",
+      created: true,
+    });
+    expect(callDiffOf("write", { path: "big.bin", binary: true }, false)).toEqual({
+      path: "big.bin",
+      unavailable: true,
+    });
+  });
+
   it("is that a write's change is too large to show, for `tooLarge` and for `binary`", () => {
     expect(callDiffOf("write", { tooLarge: true }, false)).toEqual({ unavailable: true });
     expect(callDiffOf("write", { binary: true }, false)).toEqual({ unavailable: true });

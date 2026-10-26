@@ -62,7 +62,7 @@ describe("the calls a script made", () => {
         { id: 5, name: "write", args: "{}", status: "ok" },
       ],
       diffs: {
-        "1": { patch, created: true },
+        "1": { path: "a.ts", patch, created: true },
         "3": { patch: "--- b\n+++ b\n" },
         "4": { tooLarge: true, created: true },
         "5": { patch: 7, nonsense: true },
@@ -71,7 +71,7 @@ describe("the calls a script made", () => {
     });
 
     expect(Arr.map(calls, (call) => [call.id, call.diff])).toEqual([
-      ["1", { patch, created: true }],
+      ["1", { path: "a.ts", patch, created: true }],
       ["2", undefined],
       ["3", { patch: "--- b\n+++ b\n" }],
       ["4", { unavailable: true, created: true }],

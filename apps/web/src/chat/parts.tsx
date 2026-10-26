@@ -182,8 +182,9 @@ const StateIcon = ({ status }: { status: NestedCall["status"] }) => {
 };
 
 /** One call of a script, on one line: its state, name, the argument that tells it apart, its change, and its time. */
-const NestedLine = ({ call }: { call: NestedCall }) => {
-  const summary = toolSummary(call.name, call.args);
+const NestedLine = ({ call, path }: { call: NestedCall; path?: string | undefined }) => {
+  // The arguments of a call are cut for display, and may not say the file; a Call diff does.
+  const summary = toolSummary(call.name, call.args) ?? path;
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
@@ -220,11 +221,12 @@ const NestedCalls = ({
       <div className="text-xs font-medium text-muted-foreground">Calls</div>
       <ul className="mt-1 space-y-1">
         {Arr.map(calls, (call) => {
-          const path = Option.getOrUndefined(
-            Option.map(decodePath(call.args), (found) => found.path),
-          );
-
           const { diff } = call;
+
+          // The script's arguments are cut for display, so the path is the one the diff was recorded with.
+          const path =
+            diff?.path ??
+            Option.getOrUndefined(Option.map(decodePath(call.args), (found) => found.path));
 
           return (
             <li key={call.id}>
@@ -242,10 +244,10 @@ const NestedCalls = ({
                     <>
                       <summary className="flex cursor-pointer list-none items-center gap-2 select-none [&::-webkit-details-marker]:hidden">
                         <ChevronRight
-                          className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open/call:rotate-90"
+                          className="size-3.5 shrink-0 text-muted-foreground motion-safe:transition-transform group-open/call:rotate-90"
                           aria-hidden
                         />
-                        <NestedLine call={call} />
+                        <NestedLine call={call} path={path} />
                       </summary>
                       {open && (
                         <div className="mt-1.5 mb-1 ml-5.5">

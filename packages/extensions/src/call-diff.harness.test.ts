@@ -24,6 +24,7 @@ import {
   ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { RecordedDiff } from "@cloudpid/protocol/call-diff";
 import { err, FileError, type Result } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import * as Option from "effect/Option";
@@ -62,17 +63,7 @@ const ScriptDetails = Schema.Struct({
   calls: Schema.Array(
     Schema.Struct({ id: Schema.Finite, name: Schema.String, status: Schema.String }),
   ),
-  diffs: Schema.optional(
-    Schema.Record(
-      Schema.String,
-      Schema.Struct({
-        patch: Schema.optional(Schema.String),
-        created: Schema.optional(Schema.Boolean),
-        tooLarge: Schema.optional(Schema.Boolean),
-        binary: Schema.optional(Schema.Boolean),
-      }),
-    ),
-  ),
+  diffs: Schema.optional(Schema.Record(Schema.String, RecordedDiff)),
 });
 
 const decodeScriptDetails = Schema.decodeUnknownOption(ScriptDetails);
@@ -171,6 +162,7 @@ describe("write's Call diff", () => {
     expect(result.isError).toBe(false);
     expect(result.text).toBe("Successfully wrote to notes/a.txt");
     expect(result.details).toEqual({
+      path: "notes/a.txt",
       created: true,
       patch: "--- notes/a.txt\n+++ notes/a.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n",
     });
@@ -183,6 +175,7 @@ describe("write's Call diff", () => {
     const result = await call("write", { path: "a.txt", content: "one\n2\nthree\n" });
 
     expect(result.details).toEqual({
+      path: "a.txt",
       patch: "--- a.txt\n+++ a.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n",
     });
     expect(await file("a.txt")).toBe("one\n2\nthree\n");
@@ -192,6 +185,7 @@ describe("write's Call diff", () => {
     const { call } = await open({ "a.txt": "same\n" });
 
     expect((await call("write", { path: "a.txt", content: "same\n" })).details).toEqual({
+      path: "a.txt",
       patch: "--- a.txt\n+++ a.txt\n",
     });
   });
@@ -202,7 +196,7 @@ describe("write's Call diff", () => {
     const result = await call("write", { path: "a.bin", content: "text now\n" });
 
     expect(result.isError).toBe(false);
-    expect(result.details).toEqual({ binary: true });
+    expect(result.details).toEqual({ path: "a.bin", binary: true });
     expect(await file("a.bin")).toBe("text now\n");
   });
 
@@ -212,7 +206,7 @@ describe("write's Call diff", () => {
     const result = await call("write", { path: "locked.txt", content: "new\n" });
 
     expect(result.isError).toBe(false);
-    expect(result.details).toEqual({ binary: true });
+    expect(result.details).toEqual({ path: "locked.txt", binary: true });
     expect(await file("locked.txt")).toBe("new\n");
   });
 
@@ -225,7 +219,7 @@ describe("write's Call diff", () => {
     });
 
     expect(result.isError).toBe(false);
-    expect(result.details).toEqual({ tooLarge: true });
+    expect(result.details).toEqual({ path: "big.txt", tooLarge: true });
     expect((await file("big.txt")).length).toBe(MAX_DIFF_INPUT_BYTES / 2 + 2);
   });
 
@@ -237,8 +231,21 @@ describe("write's Call diff", () => {
       content: "x".repeat(MAX_DIFF_INPUT_BYTES),
     });
 
-    expect(result.details).toEqual({ created: true, tooLarge: true });
+    expect(result.details).toEqual({ path: "big.txt", created: true, tooLarge: true });
     expect(result.bytes).toBeLessThan(10_000);
+  });
+
+  it("keeps the stored result of a write whose patch is just under 512 KiB well within the 2 MB row", async () => {
+    const { call } = await open();
+    // Quotes are escaped when stored, so the patch is the longest a result holds: about 488 KiB as stored.
+    const content = `${'"'.repeat(60)}\n`.repeat(4_000);
+
+    const result = await call("write", { path: "q.txt", content });
+
+    expect(result.details).toMatchObject({ path: "q.txt", created: true });
+    expect(JSON.stringify(result.details).length).toBeGreaterThan(450 * 1024);
+    expect(result.bytes).toBeGreaterThan(450 * 1024);
+    expect(result.bytes).toBeLessThan(600 * 1024);
   });
 
   it("fails like pi-durable's write when the write fails, with no details", async () => {
@@ -278,9 +285,21 @@ describe("the calls a codemode script makes", () => {
     ]);
 
     expect(script.diffs).toEqual({
-      1: { created: true, patch: "--- new.txt\n+++ new.txt\n@@ -0,0 +1,1 @@\n+one\n" },
-      3: { patch: "--- old.txt\n+++ old.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n" },
-      5: { created: true, patch: "--- again.txt\n+++ again.txt\n@@ -0,0 +1,1 @@\n+two\n" },
+      1: {
+        path: "new.txt",
+        created: true,
+        patch: "--- new.txt\n+++ new.txt\n@@ -0,0 +1,1 @@\n+one\n",
+      },
+      // An `edit` records no path of its own: its patch's header names the file.
+      3: {
+        path: "old.txt",
+        patch: "--- old.txt\n+++ old.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+gamma\n",
+      },
+      5: {
+        path: "again.txt",
+        created: true,
+        patch: "--- again.txt\n+++ again.txt\n@@ -0,0 +1,1 @@\n+two\n",
+      },
     });
   });
 
@@ -318,7 +337,7 @@ describe("the calls a codemode script makes", () => {
       false,
       false,
     ]);
-    expect(diffs["3"]).toEqual({ created: true, tooLarge: true });
+    expect(diffs["3"]).toEqual({ path: "f3.txt", created: true, tooLarge: true });
     expect(result.bytes).toBeLessThan(1_000_000);
   });
 
