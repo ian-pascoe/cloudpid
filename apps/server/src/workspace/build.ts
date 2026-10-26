@@ -11,9 +11,10 @@
 // Setup Scripts get the Environment's Secrets marked for the Build, as `$PI_SECRET_<NAME>` (the name a Session's
 // commands get them under), in their environment only. The last good Build is kept with the state of the one in
 // progress or the last failure; a Build that fails keeps the last good one. An Environment's Test Build object
-// (`testBuildObjectName`) makes Test Builds of proposed changes the same way, one at a time, by the id of the call that
-// asks: their outcome is answered to that call (`BuildState.test`), never kept as the last good Build, and a cancel
-// stops one.
+// (`testBuildObjectName`) makes Test Builds of proposed changes the same way but for the snapshot, which they do not
+// take, one at a time, by the id of the call that asks: their outcome is answered to that call (`BuildState.test`),
+// never kept as the last good Build, and a cancel stops one. A step the platform cut off (the Container's connection
+// broke) does not fail a Build: it is begun again from the start, as one an eviction cut off is.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import {
   containerOverridesFrom,
@@ -36,7 +37,7 @@ import {
   SETUP_TIMEOUT_SECONDS,
   setupScriptRunIfDue,
 } from "@cloudpid/sandbox-image/toolchains";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import type { BuildRequest, BuildState, EnvironmentBuild, TestBuildState } from "./build-record.ts";
 import { buildSecretEnvironment, type HeldSecrets } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
@@ -107,11 +108,21 @@ const LOG_KEY = "workspace.build";
 /** Why a Build or Test Build fails at once under `alchemy dev`. */
 const BUILDS_OFF = "Builds are off where the Container takes no snapshots (alchemy dev)";
 
-/** What a Build of `request` came to. */
+/** What a Build of `request` came to; a Test Build that passed every step takes no snapshot: `tested`. */
 type Outcome =
   | { readonly kind: "built"; readonly build: EnvironmentBuild }
+  | { readonly kind: "tested" }
   | { readonly kind: "unchanged" }
   | { readonly kind: "failed"; readonly reason: string };
+
+/**
+ * A step the platform cut off, not the step's script: the Container could not be reached, or its connection broke while
+ * the script ran. The Build is begun again from the start, within its attempts (`BUILD_ATTEMPTS`).
+ */
+class ContainerLost extends Schema.TaggedError<ContainerLost, { readonly brand: unique symbol }>()(
+  "ContainerLost",
+  { message: Schema.String },
+) {}
 
 /** A Test Build's state once it ended with `outcome`. */
 const testEnded = (test: TestBuildState, outcome: Outcome, at: number): TestBuildState => {
@@ -327,8 +338,9 @@ export class BuildRunner {
   }
 
   /**
-   * Run step `what` of request `run`: `script` on the Container, with `env` beside its own, which must exit 0. Its
-   * output when it did. A Test Build cancelled meanwhile runs no step, and its step under way counts as failed.
+   * Run step `what` (its subject: "Cloning the repos") of request `run`: `script` on the Container, with `env` beside its
+   * own, which must exit 0. Its output when it did; a step the platform cut off throws `ContainerLost`. A Test Build
+   * cancelled meanwhile runs no step, and its step under way counts as failed.
    */
   async #step(
     run: string,
@@ -349,10 +361,18 @@ export class BuildRunner {
 
     if (ran.exitCode === 0) return ran.output;
 
+    if (ran.lost === true) {
+      throw ContainerLost.make({
+        message: `${what} was cut off by the platform, not by the script: the connection to the Container broke (${ran.output.trim()})`,
+      });
+    }
+
     const tail = ran.output.trim().slice(-REPORTED_OUTPUT);
     const status = ran.exitCode === null ? "it did not finish" : `exit ${ran.exitCode}`;
 
-    throw new Error(tail === "" ? `${what} (${status})` : `${what} (${status}): ${tail}`);
+    throw new Error(
+      tail === "" ? `${what} failed (${status})` : `${what} failed (${status}): ${tail}`,
+    );
   }
 
   /** Whether the daily look finds nothing to build for: no default branch moved since `last`, which is recent. */
@@ -367,7 +387,7 @@ export class BuildRunner {
     const heads = parseCommits(
       await this.#step(
         request.id,
-        "Asking the repos' remotes for their default branches failed",
+        "Asking the repos' remotes for their default branches",
         remoteHeadsScript(request.repos),
         SHORT_STEP_SECONDS,
       ),
@@ -389,6 +409,7 @@ export class BuildRunner {
     deps.idle.begin().catch(trackingFailed);
 
     let outcome: Outcome;
+    let lost = false;
 
     try {
       const { settings } = resolveContainerSettingsLeniently(request.settings);
@@ -410,7 +431,7 @@ export class BuildRunner {
         await this.#mark(request, "building");
         await this.#step(
           request.id,
-          "Cloning the repos failed",
+          "Cloning the repos",
           `${prelude}${buildCloneScript(request.repos)}`,
           CLONE_TIMEOUT_SECONDS,
         );
@@ -418,7 +439,7 @@ export class BuildRunner {
         if (settings.setupScript !== "") {
           await this.#step(
             request.id,
-            "The environment's Setup Script failed",
+            "The environment's Setup Script",
             `${prelude}${environmentSetupScriptRun(settings.setupScript, BUILD_ROOT)}`,
             SETUP_TIMEOUT_SECONDS + SCRIPT_RUN_MARGIN_SECONDS,
             secretEnv,
@@ -428,7 +449,7 @@ export class BuildRunner {
         for (const repo of request.repos) {
           await this.#step(
             request.id,
-            `The Setup Script ${repo.name}/${SETUP_SCRIPT} failed`,
+            `The Setup Script ${repo.name}/${SETUP_SCRIPT}`,
             `${prelude}${setupScriptRunIfDue(`${BUILD_ROOT}/${repo.name}`, SETUP_STATE_DIRECTORY, SETUP_TIMEOUT_SECONDS, BUILD_ROOT)}`,
             SETUP_TIMEOUT_SECONDS + SCRIPT_RUN_MARGIN_SECONDS,
             secretEnv,
@@ -438,7 +459,7 @@ export class BuildRunner {
         const commits = parseCommits(
           await this.#step(
             request.id,
-            "Reading the repos' commits failed",
+            "Reading the repos' commits",
             buildCommitsScript(request.repos),
             SHORT_STEP_SECONDS,
           ),
@@ -446,31 +467,36 @@ export class BuildRunner {
 
         await this.#step(
           request.id,
-          "Stopping what the Setup Scripts started failed",
+          "Stopping what the Setup Scripts started",
           buildCleanupScript(request.id),
           SHORT_STEP_SECONDS,
         );
 
         if (this.#cancelled === request.id) throw new Error("The Test Build was cancelled");
 
-        // A Test Build's snapshot is taken too, for its scan; its handle is then dropped (`#finish`).
-        const taken = await deps.snapshot();
+        if (request.test !== undefined) {
+          // Its result is never kept, so it takes no snapshot (nor the snapshot's scan).
+          outcome = { kind: "tested" };
+        } else {
+          const taken = await deps.snapshot();
 
-        if (!taken.ok) throw new Error(`The snapshot was not taken: ${taken.reason}`);
+          if (!taken.ok) throw new Error(`The snapshot was not taken: ${taken.reason}`);
 
-        outcome = {
-          kind: "built",
-          build: {
-            key: request.key,
-            snapshot: taken.snapshot,
-            image: taken.image,
-            ignore: taken.ignore === undefined ? null : [...taken.ignore],
-            commits,
-            finishedAt: deps.now(),
-          },
-        };
+          outcome = {
+            kind: "built",
+            build: {
+              key: request.key,
+              snapshot: taken.snapshot,
+              image: taken.image,
+              ignore: taken.ignore === undefined ? null : [...taken.ignore],
+              commits,
+              finishedAt: deps.now(),
+            },
+          };
+        }
       }
     } catch (cause) {
+      lost = Schema.is(ContainerLost)(cause);
       outcome = {
         kind: "failed",
         reason: deps.redact(cause instanceof Error ? cause.message : String(cause)),
@@ -490,11 +516,22 @@ export class BuildRunner {
     const took = deps.now() - started;
     const what = request.test === undefined ? "" : " (a Test Build)";
 
+    if (outcome.kind === "failed" && lost && (await this.#again(request))) {
+      deps.warn(
+        `${LOG_KEY}: cut off after ${took} ms${what} (attempt ${request.attempts} of ${BUILD_ATTEMPTS}), begun again: ${outcome.reason}`,
+      );
+
+      return;
+    }
+
     switch (outcome.kind) {
       case "built":
         deps.info(
           `${LOG_KEY}: built in ${took} ms${what}, snapshot ${Math.round(outcome.build.snapshot.size / 1e6)} MB`,
         );
+        break;
+      case "tested":
+        deps.info(`${LOG_KEY}: every step passed in ${took} ms${what}`);
         break;
       case "unchanged":
         deps.info(`${LOG_KEY}: no default branch moved; the Build stays`);
@@ -505,6 +542,23 @@ export class BuildRunner {
     }
 
     await this.#finish(request, outcome);
+  }
+
+  /**
+   * Begin the Build of `request`, which the platform cut off, again from the start at the next alarm, as one an eviction
+   * cut off is: whether it will be. It will not when its attempts are spent, or when it is no longer the request that
+   * waits (a newer one replaced it, or its Test Build was cancelled).
+   */
+  async #again(request: StoredBuilds["pending"] & {}): Promise<boolean> {
+    if (request.attempts >= BUILD_ATTEMPTS) return false;
+
+    const stored = await this.#deps.load();
+
+    if (stored?.pending?.id !== request.id) return false;
+
+    await this.#deps.wake(this.#deps.now());
+
+    return true;
   }
 
   /** Show the Build of `request` as `status`, unless a newer request replaced it meanwhile. */
@@ -539,8 +593,7 @@ export class BuildRunner {
     const current = stored.pending?.id === request.id;
 
     if (request.test !== undefined) {
-      // Answered to its call, never kept as the last good Build: its snapshot's handle is dropped here. One cancelled
-      // meanwhile stays cancelled.
+      // Answered to its call, never kept as the last good Build. One cancelled meanwhile stays cancelled.
       const { test } = stored;
       const mine = test?.id === request.test && test.status === "building";
 

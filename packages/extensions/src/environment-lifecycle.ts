@@ -742,7 +742,7 @@ export const lifecycleTools = ({
                 type: "text" as const,
                 text: Arr.join(
                   [
-                    `The Test Build of ${where} with the proposed ${proposal} succeeded in ${durationWords(tookMs)}: every step of a Build passed (the clones, the Toolchains, the Setup Scripts, the clean-up and the snapshot's scan).`,
+                    `The Test Build of ${where} with the proposed ${proposal} succeeded in ${durationWords(tookMs)}: every step of a Build passed (the clones, the Toolchains, the Setup Scripts and the clean-up; a Test Build takes no snapshot).`,
                     "Nothing was saved or recorded, and no Workspace starts from it.",
                     fields.length === 0
                       ? ""

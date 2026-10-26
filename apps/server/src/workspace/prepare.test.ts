@@ -406,4 +406,23 @@ describe("runScript", () => {
       await runScript(failing(new ExecutionError("spawn_error", "No Container")), "x", 60),
     ).toEqual({ exitCode: null, output: "No Container" });
   });
+
+  it("says the platform cut off a script whose Container could not be reached or whose stream broke", async () => {
+    const failing = (error: ExecutionError) => {
+      const exec: Shell["exec"] = () => Promise.resolve(err(error));
+
+      return { exec };
+    };
+
+    const disposed = "Error: WritableStream RPC stub was disposed without calling close()";
+
+    expect(await runScript(failing(new ExecutionError("unknown", disposed)), "x", 60)).toEqual({
+      exitCode: null,
+      output: disposed,
+      lost: true,
+    });
+    expect(
+      await runScript(failing(new ExecutionError("shell_unavailable", "no Workspace")), "x", 60),
+    ).toEqual({ exitCode: null, output: "no Workspace", lost: true });
+  });
 });

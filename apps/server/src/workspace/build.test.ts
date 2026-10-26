@@ -467,6 +467,108 @@ describe("the daily look at the default branches", () => {
   });
 });
 
+describe("a Build the platform cut off", () => {
+  const lost = {
+    exitCode: null,
+    output: "Error: WritableStream RPC stub was disposed without calling close()",
+    lost: true,
+  } as const;
+
+  it("is begun again from the start at the next alarm, which it wakes, and not failed", async () => {
+    const { fake, builds } = open();
+
+    fake.answers = { ...GOOD_COMMITS, "setup:app": lost };
+    await builds.request(request());
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.wakes).toHaveLength(2);
+    });
+
+    expect(fake.stops).toBe(1);
+    expect(fake.stored?.progress).toMatchObject({ status: "building", key: "key-1" });
+    expect(fake.stored?.pending).toMatchObject({ id: "run-1", attempts: 1 });
+    expect(fake.warnings.join("\n")).toContain(
+      "The Setup Script app/.cloudpid/setup.sh was cut off by the platform, not by the script",
+    );
+
+    // The platform is back: the next alarm begins it again, from the clone.
+    fake.answers = GOOD_COMMITS;
+    fake.steps = [];
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.stored?.last?.key).toBe("key-1");
+    });
+
+    expect(fake.steps[0]).toBe("clone");
+    expect(fake.stored?.progress).toBeNull();
+  });
+
+  it("fails saying the platform cut it off once its attempts are spent", async () => {
+    const { fake, builds } = open();
+
+    fake.answers = { ...GOOD_COMMITS, clone: lost };
+    await builds.request(request());
+
+    // Each attempt but the last wakes the object for the next.
+    for (let attempt = 1; attempt < BUILD_ATTEMPTS; attempt++) {
+      await builds.alarm();
+      await vi.waitFor(() => {
+        expect(fake.wakes).toHaveLength(attempt + 1);
+      });
+    }
+
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.stored?.progress).toMatchObject({ status: "failed" });
+    });
+    expect(fake.stops).toBe(BUILD_ATTEMPTS);
+    expect(fake.stored?.progress).toMatchObject({
+      reason:
+        "Cloning the repos was cut off by the platform, not by the script: the connection to the Container broke (Error: WritableStream RPC stub was disposed without calling close())",
+    });
+    expect(fake.stored?.pending).toBeNull();
+  });
+
+  it("fails a Test Build as a script's failure when the script itself did not finish", async () => {
+    const { fake, builds } = open();
+
+    fake.answers = {
+      ...GOOD_COMMITS,
+      "setup:app": { exitCode: null, output: "it ran past 30 minutes" },
+    };
+    await builds.request(request({ key: "key-test", test: "s-1/7" }));
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.stored?.test?.status).toBe("failed");
+    });
+
+    expect(fake.stored?.test).toMatchObject({
+      reason:
+        "The Setup Script app/.cloudpid/setup.sh failed (it did not finish): it ran past 30 minutes",
+    });
+  });
+
+  it("begins a Test Build again too, and leaves one cancelled meanwhile cancelled", async () => {
+    const { fake, builds } = open();
+
+    fake.answers = { ...GOOD_COMMITS, "setup:app": lost };
+    await builds.request(request({ key: "key-test", test: "s-1/7" }));
+    await builds.alarm();
+    await vi.waitFor(() => {
+      expect(fake.wakes).toHaveLength(2);
+    });
+
+    expect(fake.stored?.test?.status).toBe("building");
+
+    await builds.cancel("s-1/7");
+    fake.steps = [];
+    await builds.alarm();
+
+    expect(fake.steps).toEqual([]);
+    expect(fake.stored?.test?.status).toBe("cancelled");
+  });
+});
+
 describe("a Build cut off by an eviction", () => {
   it("is begun again at the next alarm, a few times at most, then reported as failed", async () => {
     const { fake, builds } = open();
@@ -528,9 +630,10 @@ describe("a Test Build", () => {
       "setup:api",
       "commits",
       "cleanup",
-      "snapshot",
       "stop",
     ]);
+    // Its result is never kept, so it takes no snapshot, and no snapshot's scan can fail it.
+    expect(fake.snapshots).toBe(0);
 
     const state = await builds.state();
 
@@ -543,8 +646,6 @@ describe("a Test Build", () => {
       startedAt,
       finishedAt: fake.now,
     });
-    // Its snapshot is not kept: nothing the object stores names it.
-    expect(JSON.stringify(fake.stored)).not.toContain("snap-1");
     expect(fake.stored?.pending).toBeNull();
     expect(fake.holds).toBe(0);
   });
