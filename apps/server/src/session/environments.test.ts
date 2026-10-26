@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { unusedLifecycle } from "./environments.fixture.ts";
 import { type EnvironmentsRegistry, sessionEnvironments } from "./environments.ts";
 import { workspacePlacement } from "./workspace.ts";
 
@@ -111,6 +112,7 @@ const open = (
           upkept.push(environment);
         }),
     },
+    lifecycle: unusedLifecycle,
   });
 
   return { environments, handedOver, upkept, asked };

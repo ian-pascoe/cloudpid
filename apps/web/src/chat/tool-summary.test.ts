@@ -72,6 +72,16 @@ describe("toolSummary", () => {
       toolSummary("environment_setup_script_set", { script: "echo", reason: "jq\nmore" }),
     ).toBe("jq");
     expect(toolSummary("environment_ignore_set", { patterns: ["/a"], reason: "big" })).toBe("big");
+    expect(toolSummary("environment_create", { name: "Billing", reason: "r" })).toBe("Billing");
+    expect(toolSummary("environment_rename", { id: "0000abcd", name: "Main" })).toBe(
+      "Main in 0000abcd",
+    );
+    expect(toolSummary("environment_repo_add", { url: "o/api" })).toBe("o/api");
+    expect(toolSummary("environment_repo_remove", { name: "api", id: "0000abcd" })).toBe(
+      "api in 0000abcd",
+    );
+    expect(toolSummary("environment_rebuild", {})).toBeUndefined();
+    expect(toolSummary("environment_rebuild", { id: "0000abcd" })).toBe("0000abcd");
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");

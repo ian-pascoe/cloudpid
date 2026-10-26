@@ -7,6 +7,7 @@ import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
+  fieldRepo,
   fieldVariable,
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
@@ -573,6 +574,11 @@ const fakeRegistries = () => {
       }),
     // The Session DO makes Agent changes, never the endpoint.
     changeEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    agentCreateEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    agentRenameEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    agentAddRepo: () => Effect.die("The endpoint makes no Agent change"),
+    agentRemoveRepo: () => Effect.die("The endpoint makes no Agent change"),
+    recordRebuild: () => Effect.die("The endpoint makes no Agent change"),
     listAgentChanges: ({ environment }) =>
       Effect.sync(() =>
         Arr.some(environments, (item) => item.id === environment)
@@ -593,6 +599,26 @@ const fakeRegistries = () => {
 
         if (found.value.actor === "owner")
           return { status: "refused", message: "A revert is not undone" };
+
+        // A Repo put back or taken out changes the Environment's record, which the fake does not model.
+        if (fieldRepo(found.value.field) !== null) {
+          const repoRevert: AgentChange = {
+            ...found.value,
+            id: agentChanges.length + 1,
+            actor: "owner",
+            session: null,
+            conversation: null,
+            tool: null,
+            reason: `Reverted change ${change}`,
+            before: found.value.after,
+            after: found.value.before,
+            reverts: change,
+          };
+
+          agentChanges.push(repoRevert);
+
+          return { status: "reverted", change: repoRevert };
+        }
 
         const name = fieldVariable(found.value.field) ?? found.value.field;
 
@@ -2177,6 +2203,26 @@ it("reverts an Agent change, answers the owner's change, and keeps the Build cur
   expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
 });
 
+it("keeps the spare Workspace and the Build current after a revert of a Repo", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, "https://github.com/o/app.git"),
+    tool: "environment_repo_add",
+    field: "repos.app",
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
 it("refuses to revert an Agent change whose variable changed since, showing its value now", async () => {
   const fake = fakeRegistries();
 
@@ -3008,6 +3054,33 @@ it("makes an Environment's Build again when the owner asks, though it is current
     since: 50,
     lastGoodAt: 10,
   });
+});
+
+it("answers whether a Rebuild asked for a Build, or found one of the wanted key under way, which it leaves alone", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+
+  const name = `build:${environment}`;
+  const rebuild = () => Effect.runPromise(fake.buildUpkeep.rebuild(environment));
+
+  expect(await rebuild()).toBe("asked");
+
+  const started = Arr.filter(fake.calls, (each) => each === `startBuild:${name}`).length;
+
+  expect(started).toBe(1);
+
+  // The Build object now answers that the Build of the key is under way.
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: null,
+    progress: { status: "building", key: await keyOf(fake, environment), startedAt: 1 },
+    attemptedAt: null,
+  });
+
+  expect(await rebuild()).toBe("underway");
+  expect(Arr.filter(fake.calls, (each) => each === `startBuild:${name}`)).toHaveLength(started);
 });
 
 it("refuses a Rebuild of an Environment that does not exist, or has nothing to build, or whose Build object cannot be reached", async () => {

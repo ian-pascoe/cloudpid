@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { EnvironmentRecord } from "../registry/store.ts";
+import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
 import type { Builds } from "../registry/builds.ts";
 import type { Placement } from "./workspace.ts";
 
@@ -45,6 +46,8 @@ export type SessionEnvironmentsOptions = {
   ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }>;
   /** The Builds' upkeep, run for an Environment after each change, as after the owner's save. */
   readonly builds: Pick<Builds, "of">;
+  /** What the agent does to an Environment's own record: make, rename, Repos, Build (`sessionLifecycle`). */
+  readonly lifecycle: EnvironmentLifecycle;
 };
 
 const NO_BUILD: BuildView = { status: "none" };
@@ -79,6 +82,7 @@ export const sessionEnvironments = ({
   placement,
   handOver,
   builds,
+  lifecycle,
 }: SessionEnvironmentsOptions): EnvironmentsService => {
   /** The Session's Workspace and its Environment, once found: neither changes for the Session's life. */
   let found: { readonly object: string; readonly environment: string } | undefined;
@@ -109,6 +113,7 @@ export const sessionEnvironments = ({
   );
 
   return {
+    ...lifecycle,
     current: Effect.map(where, (known) => known?.environment ?? null),
     list: Effect.gen(function* () {
       const environments = yield* registry.listEnvironments();

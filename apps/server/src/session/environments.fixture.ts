@@ -3,6 +3,7 @@
 import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type { EnvironmentsService } from "@cloudpid/extensions/environment";
+import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import type { SettingsKv } from "./settings.ts";
@@ -10,11 +11,23 @@ import type { SettingsKv } from "./settings.ts";
 const VARIABLES_KEY = "test-environment-variables";
 const DEFAULT = { id: "default", name: "Default" } as const;
 
+const unused = () => Effect.die("the test Environments make no lifecycle change");
+
+/** Lifecycle operations that die when called, for Environments that make no such change. */
+export const unusedLifecycle: EnvironmentLifecycle = {
+  create: unused,
+  rename: unused,
+  addRepo: unused,
+  removeRepo: unused,
+  rebuild: unused,
+};
+
 export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
   const variables = () => kv.get<Readonly<Record<string, string>>>(VARIABLES_KEY) ?? {};
   const listing = { ...DEFAULT, repos: [], build: { status: "none" as const } };
 
   return {
+    ...unusedLifecycle,
     current: Effect.succeed(DEFAULT.id),
     list: Effect.sync(() => [listing]),
     get: (id) =>

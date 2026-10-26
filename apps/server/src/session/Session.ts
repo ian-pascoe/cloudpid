@@ -39,6 +39,7 @@ import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { buildUpkeep } from "../registry/builds.ts";
 import { spareUpkeep } from "../registry/rpc.ts";
 import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
+import { sessionLifecycle } from "./environment-lifecycle.ts";
 import { sessionEnvironments } from "./environments.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
@@ -295,16 +296,19 @@ export const SessionLive = Session.make(
           worker[WORKSPACE_BINDING] as Parameters<typeof workspaceObjectsRemote>[0],
         );
 
+        const spares = spareUpkeep(registries, { workspaces: workspaceObjects });
+        const builds = buildUpkeep(registries, { workspaces: workspaceObjects, spares });
+
+        const registryObject = registries.getByName(REGISTRY_NAME);
+
         const environments = sessionEnvironments({
-          registry: registries.getByName(REGISTRY_NAME),
+          registry: registryObject,
           session: name,
           placement,
           handOver: (object, overrides) =>
             workspaces.getByName(object).updateContainerSettings(overrides),
-          builds: buildUpkeep(registries, {
-            workspaces: workspaceObjects,
-            spares: spareUpkeep(registries, { workspaces: workspaceObjects }),
-          }),
+          builds,
+          lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
         });
 
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.

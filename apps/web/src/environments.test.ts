@@ -395,6 +395,17 @@ describe("an Agent change", () => {
     expect(changeValueText({ a: 1 })).toBe('{"a":1}');
     expect(changeFieldText("variables.API_URL")).toBe("Variable API_URL");
     expect(changeFieldText("idleMinutes")).toBe("idleMinutes");
+    expect(changeFieldText("name")).toBe("Name");
+    expect(changeFieldText("repos.api")).toBe("Repo api");
+    expect(changeFieldText("environment")).toBe("Creation");
+    expect(changeFieldText("build")).toBe("Build");
+  });
+
+  it("cannot revert the making of an Environment or a Build asked for", () => {
+    expect(revertible({ ...change, field: "environment" })).toBe(false);
+    expect(revertible({ ...change, field: "build" })).toBe(false);
+    expect(revertible({ ...change, field: "name" })).toBe(true);
+    expect(revertible({ ...change, field: "repos.api" })).toBe(true);
   });
 
   it("says who made it and when, and can be reverted while it is the agent's and not reverted yet", () => {

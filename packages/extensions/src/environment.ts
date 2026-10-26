@@ -38,6 +38,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { SIZE_LINES } from "./container.ts";
+import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -133,7 +134,7 @@ export type EnvironmentsService = {
     readonly change: SettingChange;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<AppliedChange, EnvironmentsError>;
-};
+} & EnvironmentLifecycle;
 
 export class Environments extends Context.Service<Environments, EnvironmentsService>()(
   "@cloudpid/extensions/environment/Environments",
@@ -268,7 +269,7 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
         : []),
       ...(newBuild
         ? [
-            "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes).",
+            "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes; environment_rebuild asks for another now, such as after it failed).",
           ]
         : []),
     ],
@@ -894,8 +895,34 @@ export const EnvironmentTools: Effect.Effect<
       }),
   });
 
+  /** Fails, saving nothing, when a text holds a Secret the Session holds or a deploy-time credential. */
+  const refuseSecrets = (texts: ReadonlyArray<{ readonly what: string; readonly text: string }>) =>
+    Effect.gen(function* () {
+      for (const { what, text } of texts) {
+        if (text !== "" && (yield* holdsSecret(text))) {
+          return yield* EnvironmentsError.make({
+            message: `Nothing was saved: ${what} holds the value of a Secret this Session holds, or of the GitHub token. Say it without the value; a credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page.`,
+          });
+        }
+      }
+    });
+
+  const lifecycle = yield* lifecycleTools({ environments, log, refuseSecrets, target, notFound });
+
   return defineExtension({
     name: extensionName,
-    tools: [list, get, set, unset, resize, idleTime, setupScript, startScript, toolchains, ignore],
+    tools: [
+      list,
+      get,
+      set,
+      unset,
+      resize,
+      idleTime,
+      setupScript,
+      startScript,
+      toolchains,
+      ignore,
+      ...lifecycle,
+    ],
   });
 });

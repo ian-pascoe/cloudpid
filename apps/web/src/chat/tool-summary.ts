@@ -94,6 +94,15 @@ const idleTime = (args: Args): Option.Option<string> =>
     Predicate.isNumber(args.minutes) ? `${reason} (${args.minutes} min)` : reason,
   );
 
+/** What an `environment_*` call changes in an Environment's record: its new name, or the Repo, in the Environment its `id` names when it names one. */
+const lifecycle = (toolName: string, args: Args): Option.Option<string> =>
+  Option.map(text(args, toolName === "environment_repo_add" ? "url" : "name"), (what) =>
+    Option.match(text(args, "id"), {
+      onNone: () => what,
+      onSome: (id) => `${what} in ${id}`,
+    }),
+  );
+
 /** `line`, after the agent a call names when it names one. */
 const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string> =>
   Option.map(line, (value) =>
@@ -134,7 +143,14 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "todo":
         return todo(args);
       case "environment_get":
+      case "environment_rebuild":
         return text(args, "id");
+      case "environment_create":
+        return text(args, "name");
+      case "environment_rename":
+      case "environment_repo_add":
+      case "environment_repo_remove":
+        return lifecycle(toolName, args);
       case "environment_variable_set":
       case "environment_variable_unset":
         return variable(args);
