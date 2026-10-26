@@ -5,33 +5,19 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import { lazy, Suspense, useId, useMemo, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
-import { useShownChanges } from "../diff-pane/changes-summary.tsx";
 import { findChange } from "../diff-pane/changes.ts";
+import { DiffTally } from "../diff-pane/parts.tsx";
 import { openDiffPaneAtom } from "../diff-pane/target.ts";
-import { taskGraphAtom } from "../session/atoms.ts";
+import { changesAtom, taskGraphAtom } from "../session/atoms.ts";
 import { useWidth } from "../use-width.ts";
 import { useShownSessionId, useThreadConversation } from "./conversation.ts";
-import {
-  type CallDiff,
-  callDiffCounts,
-  capPatch,
-  diffStyleFor,
-  type DiffCounts,
-} from "../call-diff.ts";
+import { type CallDiff, callDiffCounts, capPatch, diffStyleFor } from "../call-diff.ts";
 
 // The library, its highlighter and its theme are a chunk of their own, fetched when the first diff opens.
 const PatchView = lazy(() => import("./patch-view.tsx"));
 
 /** What shows where a Call diff has no patch to show. */
 const UNAVAILABLE = "Too large to show here";
-
-/** `+n −m`: the lines added in Run Green and the lines removed in Brick Red. */
-export const DiffTally = ({ counts }: { counts: DiffCounts }) => (
-  <span className="tabular shrink-0 font-mono text-xs whitespace-nowrap">
-    <span className="text-success">+{counts.additions}</span>{" "}
-    <span className="text-destructive">−{counts.deletions}</span>
-  </span>
-);
 
 /**
  * What a Call diff says on a card's line, after the path: a "new file" mark for a create, then `+n −m`, or "No change"
@@ -92,13 +78,19 @@ const DiffBox = ({
 };
 
 /**
- * "Open in Diff pane": the Changes at the file the call wrote, while it still has Changes; otherwise it says it has none.
- * A subagent in a Subagent Workspace wrote to that Workspace, whose Changes the Diff pane does not show: it has none.
+ * "Open in Diff pane": the Changes at the file the call wrote, while it has Changes in the current list; otherwise it says
+ * it has none, until a list has it again. A subagent in a Subagent Workspace wrote to that Workspace, whose Changes the
+ * Diff pane does not show: it has none.
  */
 const OpenInDiffPane = ({ path }: { path: string }) => {
   const sessionId = useShownSessionId();
-  const changes = useShownChanges();
   const open = useAtomSet(openDiffPaneAtom(sessionId));
+
+  // The file's Changes in the current list; `null` before the first list.
+  const file = useAtomValue(changesAtom(sessionId), (changes) =>
+    changes === null ? null : findChange(changes.repos, path),
+  );
+
   const conversationId = useThreadConversation();
 
   const elsewhere = useAtomValue(
@@ -111,31 +103,28 @@ const OpenInDiffPane = ({ path }: { path: string }) => {
       ),
   );
 
-  const [none, setNone] = useState(false);
-
   if (elsewhere) return null;
 
-  return (
-    <>
-      <span role="status" className="shrink-0 text-xs text-muted-foreground empty:hidden">
-        {none ? "No Changes in this file now" : ""}
+  if (file === undefined) {
+    return (
+      <span role="status" className="shrink-0 text-xs text-muted-foreground">
+        No Changes in this file now
       </span>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="h-7 px-2 text-xs text-muted-foreground"
-        onClick={() => {
-          const file = findChange(changes?.repos ?? [], path);
+    );
+  }
 
-          setNone(file === undefined);
-
-          if (file !== undefined) open(file.id);
-        }}
-      >
-        Open in Diff pane
-      </Button>
-    </>
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-7 px-2 text-xs text-muted-foreground"
+      onClick={() => {
+        open(file?.id ?? null);
+      }}
+    >
+      Open in Diff pane
+    </Button>
   );
 };
 

@@ -10,11 +10,10 @@ import { use } from "react";
 import { useShownSessionId } from "./chat/conversation.ts";
 import { TreeBarScope } from "./chat/tree-actions.ts";
 import { useSubagentsWorking } from "./chat/subagents-pane.tsx";
-import { changesTotals } from "./diff-pane/changes.ts";
-import { filesLabel } from "./diff-pane/parts.tsx";
+import { totalsText } from "./diff-pane/changes.ts";
+import { changesTotalsAtom } from "./diff-pane/watch.ts";
 import { BROWSER_PANE, DIFF_PANE, NEW_PANE, SUBAGENTS_PANE, TREE_PANE } from "./panes.ts";
 import { panesAtom } from "./panes-state.ts";
-import { changesAtom } from "./session/atoms.ts";
 
 /** One Pane the New pane offers. */
 interface Choice {
@@ -32,7 +31,7 @@ export const NewPane = () => {
   // An archived Session cannot move in its tree, so it offers none, as it has no `/tree`; nor does it start a browser.
   const archived = use(TreeBarScope)?.archived === true;
   const working = useSubagentsWorking();
-  const changes = changesTotals(useAtomValue(changesAtom(useShownSessionId()))?.repos ?? []);
+  const changes = useAtomValue(changesTotalsAtom(useShownSessionId()));
 
   const choices: readonly Choice[] = [
     {
@@ -40,10 +39,7 @@ export const NewPane = () => {
       name: "Diff",
       description: "The Changes in the Workspace: every changed file, in one scroll.",
       icon: FileDiff,
-      status:
-        changes.files > 0
-          ? `${filesLabel(changes.files)} ${changes.approximate ? "≈" : ""}+${changes.additions} −${changes.deletions}`
-          : undefined,
+      status: changes.files > 0 ? totalsText(changes) : undefined,
     },
     {
       key: SUBAGENTS_PANE,

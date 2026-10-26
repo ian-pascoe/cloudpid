@@ -1,11 +1,13 @@
 // The Changes as the web app shows them (`docs/spec.md` → Diffs and review → Diff pane): one list of files across the
 // repos, each under an ID the Diff pane scrolls to, the totals the chip, the Session details and the Pane's header
-// show, and which changed file a Call diff's path is.
+// show, which changed file a Call diff's path is, and what of a file's change a new list must differ in to load it again.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over values, called from React, over native arrays.
-import type { ChangeEntry, RepoChanges } from "@cloudpid/protocol";
-
-/** The Workspace's root: every repo is a directory right below it. */
-const WORKSPACE_ROOT = "/workspace";
+import {
+  WORKSPACE_ROOT,
+  workspaceDirectory,
+  type ChangeEntry,
+  type RepoChanges,
+} from "@cloudpid/protocol";
 
 /** One changed file, with its repo and the ID the Diff pane knows it by. */
 export interface ChangedFile {
@@ -87,35 +89,56 @@ export const changesPreview = (repos: readonly RepoChanges[], max: number): Chan
   return { shown, more: changesTotals(repos).files - shown.length };
 };
 
-/** `path` without `./` segments or repeated slashes. */
-const normalize = (path: string): string =>
-  path
-    .split("/")
-    .filter((segment, index) => segment !== "." && (segment !== "" || index === 0))
-    .join("/");
+/**
+ * The directory the Session works in, as its list of the Changes tells: a Session in one repo's clone lists that repo,
+ * one at the Workspace's root every repo (none, or several: a Workspace of one repo works in its clone).
+ */
+export const changesDirectory = (repos: readonly RepoChanges[]): string =>
+  workspaceDirectory(repos.map((repo) => repo.repo));
+
+/** `path` made absolute against `directory`, without `.` and `..` segments or repeated slashes. */
+export const resolvePath = (directory: string, path: string): string => {
+  const segments: string[] = [];
+
+  for (const segment of `${path.startsWith("/") ? "" : directory}/${path}`.split("/")) {
+    if (segment === "..") segments.pop();
+    else if (segment !== "" && segment !== ".") segments.push(segment);
+  }
+
+  return `/${segments.join("/")}`;
+};
 
 /**
- * The changed file a Call diff's path names, or undefined when it has no Changes. An absolute path is the file at that
- * place; a relative one (to the conversation's directory: a repo, or the Workspace's root) is the file whose path ends
- * with it, the shortest such when several repos have one.
+ * The changed file a Call diff's path names, or undefined when it has no Changes: the file at that place, a relative path
+ * taken from the Session's directory (`changesDirectory`).
  */
 export const findChange = (
   repos: readonly RepoChanges[],
   path: string,
 ): ChangedFile | undefined => {
-  const wanted = normalize(path);
-  const absolute = wanted.startsWith("/");
-  const ending = `/${wanted}`;
-  let best: { readonly file: ChangedFile; readonly length: number } | undefined;
+  const wanted = resolvePath(changesDirectory(repos), path);
 
-  for (const file of changedFiles(repos)) {
-    const full = `${WORKSPACE_ROOT}/${file.id}`;
-    const matches = absolute ? full === wanted : full.endsWith(ending);
-
-    if (matches && (best === undefined || full.length < best.length)) {
-      best = { file, length: full.length };
-    }
-  }
-
-  return best?.file;
+  return changedFiles(repos).find((file) => `${WORKSPACE_ROOT}/${file.id}` === wanted);
 };
+
+/**
+ * What the list says of a file's change: when it is the same in a new list, the file's contents are taken to be the same
+ * too, and a file loaded from the old list is asked for again only while it is in view.
+ */
+export const entrySignature = (entry: ChangeEntry): string =>
+  JSON.stringify([
+    entry.status,
+    entry.oldPath ?? null,
+    entry.additions,
+    entry.deletions,
+    entry.approximate === true,
+    entry.binary === true,
+    entry.tooLarge === true,
+  ]);
+
+/** "1 file", "12 files". */
+export const filesLabel = (files: number): string => `${files} file${files === 1 ? "" : "s"}`;
+
+/** `n files ≈+a −d`, as a status line or a label takes it. */
+export const totalsText = (totals: ChangesTotals): string =>
+  `${filesLabel(totals.files)} ${totals.approximate ? "≈" : ""}+${totals.additions} −${totals.deletions}`;

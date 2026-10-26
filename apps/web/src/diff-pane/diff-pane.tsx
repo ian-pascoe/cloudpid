@@ -4,25 +4,25 @@
 // chip, the Session details and a Call diff card. A header with the source picker (Changes only, for now), Refresh,
 // "may be out of date", the totals with "collapse all", Auto / Split / Stacked and Wrap; then every file of the source
 // in one scroll (`changes-view.tsx`, a lazy chunk), with the file list as a rail beside it on a wide Pane and folding
-// above it on a narrow one. Opening it asks the Session to list the Changes again.
+// above it on a narrow one. Opening it asks the Session to list the Changes again. Its state is in atoms
+// (`pane-atoms.ts`), kept while it is mounted.
 
 import type { RepoChanges } from "@cloudpid/protocol";
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ChevronRight, CircleAlert, RefreshCw, WrapText } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useCall } from "../calls.ts";
+import { lazy, Suspense } from "react";
 import { useShownSessionId } from "../chat/conversation.ts";
 import { Button } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
-import { changeFileAtom, changesAtom, refreshChangesAtom } from "../session/atoms.ts";
+import { changesAtom } from "../session/atoms.ts";
 import type { ChangesState } from "../session/state.ts";
 import { useWidth } from "../use-width.ts";
-import { changedFiles, changesTotals, groupedByRepo } from "./changes.ts";
-import type { PaneFile, ScrollTarget } from "./changes-view.tsx";
-import { foldReason } from "./folding.ts";
-import { ChangeTally, EntryTally, filesLabel, StatusLetter } from "./parts.tsx";
+import { filesLabel, groupedByRepo } from "./changes.ts";
+import { DiffPaneScope, type PaneAtoms } from "./pane-atoms.ts";
+import type { PaneFile } from "./pane-files.ts";
+import { ChangedFileRow, DiffTally } from "./parts.tsx";
 import { diffLayoutAtom, diffWrapAtom, type DiffLayout } from "./prefs.ts";
-import { diffTargetAtom } from "./target.ts";
+import { changesTotalsAtom } from "./watch.ts";
 
 // The library, its highlighter and the workers are a chunk of their own, fetched when the Pane first opens.
 const ChangesView = lazy(() => import("./changes-view.tsx"));
@@ -35,27 +35,6 @@ const LAYOUTS: ReadonlyArray<{ readonly value: DiffLayout; readonly label: strin
   { value: "split", label: "Split" },
   { value: "stacked", label: "Stacked" },
 ];
-
-/** The files of `repos` as the Pane shows them: with their repo in front when grouped, and why each starts folded. */
-const paneFilesOf = (repos: readonly RepoChanges[]): readonly PaneFile[] => {
-  const grouped = groupedByRepo(repos);
-
-  return changedFiles(repos).map(({ id, repo, entry }) => {
-    const shown = (path: string) => (grouped ? `${repo}/${path}` : path);
-
-    return {
-      id,
-      repo,
-      entry,
-      names: {
-        name: shown(entry.path),
-        prevName: entry.oldPath === undefined ? undefined : shown(entry.oldPath),
-        status: entry.status,
-      },
-      reason: foldReason(entry),
-    };
-  });
-};
 
 /** Auto / Split / Stacked, as a group of radio buttons. */
 const LayoutPicker = () => {
@@ -112,18 +91,12 @@ const WrapToggle = () => {
 };
 
 /** The Pane's header: the source, Refresh, "may be out of date", the totals with "collapse all", the layout, Wrap. */
-const PaneHeader = ({
-  changes,
-  refreshing,
-  onRefresh,
-  onCollapseAll,
-}: {
-  changes: ChangesState | null;
-  refreshing: boolean;
-  onRefresh: () => void;
-  onCollapseAll: (() => void) | undefined;
-}) => {
-  const totals = changesTotals(changes?.repos ?? []);
+const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState | null }) => {
+  const totals = useAtomValue(changesTotalsAtom(pane.sessionId));
+  const [refreshed, refresh] = useAtom(pane.refresh);
+  const files = useAtomValue(pane.files);
+  const act = useAtomSet(pane.ui);
+  const refreshing = refreshed.waiting;
   const starting = changes?.startingContainer === true;
 
   return (
@@ -141,7 +114,9 @@ const PaneHeader = ({
         variant="ghost"
         size="sm"
         disabled={refreshing}
-        onClick={onRefresh}
+        onClick={() => {
+          refresh();
+        }}
         title="List the Changes again, starting the Container if a repo needs it"
         className="touch-target h-8 gap-1.5 px-2 text-xs text-muted-foreground"
       >
@@ -164,17 +139,15 @@ const PaneHeader = ({
         {totals.files > 0 && (
           <>
             <span className="font-medium">{filesLabel(totals.files)}</span>
-            <ChangeTally
-              additions={totals.additions}
-              deletions={totals.deletions}
-              approximate={totals.approximate}
-            />
+            <DiffTally counts={totals} approximate={totals.approximate} />
           </>
         )}
-        {onCollapseAll !== undefined && (
+        {files.length > 0 && (
           <button
             type="button"
-            onClick={onCollapseAll}
+            onClick={() => {
+              act({ type: "collapse-all", ids: files.map((file) => file.id) });
+            }}
             className="touch-target rounded px-1 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             Collapse all
@@ -189,17 +162,18 @@ const PaneHeader = ({
   );
 };
 
+let picks = 0;
+
 /** The files, grouped by repo when there are several, each scrolling the diff to it. */
-const FileList = ({
-  files,
-  repos,
-  onPick,
-}: {
-  files: readonly PaneFile[];
-  repos: readonly RepoChanges[];
-  onPick: (id: string) => void;
-}) => {
+const FileList = ({ pane, repos }: { pane: PaneAtoms; repos: readonly RepoChanges[] }) => {
+  const files = useAtomValue(pane.files);
+  const act = useAtomSet(pane.ui);
   const grouped = groupedByRepo(repos);
+
+  const pick = (file: PaneFile) => {
+    picks += 1;
+    act({ type: "show", target: { file: file.id, at: picks } });
+  };
 
   return (
     <div className="py-1">
@@ -216,20 +190,14 @@ const FileList = ({
             <ul>
               {own.map((file) => (
                 <li key={file.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onPick(file.id);
+                  <ChangedFileRow
+                    entry={file.entry}
+                    path={file.entry.path}
+                    onOpen={() => {
+                      pick(file);
                     }}
-                    title={file.entry.path}
-                    className="flex w-full items-center gap-2 px-3 py-1 text-left hover:bg-accent"
-                  >
-                    <StatusLetter status={file.entry.status} />
-                    <bdi className="min-w-0 flex-1 truncate font-mono text-xs [direction:rtl]">
-                      {file.entry.path}
-                    </bdi>
-                    <EntryTally entry={file.entry} />
-                  </button>
+                    className="px-3 py-1"
+                  />
                 </li>
               ))}
             </ul>
@@ -245,82 +213,41 @@ const FileList = ({
   );
 };
 
-/** What the Pane says when it has no files to show: still listing, or none. */
-const Empty = ({ changes }: { changes: ChangesState | null }) => (
-  <p className="px-4 py-6 text-sm text-muted-foreground">
-    {changes === null
-      ? "Listing the Changes…"
-      : "No Changes: the working tree matches HEAD in every repo."}
-  </p>
-);
+/** What the Pane says when it has no files to show: still listing, none, or that they could not be listed. */
+const Empty = ({ changes }: { changes: ChangesState | null }) => {
+  const listed = changes !== null && changes.listing > 0;
+  const unlisted = changes?.repos.some((repo) => repo.error !== undefined) === true;
 
-/** The Diff pane of the Session shown, on its Changes. */
-export const DiffPane = () => {
-  const sessionId = useShownSessionId();
-  const changes = useAtomValue(changesAtom(sessionId));
-  const refresh = useCall(refreshChangesAtom(sessionId));
-  const load = useCall(changeFileAtom(sessionId));
-  const [layout] = useAtom(diffLayoutAtom);
-  const [wrap] = useAtom(diffWrapAtom);
-  const [asked, setAsked] = useAtom(diffTargetAtom(sessionId));
-  const [target, setTarget] = useState<ScrollTarget | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
-  const { ref: pane, width } = useWidth();
+  if (!listed && changes?.failure !== null && changes?.failure !== undefined) {
+    return (
+      <p className="px-4 py-6 text-sm text-muted-foreground">The Changes could not be listed.</p>
+    );
+  }
+
+  if (!listed)
+    return <p className="px-4 py-6 text-sm text-muted-foreground">Listing the Changes…</p>;
+
+  return (
+    <p className="px-4 py-6 text-sm text-muted-foreground">
+      {unlisted
+        ? "No Changes in the repos that could be listed."
+        : "No Changes: the working tree matches HEAD in every repo."}
+    </p>
+  );
+};
+
+/** The Pane, inside its atoms' scope. */
+const PaneBody = () => {
+  const pane = useAtomValue(DiffPaneScope.use());
+  const changes = useAtomValue(changesAtom(pane.sessionId));
+  const files = useAtomValue(pane.files);
+  const totals = useAtomValue(changesTotalsAtom(pane.sessionId));
+  const { ref, width } = useWidth();
+
+  useAtomMount(pane.opened);
 
   const repos = changes?.repos ?? [];
-  const files = useMemo(() => paneFilesOf(repos), [repos]);
   const wide = (width ?? 0) >= RAIL_MIN_WIDTH;
-
-  // Opening the Pane lists the Changes again (never starting the Container).
-  useEffect(() => {
-    void refresh(false);
-    // Once, as the Pane opens: `refresh` is a new function each render, calling the same atom.
-  }, []);
-
-  // Asked to show a file (the chip, the Session details, a Call diff): open it if folded, scroll to it, and clear the ask.
-  useEffect(() => {
-    if (asked === null) return;
-
-    if (asked.file !== null) {
-      const id = asked.file;
-
-      setOverrides((before) => new Map(before).set(id, false));
-    }
-
-    setTarget(asked);
-    setAsked(null);
-  }, [asked, setAsked]);
-
-  // Folded or opened by hand stays so while the Pane is mounted; the rest follows the folding rules.
-  const folded = useMemo(
-    () =>
-      new Set(
-        files
-          .filter((file) => overrides.get(file.id) ?? file.reason !== undefined)
-          .map((file) => file.id),
-      ),
-    [files, overrides],
-  );
-
-  const toggle = useCallback(
-    (id: string) => {
-      setOverrides((before) => new Map(before).set(id, !folded.has(id)));
-    },
-    [folded],
-  );
-
-  const collapseAll = () => {
-    setOverrides(new Map(files.map((file) => [file.id, true])));
-  };
-
-  const pick = (id: string) => {
-    setTarget({ file: id, at: performance.now() });
-  };
-
-  const shown = useCallback(() => {
-    setTarget(null);
-  }, []);
 
   const failures = [
     ...(changes?.failure === null || changes?.failure === undefined ? [] : [changes.failure]),
@@ -329,22 +256,11 @@ export const DiffPane = () => {
     ),
   ];
 
-  const list = <FileList files={files} repos={repos} onPick={pick} />;
-  const totals = changesTotals(repos);
+  const list = <FileList pane={pane} repos={repos} />;
 
   return (
-    <div ref={pane} className="flex min-h-0 flex-1 flex-col">
-      <PaneHeader
-        changes={changes}
-        refreshing={refreshing}
-        onRefresh={() => {
-          setRefreshing(true);
-          void refresh(true).finally(() => {
-            setRefreshing(false);
-          });
-        }}
-        onCollapseAll={files.length > 0 ? collapseAll : undefined}
-      />
+    <div ref={ref} className="flex min-h-0 flex-1 flex-col">
+      <PaneHeader pane={pane} changes={changes} />
       {failures.length > 0 && (
         <div role="alert" className="border-b px-3 py-1.5 text-xs text-destructive">
           {failures.map((failure) => (
@@ -368,15 +284,7 @@ export const DiffPane = () => {
             fallback={<p className="px-4 py-6 text-sm text-muted-foreground">Loading the diff…</p>}
           >
             <ChangesView
-              files={files}
-              folded={folded}
-              onToggleFold={toggle}
-              layout={layout}
-              wrap={wrap}
-              listing={changes?.listing ?? 0}
-              load={load}
-              target={target}
-              onTargetShown={shown}
+              pane={pane}
               header={
                 wide ? undefined : (
                   <details open className="group border-b">
@@ -388,11 +296,7 @@ export const DiffPane = () => {
                       <span className="font-medium text-foreground">
                         {filesLabel(totals.files)}
                       </span>
-                      <ChangeTally
-                        additions={totals.additions}
-                        deletions={totals.deletions}
-                        approximate={totals.approximate}
-                      />
+                      <DiffTally counts={totals} approximate={totals.approximate} />
                     </summary>
                     <div className="max-h-56 overflow-y-auto overscroll-y-contain">{list}</div>
                   </details>
@@ -405,3 +309,10 @@ export const DiffPane = () => {
     </div>
   );
 };
+
+/** The Diff pane of the Session shown, on its Changes. */
+export const DiffPane = () => (
+  <DiffPaneScope.Provider value={useShownSessionId()}>
+    <PaneBody />
+  </DiffPaneScope.Provider>
+);

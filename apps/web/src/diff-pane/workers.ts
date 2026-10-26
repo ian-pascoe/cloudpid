@@ -10,7 +10,7 @@ import {
 import highlightWorkerUrl from "@pierre/diffs/worker/worker.js?worker&url";
 import { DIFF_THEME } from "../diff-theme.ts";
 import { keeperOf } from "./keeper.ts";
-import type { LineUp, LineUpRequest } from "./line-up.ts";
+import { lineUpClient, type LineUpClient, type WorkerLike } from "./line-up-client.ts";
 import { poolSize } from "./loading.ts";
 
 /**
@@ -51,56 +51,34 @@ export const workerPool = keeperOf<WorkerPoolManager, number>({
   ...timers,
 });
 
-/** Lines file pairs up off the page, one at a time. */
-export interface LineUpWorker {
-  readonly lineUp: (request: LineUpRequest) => Promise<LineUp>;
-  readonly terminate: () => void;
-}
-
-const startLineUpWorker = (): LineUpWorker => {
+/** A line-up worker (`line-up.worker.ts`), as the client takes it. */
+const spawnLineUpWorker = (): WorkerLike => {
   const worker = new Worker(new URL("./line-up.worker.ts", import.meta.url), { type: "module" });
 
-  const waiting = new Map<
-    number,
-    { readonly resolve: (result: LineUp) => void; readonly reject: (error: Error) => void }
-  >();
-
-  let asked = 0;
-
-  const failAll = (error: Error) => {
-    for (const { reject } of waiting.values()) reject(error);
-
-    waiting.clear();
-  };
-
-  worker.addEventListener("message", (event: MessageEvent<{ id: number; result: LineUp }>) => {
-    const answer = waiting.get(event.data.id);
-
-    waiting.delete(event.data.id);
-    answer?.resolve(event.data.result);
-  });
-  worker.addEventListener("error", () => {
-    failAll(new Error("The line-up worker failed."));
-  });
-
   return {
-    lineUp: (request) =>
-      // @effect-diagnostics-next-line newPromise:off -- a worker's answer, for React callers.
-      new Promise((resolve, reject) => {
-        asked += 1;
-        waiting.set(asked, { resolve, reject });
-        worker.postMessage({ id: asked, request });
-      }),
+    postMessage: (message) => {
+      worker.postMessage(message);
+    },
     terminate: () => {
       worker.terminate();
-      failAll(new Error("The line-up worker was shut."));
+    },
+    addEventListener: (type, listener) => {
+      if (type === "message") {
+        worker.addEventListener("message", (event) => {
+          listener({ data: event.data });
+        });
+      } else {
+        worker.addEventListener("error", () => {
+          listener({});
+        });
+      }
     },
   };
 };
 
-/** The line-up worker, shared by every Diff pane open on the page. */
-export const lineUpWorker = keeperOf<LineUpWorker, number>({
-  create: startLineUpWorker,
+/** The line-up worker's client, shared by every Diff pane open on the page. */
+export const lineUpWorker = keeperOf<LineUpClient, number>({
+  create: () => lineUpClient(spawnLineUpWorker),
   dispose: (worker) => {
     worker.terminate();
   },

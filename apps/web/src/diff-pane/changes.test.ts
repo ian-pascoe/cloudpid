@@ -116,26 +116,27 @@ describe("findChange", () => {
   it("finds an absolute path in its repo", () => {
     expect(findChange(repos, "/workspace/web/src/a.ts")?.id).toBe("web/src/a.ts");
     expect(findChange(repos, "/workspace/api/src/a.ts")?.id).toBe("api/src/a.ts");
+    expect(findChange(repos, "/workspace/web/apps/../src/./a.ts")?.id).toBe("web/src/a.ts");
   });
 
-  it("finds a path relative to the Workspace root", () => {
+  it("takes a relative path from the Workspace root when the list holds several repos", () => {
     expect(findChange(repos, "web/src/a.ts")?.id).toBe("web/src/a.ts");
-    expect(findChange(repos, "./api/src/a.ts")?.id).toBe("api/src/a.ts");
+    expect(findChange(repos, "./api//src/a.ts")?.id).toBe("api/src/a.ts");
+    expect(findChange(repos, "src/a.ts")).toBeUndefined();
   });
 
-  it("finds a path relative to a repo by its ending", () => {
-    expect(findChange(repos, "apps/web/src/b.ts")?.id).toBe("web/apps/web/src/b.ts");
-    expect(findChange(repos, "src/b.ts")?.id).toBe("web/apps/web/src/b.ts");
-  });
+  it("takes a relative path from the repo's clone when the list holds one", () => {
+    const one = [repo("web", [file("src/index.ts", 1, 0), file("README.md", 1, 0)])];
 
-  it("takes the shortest match when several repos end the same way", () => {
-    expect(findChange(repos, "src/a.ts")?.id).toBe("api/src/a.ts");
+    expect(findChange(one, "src/index.ts")?.id).toBe("web/src/index.ts");
+    expect(findChange(one, "index.ts")).toBeUndefined();
+    expect(findChange(one, "../web/README.md")?.id).toBe("web/README.md");
   });
 
   it("finds nothing for a file without Changes, or a partial name", () => {
     expect(findChange(repos, "/workspace/web/src/c.ts")).toBeUndefined();
-    expect(findChange(repos, "a.ts.bak")).toBeUndefined();
-    expect(findChange(repos, "rc/a.ts")).toBeUndefined();
+    expect(findChange(repos, "web/src/a.ts.bak")).toBeUndefined();
+    expect(findChange(repos, "/workspace/web/rc/a.ts")).toBeUndefined();
     expect(findChange(repos, "/etc/passwd")).toBeUndefined();
     expect(findChange([], "src/a.ts")).toBeUndefined();
   });

@@ -5,52 +5,31 @@
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import { CircleAlert, FileDiff, PanelRightOpen } from "lucide-react";
-import { useEffect } from "react";
-import { useCall } from "../calls.ts";
 import { useShownSessionId } from "../chat/conversation.ts";
 import { Button } from "../components/ui/button.tsx";
-import { changesAtom, refreshChangesAtom } from "../session/atoms.ts";
-import { changesPreview, changesTotals, groupedByRepo, repoTotals } from "./changes.ts";
-import { ChangeTally, EntryTally, filesLabel, StatusLetter } from "./parts.tsx";
+import { changesAtom } from "../session/atoms.ts";
+import { changesPreview, filesLabel, groupedByRepo, repoTotals } from "./changes.ts";
+import { ChangedFileRow, DiffTally } from "./parts.tsx";
 import { openDiffPaneAtom } from "./target.ts";
+import { changesOnReturnAtom, changesTotalsAtom } from "./watch.ts";
 
 /** How many files the Session details list before "and n more". */
 export const DETAILS_FILES = 10;
 
 /**
- * Watch Session `sessionId`'s Changes while its page is open, for the chip, and ask for them again whenever the page
- * regains focus or comes back into view.
+ * Watch Session `sessionId`'s Changes while its page is open, for the chip, and ask for them again whenever the owner
+ * comes back to the page (`page-return.ts`).
  */
 export const useChangesWatch = (sessionId: string) => {
   useAtomMount(changesAtom(sessionId));
-
-  const refresh = useCall(refreshChangesAtom(sessionId));
-
-  useEffect(() => {
-    const again = () => {
-      if (document.visibilityState === "visible") void refresh(false);
-    };
-
-    window.addEventListener("focus", again);
-    document.addEventListener("visibilitychange", again);
-
-    return () => {
-      window.removeEventListener("focus", again);
-      document.removeEventListener("visibilitychange", again);
-    };
-    // `refresh` is a new function each render, calling the same atom.
-  }, [sessionId]);
+  useAtomMount(changesOnReturnAtom(sessionId));
 };
-
-/** The Changes of the Session shown, as its page watches them. */
-export const useShownChanges = () => useAtomValue(changesAtom(useShownSessionId()));
 
 /** The header's Changes chip, `n files +a −d`, while there are Changes: it opens the Diff pane at the top. */
 export const ChangesChip = () => {
   const sessionId = useShownSessionId();
-  const changes = useAtomValue(changesAtom(sessionId));
   const open = useAtomSet(openDiffPaneAtom(sessionId));
-  const totals = changesTotals(changes?.repos ?? []);
+  const totals = useAtomValue(changesTotalsAtom(sessionId));
 
   if (totals.files === 0) return null;
 
@@ -70,11 +49,7 @@ export const ChangesChip = () => {
     >
       <FileDiff aria-hidden className="size-3.5" />
       <span className="hidden text-foreground sm:inline">{filesLabel(totals.files)}</span>
-      <ChangeTally
-        additions={totals.additions}
-        deletions={totals.deletions}
-        approximate={totals.approximate}
-      />
+      <DiffTally counts={totals} approximate={totals.approximate} />
     </Button>
   );
 };
@@ -88,7 +63,7 @@ export const ChangesSection = () => {
   const changes = useAtomValue(changesAtom(sessionId));
   const open = useAtomSet(openDiffPaneAtom(sessionId));
   const repos = changes?.repos ?? [];
-  const totals = changesTotals(repos);
+  const totals = useAtomValue(changesTotalsAtom(sessionId));
 
   if (totals.files === 0) return null;
 
@@ -115,14 +90,10 @@ export const ChangesSection = () => {
       <button
         type="button"
         onClick={atTop}
-        className="-mx-1.5 mt-1 flex w-[calc(100%+0.75rem)] flex-wrap items-center gap-x-2 rounded px-1.5 py-1 text-left text-[0.8125rem] hover:bg-accent"
+        className="-mx-1.5 mt-1 flex w-[calc(100%+0.75rem)] flex-wrap items-center gap-x-2 rounded px-1.5 py-1 text-left text-sm hover:bg-accent"
       >
         <span className="font-medium">{filesLabel(totals.files)}</span>
-        <ChangeTally
-          additions={totals.additions}
-          deletions={totals.deletions}
-          approximate={totals.approximate}
-        />
+        <DiffTally counts={totals} approximate={totals.approximate} />
         {totals.stale && (
           <span
             className="flex items-center gap-1 text-xs text-muted-foreground [&_svg]:size-3"
@@ -146,11 +117,7 @@ export const ChangesSection = () => {
                 {repo.error === undefined ? (
                   <>
                     <span className="ml-auto shrink-0">{filesLabel(own.files)}</span>
-                    <ChangeTally
-                      additions={own.additions}
-                      deletions={own.deletions}
-                      approximate={own.approximate}
-                    />
+                    <DiffTally counts={own} approximate={own.approximate} />
                   </>
                 ) : (
                   <span className="ml-auto shrink-0 text-destructive" title={repo.error}>
@@ -168,20 +135,14 @@ export const ChangesSection = () => {
 
           return (
             <li key={id}>
-              <button
-                type="button"
-                onClick={() => {
+              <ChangedFileRow
+                entry={entry}
+                path={path}
+                onOpen={() => {
                   open(id);
                 }}
-                title={`Open ${path}`}
-                className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-accent"
-              >
-                <StatusLetter status={entry.status} />
-                <bdi className="min-w-0 flex-1 truncate font-mono text-xs [direction:rtl]">
-                  {path}
-                </bdi>
-                <EntryTally entry={entry} />
-              </button>
+                className="rounded px-1.5 py-1"
+              />
             </li>
           );
         })}

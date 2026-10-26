@@ -9,8 +9,8 @@ import * as Arr from "effect/Array";
 import { PanelRightOpen, SquareMenu } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
-import { ChangesSection, useShownChanges } from "../diff-pane/changes-summary.tsx";
-import { changesTotals } from "../diff-pane/changes.ts";
+import { ChangesSection } from "../diff-pane/changes-summary.tsx";
+import { changesTotalsAtom } from "../diff-pane/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { SUBAGENTS_PANE, subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
@@ -145,7 +145,7 @@ export const SessionDetails = () => {
   const [open, setOpen] = useAtom(detailsOpenAtom(sessionId));
   const { items, agents } = useDetails();
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
-  const changed = changesTotals(useShownChanges()?.repos ?? []).files > 0;
+  const changed = useAtomValue(changesTotalsAtom(sessionId), (totals) => totals.files > 0);
 
   if (!open) return null;
 
