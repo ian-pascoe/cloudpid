@@ -116,6 +116,10 @@ _Avoid_: Diff (for the whole set), working copy, pending edits
 A branch's or pull request's changes against its base.
 _Avoid_: Branch diff, PR diff (for the thing itself)
 
+**Call diff**:
+The change one file-writing tool call made to one file, as recorded when it ran. Unlike Changes, it never changes afterwards.
+_Avoid_: Per-call diff, edit diff
+
 **Annotation**:
 The owner's note on a line range of a diff, kept as a draft until it is sent in a Review.
 _Avoid_: Comment, remark, note (that is an agent's Note)
