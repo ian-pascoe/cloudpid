@@ -147,7 +147,7 @@ const changesFieldAtom = slice((state) => state.changes);
 
 /**
  * The Changes of the Session's Workspace, null until the Session lists them; asks the Session to send them while read.
- * The Session's page reads them for as long as it is open, for the Changes chip.
+ * The Session's page reads them for as long as it is open, for the Session details.
  */
 export const changesAtom = Atom.family((sessionId: string) =>
   Atom.make((get) => {

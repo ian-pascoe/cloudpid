@@ -6,7 +6,7 @@ import {
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { ReactNode } from "react";
-import { ChangesChip, useChangesWatch } from "../diff-pane/changes-summary.tsx";
+import { useChangesWatch } from "../diff-pane/changes-summary.tsx";
 import { drainFirstMessageAtom } from "../draft-state.ts";
 import { PaneArea, PaneAreaToggle } from "../pane-area.tsx";
 import { canStopAllBelow } from "../session/agents.ts";
@@ -97,7 +97,7 @@ const LiveSession = ({
   useAtomMount(showLayoutAtom(sessionId));
 
   useAtomMount(usageAtom(sessionId));
-  // The Changes, for the chip, the Session details and the Diff pane: asked again as the page regains focus.
+  // The Changes, for the Session details and the Diff pane: asked again as the owner comes back to the page.
   useChangesWatch(sessionId);
   // Deleted (here or elsewhere): its socket closed saying so, and the page leaves it.
   useAtomMount(leaveWhenDeletedAtom(sessionId));
@@ -158,7 +158,6 @@ const LiveSession = ({
                 actions={
                   <>
                     {menu}
-                    <ChangesChip />
                     <SessionDetailsButton />
                     <PaneAreaToggle />
                   </>

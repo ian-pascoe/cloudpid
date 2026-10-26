@@ -1,5 +1,5 @@
 // The Changes the Session's page watches while it is open (`docs/spec.md` → Diffs and review → Diff pane): their totals,
-// read by the chip, the Session details, the New pane and the Diff pane, and a new listing asked for each time the owner
+// read by the Session details, the New pane and the Diff pane, and a new listing asked for each time the owner
 // comes back to the page (`page-return.ts`).
 
 import * as Effect from "effect/Effect";

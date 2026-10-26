@@ -1,4 +1,4 @@
-// Small pieces diffs and the Changes show with wherever they appear: a Call diff's card, the chip, the Session details,
+// Small pieces diffs and the Changes show with wherever they appear: a Call diff's card, the Session details,
 // the Diff pane's file list and headers. `+a −d` with "≈" where the counts are whole-file numbers, a file's status as a
 // letter, and a changed file's row.
 

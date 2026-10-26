@@ -176,7 +176,7 @@ A single cool, blue-slate family, light or dark by the system setting, with thre
 
 **The One Hue Rule.** Every neutral is tinted to hue 250. A pure gray (`zinc`, `neutral`, `#888`) does not belong on any surface.
 
-**The Signals Mean Something Rule.** Green is only "running", red only "failed or destroys". Neither is decoration, and neither is used for emphasis. The one exception is a diff, where they mean added and removed: the washes and marks on its lines (the Agent change diff's, and the `@pierre/diffs` theme's), the `+n −m` on a tool card, the Changes chip, the Session details and the Diff pane, and a changed file's status letter (A green, D red; M and R Faded Ink).
+**The Signals Mean Something Rule.** Green is only "running", red only "failed or destroys". Neither is decoration, and neither is used for emphasis. The one exception is a diff, where they mean added and removed: the washes and marks on its lines (the Agent change diff's, and the `@pierre/diffs` theme's), the `+n −m` on a tool card, the Session details and the Diff pane, and a changed file's status letter (A green, D red; M and R Faded Ink).
 
 ## Typography
 
@@ -296,9 +296,9 @@ A column beside the transcript (a 1 px Ruled Line on its left, no shadow: it doe
 
 A header of two rows over a Ruled Line: the source picker (a 32 px native select), a ghost _Refresh_ (12 px Faded Ink, a 14 px arrow that spins while it works, where motion is allowed), "May be out of date" in 12 px Faded Ink with a 14 px alert icon, and on the right the totals (`n files` in 12 px medium, `+a −d` in 12 px mono, green and red) with a _Collapse all_ text button; under them, on the right, a segmented Auto / Split / Stacked radio group (a 1 px border, the picked one on Tinted Wash) and a _Wrap_ toggle on Tinted Wash while on. A failure to list shows under the header in 12 px Brick Red over the last list. Then every file in one scroll: each file's sticky 44 px header on the page colour over a Ruled Line holds a 28 px fold chevron (rotated open), the status letter in 12 px semibold mono, the path in 12 px mono cut from its start so the name stays, a rename as old → new with the old one in Faded Ink, the note (why it is folded, Binary, Too large to show, Loading…, "Replaced whole: lining it up took too long") in 12 px Faded Ink, a failure to load in Brick Red, and `+a −d` last. The file list is a 256 px rail with a Ruled Line on its right from a Pane width of 900 px, and below that a disclosure above the first file ("n files +a −d", open, at most 224 px high before it scrolls); its rows are the status letter, the path in 12 px mono and the counts, washing on hover, under 12 px mono repo headings when the Session lists several repos.
 
-### Changes Chip
+### Changes Section
 
-In the Session header, before the Session details button, only while there are Changes: a ghost 32 px button with a 14 px file-diff icon, `n files` in 12 px Ink and `+a −d` in 12 px mono ("≈" before approximate counts in Faded Ink). On a phone it drops `n files` and keeps the icon and the counts. Its label reads the totals in words. The Session details' Changes section repeats it as a list: a 12 px Faded Ink heading "Changes" with _Open pane_, the totals as a 14 px row that washes on hover, each repo's totals in 12 px under it when there are several, then up to 10 files as rows (status letter, path in 12 px mono, counts) and "and n more" in 12 px Faded Ink.
+The Changes are summed up in the Session details only, never in the Session header. Their section, only while there are Changes: a 12 px Faded Ink heading "Changes" with _Open pane_, the totals (`n files` and `+a −d` in 12 px mono, "≈" before approximate counts in Faded Ink) as a 14 px row that washes on hover, each repo's totals in 12 px under it when there are several, then up to 10 files as rows (status letter, path in 12 px mono, counts) and "and n more" in 12 px Faded Ink.
 
 ### Waiting-On-You Card
 
@@ -321,4 +321,4 @@ The Secret request and Browser Handoff: a bordered 10 px card with a small shado
 - **Don't** use Run Green or Brick Red for emphasis or decoration. A diff's added and removed lines and its `+n −m` are not decoration.
 - **Don't** use raw Tailwind palette colors (`amber-500`, `zinc-*`): add a token in `styles.css` with light and dark values instead. The context ring's `amber` "near the spend limit" border is a known exception still to be turned into a warning token.
 - **Don't** reference a color utility with no token behind it. `bg-card` is used by the Waiting-On-You cards but `--card` is not defined, so they currently render with no fill; define the token before relying on it.
-- **Don't** let a header's controls push its title off screen on a phone: keep the Session header to its title, a few icon buttons and the Changes chip's icon and counts; what steers the next request (model, thinking level) lives in the composer's toolbar.
+- **Don't** let a header's controls push its title off screen on a phone: keep the Session header to its title and a few icon buttons; what steers the next request (model, thinking level) lives in the composer's toolbar.

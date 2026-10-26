@@ -1,12 +1,11 @@
 // The Changes outside the Diff pane (`docs/spec.md` → Diffs and review → Diff pane): the watch the Session's page keeps
-// while it is open, the chip in the Session's header and the section of the Session details. Each shows only while there
-// are Changes, and each opens the Pane: the chip, the totals and "and n more" at the top, a file at that file.
+// while it is open, and the section of the Session details, the only summary of them. The section shows only while there
+// are Changes, and opens the Pane: the totals and "and n more" at the top, a file at that file.
 
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { CircleAlert, FileDiff, PanelRightOpen } from "lucide-react";
+import { CircleAlert, PanelRightOpen } from "lucide-react";
 import { useShownSessionId } from "../chat/conversation.ts";
-import { Button } from "../components/ui/button.tsx";
 import { changesAtom } from "../session/atoms.ts";
 import { changesPreview, filesLabel, groupedByRepo, repoTotals } from "./changes.ts";
 import { ChangedFileRow, DiffTally } from "./parts.tsx";
@@ -17,41 +16,12 @@ import { changesOnReturnAtom, changesTotalsAtom } from "./watch.ts";
 export const DETAILS_FILES = 10;
 
 /**
- * Watch Session `sessionId`'s Changes while its page is open, for the chip, and ask for them again whenever the owner
+ * Watch Session `sessionId`'s Changes while its page is open, for the Session details, and ask for them again whenever the owner
  * comes back to the page (`page-return.ts`).
  */
 export const useChangesWatch = (sessionId: string) => {
   useAtomMount(changesAtom(sessionId));
   useAtomMount(changesOnReturnAtom(sessionId));
-};
-
-/** The header's Changes chip, `n files +a −d`, while there are Changes: it opens the Diff pane at the top. */
-export const ChangesChip = () => {
-  const sessionId = useShownSessionId();
-  const open = useAtomSet(openDiffPaneAtom(sessionId));
-  const totals = useAtomValue(changesTotalsAtom(sessionId));
-
-  if (totals.files === 0) return null;
-
-  const label = `Open the Changes: ${filesLabel(totals.files)}, ${totals.approximate ? "about " : ""}${totals.additions} lines added and ${totals.deletions} deleted${totals.stale ? ", may be out of date" : ""}`;
-
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      aria-label={label}
-      title={label}
-      onClick={() => {
-        open(null);
-      }}
-      className="h-8 gap-1.5 px-2 text-xs font-normal text-muted-foreground"
-    >
-      <FileDiff aria-hidden className="size-3.5" />
-      <span className="hidden text-foreground sm:inline">{filesLabel(totals.files)}</span>
-      <DiffTally counts={totals} approximate={totals.approximate} />
-    </Button>
-  );
 };
 
 /**

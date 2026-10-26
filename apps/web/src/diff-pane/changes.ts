@@ -1,6 +1,6 @@
 // The Changes as the web app shows them (`docs/spec.md` → Diffs and review → Diff pane): one list of files across the
-// repos, each under an ID the Diff pane scrolls to, the totals the chip, the Session details and the Pane's header
-// show, which changed file a Call diff's path is, and what of a file's change a new list must differ in to load it again.
+// repos, each under an ID the Diff pane scrolls to, the totals the Session details, the New pane and the Pane's
+// header show, which changed file a Call diff's path is, and what of a file's change a new list must differ in to load it again.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain functions over values, called from React, over native arrays.
 import {
   WORKSPACE_ROOT,

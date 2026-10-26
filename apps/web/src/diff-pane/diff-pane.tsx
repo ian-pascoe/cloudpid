@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- the Pane's files, over native arrays, sets and maps.
 
-// The Diff pane (`docs/spec.md` → Diffs and review → Diff pane): one per Session, opened from the New pane, the Changes
-// chip, the Session details and a Call diff card. A header with the source picker (Changes only, for now), Refresh,
+// The Diff pane (`docs/spec.md` → Diffs and review → Diff pane): one per Session, opened from the New pane, the Session
+// details and a Call diff card. A header with the source picker (Changes only, for now), Refresh,
 // "may be out of date", the totals with "collapse all", Auto / Split / Stacked and Wrap; then every file of the source
 // in one scroll (`changes-view.tsx`, a lazy chunk), with the file list as a rail beside it on a wide Pane and folding
 // above it on a narrow one. Opening it asks the Session to list the Changes again. Its state is in atoms
