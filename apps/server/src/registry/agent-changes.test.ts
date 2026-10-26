@@ -39,9 +39,7 @@ describe("wantsNewBuild", () => {
 
   it("is false for the Start Script and the size, which a Build does not use", async () => {
     expect(await wantsNewBuild(repos, settings({}), settings({ startScript: "up" }))).toBe(false);
-    expect(await wantsNewBuild(repos, settings({}), settings({ instance: "custom-2" }))).toBe(
-      false,
-    );
+    expect(await wantsNewBuild(repos, settings({}), settings({ instance: "cpu-2" }))).toBe(false);
   });
 
   it("is true when the change makes an Environment want a Build at all", async () => {

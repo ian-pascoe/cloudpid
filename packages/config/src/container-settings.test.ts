@@ -18,6 +18,10 @@ import {
   resolveContainerSettings,
   resolveContainerSettingsLeniently,
   containerOverridesFrom,
+  currentFieldValue,
+  currentInstanceName,
+  isRenamedInstance,
+  RENAMED_INSTANCE_TYPES,
   scriptProblem,
   toolchainsProblem,
   type ContainerSettings,
@@ -25,7 +29,7 @@ import {
 } from "./container-settings.ts";
 
 const NONE = {
-  maxInstance: "custom-2",
+  maxInstance: "cpu-2",
   variables: {},
   setupScript: "",
   startScript: "",
@@ -51,8 +55,8 @@ const rejected = (overrides: Schema.Json): string => {
 describe("the defaults", () => {
   it("are the 1 vCPU / 3 GiB custom size and a 2-minute idle stop, as the spec says", () => {
     expect(DEFAULT_CONTAINER_SETTINGS).toEqual({
-      instance: "custom-1",
-      maxInstance: "custom-2",
+      instance: "cpu-1",
+      maxInstance: "cpu-2",
       idleMinutes: 2,
       ignore: [],
       variables: {},
@@ -67,30 +71,48 @@ describe("the defaults", () => {
   });
 });
 
+/** Whether `type` is one of the custom sizes rather than a Cloudflare name. */
+const isCustom = (type: string): boolean => type.startsWith("cpu-") || type.startsWith("mem-");
+
 describe("containerInstance", () => {
   it("passes a named instance type through", () => {
     for (const type of INSTANCE_TYPES) {
-      if (!type.startsWith("custom-")) expect(containerInstance(type)).toBe(type);
+      if (!isCustom(type)) expect(containerInstance(type)).toBe(type);
     }
   });
 
-  it("maps custom-1 to 1 vCPU, 3 GiB memory and 12 GB disk", () => {
-    expect(containerInstance("custom-1")).toEqual({ vcpu: 1, memoryMib: 3072, diskMb: 12_000 });
+  it.each([
+    ["cpu-1", { vcpu: 1, memoryMib: 3072, diskMb: 12_000 }],
+    ["cpu-2", { vcpu: 2, memoryMib: 6144, diskMb: 12_000 }],
+    ["cpu-3", { vcpu: 3, memoryMib: 9216, diskMb: 12_000 }],
+    ["mem-4", { vcpu: 1, memoryMib: 4096, diskMb: 12_000 }],
+    ["mem-8", { vcpu: 1, memoryMib: 8192, diskMb: 12_000 }],
+    ["mem-12", { vcpu: 2, memoryMib: 12_288, diskMb: 12_000 }],
+  ] as const)("maps %s to %o", (type, resources) => {
+    expect(containerInstance(type)).toEqual(resources);
   });
 
-  it("maps custom-2 to 2 vCPU, 6 GiB memory and 12 GB disk", () => {
-    expect(containerInstance("custom-2")).toEqual({ vcpu: 2, memoryMib: 6144, diskMb: 12_000 });
-  });
+  it("names each cpu- size by its vCPU, at the least memory they allow, and each mem- size by its GiB", () => {
+    for (const type of INSTANCE_TYPES) {
+      const { vcpu, memoryMib } = INSTANCE_RESOURCES[type];
 
-  it("maps custom-3 to 3 vCPU, 9 GiB memory and 12 GB disk", () => {
-    expect(containerInstance("custom-3")).toEqual({ vcpu: 3, memoryMib: 9216, diskMb: 12_000 });
+      if (type.startsWith("cpu-")) {
+        expect(type).toBe(`cpu-${vcpu}`);
+        expect(memoryMib).toBe(vcpu * 3072);
+      }
+
+      if (type.startsWith("mem-")) {
+        expect(type).toBe(`mem-${memoryMib / 1024}`);
+        expect(memoryMib).toBeGreaterThan(vcpu * 3072);
+      }
+    }
   });
 
   it("keeps every custom size within Cloudflare's custom instance limits", () => {
     for (const type of INSTANCE_TYPES) {
       const { vcpu, memoryMib, diskMb } = INSTANCE_RESOURCES[type];
 
-      if (!type.startsWith("custom-")) continue;
+      if (!isCustom(type)) continue;
 
       // 1 to 4 vCPU, at most 12 GiB memory and 20 GB disk, at least 3 GiB memory per vCPU.
       expect(vcpu).toBeGreaterThanOrEqual(1);
@@ -105,7 +127,7 @@ describe("containerInstance", () => {
     const disks = new Set<number>();
 
     for (const type of INSTANCE_TYPES) {
-      if (type.startsWith("custom-")) disks.add(INSTANCE_RESOURCES[type].diskMb);
+      if (isCustom(type)) disks.add(INSTANCE_RESOURCES[type].diskMb);
     }
 
     expect([...disks]).toEqual([12_000]);
@@ -117,22 +139,73 @@ describe("containerInstance", () => {
     expect(ordered).toEqual([
       "lite",
       "basic",
-      "custom-1",
+      "cpu-1",
       "standard-1",
+      "mem-4",
       "standard-2",
-      "custom-2",
+      "cpu-2",
+      "mem-8",
       "standard-3",
-      "custom-3",
+      "cpu-3",
+      "mem-12",
       "standard-4",
     ]);
-    expect(compareInstances("custom-2", "custom-2")).toBe(0);
+    expect(ordered).toEqual(INSTANCE_TYPES);
+    expect(compareInstances("cpu-2", "cpu-2")).toBe(0);
   });
 
   it("describes every instance type", () => {
     for (const type of INSTANCE_TYPES) expect(INSTANCE_DESCRIPTIONS[type]).not.toBe("");
-    expect(INSTANCE_DESCRIPTIONS["custom-1"]).toBe("1 vCPU, 3 GiB memory, 12 GB disk");
-    expect(INSTANCE_DESCRIPTIONS["custom-2"]).toBe("2 vCPU, 6 GiB memory, 12 GB disk");
-    expect(INSTANCE_DESCRIPTIONS["custom-3"]).toBe("3 vCPU, 9 GiB memory, 12 GB disk");
+    expect(INSTANCE_DESCRIPTIONS["cpu-1"]).toBe("1 vCPU, 3 GiB memory, 12 GB disk");
+    expect(INSTANCE_DESCRIPTIONS["cpu-2"]).toBe("2 vCPU, 6 GiB memory, 12 GB disk");
+    expect(INSTANCE_DESCRIPTIONS["cpu-3"]).toBe("3 vCPU, 9 GiB memory, 12 GB disk");
+    expect(INSTANCE_DESCRIPTIONS["mem-4"]).toBe("1 vCPU, 4 GiB memory, 12 GB disk");
+    expect(INSTANCE_DESCRIPTIONS["mem-8"]).toBe("1 vCPU, 8 GiB memory, 12 GB disk");
+    expect(INSTANCE_DESCRIPTIONS["mem-12"]).toBe("2 vCPU, 12 GiB memory, 12 GB disk");
+  });
+});
+
+describe("the sizes renamed from custom- to cpu-", () => {
+  it("name each old size by the new one with the same resources", () => {
+    expect(Record.keys(RENAMED_INSTANCE_TYPES)).toEqual(["custom-1", "custom-2", "custom-3"]);
+
+    for (const [old, now] of Record.toEntries(RENAMED_INSTANCE_TYPES)) {
+      expect(now).toBe(old.replace("custom-", "cpu-"));
+      expect(INSTANCE_TYPES).toContain(now);
+      expect(INSTANCE_TYPES).not.toContain(old);
+    }
+  });
+
+  it("read an old name as its new one, and any other name as it is", () => {
+    expect(currentInstanceName("custom-2")).toBe("cpu-2");
+    expect(currentInstanceName("mem-8")).toBe("mem-8");
+    expect(currentInstanceName("standard-2")).toBe("standard-2");
+    expect(isRenamedInstance("custom-3")).toBe(true);
+    expect(isRenamedInstance("cpu-3")).toBe(false);
+    expect(isRenamedInstance("toString")).toBe(false);
+  });
+
+  it("rename the value of a size field only", () => {
+    expect(currentFieldValue("instance", "custom-1")).toBe("cpu-1");
+    expect(currentFieldValue("maxInstance", "custom-3")).toBe("cpu-3");
+    expect(currentFieldValue("maxInstance", null)).toBeNull();
+    expect(currentFieldValue("setupScript", "custom-1")).toBe("custom-1");
+  });
+
+  it("resolve saved settings that name an old size, strictly and leniently", () => {
+    const saved = { instance: "custom-2", maxInstance: "custom-3" };
+
+    expect(resolved(saved)).toMatchObject({ instance: "cpu-2", maxInstance: "cpu-3" });
+    expect(resolveContainerSettingsLeniently(saved)).toEqual({
+      settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "cpu-2", maxInstance: "cpu-3" },
+      dropped: [],
+    });
+  });
+
+  it("keep an old default out of the overrides, so it follows the default as it did", () => {
+    expect(
+      containerOverridesFrom(resolved({ instance: "custom-1", maxInstance: "custom-2" })),
+    ).toEqual({});
   });
 });
 
@@ -145,7 +218,7 @@ describe("resolveContainerSettings", () => {
       ...NONE,
     });
     expect(resolved({ idleMinutes: 90 })).toEqual({
-      instance: "custom-1",
+      instance: "cpu-1",
       idleMinutes: 90,
       ignore: [],
       ...NONE,
@@ -366,21 +439,19 @@ describe("containerOverridesFrom", () => {
 
 describe("instanceLimitProblem", () => {
   it("accepts a size up to the size limit", () => {
-    expect(instanceLimitProblem({ instance: "custom-2", maxInstance: "custom-2" })).toBeUndefined();
+    expect(instanceLimitProblem({ instance: "cpu-2", maxInstance: "cpu-2" })).toBeUndefined();
     expect(instanceLimitProblem(DEFAULT_CONTAINER_SETTINGS)).toBeUndefined();
-    // standard-1 has more memory than custom-1, though fewer vCPU.
-    expect(
-      instanceLimitProblem({ instance: "custom-1", maxInstance: "standard-1" }),
-    ).toBeUndefined();
+    // standard-1 has more memory than cpu-1, though fewer vCPU.
+    expect(instanceLimitProblem({ instance: "cpu-1", maxInstance: "standard-1" })).toBeUndefined();
   });
 
   it("refuses a size above the size limit, naming both", () => {
-    const problem = instanceLimitProblem({ instance: "standard-3", maxInstance: "custom-2" });
+    const problem = instanceLimitProblem({ instance: "standard-3", maxInstance: "cpu-2" });
 
     expect(problem).toMatch(/standard-3/);
-    expect(problem).toMatch(/custom-2/);
-    expect(instanceLimitProblem({ instance: "standard-1", maxInstance: "custom-1" })).toMatch(
-      /standard-1.*custom-1/,
+    expect(problem).toMatch(/cpu-2/);
+    expect(instanceLimitProblem({ instance: "standard-1", maxInstance: "cpu-1" })).toMatch(
+      /standard-1.*cpu-1/,
     );
   });
 });
@@ -392,7 +463,7 @@ describe("resolveContainerSettingsLeniently", () => {
       idleMinutes: 30,
     });
 
-    expect(settings).toEqual({ instance: "custom-1", idleMinutes: 30, ignore: [], ...NONE });
+    expect(settings).toEqual({ instance: "cpu-1", idleMinutes: 30, ignore: [], ...NONE });
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("instance");
   });
@@ -421,7 +492,7 @@ describe("resolveContainerSettingsLeniently", () => {
       dropped: [],
     });
     expect(resolveContainerSettingsLeniently({ instance: "standard-2" }).settings.maxInstance).toBe(
-      "custom-2",
+      "cpu-2",
     );
   });
 

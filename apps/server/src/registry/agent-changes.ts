@@ -7,6 +7,7 @@
 import {
   type ContainerSettings,
   containerOverridesFrom,
+  currentFieldValue,
   DEFAULT_CONTAINER_SETTINGS,
 } from "@cloudpid/config";
 import {
@@ -175,6 +176,13 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
 const valueOf = (text: string | null): Schema.Json | null =>
   text === null ? null : Option.getOrNull(decodeJson(text));
 
+/**
+ * The stored value of `field`: as `valueOf` reads it, with a size since renamed (`custom-2`) under its name now, so a
+ * change from before the rename shows, and is reverted, as the size it named.
+ */
+const storedFieldValue = (field: string, text: string | null): Schema.Json | null =>
+  currentFieldValue(field, valueOf(text));
+
 const toChange = (row: AgentChangeRow): AgentChange => {
   const change: AgentChange = {
     id: row.id,
@@ -186,8 +194,8 @@ const toChange = (row: AgentChangeRow): AgentChange => {
     tool: row.tool,
     reason: row.reason,
     field: row.field,
-    before: valueOf(row.before),
-    after: valueOf(row.after),
+    before: storedFieldValue(row.field, row.before),
+    after: storedFieldValue(row.field, row.after),
     reverts: row.reverts,
     revertedBy: row.reverted_by,
   };
@@ -349,11 +357,15 @@ export const changeEnvironment = (
 
     const before = fieldValue(known.settings, change.field);
 
-    if (sameJson(before, change.value)) {
+    // An Approval asked for before the sizes were renamed may name an old one (`currentFieldValue`).
+    if (sameJson(before, currentFieldValue(change.field, change.value))) {
       return { status: "unchanged", environment: known.record, value: before };
     }
 
-    if (expected !== undefined && !sameJson(before, expected.value)) {
+    if (
+      expected !== undefined &&
+      !sameJson(before, currentFieldValue(change.field, expected.value))
+    ) {
       return { status: "changed-since", current: before };
     }
 

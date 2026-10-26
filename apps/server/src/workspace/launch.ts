@@ -27,9 +27,11 @@ import type {
 } from "@cloudflare/computer/backends/container";
 import {
   containerInstance,
+  currentInstanceName,
   DEFAULT_CONTAINER_SETTINGS,
   type InstanceType,
   type ContainerSettings,
+  type StoredInstanceType,
 } from "@cloudpid/config";
 import { type EnvironmentBuild, RESET_STORE_VARIABLE } from "./build-record.ts";
 import { launchSize } from "./resize.ts";
@@ -61,6 +63,21 @@ export type LaunchRecord = {
   /** Epoch milliseconds. */
   readonly launchedAt: number;
 };
+
+/**
+ * A launch record as storage holds it: one kept before the sizes were renamed may name an old one (`custom-2`), and
+ * `currentLaunchRecord` reads it as the new name, whose resources are the same, so a Container launched then is adopted
+ * as it runs.
+ */
+export type StoredLaunchRecord = Omit<LaunchRecord, "instance"> & {
+  readonly instance: StoredInstanceType;
+};
+
+/** The launch record `stored`, with its size under the name it has now. */
+export const currentLaunchRecord = (
+  stored: StoredLaunchRecord | undefined,
+): LaunchRecord | undefined =>
+  stored === undefined ? undefined : { ...stored, instance: currentInstanceName(stored.instance) };
 
 export type ContainerLaunchDeps = {
   /** The Workspace's settings now. */

@@ -34,7 +34,7 @@ describe("how full the context is", () => {
 const AS_OF = 1_700_000_000_000;
 
 const container = (fields: Partial<ContainerUsage> = {}): ContainerUsage => ({
-  instance: "custom-2",
+  instance: "cpu-2",
   runSeconds: 600,
   cpuSeconds: 30,
   egressBytes: 1_000_000,

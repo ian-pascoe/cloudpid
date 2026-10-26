@@ -291,8 +291,8 @@ describe("the environment tools", () => {
     const shown = text(await run(tool("environment_get"), {}));
 
     expect(shown).toContain('Environment "Default" (id default, the Environment of this Session)');
-    expect(shown).toContain("Container size: custom-1");
-    expect(shown).toMatch(/Size limit \(.*\): custom-2/);
+    expect(shown).toContain("Container size: cpu-1");
+    expect(shown).toMatch(/Size limit \(.*\): cpu-2/);
     expect(shown).toContain("Idle time: 2 minutes");
     expect(shown).toContain("NODE_ENV=test");
     expect(shown).toContain(
@@ -519,23 +519,23 @@ describe("environment_container_resize", () => {
     const tool = await toolsOver(environments.service, { logged });
 
     const result = await run(tool("environment_container_resize"), {
-      size: "custom-2",
+      size: "cpu-2",
       reason: "The tests need 6 GiB",
     });
 
     expect(environments.changes[0]).toMatchObject({
       environment: "default",
-      change: { field: "instance", value: "custom-2" },
+      change: { field: "instance", value: "cpu-2" },
       tool: "environment_container_resize",
     });
-    expect(text(result)).toContain("it was custom-1, and is custom-2 now");
+    expect(text(result)).toContain("it was cpu-1, and is cpu-2 now");
     expect(text(result)).toContain("every Workspace of the Environment");
     expect(text(result)).toContain(
       "container_resize changes only this Workspace's current Container",
     );
     expect(text(result)).toContain("holds through container_restart until the idle stop");
     expect(result.details).toMatchObject({
-      agentChange: { field: "instance", before: "custom-1", after: "custom-2" },
+      agentChange: { field: "instance", before: "cpu-1", after: "cpu-2" },
     });
     expect(logged).toEqual([
       { tool: "environment_container_resize", environmentName: "Default", field: "instance" },
@@ -548,7 +548,8 @@ describe("environment_container_resize", () => {
 
     expect(description).toContain("environment_container_size_limit_set");
     expect(description).toContain("container_resize");
-    expect(description).toContain("- custom-3: 3 vCPU, 9 GiB memory");
+    expect(description).toContain("- cpu-3: 3 vCPU, 9 GiB memory");
+    expect(description).toContain("- mem-12: 2 vCPU, 12 GiB memory");
   });
 
   it("refuses a size above the size limit, naming it and the tool that raises it, and records nothing", async () => {
@@ -561,7 +562,7 @@ describe("environment_container_resize", () => {
     );
 
     expect(message).toContain("size limit");
-    expect(message).toContain("custom-2");
+    expect(message).toContain("cpu-2");
     expect(message).toContain("environment_container_size_limit_set");
     expect(environments.changes).toEqual([]);
     expect(logged).toEqual([]);
@@ -571,13 +572,10 @@ describe("environment_container_resize", () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service);
 
-    await run(tool("environment_container_resize"), { size: "custom-2", reason: "r" });
+    await run(tool("environment_container_resize"), { size: "cpu-2", reason: "r" });
     await run(tool("environment_container_resize"), { size: "basic", reason: "r" });
 
-    expect(Arr.map(environments.changes, ({ change }) => change.value)).toEqual([
-      "custom-2",
-      "basic",
-    ]);
+    expect(Arr.map(environments.changes, ({ change }) => change.value)).toEqual(["cpu-2", "basic"]);
   });
 
   it("says so of the size the Environment has, and records nothing", async () => {
@@ -585,11 +583,11 @@ describe("environment_container_resize", () => {
     const tool = await toolsOver(environments.service);
 
     const result = await run(tool("environment_container_resize"), {
-      size: "custom-1",
+      size: "cpu-1",
       reason: "r",
     });
 
-    expect(text(result)).toContain("custom-1 already");
+    expect(text(result)).toContain("cpu-1 already");
     expect(environments.changes).toEqual([]);
   });
 
@@ -599,7 +597,7 @@ describe("environment_container_resize", () => {
 
     const result = await run(tool("environment_container_resize"), {
       id: "0000abcd",
-      size: "custom-2",
+      size: "cpu-2",
       reason: "r",
     });
 
@@ -617,8 +615,8 @@ describe("environment_idle_time_set", () => {
 
     expect(environments.changes[0]?.change).toEqual({ field: "idleMinutes", value: 10 });
     expect(text(result)).toContain("it was 2 minutes, and is 10 now");
-    // custom-1: 3 GiB of memory at $0.0000025 a GiB-second is $0.00045 a minute.
-    expect(text(result)).toContain("at custom-1 (3 GiB) about $0.00045 a minute");
+    // cpu-1: 3 GiB of memory at $0.0000025 a GiB-second is $0.00045 a minute.
+    expect(text(result)).toContain("at cpu-1 (3 GiB) about $0.00045 a minute");
     expect(text(result)).toContain("up to $0.0045 for each idle stretch of 10 minutes");
   });
 

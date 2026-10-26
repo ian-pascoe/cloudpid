@@ -6,14 +6,12 @@ import { describe, expect, it } from "vitest";
 import { readEnvironmentSettings, writeEnvironmentSettings } from "./environment-settings.ts";
 
 describe("saving an Environment's Container settings", () => {
-  it("keeps the size limit as an override only when it differs from custom-2, the default", () => {
+  it("keeps the size limit as an override only when it differs from cpu-2, the default", () => {
     expect(
-      Result.getOrThrow(
-        writeEnvironmentSettings({ instance: "custom-2", maxInstance: "custom-2" }),
-      ),
+      Result.getOrThrow(writeEnvironmentSettings({ instance: "cpu-2", maxInstance: "cpu-2" })),
     ).toEqual({
-      settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "custom-2" },
-      overrides: { instance: "custom-2" },
+      settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "cpu-2" },
+      overrides: { instance: "cpu-2" },
     });
     expect(
       Result.getOrThrow(
@@ -27,7 +25,7 @@ describe("saving an Environment's Container settings", () => {
 
     expect(Result.isFailure(refused)).toBe(true);
     expect(Result.isFailure(refused) ? refused.failure : "").toMatch(
-      /standard-3 is larger than the size limit custom-2/,
+      /standard-3 is larger than the size limit cpu-2/,
     );
   });
 });
