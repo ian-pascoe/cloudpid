@@ -1,13 +1,16 @@
 // @effect-diagnostics missingPipeableSignature:off
 // The Session's side of the Browser Pane (`docs/spec.md` → Browser → Browser Pane, ADR-0013): the links to the Owner tab
-// the Pane shows, which the browser host mints for the one client that asked (`owner_tab_view`). Like a Browser
-// Handoff's Live View links (`./handoff.ts`), none is kept here or sent to another client.
+// the Pane shows, which the browser host mints for the one client that asked (`owner_tab_view`), and the Owner tabs of its
+// tab strip (`tabs`, `open`, `show`, `close`). Like a Browser Handoff's Live View links (`./handoff.ts`), no link is kept
+// here or sent to another client.
 //
 // Three rules sit here, between the socket and the host. An archived Session opens nothing: an ask to open is asked
-// without, so it shows an Owner tab still there or says there is none, and never starts a browser. The host's "the Owner
-// tab is gone" reaches the client in its own words, as `LIVE_VIEW_HANDOFF_OVER` does. And an ask that opened an Owner
-// tab (perhaps starting the browser for it) is a use of the browser, so the Session's idle close counts from it: a
-// browser the Pane started is closed like any other once the Session has left it idle.
+// without, so it shows an Owner tab still there or says there is none and never starts a browser, and a new Owner tab
+// (`open`) is refused. The host's "the Owner tab is gone" reaches the client in its own words
+// (`withGoneInItsOwnWords`), as `LIVE_VIEW_HANDOFF_OVER` does. An ask that opened an Owner tab (perhaps starting the
+// browser for it), a link ask or a new Owner tab alike, is a use of the browser, so the Session's idle close counts from
+// it: a browser the Pane started is closed like any other once the Session has left it idle. Listing, showing and closing
+// Owner tabs are not uses.
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -41,7 +44,7 @@ export type BrowserPaneService = {
 export const ARCHIVED_OPENS_NO_OWNER_TAB = "An archived session opens no Owner tab";
 
 /** The host's "the Owner tab is gone" in its own words, without the call it came through. */
-const gone = (error: BrowserError): BrowserError =>
+const withGoneInItsOwnWords = (error: BrowserError): BrowserError =>
   error.message.includes(OWNER_TAB_GONE) ? BrowserError.make({ message: OWNER_TAB_GONE }) : error;
 
 /** The Session's Browser Pane links. */
@@ -64,7 +67,7 @@ export const makeBrowserPane = (
       const opening = open && !(yield* archived);
 
       // The host's word for it, as the client reads it, without the call it came through.
-      const links = yield* host.ownerTabView(opening).pipe(Effect.mapError(gone));
+      const links = yield* host.ownerTabView(opening).pipe(Effect.mapError(withGoneInItsOwnWords));
 
       if (links.opened) yield* session.touch;
 
@@ -80,7 +83,7 @@ export const makeBrowserPane = (
 
     return tabs;
   }),
-  show: (id) => host.showOwnerTab(id).pipe(Effect.mapError(gone)),
+  show: (id) => host.showOwnerTab(id).pipe(Effect.mapError(withGoneInItsOwnWords)),
   close: (id) => host.closeOwnerTab(id),
 });
 

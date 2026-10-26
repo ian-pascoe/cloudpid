@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off schemaSync:off preferTypedSchemaDecoder:off
+// @effect-diagnostics globalDate:off asyncFunction:off preferEffectArray:off missingPipeableSignature:off schemaSync:off preferTypedSchemaDecoder:off
 // The tab an `agents/browser` scope works in, as `agents/browser` has stored it: a conversation's, for a Browser Handoff
 // (`./handoff.ts`), and an Owner tab's, for the Browser Pane (`./owner-tabs.ts`); and opening an Owner tab, recording a
 // page a tab opened as one, and forgetting one that is gone.
@@ -124,24 +124,50 @@ export const openTab = async (browser: Pick<Browser, "connect">, scope: string):
 };
 
 /**
- * Record page `targetId`, which a page of the browser opened, as scope `scope`'s tab: the scope's record then names the
- * tab and the browser it is in, as for a tab `openTab` made. Fails when the browser was closed or replaced meanwhile.
+ * Record page `targetId`, which a page of browser session `browserSessionId` opened, as scope `scope`'s tab: the scope's
+ * record then names the tab and the browser it is in, as for a tab `openTab` made. It starts no browser, which
+ * `Browser.connect` would when the browser has closed since: the records are checked and written under the lock
+ * `agents/browser` writes scope records under, and fail when the browser is closed or is not `browserSessionId` any
+ * more. (The record's shape is `agents/browser`'s private one, like its keys: `tab.test.ts` reads it back through a real
+ * `Browser`.)
  */
 export const adoptTab = async (
-  browser: Pick<Browser, "connect">,
+  {
+    name,
+    store,
+  }: {
+    readonly name: string;
+    readonly store: Pick<BrowserSessionStore, "acquireLock" | "get" | "set">;
+  },
   scope: string,
   targetId: string,
+  browserSessionId: string,
 ): Promise<Tab> => {
-  const connection = await browser.connect({ scope });
+  const lock = await store.acquireLock(scopesLockKey(name));
 
   try {
-    if (!(await connection.setActiveTarget(targetId))) {
+    const browser = await store.get(browserKey(name));
+
+    if (
+      browser === undefined ||
+      browser.closedAt !== undefined ||
+      browser.sessionId !== browserSessionId
+    ) {
       throw new Error("The browser was closed while the tab was recorded");
     }
 
-    return { browserSessionId: connection.sessionId, targetId };
+    const now = Date.now();
+
+    await store.set(scopeKey(name, scope), {
+      sessionId: browserSessionId,
+      createdAt: now,
+      updatedAt: now,
+      activeTargetId: targetId,
+    });
+
+    return { browserSessionId, targetId };
   } finally {
-    connection.cdp.disconnect();
+    await lock.release();
   }
 };
 

@@ -85,7 +85,13 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
           tabIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scope),
         tabsOf: (scopes) =>
           tabsIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scopes),
-        adoptTab: (scope, targetId) => adoptTab(this.#browser, scope, targetId),
+        adoptTab: (scope, targetId, browserSessionId) =>
+          adoptTab(
+            { name: this.#browser.name, store: this.#store },
+            scope,
+            targetId,
+            browserSessionId,
+          ),
         openTab: (scope) => openTab(this.#browser, scope),
         forget: (scope) => forgetScope({ name: this.#browser.name, store: this.#store }, scope),
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),

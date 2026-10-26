@@ -21,6 +21,7 @@ const ownerTabsOver = (
   store = records(),
   tabs = new Map<string, Tab>(),
   unreachable?: Error,
+  adoptFails = false,
 ) => {
   const opened: string[] = [];
   const adopted: Array<readonly [string, string]> = [];
@@ -44,6 +45,9 @@ const ownerTabsOver = (
           ),
         ),
       adoptTab: (scope, targetId) => {
+        if (adoptFails)
+          return Promise.reject(new Error("The browser was closed while the tab was recorded"));
+
         adopted.push([scope, targetId]);
 
         const tab = { browserSessionId: "browser-1", targetId };
@@ -521,5 +525,75 @@ describe("the Browser Pane's several Owner tabs", () => {
 
     expect(links.ownerTabId).toBe("c");
     expect(ownerTabs.list()).toEqual({ tabs: [{ id: "a" }, { id: "c" }], shown: "c" });
+  });
+
+  it("leaves a page alone, starting no browser, when the browser closed before it could be recorded, and records it next time", async () => {
+    const targets = [
+      ...owners,
+      page("link-page", { openerId: "owner-b", canAccessOpener: false, title: "Docs" }),
+    ];
+
+    const store = records();
+    const tabs = new Map<string, Tab>();
+
+    for (const id of ["a", "b", "c"]) {
+      tabs.set(ownerTabScope(id), { browserSessionId: "browser-1", targetId: `owner-${id}` });
+    }
+
+    store.put("owner-tabs", { tabs: [{ id: "a" }, { id: "b" }, { id: "c" }], shown: "a" });
+
+    const reads = () =>
+      Array.from({ length: 4 }, () =>
+        fakeTransport({ "Target.getTargets": { targetInfos: targets } }),
+      );
+
+    const closed = ownerTabsOver(reads(), store, tabs, undefined, true);
+
+    expect((await closed.ownerTabs.tabs()).tabs.map(({ id }) => id)).toEqual(["a", "b", "c"]);
+    expect(closed.opened).toEqual([]);
+    expect(closed.adopted).toEqual([]);
+
+    const later = ownerTabsOver(reads(), store, tabs);
+
+    expect((await later.ownerTabs.tabs()).tabs.map(({ title }) => title)).toEqual([
+      "Tab A",
+      "Tab B",
+      "Tab C",
+      "Docs",
+    ]);
+  });
+
+  it("counts the Owner tabs that are there against the twenty, not stored ones that are gone", async () => {
+    const stale = Array.from({ length: 25 }, (_, index) => `old${index}`);
+    const { ownerTabs, store, opened } = withTabs(owners);
+
+    store.put("owner-tabs", {
+      tabs: [...stale.map((id) => ({ id })), { id: "a" }, { id: "b" }, { id: "c" }],
+      shown: "a",
+    });
+
+    const listing = await ownerTabs.open();
+
+    expect(opened).toEqual([ownerTabScope("id-1")]);
+    expect(listing.tabs.map(({ id }) => id)).toEqual(["a", "b", "c", "id-1"]);
+  });
+
+  it("answers listings asked while one waits with a single listing", async () => {
+    const { ownerTabs, connected } = withTabs(owners);
+
+    await Promise.all(Array.from({ length: 6 }, () => ownerTabs.tabs()));
+
+    // The first runs at once and the five asked meanwhile share the next.
+    expect(connected.length).toBeLessThanOrEqual(2);
+  });
+
+  it("closes an Owner tab on one connection", async () => {
+    const { ownerTabs, connected } = withTabs([
+      ...owners,
+      page("popup", { openerId: "owner-b", canAccessOpener: true }),
+    ]);
+
+    await ownerTabs.close("b");
+    expect(connected).toHaveLength(1);
   });
 });

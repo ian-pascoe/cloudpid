@@ -155,18 +155,24 @@ export const windowsOf = async (
   except?: (target: PageTarget) => boolean,
 ): Promise<OpenedWindow[]> => windowsAmong(await pagesOf(transport), tabId, except);
 
+export type ViewLinkOptions = {
+  /** Sees the windows found before their links are minted. */
+  readonly noting?: (windows: ReadonlyArray<OpenedWindow>) => Promise<void>;
+  /** Pages that are not windows (`windowsAmong`). */
+  readonly except?: (target: PageTarget) => boolean;
+};
+
 /**
  * Fresh links to tab `tab.targetId` (sent in CDP session `tab.cdpSessionId`, or to the browser) and to every window it
- * opened (`windowsOf`), each minted on the browser. `noting` sees the windows found before their links are minted. A
+ * opened (`windowsOf`), each minted on the browser. `options.noting` sees the windows found before their links are minted. A
  * window that closes before its link is minted is left out, as one that closed before the listing is; Browser Run saying
- * the tab itself is not there fails the call (`isNoTarget`), for the caller to say what is gone. `except` names pages
+ * the tab itself is not there fails the call (`isNoTarget`), for the caller to say what is gone. `options.except` names pages
  * that are not windows (`windowsAmong`).
  */
 export const mintViewLinks = async (
   transport: CdpTransport,
   tab: { readonly targetId: string; readonly cdpSessionId?: string | undefined },
-  noting?: (windows: ReadonlyArray<OpenedWindow>) => Promise<void>,
-  except?: (target: PageTarget) => boolean,
+  { noting, except }: ViewLinkOptions = {},
 ): Promise<LiveViewLinks> => {
   const [link, found] = await Promise.all([
     mintLink(transport, tab.targetId, tab.cdpSessionId),

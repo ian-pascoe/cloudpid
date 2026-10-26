@@ -29,7 +29,7 @@ export const browserPaneKey = (sessionId: string, archived: boolean): BrowserPan
 
 /** How often the Pane asks the Session for its Owner tabs while it is open and the page is visible, for the tabs a page
  * opened and the titles that changed. What a device changes is sent to the others at once. */
-export const OWNER_TABS_POLL = Duration.seconds(5);
+const OWNER_TABS_POLL = Duration.seconds(5);
 
 /** How long after a window opened the Owner tabs are asked again: the browser may not list a new page at once. */
 const WINDOW_OPENED_RECHECK = Duration.seconds(1);
@@ -178,7 +178,9 @@ export const ownerTabCommandAtom = Atom.family((sessionId: string) =>
 
 /** Show the Owner tab the Session says is shown: the Pane's connection moves to it when it shows another. */
 export const followOwnerTabAtom = Atom.family((key: BrowserPaneKey) =>
-  appRuntime.fn((shown: string | undefined, get) =>
-    get.result(browserPaneViewAtom(key)).pipe(Effect.flatMap((view) => view.follow(shown))),
+  appRuntime.fn(
+    (shown: string | undefined, get) =>
+      get.result(browserPaneViewAtom(key)).pipe(Effect.flatMap((view) => view.follow(shown))),
+    { concurrent: true },
   ),
 );

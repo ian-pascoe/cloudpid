@@ -7,7 +7,7 @@
 // replaced the one that is gone. An archived Session's Pane opens nothing: it shows an Owner tab still there, if any. It
 // opens only from the New pane (or the URL or the Session's layout); it never opens on its own.
 
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { ArrowLeft, ArrowRight, Globe, RotateCw, X } from "lucide-react";
 import { use, useEffect, useId, useRef, useState, type FormEvent, type RefObject } from "react";
@@ -25,6 +25,7 @@ import {
   dismissReplacedAtom,
   followOwnerTabAtom,
   ownerTabActionAtom,
+  ownerTabCommandAtom,
   ownerTabListAtom,
   ownerTabPageAtom,
   ownerTabReplacedAtom,
@@ -184,7 +185,8 @@ const GONE =
 
 /** What the Pane shows once the Owner tab is gone: why, and a new Owner tab, unless the Session is archived. */
 const Gone = ({ pane }: { pane: BrowserPaneKey }) => {
-  const reopen = useAtomRefresh(browserPaneViewAtom(pane));
+  // Through the Session, like **+**: every device is told, and each Pane follows to the new Owner tab.
+  const open = useAtomSet(ownerTabCommandAtom(pane.sessionId));
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
@@ -200,7 +202,12 @@ const Gone = ({ pane }: { pane: BrowserPaneKey }) => {
             A browser that was closed takes its pages and sign-ins with it. A new Owner tab opens in
             the Session's browser, starting one if none runs.
           </p>
-          <Button size="sm" onClick={reopen}>
+          <Button
+            size="sm"
+            onClick={() => {
+              open({ type: "open" });
+            }}
+          >
             Open a new Owner tab
           </Button>
         </>
@@ -242,7 +249,6 @@ const Replaced = ({ pane }: { pane: BrowserPaneKey }) => {
 const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
   const view = browserPaneViewAtom(pane);
   const ended = useAtomValue(liveViewStateAtom(view), (state) => state.status === "ended");
-  const reopen = useAtomRefresh(view);
   const focusWhenLive = useRef(false);
 
   // The Owner tab shown is the Session's, so every device shows the same: this one's connection moves to it.
@@ -257,11 +263,9 @@ const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
     <div className="flex min-h-0 flex-1 flex-col">
       <OwnerTabStrip
         pane={pane}
-        ended={ended}
         onNew={() => {
           focusWhenLive.current = true;
         }}
-        reopen={reopen}
       />
       <UrlBar pane={pane} focusWhenLive={focusWhenLive} />
       {ended ? (

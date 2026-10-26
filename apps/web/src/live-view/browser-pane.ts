@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { LiveViewError } from "./cdp-socket.ts";
+import { coalesced } from "./coalesced.ts";
 import {
   LiveViewOver,
   make,
@@ -71,7 +72,8 @@ export interface BrowserPaneView extends LiveView {
   readonly dismiss: Effect.Effect<void>;
   /**
    * Follow the Owner tab the Session says is shown (`undefined`: none): when it is not the one this view is connected to,
-   * connect afresh, which mints links for the one shown. Nothing before the first links, or while it already shows it.
+   * connect afresh, which mints links for the one shown; and when the view ended (its Owner tab was gone) and one is shown
+   * now, resume. Nothing before the first links, or while it already shows it.
    */
   readonly follow: (shown: string | undefined) => Effect.Effect<void>;
   /** Open `url` in the tab (an address the URL bar took: `address.ts`); fails with why the page could not be opened. */
@@ -101,10 +103,14 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
     windowOpened = Effect.void,
   }: {
     readonly opens?: boolean;
-    /** Run when a page of the Owner tab opened a window: it may be a tab of its own, which the Session lists. */
+    /**
+     * Run when a page of the Owner tab opened a window: it may be a tab of its own, which the Session lists. Coalesced
+     * (`coalesced`): at most one running and one waiting.
+     */
     readonly windowOpened?: Effect.Effect<void>;
   } = {},
 ) {
+  const windowOpenedOnce = coalesced(windowOpened);
   const page = yield* SubscriptionRef.make(INITIAL_OWNER_TAB_PAGE);
   const replaced = yield* SubscriptionRef.make(false);
   let opened = !opens;
@@ -142,7 +148,7 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
         frame.parentId === undefined ? refresh(tab) : Effect.void,
       );
       tab.on("Page.navigatedWithinDocument", Ignored, () => refresh(tab));
-      tab.on("Page.windowOpen", Ignored, () => windowOpened);
+      tab.on("Page.windowOpen", Ignored, () => windowOpenedOnce);
 
       yield* refresh(tab);
     });
@@ -168,11 +174,13 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
     replaced,
     dismiss: SubscriptionRef.set(replaced, false),
     follow: (shown) =>
-      Effect.suspend(() =>
-        shown === undefined || connectedTab === undefined || shown === connectedTab
-          ? Effect.void
-          : view.reconnect,
-      ),
+      Effect.suspend(() => {
+        if (shown === undefined) return Effect.void;
+
+        if (SubscriptionRef.getUnsafe(view.state).status === "ended") return view.resume;
+
+        return connectedTab === undefined || shown === connectedTab ? Effect.void : view.reconnect;
+      }),
     navigate: (url) =>
       view.withTab((tab) =>
         tab

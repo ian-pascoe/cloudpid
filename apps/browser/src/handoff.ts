@@ -519,7 +519,7 @@ export class HandoffHost {
     return mintViewLinks(
       live.transport,
       { targetId: record.targetId, cdpSessionId: live.cdpSessionId },
-      (found) => this.#noteWindowSizes(requestId, live, found),
+      { noting: (found) => this.#noteWindowSizes(requestId, live, found) },
     );
   }
 

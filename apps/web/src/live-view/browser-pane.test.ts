@@ -3,7 +3,9 @@
 import { OWNER_TAB_GONE, type OwnerTabLinks } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import { settle } from "../session/client.testing.ts";
 import { openBrowserPaneView } from "./browser-pane.ts";
 import { fakeBrowser } from "./connection.testing.ts";
@@ -82,6 +84,13 @@ const setup = (
       replaced: () => SubscriptionRef.getUnsafe(view.replaced),
     };
   });
+
+/** The Owner tab a test's Session shows: null when it says the Owner tab is gone. */
+interface FollowedTab {
+  id: string | null;
+}
+
+const followedTab = (id: string | null): FollowedTab => ({ id });
 
 describe("the Browser Pane's view of the Owner tab", () => {
   it.effect("opens the Owner tab on its first ask, and only reads it on a reconnect", () =>
@@ -343,6 +352,126 @@ describe("the Browser Pane's view of the Owner tab", () => {
         yield* settle;
 
         expect(told).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  /** A view whose Session shows `shown.id`, or says the Owner tab is gone when `shown.id` is null. */
+  const followed = (shown: FollowedTab) =>
+    Effect.gen(function* () {
+      const fake = fakeBrowser();
+      const asked: boolean[] = [];
+
+      const view = yield* openBrowserPaneView((open: boolean) =>
+        Effect.suspend(() => {
+          asked.push(open);
+
+          if (shown.id === null) return Effect.fail({ message: OWNER_TAB_GONE });
+
+          const ownerTabId = shown.id;
+
+          return fake.mint.pipe(
+            Effect.map((links): OwnerTabLinks => ({
+              ownerTabId,
+              ...links,
+              opened: open,
+              replaced: false,
+            })),
+          );
+        }),
+      ).pipe(Effect.provide(fake.layer));
+
+      yield* settle;
+
+      return { fake, asked, view, status: () => SubscriptionRef.getUnsafe(view.state).status };
+    });
+
+  it.effect("stays connected when a switch is cancelled by the next one: a, b, a", () =>
+    Effect.gen(function* () {
+      const shown = followedTab("a");
+      const { view, asked, status } = yield* followed(shown);
+
+      // The Session shows b, and the follow is cancelled as it starts, by the follow of a, which shows again.
+      shown.id = "b";
+
+      const toB = yield* Effect.forkChild(view.follow("b"));
+
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(toB);
+      shown.id = "a";
+      yield* view.follow("a");
+      yield* settle;
+      yield* settle;
+
+      expect(status()).toBe("live");
+      expect(asked.length).toBeGreaterThanOrEqual(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps following when its Owner tab was gone: another device closed the last and opened a new one",
+    () =>
+      Effect.gen(function* () {
+        const shown = followedTab("a");
+        const { fake, view, asked, status } = yield* followed(shown);
+
+        // Device A closes the last Owner tab: the page goes, and the Session has none to show.
+        shown.id = null;
+        yield* fake.to("T")[0]!.drop();
+        yield* settle;
+        expect(status()).toBe("ended");
+
+        // Nothing is shown, nothing to follow.
+        yield* view.follow(undefined);
+        expect(status()).toBe("ended");
+
+        // Device A opens one (`owner_tab_open`): the Session tells every client, and this one connects to it, asking
+        // without opening.
+        shown.id = "n";
+        yield* view.follow("n");
+        yield* settle;
+        yield* settle;
+
+        expect(status()).toBe("live");
+        expect(asked.at(-1)).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "asks the Session for the Owner tabs once at a time while a page opens windows without end",
+    () =>
+      Effect.gen(function* () {
+        const fake = fakeBrowser();
+        let runs = 0;
+
+        yield* openBrowserPaneView(
+          (open: boolean) =>
+            fake.mint.pipe(
+              Effect.map((links): OwnerTabLinks => ({
+                ownerTabId: "owner-1",
+                ...links,
+                opened: open,
+                replaced: false,
+              })),
+            ),
+          {
+            windowOpened: Effect.sync(() => {
+              runs += 1;
+            }).pipe(Effect.andThen(Effect.sleep(50))),
+          },
+        ).pipe(Effect.provide(fake.layer));
+
+        yield* settle;
+
+        for (let window = 0; window < 40; window++) {
+          yield* fake.to("T")[0]!.event("Page.windowOpen", { url: "https://spam.example/" });
+        }
+
+        yield* TestClock.adjust(300);
+        yield* settle;
+
+        // The first, and one more for all that came while it ran.
+        expect(runs).toBeLessThanOrEqual(2);
+        expect(runs).toBeGreaterThanOrEqual(1);
       }).pipe(Effect.scoped),
   );
 });

@@ -2,7 +2,7 @@
 // The Browser Pane's tab strip (#239): each Owner tab by its title with the one shown marked, a close button on each, and
 // **+** for a new blank one. Which tab is shown is the Session's (the browser host's), so switching here switches the
 // owner's other devices too; the Pane's connection follows what the Session says (`followOwnerTabAtom`), not the click.
-// The titles are the pages' own: page content, shown as text. With the Owner tab gone (`ended`) the strip is only **+**.
+// The titles are the pages' own: page content, shown as text.
 
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -15,29 +15,19 @@ import {
   ownerTabCommandAtom,
   ownerTabListAtom,
 } from "./browser-pane-atoms.ts";
-
-/** What a tab with no title is called: a blank page, or one still loading. */
-export const BLANK_TAB_TITLE = "New tab";
-
-/** The label of an Owner tab. */
-export const titleOf = (tab: { readonly title: string }): string =>
-  tab.title.trim() === "" ? BLANK_TAB_TITLE : tab.title;
+import { stripOf } from "./owner-tab-strip-model.ts";
 
 /**
  * The tab strip of the Browser Pane `pane`. `onNew` runs when **+** is pressed, before the Session is asked: the Pane
- * focuses the URL bar once the new tab is shown. When `ended` the Pane has no Owner tab to show, so the strip is **+**
- * alone, and `reopen` (not a command: the Pane opens a new Owner tab itself) is what it runs.
+ * focuses the URL bar once the new tab is shown. **+** is always `owner_tab_open`, so every device is told, one whose
+ * Pane had ended included.
  */
 export const OwnerTabStrip = ({
   pane,
-  ended,
   onNew,
-  reopen,
 }: {
   readonly pane: BrowserPaneKey;
-  readonly ended: boolean;
   readonly onNew: () => void;
-  readonly reopen: () => void;
 }) => {
   const listing = useAtomValue(ownerTabListAtom(pane.sessionId));
   const commandAtom = ownerTabCommandAtom(pane.sessionId);
@@ -47,7 +37,7 @@ export const OwnerTabStrip = ({
     AsyncResult.isFailure(result) ? settledFailureOf(result) : null,
   );
 
-  const tabs = ended ? [] : (listing?.tabs ?? []);
+  const { tabs, canOpen } = stripOf(listing, pane.archived);
 
   return (
     <div className="flex flex-col border-b">
@@ -58,8 +48,7 @@ export const OwnerTabStrip = ({
           className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
         >
           {tabs.map((tab) => {
-            const shown = tab.id === listing?.shown;
-            const title = titleOf(tab);
+            const { shown, title } = tab;
 
             return (
               <div
@@ -96,7 +85,7 @@ export const OwnerTabStrip = ({
             );
           })}
         </div>
-        {!pane.archived && (
+        {canOpen && (
           <Button
             type="button"
             variant="ghost"
@@ -106,9 +95,7 @@ export const OwnerTabStrip = ({
             title="New Owner tab"
             onClick={() => {
               onNew();
-
-              if (ended) reopen();
-              else command({ type: "open" });
+              command({ type: "open" });
             }}
           >
             <Plus aria-hidden />

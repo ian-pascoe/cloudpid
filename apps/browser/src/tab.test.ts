@@ -223,13 +223,13 @@ describe("opening an Owner tab", () => {
     expect(await tabIn(lookup, "owner-tab:b")).toEqual(second);
   });
 
-  it("records a page a tab opened as its scope's tab, in the browser that runs and starting none", async () => {
-    const { browser, lookup, run, work } = setup();
+  it("records a page a tab opened as its scope's tab, in the browser that runs", async () => {
+    const { lookup, run, work } = setup();
     const sessionId = await work(5, "tab-1");
 
     run.state.tabs.set(sessionId, ["tab-1", "link-page"]);
 
-    expect(await adoptTab(browser, "owner-tab:a", "link-page")).toEqual({
+    expect(await adoptTab(lookup, "owner-tab:a", "link-page", sessionId)).toEqual({
       browserSessionId: sessionId,
       targetId: "link-page",
     });
@@ -239,6 +239,27 @@ describe("opening an Owner tab", () => {
       targetId: "link-page",
     });
     expect(await tabOf(lookup, 5)).toEqual({ browserSessionId: sessionId, targetId: "tab-1" });
+  });
+
+  it("starts no browser to record a page: it fails when the browser is closed or replaced", async () => {
+    const { browser, lookup, run, work, store } = setup();
+    const sessionId = await work(5, "tab-1");
+
+    await browser.close();
+
+    const before = JSON.stringify([...store.records]);
+
+    await expect(adoptTab(lookup, "owner-tab:a", "link-page", sessionId)).rejects.toThrow(/closed/);
+    expect(run.state.created).toBe(1);
+    expect(JSON.stringify([...store.records])).toBe(before);
+
+    // Another browser now runs: the page belonged to the old one.
+    const current = await work(6, "tab-2");
+
+    await expect(adoptTab(lookup, "owner-tab:a", "link-page", sessionId)).rejects.toThrow(/closed/);
+    expect(run.state.created).toBe(2);
+    expect(await tabIn(lookup, "owner-tab:a")).toBeUndefined();
+    expect(current).not.toBe(sessionId);
   });
 
   it("finds several scopes' tabs asking Browser Run once, leaving out those that are gone", async () => {
