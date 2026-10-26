@@ -32,7 +32,7 @@ export const NewPane = () => {
     {
       key: SUBAGENTS_PANE,
       name: "Subagents",
-      description: "The subagents, each opening into its thread, and background work.",
+      description: "The subagents, each opening in a pane of its own, and background work.",
       icon: Bot,
       status: working > 0 ? `${working} working` : undefined,
     },

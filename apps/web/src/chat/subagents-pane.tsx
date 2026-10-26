@@ -1,21 +1,19 @@
-// The Subagents Pane: the Session's subagents (each openable into its thread, its header with its Subagent Workspace's
-// branch when it has one) and the background tasks running, from the task graph the Session streams. The Todo List is
-// in the Session details, over the chat (`session-details.tsx`).
+// The Subagents Pane: the Session's subagents (each row with its Subagent Workspace's branch when it has one, and
+// opening the agent's conversation in a Subagent Pane of its own, `subagent-pane.tsx`) and the background tasks
+// running, from the task graph the Session streams. The Todo List is in the Session details, over the chat
+// (`session-details.tsx`).
 
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Square } from "lucide-react";
-import { useEffect, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
+import { subagentPaneKey } from "../panes.ts";
+import { panesAtom } from "../panes-state.ts";
 import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
 import { abortAtom, sessionViewAtom, taskGraphAtom } from "../session/atoms.ts";
-import { agentRowOpenAtom } from "../session-layout-state.ts";
-import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
-import { Messages } from "./messages.tsx";
-import { AgentBranch, AgentStatus, shortModel } from "./subagent-card.tsx";
-import { revealedAgentAtom } from "./subagents-state.ts";
+import { AgentStatus, AgentStopButton, AgentSummary } from "./subagent-card.tsx";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
 const kindLabel = (kind: string): string =>
@@ -24,63 +22,24 @@ const kindLabel = (kind: string): string =>
 type RowProps = { agent: GraphAgent; depth: number };
 
 const AgentRow = ({ agent, depth }: RowProps) => {
-  const sessionId = useShownSessionId();
-  const abort = useAtomSet(abortAtom(sessionId));
-  const [open, setOpen] = useAtom(agentRowOpenAtom(sessionId, agent.conversationId));
-  const [revealed, setRevealed] = useAtom(revealedAgentAtom(sessionId));
-  const row = useRef<HTMLLIElement>(null);
-
-  useEffect(() => {
-    if (revealed !== agent.conversationId) return;
-
-    row.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-    setRevealed(null);
-  }, [revealed, agent.conversationId, setRevealed]);
+  const actOnPanes = useAtomSet(panesAtom);
 
   return (
-    <li ref={row} className="scroll-mt-3">
+    <li>
       <div className="flex items-center gap-2 py-1" style={{ paddingLeft: `${depth * 0.75}rem` }}>
         <button
           type="button"
-          aria-expanded={open}
+          title={`Open ${agent.id}`}
           onClick={() => {
-            setOpen(!open);
+            actOnPanes({ type: "open", key: subagentPaneKey(agent.conversationId) });
           }}
           className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-accent"
         >
-          <span className="font-mono text-[0.8125rem]">{agent.id}</span>
-          {agent.role !== null && (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{agent.role}</span>
-          )}
-          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
-            {shortModel(agent.model)}
-          </span>
-          <span className="min-w-0 text-muted-foreground">
-            <AgentBranch agent={agent} />
-          </span>
+          <AgentSummary agent={agent} />
         </button>
         <AgentStatus agent={agent} />
-        {agent.status === "working" && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="size-7 px-0"
-            aria-label={`Stop ${agent.id}`}
-            title={`Stop ${agent.id}`}
-            onClick={() => {
-              abort({ conversationId: agent.conversationId });
-            }}
-          >
-            <Square />
-          </Button>
-        )}
+        <AgentStopButton agent={agent} />
       </div>
-      {open && (
-        <div className="mb-2 rounded-md border px-3 py-2">
-          <ChildThread conversationId={agent.conversationId} messages={<Messages />} />
-        </div>
-      )}
     </li>
   );
 };
@@ -106,19 +65,6 @@ export const SubagentsPane = () => {
   const graph = useAtomValue(taskGraphAtom(sessionId));
   const running = useAtomValue(sessionViewAtom(sessionId), (view) => view.running);
   const stoppable = canStopAllBelow(graph, "root", running);
-  const [revealed, setRevealed] = useAtom(revealedAgentAtom(sessionId));
-
-  // An agent asked to be brought into sight that has no row (it is gone) is forgotten, so its row, if it comes back,
-  // does not scroll to itself unasked.
-  useEffect(() => {
-    if (
-      revealed !== null &&
-      graph !== null &&
-      !Arr.some(graph.agents, (agent) => agent.conversationId === revealed)
-    ) {
-      setRevealed(null);
-    }
-  }, [revealed, graph, setRevealed]);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-3">

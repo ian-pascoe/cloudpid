@@ -6,8 +6,8 @@
 // A **Pane type** is a registration in `PANE_TYPES`: its `id` (what a key starts with in the URL), whether it `multiple`
 // may be open more than once, and its tab `label`. A Pane is open under a **key**: the type's `id` alone for a type
 // that may be open once (`subagents`), else `<id>:<argument>` (`live-view:<requestId>`, from `@cloudpid/protocol`'s
-// `liveViewPaneKey`, which a push's link opens too; `terminal:<tab>`), the argument
-// telling the Panes of one type apart. The component a type shows is in `pane-area.tsx`, so these rules stay testable
+// `liveViewPaneKey`, which a push's link opens too; `subagent:<conversationId>`; `terminal:<tab>`), the argument
+// telling the Panes of one type apart; a type may refuse an argument it cannot open (`accepts`). The component a type shows is in `pane-area.tsx`, so these rules stay testable
 // without React; a type with no component there fails to typecheck.
 //
 // The Pane area has one button in the Session's header: it opens the **New pane** (`new`), a tab that offers the Pane
@@ -24,10 +24,15 @@ export interface PaneLabel {
 }
 
 /**
- * What a tab's label may look up beyond its argument, in the Session's state as the Pane area reads it: the agent whose
- * Browser Handoff `requestId` is, as the owner reads it, when it is not the root agent's.
+ * What a tab's label may look up beyond its argument, in the Session's state as the Pane area reads it, each agent as
+ * the owner reads it (its ID and role).
  */
-export type AgentOfHandoff = (requestId: string) => string | undefined;
+export interface PaneLookups {
+  /** The agent whose Browser Handoff `requestId` is, when it is not the root agent's. */
+  readonly agentOfHandoff: (requestId: string) => string | undefined;
+  /** The subagent that runs conversation `conversationId`, when the task graph lists it. */
+  readonly agentOfConversation: (conversationId: number) => string | undefined;
+}
 
 /** One kind of Pane. */
 export interface PaneType {
@@ -35,25 +40,57 @@ export interface PaneType {
   readonly id: string;
   /** Whether it may be open more than once, each under its own argument (`id:argument`). */
   readonly multiple: boolean;
+  /** Whether a type that may be open more than once can open `argument`; any argument when it does not say. */
+  readonly accepts?: (argument: string) => boolean;
   /** The tab's label, for a Pane opened with `argument` (undefined for a type that may be open once). */
-  readonly label: (argument: string | undefined, agentOfHandoff: AgentOfHandoff) => PaneLabel;
+  readonly label: (argument: string | undefined, lookups: PaneLookups) => PaneLabel;
 }
 
 /** A Live View's tab: named for the agent whose handoff it is, unless that is the root agent. */
-const liveViewLabel = (argument: string | undefined, agentOfHandoff: AgentOfHandoff): PaneLabel => {
-  const agent = argument === undefined ? undefined : agentOfHandoff(argument);
+const liveViewLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel => {
+  const agent = argument === undefined ? undefined : lookups.agentOfHandoff(argument);
 
   return agent === undefined ? { name: "Live View" } : { name: "Live View", agent };
 };
 
+/** A conversation's ID as a Subagent Pane's key writes it: a whole number in decimal, with no leading zero. */
+const CONVERSATION_ID = /^(?:0|[1-9]\d*)$/;
+
+/** The conversation a Subagent Pane opened with `argument` shows, or undefined when it names none. */
+export const conversationOfSubagentPane = (argument: string | undefined): number | undefined =>
+  argument !== undefined && CONVERSATION_ID.test(argument) ? Number(argument) : undefined;
+
 /**
- * The Pane types: the New pane, the Subagents Pane and the Session tree Pane, one each per Session, and a Live View per
- * Browser Handoff waiting (`live-view:<requestId>`). The Terminal (#139) joins them here, and in the New pane's choices
- * (`new-pane.tsx`) if the owner opens it.
+ * How a Subagent Pane names what it shows, in its tab and its header: its agent, or, while the task graph does not list
+ * the agent (not yet, or no more), its conversation, so two such Panes still read apart.
+ */
+export const subagentPaneName = (conversationId: number, agent: string | undefined): string =>
+  agent ?? `Conversation ${conversationId}`;
+
+/** A Subagent Pane's tab: what the Pane shows is the agent, so the agent is its name. */
+const subagentLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel => {
+  const conversationId = conversationOfSubagentPane(argument);
+
+  return conversationId === undefined
+    ? { name: "Subagent" }
+    : { name: subagentPaneName(conversationId, lookups.agentOfConversation(conversationId)) };
+};
+
+/**
+ * The Pane types: the New pane, the Subagents Pane and the Session tree Pane, one each per Session, a Subagent Pane per
+ * subagent the owner opens (`subagent:<conversationId>`), and a Live View per Browser Handoff waiting
+ * (`live-view:<requestId>`). The Terminal (#139) joins them here, and in the New pane's choices (`new-pane.tsx`) if the
+ * owner opens it.
  */
 export const PANE_TYPES = [
   { id: "new", multiple: false, label: () => ({ name: "New pane" }) },
   { id: "subagents", multiple: false, label: () => ({ name: "Subagents" }) },
+  {
+    id: "subagent",
+    multiple: true,
+    accepts: (argument) => conversationOfSubagentPane(argument) !== undefined,
+    label: subagentLabel,
+  },
   { id: "tree", multiple: false, label: () => ({ name: "Tree" }) },
   { id: "live-view", multiple: true, label: liveViewLabel },
 ] as const satisfies readonly PaneType[];
@@ -66,6 +103,9 @@ export const NEW_PANE = "new";
 
 /** The key of the Subagents Pane. */
 export const SUBAGENTS_PANE = "subagents";
+
+/** The key of the Subagent Pane that shows conversation `conversationId`, one subagent's. */
+export const subagentPaneKey = (conversationId: number): string => `subagent:${conversationId}`;
 
 /**
  * Keys a Pane was once opened under, and the key it has now: the Tasks Pane (`tasks`) became the Subagents Pane when
@@ -126,8 +166,12 @@ export const paneKeyOf = (
 
   if (type === undefined) return undefined;
 
-  // A type that may be open more than once needs its argument; one that may not, has none.
-  if (type.multiple ? argument === undefined || argument === "" : argument !== undefined) {
+  // A type that may be open more than once needs an argument it accepts; one that may not, has none.
+  if (
+    type.multiple
+      ? argument === undefined || argument === "" || type.accepts?.(argument) === false
+      : argument !== undefined
+  ) {
     return undefined;
   }
 

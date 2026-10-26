@@ -4,16 +4,26 @@ import { liveViewPaneKey } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   applyPaneAction,
+  conversationOfSubagentPane,
   NO_PANES,
   paneAreaOf,
   paneKeyOf,
   samePaneArea,
   searchWithPaneArea,
+  subagentPaneKey,
   tabForKey,
   type PaneAction,
   type PaneArea,
+  type PaneLookups,
   type PaneType,
 } from "./panes.ts";
+
+/** What the tabs' labels look up, knowing nothing but what `known` says. */
+const lookups = (known: Partial<PaneLookups> = {}): PaneLookups => ({
+  agentOfHandoff: () => undefined,
+  agentOfConversation: () => undefined,
+  ...known,
+});
 
 /** Pane types for the rules, apart from the app's: the New pane, one open once (`tasks`), two open more than once. */
 const TYPES: readonly PaneType[] = [
@@ -62,7 +72,7 @@ describe("a Pane key", () => {
   });
 
   it("knows the Subagents Pane by default", () => {
-    expect(paneKeyOf("subagents")?.type.label(undefined, () => undefined)).toEqual({
+    expect(paneKeyOf("subagents")?.type.label(undefined, lookups())).toEqual({
       name: "Subagents",
     });
     expect(paneKeyOf("terminal:1")).toBeUndefined();
@@ -71,17 +81,51 @@ describe("a Pane key", () => {
   it("knows a Live View per Browser Handoff, named for a subagent's handoff by the agent", () => {
     const pane = paneKeyOf(liveViewPaneKey("call-7"));
 
-    const agentOfHandoff = (requestId: string) =>
-      requestId === "call-7" ? "a2 (scout)" : undefined;
+    const known = lookups({
+      agentOfHandoff: (requestId) => (requestId === "call-7" ? "a2 (scout)" : undefined),
+    });
 
     expect(pane?.argument).toBe("call-7");
-    expect(pane?.type.label(pane.argument, agentOfHandoff)).toEqual({
+    expect(pane?.type.label(pane.argument, known)).toEqual({
       name: "Live View",
       agent: "a2 (scout)",
     });
     // The root agent's handoff, or one the page does not know (yet): no agent.
-    expect(pane?.type.label("call-1", agentOfHandoff)).toEqual({ name: "Live View" });
+    expect(pane?.type.label("call-1", known)).toEqual({ name: "Live View" });
     expect(paneKeyOf("live-view")).toBeUndefined();
+  });
+
+  it("knows a Subagent Pane per conversation, named for its agent, or its conversation until the page knows the agent", () => {
+    const key = subagentPaneKey(17);
+    const pane = paneKeyOf(key);
+
+    const known = lookups({
+      agentOfConversation: (conversationId) => (conversationId === 17 ? "a2 (scout)" : undefined),
+    });
+
+    expect(key).toBe("subagent:17");
+    expect(pane?.argument).toBe("17");
+    expect(conversationOfSubagentPane(pane?.argument)).toBe(17);
+    expect(pane?.type.label(pane.argument, known)).toEqual({ name: "a2 (scout)" });
+    // An agent the task graph does not list (yet, or any more): two such tabs still read apart.
+    expect(pane?.type.label("18", known)).toEqual({ name: "Conversation 18" });
+  });
+
+  it("is no Subagent Pane for an argument that is no conversation", () => {
+    for (const key of [
+      "subagent",
+      "subagent:",
+      "subagent:a2",
+      "subagent:-1",
+      "subagent:1.5",
+      "subagent:07",
+    ]) {
+      expect(paneKeyOf(key)).toBeUndefined();
+    }
+
+    expect(paneKeyOf("subagent:0")?.argument).toBe("0");
+    expect(conversationOfSubagentPane("a2")).toBeUndefined();
+    expect(conversationOfSubagentPane(undefined)).toBeUndefined();
   });
 });
 
@@ -108,6 +152,14 @@ describe("the area a query holds", () => {
       area(["tree", "subagents"], "subagents"),
     );
     expect(paneAreaOf("?pane=tasks&pane=subagents")).toEqual(area(["subagents"]));
+  });
+
+  it("opens the Subagent Panes of a link beside the Subagents Pane, and drops one that is no conversation", () => {
+    expect(
+      paneAreaOf(
+        "?pane=subagents&pane=subagent:3&pane=subagent:x&pane=subagent:4&shown=subagent:4",
+      ),
+    ).toEqual(area(["subagents", "subagent:3", "subagent:4"], "subagent:4"));
   });
 
   it("shows the only Pane, or the first when none is named", () => {

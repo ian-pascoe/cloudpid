@@ -3,12 +3,13 @@
 
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { GraphAgent } from "@cloudpid/protocol";
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Predicate from "effect/Predicate";
-import { Bot, ChevronRight, GitBranch, Loader } from "lucide-react";
+import { Bot, ChevronRight, GitBranch, Loader, Square } from "lucide-react";
 import type { ReactNode } from "react";
+import { Button } from "../components/ui/button.tsx";
 import { agentOfConversation } from "../session/agents.ts";
-import { taskGraphAtom } from "../session/atoms.ts";
+import { abortAtom, taskGraphAtom } from "../session/atoms.ts";
 import { subagentCardOpenAtom } from "../session-layout-state.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
@@ -41,6 +42,48 @@ export const AgentBranch = ({ agent }: { agent: GraphAgent | undefined }) =>
 
 /** The model without its provider, which the card has no room for. */
 export const shortModel = (model: string): string => model.slice(model.indexOf("/") + 1);
+
+/**
+ * What an agent is, as a row of the Subagents Pane and a Subagent Pane's header show it: its ID, role, model, and the
+ * branch of its Subagent Workspace.
+ */
+export const AgentSummary = ({ agent }: { agent: GraphAgent }) => (
+  <>
+    <span className="font-mono text-[0.8125rem]">{agent.id}</span>
+    {agent.role !== null && (
+      <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{agent.role}</span>
+    )}
+    <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+      {shortModel(agent.model)}
+    </span>
+    <span className="min-w-0 text-muted-foreground">
+      <AgentBranch agent={agent} />
+    </span>
+  </>
+);
+
+/** Stops an agent's conversation, never the agents below it, while it works; nothing while it does not. */
+export const AgentStopButton = ({ agent }: { agent: GraphAgent | undefined }) => {
+  const abort = useAtomSet(abortAtom(useShownSessionId()));
+
+  if (agent?.status !== "working") return null;
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="size-7 px-0"
+      aria-label={`Stop ${agent.id}`}
+      title={`Stop ${agent.id}`}
+      onClick={() => {
+        abort({ conversationId: agent.conversationId });
+      }}
+    >
+      <Square />
+    </Button>
+  );
+};
 
 type CardProps = {
   subagent: StartedSubagent;
