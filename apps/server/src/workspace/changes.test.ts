@@ -183,6 +183,7 @@ describe("the Changes module", () => {
       { ".gitattributes": "* text\n", "a.txt": "a\n" },
       { "a.txt": "b\n" },
     );
+
     const { changes, container } = module(space);
 
     await changes.list({ directory: "/workspace", startContainer: true });

@@ -151,6 +151,7 @@ export const readAttributes = (text: string | undefined): RootAttributes => {
     if (line === "" || line.startsWith("#")) continue;
 
     const [pattern, rest] = splitPattern(line);
+
     const tokens = rest
       .trim()
       .split(/\s+/)

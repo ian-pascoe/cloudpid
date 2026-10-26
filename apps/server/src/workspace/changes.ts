@@ -602,6 +602,7 @@ export class WorkspaceChangesModule {
     }
 
     const kept = await this.#options.kept.load(repo).catch(() => undefined);
+
     const stale = {
       repo,
       head,
@@ -837,6 +838,7 @@ const withRenames = (rows: readonly Row[]): ChangeEntry[] => {
     if (removed.has(row)) continue;
 
     const from = paired.get(row);
+
     const tooLarge = [row.old, row.new].some(
       (each) => each !== undefined && each.bytes > MAX_CHANGE_SIDE_BYTES,
     );

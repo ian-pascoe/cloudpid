@@ -137,6 +137,7 @@ describe("the Workspace DO's Changes", () => {
       old: null,
       new: { kind: "text", text: "fresh\nfile\n" },
     });
+
     // Caught at once: a stub's rejected call left to `expect().rejects` is reported as unhandled too.
     const refused = (path: string) =>
       stub.changeFile({ repo: "basic", path }).then(
