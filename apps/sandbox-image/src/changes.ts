@@ -199,17 +199,18 @@ export const parseChanges = (stdout: string): ContainerRepoChanges[] => {
           const { additions = null, deletions = null } = counts[index] ?? {};
           const status = statusOf(record.letter);
 
-          return {
+          const file: ContainerChange = {
             path: record.path,
-            ...(record.letter === "R" && record.oldPath !== undefined
-              ? { oldPath: record.oldPath }
-              : {}),
             status,
             additions,
             deletions,
             binary: counts[index] !== undefined && additions === null,
             oldBytes: status === "added" ? null : (sizes.get(record.oldId) ?? null),
           };
+
+          return record.letter === "R" && record.oldPath !== undefined
+            ? { ...file, oldPath: record.oldPath }
+            : file;
         }),
       });
     } else if (key === "raw" || key === "numstat" || key === "sizes") {

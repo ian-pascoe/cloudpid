@@ -1,5 +1,5 @@
 // The Container's side of Changes: the scripts run for real, under bash, with real git, in a throwaway root.
-// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off
+// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
