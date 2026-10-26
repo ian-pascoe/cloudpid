@@ -370,6 +370,7 @@ const setUp = async ({
 const NAMES = [
   "settings_spend_limit_set",
   "settings_subagent_depth_set",
+  "settings_subagent_workspaces_set",
   "environment_container_size_limit_set",
   "environment_delete",
   "environment_secret_delete",
@@ -559,6 +560,50 @@ describe("settings_subagent_depth_set", () => {
     expect(calls.settings[0]?.changes).toEqual([
       { field: "extensions.subagents.maxSubagentDepth", value: 3, expected: { value: null } },
     ]);
+  });
+});
+
+describe("settings_subagent_workspaces_set", () => {
+  it("asks with the default limit as the value before, and sets the option the extension reads only on Approve", async () => {
+    const { call, calls, asked } = await setUp();
+
+    const { text } = await call("settings_subagent_workspaces_set", {
+      limit: 5,
+      reason: "Five parallel implementers",
+    });
+
+    expect(asked[0]).toMatchObject({
+      tool: "settings_subagent_workspaces_set",
+      change: "Subagent Workspace limit",
+      before: "3 Subagent Workspaces per Session (the default)",
+      after: "5 Subagent Workspaces per Session",
+      expected: null,
+    });
+    expect(calls.settings[0]?.changes).toEqual([
+      { field: "extensions.subagents.maxSubagentWorkspaces", value: 5, expected: { value: null } },
+    ]);
+    expect(text).toContain("The user approved");
+  });
+
+  it("changes nothing on Decline", async () => {
+    const { call, calls } = await setUp();
+
+    await call(
+      "settings_subagent_workspaces_set",
+      { limit: 9, reason: "More" },
+      { approve: false },
+    );
+
+    expect(calls.settings).toEqual([]);
+  });
+
+  it("asks nothing when the limit already has the value", async () => {
+    const { call, asked } = await setUp();
+
+    const { text } = await call("settings_subagent_workspaces_set", { limit: 3, reason: "Same" });
+
+    expect(text).toContain("already");
+    expect(asked).toEqual([]);
   });
 });
 

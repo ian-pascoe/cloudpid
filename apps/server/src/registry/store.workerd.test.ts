@@ -944,6 +944,101 @@ describe("the Registry store", () => {
       expect(await registry.getWorkspace("6b6b6b6b")).toMatchObject({ branch: "feature" });
     });
 
+    it("gives a Subagent Workspace the spare of its Session's Environment, recorded as the Session's", async () => {
+      const registry = fresh();
+
+      await environmentWith(registry, "0000abcd", "Cloudpid", ["app"]);
+      await registry.createSession(
+        { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d", "feature", "0000abcd") },
+        1_000,
+      );
+      await registry.upkeepSpares(["0000abcd"], ["5a5a5a5a"], 2_000);
+
+      const made = await registry.createSubagentWorkspace(
+        {
+          id: "2b3c4d5e",
+          session: "s-1",
+          agent: "agent-1",
+          branch: null,
+          base: "feature",
+          limit: 3,
+        },
+        3_000,
+      );
+
+      expect(made).toEqual({
+        id: "5a5a5a5a",
+        environment: "0000abcd",
+        branch: "cloudpid/5a5a5a5a",
+        base: "feature",
+        repos: ["app"],
+        directory: "/workspace/app",
+        createdAt: 3_000,
+        subagent: { session: "s-1", agent: "agent-1" },
+      });
+      expect(await registry.getSpare("0000abcd")).toBeNull();
+      expect(await registry.getWorkspace("5a5a5a5a")).toEqual(made);
+      expect(await registry.listSubagentWorkspaces("s-1")).toEqual([made]);
+      // The Session's own Workspace is no Subagent Workspace.
+      expect(await registry.getWorkspace("1a2b3c4d")).not.toHaveProperty("subagent");
+    });
+
+    it("answers the Subagent Workspace a subagent has again, and refuses one past the limit or for a Session not listed", async () => {
+      const registry = fresh();
+
+      await registry.createSession(
+        { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d") },
+        1_000,
+      );
+
+      const ask = (id: string, agent: string, limit = 2) =>
+        registry.createSubagentWorkspace(
+          { id, session: "s-1", agent, branch: null, base: null, limit },
+          2_000,
+        );
+
+      const first = await ask("00000001", "agent-1");
+
+      expect(first).toMatchObject({ id: "00000001", branch: "cloudpid/00000001" });
+      // Asked again (a spawn rerun after an eviction): the same Workspace, and no other made.
+      expect(await ask("00000009", "agent-1")).toEqual(first);
+      expect(await ask("00000002", "agent-2")).toMatchObject({ id: "00000002" });
+      expect(await ask("00000003", "agent-3")).toEqual({ refused: "limit", count: 2 });
+      expect(
+        await registry.createSubagentWorkspace(
+          {
+            id: "00000004",
+            session: "ghost",
+            agent: "agent-1",
+            branch: null,
+            base: null,
+            limit: 3,
+          },
+          2_000,
+        ),
+      ).toEqual({ refused: "no-session" });
+      expect(await ask("00000005", "agent-5", 9)).toMatchObject({ id: "00000005" });
+      // A branch another Workspace of the Environment is on is refused, naming it.
+      expect(
+        await registry.createSubagentWorkspace(
+          {
+            id: "00000006",
+            session: "s-1",
+            agent: "agent-6",
+            branch: "cloudpid/1a2b3c4d",
+            base: null,
+            limit: 9,
+          },
+          2_000,
+        ),
+      ).toEqual({ refused: "branch-taken", workspace: "1a2b3c4d" });
+      expect(await registry.listSubagentWorkspaces("s-1")).toHaveLength(3);
+
+      // Deleted with no Session bound to it.
+      expect(await registry.deleteWorkspace("00000001")).toBe("deleted");
+      expect(await registry.listSubagentWorkspaces("s-1")).toHaveLength(2);
+    });
+
     it("makes a new Workspace on cloudpid/<its id> when there is no spare", async () => {
       const registry = fresh();
 

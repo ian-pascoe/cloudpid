@@ -22,6 +22,7 @@ export type RemovalRegistry = Pick<
   | "deleteSession"
   | "listWorkspaces"
   | "deleteWorkspace"
+  | "listSubagentWorkspaces"
   | "getSpare"
   | "forgetSpare"
   | "deleteEnvironment"
@@ -58,19 +59,44 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
       ),
     );
 
-  /** Wipe a Session's object, then forget it: a wipe that fails leaves it listed, to try again. */
-  const deleteSession = (session: SessionRecord) =>
-    onSession("Could not delete the session", sessions.destroy(session.id)).pipe(
-      Effect.andThen(registry.deleteSession({ id: session.id })),
-      Effect.asVoid,
-    );
-
   /** A Workspace call that rejects, as the typed failure a client shows. */
   const inWorkspace = <A>(what: string, call: () => Promise<A>) =>
     Effect.tryPromise({
       try: call,
       catch: (cause) => failed(`${what}: ${reason(Cause.fail(cause))}`),
     });
+
+  /**
+   * Remove a Subagent Workspace: its object (files, Container, settings), then its record. No Session is bound to one,
+   * so nothing else goes with it.
+   */
+  const removeSubagentWorkspace = (workspace: WorkspaceRecord) =>
+    inWorkspace("Could not delete the subagent workspace's files", () =>
+      workspaces.destroy(workspaceObjectName(workspace.id)),
+    ).pipe(Effect.andThen(registry.deleteWorkspace({ id: workspace.id })), Effect.asVoid);
+
+  /**
+   * Wipe a Session's object, then its Subagent Workspaces, then forget it: a wipe that fails leaves it listed (with the
+   * Subagent Workspaces left), to try again. The object goes first, so no subagent spawned meanwhile makes another.
+   */
+  const deleteSession = (session: SessionRecord) =>
+    onSession("Could not delete the session", sessions.destroy(session.id)).pipe(
+      Effect.andThen(
+        Effect.gen(function* () {
+          for (const workspace of yield* registry.listSubagentWorkspaces({ session: session.id })) {
+            yield* removeSubagentWorkspace(workspace).pipe(
+              Effect.mapError((error) =>
+                SessionActionError.make({
+                  message: thenSaying(error.message, "The session is kept."),
+                }),
+              ),
+            );
+          }
+        }),
+      ),
+      Effect.andThen(registry.deleteSession({ id: session.id })),
+      Effect.asVoid,
+    );
 
   /**
    * Delete every Session `bound` picks (archived ones too), then `wipe` what they worked on, until `settled` says no
@@ -196,5 +222,12 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
       }
     });
 
-  return { deleteSession, removeWorkspace, deleteEnvironment, inWorkspace, onSession };
+  return {
+    deleteSession,
+    removeWorkspace,
+    removeSubagentWorkspace,
+    deleteEnvironment,
+    inWorkspace,
+    onSession,
+  };
 };

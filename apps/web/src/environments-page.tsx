@@ -13,6 +13,7 @@ import {
   type SessionRecord,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
@@ -20,6 +21,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import {
   ArrowLeft,
+  Bot,
   GitBranch,
   GitFork,
   KeyRound,
@@ -45,8 +47,9 @@ import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { cn } from "./lib/utils.ts";
 import { changeDiff } from "./line-diff.ts";
-import { navigate } from "./router.ts";
-import { SessionLink } from "./sidebar.tsx";
+import { navigate, sessionPath } from "./router.ts";
+import { SubagentWorkspaceLoss } from "./session-menu.tsx";
+import { SessionLink, sessionTitle } from "./sidebar.tsx";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import {
@@ -80,7 +83,10 @@ import {
   restartContainerAtom,
   saveEnvironmentAtom,
   startSessionAtom,
+  describeWorkspaceWork,
+  subagentWorkspacesBelow,
   workspaceListAtom,
+  workspaceWorkAtom,
   type EnvironmentDialog,
 } from "./environments-state.ts";
 import {
@@ -1381,10 +1387,155 @@ const RemoveWorkspaceDialog = ({
   );
 };
 
+/**
+ * What Workspace `id` holds that is not on the remote, read when the confirmation opens: what removing it loses.
+ */
+const UnpushedWork = ({ id }: { id: string }) => {
+  const work = useAtomValue(workspaceWorkAtom(id));
+
+  return AsyncResult.match(work, {
+    onInitial: () => (
+      <p role="status" className="text-xs text-muted-foreground">
+        Reading what it has not pushed…
+      </p>
+    ),
+    onFailure: () => (
+      <p role="alert" className="text-sm text-destructive">
+        What it has not pushed could not be read ({failureOf(work)}): it may hold work that is lost
+        with it.
+      </p>
+    ),
+    onSuccess: ({ value }) =>
+      value.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Everything in it is committed and pushed.</p>
+      ) : (
+        <p role="alert" className="text-sm text-destructive">
+          Not pushed, and lost with it: {describeWorkspaceWork(value)}.
+        </p>
+      ),
+  });
+};
+
+/**
+ * Confirm removing a Subagent Workspace by typing its branch: its subagent is deleted with it, as `subagent_delete`
+ * does, after naming what it has not pushed.
+ */
+const RemoveSubagentWorkspaceDialog = ({
+  id,
+  workspace,
+  agent,
+  session,
+}: {
+  id: string;
+  workspace: WorkspaceRecord;
+  agent: string;
+  /** The Session the subagent is in, when it is listed. */
+  session: SessionRecord | undefined;
+}) => {
+  const [typed, setTyped] = useAtom(removeWorkspaceTypedAtom(workspace.id));
+  const [removed, run] = useAtom(removeWorkspaceAtom(id));
+  const setDialog = useAtomSet(environmentDialogAtom(id));
+  const busy = removed.waiting;
+  const confirmed = deleteConfirmed(workspace.branch, typed);
+
+  // The Subagent Workspaces of the subagents below it, which go too: each that holds work not pushed is named.
+  const below = subagentWorkspacesBelow(useAtomValue(workspaceListAtom), {
+    session: workspace.subagent?.session ?? "",
+    agent,
+  });
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!confirmed || busy) return;
+
+    run(workspace.id);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        <li>
+          Subagent <span className="font-mono">{agent}</span>
+          {session === undefined ? "" : ` of “${sessionTitle(session)}”`}, and every subagent below
+          it: their work stops and their IDs are retired.
+        </li>
+        <li>Its files and Container, and those of the Subagent Workspaces below it.</li>
+      </ul>
+      <UnpushedWork id={workspace.id} />
+      {below.length > 0 && (
+        <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-destructive">
+          {Arr.map(below, (each) => (
+            <SubagentWorkspaceLoss key={each.id} workspace={each} />
+          ))}
+        </ul>
+      )}
+      <p className="text-sm text-muted-foreground">
+        What was pushed to <span className="font-mono">{workspace.branch}</span> stays on the
+        remote.
+      </p>
+      <ConfirmField
+        id={`remove-workspace-confirm-${workspace.id}`}
+        expected={workspace.branch}
+        typed={typed}
+        busy={busy}
+        onTyped={setTyped}
+      />
+      <DialogProblem problem={settledFailureOf(removed)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
+          {busy ? "Removing…" : "Remove workspace"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/** The subagent a Subagent Workspace was made for, linking to its Session. */
+const SubagentMark = ({
+  agent,
+  session,
+}: {
+  agent: string;
+  session: SessionRecord | undefined;
+}) => (
+  <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+    <Bot className="size-3.5 shrink-0" aria-hidden />
+    <span className="shrink-0">
+      subagent <span className="font-mono">{agent}</span>
+    </span>
+    {session !== undefined && (
+      <a
+        href={sessionPath(session.id)}
+        className="truncate underline-offset-2 hover:underline"
+        onClick={(event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+
+          event.preventDefault();
+          navigate(sessionPath(session.id));
+        }}
+      >
+        of {sessionTitle(session)}
+      </a>
+    )}
+  </span>
+);
+
 /** A Workspace in an Environment's card: its branch and how much is in it, with the actions on it. */
 const WorkspaceRow = ({
   workspace,
   sessions,
+  owner,
   starting,
   onStart,
   onRestart,
@@ -1393,6 +1544,8 @@ const WorkspaceRow = ({
   workspace: WorkspaceRecord;
   /** The Sessions in the Workspace, archived ones included. */
   sessions: readonly SessionRecord[];
+  /** For a Subagent Workspace: the Session its subagent is in, when it is listed. */
+  owner: SessionRecord | undefined;
   starting: boolean;
   onStart: () => void;
   onRestart: () => void;
@@ -1403,25 +1556,33 @@ const WorkspaceRow = ({
 
   return (
     <li className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-      <span className="flex min-w-0 items-center gap-2 text-sm">
-        <GitFork className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        <span className="truncate font-mono">{workspace.branch}</span>
-        <span className="shrink-0 text-xs text-muted-foreground">
-          {repos} {repos === 1 ? "repo" : "repos"} · {count ?? "no sessions"}
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="flex min-w-0 items-center gap-2 text-sm">
+          <GitFork className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="truncate font-mono">{workspace.branch}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {repos} {repos === 1 ? "repo" : "repos"}
+            {workspace.subagent === undefined ? ` · ${count ?? "no sessions"}` : ""}
+          </span>
         </span>
+        {workspace.subagent !== undefined && (
+          <SubagentMark agent={workspace.subagent.agent} session={owner} />
+        )}
       </span>
       <div className="flex items-center gap-1.5">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={starting}
-          aria-label={`New session in the ${workspace.branch} workspace`}
-          title={`New session in the ${workspace.branch} workspace`}
-          onClick={onStart}
-        >
-          <Play />
-          New session here
-        </Button>
+        {workspace.subagent === undefined && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={starting}
+            aria-label={`New session in the ${workspace.branch} workspace`}
+            title={`New session in the ${workspace.branch} workspace`}
+            onClick={onStart}
+          >
+            <Play />
+            New session here
+          </Button>
+        )}
         <Button
           size="icon"
           variant="ghost"
@@ -1584,6 +1745,7 @@ const EnvironmentCard = ({
                 key={workspace.id}
                 workspace={workspace}
                 sessions={sessions.filter((session) => session.workspace === workspace.id)}
+                owner={sessions.find((session) => session.id === workspace.subagent?.session)}
                 starting={starting}
                 onStart={() => {
                   start(workspace.id);
@@ -1648,13 +1810,21 @@ const EnvironmentCard = ({
         title={`Remove the ${removing?.branch ?? ""} workspace?`}
         description="Uncommitted changes and unpushed commits are lost for good."
       >
-        {removing !== null && (
-          <RemoveWorkspaceDialog
-            id={id}
-            workspace={removing}
-            sessions={sessions.filter((session) => session.workspace === removing.id)}
-          />
-        )}
+        {removing !== null &&
+          (removing.subagent === undefined ? (
+            <RemoveWorkspaceDialog
+              id={id}
+              workspace={removing}
+              sessions={sessions.filter((session) => session.workspace === removing.id)}
+            />
+          ) : (
+            <RemoveSubagentWorkspaceDialog
+              id={id}
+              workspace={removing}
+              agent={removing.subagent.agent}
+              session={sessions.find((session) => session.id === removing.subagent?.session)}
+            />
+          ))}
       </Dialog>
     </section>
   );

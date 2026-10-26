@@ -60,6 +60,22 @@ export type Turn = {
   answer: EntryId | null;
   error: string | null;
   delivery: Delivery | null;
+  /**
+   * For an agent with a Subagent Workspace of its own: what the turn's report ends with, its Workspace's branch and what
+   * it has not pushed as the turn settled (`handBackLine`). Absent for any other.
+   */
+  handBack?: string;
+};
+
+/**
+ * A Subagent Workspace (GLOSSARY.md), as its agent's record keeps it: the Workspace's id and branch, and where the
+ * agent's conversation works, the Workspace's Durable Object (`object`) and its directory: its Placement.
+ */
+export type AgentWorkspace = {
+  id: string;
+  branch: string;
+  object: string;
+  directory: string;
 };
 
 export type AgentRecord = {
@@ -80,6 +96,11 @@ export type AgentRecord = {
   nextTurn: number;
   /** The newest turns, oldest first. */
   turns: Turn[];
+  /**
+   * The Subagent Workspace the agent was started in (`workspace: "new"`), which its conversation's tools use. Absent for
+   * an agent that works in its parent's Workspace.
+   */
+  workspace?: AgentWorkspace;
 };
 
 /** What a `subagent_wait` returns. */
@@ -171,6 +192,28 @@ export const reportConversationOf = (
     : conversationOf(state, agent.parent);
 };
 
+/**
+ * The Subagent Workspace agent `id` works in: its own, else the nearest ancestor's that has one. Undefined for the root
+ * agent, and for an agent that works in the Session's Workspace.
+ */
+export const workspaceOf = (state: SubagentsState, id: string): AgentWorkspace | undefined => {
+  for (let agent = state.agents[id]; agent !== undefined; agent = state.agents[agent.parent]) {
+    if (agent.workspace !== undefined) return agent.workspace;
+  }
+
+  return undefined;
+};
+
+/** The Subagent Workspace conversation `conversationId` works in (`workspaceOf` its agent), if any. */
+export const conversationWorkspace = (
+  state: SubagentsState,
+  conversationId: ConversationId,
+): AgentWorkspace | undefined => {
+  const agent = agentOf(state, conversationId);
+
+  return agent === undefined ? undefined : workspaceOf(state, agent);
+};
+
 /** The direct children of `id`, oldest first. */
 export const childrenOf = (state: SubagentsState, id: string): AgentRecord[] =>
   Arr.filter(Record.values(state.agents), (agent) => agent.parent === id);
@@ -228,6 +271,48 @@ export const waitEvent = (
   message: fields.message ?? null,
   elapsed_ms: fields.elapsed_ms ?? 0,
 });
+
+/** An agent deleted with its subtree (`deleteSubtree`): what stops its conversation, and its Subagent Workspace. */
+export type DeletedAgent = Pick<AgentRecord, "id" | "conversationId"> & {
+  workspace?: AgentWorkspace;
+};
+
+/**
+ * Delete `target` and everything below it from `doc`, in a commit: each record goes, its conversation is unmapped (so no
+ * deleted agent can spawn again), its ID is retired, and every open wait on it ends `deleted`. Returns what went.
+ */
+export const deleteSubtree = (doc: SubagentsState, target: string): DeletedAgent[] => {
+  const gone: DeletedAgent[] = [];
+
+  for (const agent of subtreeOf(doc, target)) {
+    delete doc.agents[agent.id];
+    delete doc.conversations[String(agent.conversationId)];
+    doc.tombstones.push(agent.id);
+
+    const removed: DeletedAgent = { id: agent.id, conversationId: agent.conversationId };
+
+    if (agent.workspace !== undefined) removed.workspace = { ...agent.workspace };
+
+    gone.push(removed);
+  }
+
+  const ids = Arr.map(gone, (agent) => agent.id);
+
+  for (const [key, waiter] of Record.toEntries(doc.waiters)) {
+    if (!ids.includes(waiter.target) || waiter.result !== null) continue;
+
+    const entry = doc.waiters[key];
+
+    if (entry !== undefined) {
+      entry.result = waitEvent("turn", waiter.target, {
+        turn_id: waiter.turnId,
+        status: "deleted",
+      });
+    }
+  }
+
+  return gone;
+};
 
 /** The open waiter of `caller` on `target`, if one is blocked, with its wait task's ID. */
 export const openWaiter = (

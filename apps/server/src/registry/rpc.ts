@@ -1,4 +1,5 @@
 import { SettingsError } from "@cloudpid/config";
+import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
@@ -45,6 +46,7 @@ import {
   EVERY_ENVIRONMENT_SCOPE,
   type SessionRecord,
   type SessionRefusal,
+  type SubagentOwner,
   type WorkspaceRecord,
 } from "./store.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -70,6 +72,15 @@ export type SessionObjects = {
   readonly importFinish: (id: string, plan: ForkPlan) => Effect.Effect<void>;
   /** Let Session `id` take messages again once a Fork or Clone carried its files (`SessionMethods.releaseFork`). */
   readonly releaseFork: (id: string) => Effect.Effect<void>;
+  /**
+   * Delete subagent `agent` of Session `id` with its subtree and their Subagent Workspaces
+   * (`SessionMethods.deleteSubagent`); why a Subagent Workspace of theirs is still there, one line each.
+   */
+  readonly deleteSubagent: (
+    id: string,
+    agent: string,
+    workspace: string,
+  ) => Effect.Effect<ReadonlyArray<string>>;
 };
 
 /**
@@ -279,12 +290,35 @@ export const serveRegistryRpc = <R = never>(
     const failed = (message: string) => EnvironmentError.make({ message });
 
     // The deletes, shared with a Session's `environment_delete` (`removal.ts`).
-    const { deleteSession, removeWorkspace, deleteEnvironment, inWorkspace, onSession } = removals(
-      registry,
-      { workspaces, sessions },
-    );
+    const {
+      deleteSession,
+      removeWorkspace,
+      removeSubagentWorkspace,
+      deleteEnvironment,
+      inWorkspace,
+      onSession,
+    } = removals(registry, { workspaces, sessions });
 
     const notFound = (id: string) => SessionNotFound.make({ message: `No session "${id}"` });
+
+    /**
+     * Remove Subagent Workspace `workspace` as its Session's `subagent_delete` does: its subagent is deleted with the
+     * subtree below it, and their Subagent Workspaces with them (the owner confirmed losing what was not pushed). One
+     * whose Session is gone, or whose subagent is, is removed on its own.
+     */
+    const removeSubagent = (workspace: WorkspaceRecord, owner: SubagentOwner) =>
+      Effect.gen(function* () {
+        if ((yield* registry.getSession({ id: owner.session })) !== null) {
+          const kept = yield* sessions.deleteSubagent(owner.session, owner.agent, workspace.id);
+
+          if (kept.length > 0) return yield* failed(Arr.join(kept, "\n"));
+        }
+
+        // Still listed: the subagent was gone already, so nothing removed it.
+        if ((yield* registry.getWorkspace({ id: workspace.id })) !== null) {
+          yield* removeSubagentWorkspace(workspace);
+        }
+      });
 
     /** The Session registered under `id`, or a `SessionNotFound`: no object is woken for a Session nobody made. */
     const known = (id: string) =>
@@ -792,7 +826,35 @@ export const serveRegistryRpc = <R = never>(
             place === null ? Effect.succeed({ paths: [] }) : lookups.files(place, query),
           ),
         ),
-      removeWorkspace: ({ id }) => knownWorkspace(id).pipe(Effect.flatMap(removeWorkspace)),
+      removeWorkspace: ({ id }) =>
+        knownWorkspace(id).pipe(
+          Effect.flatMap((workspace) =>
+            workspace.subagent === undefined
+              ? removeWorkspace(workspace)
+              : removeSubagent(workspace, workspace.subagent),
+          ),
+        ),
+      // A clone missing or on another branch than the Workspace's is listed as not set up: its work is not known to be
+      // pushed, so the confirmation does not call it clean.
+      workspaceWork: ({ id }) =>
+        knownWorkspace(id).pipe(
+          Effect.flatMap((workspace) =>
+            inWorkspace("Could not read what the workspace has not pushed", () =>
+              workspaces.workState(workspaceObjectName(id), workspace.branch, workspace.repos),
+            ).pipe(
+              Effect.map((states) =>
+                Arr.map(unpushedWork(states, workspace.branch), (state) => {
+                  const unsettled = unsettledClone(state, workspace.branch);
+                  const { repo, uncommitted, unpushed } = state;
+
+                  return unsettled === undefined
+                    ? { repo, uncommitted, unpushed }
+                    : { repo, uncommitted, unpushed, unsettled };
+                }),
+              ),
+            ),
+          ),
+        ),
       restartContainer: ({ workspace }) =>
         knownWorkspace(workspace).pipe(
           Effect.andThen(

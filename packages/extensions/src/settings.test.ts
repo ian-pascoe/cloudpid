@@ -589,6 +589,23 @@ describe("settings_extension_set", () => {
     expect(logged).toEqual([]);
   });
 
+  it("refuses the Subagent Workspace limit, which is a Limit, pointing to settings_subagent_workspaces_set", async () => {
+    const settings = fakeSettings();
+    const tool = await toolsOver(settings.service);
+
+    expect(
+      await failure(
+        run(tool("settings_extension_set"), {
+          extension: "subagents",
+          key: "maxSubagentWorkspaces",
+          value: 9,
+          reason: "r",
+        }),
+      ),
+    ).toContain("settings_subagent_workspaces_set");
+    expect(settings.calls).toEqual([]);
+  });
+
   it("refuses a toolset that is not a list of names, which the extension would ignore with its other options", async () => {
     const settings = fakeSettings();
     const tool = await toolsOver(settings.service);

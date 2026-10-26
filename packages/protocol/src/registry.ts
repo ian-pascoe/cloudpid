@@ -138,9 +138,30 @@ export const WorkspaceRecord = Schema.Struct({
   /** Where its Sessions work: its one repo's clone, or `/workspace` (`workspaceDirectory`). */
   directory: Schema.String,
   createdAt: Schema.Finite,
+  /**
+   * For a Subagent Workspace (GLOSSARY.md): the Session and the subagent (its canonical ID) it was made for. Absent for a
+   * Workspace Sessions are started in.
+   */
+  subagent: Schema.optionalKey(Schema.Struct({ session: Schema.String, agent: Schema.String })),
 });
 
 export type WorkspaceRecord = typeof WorkspaceRecord.Type;
+
+/**
+ * What one clone of a Workspace holds that is not on the remote, or not known to be (`workspaceWork`): one whose clone
+ * is missing or has another branch than the Workspace's checked out is listed too, as not set up.
+ */
+export const WorkspaceWork = Schema.Struct({
+  repo: Schema.String,
+  /** Uncommitted changes, untracked files that are not ignored included. */
+  uncommitted: Schema.Finite,
+  /** Commits of the Workspace's branch that no remote branch has. */
+  unpushed: Schema.Finite,
+  /** Why the clone is not known to hold the Workspace's work, in words (`not set up (on cloudpid/spare, not …)`). */
+  unsettled: Schema.optionalKey(Schema.String),
+});
+
+export type WorkspaceWork = typeof WorkspaceWork.Type;
 
 /** What `createSession` is told to make the Session a new Workspace. */
 export const NEW_WORKSPACE = "new";
@@ -612,10 +633,22 @@ export class RegistryRpcs extends RpcGroup.make(
   /**
    * Remove a Workspace (`GLOSSARY.md` → Workspace removal): every Session in it (archived ones too, each as
    * `deleteSession`), then its files and Container, uncommitted changes and unpushed commits included, then its record.
-   * What it pushed stays on the remote. A failure partway leaves what is not yet deleted, to try again.
+   * What it pushed stays on the remote. A failure partway leaves what is not yet deleted, to try again. A Subagent
+   * Workspace is removed as its Session's `subagent_delete` with `discard: true` removes it: its subagent is deleted
+   * with everything below it, and their Subagent Workspaces with them.
    */
   Rpc.make("removeWorkspace", {
     payload: { id: WorkspaceId },
+    error: EnvironmentError,
+  }),
+  /**
+   * What a Workspace's clones hold that is not on the remote: per Repo, its uncommitted changes and the commits of its
+   * branch that no remote branch has; Repos with none are left out. It runs on the Workspace's Container, starting it
+   * if it is stopped. For the confirmations that remove a Subagent Workspace, or delete its Session.
+   */
+  Rpc.make("workspaceWork", {
+    payload: { id: WorkspaceId },
+    success: Schema.Array(WorkspaceWork),
     error: EnvironmentError,
   }),
   /**

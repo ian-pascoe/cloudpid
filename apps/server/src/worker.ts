@@ -178,6 +178,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
       importEntries: (id, entries) => Effect.orDie(sessions.getByName(id).importEntries(entries)),
       importFinish: (id, plan) => Effect.orDie(sessions.getByName(id).importFinish(plan)),
       releaseFork: (id) => Effect.orDie(sessions.getByName(id).releaseFork()),
+      deleteSubagent: (id, agent, workspace) =>
+        Effect.orDie(sessions.getByName(id).deleteSubagent({ agent, workspace })),
     };
 
     // Built once per isolate, so a cleanup that found nothing left is not asked again.

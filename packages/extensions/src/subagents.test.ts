@@ -3,9 +3,17 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import { answer, call, context, gate, openSubagentHarness } from "./subagents/harness.fixture.ts";
-import { isAgentConversation, stopConversation } from "./subagents/owner.ts";
-import { SubagentsDoc } from "./subagents/state.ts";
+import {
+  answer,
+  call,
+  context,
+  fakeSubagentWorkspaces,
+  gate,
+  openSubagentHarness,
+} from "./subagents/harness.fixture.ts";
+import type { SubagentWorkspaceHost } from "./subagents.ts";
+import { deleteAgent, isAgentConversation, stopConversation } from "./subagents/owner.ts";
+import { conversationWorkspace, SubagentsDoc } from "./subagents/state.ts";
 
 describe("subagents", () => {
   it("reports a child's answer back to its parent as a follow-up when nobody waits for it", async () => {
@@ -865,5 +873,432 @@ describe("subagents", () => {
 
     expect((await session.state()).tombstones).toContain("agent-1");
     expect(await isAgentConversation(session.harness, child, context)).toBe(false);
+  });
+});
+
+describe("Subagent Workspaces", () => {
+  const CLEAN =
+    "[Subagent Workspace 00000001 | branch cloudpid/00000001 | everything is committed and pushed]";
+
+  it("starts a child in a Workspace of its own, tells it its branch, and records it", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    workspaces.warn(["app has 1 commit not pushed on main: it does not reach the child"]);
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Fix it", workspace: "new", base: "main" }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    expect(workspaces.requests).toEqual([
+      { agent: "agent-1", parent: null, base: "main", branch: undefined, limit: 3 },
+    ]);
+
+    const spawned = (await session.texts("toolResult"))[0];
+
+    expect(spawned).toContain("Subagent Workspace 00000001, on branch cloudpid/00000001");
+    expect(spawned).toContain(
+      "warning: app has 1 commit not pushed on main: it does not reach the child",
+    );
+
+    const agent = (await session.state()).agents["agent-1"]!;
+
+    expect(agent.workspace).toEqual({
+      id: "00000001",
+      branch: "cloudpid/00000001",
+      object: "ws:00000001",
+      directory: "/workspace/app",
+    });
+
+    const [first] = await session.texts("user", agent.conversationId);
+
+    expect(first).toContain("on the branch cloudpid/00000001");
+    expect(first).toContain("push cloudpid/00000001");
+    expect(first).toMatch(/Fix it$/);
+  });
+
+  it("removes the Workspace of a spawn refused after it was made", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+    let taking: (() => Promise<void>) | undefined;
+
+    const host: SubagentWorkspaceHost = {
+      ...workspaces.host,
+      create: async (request) => {
+        const made = await workspaces.host.create(request);
+
+        await taking?.();
+
+        return made;
+      },
+    };
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Delegate it"
+          ? call(["subagent", { task: "Work", workspace: "new" }])
+          : answer("Noted."),
+      {},
+      [],
+      host,
+    );
+
+    // Another spawn takes agent-1's ID while its Workspace is made.
+    taking = () =>
+      session.harness.commit(async (tx) => {
+        (await tx.doc(SubagentsDoc)).nextIndex["root"] = 2;
+      }, context);
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    expect((await session.texts("toolResult"))[0]).toContain("agent-1 was taken");
+    expect(workspaces.removed).toEqual(["00000001"]);
+  });
+
+  it("ends each report with the child's branch and what it has not pushed", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+    const ready = gate();
+
+    const session = await openSubagentHarness(
+      async (request) => {
+        if (request.agent === "agent-1") {
+          if (request.text.includes("again")) {
+            await ready.promise;
+
+            return answer("Second.");
+          }
+
+          return answer("First.");
+        }
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        if (request.text === "Ask again") {
+          return call(
+            ["agent_message", { agent_id: "agent-1", message: "Work again" }],
+            ["subagent_wait", { agent_id: "agent-1" }],
+          );
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    expect((await session.texts("user"))[1]).toBe(
+      `[Subagent result | agent=agent-1 | turn=turn-1 | status=completed]\nFirst.\n\n${CLEAN}`,
+    );
+
+    workspaces.work.set("00000001", [
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 1,
+        unpushed: 2,
+        onRemote: true,
+        head: "cloudpid/00000001",
+      },
+    ]);
+
+    const asked = session.prompt("Ask again");
+
+    await session.until(
+      async () => Object.keys((await session.state()).waiters).length === 1,
+      "the wait to block",
+    );
+    ready.resolve();
+    await asked;
+    await session.settle();
+
+    expect((await session.texts("toolResult")).at(-1)).toMatch(
+      /^agent-1 turn-2 completed \([\d.]+s\)\n\nSecond\.\n\n\[Subagent Workspace 00000001 \| branch cloudpid\/00000001 \| app: 2 commits not pushed, 1 uncommitted change\]$/,
+    );
+  });
+
+  it("refuses a spawn the Session refuses a Workspace for, and base or branch for a shared one", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    workspaces.refuse(
+      "This Session has 3 Subagent Workspaces, the Subagent Workspace limit (3): delete one with subagent_delete, or ask for a higher limit with settings_subagent_workspaces_set.",
+    );
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.text === "Delegate it") {
+          return call(
+            ["subagent", { task: "Work", workspace: "new" }],
+            ["subagent", { task: "Work", branch: "mine" }],
+          );
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    const [limited, shared] = await session.texts("toolResult");
+
+    expect(limited).toContain("the Subagent Workspace limit (3)");
+    expect(limited).toContain("settings_subagent_workspaces_set");
+    expect(shared).toContain('base and branch are only for workspace: "new"');
+    expect((await session.state()).agents).toEqual({});
+  });
+
+  it("gives a grandchild its parent's Workspace when shared, and starts a new one from it", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1" && request.text.includes("Split it")) {
+          return call(
+            ["subagent", { task: "Shared part", agent_id: "near" }],
+            ["subagent", { task: "Own part", agent_id: "far", workspace: "new" }],
+          );
+        }
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Split it", workspace: "new", delegation: "fanout" }]);
+        }
+
+        return answer("Done.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    const own = workspaces.made.get("agent-1");
+
+    expect(workspaces.requests[1]).toMatchObject({ agent: "agent-1.far", parent: own });
+
+    const state = await session.state();
+
+    expect(state.agents["agent-1.near"]?.workspace).toBeUndefined();
+    expect(conversationWorkspace(state, state.agents["agent-1.near"]!.conversationId)).toEqual(own);
+    expect(conversationWorkspace(state, state.agents["agent-1.far"]!.conversationId)).toMatchObject(
+      { id: "00000002" },
+    );
+  });
+
+  it("refuses to delete a child whose Workspace has work not pushed, unless told to discard it, and removes it", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        if (request.text === "Remove it") {
+          return call(["subagent_delete", { agent_id: "agent-1" }]);
+        }
+
+        if (request.text === "Discard it") {
+          return call(["subagent_delete", { agent_id: "agent-1", discard: true }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+    workspaces.work.set("00000001", [
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 0,
+        unpushed: 3,
+        onRemote: false,
+        head: "cloudpid/00000001",
+      },
+    ]);
+    await session.prompt("Remove it");
+    await session.settle();
+
+    expect((await session.texts("toolResult")).at(-1)).toContain(
+      "agent-1 (branch cloudpid/00000001): app: 3 commits not pushed",
+    );
+    expect((await session.state()).agents["agent-1"]).toBeDefined();
+    expect(workspaces.removed).toEqual([]);
+
+    await session.prompt("Discard it");
+    await session.settle();
+
+    expect((await session.state()).tombstones).toContain("agent-1");
+    expect(workspaces.removed).toEqual(["00000001"]);
+  });
+
+  it("does not call a Workspace clean whose clone was not set up on its branch, in the report or the delete", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        if (request.text === "Remove it") {
+          return call(["subagent_delete", { agent_id: "agent-1" }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    // The spare's clone was never switched to the child's branch, and the other Repo was never cloned.
+    workspaces.work.set("00000001", [
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 0,
+        unpushed: 0,
+        onRemote: false,
+        head: "cloudpid/spare",
+      },
+      { repo: "api", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
+    ]);
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    const unsettled =
+      "app: not set up (on cloudpid/spare, not cloudpid/00000001); api: not set up (no clone)";
+
+    expect((await session.texts("user"))[1]).toContain(
+      `[Subagent Workspace 00000001 | branch cloudpid/00000001 | ${unsettled}]`,
+    );
+
+    await session.prompt("Remove it");
+    await session.settle();
+
+    expect((await session.texts("toolResult")).at(-1)).toContain(
+      `agent-1 (branch cloudpid/00000001): ${unsettled}`,
+    );
+    expect((await session.state()).agents["agent-1"]).toBeDefined();
+    expect(workspaces.removed).toEqual([]);
+  });
+
+  it("removes a child's Workspace with it when everything is pushed", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        if (request.text === "Remove it") {
+          return call(["subagent_delete", { agent_id: "agent-1" }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+    await session.prompt("Remove it");
+    await session.settle();
+
+    expect(workspaces.removed).toEqual(["00000001"]);
+  });
+
+  it("lets the owner delete a child with its Workspace, unpushed work and all, as the Environments page's Remove does", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    await session.prompt("Delegate it");
+    await session.settle();
+    workspaces.work.set("00000001", [
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 2,
+        unpushed: 1,
+        onRemote: true,
+        head: "cloudpid/00000001",
+      },
+    ]);
+
+    // A Workspace left under the ID by another agent's spawn deletes no agent that does not work in it.
+    expect(
+      await deleteAgent(session.harness, "agent-1", "0000000f", workspaces.host, context),
+    ).toEqual({ deleted: [], kept: [] });
+    expect(workspaces.removed).toEqual([]);
+
+    expect(
+      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context),
+    ).toEqual({
+      deleted: ["agent-1"],
+      kept: [],
+    });
+    expect((await session.state()).tombstones).toContain("agent-1");
+    expect(workspaces.removed).toEqual(["00000001"]);
+
+    // Asked again, as a retried RPC does, nothing more is deleted.
+    expect(
+      await deleteAgent(session.harness, "agent-1", "00000001", workspaces.host, context),
+    ).toEqual({
+      deleted: [],
+      kept: [],
+    });
   });
 });

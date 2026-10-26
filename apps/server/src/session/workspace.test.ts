@@ -1,11 +1,17 @@
 // @effect-diagnostics asyncFunction:off
 import { describe, expect, it } from "vitest";
+import type { SubagentsState } from "@cloudpid/extensions/subagents";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import {
   cachedPlacement,
   type Placement,
   readyPlacement,
+  sessionWorkspace,
   WORKSPACE_CHECKED_FOR,
+  type WorkspaceNamespace,
   workspacePlacement,
+  workspaceReadiness,
 } from "./workspace.ts";
 
 const UNLISTED: Placement = { workspace: null, object: "ws:unlisted", directory: "/workspace" };
@@ -166,5 +172,96 @@ describe("readyPlacement", () => {
 
     expect(await ready()).toEqual(IN_PI);
     expect(prepared).toHaveLength(2);
+  });
+});
+
+describe("sessionWorkspace", () => {
+  const CHILD_WORKSPACE = {
+    id: "9f9f9f9f",
+    branch: "cloudpid/9f9f9f9f",
+    object: "ws:9f9f9f9f",
+    directory: "/workspace/pi",
+  };
+
+  /** Agent `impl` (conversation 5) in a Subagent Workspace of its own, and `impl.1` (conversation 6), sharing it. */
+  const state: Pick<SubagentsState, "conversations"> & {
+    readonly agents: Record<string, { readonly parent: string; readonly workspace?: unknown }>;
+  } = {
+    agents: {
+      impl: { parent: "root", workspace: CHILD_WORKSPACE },
+      "impl.1": { parent: "impl" },
+    },
+    conversations: { "5": "impl", "6": "impl.1" },
+  };
+
+  const conversation = (id: number) => ({
+    // SAFETY: a conversation ID is a number; these name the conversations of `state`.
+    conversationId: id as ConversationId,
+    // SAFETY: the Session's Workspace reads only the Subagents document.
+    read: { snapshot: async () => state } as never,
+    context: BACKGROUND_CONTEXT,
+  });
+
+  const setUp = () => {
+    const stopped: string[] = [];
+    const prepared: string[] = [];
+
+    const namespace: WorkspaceNamespace = {
+      // SAFETY: the Container's calls are the only ones made of the stubs.
+      getByName: (object: string) =>
+        ({
+          stopContainer: async () => {
+            stopped.push(object);
+
+            return { wasRunning: true };
+          },
+        }) as never,
+    };
+
+    const workspace = sessionWorkspace({
+      namespace,
+      placement: async () => IN_PI,
+      prepare: async (id) => {
+        prepared.push(id);
+      },
+    });
+
+    return { workspace, stopped, prepared };
+  };
+
+  it("stops the Container of the calling conversation's Workspace: a subagent's own, a shared grandchild's parent's, else the Session's", async () => {
+    const { workspace, stopped } = setUp();
+
+    for (const id of [5, 6, 1]) {
+      await workspace.container.restart({ fresh: false, target: conversation(id) });
+    }
+
+    expect(stopped).toEqual(["ws:9f9f9f9f", "ws:9f9f9f9f", IN_PI.object]);
+  });
+
+  it("readies nothing to stop a Container, which may be what no longer answers", async () => {
+    const { workspace, prepared } = setUp();
+
+    await workspace.container.restart({ fresh: true, target: conversation(5) });
+
+    expect(prepared).toEqual([]);
+  });
+});
+
+describe("workspaceReadiness", () => {
+  it("counts each Workspace apart: a Subagent Workspace is readied on its own first use", async () => {
+    const prepared: string[] = [];
+
+    const ready = workspaceReadiness({
+      prepare: async (id) => {
+        prepared.push(id);
+      },
+      now: () => 0,
+    });
+
+    await Promise.all([ready("0a1b2c3d"), ready("9f9f9f9f"), ready("9f9f9f9f")]);
+    await ready("0a1b2c3d");
+
+    expect(prepared).toEqual(["0a1b2c3d", "9f9f9f9f"]);
   });
 });

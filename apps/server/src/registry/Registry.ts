@@ -84,6 +84,7 @@ import {
   type RepoChange,
   type SessionRecord,
   type SessionRefusal,
+  type SubagentWorkspaceRefusal,
   type SessionStatus,
   type SpareUpkeep,
   type WorkspaceRecord,
@@ -342,6 +343,22 @@ export type RegistryMethods = {
   }) => Effect.Effect<WorkspaceSetupWithSettings | null>;
   /** Every Workspace, newest first. */
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
+  /**
+   * Register a Subagent Workspace for subagent `agent` of Session `session` (`RegistryStore.createSubagentWorkspace`),
+   * under a fresh id unless the Environment's spare is taken; the one the subagent has already is answered again. A
+   * refusal says why.
+   */
+  readonly createSubagentWorkspace: (input: {
+    readonly session: string;
+    readonly agent: string;
+    readonly branch: string | null;
+    readonly base: string | null;
+    readonly limit: number;
+  }) => Effect.Effect<WorkspaceRecord | SubagentWorkspaceRefusal>;
+  /** Session `session`'s Subagent Workspaces, newest first. */
+  readonly listSubagentWorkspaces: (input: {
+    readonly session: string;
+  }) => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
   /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
   readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<Deletion>;
   /**
@@ -779,6 +796,18 @@ export const RegistryLive = Registry.make(
               return setup === null ? Effect.succeed(null) : withSettings(setup);
             }),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
+          createSubagentWorkspace: (input) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              // Eight hex digits rarely collide; one that does (a spare's too) is drawn again.
+              let id = yield* newWorkspaceId;
+
+              while (store.getWorkspaceSetup(id) !== null) id = yield* newWorkspaceId;
+
+              return store.createSubagentWorkspace({ ...input, id }, now);
+            }),
+          listSubagentWorkspaces: ({ session }) =>
+            Effect.sync(() => store.listSubagentWorkspaces(session)),
           deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
           upkeepSpares: ({ environments }) =>
             Effect.gen(function* () {

@@ -1,6 +1,7 @@
-import { MAX_TITLE_LENGTH, type SessionRecord } from "@cloudpid/protocol";
+import { MAX_TITLE_LENGTH, type SessionRecord, type WorkspaceRecord } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
+import * as Arr from "effect/Array";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, GitFork, Pencil, Trash2 } from "lucide-react";
@@ -12,6 +13,12 @@ import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
 import type { SessionActions as AllSessionActions } from "./session-actions.ts";
+import {
+  describeWorkspaceWork,
+  subagentWorkspacesOf,
+  workspaceListAtom,
+  workspaceWorkAtom,
+} from "./environments-state.ts";
 import {
   deleteSessionAtom,
   lastInWorkspace,
@@ -90,6 +97,50 @@ const RenameSessionDialog = ({ rename }: { rename: Rename }) => {
   );
 };
 
+/** A Subagent Workspace a delete removes, named when it holds work that is not pushed. */
+export const SubagentWorkspaceLoss = ({ workspace }: { workspace: WorkspaceRecord }) => {
+  const work = useAtomValue(workspaceWorkAtom(workspace.id));
+  const agent = workspace.subagent?.agent ?? "";
+
+  const said = AsyncResult.match(work, {
+    onInitial: () => "reading what it has not pushed…",
+    onFailure: () => "what it has not pushed could not be read",
+    onSuccess: ({ value }) => (value.length === 0 ? null : describeWorkspaceWork(value)),
+  });
+
+  if (said === null) return null;
+
+  return (
+    <li>
+      Subagent <span className="font-mono">{agent}</span> on{" "}
+      <span className="font-mono">{workspace.branch}</span>: {said}
+    </li>
+  );
+};
+
+/**
+ * The Session's Subagent Workspaces, which go with it: each that holds work not pushed is named, with that work.
+ */
+const SubagentWorkspacesLost = ({ session }: { session: SessionRecord }) => {
+  const workspaces = subagentWorkspacesOf(useAtomValue(workspaceListAtom), session.id);
+
+  if (workspaces.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1 text-sm">
+      <p>
+        Its {workspaces.length === 1 ? "Subagent Workspace is" : "Subagent Workspaces are"} removed
+        with it, with what was not pushed:
+      </p>
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-destructive">
+        {Arr.map(workspaces, (workspace) => (
+          <SubagentWorkspaceLoss key={workspace.id} workspace={workspace} />
+        ))}
+      </ul>
+    </div>
+  );
+};
+
 /**
  * Confirm deleting a Session: what goes (its conversations and history) and what stays (its files), or, for the last
  * Session in its Workspace, that the Workspace goes too. Deleting a running Session stops it first, which the dialog
@@ -141,6 +192,7 @@ const DeleteSessionDialog = ({
         </>
       }
     >
+      {open && <SubagentWorkspacesLost session={session} />}
       <DialogProblem problem={problem} />
       <DialogActions>
         <Button variant="outline" disabled={deleting} onClick={close}>

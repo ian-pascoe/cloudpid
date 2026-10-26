@@ -5,6 +5,7 @@ import {
   type AgentRecord,
   isSessionBranch,
   type SubagentsState,
+  workspaceOf,
 } from "@cloudpid/extensions/subagents";
 import {
   type ConversationId,
@@ -63,15 +64,22 @@ export const summarizeTaskGraph = (graph: TaskGraph, state: SubagentsState): Tas
     return state.conversations[String(id)] ?? (isSessionBranch(state, id) ? ROOT : "unknown");
   };
 
-  const agents = Arr.map(inTreeOrder(Record.values(state.agents), ROOT), (agent): GraphAgent => ({
-    id: agent.id,
-    parent: agent.parent,
-    // SAFETY: the conversation ID of an agent the Harness created, a pi-durable conversation ID.
-    conversationId: agent.conversationId as ConversationId,
-    role: agent.contract.role,
-    model: agent.contract.model,
-    status: working.has(agent.conversationId) ? "working" : "idle",
-  }));
+  const agents = Arr.map(inTreeOrder(Record.values(state.agents), ROOT), (agent): GraphAgent => {
+    const shown: GraphAgent = {
+      id: agent.id,
+      parent: agent.parent,
+      // SAFETY: the conversation ID of an agent the Harness created, a pi-durable conversation ID.
+      conversationId: agent.conversationId as ConversationId,
+      role: agent.contract.role,
+      model: agent.contract.model,
+      status: working.has(agent.conversationId) ? "working" : "idle",
+    };
+
+    // The Subagent Workspace it works in, shown in its thread's header.
+    const workspace = workspaceOf(state, agent.id);
+
+    return workspace === undefined ? shown : { ...shown, branch: workspace.branch };
+  });
 
   const background = Arr.map(
     Arr.take(

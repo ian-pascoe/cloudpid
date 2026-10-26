@@ -1,9 +1,10 @@
 // The `container` extension (`docs/spec.md` → Container and Toolchains → Restart by the agent, Resize by the agent): the
-// tools that act on the Session's Workspace's Container. `container_restart` stops it so the next command starts a new
-// one: the agent's way out of a Container that no longer answers (every command hangs, `echo` included), which it cannot
-// fix with a command. `container_resize` restarts it at another size, up to its Environment's size limit, until the idle
-// stop (GLOSSARY.md → Container resize). Both reach the Container only through `WorkspaceContainer`, which the Session
-// provides over its Workspace DO, and nothing here runs a command.
+// tools that act on the Container of the calling conversation's Workspace (the Session's, or its Subagent Workspace).
+// `container_restart` stops it so the next command starts a new one: the agent's way out of a Container that no longer
+// answers (every command hangs, `echo` included), which it cannot fix with a command. `container_resize` restarts it at
+// another size, up to its Environment's size limit, until the idle stop (GLOSSARY.md → Container resize). Both reach the
+// Container only through `WorkspaceContainer`, which the Session provides over the conversation's Workspace DO, and
+// nothing here runs a command.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   compareInstances,
@@ -18,6 +19,7 @@ import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { type ConversationTarget, conversationTarget } from "./conversation-target.ts";
 
 export const extensionName = "container";
 
@@ -41,18 +43,27 @@ export type ContainerResizeOutcome =
       readonly snapshotted: boolean;
     };
 
-/** The Session's Workspace's Container, as `container_restart` and `container_resize` stop it. */
+/**
+ * The Container of the Workspace a conversation works in (`target`: the Session's Workspace, or the conversation's
+ * Subagent Workspace), as `container_restart` and `container_resize` stop it.
+ */
 export interface ContainerControl {
   /**
    * Stop the Container if it runs, so the next command starts a new one: from the Workspace's last snapshot, or, when
    * `fresh`, with the snapshot forgotten, from the Environment's Build or the image. Answers whether one was running.
    */
-  restart(options: { readonly fresh: boolean }): Promise<{ readonly wasRunning: boolean }>;
+  restart(options: {
+    readonly fresh: boolean;
+    readonly target: ConversationTarget;
+  }): Promise<{ readonly wasRunning: boolean }>;
   /**
    * Have the next launch start on `size` (until the idle stop) if the Environment's size limit allows it: a running
    * Container is snapshotted and stopped first, unless it already runs on `size`.
    */
-  resize(options: { readonly size: InstanceType }): Promise<ContainerResizeOutcome>;
+  resize(options: {
+    readonly size: InstanceType;
+    readonly target: ConversationTarget;
+  }): Promise<ContainerResizeOutcome>;
 }
 
 /** The Container the tools act on: the Session provides its Workspace's. */
@@ -121,11 +132,12 @@ const ContainerRestart = defineEffectTool({
   parameters: RestartParameters,
   executionMode: "sequential",
   replay: "unsafe",
-  execute: Effect.fnUntraced(function* ({ fresh = false }) {
+  execute: Effect.fnUntraced(function* ({ fresh = false }, api) {
     const container = yield* WorkspaceContainer;
+    const target = yield* conversationTarget(api);
 
     const { wasRunning } = yield* Effect.tryPromise({
-      try: () => container.restart({ fresh }),
+      try: () => container.restart({ fresh, target }),
       catch: (cause) =>
         ContainerError.make({ message: `Could not restart the container: ${messageOf(cause)}` }),
     });
@@ -209,11 +221,12 @@ const ContainerResize = defineEffectTool({
   parameters: ResizeParameters,
   executionMode: "sequential",
   replay: "unsafe",
-  execute: Effect.fnUntraced(function* ({ size }) {
+  execute: Effect.fnUntraced(function* ({ size }, api) {
     const container = yield* WorkspaceContainer;
+    const target = yield* conversationTarget(api);
 
     const resized = yield* Effect.tryPromise({
-      try: () => container.resize({ size }),
+      try: () => container.resize({ size, target }),
       catch: (cause) =>
         ContainerError.make({ message: `Could not resize the container: ${messageOf(cause)}` }),
     });

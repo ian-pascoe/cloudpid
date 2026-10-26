@@ -58,11 +58,68 @@ import {
   restartContainerAtom,
   saveEnvironmentAtom,
   startSessionAtom,
+  describeWorkspaceWork,
+  subagentWorkspacesBelow,
+  subagentWorkspacesOf,
   workspaceBranchesAtom,
   workspaceListAtom,
   workspacesAtom,
 } from "./environments-state.ts";
 import { EMPTY_SECRET_DRAFT, EVERY_ENVIRONMENT } from "./environments.ts";
+
+describe("Subagent Workspaces on the Environments page", () => {
+  it("says what a Workspace has not pushed, per Repo", () => {
+    expect(
+      describeWorkspaceWork([
+        { repo: "app", uncommitted: 1, unpushed: 2 },
+        { repo: "docs", uncommitted: 3, unpushed: 0 },
+      ]),
+    ).toBe("app: 2 commits not pushed, 1 uncommitted change; docs: 3 uncommitted changes");
+    expect(
+      describeWorkspaceWork([
+        {
+          repo: "app",
+          uncommitted: 1,
+          unpushed: 0,
+          unsettled: "not set up (on cloudpid/spare, not cloudpid/0000abcd)",
+        },
+      ]),
+    ).toBe("app: not set up (on cloudpid/spare, not cloudpid/0000abcd), 1 uncommitted change");
+  });
+
+  it("finds a Session's Subagent Workspaces in the listing", () => {
+    const listed = {
+      id: "0000abcd",
+      environment: "default",
+      branch: "cloudpid/0000abcd",
+      base: null,
+      repos: [],
+      directory: "/workspace",
+      createdAt: 0,
+    };
+
+    const owned = { ...listed, id: "0000beef", subagent: { session: "s1", agent: "agent-1" } };
+
+    expect(subagentWorkspacesOf([listed, owned], "s1")).toEqual([owned]);
+    expect(subagentWorkspacesOf(null, "s1")).toEqual([]);
+
+    const below = {
+      ...listed,
+      id: "0000cafe",
+      subagent: { session: "s1", agent: "agent-1.agent-1" },
+    };
+
+    const sibling = { ...listed, id: "0000f00d", subagent: { session: "s1", agent: "agent-10" } };
+    const elsewhere = { ...below, id: "0000dead", subagent: { session: "s2", agent: "agent-1.x" } };
+
+    expect(
+      subagentWorkspacesBelow([listed, owned, below, sibling, elsewhere], {
+        session: "s1",
+        agent: "agent-1",
+      }),
+    ).toEqual([below]);
+  });
+});
 
 const environment = (
   id: string,

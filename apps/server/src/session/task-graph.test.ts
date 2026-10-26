@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectRecord:off preferEffectArray:off -- test data built with native arrays and records.
-import type { SubagentsState } from "@cloudpid/extensions/subagents";
+import type { AgentRecord, SubagentsState } from "@cloudpid/extensions/subagents";
 import type { ConversationId, TaskGraph, TaskGraphNode, TaskId } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { MAX_BACKGROUND_TASKS, summarizeTaskGraph } from "./task-graph.ts";
@@ -58,7 +58,9 @@ const agent = (
   turns: [],
 });
 
-const stateOf = (...agents: ReturnType<typeof agent>[]): SubagentsState => ({
+const stateOf = (
+  ...agents: Array<ReturnType<typeof agent> & Partial<AgentRecord>>
+): SubagentsState => ({
   agents: Object.fromEntries(agents.map((each) => [each.id, each])),
   conversations: Object.fromEntries(agents.map((each) => [String(each.conversationId), each.id])),
   tombstones: [],
@@ -88,6 +90,29 @@ describe("summarizeTaskGraph", () => {
         model: "anthropic/claude-haiku-5",
         status: "idle",
       },
+    ]);
+  });
+
+  it("names the branch of the Subagent Workspace each subagent works in, its own or its parent's", () => {
+    const workspace = {
+      id: "9f9f9f9f",
+      branch: "cloudpid/9f9f9f9f",
+      object: "ws:9f9f9f9f",
+      directory: "/workspace",
+    };
+
+    const state = stateOf(
+      { ...agent("agent-1", "root", 2, 1), workspace },
+      agent("agent-1.a", "agent-1", 3, 2),
+      agent("agent-2", "root", 4, 3),
+    );
+
+    expect(
+      summarizeTaskGraph(graphOf(), state).agents.map((each) => [each.id, each.branch]),
+    ).toEqual([
+      ["agent-1", "cloudpid/9f9f9f9f"],
+      ["agent-1.a", "cloudpid/9f9f9f9f"],
+      ["agent-2", undefined],
     ]);
   });
 

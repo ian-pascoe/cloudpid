@@ -41,6 +41,11 @@ const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): Lifecycl
   carry: async (branch, repos) => {
     calls.push(`carry:${branch}:${repos.length}`);
   },
+  workState: async (branch) => {
+    calls.push(`workState:${branch}`);
+
+    return [];
+  },
   ...overrides,
 });
 

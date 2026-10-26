@@ -20,7 +20,9 @@ import {
   prepareWorkspaceScript,
   repoSetupScript,
   repoStartScript,
+  parseWorkState,
   type WorkspaceClones,
+  workStateScript,
 } from "@cloudpid/sandbox-image/workspaces";
 
 /** A Workspace root, a Setup Script state, and bare remotes `app` and `api` whose default branch is `main`. */
@@ -659,5 +661,127 @@ describe("carrying a Workspace to a Fork's new one", () => {
 
     expect(sh(carryWorkspaceScript(["app", "api"], FORK, root)).status).toBe(0);
     expect(git(`ls-remote ${api.origin} refs/heads/${FORK}`, api.work)).toBe("");
+  });
+});
+
+describe("the work a Workspace has not pushed", () => {
+  const BRANCH = "cloudpid/1a2b3c4d";
+
+  /** A Workspace whose clones are made on `BRANCH`, and what the script reads of `branch` there. */
+  const made = () => {
+    const workspace = container();
+    const prepared = workspace.prepare();
+
+    if (prepared.status !== 0) throw new Error(prepared.stderr);
+
+    const read = (branch: string = BRANCH, repos: ReadonlyArray<string> = ["app", "api"]) => {
+      const ran = workspace.sh(workStateScript(repos, branch, workspace.root));
+
+      expect(ran.status, ran.stderr).toBe(0);
+
+      return parseWorkState(ran.stdout, repos);
+    };
+
+    return { ...workspace, read };
+  };
+
+  it("finds nothing in clones fresh from the remote, whose branch is not pushed yet but has no commit of its own", () => {
+    const { read } = made();
+
+    expect(read()).toEqual([
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: BRANCH },
+      { repo: "api", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: BRANCH },
+    ]);
+  });
+
+  it("says which branch a clone a set-up left behind has checked out, and none for a detached HEAD", () => {
+    const { root, git, read } = made();
+
+    // As a spare's clone is when checking out the Workspace's branch over it failed.
+    git("checkout -q -b cloudpid/spare", join(root, "app"));
+    git("checkout -q --detach", join(root, "api"));
+
+    expect(read()).toEqual([
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 0,
+        unpushed: 0,
+        onRemote: false,
+        head: "cloudpid/spare",
+      },
+      { repo: "api", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
+    ]);
+  });
+
+  it("takes a Repo the read printed nothing for as not cloned", () => {
+    expect(parseWorkState("app\t1\t0\t0\t1\tmain\nnoise\n", ["app", "api"])).toEqual([
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: true, head: "main" },
+      { repo: "api", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
+    ]);
+  });
+
+  it("counts the commits on the branch no remote branch has, and the uncommitted changes", () => {
+    const { root, git, read } = made();
+    const dir = join(root, "app");
+
+    writeFileSync(join(dir, "one.txt"), "one\n");
+    git("add one.txt", dir);
+    git("commit -q -m one", dir);
+    writeFileSync(join(dir, "two.txt"), "two\n");
+    git("add two.txt", dir);
+    git("commit -q -m two", dir);
+    writeFileSync(join(dir, "README.md"), "changed\n");
+    writeFileSync(join(dir, "new.txt"), "untracked\n");
+
+    expect(read()[0]).toEqual({
+      repo: "app",
+      cloned: true,
+      uncommitted: 2,
+      unpushed: 2,
+      onRemote: false,
+      head: BRANCH,
+    });
+  });
+
+  it("counts only what is ahead of the remote branch once it is pushed", () => {
+    const { root, git, read } = made();
+    const dir = join(root, "app");
+
+    writeFileSync(join(dir, "one.txt"), "one\n");
+    git("add one.txt", dir);
+    git("commit -q -m one", dir);
+    git(`push -q origin ${BRANCH}`, dir);
+    writeFileSync(join(dir, "two.txt"), "two\n");
+    git("add two.txt", dir);
+    git("commit -q -m two", dir);
+
+    expect(read()[0]).toEqual({
+      repo: "app",
+      cloned: true,
+      uncommitted: 0,
+      unpushed: 1,
+      onRemote: true,
+      head: BRANCH,
+    });
+  });
+
+  it("reads another branch than the one checked out, and says when a Repo is not cloned", () => {
+    const { root, read, sh } = made();
+
+    sh(`rm -rf ${join(root, "api")}`);
+
+    expect(read("main")).toEqual([
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: true, head: BRANCH },
+      { repo: "api", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
+    ]);
+  });
+
+  it("says a branch the clone does not have has nothing unpushed", () => {
+    const { read } = made();
+
+    expect(read("feature", ["app"])).toEqual([
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: BRANCH },
+    ]);
   });
 });
