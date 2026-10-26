@@ -77,8 +77,8 @@ const subagentLabel = (argument: string | undefined, lookups: PaneLookups): Pane
 };
 
 /**
- * The Pane types: the New pane, the Subagents Pane, the Session tree Pane and the Browser Pane, one each per Session, a
- * Subagent Pane per subagent the owner opens (`subagent:<conversationId>`), and a Live View per Browser Handoff waiting
+ * The Pane types: the New pane, the Subagents Pane, the Session tree Pane, the Browser Pane and the Diff pane, one each
+ * per Session, a Subagent Pane per subagent the owner opens (`subagent:<conversationId>`), and a Live View per Browser Handoff waiting
  * (`live-view:<requestId>`). The Terminal (#139) joins them here, and in the New pane's choices (`new-pane.tsx`) if the
  * owner opens it.
  */
@@ -93,6 +93,7 @@ export const PANE_TYPES = [
   },
   { id: "tree", multiple: false, label: () => ({ name: "Tree" }) },
   { id: "browser", multiple: false, label: () => ({ name: "Browser" }) },
+  { id: "diff", multiple: false, label: () => ({ name: "Diff" }) },
   { id: "live-view", multiple: true, label: liveViewLabel },
 ] as const satisfies readonly PaneType[];
 
@@ -123,6 +124,9 @@ export const TREE_PANE = "tree";
 
 /** The key of the Browser Pane: the Session's browser, in an Owner tab. Its tab is labelled "Browser". */
 export const BROWSER_PANE = "browser";
+
+/** The key of the Diff pane: a source's files in one scroll (Changes, for now). Its tab is labelled "Diff". */
+export const DIFF_PANE = "diff";
 
 /** What a Pane's component gets. */
 export interface PaneProps {

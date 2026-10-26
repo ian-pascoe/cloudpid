@@ -136,6 +136,34 @@ export const usageAtom = Atom.family((sessionId: string) =>
   }),
 );
 
+/** Watches the Changes of the Session's Workspace while mounted (a new socket asks again). */
+const watchingChangesAtom = Atom.family((sessionId: string) =>
+  appRuntime.atom((get) =>
+    get.result(sessionClientAtom(sessionId)).pipe(Effect.flatMap((client) => client.watchChanges)),
+  ),
+);
+
+const changesFieldAtom = slice((state) => state.changes);
+
+/**
+ * The Changes of the Session's Workspace, null until the Session lists them; asks the Session to send them while read.
+ * The Session's page reads them for as long as it is open, for the Session details.
+ */
+export const changesAtom = Atom.family((sessionId: string) =>
+  Atom.make((get) => {
+    get.mount(watchingChangesAtom(sessionId));
+
+    return get(changesFieldAtom(sessionId));
+  }),
+);
+
+/** What `change_file` asks for: a file of a repo, and a rename's old path. */
+export interface ChangeFileQuery {
+  readonly repo: string;
+  readonly path: string;
+  readonly oldPath?: string;
+}
+
 /** A subagent's conversation in a Session. */
 export interface ThreadKey {
   readonly sessionId: string;

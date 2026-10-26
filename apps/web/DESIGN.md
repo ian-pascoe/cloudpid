@@ -176,7 +176,7 @@ A single cool, blue-slate family, light or dark by the system setting, with thre
 
 **The One Hue Rule.** Every neutral is tinted to hue 250. A pure gray (`zinc`, `neutral`, `#888`) does not belong on any surface.
 
-**The Signals Mean Something Rule.** Green is only "running", red only "failed or destroys". Neither is decoration, and neither is used for emphasis. The one exception is a diff, where they mean added and removed: the washes and marks on its lines (the Agent change diff's, and the `@pierre/diffs` theme's) and the `+n −m` on a tool card.
+**The Signals Mean Something Rule.** Green is only "running", red only "failed or destroys". Neither is decoration, and neither is used for emphasis. The one exception is a diff, where they mean added and removed: the washes and marks on its lines (the Agent change diff's, and the `@pierre/diffs` theme's), the `+n −m` on a tool card, the Session details and the Diff pane, and a changed file's status letter (A green, D red; M and R Faded Ink).
 
 ## Typography
 
@@ -205,7 +205,7 @@ A single cool, blue-slate family, light or dark by the system setting, with thre
 
 A two-column app shell at full viewport height (`100dvh`): a 288 px sidebar with a right border, and the main column. Below the `md` breakpoint (768 px) the two take turns: the Session list alone on `/`, and any page alone with a back arrow in its header.
 
-Pages and the transcript sit in a centered column capped at `max-w-3xl` (768 px) with 16 px side padding and 24 px top and bottom. Headers are a single row, 16 px horizontal and 10 px vertical padding, over a bottom border. The Pane area (Tasks, the Session tree, the Live View, later Terminals) is a column to the right of the chat from `md` up, 384 px until dragged (288–720 px, kept per device), and takes the whole screen on a phone. The Session header reaches it through one icon button at its right end (`PanelRightOpen`/`PanelRightClose`), never a button per Pane type: an empty area opens on the New pane, which lists the Pane types to open.
+Pages and the transcript sit in a centered column capped at `max-w-3xl` (768 px) with 16 px side padding and 24 px top and bottom. Headers are a single row, 16 px horizontal and 10 px vertical padding, over a bottom border. The Pane area (Tasks, the Session tree, the Diff pane, the Live View, later Terminals) is a column to the right of the chat from `md` up, 384 px until dragged (from 288 px to 2,400 px, leaving the chat at least 320 px, kept per device; so the Diff pane's 900 px rail is in reach on a wide screen), and takes the whole screen on a phone. The Session header reaches it through one icon button at its right end (`PanelRightOpen`/`PanelRightClose`), never a button per Pane type: an empty area opens on the New pane, which lists the Pane types to open.
 
 Spacing is a 4 px grid: 8 px between related controls, 12–16 px between groups inside a card, 24 px between page sections. Lists are tight (2 px between items, 8 × 12 px item padding).
 
@@ -291,6 +291,14 @@ The owner's message is right-aligned on Tinted Wash (10 px radius, at most 85% w
 ### Pane Area
 
 A column beside the transcript (a 1 px Ruled Line on its left, no shadow: it does not wait on the owner), or on a phone a full-screen sheet over the page. At the top, one row of tabs in a `tablist`: each tab is a 32 px pill (36 px on a phone) holding its label (14 px medium; an agent it is tied to after it in 12 px mono Faded Ink) and a 28 px close button with a 14 px X; the shown tab is on Tinted Wash with Ink text, the others Faded Ink washing on hover. The row scrolls sideways rather than wrapping. Under it the shown Pane fills the column; the others stay mounted, hidden. On its left edge a 12 px wide strip (not on a phone) is a keyboard-focusable `separator` that resizes the column: a 2 px line of Signal Blue appears on hover, drag and focus, and the arrow keys, Home and End move it.
+
+### Diff Pane
+
+A header of two rows over a Ruled Line: the source picker (a 32 px native select), a ghost _Refresh_ (12 px Faded Ink, a 14 px arrow that spins while it works, where motion is allowed), "May be out of date" in 12 px Faded Ink with a 14 px alert icon, and on the right the totals (`n files` in 12 px medium, `+a −d` in 12 px mono, green and red) with a _Collapse all_ text button; under them, on the right, a segmented Auto / Split / Stacked radio group (a 1 px border, the picked one on Tinted Wash) and a _Wrap_ toggle on Tinted Wash while on. A failure to list shows under the header in 12 px Brick Red over the last list. Then every file in one scroll: each file's sticky 44 px header on the page colour over a Ruled Line holds a 28 px fold chevron (rotated open), the status letter in 12 px semibold mono, the path in 12 px mono cut from its start so the name stays, a rename as old → new with the old one in Faded Ink, the note (why it is folded, Binary, Too large to show, Loading…, "Replaced whole: lining it up took too long") in 12 px Faded Ink, a failure to load in Brick Red, and `+a −d` last. The file list is a 256 px rail with a Ruled Line on its right from a Pane width of 900 px, and below that a disclosure above the first file ("n files +a −d", open, at most 224 px high before it scrolls); its rows are the status letter, the path in 12 px mono and the counts, washing on hover, under 12 px mono repo headings when the Session lists several repos.
+
+### Changes Section
+
+The Changes are summed up in the Session details only, never in the Session header. Their section, only while there are Changes: a 12 px Faded Ink heading "Changes" with _Open pane_, the totals (`n files` and `+a −d` in 12 px mono, "≈" before approximate counts in Faded Ink) as a 14 px row that washes on hover, each repo's totals in 12 px under it when there are several, then up to 10 files as rows (status letter, path in 12 px mono, counts) and "and n more" in 12 px Faded Ink.
 
 ### Waiting-On-You Card
 

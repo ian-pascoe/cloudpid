@@ -3,13 +3,16 @@
 // already). A Live View is not offered: it opens by itself when the agent hands over its browser. The Browser Pane is the
 // owner's own way into that browser, at any time.
 
-import { useAtom } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { Bot, Globe, Network, type LucideIcon } from "lucide-react";
+import { Bot, FileDiff, Globe, Network, type LucideIcon } from "lucide-react";
 import { use } from "react";
+import { useShownSessionId } from "./chat/conversation.ts";
 import { TreeBarScope } from "./chat/tree-actions.ts";
 import { useSubagentsWorking } from "./chat/subagents-pane.tsx";
-import { BROWSER_PANE, NEW_PANE, SUBAGENTS_PANE, TREE_PANE } from "./panes.ts";
+import { totalsText } from "./diff-pane/changes.ts";
+import { changesTotalsAtom } from "./diff-pane/watch.ts";
+import { BROWSER_PANE, DIFF_PANE, NEW_PANE, SUBAGENTS_PANE, TREE_PANE } from "./panes.ts";
 import { panesAtom } from "./panes-state.ts";
 
 /** One Pane the New pane offers. */
@@ -28,8 +31,16 @@ export const NewPane = () => {
   // An archived Session cannot move in its tree, so it offers none, as it has no `/tree`; nor does it start a browser.
   const archived = use(TreeBarScope)?.archived === true;
   const working = useSubagentsWorking();
+  const changes = useAtomValue(changesTotalsAtom(useShownSessionId()));
 
   const choices: readonly Choice[] = [
+    {
+      key: DIFF_PANE,
+      name: "Diff",
+      description: "The Changes in the Workspace: every changed file, in one scroll.",
+      icon: FileDiff,
+      status: changes.files > 0 ? totalsText(changes) : undefined,
+    },
     {
       key: SUBAGENTS_PANE,
       name: "Subagents",

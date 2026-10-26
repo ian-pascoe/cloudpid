@@ -25,6 +25,7 @@ import { SessionTreePane } from "./chat/tree-pane.tsx";
 import { SubagentPane } from "./chat/subagent-pane.tsx";
 import { SubagentsPane, useSubagentsWorking } from "./chat/subagents-pane.tsx";
 import { Button } from "./components/ui/button.tsx";
+import { DiffPane } from "./diff-pane/diff-pane.tsx";
 import { cn } from "./lib/utils.ts";
 import { BrowserPane } from "./live-view/browser-pane.tsx";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
@@ -61,6 +62,7 @@ const PANE_COMPONENTS = {
   tree: SessionTreePane,
   browser: BrowserPane,
   "live-view": LiveViewPane,
+  diff: DiffPane,
 } satisfies {
   readonly [Id in PaneTypeId]: ComponentType<PaneProps>;
 };

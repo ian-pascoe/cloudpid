@@ -1,6 +1,6 @@
 // Session details (GLOSSARY.md → Session details): a small panel over the top right of the chat with what the owner
-// follows of the Session while reading, in sections: the root agent's Todo List and the Session's subagents, each
-// subagent opening its Subagent Pane. An icon button in the Session's header opens and closes it, whatever there
+// follows of the Session while reading, in sections: the root agent's Todo List, the Session's subagents, each
+// subagent opening its Subagent Pane, and the Changes in its Workspace, each file opening the Diff pane at it. An icon button in the Session's header opens and closes it, whatever there
 // is to show; whether it is open is kept in the Session's layout.
 
 import type { GraphAgent, TodoTask } from "@cloudpid/protocol";
@@ -9,6 +9,8 @@ import * as Arr from "effect/Array";
 import { PanelRightOpen, SquareMenu } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
+import { ChangesSection } from "../diff-pane/changes-summary.tsx";
+import { changesTotalsAtom } from "../diff-pane/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { SUBAGENTS_PANE, subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
@@ -40,7 +42,7 @@ const busy = (items: readonly TodoTask[], agents: readonly GraphAgent[]): boolea
 
 /**
  * The header's button for Session details: it opens and closes them (Escape on it closes them too), and, while they are
- * closed, carries a dot when something is going on.
+ * closed, carries a dot when something is going on. Changes are not something going on: they light no dot.
  */
 export const SessionDetailsButton = () => {
   const [open, setOpen] = useAtom(detailsOpenAtom(useShownSessionId()));
@@ -143,6 +145,7 @@ export const SessionDetails = () => {
   const [open, setOpen] = useAtom(detailsOpenAtom(sessionId));
   const { items, agents } = useDetails();
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+  const changed = useAtomValue(changesTotalsAtom(sessionId), (totals) => totals.files > 0);
 
   if (!open) return null;
 
@@ -166,11 +169,12 @@ export const SessionDetails = () => {
           Reconnecting: this may be out of date.
         </p>
       )}
-      {items.length === 0 && agents.length === 0 && (
+      {items.length === 0 && agents.length === 0 && !changed && (
         <p className="text-sm text-muted-foreground">Nothing to show yet.</p>
       )}
       {items.length > 0 && <TodoList tasks={items} />}
       {agents.length > 0 && <SubagentsSection agents={agents} />}
+      {changed && <ChangesSection />}
     </aside>
   );
 };

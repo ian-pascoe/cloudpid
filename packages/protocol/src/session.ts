@@ -1104,13 +1104,15 @@ export const Result = Schema.Struct({
 
 /**
  * Something failed. With `id`, the command with that `id` failed, or could not be read. With `conversationId`, the
- * watch of that conversation ended and is dropped: watch it again to resume. With neither, a message without a
- * readable `id` could not be read.
+ * watch of that conversation ended and is dropped: watch it again to resume. With `changes`, a listing of the Changes
+ * failed, and the last `changes` message stands (the watch goes on). With none, a message without a readable `id` could
+ * not be read.
  */
 export const ErrorMessage = Schema.Struct({
   type: Schema.Literal("error"),
   id: Schema.optionalKey(Schema.String),
   conversationId: Schema.optionalKey(ConversationId),
+  changes: Schema.optionalKey(Schema.Literal(true)),
   message: Schema.String,
 });
 

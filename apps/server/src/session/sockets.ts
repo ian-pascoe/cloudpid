@@ -448,7 +448,7 @@ export const sessionSocketsLayer = (
                 socket,
                 update.kind === "changes"
                   ? update.message
-                  : { type: "error", message: update.message },
+                  : { type: "error", changes: true, message: update.message },
               ),
             ),
             FiberMap.run(fibers, CHANGES),

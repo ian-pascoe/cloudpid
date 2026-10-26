@@ -1459,6 +1459,132 @@ describe("the usage on a Session connection", () => {
   );
 });
 
+describe("the Changes on a Session connection", () => {
+  const repo = {
+    repo: "web",
+    head: { commit: "abc", branch: "main" },
+    files: [{ path: "src/a.ts", status: "modified", additions: 2, deletions: 1 }],
+    more: 0,
+    stale: true,
+  } as const;
+
+  it.effect("are watched once asked, and again after a reconnect, each list counted", () =>
+    Effect.gen(function* () {
+      const { client, sockets, latest, state } = yield* setup();
+
+      yield* client.watchChanges;
+      yield* watching(latest());
+      yield* client.watchChanges;
+
+      expect(
+        latest()
+          .commands()
+          .filter((command) => command.type === "watch_changes"),
+      ).toEqual([{ type: "watch_changes", id: expect.any(String) }]);
+      expect(state().changes).toBeNull();
+
+      yield* latest().say({ type: "changes", repos: [repo], startingContainer: false });
+      expect(state().changes).toEqual({
+        repos: [repo],
+        startingContainer: false,
+        listing: 1,
+        failure: null,
+      });
+
+      // The owner's Refresh starting the Container sends the last list again, said so: no new list.
+      yield* latest().say({ type: "changes", repos: [repo], startingContainer: true });
+      expect(state().changes).toMatchObject({ startingContainer: true, listing: 1 });
+
+      yield* latest().say({
+        type: "changes",
+        repos: [{ ...repo, stale: false }],
+        startingContainer: false,
+      });
+      expect(state().changes).toMatchObject({ startingContainer: false, listing: 2 });
+
+      yield* latest().drop();
+      yield* advance(1_000);
+      yield* sockets[1]!.open();
+      yield* sockets[1]!.say({ type: "hello", root: 1 });
+
+      expect(
+        sockets[1]!.commands().filter((command) => command.type === "watch_changes"),
+      ).toHaveLength(1);
+    }),
+  );
+
+  it.effect(
+    "keep the last list when a listing fails, saying why, without failing the composer",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        yield* client.watchChanges;
+        yield* watching(latest());
+        yield* latest().say({ type: "changes", repos: [repo], startingContainer: false });
+        yield* latest().say({
+          type: "error",
+          changes: true,
+          message: "Listing the Changes failed: unreachable",
+        });
+
+        expect(state().changes).toEqual({
+          repos: [repo],
+          startingContainer: false,
+          listing: 1,
+          failure: "Listing the Changes failed: unreachable",
+        });
+        expect(state().failure).toBeNull();
+
+        yield* latest().say({ type: "changes", repos: [], startingContainer: false });
+        expect(state().changes).toMatchObject({ repos: [], failure: null, listing: 2 });
+      }),
+  );
+
+  it.effect("asks for a refresh, manual or not, and for a file's two sides", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* watching(latest());
+
+      const focus = yield* asking(client.refreshChanges(false));
+      const manual = yield* asking(client.refreshChanges(true));
+
+      const file = yield* asking(
+        client.changeFile({ repo: "web", path: "src/b.ts", oldPath: "src/a.ts" }),
+      );
+
+      const [focusAsk, manualAsk] = latest()
+        .commands()
+        .filter((command) => command.type === "refresh_changes");
+
+      const fileAsk = latest()
+        .commands()
+        .find((command) => command.type === "change_file");
+
+      expect(focusAsk).toEqual({ type: "refresh_changes", id: focusAsk?.id });
+      expect(manualAsk).toEqual({ type: "refresh_changes", id: manualAsk?.id, manual: true });
+      expect(fileAsk).toEqual({
+        type: "change_file",
+        id: fileAsk?.id,
+        repo: "web",
+        path: "src/b.ts",
+        oldPath: "src/a.ts",
+      });
+
+      const sides = { old: { kind: "text", text: "a\n" }, new: { kind: "binary" } } as const;
+
+      yield* latest().say({ type: "result", id: focusAsk?.id, result: null });
+      yield* latest().say({ type: "result", id: manualAsk?.id, result: null });
+      yield* latest().say({ type: "result", id: fileAsk?.id, result: sides });
+
+      yield* Fiber.join(focus);
+      yield* Fiber.join(manual);
+      expect(yield* Fiber.join(file)).toEqual(sides);
+    }),
+  );
+});
+
 describe("Todo Lists on a Session connection", () => {
   const tasks = (...titles: string[]) =>
     titles.map((title, index) => ({ id: index + 1, title, status: "pending" }));

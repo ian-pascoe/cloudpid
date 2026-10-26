@@ -12,6 +12,7 @@
 
 import {
   Catalog,
+  ChangeFile,
   CommandOutcome,
   EMPTY_VIEW,
   FileMatches,
@@ -171,6 +172,21 @@ export interface SessionClient {
   readonly watchTaskGraph: Effect.Effect<void>;
   /** Stream what the Session has spent into `usage`: once is enough, and a new socket asks again. */
   readonly watchUsage: Effect.Effect<void>;
+  /** Stream the Changes of the Session's Workspace into `changes`: once is enough, and a new socket asks again. */
+  readonly watchChanges: Effect.Effect<void>;
+  /**
+   * List the Changes again, for every client that watches them; with `manual` (the owner's Refresh), a stopped Container
+   * may be started for a repo that needs it. Done once the listing ended: its list, or why it failed, reaches `changes`.
+   * Fails as `catalog` does.
+   */
+  readonly refreshChanges: (manual: boolean) => Effect.Effect<void, SessionCommandError>;
+  /**
+   * One changed file's two sides (`path` in `repo`, `oldPath` for a rename). It never starts the Container: a file that
+   * needs it while it is stopped fails with why. Fails as `catalog` does too.
+   */
+  readonly changeFile: (
+    query: Omit<Extract<ClientMessage, { type: "change_file" }>, "type" | "id">,
+  ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
    * Pick the model and thinking level of the root conversation's next request. A field left out stays as it is, and
    * `null` makes the Session follow the default in the settings again. The Session's `agent_changed` event brings
@@ -354,6 +370,8 @@ const decodeOwnerTabLinks = Schema.decodeUnknownOption(OwnerTabLinks);
 
 const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
 
+const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
+
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
 const decodeSubmitResult = Schema.decodeUnknownOption(SubmitResult);
@@ -395,6 +413,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   let connection: Connection | null = null;
   let graphWanted = false;
   let usageWanted = false;
+  let changesWanted = false;
   let root: ConversationId | null = null;
   let watchId: string | null = null;
   let watched = false;
@@ -549,6 +568,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "ownerTabDrivers"
         | "taskGraph"
         | "usage"
+        | "changes"
         | "todos"
         | "activeBranch"
         | "treeVersion"
@@ -764,6 +784,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         if (usageWanted) send({ type: "watch_usage", id: nextCommandId() });
 
+        if (changesWanted) send({ type: "watch_changes", id: nextCommandId() });
+
         return;
       }
 
@@ -790,6 +812,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         return;
       }
+
+      case "changes":
+        update({
+          changes: {
+            repos: message.repos,
+            startingContainer: message.startingContainer,
+            // The Container starting is the last list again, said so: not a new one.
+            listing: (current.changes?.listing ?? 0) + (message.startingContainer ? 0 : 1),
+            failure: null,
+          },
+        });
+
+        return;
 
       case "todos": {
         if (message.conversationId === root) {
@@ -937,6 +972,16 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
           if (submit?.conversationId === undefined) update({ failure: message.message });
           else update({}, submit.conversationId, { failure: message.message });
+        } else if (message.changes === true) {
+          // A listing failed; the list before it stands, and the watch goes on.
+          update({
+            changes: {
+              repos: current.changes?.repos ?? [],
+              startingContainer: false,
+              listing: current.changes?.listing ?? 0,
+              failure: message.message,
+            },
+          });
         } else if (message.conversationId !== undefined) {
           // The watch ended and is dropped: the root's starts over, after the backoff, to resume it.
           if (message.conversationId === root) lost(from, message.message);
@@ -1247,6 +1292,21 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       if (root !== null) send({ type: "watch_usage", id: nextCommandId() });
     }),
+    watchChanges: step(() => {
+      if (changesWanted) return;
+
+      changesWanted = true;
+
+      if (root !== null) send({ type: "watch_changes", id: nextCommandId() });
+    }),
+    refreshChanges: (manual) =>
+      request(
+        (id) =>
+          manual ? { type: "refresh_changes", id, manual } : { type: "refresh_changes", id },
+        () => Option.some(undefined),
+      ),
+    changeFile: (query) =>
+      request((id) => ({ type: "change_file", id, ...query }), decodeChangeFile),
     configure: (change) =>
       step(() => {
         send({ type: "configure", id: nextCommandId(), ...change });
