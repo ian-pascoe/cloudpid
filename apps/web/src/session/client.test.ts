@@ -1644,9 +1644,7 @@ describe("the catalog and Slash commands", () => {
 
         const [list, open, show, close] = latest()
           .commands()
-          .filter(
-            (command) => typeof command.type === "string" && command.type.startsWith("owner_tab_"),
-          );
+          .filter((command) => String(command.type).startsWith("owner_tab_"));
 
         expect(list).toEqual({ type: "owner_tab_list", id: list?.id });
         expect(open).toEqual({ type: "owner_tab_open", id: open?.id });
