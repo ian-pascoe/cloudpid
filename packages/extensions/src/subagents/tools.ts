@@ -1344,12 +1344,15 @@ const unpushedRefusal = Effect.fnUntraced(function* (agents: ReadonlyArray<Agent
           `${agent.id} (branch ${workspace.branch}): what it has not pushed could not be read (${error.message})`,
         ],
         onSuccess: (states) => {
-          const pending = unpushedWork(states);
+          const pending = unpushedWork(states, workspace.branch);
 
           return pending.length === 0
             ? []
             : [
-                `${agent.id} (branch ${workspace.branch}): ${Arr.join(Arr.map(pending, describeRepoWork), "; ")}`,
+                `${agent.id} (branch ${workspace.branch}): ${Arr.join(
+                  Arr.map(pending, (state) => describeRepoWork(state, workspace.branch)),
+                  "; ",
+                )}`,
               ];
         },
       }),
@@ -1360,7 +1363,7 @@ const unpushedRefusal = Effect.fnUntraced(function* (agents: ReadonlyArray<Agent
 
   return problems.length === 0
     ? undefined
-    : `Not deleted: work in its Subagent Workspaces is not pushed and would be lost. ${Arr.join(problems, ". ")}. Push it, or pass discard: true to delete it anyway.`;
+    : `Not deleted: work in its Subagent Workspaces is not pushed, or not known to be, and would be lost. ${Arr.join(problems, ". ")}. Push it, or pass discard: true to delete it anyway.`;
 });
 
 /**

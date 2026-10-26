@@ -313,7 +313,9 @@ exit 0
 /**
  * What one clone of a Workspace has not pushed (docs/spec.md → Subagents): its uncommitted Changes (untracked files that
  * are not ignored included) and the commits of a branch that no remote branch has. `cloned` is false for a Repo with no
- * clone there; `onRemote` says whether `origin` has the branch, as the clone last saw it.
+ * clone there (or one the read printed nothing for); `onRemote` says whether `origin` has the branch, as the clone last
+ * saw it; `head` is the branch the clone has checked out (null for a detached HEAD or no clone), so a clone a set-up left
+ * on another branch (the spare's `cloudpid/spare`) is not taken for one with nothing to push.
  */
 export type RepoWorkState = {
   readonly repo: string;
@@ -321,12 +323,14 @@ export type RepoWorkState = {
   readonly uncommitted: number;
   readonly unpushed: number;
   readonly onRemote: boolean;
+  readonly head: string | null;
 };
 
 /**
  * The bash script that reads what each of `repos` cloned at `<root>/<repo>` has not pushed of `branch` (whether checked
- * out or not), without fetching: one line per Repo, `<repo>\t<cloned>\t<uncommitted>\t<unpushed>\t<on remote>`
- * (`parseWorkState`). A branch the clone does not have has nothing unpushed. It changes nothing in the clones.
+ * out or not), without fetching: one line per Repo, `<repo>\t<cloned>\t<uncommitted>\t<unpushed>\t<on remote>\t<head>`
+ * (`parseWorkState`; `<head>` empty for a detached HEAD or no clone). A branch the clone does not have has nothing
+ * unpushed. It changes nothing in the clones.
  */
 export const workStateScript = (
   repos: ReadonlyArray<string>,
@@ -339,34 +343,52 @@ repos=(${repos.map(shellQuote).join(" ")})
 for repo in \${repos[@]+"\${repos[@]}"}; do
   dir="$root/$repo"
   if [ ! -e "$dir/.git" ]; then
-    printf '%s\\t0\\t0\\t0\\t0\\n' "$repo"
+    printf '%s\\t0\\t0\\t0\\t0\\t\\n' "$repo"
     continue
   fi
+  head=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   uncommitted=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   unpushed=0 remote=0
   if git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then remote=1; fi
   if git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
     unpushed=$(git -C "$dir" rev-list --count "refs/heads/$branch" --not --remotes 2>/dev/null || echo 0)
   fi
-  printf '%s\\t1\\t%s\\t%s\\t%s\\n' "$repo" "\${uncommitted:-0}" "$unpushed" "$remote"
+  printf '%s\\t1\\t%s\\t%s\\t%s\\t%s\\n' "$repo" "\${uncommitted:-0}" "$unpushed" "$remote" "$head"
 done
 exit 0
 `;
 
-/** The lines `workStateScript` prints, read back; a line it did not print is left out. */
-export const parseWorkState = (stdout: string): RepoWorkState[] =>
-  stdout.split("\n").flatMap((line) => {
-    const [repo, cloned, uncommitted, unpushed, onRemote] = line.split("\t");
+/**
+ * The lines `workStateScript` prints for `repos`, read back, one state per Repo in order: a line it did not print is left
+ * out, and a Repo it printed no line for is taken as not cloned, so nothing unread passes for clean.
+ */
+export const parseWorkState = (stdout: string, repos: ReadonlyArray<string>): RepoWorkState[] => {
+  const read = new Map<string, RepoWorkState>();
 
-    if (repo === undefined || repo === "" || onRemote === undefined) return [];
+  for (const line of stdout.split("\n")) {
+    const [repo, cloned, uncommitted, unpushed, onRemote, head] = line.split("\t");
 
-    return [
-      {
+    if (repo === undefined || repo === "" || head === undefined) continue;
+
+    read.set(repo, {
+      repo,
+      cloned: cloned === "1",
+      uncommitted: Number(uncommitted) || 0,
+      unpushed: Number(unpushed) || 0,
+      onRemote: onRemote === "1",
+      head: cloned === "1" && head !== "" ? head : null,
+    });
+  }
+
+  return repos.map(
+    (repo) =>
+      read.get(repo) ?? {
         repo,
-        cloned: cloned === "1",
-        uncommitted: Number(uncommitted) || 0,
-        unpushed: Number(unpushed) || 0,
-        onRemote: onRemote === "1",
+        cloned: false,
+        uncommitted: 0,
+        unpushed: 0,
+        onRemote: false,
+        head: null,
       },
-    ];
-  });
+  );
+};

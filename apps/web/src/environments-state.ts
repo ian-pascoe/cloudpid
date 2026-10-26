@@ -323,14 +323,18 @@ export const subagentWorkspacesBelow = (
     (workspace.subagent?.agent ?? "").startsWith(`${owner.agent}.`),
   );
 
-/** What a Workspace holds that is not on the remote, in words: `app: 2 commits not pushed, 1 uncommitted change`. */
+/**
+ * What a Workspace holds that is not on the remote, in words: `app: 2 commits not pushed, 1 uncommitted change`, or
+ * `app: not set up (on cloudpid/spare, not cloudpid/1a2b3c4d)` for a clone whose work is not known.
+ */
 export const describeWorkspaceWork = (work: ReadonlyArray<WorkspaceWork>): string =>
   Arr.join(
     Arr.map(
       work,
-      ({ repo, uncommitted, unpushed }) =>
+      ({ repo, uncommitted, unpushed, unsettled }) =>
         `${repo}: ${Arr.join(
           [
+            ...(unsettled === undefined ? [] : [unsettled]),
             ...(unpushed > 0
               ? [`${unpushed} ${unpushed === 1 ? "commit" : "commits"} not pushed`]
               : []),

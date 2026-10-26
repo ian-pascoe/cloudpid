@@ -24,6 +24,7 @@ const repo = (overrides: Partial<RepoWorkState> = {}): RepoWorkState => ({
   uncommitted: 0,
   unpushed: 0,
   onRemote: true,
+  head: "feature/parent",
   ...overrides,
 });
 

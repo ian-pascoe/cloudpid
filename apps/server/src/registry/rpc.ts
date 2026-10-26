@@ -1,4 +1,5 @@
 import { SettingsError } from "@cloudpid/config";
+import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
@@ -833,21 +834,25 @@ export const serveRegistryRpc = <R = never>(
               : removeSubagent(workspace, workspace.subagent),
           ),
         ),
+      // A clone missing or on another branch than the Workspace's is listed as not set up: its work is not known to be
+      // pushed, so the confirmation does not call it clean.
       workspaceWork: ({ id }) =>
         knownWorkspace(id).pipe(
           Effect.flatMap((workspace) =>
             inWorkspace("Could not read what the workspace has not pushed", () =>
               workspaces.workState(workspaceObjectName(id), workspace.branch, workspace.repos),
+            ).pipe(
+              Effect.map((states) =>
+                Arr.map(unpushedWork(states, workspace.branch), (state) => {
+                  const unsettled = unsettledClone(state, workspace.branch);
+                  const { repo, uncommitted, unpushed } = state;
+
+                  return unsettled === undefined
+                    ? { repo, uncommitted, unpushed }
+                    : { repo, uncommitted, unpushed, unsettled };
+                }),
+              ),
             ),
-          ),
-          Effect.map((states) =>
-            Arr.filter(
-              states,
-              (state) => state.cloned && (state.uncommitted > 0 || state.unpushed > 0),
-            ),
-          ),
-          Effect.map((states) =>
-            Arr.map(states, ({ repo, uncommitted, unpushed }) => ({ repo, uncommitted, unpushed })),
           ),
         ),
       restartContainer: ({ workspace }) =>

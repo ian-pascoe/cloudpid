@@ -75,7 +75,14 @@ export const fakeSubagentWorkspaces = () => {
     },
     workState: async (workspace) =>
       work.get(workspace.id) ?? [
-        { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: true },
+        {
+          repo: "app",
+          cloned: true,
+          uncommitted: 0,
+          unpushed: 0,
+          onRemote: true,
+          head: workspace.branch,
+        },
       ],
     remove: async (workspace) => {
       removed.push(workspace.id);

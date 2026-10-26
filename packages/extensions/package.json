@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./subagents": "./src/subagents.ts",
+    "./subagents/workspaces": "./src/subagents/workspaces.ts",
     "./context": "./src/context.ts",
     "./todo": "./src/todo.ts",
     "./web": "./src/web.ts",

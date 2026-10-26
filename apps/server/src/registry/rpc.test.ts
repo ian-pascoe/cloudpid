@@ -42,6 +42,7 @@ import type { ForkPlan } from "../session/fork.ts";
 import { buildKey, type BuildRequest, type BuildState } from "../workspace/build-record.ts";
 import type { WorkspaceLookups } from "../session/lookups.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
+import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
@@ -264,6 +265,7 @@ const fakeRegistries = () => {
   /** The Secrets each spare's object was handed with its set-up, and the Build. */
   const spareSecrets = new Map<string, ReadonlyArray<KeptSecret> | undefined>();
   const spareBuilds = new Map<string, BuildRecord["build"]>();
+  const workStates = new Map<string, ReadonlyArray<RepoWorkState>>();
   /** What the Registry recorded of each Environment's Build. */
   const buildRecords = new Map<string, BuildRecord>();
   const NO_BUILD: BuildRecord = { build: null, status: null };
@@ -348,7 +350,7 @@ const fakeRegistries = () => {
     workState: async (name) => {
       calls.push(`workState:${name}`);
 
-      return [];
+      return workStates.get(name) ?? [];
     },
     prepareSpare: (name, setup) => {
       spareSecrets.set(name, "secrets" in setup ? setup.secrets : undefined);
@@ -1110,6 +1112,8 @@ const fakeRegistries = () => {
     /** The upkeep of the Builds, built once per fake too. */
     buildUpkeep: buildUpkeep(registries, { workspaces: workspaceObjects, spares: upkeepOfSpares }),
     spareBuilds,
+    /** What each Workspace DO's clones read as (`workState`), by object name; nothing to push when unset. */
+    workStates,
     buildObjects,
     buildRequests,
     buildRecords,
@@ -1654,6 +1658,47 @@ it("reads what a Workspace has not pushed, leaving out the Repos that hold nothi
     [],
   );
   expect(fake.calls).toContain(`workState:ws:${session.workspace}`);
+});
+
+it("never calls a Workspace clean whose clones are missing or not on its branch", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+  const workspace = fake.workspaces.find((each) => each.id === session.workspace)!;
+
+  const clone = (repo: string, head: string | null, cloned = true): RepoWorkState => ({
+    repo,
+    cloned,
+    uncommitted: 0,
+    unpushed: 0,
+    onRemote: true,
+    head,
+  });
+
+  fake.workStates.set(`ws:${session.workspace}`, [
+    clone("app", workspace.branch),
+    // A spare's clone the set-up never switched to the Workspace's branch, one never cloned, and a detached one.
+    { ...clone("api", "cloudpid/spare"), uncommitted: 1 },
+    clone("docs", null, false),
+    clone("web", null),
+  ]);
+
+  expect(await call(fake, (registry) => registry.workspaceWork({ id: session.workspace }))).toEqual(
+    [
+      {
+        repo: "api",
+        uncommitted: 1,
+        unpushed: 0,
+        unsettled: `not set up (on cloudpid/spare, not ${workspace.branch})`,
+      },
+      { repo: "docs", uncommitted: 0, unpushed: 0, unsettled: "not set up (no clone)" },
+      {
+        repo: "web",
+        uncommitted: 0,
+        unpushed: 0,
+        unsettled: `not set up (on a detached HEAD, not ${workspace.branch})`,
+      },
+    ],
+  );
 });
 
 it("removes a Workspace with its last Session: the Session, then the Workspace's object, then its record", async () => {

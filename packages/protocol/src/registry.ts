@@ -147,13 +147,18 @@ export const WorkspaceRecord = Schema.Struct({
 
 export type WorkspaceRecord = typeof WorkspaceRecord.Type;
 
-/** What one clone of a Workspace holds that is not on the remote (`workspaceWork`). */
+/**
+ * What one clone of a Workspace holds that is not on the remote, or not known to be (`workspaceWork`): one whose clone
+ * is missing or has another branch than the Workspace's checked out is listed too, as not set up.
+ */
 export const WorkspaceWork = Schema.Struct({
   repo: Schema.String,
   /** Uncommitted changes, untracked files that are not ignored included. */
   uncommitted: Schema.Finite,
   /** Commits of the Workspace's branch that no remote branch has. */
   unpushed: Schema.Finite,
+  /** Why the clone is not known to hold the Workspace's work, in words (`not set up (on cloudpid/spare, not …)`). */
+  unsettled: Schema.optionalKey(Schema.String),
 });
 
 export type WorkspaceWork = typeof WorkspaceWork.Type;

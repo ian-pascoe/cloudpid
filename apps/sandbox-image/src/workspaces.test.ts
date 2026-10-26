@@ -679,7 +679,7 @@ describe("the work a Workspace has not pushed", () => {
 
       expect(ran.status, ran.stderr).toBe(0);
 
-      return parseWorkState(ran.stdout);
+      return parseWorkState(ran.stdout, repos);
     };
 
     return { ...workspace, read };
@@ -689,8 +689,35 @@ describe("the work a Workspace has not pushed", () => {
     const { read } = made();
 
     expect(read()).toEqual([
-      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false },
-      { repo: "api", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false },
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: BRANCH },
+      { repo: "api", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: BRANCH },
+    ]);
+  });
+
+  it("says which branch a clone a set-up left behind has checked out, and none for a detached HEAD", () => {
+    const { root, git, read } = made();
+
+    // As a spare's clone is when checking out the Workspace's branch over it failed.
+    git("checkout -q -b cloudpid/spare", join(root, "app"));
+    git("checkout -q --detach", join(root, "api"));
+
+    expect(read()).toEqual([
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 0,
+        unpushed: 0,
+        onRemote: false,
+        head: "cloudpid/spare",
+      },
+      { repo: "api", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
+    ]);
+  });
+
+  it("takes a Repo the read printed nothing for as not cloned", () => {
+    expect(parseWorkState("app\t1\t0\t0\t1\tmain\nnoise\n", ["app", "api"])).toEqual([
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: true, head: "main" },
+      { repo: "api", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
     ]);
   });
 
@@ -713,6 +740,7 @@ describe("the work a Workspace has not pushed", () => {
       uncommitted: 2,
       unpushed: 2,
       onRemote: false,
+      head: BRANCH,
     });
   });
 
@@ -734,6 +762,7 @@ describe("the work a Workspace has not pushed", () => {
       uncommitted: 0,
       unpushed: 1,
       onRemote: true,
+      head: BRANCH,
     });
   });
 
@@ -743,8 +772,8 @@ describe("the work a Workspace has not pushed", () => {
     sh(`rm -rf ${join(root, "api")}`);
 
     expect(read("main")).toEqual([
-      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: true },
-      { repo: "api", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false },
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: true, head: BRANCH },
+      { repo: "api", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
     ]);
   });
 
@@ -752,7 +781,7 @@ describe("the work a Workspace has not pushed", () => {
     const { read } = made();
 
     expect(read("feature", ["app"])).toEqual([
-      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false },
+      { repo: "app", cloned: true, uncommitted: 0, unpushed: 0, onRemote: false, head: BRANCH },
     ]);
   });
 });

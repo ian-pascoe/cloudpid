@@ -863,8 +863,9 @@ export class Workspace extends ContainerHost {
 
     if (ran.exitCode !== 0) throw failure("The workspace's repos could not be read", ran);
 
-    // Its own lines have five tab-separated fields: anything else the run printed is left out.
-    return parseWorkState(ran.output);
+    // Its own lines have six tab-separated fields: anything else the run printed is left out, and a Repo it printed no
+    // line for is taken as not cloned.
+    return parseWorkState(ran.output, repos);
   }
 
   /**

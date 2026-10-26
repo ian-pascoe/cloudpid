@@ -1010,7 +1010,14 @@ describe("Subagent Workspaces", () => {
     );
 
     workspaces.work.set("00000001", [
-      { repo: "app", cloned: true, uncommitted: 1, unpushed: 2, onRemote: true },
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 1,
+        unpushed: 2,
+        onRemote: true,
+        head: "cloudpid/00000001",
+      },
     ]);
 
     const asked = session.prompt("Ask again");
@@ -1130,7 +1137,14 @@ describe("Subagent Workspaces", () => {
     await session.prompt("Delegate it");
     await session.settle();
     workspaces.work.set("00000001", [
-      { repo: "app", cloned: true, uncommitted: 0, unpushed: 3, onRemote: false },
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 0,
+        unpushed: 3,
+        onRemote: false,
+        head: "cloudpid/00000001",
+      },
     ]);
     await session.prompt("Remove it");
     await session.settle();
@@ -1146,6 +1160,61 @@ describe("Subagent Workspaces", () => {
 
     expect((await session.state()).tombstones).toContain("agent-1");
     expect(workspaces.removed).toEqual(["00000001"]);
+  });
+
+  it("does not call a Workspace clean whose clone was not set up on its branch, in the report or the delete", async () => {
+    const workspaces = fakeSubagentWorkspaces();
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") return answer("Done.");
+
+        if (request.text === "Delegate it") {
+          return call(["subagent", { task: "Work", workspace: "new" }]);
+        }
+
+        if (request.text === "Remove it") {
+          return call(["subagent_delete", { agent_id: "agent-1" }]);
+        }
+
+        return answer("Noted.");
+      },
+      {},
+      [],
+      workspaces.host,
+    );
+
+    // The spare's clone was never switched to the child's branch, and the other Repo was never cloned.
+    workspaces.work.set("00000001", [
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 0,
+        unpushed: 0,
+        onRemote: false,
+        head: "cloudpid/spare",
+      },
+      { repo: "api", cloned: false, uncommitted: 0, unpushed: 0, onRemote: false, head: null },
+    ]);
+
+    await session.prompt("Delegate it");
+    await session.settle();
+
+    const unsettled =
+      "app: not set up (on cloudpid/spare, not cloudpid/00000001); api: not set up (no clone)";
+
+    expect((await session.texts("user"))[1]).toContain(
+      `[Subagent Workspace 00000001 | branch cloudpid/00000001 | ${unsettled}]`,
+    );
+
+    await session.prompt("Remove it");
+    await session.settle();
+
+    expect((await session.texts("toolResult")).at(-1)).toContain(
+      `agent-1 (branch cloudpid/00000001): ${unsettled}`,
+    );
+    expect((await session.state()).agents["agent-1"]).toBeDefined();
+    expect(workspaces.removed).toEqual([]);
   });
 
   it("removes a child's Workspace with it when everything is pushed", async () => {
@@ -1199,7 +1268,14 @@ describe("Subagent Workspaces", () => {
     await session.prompt("Delegate it");
     await session.settle();
     workspaces.work.set("00000001", [
-      { repo: "app", cloned: true, uncommitted: 2, unpushed: 1, onRemote: true },
+      {
+        repo: "app",
+        cloned: true,
+        uncommitted: 2,
+        unpushed: 1,
+        onRemote: true,
+        head: "cloudpid/00000001",
+      },
     ]);
 
     // A Workspace left under the ID by another agent's spawn deletes no agent that does not work in it.

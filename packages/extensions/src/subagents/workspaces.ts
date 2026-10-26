@@ -17,6 +17,8 @@ export type RepoWorkState = {
   readonly unpushed: number;
   /** Whether `origin` has the branch, as the clone last saw it. */
   readonly onRemote: boolean;
+  /** The branch the clone has checked out; null for a detached HEAD or no clone. */
+  readonly head: string | null;
 };
 
 /** A Subagent Workspace asked for at a spawn. */
@@ -61,16 +63,46 @@ export class SubagentWorkspaces extends Context.Service<
 /** The default Subagent Workspace limit (GLOSSARY.md → Limit): Subagent Workspaces one Session may have at once. */
 export const DEFAULT_MAX_SUBAGENT_WORKSPACES = 3;
 
-/** The Repos that hold work not pushed: uncommitted Changes, or commits no remote branch has. */
-export const unpushedWork = (states: ReadonlyArray<RepoWorkState>): RepoWorkState[] =>
-  Arr.filter(states, (state) => state.cloned && (state.uncommitted > 0 || state.unpushed > 0));
+/**
+ * Why a clone of a Workspace on `branch` cannot be vouched for, in words: it is missing (the Workspace was not set up),
+ * or it has another branch checked out (a set-up that never switched a spare's clone to it, or work moved elsewhere),
+ * whose work the read of `branch` does not see. Undefined for a clone on `branch`.
+ */
+export const unsettledClone = (state: RepoWorkState, branch: string): string | undefined => {
+  // A Workspace DO still on code from before `head` was read answers without it.
+  const head = state.head ?? null;
+
+  if (!state.cloned) return "not set up (no clone)";
+
+  if (head === branch) return undefined;
+
+  return `not set up (on ${head ?? "a detached HEAD"}, not ${branch})`;
+};
+
+/**
+ * The Repos of a Workspace on `branch` whose work is not known to be pushed: uncommitted Changes, commits no remote
+ * branch has, or a clone missing or on another branch (`unsettledClone`).
+ */
+export const unpushedWork = (
+  states: ReadonlyArray<RepoWorkState>,
+  branch: string,
+): RepoWorkState[] =>
+  Arr.filter(
+    states,
+    (state) =>
+      unsettledClone(state, branch) !== undefined || state.uncommitted > 0 || state.unpushed > 0,
+  );
 
 const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
-/** One Repo's work not pushed, in words: `app: 2 commits not pushed, 1 uncommitted change`. */
-export const describeRepoWork = (state: RepoWorkState): string =>
+/**
+ * One Repo's work not pushed, in words: `app: 2 commits not pushed, 1 uncommitted change`, or
+ * `app: not set up (on cloudpid/spare, not cloudpid/1a2b3c4d)`.
+ */
+export const describeRepoWork = (state: RepoWorkState, branch: string): string =>
   `${state.repo}: ${Arr.join(
     [
+      ...Arr.fromNullishOr(unsettledClone(state, branch)),
       ...(state.unpushed > 0
         ? [count(state.unpushed, "commit not pushed", "commits not pushed")]
         : []),
@@ -81,13 +113,16 @@ export const describeRepoWork = (state: RepoWorkState): string =>
     ", ",
   )}`;
 
-/** What a Workspace has not pushed, in words, or that everything is pushed. */
-export const describeWork = (states: ReadonlyArray<RepoWorkState>): string => {
-  const pending = unpushedWork(states);
+/** What a Workspace on `branch` has not pushed, in words, or that everything is pushed. */
+export const describeWork = (states: ReadonlyArray<RepoWorkState>, branch: string): string => {
+  const pending = unpushedWork(states, branch);
 
   return pending.length === 0
     ? "everything is committed and pushed"
-    : Arr.join(Arr.map(pending, describeRepoWork), "; ");
+    : Arr.join(
+        Arr.map(pending, (state) => describeRepoWork(state, branch)),
+        "; ",
+      );
 };
 
 /** The line a Subagent Workspace's report ends with: its branch, and what it has not pushed. */
@@ -98,7 +133,7 @@ export const handBackText = (
   `[Subagent Workspace ${workspace.id} | branch ${workspace.branch} | ${
     states instanceof Error
       ? `what is not pushed could not be read: ${states.message}`
-      : describeWork(states)
+      : describeWork(states, workspace.branch)
   }]`;
 
 /** What the Workspace has not pushed, read now, as the line its report ends with; a read that fails says so. */

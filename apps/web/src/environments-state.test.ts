@@ -75,6 +75,16 @@ describe("Subagent Workspaces on the Environments page", () => {
         { repo: "docs", uncommitted: 3, unpushed: 0 },
       ]),
     ).toBe("app: 2 commits not pushed, 1 uncommitted change; docs: 3 uncommitted changes");
+    expect(
+      describeWorkspaceWork([
+        {
+          repo: "app",
+          uncommitted: 1,
+          unpushed: 0,
+          unsettled: "not set up (on cloudpid/spare, not cloudpid/0000abcd)",
+        },
+      ]),
+    ).toBe("app: not set up (on cloudpid/spare, not cloudpid/0000abcd), 1 uncommitted change");
   });
 
   it("finds a Session's Subagent Workspaces in the listing", () => {

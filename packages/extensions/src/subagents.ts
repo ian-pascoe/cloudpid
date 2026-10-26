@@ -46,6 +46,7 @@ export {
   type SubagentWorkspaceRequest,
   SubagentWorkspaces,
   unpushedWork,
+  unsettledClone,
 } from "./subagents/workspaces.ts";
 
 export {
