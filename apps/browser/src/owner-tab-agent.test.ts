@@ -237,6 +237,8 @@ describe("a call in an Owner tab", () => {
         'async () => cdp.send({ method: "Emulation.setDeviceMetricsOverride", params: { width: 1, height: 1, deviceScaleFactor: 1, mobile: false }, sessionId: "active" })',
         'async () => cdp.send({ method: "Emulation.clearDeviceMetricsOverride", sessionId: "active" })',
         'async () => cdp.send({ method: "Page.captureScreenshot", params: { captureBeyondViewport: true }, sessionId: "active" })',
+        // A stray field of another type hides nothing.
+        'async () => cdp.send({ method: "Page.captureScreenshot", params: { captureBeyondViewport: true, targetId: 1 }, sessionId: "active" })',
         'async () => cdp.send({ method: "Target.createTarget", params: { url: "about:blank" } })',
         'async () => cdp.attachToTarget({ targetId: "page-1" })',
         'async () => cdp.send({ method: "Target.closeTarget", params: { targetId: "page-1" } })',

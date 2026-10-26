@@ -69,23 +69,29 @@ const TARGET_COMMANDS: ReadonlySet<string> = new Set([
 const OTHER_TAB =
   'In an Owner tab you work in that tab alone, with sessionId: "active". For another Owner tab, call browser with its ID; for a page of your own, call browser without tab.';
 
-/** The params of a command that a refusal reads; any other field is ignored. */
-const RefusalParams = Schema.Struct({
-  targetId: Schema.optionalKey(Schema.String),
-  captureBeyondViewport: Schema.optionalKey(Schema.Boolean),
-});
+/** The params of a command that a refusal reads, each on its own, so a stray field elsewhere hides none of them. */
+type RefusalParams = {
+  /** The page the command names, if `targetId` is a string. */
+  readonly targetId?: string;
+  /** Whether `captureBeyondViewport` is `true`. */
+  readonly beyondViewport: boolean;
+};
 
-type RefusalParams = typeof RefusalParams.Type;
+const decodeTargetId = Schema.decodeUnknownOption(Schema.Struct({ targetId: Schema.String }));
 
-const decodeParams = Schema.decodeUnknownOption(RefusalParams);
+const decodeBeyondViewport = Schema.decodeUnknownOption(
+  Schema.Struct({ captureBeyondViewport: Schema.Literal(true) }),
+);
+
+const IGNORE_EXCESS = { onExcessProperty: "ignore" } as const;
 
 /**
- * Why a call in an Owner tab may not send `method` with `named` (the params it reads, if they parse) on the page
- * session `sessionId` (the browser when none), or undefined when it may; `tab` is the Owner tab's page.
+ * Why a call in an Owner tab may not send `method` with `named` (what it reads of the params) on the page session
+ * `sessionId` (the browser when none), or undefined when it may; `tab` is the Owner tab's page.
  */
 const refusal = (
   method: string,
-  named: RefusalParams | undefined,
+  named: RefusalParams,
   sessionId: string | undefined,
   tab: string,
 ): string | undefined => {
@@ -93,14 +99,14 @@ const refusal = (
     return `${method} is not available in an Owner tab: the owner's Browser Pane sets its size.`;
   }
 
-  if (method === "Page.captureScreenshot" && named?.captureBeyondViewport === true) {
+  if (method === "Page.captureScreenshot" && named.beyondViewport) {
     return "captureBeyondViewport is not available in an Owner tab: it resizes the page while it captures, under the owner's eyes. Capture the viewport, or a clip of it.";
   }
 
   if (BROWSER_WIDE_COMMANDS.has(method))
     return `${method} is not available in an Owner tab. ${OTHER_TAB}`;
 
-  if (TARGET_COMMANDS.has(method) && named?.targetId !== tab) return OTHER_TAB;
+  if (TARGET_COMMANDS.has(method) && named.targetId !== tab) return OTHER_TAB;
 
   // On the browser it attaches to every page; on the Owner tab's session, to its frames and workers only.
   if (method === "Target.setAutoAttach" && sessionId === undefined) {
@@ -117,7 +123,10 @@ const confine = (connection: BrowserConnection, tab: string): void => {
   const attach = cdp.attachToTarget.bind(cdp);
 
   cdp.send = (method, params, options) => {
-    const named = Option.getOrUndefined(decodeParams(params, { onExcessProperty: "ignore" }));
+    // Each field on its own: any other field, or one of another type, is ignored.
+    const targetId = Option.getOrUndefined(decodeTargetId(params, IGNORE_EXCESS))?.targetId;
+    const beyondViewport = Option.isSome(decodeBeyondViewport(params, IGNORE_EXCESS));
+    const named = targetId === undefined ? { beyondViewport } : { targetId, beyondViewport };
     const refused = refusal(method, named, options?.sessionId, tab);
 
     return refused === undefined
