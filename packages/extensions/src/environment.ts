@@ -3,8 +3,8 @@
 // Agent change: the Registry applies it as the owner's save is applied and records it, the Session hands a change to its
 // own Environment to its Workspace at once, and the Run's end notifies the owner of the changes it made
 // (`AgentChangeLog`). They are the root conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values
-// are plain: a change is refused when its value holds a Secret the Session holds or the GitHub token, or a Secret
-// Reference's placeholder, which these tools do not resolve and no command would.
+// are plain: a change is refused when a text it keeps holds a Secret the Session holds or the GitHub token, or a Secret
+// Reference's placeholder, which these tools do not resolve and no command would (`holdsSecret`).
 // @effect-diagnostics missingPipeableSignature:off
 import type { ContainerSettings } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
@@ -96,6 +96,10 @@ export class EnvironmentsError extends Schema.TaggedError<
   EnvironmentsError,
   { readonly brand: unique symbol }
 >()("EnvironmentsError", { message: Schema.String }) {}
+
+/** Why a text that holds a Secret Reference is refused: these tools resolve none, so it would be saved as written. */
+const PLACEHOLDER_REFUSAL =
+  "Nothing was saved: a text of the call holds a Secret Reference, which these tools do not resolve, so what they save would hold the reference's text, not the Secret. A credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.";
 
 /**
  * The Environments, as the Session reaches them through the Registry. `change` applies an Agent change as the owner's
@@ -305,13 +309,17 @@ export const EnvironmentTools: Effect.Effect<
 
   /**
    * Whether `value` holds a Secret's value or a credential, as written or in an encoding redaction knows: checked once
-   * the Secrets are fresh, so one the owner has just kept for the Environment counts.
+   * the Secrets are fresh, so one the owner has just kept for the Environment counts. A text these tools keep that holds
+   * a Secret Reference (held or not, such as one a message was scrubbed to) fails the call instead: these tools resolve
+   * none, so what they save would hold the reference's text, not the Secret.
    */
   const holdsSecret = (value: string) =>
-    Effect.map(
-      secrets.refresh,
-      () => secrets.redact(value) !== value || credentials.redact(value) !== value,
-    );
+    holdsPlaceholder(value)
+      ? Effect.fail(EnvironmentsError.make({ message: PLACEHOLDER_REFUSAL }))
+      : Effect.map(
+          secrets.refresh,
+          () => secrets.redact(value) !== value || credentials.redact(value) !== value,
+        );
 
   /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
   const target = (id: string | undefined) =>
@@ -350,14 +358,6 @@ export const EnvironmentTools: Effect.Effect<
         return yield* EnvironmentsError.make({
           message:
             "Nothing was saved: the value holds the value of a Secret this Session holds, or of the GitHub token. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.",
-        });
-      }
-
-      // Not resolved here, and no command would: the placeholder's text would be the variable's value.
-      if (value !== null && holdsPlaceholder(value)) {
-        return yield* EnvironmentsError.make({
-          message:
-            "Nothing was saved: the value holds a Secret Reference, which these tools do not resolve, so the variable would hold the reference's text and not the Secret. Variables are plain; a Secret cannot be one. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.",
         });
       }
 

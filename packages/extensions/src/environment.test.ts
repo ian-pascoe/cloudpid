@@ -388,7 +388,7 @@ describe("environment_variable_set", () => {
     expect(environments.changes).toEqual([]);
   });
 
-  it("refuses a value holding a Secret Reference, held or not, and saves nothing", async () => {
+  it("refuses a value or reason holding a Secret Reference, held or not, and saves nothing", async () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service, { held: { API_KEY: "sk-live-0123456789" } });
 
@@ -400,9 +400,18 @@ describe("environment_variable_set", () => {
     ]) {
       expect(
         await failure(run(tool("environment_variable_set"), { name: "KEY", value, reason: "r" })),
-      ).toContain("the value holds a Secret Reference");
+      ).toContain("holds a Secret Reference, which these tools do not resolve");
     }
 
+    expect(
+      await failure(
+        run(tool("environment_variable_set"), {
+          name: "KEY",
+          value: "1",
+          reason: `Set from ${secretReference("NOT_HELD")}`,
+        }),
+      ),
+    ).toContain("would hold the reference's text, not the Secret");
     expect(environments.changes).toEqual([]);
   });
 });
