@@ -99,7 +99,20 @@ describe("capPatch", () => {
     const patch = `${HEAD}@@ -1,2 +1,2 @@\n-a\n\\ No newline at end of file\n+b\n \n`;
     const result = capPatch(patch, 1);
 
-    expect(result.patch).toBe(`${HEAD}@@ -1,1 +1,0 @@\n-a\n\\ No newline at end of file\n`);
+    expect(result.patch).toBe(`${HEAD}@@ -1,1 +0,0 @@\n-a\n\\ No newline at end of file\n`);
+  });
+
+  it("writes a side the cut left with no lines as the format has it: its start the line before", () => {
+    const patch = `${HEAD}@@ -5,2 +5,3 @@\n+a\n+b\n+c\n-x\n-y\n`;
+
+    expect(capPatch(patch, 2).patch).toBe(`${HEAD}@@ -4,0 +5,2 @@\n+a\n+b\n`);
+    // A side that had no lines to begin with keeps the start it was written with.
+    expect(capPatch(`${HEAD}@@ -4,0 +5,3 @@\n+a\n+b\n+c\n`, 2).patch).toBe(
+      `${HEAD}@@ -4,0 +5,2 @@\n+a\n+b\n`,
+    );
+    expect(capPatch(`${HEAD}@@ -5,2 +4,0 @@\n-x\n-y\n`, 1).patch).toBe(
+      `${HEAD}@@ -5,1 +4,0 @@\n-x\n`,
+    );
   });
 
   it("caps at 2,000 lines by default", () => {

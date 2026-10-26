@@ -19,6 +19,7 @@ import { useShownSessionId, useThreadConversation } from "./conversation.ts";
 import { ChangeDiff } from "../change-diff.tsx";
 import { changeTitleText, fieldValueText } from "../environments.ts";
 import { changeDiff } from "../line-diff.ts";
+import { decodeRecorded } from "../call-diff.ts";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
@@ -37,6 +38,12 @@ export const MarkdownText = () => (
   />
 );
 
+/** Content that may be given whether its `details` are open, for content that is only worth mounting while they are. */
+type OpenContent = ReactNode | ((open: boolean) => ReactNode);
+
+const shown = (content: OpenContent, open: boolean): ReactNode =>
+  Predicate.isFunction(content) ? content(open) : content;
+
 /**
  * A `details` of a thread whose open state is kept in the Session's layout, so it is open again when the owner comes
  * back to the Session. `held` holds it open whatever was kept, as while what it shows streams.
@@ -50,8 +57,7 @@ export const KeptDetails = ({
   disclosure: DistributiveOmit<TranscriptDisclosure, "conversationId">;
   held?: boolean | undefined;
   className?: string | undefined;
-  /** A function is given whether the details are open, for content that is only worth mounting while they are. */
-  children: ReactNode | ((open: boolean) => ReactNode);
+  children: OpenContent;
 }) => {
   const conversationId = useThreadConversation();
 
@@ -70,7 +76,7 @@ export const KeptDetails = ({
       }}
       className={className}
     >
-      {Predicate.isFunction(children) ? children(open) : children}
+      {shown(children, open)}
     </details>
   );
 };
@@ -87,7 +93,7 @@ const Disclosure = ({
   disclosure: DistributiveOmit<TranscriptDisclosure, "conversationId">;
   summary: ReactNode;
   held?: boolean | undefined;
-  children: ReactNode | ((open: boolean) => ReactNode);
+  children: OpenContent;
 }) => (
   <KeptDetails disclosure={disclosure} held={held} className="group my-2 rounded-md border">
     {(open) => (
@@ -99,9 +105,7 @@ const Disclosure = ({
           />
           {summary}
         </summary>
-        <div className="border-t px-3 py-2">
-          {Predicate.isFunction(children) ? children(open) : children}
-        </div>
+        <div className="border-t px-3 py-2">{shown(children, open)}</div>
       </>
     )}
   </KeptDetails>
@@ -150,8 +154,6 @@ const Output = ({ label, text, error }: { label: string; text: string; error?: b
 const StreamedOutput = Schema.Struct({ output: Schema.NonEmptyString });
 
 const decodeStreamedOutput = Schema.decodeUnknownOption(StreamedOutput);
-
-const decodePatch = Schema.decodeUnknownOption(Schema.Struct({ patch: Schema.NonEmptyString }));
 
 const decodePath = Schema.decodeUnknownOption(Schema.Struct({ path: Schema.String }));
 
@@ -271,7 +273,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   const changes = changesOf(artifact);
 
   // The Call diff of an `edit` that finished: only a call with a result has one.
-  const patch = Option.getOrUndefined(Option.map(decodePatch(artifact), (found) => found.patch));
+  const patch = Option.getOrUndefined(Option.map(decodeRecorded(artifact), (found) => found.patch));
 
   const path = Option.getOrUndefined(Option.map(decodePath(args), (found) => found.path));
 

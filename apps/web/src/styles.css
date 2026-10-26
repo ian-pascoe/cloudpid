@@ -68,7 +68,8 @@
 
 /*
  * The CSS-variables theme of @pierre/diffs (`cloudpid`, registered in chat/patch-view.tsx), in the notebook skin
- * (apps/web/DESIGN.md): the tokens above for surfaces and ink, one hue (250) for syntax, and Run Green and Brick Red
+ * (apps/web/DESIGN.md): the tokens above for surfaces and ink, low-chroma syntax colors of their own (slate for punctuation and parameters, a
+ * hue each for keywords, strings, functions and constants), and Run Green and Brick Red
  * as the additions' and deletions' colors, which the library washes over the surface itself (a wash of its own in
  * light and dark), as the Agent change diff (change-diff.tsx) washes them. Inherited into each diff's shadow root, so
  * the tokens' dark values apply with no theme switch of the library's.

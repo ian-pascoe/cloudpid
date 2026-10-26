@@ -6,13 +6,14 @@
 import { parsePatchFiles, registerCustomCSSVariableTheme } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useMemo } from "react";
+import type { DiffStyle } from "../call-diff.ts";
 
 /** The CSS-variables theme of the notebook skin: its `--diffs-*` variables are in `styles.css`. */
 const THEME = "cloudpid";
 
 registerCustomCSSVariableTheme(THEME, {});
 
-const PatchView = ({ patch, diffStyle }: { patch: string; diffStyle: "split" | "unified" }) => {
+const PatchView = ({ patch, diffStyle }: { patch: string; diffStyle: DiffStyle }) => {
   const file = useMemo(() => parsePatchFiles(patch)[0]?.files[0], [patch]);
 
   const options = useMemo(

@@ -442,7 +442,7 @@ This section is being built, from the parent issue "Diff viewing and Reviews" (#
   - **Card, `edit`:** the card's line carries `+n −m` (Run Green, Brick Red) beside the path. Opened, a header with the file path and an _Arguments and result_ toggle (which shows them under the diff) replaces the arguments, and the diff is drawn by `parsePatchFiles` and `FileDiff` with no way to expand unchanged lines. It is split from a card width of 720 px (`SPLIT_MIN_WIDTH`) and stacked below, measured before the first paint and followed with a `ResizeObserver`. It shows at most 2,000 diff lines (`CALL_DIFF_LINE_CAP`: added, removed and unchanged ones; the cut hunk's counts are written again), then a _Show all n lines_ button. The diff is only mounted while the card is open. The seam for Annotations is `patch-view.tsx`'s `options` and the `FileDiff` props beside them; there is no gutter selection yet.
   - A `write` wrapper records one, with caps: 1 MiB of input, a 512 KiB patch, and a 1 s budget.
   - The calls a `codemode` script makes are captured into its result.
-  - The card is folded with `+n −m`. Opened, it shows the diff in place of the arguments (at most 2,000 lines, then "Show all"), with "Open in Diff pane".
+  - Still to come: the `write` and `codemode` cards take the same folded line and opened diff (a `codemode` card's Calls list gives each `edit` or `write` its own `+n −m`), and every Call diff gets "Open in Diff pane" while its file still has Changes.
   - Decided in #100, #105 and #222.
 - **Changes:** computed by the Workspace DO, with isomorphic-git and a Container fallback behind one module.
   - They reach the client over the Session socket: `watch_changes` streams the file list, and `change_file` answers one file's two texts.

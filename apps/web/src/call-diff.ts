@@ -6,15 +6,21 @@ import type { TranscriptPart } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-const decodeDetails = Schema.decodeUnknownOption(Schema.Struct({ patch: Schema.NonEmptyString }));
+const Recorded = Schema.Struct({ patch: Schema.NonEmptyString });
+
+/** Decodes the patch of an `edit`'s `details`, and of a card's artifact, which carries it under the same name. */
+export const decodeRecorded = Schema.decodeUnknownOption(Recorded);
 
 /** The most diff lines a card shows before "Show all n lines". */
 export const CALL_DIFF_LINE_CAP = 2000;
 
+/** How a diff is laid out: in two columns, or stacked. */
+export type DiffStyle = "split" | "unified";
+
 /** The card width, in px, from which a diff is split in two columns; narrower, it is stacked. */
 export const SPLIT_MIN_WIDTH = 720;
 
-export const diffStyleFor = (width: number): "split" | "unified" =>
+export const diffStyleFor = (width: number): DiffStyle =>
   width >= SPLIT_MIN_WIDTH ? "split" : "unified";
 
 /** The marker after a line that has no newline at the end of the file. */
@@ -121,16 +127,32 @@ export type CappedPatch = {
   readonly capped: boolean;
 };
 
+/** How many lines of the old file and of the new file the lines of a hunk's body cover. */
+const sideCounts = (body: readonly string[]) => {
+  const lines = Arr.filter(body, (line) => !isMarker(line));
+  const added = Arr.filter(lines, (line) => line.startsWith("+")).length;
+  const removed = Arr.filter(lines, (line) => line.startsWith("-")).length;
+
+  return { old: lines.length - added, new: lines.length - removed };
+};
+
+/**
+ * A side with no lines is written as the unified format has it, its start the line before where the lines would be: a
+ * cut that keeps only added lines of a hunk that had old ones gives `-N-1,0`. A side that had none to begin with already
+ * has that start.
+ */
+const sideStart = (start: number, count: number, wholeCount: number): number =>
+  count === 0 && wholeCount > 0 ? start - 1 : start;
+
 const hunkText = (hunk: Hunk, body: readonly string[]): string => {
-  const kept = Arr.filter(body, (line) => !isMarker(line));
-  const added = Arr.filter(kept, (line) => line.startsWith("+")).length;
-  const removed = Arr.filter(kept, (line) => line.startsWith("-")).length;
-  const oldCount = kept.length - added;
-  const newCount = kept.length - removed;
+  const kept = sideCounts(body);
+  const whole = sideCounts(hunk.body);
+  const oldStart = sideStart(hunk.oldStart, kept.old, whole.old);
+  const newStart = sideStart(hunk.newStart, kept.new, whole.new);
 
   return Arr.join(
     Arr.map(
-      [`@@ -${hunk.oldStart},${oldCount} +${hunk.newStart},${newCount} @@${hunk.tail}`, ...body],
+      [`@@ -${oldStart},${kept.old} +${newStart},${kept.new} @@${hunk.tail}`, ...body],
       (line) => `${line}\n`,
     ),
     "",
@@ -139,7 +161,9 @@ const hunkText = (hunk: Hunk, body: readonly string[]): string => {
 
 /**
  * `patch` cut to its first `cap` diff lines (the lines of its hunks, whether added, removed or unchanged), with the last
- * hunk's counts written again so what is left is a patch of its own. A patch within the cap is returned as it is.
+ * hunk's counts written again so what is left is a patch of its own. A patch within the cap is returned as it is. It
+ * handles the patch of one file, as an `edit` records (one `---`/`+++` header pair); a patch of several files would keep
+ * only the first file's header.
  */
 export const capPatch = (patch: string, cap: number = CALL_DIFF_LINE_CAP): CappedPatch => {
   const parsed = parsePatch(patch);
@@ -190,5 +214,5 @@ export const callDiffPatch = (
   isError: boolean,
 ): string | undefined =>
   toolName === "edit" && !isError
-    ? Option.getOrUndefined(Option.map(decodeDetails(details), (found) => found.patch))
+    ? Option.getOrUndefined(Option.map(decodeRecorded(details), (found) => found.patch))
     : undefined;

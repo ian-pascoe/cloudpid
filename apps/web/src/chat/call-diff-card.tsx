@@ -1,7 +1,16 @@
 // The Call diff on an `edit` card (`docs/spec.md` → Diffs and review): `+n −m` on the card's line, and, opened, the diff
 // in place of the arguments.
 
-import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Button } from "../components/ui/button.tsx";
 import { capPatch, diffStyleFor, patchCounts } from "../call-diff.ts";
 
@@ -65,6 +74,7 @@ export const CallDiffBody = ({
   const [showAll, setShowAll] = useState(false);
   const [showCall, setShowCall] = useState(false);
   const { ref, width } = useWidth();
+  const callId = useId();
   const capped = useMemo(() => capPatch(patch), [patch]);
 
   return (
@@ -76,6 +86,7 @@ export const CallDiffBody = ({
           variant="ghost"
           size="sm"
           aria-expanded={showCall}
+          aria-controls={callId}
           className="h-7 px-2 text-xs text-muted-foreground"
           onClick={() => {
             setShowCall(!showCall);
@@ -106,7 +117,11 @@ export const CallDiffBody = ({
           Show all {capped.lines} lines
         </Button>
       )}
-      {showCall && <div className="mt-3">{call}</div>}
+      {showCall && (
+        <div id={callId} className="mt-3">
+          {call}
+        </div>
+      )}
     </div>
   );
 };
