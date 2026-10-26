@@ -242,11 +242,7 @@ export const sessionSocketsLayer = (
 ): Layer.Layer<
   SessionSockets,
   never,
-<<<<<<< HEAD
-  SessionHost | Secrets | BrowserHandoffs | BrowserPane | Approvals
-=======
-  SessionHost | SessionChanges | Secrets | BrowserHandoffs | Approvals
->>>>>>> 0d5a157 (feat(session): stream the Changes on the Session socket)
+  SessionHost | SessionChanges | Secrets | BrowserHandoffs | BrowserPane | Approvals
 > =>
   Layer.effect(
     SessionSockets,
