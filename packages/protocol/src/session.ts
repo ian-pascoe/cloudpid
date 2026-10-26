@@ -1003,8 +1003,9 @@ export type OwnerTabEntry = typeof OwnerTabEntry.Type;
  * those answer `owner_tab_view`, to the one client that asked.
  *
  * With no browser running, `tabs` is empty. `lost` then says how many Owner tabs the host still has on record, to reopen
- * at their addresses (#240): the browser they were in was closed or replaced, as against none ever opened or the last
- * closed by the owner, which leave nothing on record. Absent when there are none.
+ * at their addresses (#240): the browser they were in was closed or replaced, as against none ever opened, or the last
+ * closed by the owner or by its page in a browser that still runs, which leave nothing to reopen. Absent when there are
+ * none.
  */
 export const OwnerTabListing = Schema.Struct({
   tabs: Schema.Array(OwnerTabEntry),

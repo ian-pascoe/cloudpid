@@ -27,9 +27,16 @@ const ownerTabsOver = (
     readonly refuse?: string;
     /** Scopes whose tab was closed in the browser that runs, as against taken with a browser that was replaced. */
     readonly closed?: ReadonlySet<string>;
+    /** Scopes whose tab went with a replaced browser although others are open (a reopening that failed part way). */
+    readonly replaced?: ReadonlySet<string>;
+    /** A scope whose tab cannot be opened, at its address or blank, for this once. */
+    readonly failOnce?: string;
   } = {},
 ) => {
   const { adoptFails = false, refuse, closed = new Set<string>() } = options;
+  const replaced = options.replaced ?? new Set<string>();
+  let failOnce = options.failOnce;
+  let failures = 0;
   const opened: string[] = [];
   const urls: string[] = [];
   const adopted: Array<readonly [string, string]> = [];
@@ -60,7 +67,16 @@ const ownerTabsOver = (
 
               if (tab !== undefined) return [scope, { state: "open", tab }];
 
-              return [scope, { state: closed.has(scope) ? "closed" : "replaced" }];
+              // Some tab open: the browser runs, so one that is not was closed in it. None: the browser was replaced.
+              return [
+                scope,
+                {
+                  state:
+                    replaced.has(scope) || (!closed.has(scope) && tabs.size === 0)
+                      ? "replaced"
+                      : "closed",
+                },
+              ];
             }),
           ),
         ),
@@ -81,6 +97,15 @@ const ownerTabsOver = (
         urls.push(url ?? "about:blank");
 
         if (url !== undefined && url === refuse) throw new Error("The browser refused the address");
+
+        if (scope === failOnce) {
+          failures += 1;
+
+          if (failures === 2) failOnce = undefined;
+
+          throw new Error("The browser closed while the tab opened");
+        }
+
         // Opening takes a moment, so two opens at once would both see no tab.
         await new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -590,8 +615,8 @@ describe("the Browser Pane's several Owner tabs", () => {
     expect(links.ownerTabId).toBe("c");
     expect(ownerTabs.list()).toEqual({
       tabs: [
-        { id: "a", url: "https://example.com/owner-a", title: "Tab A" },
-        { id: "c", url: "https://example.com/owner-c", title: "Tab C" },
+        { id: "a", url: "https://example.com/owner-a" },
+        { id: "c", url: "https://example.com/owner-c" },
       ],
       shown: "c",
     });
@@ -701,8 +726,8 @@ describe("the Owner tabs' addresses and titles, kept and reopened", () => {
     await first.tabs();
     expect(first.list()).toEqual({
       tabs: [
-        { id: "a", url: "https://a.example/", title: "A" },
-        { id: "b", url: "https://b.example/start", title: "B" },
+        { id: "a", url: "https://a.example/" },
+        { id: "b", url: "https://b.example/start" },
       ],
       shown: "b",
     });
@@ -719,6 +744,27 @@ describe("the Owner tabs' addresses and titles, kept and reopened", () => {
     ]);
   });
 
+  it("records the address through show and close too, and keeps no fragment or title", async () => {
+    const at = { a: "https://a.example/cb?code=x#access_token=secret", b: "https://b.example/" };
+    const { store, tabs, cdp } = twoTabs(at);
+    const reads = [cdp()];
+    const { ownerTabs } = ownerTabsOver(reads, store, tabs);
+
+    await ownerTabs.show("a");
+    expect(ownerTabs.list().tabs).toEqual([
+      { id: "a", url: "https://a.example/cb?code=x" },
+      { id: "b", url: "https://b.example/" },
+    ]);
+
+    at.b = "https://b.example/next#frag";
+    reads.push(cdp());
+    await ownerTabs.close("a");
+    expect(ownerTabs.list()).toEqual({
+      tabs: [{ id: "b", url: "https://b.example/next" }],
+      shown: "b",
+    });
+  });
+
   it("records them as the Pane asks for links, a new tab, and the tab it opened", async () => {
     const { ownerTabs } = ownerTabsOver([withWindows(), withWindows()]);
 
@@ -727,9 +773,7 @@ describe("the Owner tabs' addresses and titles, kept and reopened", () => {
 
     // A read of the list finds where it is.
     await ownerTabs.tabs();
-    expect(ownerTabs.list().tabs).toEqual([
-      { id: "id-1", url: "https://example.com/owner-1", title: "Title of owner-1" },
-    ]);
+    expect(ownerTabs.list().tabs).toEqual([{ id: "id-1", url: "https://example.com/owner-1" }]);
   });
 
   it("keeps the last address a tab had when its page failed to load, and records only addresses that can be reopened", async () => {
@@ -755,8 +799,8 @@ describe("the Owner tabs' addresses and titles, kept and reopened", () => {
 
     store.put("owner-tabs", {
       tabs: [
-        { id: "a", url: "https://a.example/", title: "A" },
-        { id: "b", url: "https://b.example/deep?x=1", title: "B" },
+        { id: "a", url: "https://a.example/" },
+        { id: "b", url: "https://b.example/deep?x=1" },
         { id: "c" },
       ],
       shown: "b",
@@ -778,8 +822,8 @@ describe("the Owner tabs' addresses and titles, kept and reopened", () => {
     // Their order, addresses and titles are kept, and so is the one shown.
     expect(ownerTabs.list()).toEqual({
       tabs: [
-        { id: "a", url: "https://a.example/", title: "A" },
-        { id: "b", url: "https://b.example/deep?x=1", title: "B" },
+        { id: "a", url: "https://a.example/" },
+        { id: "b", url: "https://b.example/deep?x=1" },
         { id: "c" },
       ],
       shown: "b",
@@ -860,6 +904,50 @@ describe("the Owner tabs' addresses and titles, kept and reopened", () => {
     expect(opened).toEqual([ownerTabScope("a"), ownerTabScope("b")]);
     expect(links.ownerTabId).toBe("a");
     expect(links.replaced).toBe(false);
+  });
+
+  it("reports nothing lost when every Owner tab was closed in a browser that still runs", async () => {
+    const store = records();
+
+    store.put("owner-tabs", { tabs: [{ id: "a", url: "https://a.example/" }], shown: "a" });
+
+    const { ownerTabs } = ownerTabsOver([], store, undefined, undefined, {
+      closed: new Set([ownerTabScope("a")]),
+    });
+
+    expect(await ownerTabs.tabs()).toEqual({ tabs: [] });
+  });
+
+  it("reopens the rest on the next ask when a reopening failed part way, rather than forgetting them", async () => {
+    const store = records();
+
+    store.put("owner-tabs", {
+      tabs: [
+        { id: "a", url: "https://a.example/" },
+        { id: "b", url: "https://b.example/" },
+        { id: "c", url: "about:blank" },
+      ],
+      shown: "a",
+    });
+
+    const tabs = new Map<string, Tab>();
+    const replaced = new Set([ownerTabScope("b"), ownerTabScope("c")]);
+
+    const host = ownerTabsOver([fakeTransport(), fakeTransport()], store, tabs, undefined, {
+      replaced,
+      failOnce: ownerTabScope("b"),
+    });
+
+    // `a` reopened, `b` failed: the list is as it was.
+    await expect(host.ownerTabs.view(true)).rejects.toThrow();
+    expect(host.opened).toEqual([ownerTabScope("a"), ownerTabScope("b"), ownerTabScope("b")]);
+    expect(host.ownerTabs.list().tabs.map((tab) => tab.id)).toEqual(["a", "b", "c"]);
+
+    // The next ask finds `a` open and `b` and `c` still taken with the old browser: it reopens them.
+    const links = await host.ownerTabs.view(true);
+
+    expect(links.reopened).toBe(2);
+    expect(host.ownerTabs.list().tabs.map((tab) => tab.id)).toEqual(["a", "b", "c"]);
   });
 
   it("reopens nothing when only asked for links", async () => {

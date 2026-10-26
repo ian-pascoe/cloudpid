@@ -1222,6 +1222,13 @@ export class TestSession extends DurableObject {
     await this.ctx.storage.deleteAlarm();
   }
 
+  /** The browser's last use alone happened `ms` earlier than it did, so only a beat can hold the idle close off. */
+  ageBrowserLastUse(ms: number): void {
+    const at = this.ctx.storage.kv.get<number>("browser-last-used");
+
+    if (at !== undefined) this.ctx.storage.kv.put("browser-last-used", at - ms);
+  }
+
   /** The browser's last use and the Pane's last beat happened `ms` earlier than they did. */
   ageBrowserUse(ms: number): void {
     for (const key of ["browser-last-used", "browser-pane-watched"]) {

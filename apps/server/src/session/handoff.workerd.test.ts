@@ -685,8 +685,12 @@ describe("the Browser Pane's Owner tabs over the Session socket", () => {
       return now.use.watched ?? 0;
     });
 
-    // The Session's object is evicted, and wakes at its alarm while the beat is still fresh: nothing is closed, and the
-    // wake is for the window after the beat.
+    // The browser's last use is past the window, so the beat alone holds the close off. The Session's object is evicted,
+    // and wakes at its alarm while the beat is still fresh: nothing is closed, and the wake is for the window after the
+    // beat.
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.ageBrowserLastUse(BROWSER_IDLE_MS + 1),
+    );
     await evictDurableObject(stub);
     await runDurableObjectAlarm(stub);
 
@@ -694,7 +698,7 @@ describe("the Browser Pane's Owner tabs over the Session socket", () => {
       const now = await state();
 
       expect(now.closes).toBe(0);
-      expect(now.use.alarm).toBe(Math.max(beat, now.use.lastUsed ?? 0) + BROWSER_IDLE_MS);
+      expect(now.use.alarm).toBe(beat + BROWSER_IDLE_MS);
     });
 
     // The beats stop and the window passes (the stored times say so): the next wake closes the browser.

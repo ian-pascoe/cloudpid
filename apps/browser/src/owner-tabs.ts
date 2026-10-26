@@ -21,7 +21,7 @@
 // its tab (`./cdp.ts`). The conversations' tabs are never listed, shown or closed here: only pages that descend from an
 // Owner tab are looked at. The agent in them comes later.
 //
-// The list also records each Owner tab's address and title (`#reconcile` reads them from the pages it already lists, so a
+// The list also records each Owner tab's address, without its fragment (`#reconcile` reads it from the pages it already lists, so a
 // Pane in view that asks for the list every few seconds keeps them within seconds, and `close()` of the host asks once
 // more just before the browser is closed), so that a browser that was closed or replaced is answered by reopening every
 // Owner tab at its address (`view(true)`: no history, scroll, form state or sign-ins come back, which the answer says:
@@ -83,12 +83,11 @@ export type OwnerTabRecords = {
 
 /**
  * An Owner tab as kept: its `id` and, once the host has read them from the browser, the address (`url`: an http(s) page or
- * blank, the only ones reopened) and the title it had last. Both are page content.
+ * blank, the only ones reopened, and without its `#fragment`: see `recordable`). It is page content.
  */
 export type StoredOwnerTab = {
   readonly id: string;
   readonly url?: string;
-  readonly title?: string;
 };
 
 /** The Owner tabs, in the order they were opened, and the one the Browser Pane shows. */
@@ -100,9 +99,15 @@ export type OwnerTabList = {
 /** An address the host records and reopens: a page over http(s), or a blank one. Not `file:`, `chrome:` or an error page. */
 const recordable = (url: string): boolean => /^https?:\/\//i.test(url) || url === "about:blank";
 
+/**
+ * `url` without its `#fragment`, which is where a page keeps what it must not leak or replay (an OAuth `#access_token=`,
+ * an `id_token`). A query string is kept: a `code=` or a signed URL in it is a residual risk the spec names.
+ */
+const withoutFragment = (url: string): string => url.split("#", 1)[0] ?? url;
+
 /** The address to reopen an Owner tab at: the one recorded, if it can be reopened, else blank. */
 const reopenUrl = (url: string | undefined): string =>
-  url !== undefined && recordable(url) ? url : "about:blank";
+  url !== undefined && recordable(url) ? withoutFragment(url) : "about:blank";
 
 const KEY = "owner-tabs";
 
@@ -142,7 +147,7 @@ const shownAmong = (
 type Shown = { readonly id: string; readonly tab: Tab };
 
 /**
- * The Owner tabs of `order` that are `keep`, as they are kept: each with its address and title as its page in `pages` has
+ * The Owner tabs of `order` that are `keep`, as they are kept: each with its address as its page in `pages` has
  * them now (`targets` says which page is whose); a page on an address that cannot be reopened (an error page, `file:`)
  * leaves what was recorded.
  */
@@ -162,7 +167,7 @@ const recorded = (
     const entry = known.get(id) ?? { id };
 
     return page !== undefined && recordable(page.url)
-      ? [{ ...entry, url: page.url, title: page.title }]
+      ? [{ ...entry, url: withoutFragment(page.url) }]
       : [entry];
   });
 };
@@ -251,49 +256,55 @@ export class OwnerTabs {
    * others were closed), the first of them is shown and the ones gone leave the list, their scope records deleted. With
    * none open and some listed (the browser was closed, replaced or lost), every one is **reopened at its recorded address**,
    * in order and under its own `id` and scope (the first starts a browser, the others reattach to it), and the one shown
-   * before is shown again, else the first. With none listed, a new one is opened and shown.
+   * before is shown again, else the first; ones a browser took are reopened while others are open too (a reopening that
+   * failed part way left them). With none listed, a new one is opened and shown.
    */
   #openShown(): Promise<Opened> {
     return this.#serial(async (): Promise<Opened> => {
-      const shown = await this.#findShown();
-
-      if (shown !== undefined) return { shown, opened: false, replaced: false, reopened: 0 };
-
       const list = this.list();
       const scopes = list.tabs.map(({ id }) => ownerTabScope(id));
-      const there = await this.#browser.tabsOf(scopes);
+
+      // One look at where every Owner tab stands answers both: whether the one shown is there, and what else to reopen.
+      const states = await this.#browser.statesOf(scopes);
+      const stands = list.shown === undefined ? undefined : states.get(ownerTabScope(list.shown));
+
+      if (
+        stands?.state === "open" &&
+        list.shown !== undefined &&
+        ![...states.values()].some(({ state }) => state === "replaced")
+      ) {
+        return {
+          shown: { id: list.shown, tab: stands.tab },
+          opened: false,
+          replaced: false,
+          reopened: 0,
+        };
+      }
+
       const kept: StoredOwnerTab[] = [];
       const gone: string[] = [];
       const tabs = new Map<string, Tab>();
       let reopened = 0;
 
-      if (there.size > 0) {
-        for (const entry of list.tabs) {
-          const tab = there.get(ownerTabScope(entry.id));
+      // Each Owner tab by where it stands: open, it is kept; closed in the browser that runs (by the owner, or by its page),
+      // it only leaves the list; taken with a browser that was closed or replaced, it is reopened at its address. One
+      // reopening that fails leaves the rest as they were, still to reopen: the next ask finds them replaced the same way.
+      for (const entry of list.tabs) {
+        const found = states.get(ownerTabScope(entry.id));
 
-          if (tab === undefined) {
-            gone.push(entry.id);
-            continue;
-          }
-
-          kept.push(entry);
-          tabs.set(entry.id, tab);
+        if (found?.state === "closed") {
+          gone.push(entry.id);
+          continue;
         }
-      } else {
-        // None is open. The ones a closed or replaced browser took are reopened; one closed in the browser that runs was
-        // closed by the owner (or by its page), and only leaves the list.
-        const states = await this.#browser.statesOf(scopes);
 
-        for (const entry of list.tabs) {
-          if (states.get(ownerTabScope(entry.id))?.state === "closed") {
-            gone.push(entry.id);
-            continue;
-          }
-
+        if (found?.state === "open") {
+          tabs.set(entry.id, found.tab);
+        } else {
           tabs.set(entry.id, await this.#reopen(entry));
-          kept.push(entry);
           reopened += 1;
         }
+
+        kept.push(entry);
       }
 
       let id = list.shown !== undefined && tabs.has(list.shown) ? list.shown : kept[0]?.id;
@@ -444,27 +455,32 @@ export class OwnerTabs {
    * Owner tab opened that cannot reach its opener joins (`#adopt`) and is shown when the tab it came from was; `closing`,
    * if given, is closed with the windows it opened (not the Owner tabs it opened) and leaves the list. The one shown gives
    * way to its neighbour (`shownAmong`). With no Owner tab left there (the browser was closed or replaced) the list is
-   * kept as it is, for `view(true)` to say it was replaced and reopen it, and the answer is empty, with the number kept as
-   * `lost`. Starts no browser.
+   * kept as it is, for `view(true)` to say it was replaced and reopen it, and the answer is empty, with the number of those a closed or
+   * replaced browser took as `lost`. Starts no browser.
    */
   async #reconcile(closing?: string): Promise<OwnerTabListing> {
     const stored = this.list();
 
     if (stored.tabs.length === 0) return { tabs: [] };
 
-    const found = await this.#browser.tabsOf(stored.tabs.map(({ id }) => ownerTabScope(id)));
+    const states = await this.#browser.statesOf(stored.tabs.map(({ id }) => ownerTabScope(id)));
 
     const present = stored.tabs.flatMap(({ id }): Present[] => {
-      const tab = found.get(ownerTabScope(id));
+      const found = states.get(ownerTabScope(id));
 
-      return tab === undefined ? [] : [{ id, tab }];
+      return found?.state === "open" ? [{ id, tab: found.tab }] : [];
     });
 
     const first = present[0];
 
     if (first === undefined) {
-      // No browser runs the Owner tabs: they are on record, for `view(true)` to reopen (`lost`).
-      if (closing === undefined) return { tabs: [], lost: stored.tabs.length };
+      if (closing === undefined) {
+        // The Owner tabs a closed or replaced browser took are on record, for `view(true)` to reopen (`lost`); ones closed
+        // in a browser that still runs are not lost, only gone.
+        const lost = [...states.values()].filter(({ state }) => state === "replaced").length;
+
+        return lost > 0 ? { tabs: [], lost } : { tabs: [] };
+      }
 
       // Gone with its browser: it only leaves the list.
       const left = stored.tabs.filter(({ id }) => id !== closing);
@@ -506,9 +522,17 @@ export class OwnerTabs {
 
     for (const { id } of joined) keep.add(id);
 
+    // The ones a closed or replaced browser took stay on record while others are open (a reopening that failed part way),
+    // for `view(true)` to reopen; they are not listed, and ones closed in the browser that runs leave.
+    const record = new Set(keep);
+
+    for (const { id } of stored.tabs) {
+      if (id !== closing && states.get(ownerTabScope(id))?.state === "replaced") record.add(id);
+    }
+
     const order = [...stored.tabs.map(({ id }) => id), ...joined.map(({ id }) => id)];
     const targets = new Map([...present, ...joined].map(({ id, tab }) => [id, tab.targetId]));
-    const tabs = recorded(order, keep, stored.tabs, targets, pages);
+    const tabs = recorded(order, record, stored.tabs, targets, pages);
 
     // A tab opened from the tab shown is shown, as in a browser (on every device, a middle click included).
     const fromShown = joined.filter(
@@ -522,15 +546,17 @@ export class OwnerTabs {
     if (JSON.stringify(next) !== JSON.stringify(stored)) this.#save(next);
 
     await this.#forget(
-      order.filter((id) => !keep.has(id) && stored.tabs.some((tab) => tab.id === id)),
+      order.filter((id) => !record.has(id) && stored.tabs.some((tab) => tab.id === id)),
     );
 
     const titles = new Map(pages.map((page) => [page.targetId, page.title]));
 
-    const entries = tabs.map(({ id }) => ({
-      id,
-      title: titles.get(targets.get(id) ?? "") ?? "",
-    }));
+    const entries = tabs
+      .filter(({ id }) => keep.has(id))
+      .map(({ id }) => ({
+        id,
+        title: titles.get(targets.get(id) ?? "") ?? "",
+      }));
 
     return shown === undefined ? { tabs: entries } : { tabs: entries, shown };
   }
