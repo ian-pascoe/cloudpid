@@ -42,6 +42,7 @@ const LiveChildThread = ({
   thread: ThreadState;
   /** The transcript's messages, rendered inside this thread's own runtime. */
   messages: ReactNode;
+  /** Whether it takes the height of its column (a Subagent Pane) rather than a box of its own (a card). */
   fill: boolean;
 }) => {
   const submit = useAtomSet(submitAtom(sessionId));

@@ -7,7 +7,7 @@
 // may be open more than once, and its tab `label`. A Pane is open under a **key**: the type's `id` alone for a type
 // that may be open once (`subagents`), else `<id>:<argument>` (`live-view:<requestId>`, from `@cloudpid/protocol`'s
 // `liveViewPaneKey`, which a push's link opens too; `subagent:<conversationId>`; `terminal:<tab>`), the argument
-// telling the Panes of one type apart, and a type may refuse an argument it cannot open (`accepts`). The component a type shows is in `pane-area.tsx`, so these rules stay testable
+// telling the Panes of one type apart; a type may refuse an argument it cannot open (`accepts`). The component a type shows is in `pane-area.tsx`, so these rules stay testable
 // without React; a type with no component there fails to typecheck.
 //
 // The Pane area has one button in the Session's header: it opens the **New pane** (`new`), a tab that offers the Pane
@@ -46,13 +46,12 @@ export interface PaneType {
   readonly label: (argument: string | undefined, lookups: PaneLookups) => PaneLabel;
 }
 
-/** A tab's label: `name`, with `agent` beside it when there is one. */
-const labelOf = (name: string, agent: string | undefined): PaneLabel =>
-  agent === undefined ? { name } : { name, agent };
-
 /** A Live View's tab: named for the agent whose handoff it is, unless that is the root agent. */
-const liveViewLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel =>
-  labelOf("Live View", argument === undefined ? undefined : lookups.agentOfHandoff(argument));
+const liveViewLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel => {
+  const agent = argument === undefined ? undefined : lookups.agentOfHandoff(argument);
+
+  return agent === undefined ? { name: "Live View" } : { name: "Live View", agent };
+};
 
 /** A conversation's ID as a Subagent Pane's key writes it: a whole number in decimal, with no leading zero. */
 const CONVERSATION_ID = /^(?:0|[1-9]\d*)$/;
@@ -61,14 +60,20 @@ const CONVERSATION_ID = /^(?:0|[1-9]\d*)$/;
 export const conversationOfSubagentPane = (argument: string | undefined): number | undefined =>
   argument !== undefined && CONVERSATION_ID.test(argument) ? Number(argument) : undefined;
 
-/** A Subagent Pane's tab: named for its agent once the task graph lists it. */
+/**
+ * How a Subagent Pane names what it shows, in its tab and its header: its agent, or, while the task graph does not list
+ * the agent (not yet, or no more), its conversation, so two such Panes still read apart.
+ */
+export const subagentPaneName = (conversationId: number, agent: string | undefined): string =>
+  agent ?? `Conversation ${conversationId}`;
+
+/** A Subagent Pane's tab: what the Pane shows is the agent, so the agent is its name. */
 const subagentLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel => {
   const conversationId = conversationOfSubagentPane(argument);
 
-  return labelOf(
-    "Subagent",
-    conversationId === undefined ? undefined : lookups.agentOfConversation(conversationId),
-  );
+  return conversationId === undefined
+    ? { name: "Subagent" }
+    : { name: subagentPaneName(conversationId, lookups.agentOfConversation(conversationId)) };
 };
 
 /**

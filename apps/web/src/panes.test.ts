@@ -95,7 +95,7 @@ describe("a Pane key", () => {
     expect(paneKeyOf("live-view")).toBeUndefined();
   });
 
-  it("knows a Subagent Pane per conversation, named for its agent once the page knows it", () => {
+  it("knows a Subagent Pane per conversation, named for its agent, or its conversation until the page knows the agent", () => {
     const key = subagentPaneKey(17);
     const pane = paneKeyOf(key);
 
@@ -106,12 +106,9 @@ describe("a Pane key", () => {
     expect(key).toBe("subagent:17");
     expect(pane?.argument).toBe("17");
     expect(conversationOfSubagentPane(pane?.argument)).toBe(17);
-    expect(pane?.type.label(pane.argument, known)).toEqual({
-      name: "Subagent",
-      agent: "a2 (scout)",
-    });
-    // An agent the task graph does not list (yet, or any more).
-    expect(pane?.type.label("18", known)).toEqual({ name: "Subagent" });
+    expect(pane?.type.label(pane.argument, known)).toEqual({ name: "a2 (scout)" });
+    // An agent the task graph does not list (yet, or any more): two such tabs still read apart.
+    expect(pane?.type.label("18", known)).toEqual({ name: "Conversation 18" });
   });
 
   it("is no Subagent Pane for an argument that is no conversation", () => {

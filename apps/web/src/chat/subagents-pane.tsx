@@ -1,6 +1,6 @@
-// The Subagents Pane: the Session's subagents (each opening its conversation in a Subagent Pane of its own,
-// `subagent-pane.tsx`; its row with its Subagent Workspace's branch when it has one) and the background tasks running,
-// from the task graph the Session streams. The Todo List is in the Session details, over the chat
+// The Subagents Pane: the Session's subagents (each row with its Subagent Workspace's branch when it has one, and
+// opening the agent's conversation in a Subagent Pane of its own, `subagent-pane.tsx`) and the background tasks
+// running, from the task graph the Session streams. The Todo List is in the Session details, over the chat
 // (`session-details.tsx`).
 
 import * as Arr from "effect/Array";
@@ -13,7 +13,7 @@ import { panesAtom } from "../panes-state.ts";
 import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
 import { abortAtom, sessionViewAtom, taskGraphAtom } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
-import { AgentBranch, AgentStatus, shortModel } from "./subagent-card.tsx";
+import { AgentStatus, AgentStopButton, AgentSummary } from "./subagent-card.tsx";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
 const kindLabel = (kind: string): string =>
@@ -22,8 +22,6 @@ const kindLabel = (kind: string): string =>
 type RowProps = { agent: GraphAgent; depth: number };
 
 const AgentRow = ({ agent, depth }: RowProps) => {
-  const sessionId = useShownSessionId();
-  const abort = useAtomSet(abortAtom(sessionId));
   const actOnPanes = useAtomSet(panesAtom);
 
   return (
@@ -37,33 +35,10 @@ const AgentRow = ({ agent, depth }: RowProps) => {
           }}
           className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-accent"
         >
-          <span className="font-mono text-[0.8125rem]">{agent.id}</span>
-          {agent.role !== null && (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{agent.role}</span>
-          )}
-          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
-            {shortModel(agent.model)}
-          </span>
-          <span className="min-w-0 text-muted-foreground">
-            <AgentBranch agent={agent} />
-          </span>
+          <AgentSummary agent={agent} />
         </button>
         <AgentStatus agent={agent} />
-        {agent.status === "working" && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="size-7 px-0"
-            aria-label={`Stop ${agent.id}`}
-            title={`Stop ${agent.id}`}
-            onClick={() => {
-              abort({ conversationId: agent.conversationId });
-            }}
-          >
-            <Square />
-          </Button>
-        )}
+        <AgentStopButton agent={agent} />
       </div>
     </li>
   );
