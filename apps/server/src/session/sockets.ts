@@ -13,6 +13,7 @@ import {
   type SessionTree,
   HEARTBEAT,
   type LiveViewLinks,
+  type OwnerTabLinks,
   type ClientMessage,
   type ServerMessage,
   ServerMessageJson,
@@ -26,9 +27,10 @@ import {
 } from "@cloudpid/extensions/secrets";
 import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/extensions/approvals";
 import {
-  type BrowserError,
+  BrowserError,
   type BrowserHandoffRequest,
   BrowserHandoffs,
+  BrowserPane,
 } from "@cloudpid/extensions/browser";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -222,13 +224,18 @@ type WatchKey = ConversationId | typeof TASK_GRAPH | typeof USAGE;
  */
 export const sessionSocketsLayer = (
   state: SocketState,
-): Layer.Layer<SessionSockets, never, SessionHost | Secrets | BrowserHandoffs | Approvals> =>
+): Layer.Layer<
+  SessionSockets,
+  never,
+  SessionHost | Secrets | BrowserHandoffs | BrowserPane | Approvals
+> =>
   Layer.effect(
     SessionSockets,
     Effect.gen(function* () {
       const host = yield* SessionHost;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
+      const browserPane = yield* BrowserPane;
       const approvals = yield* Approvals;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
@@ -404,6 +411,7 @@ export const sessionSocketsLayer = (
         | SessionTree
         | Navigated
         | LiveViewLinks
+        | OwnerTabLinks
         | null,
         SessionError | SecretsError | BrowserError | ApprovalsError
       > => {
@@ -445,6 +453,23 @@ export const sessionSocketsLayer = (
           // Answered to this socket alone, as every command is: the links are never stored or sent to other clients.
           case "live_view":
             return handoffs.liveView(message.requestId);
+
+          // The Browser Pane's links, answered to this socket alone the same way. An Owner tab it opened is a use of the
+          // browser: settling arms the wake for its idle close, which an idle Session would otherwise not have.
+          case "owner_tab_view":
+            return browserPane.view(message.open).pipe(
+              // In the background and best effort: the answer neither waits on the settle nor loses its links to it.
+              Effect.tap((links) =>
+                links.opened
+                  ? host.settle.pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("Settling after an Owner tab opened failed", cause),
+                      ),
+                      Effect.forkIn(scope),
+                    )
+                  : Effect.void,
+              ),
+            );
 
           case "command": {
             const { type: _type, id: _id, ...command } = message;

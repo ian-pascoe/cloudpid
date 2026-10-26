@@ -327,12 +327,25 @@ export const LiveViewRequest = Schema.Struct({
   requestId: Schema.String,
 });
 
+/**
+ * Mint Live View links for the Owner tab the Browser Pane shows, and the windows it opened: the Pane opening (`open`),
+ * reconnecting, or following a window. With `open`, the Session's browser is started when none runs and an Owner tab
+ * opened and shown when the owner has none; without it nothing is started or opened. Answered with `OwnerTabLinks`, to
+ * the asking client only; fails with `OWNER_TAB_GONE` ("the Owner tab is gone") when the tab or its browser is gone.
+ */
+export const OwnerTabViewRequest = Schema.Struct({
+  type: Schema.Literal("owner_tab_view"),
+  id: CommandId,
+  open: Schema.Boolean,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   TreeRequest,
   Navigate,
   SwitchBranch,
   LiveViewRequest,
+  OwnerTabViewRequest,
   Submit,
   Abort,
   CatalogRequest,
@@ -842,6 +855,22 @@ export const LiveViewLinks = Schema.Struct({
 });
 
 export type LiveViewLinks = typeof LiveViewLinks.Type;
+
+/**
+ * The answer to `owner_tab_view`: the Owner tab the Browser Pane shows (`ownerTabId`, which names it in the browser host,
+ * not a CDP target), with fresh links to it and to each window it opened that is still open. An ask with `open` says
+ * whether it opened the Owner tab (`opened`: none of the owner's was still there, so the browser may have been started
+ * too) and whether the one shown before is gone (`replaced`: its browser was closed or replaced, or it was closed), so
+ * the Pane can say why it shows another; an ask without `open` does neither.
+ */
+export const OwnerTabLinks = Schema.Struct({
+  ownerTabId: Schema.String,
+  ...LiveViewLinks.fields,
+  opened: Schema.Boolean,
+  replaced: Schema.Boolean,
+});
+
+export type OwnerTabLinks = typeof OwnerTabLinks.Type;
 
 /** A file a Slash command hands the owner, such as `/export`'s transcript, for the client to download. */
 export const CommandFile = Schema.Struct({

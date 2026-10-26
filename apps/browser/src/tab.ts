@@ -1,11 +1,18 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
-// The tab a conversation works in, as `agents/browser` has stored it, for a Browser Handoff (`./handoff.ts`).
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off schemaSync:off preferTypedSchemaDecoder:off
+// The tab an `agents/browser` scope works in, as `agents/browser` has stored it: a conversation's, for a Browser Handoff
+// (`./handoff.ts`), and an Owner tab's, for the Browser Pane (`./owner-tabs.ts`); and opening an Owner tab, and
+// forgetting one that is gone.
 import {
+  type Browser,
   type BrowserBinding,
   type BrowserSessionStore,
   BrowserRenderingError,
   listBrowserTargets,
 } from "agents/browser";
+import * as Schema from "effect/Schema";
+
+/** What `Target.createTarget` answers: the new page's target; any other field is ignored. */
+const decodeCreated = Schema.decodeUnknownSync(Schema.Struct({ targetId: Schema.String }));
 
 /** The part of a `Browser` the lookup reads: its name, its store, and Browser Run. */
 export type TabLookup = {
@@ -14,44 +21,50 @@ export type TabLookup = {
   readonly binding: BrowserBinding;
 };
 
-/** A conversation's tab: the Browser Run session it is in and its CDP target. */
+/** A scope's tab: the Browser Run session it is in and its CDP target. */
 export type Tab = { readonly browserSessionId: string; readonly targetId: string };
 
+/** The scope `agents/browser/pi`'s `browserTool` gives conversation `conversationId` (its `scope` option's default). */
+export const conversationScope = (conversationId: number): string =>
+  `conversation:${conversationId}`;
+
 /**
- * The store keys `agents/browser` keeps a browser and a conversation's scope under. They are private to the package
+ * The store keys `agents/browser` keeps a browser and a scope under. They are private to the package
  * (`namedBrowserSessionKey` and `browserScopeKeyPrefix`, in `agents` 0.28.1, the version pinned in `package.json`), so
  * `tab.test.ts` creates the records through a real `Browser` and fails when an upgrade changes them: check it, and these
- * two functions, whenever `agents` is upgraded.
+ * two functions and `scopesLockKey` (the lock key, `browserScopeKeyPrefix` too), whenever `agents` is upgraded.
  */
 export const browserKey = (name: string): string => `browser:session:${name}`;
 
-export const scopeKey = (name: string, conversationId: number): string =>
-  `browser:scope:${name.length}:${name}:conversation:${conversationId}`;
+export const scopeKey = (name: string, scope: string): string =>
+  `browser:scope:${name.length}:${name}:${scope}`;
+
+/** The lock `agents/browser` writes every scope record of browser `name` under: their keys' prefix (private too). */
+const scopesLockKey = (name: string): string => scopeKey(name, "");
 
 /**
- * The tab conversation `conversationId` works in, if its browser is still there. The `browserTool` keeps it in the
- * conversation's scope record (`conversation:<id>`, the `scope` option's default) beside the browser's own record, and
- * both are read as they are stored: `Browser.connect` would create a browser for a conversation that has none and move
- * a stale scope record to it, and a handoff must change neither.
+ * The tab scope `scope` works in, if its browser is still there. `agents/browser` keeps it in the scope's record beside
+ * the browser's own record, and both are read as they are stored: `Browser.connect` would create a browser for a scope
+ * that has none and move a stale scope record to it, and neither a handoff nor a Pane asking again may change either.
  */
-export const tabOf = async (
+export const tabIn = async (
   { name, store, binding }: TabLookup,
-  conversationId: number,
+  scope: string,
 ): Promise<Tab | undefined> => {
   const browser = await store.get(browserKey(name));
-  const scope = await store.get(scopeKey(name, conversationId));
+  const record = await store.get(scopeKey(name, scope));
 
-  // The scope's record names the browser it last worked in: one that was replaced since has no tab to hand over.
+  // The scope's record names the browser it last worked in: one that was replaced since has no tab there.
   if (
     browser === undefined ||
     browser.closedAt !== undefined ||
-    scope?.sessionId !== browser.sessionId ||
-    scope.activeTargetId === undefined
+    record?.sessionId !== browser.sessionId ||
+    record.activeTargetId === undefined
   ) {
     return undefined;
   }
 
-  const { activeTargetId } = scope;
+  const { activeTargetId } = record;
 
   try {
     const targets = await listBrowserTargets(binding, browser.sessionId);
@@ -66,5 +79,53 @@ export const tabOf = async (
     }
 
     throw error;
+  }
+};
+
+/** The tab conversation `conversationId` works in, if its browser is still there (`tabIn`). */
+export const tabOf = (lookup: TabLookup, conversationId: number): Promise<Tab | undefined> =>
+  tabIn(lookup, conversationScope(conversationId));
+
+/**
+ * Open a blank tab for scope `scope` and record it as the scope's tab. `Browser.connect` reattaches to the browser that
+ * runs and starts one only when none does (or it is gone), so this never starts a second browser.
+ */
+export const openTab = async (browser: Pick<Browser, "connect">, scope: string): Promise<Tab> => {
+  const connection = await browser.connect({ scope });
+
+  try {
+    const { targetId } = decodeCreated(
+      await connection.cdp.send("Target.createTarget", { url: "about:blank" }),
+      { onExcessProperty: "ignore" },
+    );
+
+    // False when the browser was closed or replaced meanwhile: the tab is not where the record would say.
+    if (!(await connection.setActiveTarget(targetId))) {
+      throw new Error("The browser was closed while the tab opened");
+    }
+
+    return { browserSessionId: connection.sessionId, targetId };
+  } finally {
+    connection.cdp.disconnect();
+  }
+};
+
+/**
+ * Delete scope `scope`'s record, under the lock `agents/browser` writes scope records under: for a scope that is done
+ * with (an Owner tab that is gone), so it does not count against `MAX_BROWSER_SCOPES`. Its tab, if still open, is left.
+ */
+export const forgetScope = async (
+  {
+    name,
+    store,
+  }: { readonly name: string; readonly store: Pick<BrowserSessionStore, "acquireLock" | "delete"> },
+  scope: string,
+): Promise<void> => {
+  const lock = await store.acquireLock(scopesLockKey(name));
+
+  try {
+    await store.delete(scopeKey(name, scope));
+  } finally {
+    await lock.release();
   }
 };

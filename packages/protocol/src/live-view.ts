@@ -1,10 +1,17 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain helpers over text.
 // The names a Browser Handoff's Live View is known by on both sides of the Session socket (`docs/spec.md` → Browser):
-// its Pane's key and the query that opens it, and the words `live_view` fails with once the handoff is over. No imports,
-// so the browser host's Worker can take this module alone (`@cloudpid/protocol/live-view`).
+// its Pane's key and the query that opens it, and the words `live_view` fails with once the handoff is over; and the
+// words `owner_tab_view` fails with when the Browser Pane's Owner tab is gone. No imports, so the browser host's Worker
+// can take this module alone (`@cloudpid/protocol/live-view`).
 
 /** What `live_view` fails with once its handoff has ended (or for a handoff the Session does not have), exactly. */
 export const LIVE_VIEW_HANDOFF_OVER = "the handoff is over";
+
+/**
+ * What `owner_tab_view` fails with when the Owner tab the Browser Pane shows is gone, exactly: its browser was closed or
+ * replaced, or the tab was closed, and the request did not ask to open one.
+ */
+export const OWNER_TAB_GONE = "the Owner tab is gone";
 
 /** The key of the Live View Pane of the Browser Handoff `requestId` names: `live-view:<requestId>`, as it is. */
 export const liveViewPaneKey = (requestId: string): string => `live-view:${requestId}`;

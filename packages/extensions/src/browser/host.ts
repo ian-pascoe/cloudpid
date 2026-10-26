@@ -12,6 +12,7 @@ import type {
   HandoffStartInput,
   HandoffStatus,
   LiveViewLinks,
+  OwnerTabLinks,
 } from "./contract.ts";
 
 export {
@@ -29,6 +30,8 @@ export {
   type LiveViewTarget,
   type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
+  OWNER_TAB_GONE,
+  type OwnerTabLinks,
 } from "./contract.ts";
 
 /** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
@@ -60,6 +63,13 @@ export type BrowserHostService = {
    * asked. Fails (its message holds `LIVE_VIEW_HANDOFF_OVER`) once the handoff has ended.
    */
   readonly liveView: (requestId: string) => Effect.Effect<LiveViewLinks, BrowserError>;
+  /**
+   * Fresh 60-second Live View links to the Owner tab the owner's Browser Pane shows and the windows it opened, for the
+   * one client that asked. With `open` (the Pane opening), the browser is started when none runs and an Owner tab opened
+   * and shown when the owner has none. Fails (its message holds `OWNER_TAB_GONE`) when the tab or its browser is gone
+   * and `open` is false.
+   */
+  readonly ownerTabView: (open: boolean) => Effect.Effect<OwnerTabLinks, BrowserError>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   readonly waitHandoff: (
     requestId: string,

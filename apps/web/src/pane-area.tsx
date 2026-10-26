@@ -26,6 +26,7 @@ import { SubagentPane } from "./chat/subagent-pane.tsx";
 import { SubagentsPane, useSubagentsWorking } from "./chat/subagents-pane.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { cn } from "./lib/utils.ts";
+import { BrowserPane } from "./live-view/browser-pane.tsx";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
 import { handoffAgentsAtom } from "./live-view/handoff-atoms.ts";
 import { NewPane } from "./new-pane.tsx";
@@ -58,6 +59,7 @@ const PANE_COMPONENTS = {
   subagents: SubagentsPane,
   subagent: SubagentPane,
   tree: SessionTreePane,
+  browser: BrowserPane,
   "live-view": LiveViewPane,
 } satisfies {
   readonly [Id in PaneTypeId]: ComponentType<PaneProps>;

@@ -1,7 +1,7 @@
 // What the Session and its browser host (`apps/browser`) agree on, in plain data a Durable Object RPC carries and
 // without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and of
 // `@cloudpid/protocol` only types and its import-free `live-view` module.
-import type { LiveViewLinks } from "@cloudpid/protocol";
+import type { LiveViewLinks, OwnerTabLinks } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 
 /**
@@ -55,6 +55,15 @@ export type { LiveViewLinks, LiveViewTarget, LiveViewWindow } from "@cloudpid/pr
 export { LIVE_VIEW_HANDOFF_OVER } from "@cloudpid/protocol/live-view";
 
 /**
+ * `owner_tab_view`'s answer (`@cloudpid/protocol`'s `OwnerTabLinks`): the Owner tab the Browser Pane shows, with fresh
+ * Live View links to it and its windows, minted as `liveView`'s are and for the asking client alone.
+ */
+export type { OwnerTabLinks } from "@cloudpid/protocol";
+
+/** What `ownerTabView` fails with when the Owner tab shown, or its browser, is gone, exactly. */
+export { OWNER_TAB_GONE } from "@cloudpid/protocol/live-view";
+
+/**
  * How a Browser Handoff was left: the origins (never the URLs) of the windows the tab opened that are still open, or no
  * `windowOrigins` when the host could not tell.
  */
@@ -103,6 +112,13 @@ export type BrowserHostRpc = {
    * that asked. Fails with `LIVE_VIEW_HANDOFF_OVER` once the handoff has ended.
    */
   liveView(requestId: string): Promise<LiveViewLinks>;
+  /**
+   * Mint fresh Live View links (60 s) to the Owner tab the Browser Pane shows and the windows it opened, for the owner's
+   * client that asked. With `open` (the Pane opening), the browser is started when none runs and an Owner tab opened and
+   * shown when the owner has none, and the answer says whether it opened one and whether the one shown before is gone.
+   * Fails with `OWNER_TAB_GONE` when the tab or its browser is gone and `open` is false.
+   */
+  ownerTabView(open: boolean): Promise<OwnerTabLinks>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
   waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus>;
   /**
