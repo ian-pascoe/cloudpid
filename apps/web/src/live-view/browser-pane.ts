@@ -1,11 +1,13 @@
-// @effect-diagnostics missingPipeableSignature:off -- a plain constructor of a Live View.
+// @effect-diagnostics missingPipeableSignature:off -- a plain constructor of the Pane's connection.
 
-// What the Browser Pane adds to a Live View's connection (#238, ADR-0013), on the Owner tab it shows: the tab's URL as
-// it navigates and whether it can go back or forward, read on the tab's own connection (`AttachTab`), and the URL bar's
-// navigate, back, forward and reload sent there. The links come from the Session's `owner_tab_view`: the first ask opens
-// (the browser is started when none runs, an Owner tab opened when the owner has none), later ones (a reconnect, a
-// window opening or closing) only read, and one that finds the Owner tab gone ends the Live View, for the Pane to offer
-// a new one. The connection (`connection.ts`) knows none of this, nor do the handoff's files.
+// What the Browser Pane adds to the connection it shares with the Live View (`connection.ts`; #238, ADR-0013), on the
+// Owner tab it shows: the tab's URL as it navigates and whether it can go back or forward, read on the tab's own
+// connection (`AttachTab`), and the URL bar's navigate, back, forward and reload sent there. The links come from the
+// Session's `owner_tab_view`: the first ask opens (the browser is started when none runs, an Owner tab opened when the
+// owner has none), unless the Session is archived; later ones (a reconnect, a window opening or closing) only read, and
+// one that finds the Owner tab gone ends the connection, for the Pane to offer a new one. An ask that opened says
+// whether the Owner tab shown before was gone (`replaced`), for the Pane to say why it shows another. The connection
+// knows none of this, nor do the handoff's files.
 
 import { OWNER_TAB_GONE, type OwnerTabLinks } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
@@ -52,10 +54,16 @@ const Navigated = Schema.Struct({ errorText: Schema.optional(Schema.String) });
 
 const Ignored = Schema.Unknown;
 
-/** A Live View of the Owner tab, with its URL and the URL bar's commands. */
+/** The Browser Pane's connection to the Owner tab, with its URL and the URL bar's commands. */
 export interface BrowserPaneView extends LiveView {
   /** The tab's URL and history: the same object until one changes. */
   readonly page: SubscriptionRef.SubscriptionRef<OwnerTabPage>;
+  /**
+   * Whether the Owner tab the Pane opened on replaces one that is gone (its browser was closed or replaced, or the tab
+   * was closed), until `dismiss`.
+   */
+  readonly replaced: SubscriptionRef.SubscriptionRef<boolean>;
+  readonly dismiss: Effect.Effect<void>;
   /** Open `url` in the tab (an address the URL bar took: `address.ts`); fails with why the page could not be opened. */
   readonly navigate: (url: string) => Effect.Effect<void, LiveViewError>;
   /** Back and forward in the tab's history; nothing when there is nowhere to go. */
@@ -71,17 +79,21 @@ const pageOf = (history: NavigationHistory): OwnerTabPage => ({
 });
 
 /**
- * The Browser Pane's Live View of the Owner tab, for as long as the scope is open, with `mint` asking the Session for
- * fresh links (`SessionClient.ownerTabView`): opening on the first ask that succeeds, reading after it. It connects at
- * once. Closing the scope closes its connections; the Owner tab stays open in the browser.
+ * The Browser Pane's connection to the Owner tab, for as long as the scope is open, with `mint` asking the Session for
+ * fresh links (`SessionClient.ownerTabView`): opening on the first ask that succeeds, reading after it, and never
+ * opening when `opens` is false (an archived Session). It connects at once. Closing the scope closes its connections;
+ * the Owner tab stays open in the browser.
  */
 export const openBrowserPaneView = Effect.fnUntraced(function* (
   mint: (open: boolean) => Effect.Effect<OwnerTabLinks, { readonly message: string }>,
+  { opens = true }: { readonly opens?: boolean } = {},
 ) {
   const page = yield* SubscriptionRef.make(INITIAL_OWNER_TAB_PAGE);
-  let opened = false;
+  const replaced = yield* SubscriptionRef.make(false);
+  let opened = !opens;
 
   const links: LinkSource = Effect.suspend(() => mint(!opened)).pipe(
+    Effect.tap((answer) => (answer.replaced ? SubscriptionRef.set(replaced, true) : Effect.void)),
     Effect.map(({ tab, windows }) => {
       opened = true;
 
@@ -132,6 +144,8 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
   const pane: BrowserPaneView = {
     ...view,
     page,
+    replaced,
+    dismiss: SubscriptionRef.set(replaced, false),
     navigate: (url) =>
       view.withTab((tab) =>
         tab

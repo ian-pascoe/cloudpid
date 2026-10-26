@@ -121,7 +121,7 @@ const currentKey = (key: string, types: readonly PaneType[]): string =>
 /** The key of the Session tree Pane. */
 export const TREE_PANE = "tree";
 
-/** The key of the Browser Pane: the Session's browser, in the owner's Owner tab. */
+/** The key of the Browser Pane: the Session's browser, in an Owner tab. Its tab is labelled "Browser". */
 export const BROWSER_PANE = "browser";
 
 /** What a Pane's component gets. */

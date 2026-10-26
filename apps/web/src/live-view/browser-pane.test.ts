@@ -16,13 +16,15 @@ interface History {
 
 /**
  * A Browser Pane over a fake Browser Run and Session: `owner_tab_view` answers with links to the fake's tab (`T`) until
- * `lose` says the Owner tab is gone; `opens` is what each ask said of opening. The tab's history is `history`.
+ * `lose` says the Owner tab is gone, and an ask to open after that says it replaced the one that is gone; `opens` is
+ * what each ask said of opening. The tab's history is `history`; `archived` is the Pane's Session's.
  */
 const setup = (
   history: History = {
     currentIndex: 0,
     entries: [{ id: 1, url: "https://example.com/", title: "Example" }],
   },
+  { archived = false }: { readonly archived?: boolean } = {},
 ) =>
   Effect.gen(function* () {
     const fake = fakeBrowser({
@@ -47,14 +49,23 @@ const setup = (
 
         if (gone && !open) return Effect.fail({ message: OWNER_TAB_GONE });
 
+        const replaced = gone;
+
         gone = false;
 
         return fake.mint.pipe(
-          Effect.map((links): OwnerTabLinks => ({ ownerTabId: "owner-1", ...links })),
+          Effect.map((links): OwnerTabLinks => ({
+            ownerTabId: "owner-1",
+            ...links,
+            opened: open,
+            replaced,
+          })),
         );
       });
 
-    const view = yield* openBrowserPaneView(mint).pipe(Effect.provide(fake.layer));
+    const view = yield* openBrowserPaneView(mint, { opens: !archived }).pipe(
+      Effect.provide(fake.layer),
+    );
 
     yield* settle;
 
@@ -68,6 +79,7 @@ const setup = (
       },
       state: () => SubscriptionRef.getUnsafe(view.state),
       page: () => SubscriptionRef.getUnsafe(view.page),
+      replaced: () => SubscriptionRef.getUnsafe(view.replaced),
     };
   });
 
@@ -88,16 +100,66 @@ describe("the Browser Pane's view of the Owner tab", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("ends when the Owner tab is gone: its browser was closed or replaced", () =>
-    Effect.gen(function* () {
-      const { lose, to, state, opens } = yield* setup();
+  it.effect(
+    "ends when the Owner tab is gone: it was closed, or its browser was closed or replaced",
+    () =>
+      Effect.gen(function* () {
+        const { lose, to, state, opens } = yield* setup();
 
-      lose();
+        lose();
+        yield* to("T")[0]!.drop();
+        yield* settle;
+
+        expect(opens).toEqual([true, false]);
+        expect(state().status).toBe("ended");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("says the Owner tab it opened on replaced one that is gone, until dismissed", () =>
+    Effect.gen(function* () {
+      expect((yield* setup()).replaced()).toBe(false);
+
+      // The Pane opens (Open a new Owner tab) after the one it showed was lost: the host says it replaced it.
+      const fake = fakeBrowser();
+
+      const view = yield* openBrowserPaneView((open: boolean) =>
+        fake.mint.pipe(
+          Effect.map((links) => ({
+            ownerTabId: "owner-2",
+            ...links,
+            opened: open,
+            replaced: open,
+          })),
+        ),
+      ).pipe(Effect.provide(fake.layer));
+
+      yield* settle;
+
+      expect(SubscriptionRef.getUnsafe(view.replaced)).toBe(true);
+
+      // A reconnect neither says it again nor takes it back; the owner dismisses it.
+      yield* fake.to("T")[0]!.drop();
+      yield* settle;
+
+      expect(SubscriptionRef.getUnsafe(view.replaced)).toBe(true);
+
+      yield* view.dismiss;
+
+      expect(SubscriptionRef.getUnsafe(view.replaced)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("never asks to open in an archived Session", () =>
+    Effect.gen(function* () {
+      const { opens, to, state } = yield* setup(undefined, { archived: true });
+
+      expect(opens).toEqual([false]);
+      expect(state().status).toBe("live");
+
       yield* to("T")[0]!.drop();
       yield* settle;
 
-      expect(opens).toEqual([true, false]);
-      expect(state().status).toBe("ended");
+      expect(opens).toEqual([false, false]);
     }).pipe(Effect.scoped),
   );
 
@@ -187,8 +249,15 @@ describe("the Browser Pane's view of the Owner tab", () => {
             : undefined,
       });
 
-      const view = yield* openBrowserPaneView((_open: boolean) =>
-        fake.mint.pipe(Effect.map((links) => ({ ownerTabId: "owner-1", ...links }))),
+      const view = yield* openBrowserPaneView((open: boolean) =>
+        fake.mint.pipe(
+          Effect.map((links) => ({
+            ownerTabId: "owner-1",
+            ...links,
+            opened: open,
+            replaced: false,
+          })),
+        ),
       ).pipe(Effect.provide(fake.layer));
 
       yield* settle;

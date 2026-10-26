@@ -1,33 +1,43 @@
 // The Browser Pane (#238, ADR-0013): the Session's browser for the owner, in an Owner tab, at any time. It is a URL bar
-// (back, forward, reload, and the tab's URL, which Enter navigates) around the Live View's screen (`live-screen.tsx`),
-// over links the Session's `owner_tab_view` mints. Opening it opens an Owner tab when the owner has none; closing it
-// leaves the tab open in the browser, so opening it again shows the same page. When the Owner tab's browser was closed
-// or replaced, it says so and offers to open a new Owner tab. It opens only from the New pane (or the URL or the
-// Session's layout); it never opens on its own.
+// (back, forward, reload, and the tab's URL, which Enter navigates) around the screen it shares with the Live View
+// (`live-screen.tsx`), over links the Session's `owner_tab_view` mints. Opening it opens an Owner tab when the owner has
+// none; closing it leaves the tab open in the browser, so opening it again shows the same page. When the Owner tab is
+// gone (closed, or its browser closed or replaced), it says so and offers to open a new Owner tab, and a new one says it
+// replaced the one that is gone. An archived Session's Pane opens nothing: it shows an Owner tab still there, if any. It
+// opens only from the New pane (or the URL or the Session's layout); it never opens on its own.
 
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { ArrowLeft, ArrowRight, Globe, RotateCw } from "lucide-react";
-import { useId, useState, type FormEvent } from "react";
+import { ArrowLeft, ArrowRight, Globe, RotateCw, X } from "lucide-react";
+import { use, useId, useState, type FormEvent } from "react";
 import { useShownSessionId } from "../chat/conversation.ts";
+import { TreeBarScope } from "../chat/tree-actions.ts";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { settledFailureOf } from "../registry.ts";
 import { addressOf } from "./address.ts";
 import { liveViewStateAtom } from "./atoms.ts";
-import { browserPaneViewAtom, ownerTabActionAtom, ownerTabPageAtom } from "./browser-pane-atoms.ts";
+import {
+  browserPaneKey,
+  type BrowserPaneKey,
+  browserPaneViewAtom,
+  dismissReplacedAtom,
+  ownerTabActionAtom,
+  ownerTabPageAtom,
+  ownerTabReplacedAtom,
+} from "./browser-pane-atoms.ts";
 import { keepFocus, LiveScreen } from "./live-screen.tsx";
 
 /** Back, forward, reload and the URL bar, over the Owner tab. */
-const UrlBar = ({ sessionId }: { sessionId: string }) => {
-  const page = useAtomValue(ownerTabPageAtom(sessionId));
+const UrlBar = ({ pane }: { pane: BrowserPaneKey }) => {
+  const page = useAtomValue(ownerTabPageAtom(pane));
 
   const live = useAtomValue(
-    liveViewStateAtom(browserPaneViewAtom(sessionId)),
+    liveViewStateAtom(browserPaneViewAtom(pane)),
     (state) => state.status === "live",
   );
 
-  const actionAtom = ownerTabActionAtom(sessionId);
+  const actionAtom = ownerTabActionAtom(pane);
   const act = useAtomSet(actionAtom);
 
   const failure = useAtomValue(actionAtom, (result) =>
@@ -146,37 +156,92 @@ const UrlBar = ({ sessionId }: { sessionId: string }) => {
   );
 };
 
-/** What the Pane shows once the Owner tab is gone: why, and a new Owner tab. */
-const Gone = ({ sessionId }: { sessionId: string }) => {
-  const reopen = useAtomRefresh(browserPaneViewAtom(sessionId));
+/** Why the Owner tab is gone, as the Pane says it. */
+const GONE = "The Owner tab is gone: it was closed, or the browser was closed or replaced.";
+
+/** What the Pane shows once the Owner tab is gone: why, and a new Owner tab, unless the Session is archived. */
+const Gone = ({ pane }: { pane: BrowserPaneKey }) => {
+  const reopen = useAtomRefresh(browserPaneViewAtom(pane));
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
       <Globe className="size-5 text-muted-foreground" aria-hidden />
-      <p className="text-sm">The browser was closed or replaced, and this tab with it.</p>
-      <p className="max-w-sm text-xs text-muted-foreground">
-        Pages and sign-ins of the old browser are gone. A new Owner tab opens in the Session's
-        browser, starting one if none runs.
+      <p className="text-sm">{pane.archived ? "No Owner tab is open." : GONE}</p>
+      {pane.archived ? (
+        <p className="max-w-sm text-xs text-muted-foreground">
+          Unarchive the session to open an Owner tab in its browser.
+        </p>
+      ) : (
+        <>
+          <p className="max-w-sm text-xs text-muted-foreground">
+            A browser that was closed takes its pages and sign-ins with it. A new Owner tab opens in
+            the Session's browser, starting one if none runs.
+          </p>
+          <Button size="sm" onClick={reopen}>
+            Open a new Owner tab
+          </Button>
+        </>
+      )}
+    </div>
+  );
+};
+
+/** The note that the Owner tab shown replaced one that is gone, until dismissed. */
+const Replaced = ({ pane }: { pane: BrowserPaneKey }) => {
+  const replaced = useAtomValue(ownerTabReplacedAtom(pane));
+  const dismiss = useAtomSet(dismissReplacedAtom(pane));
+
+  if (!replaced) return null;
+
+  return (
+    <div role="status" className="flex items-start gap-2 border-b px-3 py-1.5 text-xs">
+      <p className="flex-1">
+        The Owner tab shown before is gone: it was closed, or the browser was closed or replaced.
+        This is another.
       </p>
-      <Button size="sm" onClick={reopen}>
-        Open a new Owner tab
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-5 shrink-0"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={() => {
+          dismiss();
+        }}
+      >
+        <X aria-hidden />
       </Button>
     </div>
   );
 };
 
-/** The Browser Pane of Session `sessionId`. */
-const BrowserPaneOf = ({ sessionId }: { sessionId: string }) => {
-  const view = browserPaneViewAtom(sessionId);
+/** The Browser Pane `pane`. */
+const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
+  const view = browserPaneViewAtom(pane);
   const ended = useAtomValue(liveViewStateAtom(view), (state) => state.status === "ended");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <UrlBar sessionId={sessionId} />
-      {ended ? <Gone sessionId={sessionId} /> : <LiveScreen view={view} label="The browser" />}
+      <UrlBar pane={pane} />
+      {ended ? (
+        <Gone pane={pane} />
+      ) : (
+        <>
+          <Replaced pane={pane} />
+          <LiveScreen view={view} label="Owner tab" />
+        </>
+      )}
     </div>
   );
 };
 
-/** The Browser Pane: one per Session, so it takes no argument. */
-export const BrowserPane = () => <BrowserPaneOf sessionId={useShownSessionId()} />;
+/**
+ * The Browser Pane: one per Session, so it takes no argument. An archived Session's opens nothing (as its tree Pane
+ * moves nowhere).
+ */
+export const BrowserPane = () => {
+  const sessionId = useShownSessionId();
+  const archived = use(TreeBarScope)?.archived === true;
+
+  return <BrowserPaneOf pane={browserPaneKey(sessionId, archived)} />;
+};
