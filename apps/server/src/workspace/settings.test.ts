@@ -31,18 +31,25 @@ describe("workspaceSettingsStore", () => {
   it("saves overrides and reads them back as the settings in force", async () => {
     const { store } = open();
 
-    const answer = await store.write({ instance: "standard-4", idleMinutes: 45 });
+    const answer = await store.write({ instance: "standard-3", idleMinutes: 45 });
 
     expect(answer).toEqual({
       ok: true,
       state: {
-        settings: { ...DEFAULT_CONTAINER_SETTINGS, instance: "standard-4", idleMinutes: 45 },
-        overrides: { instance: "standard-4", idleMinutes: 45 },
+        settings: {
+          ...DEFAULT_CONTAINER_SETTINGS,
+          instance: "standard-3",
+          // A legacy Environment's size above the default limit is its limit too.
+          maxInstance: "standard-3",
+          idleMinutes: 45,
+        },
+        overrides: { instance: "standard-3", idleMinutes: 45 },
       },
     });
     expect((await store.read()).settings).toEqual({
       ...DEFAULT_CONTAINER_SETTINGS,
-      instance: "standard-4",
+      instance: "standard-3",
+      maxInstance: "standard-3",
       idleMinutes: 45,
     });
   });

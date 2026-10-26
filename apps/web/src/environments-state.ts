@@ -325,6 +325,8 @@ export interface EnvironmentDraft {
   readonly name: string;
   /** Undefined until the Environment's settings have answered and nothing was picked. */
   readonly instance: InstanceType | undefined;
+  /** The size limit; undefined until the Environment's settings have answered and nothing was picked. */
+  readonly maxInstance: InstanceType | undefined;
   /** Undefined until the Environment's settings have answered and nothing was typed. */
   readonly idle: string | undefined;
   /** The extra Container-only paths, one per line; undefined until the settings have answered and nothing was typed. */
@@ -349,6 +351,7 @@ const filledFrom = (
     : {
         ...draft,
         instance: draft.instance ?? saved.settings.instance,
+        maxInstance: draft.maxInstance ?? saved.settings.maxInstance,
         idle: draft.idle ?? String(saved.settings.idleMinutes),
         ignore: draft.ignore ?? Arr.join(saved.settings.ignore, "\n"),
         variables: draft.variables ?? variablesText(saved.settings.variables),
@@ -370,6 +373,7 @@ export const environmentDraftAtom = Atom.family((id: string) =>
         Option.getOrElse(get.self<EnvironmentDraft>(), () => ({
           name: get(environmentNamesAtom)[id] ?? "",
           instance: undefined,
+          maxInstance: undefined,
           idle: undefined,
           ignore: undefined,
           variables: undefined,

@@ -734,6 +734,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Work",
         instance: undefined,
+        maxInstance: undefined,
         idle: undefined,
         ignore: undefined,
         variables: undefined,
@@ -748,6 +749,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Work",
         instance: DEFAULT_CONTAINER_SETTINGS.instance,
+        maxInstance: DEFAULT_CONTAINER_SETTINGS.maxInstance,
         idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "",
         variables: "",
@@ -813,6 +815,7 @@ describe("the Edit dialog's draft", () => {
       registry.set(environmentDraftAtom("work"), {
         name: "Renamed",
         instance: other,
+        maxInstance: "standard-4",
         idle: undefined,
         ignore: "/data",
         variables: "A=1",
@@ -826,6 +829,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Renamed",
         instance: other,
+        maxInstance: "standard-4",
         idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "/data",
         variables: "A=1",
@@ -845,6 +849,7 @@ describe("the Edit dialog's draft", () => {
       registry.set(environmentDraftAtom("work"), {
         name: "Work",
         instance: "lite",
+        maxInstance: "basic",
         idle: "20",
         ignore: "",
         variables: "",
@@ -858,6 +863,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Work",
         instance: "lite",
+        maxInstance: "basic",
         idle: "20",
         ignore: "",
         variables: "",

@@ -32,6 +32,7 @@ export type WorkspaceNamespace = {
       | "environmentSecretsUnavailable"
       | "containerUsage"
       | "stopContainer"
+      | "resizeContainer"
     >;
 };
 
@@ -168,8 +169,10 @@ export type SessionWorkspace = {
   /** The Workspace's file search, for `ls`, `find`, and `grep`. */
   readonly files: FileSearch;
   /**
-   * The Workspace's Container, for `restart_container`. It does not ready the Workspace first: readying may need the
-   * Container, which is what a restart is for when it no longer answers.
+   * The Workspace's Container, for `container_restart` and `container_resize`. It does not ready the Workspace first:
+   * readying may need the Container, which is what a restart is for when it no longer answers. A resize is decided by
+   * the Environment's settings as the Workspace DO last had them handed over (at most a minute old while the Session
+   * works), as its launches are.
    */
   readonly container: ContainerControl;
 };
@@ -210,6 +213,11 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
       const placed = await options.placement();
 
       return options.namespace.getByName(placed.object).stopContainer({ forgetSnapshot: fresh });
+    },
+    resize: async ({ size }) => {
+      const placed = await options.placement();
+
+      return options.namespace.getByName(placed.object).resizeContainer({ size });
     },
   };
 

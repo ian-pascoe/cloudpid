@@ -132,6 +132,13 @@ describe("resolving overrides", () => {
     expect(resolved({ tools: { offered: [] } }).tools.offered).toEqual([]);
   });
 
+  it("saves restart_container in the offered tools as container_restart, its new name", () => {
+    const settings = resolved({ tools: { offered: ["restart_container"] } });
+
+    expect(settings.tools.offered).toEqual(["container_restart"]);
+    expect(overridesFrom(settings)).toEqual({ tools: { offered: ["container_restart"] } });
+  });
+
   it("rejects an offered tool that is not a snake_case name or pattern, so a typo is not saved", () => {
     for (const entry of ["", " read", "Read", "web fetch", "read,bash"]) {
       expect(rejected({ tools: { offered: ["bash", entry] } })).toContain("tools.offered");
@@ -264,6 +271,22 @@ describe("resolving stale overrides leniently", () => {
     expect(settings.tools.offered).toEqual(DEFAULT_OFFERED_TOOLS);
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain("tools.offered");
+  });
+
+  it("reads restart_container in a saved offered list as container_restart, its new name, with no problem", () => {
+    expect(resolveLeniently({ tools: { offered: ["read", "restart_container", "bash"] } })).toEqual(
+      {
+        settings: {
+          ...DEFAULT_SETTINGS,
+          tools: { offered: ["read", "container_restart", "bash"] },
+        },
+        dropped: [],
+      },
+    );
+    expect(
+      resolveLeniently({ tools: { offered: ["restart_container", "container_restart"] } }).settings
+        .tools.offered,
+    ).toEqual(["container_restart"]);
   });
 
   it("gives the defaults for overrides that are not an object", () => {
