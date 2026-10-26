@@ -37,6 +37,7 @@ import {
 } from "./environment.ts";
 import { matchesPattern } from "./patterns.ts";
 import { Redactions } from "./secrets/redaction.ts";
+import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import { SUBAGENT_TOOLSET_OPTIONS } from "./subagents/options.ts";
 import { ALWAYS_OFFERED } from "./tool-search.ts";
@@ -237,6 +238,10 @@ const jsonText = (value: Schema.Json | null): string =>
 // SAFETY: the two types describe the same values; the details are never mutated.
 const asJsonValue = (value: Schema.Json | null): JsonValue => value as JsonValue;
 
+/** Why a text that holds a Secret Reference is refused: the tools resolve none, so the Settings would hold its text. */
+const REFUSED_PLACEHOLDER =
+  "Nothing was saved: the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference.";
+
 const REFUSED_SECRET =
   "Nothing was saved: the text holds the value of a Secret this Session holds, or of the GitHub token. Settings are plain and the user reads them. Say it without the value.";
 
@@ -293,7 +298,13 @@ export const SettingsTools: Effect.Effect<
     }) => string;
   }) =>
     Effect.gen(function* () {
-      if (yield* holdsSecret(Arr.join([reason, ...texts], "\n"))) {
+      const kept = Arr.join([reason, ...texts], "\n");
+
+      if (holdsPlaceholder(kept)) {
+        return yield* SettingsAccessError.make({ message: REFUSED_PLACEHOLDER });
+      }
+
+      if (yield* holdsSecret(kept)) {
         return yield* SettingsAccessError.make({ message: REFUSED_SECRET });
       }
 

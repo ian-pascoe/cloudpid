@@ -657,13 +657,30 @@ describe("a reason", () => {
     expect(settings.calls).toEqual([]);
   });
 
-  it("may hold a Secret Reference, which is only a name", async () => {
+  it("that holds a Secret Reference is refused, held or not, since the Settings would hold its text", async () => {
     const settings = fakeSettings();
     const tool = await toolsOver(settings.service, { held: { KEY: "sk-live-0123456789" } });
 
+    for (const name of ["KEY", "OTHER"]) {
+      expect(
+        await failure(
+          run(tool("settings_branch_summary_set"), {
+            skip_prompt: true,
+            reason: `because of ${secretReference(name)}`,
+          }),
+        ),
+      ).toContain("holds a Secret Reference");
+    }
+
+    expect(settings.calls).toEqual([]);
+  });
+
+  it("may name a reference an escape keeps as written", async () => {
+    const tool = await toolsOver(fakeSettings().service);
+
     const result = await run(tool("settings_branch_summary_set"), {
       skip_prompt: true,
-      reason: `because of ${secretReference("KEY")}`,
+      reason: `the form is \\${secretReference("KEY")}`,
     });
 
     expect(result.isError).not.toBe(true);
