@@ -58,7 +58,7 @@ export const showLayoutAtom = Atom.family((sessionId: string) =>
 );
 
 /** A list of things open in a layout, kept by `withOpen`. */
-type OpenList = "openAgents" | "openCards" | "openDisclosures";
+type OpenList = "openCards" | "openDisclosures";
 
 /**
  * Per Session, then per thing in `list`: whether it is open in the Session's layout; writing it opens or closes it
@@ -80,13 +80,8 @@ const openFamily = <List extends OpenList>(list: List) =>
     );
   });
 
-const agentRows = openFamily("openAgents");
 const subagentCards = openFamily("openCards");
 const disclosures = openFamily("openDisclosures");
-
-/** Whether a subagent's row is open into its thread in Session `sessionId`'s Subagents Pane. */
-export const agentRowOpenAtom = (sessionId: string, conversationId: number) =>
-  agentRows(sessionId)(conversationId);
 
 /** Whether a subagent's card is open into its thread in Session `sessionId`'s transcript. */
 export const subagentCardOpenAtom = (sessionId: string, conversationId: number) =>

@@ -22,6 +22,7 @@ import {
 } from "react";
 import { useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
+import { SubagentPane } from "./chat/subagent-pane.tsx";
 import { SubagentsPane, useSubagentsWorking } from "./chat/subagents-pane.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { cn } from "./lib/utils.ts";
@@ -33,10 +34,12 @@ import {
   paneKeyOf,
   SUBAGENTS_PANE,
   tabForKey,
-  type AgentOfHandoff,
+  type PaneLookups,
   type PaneProps,
   type PaneTypeId,
 } from "./panes.ts";
+import { agentLabel } from "./session/agents.ts";
+import { taskGraphAtom } from "./session/atoms.ts";
 import {
   DEFAULT_PANE_WIDTH,
   MAX_PANE_WIDTH,
@@ -53,6 +56,7 @@ import {
 const PANE_COMPONENTS = {
   new: NewPane,
   subagents: SubagentsPane,
+  subagent: SubagentPane,
   tree: SessionTreePane,
   "live-view": LiveViewPane,
 } satisfies {
@@ -145,11 +149,19 @@ const ResizeHandle = ({
   );
 };
 
-/** What the tabs' labels look up in the Session shown: whose Browser Handoff a Live View is for. */
-const useAgentOfHandoff = (): AgentOfHandoff => {
-  const agents = useAtomValue(handoffAgentsAtom(useShownSessionId()));
+/**
+ * What the tabs' labels look up in the Session shown: whose Browser Handoff a Live View is for, and which agent a
+ * Subagent Pane shows.
+ */
+const usePaneLookups = (): PaneLookups => {
+  const sessionId = useShownSessionId();
+  const handoffAgents = useAtomValue(handoffAgentsAtom(sessionId));
+  const graph = useAtomValue(taskGraphAtom(sessionId));
 
-  return (requestId) => agents.get(requestId);
+  return {
+    agentOfHandoff: (requestId) => handoffAgents.get(requestId),
+    agentOfConversation: (conversationId) => agentLabel(graph, conversationId),
+  };
 };
 
 /** The Pane area's element, which the header's button controls: a Session page has one. */
@@ -202,7 +214,7 @@ export const PaneArea = () => {
   useAtomMount(rememberPanesAtom(useShownSessionId()));
 
   const [{ open, shown, hidden }, act] = useAtom(panesAtom);
-  const agentOfHandoff = useAgentOfHandoff();
+  const lookups = usePaneLookups();
   const [width] = useAtom(paneWidthAtom);
   const base = useId();
   const area = useRef<HTMLElement>(null);
@@ -253,7 +265,9 @@ export const PaneArea = () => {
         >
           {open.map((key) => {
             const pane = paneKeyOf(key);
-            const label = pane?.type.label(pane.argument, agentOfHandoff) ?? { name: key };
+            const label = pane?.type.label(pane.argument, lookups) ?? { name: key };
+            // Several tabs of a type read apart by their agent.
+            const named = label.agent === undefined ? label.name : `${label.name} ${label.agent}`;
             const selected = key === shown;
 
             return (
@@ -287,8 +301,8 @@ export const PaneArea = () => {
                 </button>
                 <button
                   type="button"
-                  aria-label={`Close ${label.name}`}
-                  title={`Close ${label.name}`}
+                  aria-label={`Close ${named}`}
+                  title={`Close ${named}`}
                   onClick={() => {
                     act({ type: "close", key });
                   }}
