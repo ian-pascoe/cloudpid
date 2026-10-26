@@ -298,8 +298,8 @@ _Avoid_: Viewer, screencast, hosted Live View (that is Browser Run's own page)
 
 **Browser Pane**:
 A Pane, one per Session, that shows the Session's browser for the owner to use at any time, in an Owner tab, with a URL bar, apart from any Browser Handoff. It shares the Live View's screen and input, and opens only when the owner opens it.
-_Avoid_: Browser (alone, for the Pane), Live View (for this Pane)
+_Avoid_: Browser (alone, for the Pane, in prose and code; its tab label is "Browser", as the Session tree Pane's is "Tree"), Live View (for this Pane or its connection)
 
 **Owner tab**:
-A tab of the Session's shared browser that the owner opened in the Browser Pane, apart from the conversations' tabs but sharing their cookies and logins. The owner may have several; the Browser Pane shows one of them. It lasts as long as the browser it is in.
+A tab of the Session's shared browser that the owner opened in the Browser Pane, apart from the conversations' tabs but sharing their cookies and logins. The owner may have several; the Browser Pane shows one of them. It lasts as long as the browser it is in, or until it is closed.
 _Avoid_: User tab, the owner's tab (for a conversation's tab the owner took over in a Browser Handoff)
