@@ -62,6 +62,16 @@ describe("toolSummary", () => {
     expect(toolSummary("environment_variable_unset", { id: "0000abcd", name: "MODE" })).toBe(
       "MODE in 0000abcd",
     );
+    expect(
+      toolSummary("environment_container_resize", { size: "custom-2", reason: "needs 6 GiB" }),
+    ).toBe("needs 6 GiB (to custom-2)");
+    expect(
+      toolSummary("environment_idle_time_set", { id: "0000abcd", minutes: 10, reason: "warm" }),
+    ).toBe("0000abcd: warm (10 min)");
+    expect(
+      toolSummary("environment_setup_script_set", { script: "echo", reason: "jq\nmore" }),
+    ).toBe("jq");
+    expect(toolSummary("environment_ignore_set", { patterns: ["/a"], reason: "big" })).toBe("big");
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");

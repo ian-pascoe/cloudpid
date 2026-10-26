@@ -10,7 +10,9 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
+import { ChangeDiff } from "../change-diff.tsx";
 import { changeFieldText, changeValueText } from "../environments.ts";
+import { changeDiff } from "../line-diff.ts";
 import { changeOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
 import { toolSummary } from "./tool-summary.ts";
@@ -130,16 +132,31 @@ const NestedCalls = ({ calls }: { calls: readonly NestedCall[] }) => (
   </div>
 );
 
-/** The Agent change a call made: the Environment and field, and its value before and after, in full. */
-const Change = ({ change }: { change: ShownChange }) => (
-  <div className="mt-2 first:mt-0">
-    <div className="text-xs font-medium text-muted-foreground">
-      {changeFieldText(change.field)} in {change.environment.name}
+/**
+ * The Agent change a call made: the Environment and field, and its value before and after, in full; a script's or the
+ * Toolchains' as a diff.
+ */
+const Change = ({ change }: { change: ShownChange }) => {
+  const diff = changeDiff(change.field, change.before, change.after);
+
+  return (
+    <div className="mt-2 first:mt-0">
+      <div className="text-xs font-medium text-muted-foreground">
+        {changeFieldText(change.field)} in {change.environment.name}
+      </div>
+      {diff === undefined ? (
+        <>
+          <Output label="Before" text={changeValueText(change.before)} />
+          <Output label="After" text={changeValueText(change.after)} />
+        </>
+      ) : (
+        <div className="mt-1">
+          <ChangeDiff rows={diff} />
+        </div>
+      )}
     </div>
-    <Output label="Before" text={changeValueText(change.before)} />
-    <Output label="After" text={changeValueText(change.after)} />
-  </div>
-);
+  );
+};
 
 /**
  * A tool call: its name and state on one line, its arguments, the Agent change it made, streamed output, and result

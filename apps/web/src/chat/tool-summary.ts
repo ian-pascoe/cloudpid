@@ -79,6 +79,21 @@ const variable = (args: Args): Option.Option<string> =>
     }),
   );
 
+/** `line`, after the Environment a call's `id` names when it names one. */
+const inEnvironment = (args: Args, line: Option.Option<string>): Option.Option<string> =>
+  Option.map(line, (value) =>
+    Option.match(text(args, "id"), {
+      onNone: () => value,
+      onSome: (id) => `${id}: ${value}`,
+    }),
+  );
+
+/** Why an `environment_idle_time_set` call sets the idle time, and the minutes. */
+const idleTime = (args: Args): Option.Option<string> =>
+  Option.map(firstLine(args, "reason"), (reason) =>
+    Predicate.isNumber(args.minutes) ? `${reason} (${args.minutes} min)` : reason,
+  );
+
 /** `line`, after the agent a call names when it names one. */
 const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string> =>
   Option.map(line, (value) =>
@@ -123,6 +138,15 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "environment_variable_set":
       case "environment_variable_unset":
         return variable(args);
+      case "environment_container_resize":
+        return inEnvironment(args, resize(args));
+      case "environment_idle_time_set":
+        return inEnvironment(args, idleTime(args));
+      case "environment_setup_script_set":
+      case "environment_start_script_set":
+      case "environment_toolchains_set":
+      case "environment_ignore_set":
+        return inEnvironment(args, firstLine(args, "reason"));
       case "subagent":
         return toAgent(args, firstLine(args, "task"));
       case "agent_message":

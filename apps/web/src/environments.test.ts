@@ -389,6 +389,10 @@ describe("an Agent change", () => {
     expect(changeValueText(null)).toBe("not set");
     expect(changeValueText("a\nb")).toBe("a\nb");
     expect(changeValueText(30)).toBe("30");
+    expect(changeValueText("")).toBe("empty");
+    expect(changeValueText([])).toBe("none");
+    expect(changeValueText(["/data", "**/.big"])).toBe("/data\n**/.big");
+    expect(changeValueText({ a: 1 })).toBe('{"a":1}');
     expect(changeFieldText("variables.API_URL")).toBe("Variable API_URL");
     expect(changeFieldText("idleMinutes")).toBe("idleMinutes");
   });

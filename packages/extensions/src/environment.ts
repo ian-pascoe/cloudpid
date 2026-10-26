@@ -1,12 +1,26 @@
 // The `environment` extension (`docs/spec.md` → Agent changes, ADR-0019): the agent's tools for its Environments,
-// `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset`. Each change is an
+// `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset`, and one tool for each
+// of the other Container settings (`environment_container_resize`, `environment_idle_time_set`,
+// `environment_setup_script_set`, `environment_start_script_set`, `environment_toolchains_set` and
+// `environment_ignore_set`). Each change is an
 // Agent change: the Registry applies it as the owner's save is applied and records it, the Session hands a change to its
 // own Environment to its Workspace at once, and the Run's end notifies the owner of the changes it made
 // (`AgentChangeLog`). They are the root conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values
 // are plain: a change is refused when a text it keeps holds a Secret the Session holds or the GitHub token, or a Secret
 // Reference's placeholder, which these tools do not resolve and no command would (`holdsSecret`).
 // @effect-diagnostics missingPipeableSignature:off
-import type { ContainerSettings } from "@cloudpid/config";
+import {
+  type ContainerSettings,
+  compareInstances,
+  containerRates,
+  INSTANCE_DESCRIPTIONS,
+  INSTANCE_RESOURCES,
+  InstanceType,
+  MAX_IDLE_MINUTES,
+  MAX_IGNORE_PATTERNS,
+  MAX_SCRIPT_BYTES,
+  MAX_TOOLCHAINS_BYTES,
+} from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   type AgentChange,
@@ -20,8 +34,10 @@ import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import { SIZE_LINES } from "./container.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -259,6 +275,39 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
     " ",
   );
 
+/** What a result says of a Container-setting change's recording, after the setting itself. */
+const RECORDED =
+  "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.";
+
+/** US dollars, to two significant digits. */
+const money = (dollars: number): string => `$${dollars.toPrecision(2)}`;
+
+/** The memory cost of idle time: a Container that sits unused is billed for its memory until the idle stop. */
+export const describeIdleCost = (minutes: number, instance: InstanceType): string => {
+  const { memoryMib } = INSTANCE_RESOURCES[instance];
+  const perMinute = containerRates(instance).memory * 60;
+
+  return `A Container that sits unused is billed for its memory until the idle stop: at ${instance} (${memoryMib / 1024} GiB) about ${money(perMinute)} a minute, so up to ${money(perMinute * minutes)} for each idle stretch of ${minutes} minute${minutes === 1 ? "" : "s"}, per Workspace. A shorter idle time costs less but loses the warm Container (the next command starts a new one from the snapshot, several seconds).`;
+};
+
+/** A script or Toolchains value as a result sizes it: the card shows the user the difference. */
+const textSize = (value: Schema.Json | null): string => {
+  const text = Predicate.isString(value) ? value : "";
+  const lines = text.replace(/\n$/, "").split("\n").length;
+
+  return text === ""
+    ? "none"
+    : `${lines} line${lines === 1 ? "" : "s"}, ${new TextEncoder().encode(text).length} bytes`;
+};
+
+/** A size or a number of minutes as a result says it: a text bare, a number as it is. */
+const plainValue = (value: Schema.Json | null): string =>
+  Predicate.isString(value) ? value : JSON.stringify(value);
+
+/** A list of Container-only paths as a result says it. */
+const pathsLine = (value: Schema.Json | null): string =>
+  Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
+
 const Id = Schema.String.annotate({
   description:
     "The Environment's id, as environment_list shows it (default: this Session's Environment)",
@@ -337,28 +386,49 @@ export const EnvironmentTools: Effect.Effect<
       return { environment, own: environment === current };
     });
 
-  /** Apply `change` of variable `name` as `tool`, and say how it went. */
-  const changeVariable = (
-    tool: string,
-    {
-      id,
-      name,
-      value,
-      reason,
-    }: {
-      readonly id?: string | undefined;
-      readonly name: string;
-      readonly value: string | null;
-      readonly reason: string;
-    },
-    conversation: number,
-  ) =>
+  /**
+   * Apply the change of `field` to `value` as `tool`, and say how it went: refused when any of `texts` holds a Secret
+   * (`refusal` says it) or the reason does, then `prepare`d with the Environment found (which may refuse it too, or hand
+   * `changed` what it read), then made by the Registry.
+   */
+  const applyChange = <Prepared>({
+    tool,
+    id,
+    field,
+    value,
+    texts = [],
+    refusal = "",
+    reason,
+    conversation,
+    prepare,
+    unchanged,
+    changed,
+  }: {
+    readonly tool: string;
+    readonly id: string | undefined;
+    readonly field: string;
+    readonly value: Schema.Json | null;
+    /** The text the value is made of, kept as written: none holds a Secret's value or a credential. */
+    readonly texts?: ReadonlyArray<string>;
+    /** What a refusal for a text that holds a Secret says. */
+    readonly refusal?: string;
+    readonly reason: string;
+    readonly conversation: number;
+    readonly prepare: (environment: string) => Effect.Effect<Prepared, EnvironmentsError>;
+    /** The result for a field that already has the value, given the Environment named. */
+    readonly unchanged: (where: string) => string;
+    /** The result for a change made, given the Environment named. */
+    readonly changed: (made: {
+      readonly where: string;
+      readonly change: AgentChange;
+      readonly own: boolean;
+      readonly newBuild: boolean;
+      readonly prepared: Prepared;
+    }) => string;
+  }) =>
     Effect.gen(function* () {
-      if (value !== null && (yield* holdsSecret(value))) {
-        return yield* EnvironmentsError.make({
-          message:
-            "Nothing was saved: the value holds the value of a Secret this Session holds, or of the GitHub token. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.",
-        });
+      if (texts.length > 0 && (yield* holdsSecret(Arr.join(texts, "\n")))) {
+        return yield* EnvironmentsError.make({ message: refusal });
       }
 
       // The reason is kept with the change as written, for the user to read.
@@ -370,7 +440,7 @@ export const EnvironmentTools: Effect.Effect<
       }
 
       const { environment, own } = yield* target(id);
-      const field = variableField(name);
+      const prepared = yield* prepare(environment);
 
       const applied = yield* environments.change({
         environment,
@@ -392,10 +462,7 @@ export const EnvironmentTools: Effect.Effect<
             output: [
               {
                 type: "text" as const,
-                text:
-                  value === null
-                    ? `${name} is not set in ${where}: nothing changed, and nothing was recorded.`
-                    : `${name} already has that value in ${where}: nothing changed, and nothing was recorded.`,
+                text: unchanged(where),
               },
             ],
             details: { unchanged: { environment: applied.environment, field } },
@@ -407,13 +474,17 @@ export const EnvironmentTools: Effect.Effect<
 
           yield* log.record({ tool, environmentName: applied.environment.name, field });
 
-          const did = value === null ? `Unset ${name}` : `Set ${name}`;
-
           return {
             output: [
               {
                 type: "text" as const,
-                text: `${did} in ${namedEnvironment(applied.environment)}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${describeApplied(own, applied.newBuild)}`,
+                text: changed({
+                  where: namedEnvironment(applied.environment),
+                  change,
+                  own,
+                  newBuild: applied.newBuild,
+                  prepared,
+                }),
               },
             ],
             details: {
@@ -430,6 +501,83 @@ export const EnvironmentTools: Effect.Effect<
           };
         }
       }
+    });
+
+  /** Apply `change` of variable `name` as `tool`, and say how it went. */
+  const changeVariable = (
+    tool: string,
+    {
+      id,
+      name,
+      value,
+      reason,
+    }: {
+      readonly id?: string | undefined;
+      readonly name: string;
+      readonly value: string | null;
+      readonly reason: string;
+    },
+    conversation: number,
+  ) =>
+    applyChange({
+      tool,
+      id,
+      field: variableField(name),
+      value,
+      texts: value === null ? [] : [value],
+      refusal:
+        "Nothing was saved: the value holds the value of a Secret this Session holds, or of the GitHub token. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.",
+      reason,
+      conversation,
+      prepare: () => Effect.void,
+      unchanged: (where) =>
+        value === null
+          ? `${name} is not set in ${where}: nothing changed, and nothing was recorded.`
+          : `${name} already has that value in ${where}: nothing changed, and nothing was recorded.`,
+      changed: ({ where, change, own, newBuild }) =>
+        `${value === null ? `Unset ${name}` : `Set ${name}`} in ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${describeApplied(own, newBuild)}`,
+    });
+
+  /** The refusal of a script, Toolchains or path that holds a Secret's value: they are stored as written. */
+  const storedAsWritten = (what: string) =>
+    `Nothing was saved: the ${what} holds the value of a Secret this Session holds, or of the GitHub token. It is stored as written, and every command and the agent can read it. Use the Secret's name instead: ask the user to keep the value as a Secret for the Environment on the Environments page, and a command or script then gets it as $PI_SECRET_<NAME> (a Setup Script too, when the user marks the Secret for the Build).`;
+
+  /** Apply a change of a text setting (a script or the Toolchains) as `tool`. */
+  const changeText = (
+    tool: string,
+    {
+      field,
+      what,
+      id,
+      text,
+      reason,
+      note,
+    }: {
+      readonly field: "setupScript" | "startScript" | "toolchains";
+      /** What the setting is called in a result. */
+      readonly what: string;
+      readonly id: string | undefined;
+      readonly text: string;
+      readonly reason: string;
+      /** What the result adds of when the setting runs or is used. */
+      readonly note: string;
+    },
+    conversation: number,
+  ) =>
+    applyChange({
+      tool,
+      id,
+      field,
+      value: text,
+      texts: [text],
+      refusal: storedAsWritten(what),
+      reason,
+      conversation,
+      prepare: () => Effect.void,
+      unchanged: (where) =>
+        `The ${what} of ${where} is that text already: nothing changed, and nothing was recorded.`,
+      changed: ({ where, change, own, newBuild }) =>
+        `${text === "" ? `Removed the ${what}` : `Set the ${what}`} of ${where}: it was ${textSize(change.before)}, and is ${textSize(change.after)} now (the user sees the difference on the Environments page). ${note} ${describeApplied(own, newBuild)}${newBuild ? "" : " No new Build was asked for."}`,
     });
 
   const list = yield* defineEffectTool({
@@ -516,5 +664,238 @@ export const EnvironmentTools: Effect.Effect<
       changeVariable("environment_variable_unset", { ...args, value: null }, api.conversationId),
   });
 
-  return defineExtension({ name: extensionName, tools: [list, get, set, unset] });
+  const resize = yield* defineEffectTool({
+    name: "environment_container_resize",
+    description: Arr.join(
+      [
+        "Set the Container size of an Environment (this Session's unless id names another): the size the next Container of every one of its Workspaces starts on, and the size they keep after each idle stop.",
+        `Sizes, by memory, then vCPU:\n${SIZE_LINES}`,
+        "Memory is what a running Container costs, so a larger size costs more for every Workspace of the Environment. The Environment's size limit bounds the size: a larger one is refused, and the limit is a Limit that only the user can raise, with environment_container_size_limit_set, which asks for their Approval.",
+        "This changes the Environment, not a Container that runs: it keeps the size it started on, and a size container_resize gave it holds there until its idle stop. To restart only this Workspace's current Container at another size, for more memory now, use container_resize, which changes no Environment.",
+        RECORDED,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      size: InstanceType.annotate({ description: "The size of the Environment's next Containers" }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, size, reason }, api) =>
+      applyChange({
+        tool: "environment_container_resize",
+        id,
+        field: "instance",
+        value: size,
+        reason,
+        conversation: api.conversationId,
+        prepare: (environment) =>
+          Effect.gen(function* () {
+            const details = yield* environments.get(environment);
+
+            if (details === null) return yield* notFound(environment);
+
+            const limit = details.settings.maxInstance;
+
+            if (compareInstances(size, limit) > 0) {
+              return yield* EnvironmentsError.make({
+                message: `Nothing was saved: ${size} is above the size limit of ${namedEnvironment(details)}, ${limit}. Pick a size up to ${limit}, or ask the user to raise the limit: environment_container_size_limit_set asks for their Approval to raise it.`,
+              });
+            }
+          }),
+        unchanged: (where) =>
+          `The Container size of ${where} is ${size} already: nothing changed, and nothing was recorded.`,
+        changed: ({ where, change, own, newBuild }) =>
+          `Set the Container size of ${where}: it was ${plainValue(change.before)}, and is ${plainValue(change.after)} now (${INSTANCE_DESCRIPTIONS[size]}). It is the size of the next Container of every Workspace of the Environment, and of those after each idle stop; Containers that run keep their size, and container_resize changes only this Workspace's current Container, until its idle stop, and no Environment. ${describeApplied(own, newBuild)}${own ? " If container_resize gave this Workspace's Container another size, that size holds through container_restart until the idle stop." : ""}`,
+      }),
+  });
+
+  const idleTime = yield* defineEffectTool({
+    name: "environment_idle_time_set",
+    description: Arr.join(
+      [
+        `Set an Environment's idle time (this Session's unless id names another): the minutes a Container may sit without a command before its Workspace stops it, from 1 to ${MAX_IDLE_MINUTES}. A disk snapshot is taken first, so the next command starts a new Container from it in several seconds.`,
+        "A Container is billed for its memory for as long as it runs, idle or not, so a long idle time costs more; a short one stops a Container between a few minutes of thought and work. The result names the cost at the Environment's size.",
+        RECORDED,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      minutes: Schema.Finite.annotate({
+        description: `Minutes of idle time, a whole number from 1 to ${MAX_IDLE_MINUTES}`,
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, minutes, reason }, api) =>
+      applyChange({
+        tool: "environment_idle_time_set",
+        id,
+        field: "idleMinutes",
+        value: minutes,
+        reason,
+        conversation: api.conversationId,
+        prepare: (environment) => environments.get(environment),
+        unchanged: (where) =>
+          `The idle time of ${where} is ${minutes} already: nothing changed, and nothing was recorded.`,
+        changed: ({ where, change, own, newBuild, prepared }) =>
+          `Set the idle time of ${where}: it was ${plainValue(change.before)} minutes, and is ${plainValue(change.after)} now. ${prepared === null ? "" : `${describeIdleCost(minutes, prepared.settings.instance)} `}${describeApplied(own, newBuild)}`,
+      }),
+  });
+
+  const setupScript = yield* defineEffectTool({
+    name: "environment_setup_script_set",
+    description: Arr.join(
+      [
+        `Set an Environment's own Setup Script (this Session's unless id names another): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It prepares what the Environment's Workspaces need whatever their Repos (system packages, a Docker image), in /workspace.`,
+        "It runs once per content on each Container (when the content changes, or on a Container started from the image; one restored from a snapshot has run it already), before the Repos' own Setup Scripts, and in the Environment's Build. A Setup Script is part of what a Build is made with, so a changed one makes a new Build. It gets the Environment's variables and the Secrets marked for the Build, runs for 15 minutes at most, and a failure stops no command. Nothing validates the bash before it runs.",
+        "A step that belongs to one Repo (installing its dependencies) is usually better in that Repo's own .cloudpid/setup.sh, which is committed with the code; use this one for what is the Environment's.",
+        "The text is stored as written: a Secret this Session holds, or the GitHub token, in it is refused.",
+        RECORDED,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      script: Schema.String.annotate({
+        description: "The whole script, replacing the one there is; empty removes it",
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, script, reason }, api) =>
+      changeText(
+        "environment_setup_script_set",
+        {
+          field: "setupScript",
+          what: "Setup Script",
+          id,
+          text: script,
+          reason,
+          note: "It runs once with this content on each Container: at each Workspace's next Container start (one restored from a snapshot has run the old script, not this one), and in the Environment's Build.",
+        },
+        api.conversationId,
+      ),
+  });
+
+  const startScript = yield* defineEffectTool({
+    name: "environment_start_script_set",
+    description: Arr.join(
+      [
+        `Set an Environment's own Start Script (this Session's unless id names another): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It brings up what a snapshot cannot hold, such as a database or docker compose up, in /workspace.`,
+        "It runs at every Container start (a restored Container too), after the Setup Scripts and before the Repos' own Start Scripts, for 5 minutes at most; a failure stops no command. A service it starts must detach, or the script never ends: setsid nohup cmd >/tmp/cmd.log 2>&1 &. It may run again on a Container that already runs, so it should leave a service that is up alone. A Start Script is not part of the Build.",
+        "A step that belongs to one Repo is usually better in that Repo's own .cloudpid/start.sh, which is committed with the code; use this one for what is the Environment's.",
+        "The text is stored as written: a Secret this Session holds, or the GitHub token, in it is refused.",
+        RECORDED,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      script: Schema.String.annotate({
+        description: "The whole script, replacing the one there is; empty removes it",
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, script, reason }, api) =>
+      changeText(
+        "environment_start_script_set",
+        {
+          field: "startScript",
+          what: "Start Script",
+          id,
+          text: script,
+          reason,
+          note: "It runs at every Container start of each Workspace, a restored one too; a service it starts must detach.",
+        },
+        api.conversationId,
+      ),
+  });
+
+  const toolchains = yield* defineEffectTool({
+    name: "environment_toolchains_set",
+    description: Arr.join(
+      [
+        `Set an Environment's Toolchains (this Session's unless id names another): the text of a mise.toml, at most ${MAX_TOOLCHAINS_BYTES / 1024} KiB of UTF-8 with no NUL; empty means the image's base Toolchains. mise reads it, not the save: a bad one fails the install at the next Container start.`,
+        "The bootstrap writes it as /workspace/mise.toml where a Workspace has none or still has the copy it wrote last, and installs from it; a Workspace whose own mise.toml was changed keeps that one. Toolchains are part of what a Build is made with, so a changed text makes a new Build.",
+        "The text is stored as written: a Secret this Session holds, or the GitHub token, in it is refused.",
+        RECORDED,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      mise_toml: Schema.String.annotate({
+        description:
+          "The whole mise.toml, replacing the one there is; empty means the base Toolchains",
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, mise_toml, reason }, api) =>
+      changeText(
+        "environment_toolchains_set",
+        {
+          field: "toolchains",
+          what: "Toolchains",
+          id,
+          text: mise_toml,
+          reason,
+          note: "mise installs them at each Workspace's next Container start.",
+        },
+        api.conversationId,
+      ),
+  });
+
+  const ignore = yield* defineEffectTool({
+    name: "environment_ignore_set",
+    description: Arr.join(
+      [
+        `Set an Environment's extra Container-only paths (this Session's unless id names another): the full list, replacing the one there is, of at most ${MAX_IGNORE_PATTERNS} patterns. A path matching one lives on the Container's disk only: it is not synced to the Workspace, so it is fast and kept out of its storage, and it is gone when the Workspace's Container is restarted fresh. The built-in list already covers node_modules, .venv, caches and build tools' output directories.`,
+        'A pattern starts with "/" (from /workspace: "/data" is /workspace/data) or "**/" (at any depth), may start with "!" to keep a path synced again, and has only "*" and "**" (a whole segment) as wildcards. The last pattern that matches a path wins. A bad pattern is refused as the user\'s save refuses it.',
+        "A changed list means the next Container of each Workspace starts without the Workspace's snapshot (a snapshot is tied to the list its Container launched with): from the Environment's Build once there is one for the new list, else from the image, so dependency directories, build output and caches are made again and the Setup Scripts run again, which takes minutes.",
+        "The patterns are stored as written: a Secret this Session holds, or the GitHub token, in one is refused.",
+        RECORDED,
+      ],
+      "\n\n",
+    ),
+    parameters: Schema.Struct({
+      id: Schema.optionalKey(Id),
+      patterns: Schema.Array(Schema.String).annotate({
+        description: "The whole list of extra Container-only paths; empty removes them all",
+      }),
+      reason: Reason,
+    }),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: ({ id, patterns, reason }, api) =>
+      applyChange({
+        tool: "environment_ignore_set",
+        id,
+        field: "ignore",
+        value: patterns,
+        texts: patterns,
+        refusal: storedAsWritten("list of patterns"),
+        reason,
+        conversation: api.conversationId,
+        prepare: () => Effect.void,
+        unchanged: (where) =>
+          `The extra Container-only paths of ${where} are that list already: nothing changed, and nothing was recorded.`,
+        changed: ({ where, change, own, newBuild }) =>
+          `Set the extra Container-only paths of ${where}: they were ${pathsLine(change.before)}, and are ${pathsLine(change.after)} now. Warning: the next Container of each Workspace starts without the Workspace's snapshot, from the Environment's Build once there is one for this list, else from the image: dependency directories, build output and caches are made again, and the Setup Scripts run again (minutes). ${describeApplied(own, newBuild)}`,
+      }),
+  });
+
+  return defineExtension({
+    name: extensionName,
+    tools: [list, get, set, unset, resize, idleTime, setupScript, startScript, toolchains, ignore],
+  });
 });
