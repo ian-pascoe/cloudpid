@@ -4,7 +4,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off
 import type { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { BrowserGoneError, type CdpEvent, type CdpTransport } from "./cdp.ts";
+import { BrowserGoneError, type CdpEvent } from "./cdp.ts";
 import {
   fakeTransport,
   linkTo,

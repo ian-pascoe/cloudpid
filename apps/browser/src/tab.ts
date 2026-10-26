@@ -88,6 +88,7 @@ export const openTab = async (browser: Pick<Browser, "connect">, scope: string):
 
   try {
     const created = await connection.cdp.send("Target.createTarget", { url: "about:blank" });
+
     const targetId =
       Predicate.isObject(created) && "targetId" in created && Predicate.isString(created.targetId)
         ? created.targetId

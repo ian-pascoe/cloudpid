@@ -234,6 +234,7 @@ describe("Browser Handoffs over the Session socket", () => {
     // nothing the object stores, nor the transcript or the model's requests.
     const asked = (message: ServerMessage) =>
       answerTo("lv-1")(message) || answerTo("otv-1")(message);
+
     const elsewhere = [...owner.received.filter((message) => !asked(message)), ...other.received];
 
     const surfaces = await runInDurableObject(stub, async (instance: TestSession) => [
@@ -446,6 +447,7 @@ describe("the Browser Pane over the Session socket", () => {
 
     // The links reached the answers to the asking client, and nothing else.
     const answers = new Set(["b-1", "b-2", "b-4"]);
+
     const elsewhere = [
       ...owner.received.filter(
         (message) => !((message.type === "result" && answers.has(message.id)) || false),

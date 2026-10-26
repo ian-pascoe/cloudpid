@@ -45,6 +45,7 @@ const fakeBrowserRun = () => {
     tabs: new Map<string, string[]>(),
     gone: new Set<string>(),
   };
+
   const requests: string[] = [];
 
   const binding: BrowserBinding = {

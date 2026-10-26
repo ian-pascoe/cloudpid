@@ -145,6 +145,7 @@ describe("the Session's browser host", () => {
 
   it("mints the Browser Pane's links in the object named for the Session, opening an Owner tab only when asked", async () => {
     const calls: unknown[] = [];
+
     const links = {
       ownerTabId: "owner-1",
       tab: { targetId: "tab-9", link: "wss://live.example/o" },
