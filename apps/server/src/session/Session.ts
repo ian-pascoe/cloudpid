@@ -74,6 +74,7 @@ import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
+import { changesRefreshingTools, SessionChanges, sessionChangesLayer } from "./changes.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
 import {
@@ -470,6 +471,27 @@ export const SessionLive = Session.make(
           }),
         });
 
+        // The Changes of the Session's Workspace, in the directory the Session works in. Read without readying the
+        // Workspace, so a listing clones nothing, and only the owner's Refresh may start its Container.
+        const sessionChanges = sessionChangesLayer({
+          // @effect-diagnostics-next-line asyncFunction:off
+          list: async (startContainer) => {
+            const { workspace: id, object, directory } = await placement();
+
+            if (id === null) return null;
+
+            return workspaces.getByName(object).changes({ directory, startContainer });
+          },
+          // @effect-diagnostics-next-line asyncFunction:off
+          file: async (query) => {
+            const { workspace: id, object } = await placement();
+
+            if (id === null) throw new Error("This Session has no Workspace");
+
+            return workspaces.getByName(object).changeFile(query);
+          },
+        });
+
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed (with no Live View link).
         const sessionBrowserHandoffs = sessionBrowserHandoffsLayer({
           host: browser,
@@ -537,14 +559,19 @@ export const SessionLive = Session.make(
                 },
                 subagentWorkspaces,
                 extensions: sessionExtensions.pipe(
-                  // After every other extension, so each of their tools is named and its call is a span.
-                  Effect.map((installed) => [
-                    ...installed,
-                    tracingTools(
-                      telemetry.context,
-                      Arr.flatMap(installed, (extension) => extension.tools ?? []),
-                    ),
-                  ]),
+                  // After every other extension, so each of their tools is named and its call is a span, and the
+                  // Changes are listed again after each writing call.
+                  Effect.flatMap((installed) =>
+                    Effect.map(Effect.service(SessionChanges), (changes) => {
+                      const tools = Arr.flatMap(installed, (extension) => extension.tools ?? []);
+
+                      return [
+                        ...installed,
+                        tracingTools(telemetry.context, tools),
+                        changesRefreshingTools(tools, changes.written),
+                      ];
+                    }),
+                  ),
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(WorkspaceContainer, workspace.container),
@@ -594,6 +621,7 @@ export const SessionLive = Session.make(
               }),
             ),
             Layer.provideMerge(sessionSecrets),
+            Layer.provideMerge(sessionChanges),
             Layer.provideMerge(sessionApprovals),
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),

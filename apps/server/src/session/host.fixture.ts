@@ -42,6 +42,7 @@ import type {
   HistoryPage,
   Navigated,
   SessionTree,
+  WorkspaceChanges,
 } from "@cloudpid/protocol";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
@@ -103,6 +104,12 @@ import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
 import { wakeAt } from "./wake.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
+import {
+  type ChangesSource,
+  SessionChanges,
+  sessionChangesLayer,
+  type SessionChangesService,
+} from "./changes.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
 
@@ -115,6 +122,23 @@ declare global {
     }
   }
 }
+
+/** How long after an agent's write the test Session lists the Changes again. */
+export const CHANGES_TEST_DEBOUNCE_MS = 100;
+
+const CHANGES_FIXTURE_KEY = "test:changes";
+const CHANGES_CALLS_KEY = "test:changes-calls";
+
+/** The Changes a test Session's Workspace lists (`setChanges`). */
+export type ChangesFixture = {
+  /** As the Container lists them, or the Workspace DO itself. */
+  readonly running: WorkspaceChanges;
+  /** As a listing that may not start the Container shows them, until one that may has run. */
+  readonly stopped?: WorkspaceChanges;
+  readonly delayMs?: number;
+  readonly fails?: boolean;
+  readonly started?: boolean;
+};
 
 /** A tool to call, so a Run has a tool call in its transcript: `echo` answers `echo: <text>`. */
 const Echo = defineEffectTool({
@@ -411,8 +435,9 @@ export class TestSession extends DurableObject {
   readonly #spans: Tracer.NativeSpan[] = [];
   #host!: SessionHostService;
   #sockets!: SessionSocketsService;
+  #changes!: SessionChangesService;
   #runtime!: ManagedRuntime.ManagedRuntime<
-    SessionHost | SessionSockets | Harness | Secrets,
+    SessionHost | SessionSockets | SessionChanges | Harness | Secrets,
     unknown
   >;
   /** Resolves when this instance's model request starts and hangs. */
@@ -550,6 +575,7 @@ export class TestSession extends DurableObject {
               ),
             ),
           ),
+          Layer.provideMerge(sessionChangesLayer(this.#changesSource(), { debounceMs: CHANGES_TEST_DEBOUNCE_MS })),
           Layer.provideMerge(
             sessionApprovalsLayer({
               storage: ctx.storage.kv,
@@ -588,7 +614,54 @@ export class TestSession extends DurableObject {
 
       this.#host = Context.get(context, SessionHost);
       this.#sockets = Context.get(context, SessionSockets);
+      this.#changes = Context.get(context, SessionChanges);
     });
+  }
+
+  /**
+   * The Changes as the test set them (`setChanges`): the `running` list while the Container runs or a listing may start
+   * it, else the `stopped` one. Each listing is recorded, by whether it may start the Container, and takes `delayMs`.
+   */
+  #changesSource(): ChangesSource {
+    const kv = this.ctx.storage.kv;
+
+    return {
+      list: async (startContainer) => {
+        const fixture = kv.get<ChangesFixture>(CHANGES_FIXTURE_KEY);
+
+        kv.put(CHANGES_CALLS_KEY, [...(kv.get<boolean[]>(CHANGES_CALLS_KEY) ?? []), startContainer]);
+
+        if (fixture === undefined) return null;
+
+        await new Promise((resolve) => setTimeout(resolve, fixture.delayMs ?? 0));
+
+        if (fixture.fails === true) throw new Error("The Workspace is unreachable");
+
+        if (startContainer) kv.put(CHANGES_FIXTURE_KEY, { ...fixture, started: true });
+
+        return startContainer || fixture.started === true ? fixture.running : (fixture.stopped ?? fixture.running);
+      },
+      file: async (query) => {
+        if (query.path === "missing") throw new Error("No such file in the Workspace's repos");
+
+        return { old: null, new: { kind: "text", text: `${query.repo}/${query.path}\n` } };
+      },
+    };
+  }
+
+  /** What the Session's Workspace lists as its Changes from now on. */
+  setChanges(fixture: ChangesFixture): void {
+    this.ctx.storage.kv.put(CHANGES_FIXTURE_KEY, fixture);
+  }
+
+  /** Each listing of the Changes so far, by whether it could start the Container. */
+  changesCalls(): boolean[] {
+    return this.ctx.storage.kv.get<boolean[]>(CHANGES_CALLS_KEY) ?? [];
+  }
+
+  /** An agent wrote to the Session's Workspace, as a writing tool's call reports. */
+  wrote(): void {
+    this.#changes.written();
   }
 
   /** A client's socket to the Session, as the Session DO answers the main Worker's upgrade. */

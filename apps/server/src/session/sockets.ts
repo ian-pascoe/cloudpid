@@ -4,6 +4,7 @@
 // hibernation restarts them, each with a fresh snapshot, on sockets that never closed.
 import {
   type Catalog,
+  type ChangeFile,
   type CommandOutcome,
   ConversationId,
   decodeClientMessage,
@@ -47,6 +48,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
+import { SessionChanges } from "./changes.ts";
 import { SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 
@@ -63,13 +65,14 @@ export type SocketState = {
 type ErrorMessage = Extract<ServerMessage, { type: "error" }>;
 
 /**
- * What a socket keeps across hibernation: the conversations it watches, and whether it watches the task graph and the
- * Session's usage.
+ * What a socket keeps across hibernation: the conversations it watches, and whether it watches the task graph, the
+ * Session's usage and the Changes.
  */
 const Attachment = Schema.Struct({
   watches: Schema.Array(ConversationId),
   taskGraph: Schema.optionalKey(Schema.Boolean),
   usage: Schema.optionalKey(Schema.Boolean),
+  changes: Schema.optionalKey(Schema.Boolean),
 });
 
 type Attachment = typeof Attachment.Type;
@@ -210,13 +213,25 @@ const setUsageWatched = (socket: WebSocket, watched: boolean) =>
     } satisfies Attachment);
   });
 
+/** Record that `socket` watches the Changes, or no longer does. */
+const setChangesWatched = (socket: WebSocket, watched: boolean) =>
+  Effect.sync(() => {
+    socket.serializeAttachment({
+      ...readAttachment(socket),
+      changes: watched,
+    } satisfies Attachment);
+  });
+
 /** The key of a socket's task graph watch among its watches. */
 const TASK_GRAPH = "task_graph";
 
 /** The key of a socket's usage watch among its watches. */
 const USAGE = "usage";
 
-type WatchKey = ConversationId | typeof TASK_GRAPH | typeof USAGE;
+/** The key of a socket's Changes watch among its watches. */
+const CHANGES = "changes";
+
+type WatchKey = ConversationId | typeof TASK_GRAPH | typeof USAGE | typeof CHANGES;
 
 /**
  * The Session's sockets over the object's `state`. Building it restarts the watches of sockets that outlived the last
@@ -227,12 +242,17 @@ export const sessionSocketsLayer = (
 ): Layer.Layer<
   SessionSockets,
   never,
+<<<<<<< HEAD
   SessionHost | Secrets | BrowserHandoffs | BrowserPane | Approvals
+=======
+  SessionHost | SessionChanges | Secrets | BrowserHandoffs | Approvals
+>>>>>>> 0d5a157 (feat(session): stream the Changes on the Session socket)
 > =>
   Layer.effect(
     SessionSockets,
     Effect.gen(function* () {
       const host = yield* SessionHost;
+      const changes = yield* SessionChanges;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
       const browserPane = yield* BrowserPane;
@@ -392,6 +412,35 @@ export const sessionSocketsLayer = (
           );
         });
 
+      /**
+       * Send the Changes to `socket`, replacing a watch it already has: the last list at once if there is one, then each
+       * listing, which every watching client shares. A listing that fails tells the client, and the watch goes on.
+       */
+      const watchChanges = (socket: WebSocket) =>
+        Effect.gen(function* () {
+          const fibers = yield* watchesOf(socket);
+
+          yield* setChangesWatched(socket, true);
+          yield* changes.updates.pipe(
+            Stream.runForEach((update) =>
+              send(
+                socket,
+                update.kind === "changes" ? update.message : { type: "error", message: update.message },
+              ),
+            ),
+            FiberMap.run(fibers, CHANGES),
+          );
+        });
+
+      const unwatchChanges = (socket: WebSocket) =>
+        Effect.suspend(() => {
+          const fibers = watching.get(socket);
+
+          return (fibers === undefined ? Effect.void : FiberMap.remove(fibers, CHANGES)).pipe(
+            Effect.andThen(setChangesWatched(socket, false)),
+          );
+        });
+
       const unwatch = (socket: WebSocket, conversationId: ConversationId) =>
         Effect.suspend(() => {
           const fibers = watching.get(socket);
@@ -405,6 +454,7 @@ export const sessionSocketsLayer = (
       ): Effect.Effect<
         | { readonly submissionId: number }
         | Catalog
+        | ChangeFile
         | CommandOutcome
         | FileMatches
         | HistoryPage
@@ -502,6 +552,18 @@ export const sessionSocketsLayer = (
             return watchUsage(socket).pipe(Effect.as(null));
           case "unwatch_usage":
             return unwatchUsage(socket).pipe(Effect.as(null));
+          case "watch_changes":
+            return watchChanges(socket).pipe(Effect.as(null));
+          case "unwatch_changes":
+            return unwatchChanges(socket).pipe(Effect.as(null));
+          case "refresh_changes":
+            return changes.refresh(message.manual === true).pipe(Effect.as(null));
+          case "change_file": {
+            const { type: _type, id: _id, ...query } = message;
+
+            return changes.file(query);
+          }
+
           case "secret_answer":
             return secrets
               .answer(message.request, message.values, message.keep)
@@ -621,6 +683,8 @@ export const sessionSocketsLayer = (
         if (readAttachment(socket).taskGraph === true) yield* watchGraph(socket);
 
         if (readAttachment(socket).usage === true) yield* watchUsage(socket);
+
+        if (readAttachment(socket).changes === true) yield* watchChanges(socket);
 
         for (const conversationId of readAttachment(socket).watches) {
           yield* watch(socket, conversationId).pipe(

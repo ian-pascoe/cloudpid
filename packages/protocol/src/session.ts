@@ -202,7 +202,8 @@ export const UnwatchChanges = Schema.Struct({
 /**
  * List the Changes again, for every client that watches them: the page regained focus, the Diff pane opened, or the
  * owner asked (`manual`). Only a manual one may start a stopped Container, for a repo that needs it, and the `changes`
- * message says so while it does. Answered with `null` once the list is sent.
+ * message says so while it does. Answered with `null` once the listing ended; its list (or the `error` saying why
+ * there is none) reaches the watching clients as any other.
  */
 export const RefreshChanges = Schema.Struct({
   type: Schema.Literal("refresh_changes"),
