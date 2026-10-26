@@ -1,5 +1,5 @@
-// The Call diff on an `edit` card (`docs/spec.md` → Diffs and review): `+n −m` on the card's line, and, opened, the diff
-// in place of the arguments.
+// The Call diff on an `edit` or `write` card, and on the calls a `codemode` card lists (`docs/spec.md` → Diffs and
+// review): `+n −m` on the line, and, opened, the diff in place of the arguments.
 
 import {
   lazy,
@@ -12,20 +12,50 @@ import {
   type ReactNode,
 } from "react";
 import { Button } from "../components/ui/button.tsx";
-import { capPatch, diffStyleFor, patchCounts } from "../call-diff.ts";
+import {
+  type CallDiff,
+  callDiffCounts,
+  capPatch,
+  diffStyleFor,
+  type DiffCounts,
+} from "../call-diff.ts";
 
 // The library, its highlighter and its theme are a chunk of their own, fetched when the first diff opens.
 const PatchView = lazy(() => import("./patch-view.tsx"));
 
-/** `+n −m` for a patch: the lines it adds in Run Green and the lines it removes in Brick Red. */
-export const CallDiffStats = ({ patch }: { patch: string }) => {
-  const counts = useMemo(() => patchCounts(patch), [patch]);
+/** What shows where a Call diff has no patch to show. */
+const UNAVAILABLE = "Too large to show here";
 
-  return counts === undefined ? null : (
-    <span className="tabular shrink-0 font-mono text-xs whitespace-nowrap">
-      <span className="text-success">+{counts.additions}</span>{" "}
-      <span className="text-destructive">−{counts.deletions}</span>
-    </span>
+/** `+n −m`: the lines added in Run Green and the lines removed in Brick Red. */
+export const DiffTally = ({ counts }: { counts: DiffCounts }) => (
+  <span className="tabular shrink-0 font-mono text-xs whitespace-nowrap">
+    <span className="text-success">+{counts.additions}</span>{" "}
+    <span className="text-destructive">−{counts.deletions}</span>
+  </span>
+);
+
+/**
+ * What a Call diff says on a card's line, after the path: a "new file" mark for a create, then `+n −m`, or "No change"
+ * where the call left the file as it was, or that the change is too large to show.
+ */
+export const CallDiffStats = ({ diff }: { diff: CallDiff }) => {
+  const counts = useMemo(() => callDiffCounts(diff), [diff]);
+
+  return (
+    <>
+      {diff.created === true && (
+        <span className="shrink-0 text-xs whitespace-nowrap">new file</span>
+      )}
+      {diff.unavailable === true ? (
+        <span className="min-w-0 truncate text-xs">{UNAVAILABLE}</span>
+      ) : counts !== undefined ? (
+        <DiffTally counts={counts} />
+      ) : (
+        diff.created !== true && (
+          <span className="shrink-0 text-xs whitespace-nowrap">No change</span>
+        )
+      )}
+    </>
   );
 };
 
@@ -57,54 +87,89 @@ const useWidth = () => {
   return { ref, width };
 };
 
+/** What the opened diff shows in its box: the patch, or why there is none. */
+const DiffBox = ({
+  diff,
+  patch,
+  width,
+}: {
+  diff: CallDiff;
+  patch: string | undefined;
+  width: number | undefined;
+}) => {
+  if (diff.unavailable === true) {
+    return <p className="p-2 text-sm text-muted-foreground">{UNAVAILABLE}</p>;
+  }
+
+  if (patch === undefined || width === undefined) return null;
+
+  if (callDiffCounts(diff) === undefined) {
+    return (
+      <p className="p-2 text-sm text-muted-foreground">
+        {diff.created === true ? "An empty file." : "No change."}
+      </p>
+    );
+  }
+
+  return (
+    <Suspense fallback={<p className="p-2 text-sm text-muted-foreground">Loading the diff…</p>}>
+      <PatchView patch={patch} diffStyle={diffStyleFor(width)} />
+    </Suspense>
+  );
+};
+
 /**
- * What an opened `edit` card shows: the file's path and the diff, split or stacked by the card's width and cut at the
- * line cap until "Show all" is pressed. The call's arguments and result sit behind a toggle.
+ * What an opened card shows for a Call diff: the file's path (with a "new file" mark for a create) and the diff, split or
+ * stacked by the card's width and cut at the line cap until "Show all" is pressed. A card's arguments and result sit
+ * behind a toggle; the calls a `codemode` card lists have none.
  */
 export const CallDiffBody = ({
-  patch,
+  diff,
   path,
   call,
 }: {
-  patch: string;
+  diff: CallDiff;
   path: string | undefined;
   /** The card's arguments and result, as they show on a card with no diff. */
-  call: ReactNode;
+  call?: ReactNode;
 }) => {
   const [showAll, setShowAll] = useState(false);
   const [showCall, setShowCall] = useState(false);
   const { ref, width } = useWidth();
   const callId = useId();
-  const capped = useMemo(() => capPatch(patch), [patch]);
+
+  const capped = useMemo(
+    () => (diff.patch === undefined ? undefined : capPatch(diff.patch)),
+    [diff.patch],
+  );
 
   return (
     <div ref={ref} className="min-w-0">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{path}</span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-expanded={showCall}
-          aria-controls={callId}
-          className="h-7 px-2 text-xs text-muted-foreground"
-          onClick={() => {
-            setShowCall(!showCall);
-          }}
-        >
-          Arguments and result
-        </Button>
-      </div>
-      <div className="mt-2 overflow-hidden rounded border">
-        {width === undefined ? null : (
-          <Suspense
-            fallback={<p className="p-2 text-sm text-muted-foreground">Loading the diff…</p>}
+        {diff.created === true && (
+          <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">new file</span>
+        )}
+        {call !== undefined && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-expanded={showCall}
+            aria-controls={callId}
+            className="h-7 px-2 text-xs text-muted-foreground"
+            onClick={() => {
+              setShowCall(!showCall);
+            }}
           >
-            <PatchView patch={showAll ? patch : capped.patch} diffStyle={diffStyleFor(width)} />
-          </Suspense>
+            Arguments and result
+          </Button>
         )}
       </div>
-      {capped.capped && !showAll && (
+      <div className="mt-2 overflow-hidden rounded border">
+        <DiffBox diff={diff} patch={showAll ? diff.patch : capped?.patch} width={width} />
+      </div>
+      {capped?.capped === true && !showAll && (
         <Button
           type="button"
           variant="outline"

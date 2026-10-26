@@ -7,6 +7,7 @@ import type { NestedTool, TranscriptPart } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
+import { CallDiff, decodeRecorded, toCallDiff } from "../call-diff.ts";
 
 /** A nested call as the card shows it. */
 export const NestedCall = Schema.Struct({
@@ -17,6 +18,8 @@ export const NestedCall = Schema.Struct({
   status: Schema.Literals(["running", "ok", "error", "cancelled"]),
   durationMs: Schema.optional(Schema.Finite),
   error: Schema.optional(Schema.String),
+  /** What an `edit` or `write` the script made recorded of its change; only a finished script's calls have one. */
+  diff: Schema.optional(CallDiff),
 });
 
 export type NestedCall = typeof NestedCall.Type;
@@ -52,6 +55,8 @@ const Details = Schema.Struct({
       error: Schema.optional(Schema.String),
     }),
   ),
+  /** The Call diffs of the script's `edit` and `write` calls, by call (`id`); read one at a time, as one bad entry is not the list's. */
+  diffs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
 const decodeDetails = Schema.decodeUnknownOption(Details);
@@ -66,7 +71,7 @@ export const settledCalls = (
 ): NestedCall[] =>
   Option.match(decodeDetails(details), {
     onNone: () => [],
-    onSome: ({ calls }) =>
+    onSome: ({ calls, diffs }) =>
       calls.map((listed) => {
         const call: Types.Mutable<NestedCall> = {
           id: String(listed.id),
@@ -78,6 +83,12 @@ export const settledCalls = (
         if (listed.durationMs !== undefined) call.durationMs = listed.durationMs;
 
         if (listed.error !== undefined) call.error = listed.error;
+
+        const diff = Option.getOrUndefined(
+          Option.flatMap(decodeRecorded(diffs?.[String(listed.id)]), toCallDiff),
+        );
+
+        if (diff !== undefined) call.diff = diff;
 
         return call;
       }),

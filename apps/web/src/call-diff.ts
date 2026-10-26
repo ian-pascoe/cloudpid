@@ -1,15 +1,56 @@
-// The Call diff of an `edit` card (`docs/spec.md` → Diffs and review): the patch the call recorded, its `+n −m`, the cap
-// on how much of it a card shows, and whether it is laid out split or stacked.
+// The Call diff of an `edit` or `write` card, and of the calls a `codemode` card lists (`docs/spec.md` → Diffs and
+// review): what the call recorded of its change, its `+n −m`, the cap on how much of the patch a card shows, and whether
+// it is laid out split or stacked.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, called from React.
 import * as Arr from "effect/Array";
 import type { TranscriptPart } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-const Recorded = Schema.Struct({ patch: Schema.NonEmptyString });
+/**
+ * What a card shows of a call's change: its patch, or that there is none to show (`unavailable`: the files were too
+ * large, or the old one binary or unreadable), and whether the call made a new file (`created`).
+ */
+export const CallDiff = Schema.Struct({
+  patch: Schema.optional(Schema.NonEmptyString),
+  created: Schema.optional(Schema.Literal(true)),
+  unavailable: Schema.optional(Schema.Literal(true)),
+});
 
-/** Decodes the patch of an `edit`'s `details`, and of a card's artifact, which carries it under the same name. */
+export type CallDiff = typeof CallDiff.Type;
+
+/** Decodes a card's artifact, which carries its Call diff as `diff`. */
+export const decodeCardDiff = Schema.decodeUnknownOption(Schema.Struct({ diff: CallDiff }));
+
+/** What a tool records in its result's `details`: `edit` a `patch`, `write` and the `codemode` calls these and flags. */
+const Recorded = Schema.Struct({
+  patch: Schema.optional(Schema.String),
+  created: Schema.optional(Schema.Boolean),
+  tooLarge: Schema.optional(Schema.Boolean),
+  binary: Schema.optional(Schema.Boolean),
+});
+
+/** Decodes what a result's `details`, or a `codemode` result's entry for a nested call, record of a change. */
 export const decodeRecorded = Schema.decodeUnknownOption(Recorded);
+
+/** The Call diff of recorded details: none where they record no patch and no reason for there being none. */
+export const toCallDiff = (recorded: typeof Recorded.Type): Option.Option<CallDiff> => {
+  const created = recorded.created === true ? ({ created: true } as const) : {};
+
+  if (recorded.patch !== undefined && recorded.patch !== "") {
+    return Option.some({ ...created, patch: recorded.patch });
+  }
+
+  return recorded.tooLarge === true || recorded.binary === true
+    ? Option.some({ ...created, unavailable: true })
+    : Option.none();
+};
+
+type ResultDetails = Extract<TranscriptPart, { type: "tool-result" }>["details"];
+
+/** The Call diff in a tool result's `details`. */
+export const callDiffFrom = (details: ResultDetails): CallDiff | undefined =>
+  Option.getOrUndefined(Option.flatMap(decodeRecorded(details), toCallDiff));
 
 /** The most diff lines a card shows before "Show all n lines". */
 export const CALL_DIFF_LINE_CAP = 2000;
@@ -99,10 +140,11 @@ const parsePatch = (patch: string): ParsedPatch => {
   return { head, hunks };
 };
 
+/** The lines a patch adds and removes. */
+export type DiffCounts = { readonly additions: number; readonly deletions: number };
+
 /** The added and removed lines of a patch, or undefined where it has no hunk. */
-export const patchCounts = (
-  patch: string,
-): { readonly additions: number; readonly deletions: number } | undefined => {
+export const patchCounts = (patch: string): DiffCounts | undefined => {
   const { hunks } = parsePatch(patch);
 
   if (hunks.length === 0) return undefined;
@@ -205,14 +247,35 @@ export const capPatch = (patch: string, cap: number = CALL_DIFF_LINE_CAP): Cappe
 };
 
 /**
- * The patch a finished tool call's `details` record for the card's Call diff: only `edit` records one, a call that
- * failed has none, and nothing else is shown as a diff.
+ * The Call diff a finished tool call's `details` record for its card: `edit` and `write` record one, a call that failed
+ * has none, a `write` from before the wrapper has none, and nothing else is shown as a diff.
  */
-export const callDiffPatch = (
+export const callDiffOf = (
   toolName: string,
-  details: Extract<TranscriptPart, { type: "tool-result" }>["details"],
+  details: ResultDetails,
   isError: boolean,
-): string | undefined =>
-  toolName === "edit" && !isError
-    ? Option.getOrUndefined(Option.map(decodeRecorded(details), (found) => found.patch))
-    : undefined;
+): CallDiff | undefined =>
+  (toolName === "edit" || toolName === "write") && !isError ? callDiffFrom(details) : undefined;
+
+/** A Call diff's added and removed lines; undefined where it has no patch, or its patch changes nothing. */
+export const callDiffCounts = (diff: CallDiff): DiffCounts | undefined =>
+  diff.patch === undefined ? undefined : patchCounts(diff.patch);
+
+/** The lines the Call diffs add and remove together; undefined where none of them changes a line. */
+export const diffTotals = (diffs: readonly (CallDiff | undefined)[]): DiffCounts | undefined => {
+  let additions = 0;
+  let deletions = 0;
+  let counted = false;
+
+  for (const diff of diffs) {
+    const counts = diff === undefined ? undefined : callDiffCounts(diff);
+
+    if (counts === undefined) continue;
+
+    counted = true;
+    additions += counts.additions;
+    deletions += counts.deletions;
+  }
+
+  return counted ? { additions, deletions } : undefined;
+};

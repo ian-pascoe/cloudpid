@@ -2,9 +2,11 @@ import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import {
   CALL_DIFF_LINE_CAP,
-  callDiffPatch,
+  callDiffCounts,
+  callDiffOf,
   capPatch,
   diffStyleFor,
+  diffTotals,
   patchCounts,
   SPLIT_MIN_WIDTH,
 } from "./call-diff.ts";
@@ -134,20 +136,64 @@ describe("diffStyleFor", () => {
   });
 });
 
-describe("callDiffPatch", () => {
+describe("callDiffOf", () => {
   it("is the patch of a finished edit's details", () => {
-    expect(callDiffPatch("edit", { patch: "p", diff: "d" }, false)).toBe("p");
+    expect(callDiffOf("edit", { patch: "p", diff: "d" }, false)).toEqual({ patch: "p" });
+  });
+
+  it("is a finished write's patch, with whether it made the file", () => {
+    expect(callDiffOf("write", { patch: "p" }, false)).toEqual({ patch: "p" });
+    expect(callDiffOf("write", { patch: "p", created: true }, false)).toEqual({
+      patch: "p",
+      created: true,
+    });
+  });
+
+  it("is that a write's change is too large to show, for `tooLarge` and for `binary`", () => {
+    expect(callDiffOf("write", { tooLarge: true }, false)).toEqual({ unavailable: true });
+    expect(callDiffOf("write", { binary: true }, false)).toEqual({ unavailable: true });
+    expect(callDiffOf("write", { tooLarge: true, created: true }, false)).toEqual({
+      unavailable: true,
+      created: true,
+    });
   });
 
   it("is undefined for a call that failed", () => {
-    expect(callDiffPatch("edit", { patch: "p" }, true)).toBeUndefined();
+    expect(callDiffOf("edit", { patch: "p" }, true)).toBeUndefined();
+    expect(callDiffOf("write", { patch: "p" }, true)).toBeUndefined();
   });
 
-  it("is undefined for other tools, for details without a patch, and for none", () => {
-    expect(callDiffPatch("write", { patch: "p" }, false)).toBeUndefined();
-    expect(callDiffPatch("edit", { diff: "d" }, false)).toBeUndefined();
-    expect(callDiffPatch("edit", { patch: "" }, false)).toBeUndefined();
-    expect(callDiffPatch("edit", undefined, false)).toBeUndefined();
-    expect(callDiffPatch("edit", "text", false)).toBeUndefined();
+  it("is undefined for other tools, for details that record nothing, and for none", () => {
+    expect(callDiffOf("read", { patch: "p" }, false)).toBeUndefined();
+    expect(callDiffOf("edit", { diff: "d" }, false)).toBeUndefined();
+    expect(callDiffOf("edit", { patch: "" }, false)).toBeUndefined();
+    expect(callDiffOf("edit", undefined, false)).toBeUndefined();
+    expect(callDiffOf("edit", "text", false)).toBeUndefined();
+    // A `write` from before the wrapper recorded anything.
+    expect(callDiffOf("write", undefined, false)).toBeUndefined();
+    expect(callDiffOf("write", { created: true }, false)).toBeUndefined();
+  });
+});
+
+describe("callDiffCounts and diffTotals", () => {
+  const change = { patch: `${HEAD}${hunk(1, 4, 2, 3)}` };
+
+  it("counts a patch's lines, and none for a diff without one or whose patch changes nothing", () => {
+    expect(callDiffCounts(change)).toEqual({ additions: 3, deletions: 2 });
+    expect(callDiffCounts({ unavailable: true })).toBeUndefined();
+    expect(callDiffCounts({ patch: HEAD })).toBeUndefined();
+  });
+
+  it("adds the lines of the diffs that have a patch, and none where no diff changes a line", () => {
+    expect(
+      diffTotals([
+        change,
+        undefined,
+        { unavailable: true },
+        { patch: `${HEAD}${hunk(1, 2, 1, 0)}` },
+      ]),
+    ).toEqual({ additions: 3, deletions: 3 });
+    expect(diffTotals([])).toBeUndefined();
+    expect(diffTotals([undefined, { unavailable: true }, { patch: HEAD }])).toBeUndefined();
   });
 });
