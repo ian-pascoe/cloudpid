@@ -385,10 +385,17 @@ export const OwnerTabViewRequest = Schema.Struct({
  * shown. Answered with an `OwnerTabListing`, to the asking client. The browser host also finds here the tabs a page
  * opened (a link with `target=_blank`) and adds them to the list, so a Pane asks again now and then while it is open.
  * Starts nothing: with no browser running the list is empty.
+ *
+ * `watching` says the Pane is **in view** (its tab shown in the Pane area, the area not hidden, the page visible) and
+ * this ask is its heartbeat: while such asks keep coming, the Session keeps its browser (the listing is itself a command
+ * to the browser, which Browser Run's `keep_alive` counts), and it lets the browser close once they stop. It is a time
+ * the Session notes, never an open/closed flag, so a Pane that is hidden, closed or cut off needs to say nothing. An ask
+ * without it (a window opened, another consumer of the listing) holds nothing.
  */
 export const OwnerTabListRequest = Schema.Struct({
   type: Schema.Literal("owner_tab_list"),
   id: CommandId,
+  watching: Schema.optionalKey(Schema.Boolean),
 });
 
 /**
@@ -963,13 +970,16 @@ export type LiveViewLinks = typeof LiveViewLinks.Type;
  * not a CDP target), with fresh links to it and to each window it opened that is still open. An ask with `open` says
  * whether it opened the Owner tab (`opened`: none of the owner's was still there, so the browser may have been started
  * too) and whether the one shown before is gone (`replaced`: its browser was closed or replaced, or it was closed), so
- * the Pane can say why it shows another; an ask without `open` does neither.
+ * the Pane can say why it shows another; an ask without `open` does neither. `reopened`, when present, is how many Owner
+ * tabs the ask reopened at their recorded addresses in a browser that replaced the one they were in (no history, scroll,
+ * form state or sign-ins come back): the Pane says so.
  */
 export const OwnerTabLinks = Schema.Struct({
   ownerTabId: Schema.String,
   ...LiveViewLinks.fields,
   opened: Schema.Boolean,
   replaced: Schema.Boolean,
+  reopened: Schema.optionalKey(Schema.Int),
 });
 
 export type OwnerTabLinks = typeof OwnerTabLinks.Type;
@@ -991,10 +1001,15 @@ export type OwnerTabEntry = typeof OwnerTabEntry.Type;
  * The Owner tabs of the Browser Pane, in the order they were opened, and the one shown (`shown`, an `id` of `tabs`;
  * absent when there are none). It is the browser host's, so every device shows the same tab. It holds no Live View link:
  * those answer `owner_tab_view`, to the one client that asked.
+ *
+ * With no browser running, `tabs` is empty. `lost` then says how many Owner tabs the host still has on record, to reopen
+ * at their addresses (#240): the browser they were in was closed or replaced, as against none ever opened or the last
+ * closed by the owner, which leave nothing on record. Absent when there are none.
  */
 export const OwnerTabListing = Schema.Struct({
   tabs: Schema.Array(OwnerTabEntry),
   shown: Schema.optionalKey(Schema.String),
+  lost: Schema.optionalKey(Schema.Int),
 });
 
 export type OwnerTabListing = typeof OwnerTabListing.Type;

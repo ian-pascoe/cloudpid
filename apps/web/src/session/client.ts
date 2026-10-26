@@ -263,9 +263,11 @@ export interface SessionClient {
   readonly ownerTabView: (open: boolean) => Effect.Effect<OwnerTabLinks, SessionCommandError>;
   /**
    * The Owner tabs of the Browser Pane by title, and the one shown (`SessionState.ownerTabs` follows every answer). The
-   * Session also finds the tabs a page opened with a link here, so the Pane asks now and then while it is open.
+   * Session also finds the tabs a page opened with a link here, so the Pane asks now and then while it is open. With
+   * `watching` (the Pane is in view), the ask is also the Pane's heartbeat: the Session keeps its browser while they keep
+   * coming and lets it close once they stop (#240).
    */
-  readonly ownerTabs: Effect.Effect<OwnerTabListing, SessionCommandError>;
+  readonly ownerTabs: (watching: boolean) => Effect.Effect<OwnerTabListing, SessionCommandError>;
   /** Open a blank Owner tab and show it (the tab strip's **+**). Fails for an archived Session. */
   readonly openOwnerTab: Effect.Effect<OwnerTabListing, SessionCommandError>;
   /** Show Owner tab `id` on every device. Fails with the Session's "the Owner tab is gone" when it is. */
@@ -1382,7 +1384,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       request((id) => ({ type: "live_view", id, requestId }), decodeLiveViewLinks),
     ownerTabView: (open) =>
       request((id) => ({ type: "owner_tab_view", id, open }), decodeOwnerTabLinks),
-    ownerTabs: Effect.suspend(() => ownerTabsRequest((id) => ({ type: "owner_tab_list", id }))),
+    ownerTabs: (watching) =>
+      ownerTabsRequest((id) =>
+        watching ? { type: "owner_tab_list", id, watching } : { type: "owner_tab_list", id },
+      ),
     openOwnerTab: Effect.suspend(() =>
       ownerTabsRequest((id) => ({ type: "owner_tab_open", id }), true),
     ),

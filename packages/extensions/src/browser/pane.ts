@@ -10,7 +10,8 @@
 // (`withGoneInItsOwnWords`), as `LIVE_VIEW_HANDOFF_OVER` does. An ask that opened an Owner tab (perhaps starting the
 // browser for it), a link ask or a new Owner tab alike, is a use of the browser, so the Session's idle close counts from
 // it: a browser the Pane started is closed like any other once the Session has left it idle. Listing, showing and closing
-// Owner tabs are not uses.
+// Owner tabs are not uses. A Pane in view keeps the browser by its listing asks (`watchedTabs`): a heartbeat the idle
+// close counts from, which lapses with the Pane.
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -29,6 +30,17 @@ export type BrowserPaneService = {
   readonly view: (open: boolean) => Effect.Effect<OwnerTabLinks, BrowserError>;
   /** The Owner tabs by title and the one shown; starts nothing. */
   readonly tabs: Effect.Effect<OwnerTabListing, BrowserError>;
+  /**
+   * `tabs` as a Browser Pane **in view** asks for it (`owner_tab_list` with `watching`): its heartbeat. The listing is
+   * itself a command to the browser, so Browser Run's `keep_alive` counts it; and when the host answers with Owner tabs
+   * (a browser runs), the Session notes the beat (`BrowserSession.watch`), so its idle close counts from it. `arm` says
+   * the Session must settle to arm the wake for the close time the beat set; a beat never starts a browser or opens an
+   * Owner tab. No tabs, no beat noted: a Pane that finds its browser gone holds nothing open.
+   */
+  readonly watchedTabs: Effect.Effect<
+    { readonly tabs: OwnerTabListing; readonly arm: boolean },
+    BrowserError
+  >;
   /**
    * Open a blank Owner tab and show it (the tab strip's **+**), starting the browser when none runs: a use of the browser,
    * as an ask to `view` that opened one is. Fails for an archived Session, which opens nothing.
@@ -60,7 +72,7 @@ export type BrowserPaneOptions = {
 
 export const makeBrowserPane = (
   { host, archived }: BrowserPaneOptions,
-  session: Pick<BrowserSessionService, "touch">,
+  session: Pick<BrowserSessionService, "touch" | "watch">,
 ): BrowserPaneService => ({
   view: (open) =>
     Effect.gen(function* () {
@@ -74,6 +86,12 @@ export const makeBrowserPane = (
       return links;
     }),
   tabs: host.ownerTabs,
+  watchedTabs: Effect.gen(function* () {
+    const tabs = yield* host.ownerTabs;
+    const arm = tabs.tabs.length > 0 ? yield* session.watch : false;
+
+    return { tabs, arm };
+  }),
   open: Effect.gen(function* () {
     if (yield* archived) return yield* BrowserError.make({ message: ARCHIVED_OPENS_NO_OWNER_TAB });
 

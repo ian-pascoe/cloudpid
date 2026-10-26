@@ -519,8 +519,15 @@ export const sessionSocketsLayer = (
 
           // The Owner tabs hold no link, so a change goes to every client: a second device shows the tab the first
           // switched to, and sees the tabs it opened and closed.
+          // Asked by a Pane in view with `watching`, the listing is its heartbeat: it holds the browser's idle close off. A
+          // beat that set a close time where there was none arms the wake, which settling does.
           case "owner_tab_list":
-            return browserPane.tabs;
+            return message.watching === true
+              ? browserPane.watchedTabs.pipe(
+                  Effect.tap(({ arm }) => (arm ? settleInBackground : Effect.void)),
+                  Effect.map(({ tabs }) => tabs),
+                )
+              : browserPane.tabs;
           case "owner_tab_open":
             return browserPane.open.pipe(
               Effect.tap(() => settleInBackground),
@@ -655,7 +662,7 @@ export const sessionSocketsLayer = (
       /** In the background and best effort: an answer neither waits on the settle nor loses its result to it. */
       const settleInBackground = host.settle.pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Settling after an Owner tab opened failed", cause),
+          Effect.logWarning("Settling after an Owner tab opened or watched failed", cause),
         ),
         Effect.forkIn(scope),
         Effect.asVoid,

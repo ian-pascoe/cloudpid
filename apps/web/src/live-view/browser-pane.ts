@@ -69,6 +69,12 @@ export interface BrowserPaneView extends LiveView {
    * was closed), until `dismiss`.
    */
   readonly replaced: SubscriptionRef.SubscriptionRef<boolean>;
+  /**
+   * How many Owner tabs the Pane's opening reopened at their addresses in a browser that replaced the old one (none: 0),
+   * until `dismiss`: no history, scroll, form state or logins came back.
+   */
+  readonly reopened: SubscriptionRef.SubscriptionRef<number>;
+  /** Take back the notes `replaced` and `reopened` carry. */
   readonly dismiss: Effect.Effect<void>;
   /**
    * Follow the Owner tab the Session says is shown (`undefined`: none): when it is not the one this view is connected to,
@@ -113,12 +119,16 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
   const windowOpenedOnce = coalesced(windowOpened);
   const page = yield* SubscriptionRef.make(INITIAL_OWNER_TAB_PAGE);
   const replaced = yield* SubscriptionRef.make(false);
+  const reopened = yield* SubscriptionRef.make(0);
   let opened = !opens;
   /** The Owner tab the last links were minted for. */
   let connectedTab: string | undefined;
 
   const links: LinkSource = Effect.suspend(() => mint(!opened)).pipe(
     Effect.tap((answer) => (answer.replaced ? SubscriptionRef.set(replaced, true) : Effect.void)),
+    Effect.tap(({ reopened: count = 0 }) =>
+      count > 0 ? SubscriptionRef.set(reopened, count) : Effect.void,
+    ),
     Effect.map(({ tab, windows, ownerTabId }) => {
       opened = true;
       connectedTab = ownerTabId;
@@ -172,7 +182,10 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
     ...view,
     page,
     replaced,
-    dismiss: SubscriptionRef.set(replaced, false),
+    reopened,
+    dismiss: SubscriptionRef.set(replaced, false).pipe(
+      Effect.andThen(SubscriptionRef.set(reopened, 0)),
+    ),
     follow: (shown) =>
       Effect.suspend(() => {
         if (shown === undefined) return Effect.void;

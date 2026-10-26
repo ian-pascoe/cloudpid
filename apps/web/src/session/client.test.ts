@@ -1644,16 +1644,19 @@ describe("the catalog and Slash commands", () => {
 
         expect(state().ownerTabs).toBeNull();
 
-        const listed = yield* asking(client.ownerTabs);
+        const listed = yield* asking(client.ownerTabs(false));
+        const heartbeat = yield* asking(client.ownerTabs(true));
         const opened = yield* asking(client.openOwnerTab);
         const shown = yield* asking(client.showOwnerTab("a"));
         const closed = yield* asking(client.closeOwnerTab("b"));
 
-        const [list, open, show, close] = latest()
+        const [list, beat, open, show, close] = latest()
           .commands()
           .filter((command) => OWNER_TAB_COMMANDS.has(command.type));
 
         expect(list).toEqual({ type: "owner_tab_list", id: list?.id });
+        // In view, the same listing says so: it is the Pane's heartbeat, with no second command.
+        expect(beat).toEqual({ type: "owner_tab_list", id: beat?.id, watching: true });
         expect(open).toEqual({ type: "owner_tab_open", id: open?.id });
         expect(show).toEqual({ type: "owner_tab_show", id: show?.id, ownerTabId: "a" });
         expect(close).toEqual({ type: "owner_tab_close", id: close?.id, ownerTabId: "b" });
@@ -1663,6 +1666,9 @@ describe("the catalog and Slash commands", () => {
         yield* latest().say({ type: "result", id: list?.id, result: one });
         expect(yield* Fiber.join(listed)).toEqual(one);
         expect(state().ownerTabs).toEqual(one);
+
+        yield* latest().say({ type: "result", id: beat?.id, result: one });
+        expect(yield* Fiber.join(heartbeat)).toEqual(one);
 
         // Another device opened a tab: the Session sends every client the tabs.
         const two = {

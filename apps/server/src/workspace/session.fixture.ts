@@ -141,6 +141,7 @@ export class TestWorkspaceSession extends TestSession {
       }),
       Effect.provideService(BrowserSession, {
         touch: Effect.void,
+        watch: Effect.succeed(false),
         closeAt: Effect.undefined,
         closeIfIdle: Effect.void,
       }),

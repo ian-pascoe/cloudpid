@@ -63,6 +63,7 @@ const fakeSession = () => {
     touch: Effect.sync(() => {
       uses.count += 1;
     }),
+    watch: Effect.succeed(false),
     closeAt: Effect.undefined,
     closeIfIdle: Effect.void,
   };

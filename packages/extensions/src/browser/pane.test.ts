@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { fakeHandoffHost, LIVE_VIEW_LINKS } from "./host.fixture.ts";
 import { BROWSER_IDLE_MS, BrowserError, type BrowserHostService } from "./host.ts";
 import { ARCHIVED_OPENS_NO_OWNER_TAB, makeBrowserPane } from "./pane.ts";
-import { makeBrowserSession } from "./session.ts";
+import { makeBrowserSession, WATCH_WRITE_MS } from "./session.ts";
 
 /** A Durable Object's key-value storage, in memory. */
 const memoryStorage = () => {
@@ -30,9 +30,15 @@ const fakeHost = (gone = false) => {
   const asked: boolean[] = [];
   let tab = false;
   let opens = 0;
+  const listed = { count: 0 };
 
   const host: BrowserHostService = {
     ...fakeHandoffHost().host,
+    ownerTabs: Effect.sync(() => {
+      listed.count += 1;
+
+      return gone ? { tabs: [] } : { tabs: [{ id: "owner-1", title: "" }], shown: "owner-1" };
+    }),
     openOwnerTab: Effect.sync(() => {
       tab = true;
       opens += 1;
@@ -64,11 +70,11 @@ const fakeHost = (gone = false) => {
       }),
   };
 
-  return { host, asked, opens: () => opens };
+  return { host, asked, opens: () => opens, listed };
 };
 
 const setup = (options: { readonly archived?: boolean; readonly gone?: boolean } = {}) => {
-  const { host, asked, opens } = fakeHost(options.gone);
+  const { host, asked, opens, listed } = fakeHost(options.gone);
   const session = makeBrowserSession({ host, storage: memoryStorage() });
 
   const pane = makeBrowserPane(
@@ -76,7 +82,7 @@ const setup = (options: { readonly archived?: boolean; readonly gone?: boolean }
     session,
   );
 
-  return { pane, session, asked, opens };
+  return { pane, session, asked, opens, listed };
 };
 
 const test = (name: string, body: () => Effect.Effect<void, unknown>) =>
@@ -147,5 +153,58 @@ describe("the Session's Browser Pane", () => {
       expect(yield* failure(pane.show("nope"))).toBe(OWNER_TAB_GONE);
       // None of these is a use of the browser.
       expect(yield* session.closeAt).toBeUndefined();
+    }));
+
+  test("keeps the browser for a Pane in view: its listing is a heartbeat the idle close counts from", () =>
+    Effect.gen(function* () {
+      const { pane, session, listed } = setup();
+
+      yield* pane.view(true);
+      yield* TestClock.adjust(BROWSER_IDLE_MS - 1_000);
+
+      const beat = yield* pane.watchedTabs;
+
+      expect(beat.tabs.shown).toBe("owner-1");
+      expect(listed.count).toBe(1);
+      expect(yield* session.closeAt).toBe(BROWSER_IDLE_MS - 1_000 + BROWSER_IDLE_MS);
+      expect(beat.arm).toBe(false);
+    }));
+
+  test("holds nothing for a listing that is not a heartbeat", () =>
+    Effect.gen(function* () {
+      const { pane, session } = setup();
+
+      yield* pane.view(true);
+
+      const opened = yield* session.closeAt;
+
+      yield* TestClock.adjust(WATCH_WRITE_MS * 2);
+      yield* pane.tabs;
+
+      expect(yield* session.closeAt).toBe(opened);
+    }));
+
+  test("notes no beat when the host has no Owner tabs: a Pane that finds its browser gone holds nothing open", () =>
+    Effect.gen(function* () {
+      const { pane, session } = setup({ gone: true });
+
+      expect((yield* pane.watchedTabs).tabs.tabs).toEqual([]);
+      expect(yield* session.closeAt).toBeUndefined();
+    }));
+
+  test("says the Session must settle to arm the wake only when the beat left no close time before", () =>
+    Effect.gen(function* () {
+      const { pane, session } = setup();
+
+      yield* pane.view(true);
+      // Opening was a use, so a wake is armed already.
+      expect((yield* pane.watchedTabs).arm).toBe(false);
+
+      // The idle close ran (the browser is still the host's, as when the close failed): a beat sets a new close time.
+      yield* TestClock.adjust(BROWSER_IDLE_MS);
+      yield* session.closeIfIdle;
+
+      expect((yield* pane.watchedTabs).arm).toBe(true);
+      expect((yield* pane.watchedTabs).arm).toBe(false);
     }));
 });

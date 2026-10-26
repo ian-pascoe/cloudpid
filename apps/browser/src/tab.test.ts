@@ -11,7 +11,7 @@ import {
   type StoredBrowserSession,
 } from "agents/browser";
 import { describe, expect, it } from "vitest";
-import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabsIn } from "./tab.ts";
+import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabStatesIn, tabsIn } from "./tab.ts";
 
 const memoryStore = (): ListableBrowserSessionStore & {
   readonly records: Map<string, StoredBrowserSession>;
@@ -50,6 +50,8 @@ const fakeBrowserRun = () => {
   const state = {
     created: 0,
     opened: 0,
+    /** The `url` of each `Target.createTarget`, in order. */
+    urls: new Array<string>(),
     tabs: new Map<string, string[]>(),
     gone: new Set<string>(),
   };
@@ -90,11 +92,14 @@ const fakeBrowserRun = () => {
 
       server.accept();
       server.addEventListener("message", (event) => {
-        const command: { id: number; method: string } = JSON.parse(String(event.data));
+        const command: { id: number; method: string; params?: { url?: string } } = JSON.parse(
+          String(event.data),
+        );
 
         if (command.method !== "Target.createTarget") return;
 
         state.opened += 1;
+        state.urls.push(command.params?.url ?? "");
 
         const targetId = `opened-${state.opened}`;
 
@@ -188,6 +193,14 @@ describe("the tab a conversation works in", () => {
 });
 
 describe("opening an Owner tab", () => {
+  it("opens it at the address it is given, blank otherwise", async () => {
+    const { browser, run } = setup();
+
+    await openTab(browser, "owner-tab:a");
+    await openTab(browser, "owner-tab:b", "https://example.com/deep");
+    expect(run.state.urls).toEqual(["about:blank", "https://example.com/deep"]);
+  });
+
   it("opens it in the browser that runs, starting none, as its scope's tab, apart from the conversations' tabs", async () => {
     const { browser, lookup, run, work } = setup();
     const sessionId = await work(5, "tab-1");
@@ -281,6 +294,45 @@ describe("opening an Owner tab", () => {
       ]),
     );
     expect(run.requests).toHaveLength(1);
+  });
+
+  it("says a tab was closed in the browser that runs, as against taken with a browser that was closed, replaced or lost", async () => {
+    const { browser, lookup, run } = setup();
+
+    const a = await openTab(browser, "owner-tab:a");
+    const b = await openTab(browser, "owner-tab:b");
+
+    // `b` was closed in the browser that runs; `c` never had a record.
+    run.state.tabs.set(a.browserSessionId, [a.targetId]);
+    expect(await tabStatesIn(lookup, ["owner-tab:a", "owner-tab:b", "owner-tab:c"])).toEqual(
+      new Map([
+        ["owner-tab:a", { state: "open", tab: a }],
+        ["owner-tab:b", { state: "closed" }],
+        ["owner-tab:c", { state: "replaced" }],
+      ]),
+    );
+
+    // Browser Run lost the browser: every tab went with it.
+    run.state.gone.add(a.browserSessionId);
+    expect(
+      [...(await tabStatesIn(lookup, ["owner-tab:a", "owner-tab:b"])).values()].map(
+        (found) => found.state,
+      ),
+    ).toEqual(["replaced", "replaced"]);
+    run.state.gone.clear();
+
+    // The browser was closed, and a new one has `b` alone: `a`'s record names the old one.
+    expect(await browser.close()).toBe(true);
+
+    const fresh = await openTab(browser, "owner-tab:b");
+
+    expect(await tabStatesIn(lookup, ["owner-tab:a", "owner-tab:b"])).toEqual(
+      new Map([
+        ["owner-tab:a", { state: "replaced" }],
+        ["owner-tab:b", { state: "open", tab: fresh }],
+      ]),
+    );
+    expect(b.browserSessionId).toBe(a.browserSessionId);
   });
 
   it("forgets an Owner tab's scope record under the scope records' lock, leaving the others", async () => {

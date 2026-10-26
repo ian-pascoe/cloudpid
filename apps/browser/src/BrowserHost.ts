@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalConsole:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalConsole:off newPromise:off globalTimers:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
 // The browser host: one Durable Object per Session (ADR-0007) with the Session's one Browser Run browser, driven by
 // `agents/browser`'s `browserTool`. The Session DO reaches it over RPC, because the tool needs this Worker's
 // `CodemodeRuntime` facet and the Loader that runs the model's CDP code (`docs/spec.md` → Browser).
@@ -29,7 +29,10 @@ import { DurableObject } from "cloudflare:workers";
 import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
-import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabsIn } from "./tab.ts";
+import { adoptTab, forgetScope, openTab, tabIn, tabOf, tabStatesIn, tabsIn } from "./tab.ts";
+
+/** How long closing the browser waits to note where the Owner tabs are, at most. */
+const RECORD_BEFORE_CLOSE_MS = 2_000;
 
 /** What the browser Worker binds (`resource.ts`). */
 export type BrowserHostEnv = {
@@ -85,6 +88,11 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
           tabIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scope),
         tabsOf: (scopes) =>
           tabsIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scopes),
+        statesOf: (scopes) =>
+          tabStatesIn(
+            { name: this.#browser.name, store: this.#store, binding: env.BROWSER },
+            scopes,
+          ),
         adoptTab: (scope, targetId, browserSessionId) =>
           adoptTab(
             { name: this.#browser.name, store: this.#store },
@@ -92,7 +100,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
             targetId,
             browserSessionId,
           ),
-        openTab: (scope) => openTab(this.#browser, scope),
+        openTab: (scope, url) => openTab(this.#browser, scope, url),
         forget: (scope) => forgetScope({ name: this.#browser.name, store: this.#store }, scope),
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
       },
@@ -192,8 +200,27 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     return this.#handoffs.end(requestId);
   }
 
-  /** Close the browser: its record is retired and its Browser Run session ends. False when there was none. */
-  close(): Promise<boolean> {
+  /**
+   * Close the browser: its record is retired and its Browser Run session ends. False when there was none. The Owner tabs'
+   * addresses are noted first (for as long as `RECORD_BEFORE_CLOSE_MS`, so a slow browser does not hold the close up), so
+   * that the browser that replaces this one reopens them where the owner left them.
+   */
+  async close(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      await Promise.race([
+        this.#ownerTabs.tabs(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, RECORD_BEFORE_CLOSE_MS);
+        }),
+      ]);
+    } catch (error) {
+      console.warn(`Recording the Owner tabs before closing the browser failed: ${String(error)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+
     return this.#browser.close();
   }
 }

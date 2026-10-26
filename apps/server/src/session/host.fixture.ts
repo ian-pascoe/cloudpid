@@ -103,7 +103,7 @@ import {
 import type { NavigateRequest } from "./branches.ts";
 import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
-import { wakeAt } from "./wake.ts";
+import { onIdle, wakeAt } from "./wake.ts";
 import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
 import {
   type ChangesSource,
@@ -208,7 +208,11 @@ const roundWaiters = new Map<string, () => void>();
 const testBrowserHost = (kv: Kv): BrowserHostService => ({
   describe: Effect.succeed("Drives a browser."),
   run: () => Effect.succeed({ output: [{ type: "text", text: "ok" }] }),
-  close: Effect.succeed(false),
+  close: Effect.sync(() => {
+    kv.put("browser-closes", (kv.get<number>("browser-closes") ?? 0) + 1);
+
+    return false;
+  }),
   startHandoff: (input) =>
     Effect.sync(() => {
       kv.put("handoff-starts", [...(kv.get<HandoffStartInput[]>("handoff-starts") ?? []), input]);
@@ -270,7 +274,11 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
         ? Effect.succeed({ ...OWNER_TAB_LINKS, opened, replaced })
         : Effect.fail(BrowserError.make({ message: `ownerTabView: Error: ${OWNER_TAB_GONE}` }));
     }),
-  ownerTabs: Effect.sync(() => ownerTabListing(kv)),
+  ownerTabs: Effect.sync(() => {
+    kv.put("owner-tab-lists", (kv.get<number>("owner-tab-lists") ?? 0) + 1);
+
+    return ownerTabListing(kv);
+  }),
   openOwnerTab: Effect.sync(() => {
     const { tabs } = ownerTabListing(kv);
     const id = `owner-tab-${tabs.length + 1}`;
@@ -502,6 +510,12 @@ export class TestSession extends DurableObject {
     const models = createModels();
 
     models.setProvider(faux.provider);
+
+    const browser = makeBrowserSession({
+      host: testBrowserHost(ctx.storage.kv),
+      storage: ctx.storage.kv,
+    });
+
     void ctx.blockConcurrencyWhile(async () => {
       this.#runtime = ManagedRuntime.make(
         sessionSocketsLayer(ctx).pipe(
@@ -522,23 +536,15 @@ export class TestSession extends DurableObject {
               reportTimeout:
                 ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
               // As the Session DO's: a held Secret's expiry, or the browser's idle close.
-              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) =>
-                wakeAt(
-                  held,
-                  makeBrowserSession({
-                    host: testBrowserHost(ctx.storage.kv),
-                    storage: ctx.storage.kv,
-                  }),
-                ),
-              ),
+              wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => wakeAt(held, browser)),
+              // And what it does when it settles: the abandoned requests dropped, an idle browser closed.
               onIdle: Effect.flatMap(
                 Effect.all([
                   Effect.service(Secrets),
                   Effect.service(BrowserHandoffs),
                   Effect.service(Approvals),
                 ]),
-                ([held, handoffs, approvals]) =>
-                  Effect.all([held.dropAbandoned, handoffs.dropAbandoned, approvals.dropAbandoned]),
+                ([held, handoffs, approvals]) => onIdle(held, browser, handoffs, approvals),
               ),
             }).pipe(
               Layer.provide(
@@ -1177,12 +1183,52 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("archived", archived);
   }
 
-  /** When the browser was last used, as the Session's keep-alive keeps it, and when the object's alarm is set. */
-  async browserUse(): Promise<{ readonly lastUsed?: number; readonly alarm: number | null }> {
+  /** How many times the Session closed the browser through the test browser host. */
+  browserCloses(): number {
+    return this.ctx.storage.kv.get<number>("browser-closes") ?? 0;
+  }
+
+  /** How many times the test browser host was asked to list the Owner tabs, for any reason. */
+  ownerTabLists(): number {
+    return this.ctx.storage.kv.get<number>("owner-tab-lists") ?? 0;
+  }
+
+  /**
+   * When the browser was last used and when a Browser Pane in view last beat, as the Session's keep-alive keeps them, and
+   * when the object's alarm is set.
+   */
+  async browserUse(): Promise<{
+    readonly lastUsed?: number;
+    readonly watched?: number;
+    readonly alarm: number | null;
+  }> {
     const lastUsed = this.ctx.storage.kv.get<number>("browser-last-used");
+    const watched = this.ctx.storage.kv.get<number>("browser-pane-watched");
     const alarm = await this.ctx.storage.getAlarm();
 
-    return lastUsed === undefined ? { alarm } : { lastUsed, alarm };
+    const use: Types.Mutable<Awaited<ReturnType<TestSession["browserUse"]>>> = { alarm };
+
+    if (lastUsed !== undefined) use.lastUsed = lastUsed;
+
+    if (watched !== undefined) use.watched = watched;
+
+    return use;
+  }
+
+  /** The browser's use and the Pane's beats are forgotten, and the alarm with them, as the idle close leaves them. */
+  async forgetBrowserUse(): Promise<void> {
+    this.ctx.storage.kv.delete("browser-last-used");
+    this.ctx.storage.kv.delete("browser-pane-watched");
+    await this.ctx.storage.deleteAlarm();
+  }
+
+  /** The browser's last use and the Pane's last beat happened `ms` earlier than they did. */
+  ageBrowserUse(ms: number): void {
+    for (const key of ["browser-last-used", "browser-pane-watched"]) {
+      const at = this.ctx.storage.kv.get<number>(key);
+
+      if (at !== undefined) this.ctx.storage.kv.put(key, at - ms);
+    }
   }
 
   /** The origins of the windows the test browser host says a handoff left open when it ends. */
