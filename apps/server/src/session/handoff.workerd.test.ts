@@ -5,7 +5,7 @@
 // model request.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   type ClientMessage,
@@ -610,5 +610,110 @@ describe("the Browser Pane's Owner tabs over the Session socket", () => {
     expect(
       await runInDurableObject(stub, (instance: TestSession) => instance.browserUse()),
     ).toEqual({ alarm: null });
+  });
+
+  it("keeps the browser while the Pane in view lists the Owner tabs: the idle close counts from the beat, and a listing of a Pane not in view, or of no Owner tabs, notes nothing", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    const owner = await connect(stub);
+    const use = () => runInDurableObject(stub, (instance: TestSession) => instance.browserUse());
+
+    // No Owner tab, so no browser to keep: the listing is answered and notes nothing, and sets no alarm.
+    owner.send({ type: "owner_tab_list", id: "w-0", watching: true });
+    expect(await owner.next(answerTo("w-0"))).toEqual({
+      type: "result",
+      id: "w-0",
+      result: { tabs: [] },
+    });
+    expect(await use()).toEqual({ alarm: null });
+
+    owner.send({ type: "owner_tab_open", id: "w-1" });
+    await owner.next(answerTo("w-1"));
+    await vi.waitFor(async () => expect((await use()).alarm).not.toBeNull());
+
+    // The idle close ran meanwhile and forgot the times (the host still has the browser): a listing that is not asked for
+    // by a Pane in view holds nothing, and one that is sets the close time anew and arms the wake for it.
+    await runInDurableObject(stub, (instance: TestSession) => instance.forgetBrowserUse());
+    owner.send({ type: "owner_tab_list", id: "w-2" });
+    await owner.next(answerTo("w-2"));
+    expect(await use()).toEqual({ alarm: null });
+
+    owner.send({ type: "owner_tab_list", id: "w-3", watching: true });
+
+    const answer = await owner.next(answerTo("w-3"));
+
+    // Answered as any listing is: the tabs, to the asker alone.
+    expect(answer).toMatchObject({ result: { shown: "owner-tab-1" } });
+
+    const beat = await vi.waitFor(async () => {
+      const now = await use();
+
+      expect(now.watched).toBeTypeOf("number");
+      expect(now.alarm).toBe((now.watched ?? 0) + BROWSER_IDLE_MS);
+
+      return now;
+    });
+
+    expect(beat.lastUsed).toBeUndefined();
+
+    // Each listing is one ask of the host and nothing else is sent it: the listing is the heartbeat, with no second one.
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.ownerTabLists()),
+    ).toBe(3);
+  });
+
+  it("holds the idle close off across an eviction while the beats are fresh, and closes the browser at the alarm once they lapse", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    const owner = await connect(stub);
+
+    const state = () =>
+      runInDurableObject(stub, async (instance: TestSession) => ({
+        use: await instance.browserUse(),
+        closes: instance.browserCloses(),
+      }));
+
+    owner.send({ type: "owner_tab_open", id: "e-1" });
+    await owner.next(answerTo("e-1"));
+    owner.send({ type: "owner_tab_list", id: "e-2", watching: true });
+    await owner.next(answerTo("e-2"));
+    owner.close();
+
+    const beat = await vi.waitFor(async () => {
+      const now = await state();
+
+      expect(now.use.watched).toBeTypeOf("number");
+
+      return now.use.watched ?? 0;
+    });
+
+    // The browser's last use is past the window, so the beat alone holds the close off. The Session's object is evicted,
+    // and wakes at its alarm while the beat is still fresh: nothing is closed, and the wake is for the window after the
+    // beat.
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.ageBrowserLastUse(BROWSER_IDLE_MS + 1),
+    );
+    await evictDurableObject(stub);
+    await runDurableObjectAlarm(stub);
+
+    await vi.waitFor(async () => {
+      const now = await state();
+
+      expect(now.closes).toBe(0);
+      expect(now.use.alarm).toBe(beat + BROWSER_IDLE_MS);
+    });
+
+    // The beats stop and the window passes (the stored times say so): the next wake closes the browser.
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.ageBrowserUse(BROWSER_IDLE_MS + 1),
+    );
+    await evictDurableObject(stub);
+    await runDurableObjectAlarm(stub);
+
+    await vi.waitFor(async () => {
+      const now = await state();
+
+      expect(now.closes).toBe(1);
+      expect(now.use.watched).toBeUndefined();
+      expect(now.use.lastUsed).toBeUndefined();
+    });
   });
 });

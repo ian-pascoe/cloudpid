@@ -43,19 +43,34 @@ export const scopeKey = (name: string, scope: string): string =>
 const scopesLockKey = (name: string): string => scopeKey(name, "");
 
 /**
- * The tabs scopes `scopes` work in, those whose browser is still there. `agents/browser` keeps each in the scope's record
- * beside the browser's own record, and both are read as they are stored: `Browser.connect` would create a browser for a
- * scope that has none and move a stale scope record to it, and neither a handoff nor a Pane asking again may change
- * either. Browser Run is asked for its pages once, however many scopes.
+ * Where a scope's tab stands: open in the browser that runs; `closed` (the browser that runs is the one the scope's record
+ * names, and the tab is not among its pages); or `replaced` (the scope's browser is closed, replaced or gone from Browser
+ * Run, or the scope has no record: whatever the tab showed went with it).
  */
-export const tabsIn = async (
+export type TabState =
+  | { readonly state: "open"; readonly tab: Tab }
+  | { readonly state: "closed" }
+  | { readonly state: "replaced" };
+
+/**
+ * Where each of scopes `scopes`' tab stands (`TabState`). `agents/browser` keeps each in the scope's record beside the
+ * browser's own record, and both are read as they are stored: `Browser.connect` would create a browser for a scope that
+ * has none and move a stale scope record to it, and neither a handoff nor a Pane asking again may change either. Browser
+ * Run is asked for its pages once, however many scopes.
+ */
+export const tabStatesIn = async (
   { name, store, binding }: TabLookup,
   scopes: ReadonlyArray<string>,
-): Promise<Map<string, Tab>> => {
-  const found = new Map<string, Tab>();
+): Promise<Map<string, TabState>> => {
+  const states = new Map<string, TabState>();
   const browser = await store.get(browserKey(name));
+  const replaced: TabState = { state: "replaced" };
 
-  if (browser === undefined || browser.closedAt !== undefined) return found;
+  if (browser === undefined || browser.closedAt !== undefined) {
+    for (const scope of scopes) states.set(scope, replaced);
+
+    return states;
+  }
 
   const candidates: Array<readonly [string, Tab]> = [];
 
@@ -68,27 +83,48 @@ export const tabsIn = async (
         scope,
         { browserSessionId: browser.sessionId, targetId: record.activeTargetId },
       ]);
+    } else {
+      states.set(scope, replaced);
     }
   }
 
-  if (candidates.length === 0) return found;
+  if (candidates.length === 0) return states;
 
   try {
     const targets = await listBrowserTargets(binding, browser.sessionId);
 
     for (const [scope, tab] of candidates) {
-      if (targets.some((target) => target.id === tab.targetId)) found.set(scope, tab);
+      states.set(
+        scope,
+        targets.some((target) => target.id === tab.targetId)
+          ? { state: "open", tab }
+          : { state: "closed" },
+      );
     }
 
-    return found;
+    return states;
   } catch (error) {
     // Browser Run no longer has the browser; any other failure is not an answer.
     if (error instanceof BrowserRenderingError && (error.status === 404 || error.status === 410)) {
-      return new Map();
+      return new Map(scopes.map((scope) => [scope, replaced]));
     }
 
     throw error;
   }
+};
+
+/** The tabs scopes `scopes` work in, those that are open in the browser that runs (`tabStatesIn`). */
+export const tabsIn = async (
+  lookup: TabLookup,
+  scopes: ReadonlyArray<string>,
+): Promise<Map<string, Tab>> => {
+  const found = new Map<string, Tab>();
+
+  for (const [scope, tab] of await tabStatesIn(lookup, scopes)) {
+    if (tab.state === "open") found.set(scope, tab.tab);
+  }
+
+  return found;
 };
 
 /** The tab scope `scope` works in, if its browser is still there (`tabsIn`). */
@@ -100,17 +136,20 @@ export const tabOf = (lookup: TabLookup, conversationId: number): Promise<Tab | 
   tabIn(lookup, conversationScope(conversationId));
 
 /**
- * Open a blank tab for scope `scope` and record it as the scope's tab. `Browser.connect` reattaches to the browser that
- * runs and starts one only when none does (or it is gone), so this never starts a second browser.
+ * Open a tab for scope `scope` (blank, or at `url`) and record it as the scope's tab. `Browser.connect` reattaches to the
+ * browser that runs and starts one only when none does (or it is gone), so this never starts a second browser.
  */
-export const openTab = async (browser: Pick<Browser, "connect">, scope: string): Promise<Tab> => {
+export const openTab = async (
+  browser: Pick<Browser, "connect">,
+  scope: string,
+  url = "about:blank",
+): Promise<Tab> => {
   const connection = await browser.connect({ scope });
 
   try {
-    const { targetId } = decodeCreated(
-      await connection.cdp.send("Target.createTarget", { url: "about:blank" }),
-      { onExcessProperty: "ignore" },
-    );
+    const { targetId } = decodeCreated(await connection.cdp.send("Target.createTarget", { url }), {
+      onExcessProperty: "ignore",
+    });
 
     // False when the browser was closed or replaced meanwhile: the tab is not where the record would say.
     if (!(await connection.setActiveTarget(targetId))) {

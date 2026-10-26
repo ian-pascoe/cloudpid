@@ -40,9 +40,9 @@ const pageVisible = (): boolean =>
 
 /** A page of the Owner tab opened a window: ask for the Owner tabs now, and once more in a moment. */
 const windowOpenedIn = (client: SessionClient) =>
-  Effect.ignore(client.ownerTabs).pipe(
+  Effect.ignore(client.ownerTabs(false)).pipe(
     Effect.andThen(Effect.sleep(WINDOW_OPENED_RECHECK)),
-    Effect.andThen(Effect.ignore(client.ownerTabs)),
+    Effect.andThen(Effect.ignore(client.ownerTabs(false))),
   );
 
 /**
@@ -87,7 +87,21 @@ export const ownerTabReplacedAtom = Atom.family((key: BrowserPaneKey) =>
   Atom.make((get): boolean => AsyncResult.getOrElse(get(replacedRefAtom(key)), () => false)),
 );
 
-/** Dismiss the note that the Owner tab shown replaced one that is gone. */
+const reopenedRefAtom = Atom.family((key: BrowserPaneKey) =>
+  appRuntime.subscriptionRef((get) =>
+    get.result(browserPaneViewAtom(key)).pipe(Effect.map((view) => view.reopened)),
+  ),
+);
+
+/**
+ * How many Owner tabs the Pane's opening reopened at their addresses in a new browser (none: 0), until the owner
+ * dismisses the note.
+ */
+export const ownerTabsReopenedAtom = Atom.family((key: BrowserPaneKey) =>
+  Atom.make((get): number => AsyncResult.getOrElse(get(reopenedRefAtom(key)), () => 0)),
+);
+
+/** Dismiss the notes that the Owner tab shown replaced one that is gone, and that Owner tabs were reopened. */
 export const dismissReplacedAtom = Atom.family((key: BrowserPaneKey) =>
   appRuntime.fn((_: void, get) =>
     get.result(browserPaneViewAtom(key)).pipe(Effect.flatMap((view) => view.dismiss)),
@@ -121,19 +135,34 @@ export const ownerTabActionAtom = Atom.family((key: BrowserPaneKey) =>
   ),
 );
 
-/** Asks the Session for its Owner tabs now and every `OWNER_TABS_POLL` while the page is visible, for as long as mounted. */
+/**
+ * Whether Session `sessionId`'s Browser Pane is in view on this device: its tab shown in the Pane area, the area not
+ * hidden, the page visible. The Pane sets it (`browser-pane.tsx`) and the poll of the Owner tabs reads it: a Pane in view
+ * asks as the heartbeat that keeps the Session's browser (#240), one that is not asks as it always did and keeps nothing.
+ */
+export const browserPaneInViewAtom = Atom.family((_sessionId: string) =>
+  Atom.make(false).pipe(Atom.keepAlive),
+);
+
+/**
+ * Asks the Session for its Owner tabs now and every `OWNER_TABS_POLL` while the page is visible, for as long as mounted,
+ * as the heartbeat (`watching`) while the Pane is in view. The one poll is the only heartbeat: it lapses with the Pane
+ * going out of view or the page being hidden, never an open/closed flag.
+ */
 const pollOwnerTabsAtom = Atom.family((sessionId: string) =>
-  appRuntime.atom((get) =>
-    get
+  appRuntime.atom((get) => {
+    const inView = get(browserPaneInViewAtom(sessionId));
+
+    return get
       .result(sessionClientAtom(sessionId))
       .pipe(
         Effect.flatMap((client) =>
           Effect.suspend(() =>
-            pageVisible() ? Effect.ignore(client.ownerTabs) : Effect.void,
+            pageVisible() ? Effect.ignore(client.ownerTabs(inView)) : Effect.void,
           ).pipe(Effect.andThen(Effect.sleep(OWNER_TABS_POLL)), Effect.forever),
         ),
-      ),
-  ),
+      );
+  }),
 );
 
 /**

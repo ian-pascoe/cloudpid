@@ -158,6 +158,39 @@ describe("the Browser Pane's view of the Owner tab", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("says how many Owner tabs it reopened in a new browser, until dismissed", () =>
+    Effect.gen(function* () {
+      const fake = fakeBrowser();
+
+      const view = yield* openBrowserPaneView((open: boolean) =>
+        fake.mint.pipe(
+          Effect.map((links) => ({
+            ownerTabId: "owner-2",
+            ...links,
+            opened: open,
+            replaced: open,
+          })),
+          Effect.map((links) => (links.opened ? { ...links, reopened: 3 } : links)),
+        ),
+      ).pipe(Effect.provide(fake.layer));
+
+      yield* settle;
+
+      expect(SubscriptionRef.getUnsafe(view.reopened)).toBe(3);
+
+      // A reconnect (a plain ask) leaves it; the owner dismisses both notes together.
+      yield* fake.to("T")[0]!.drop();
+      yield* settle;
+
+      expect(SubscriptionRef.getUnsafe(view.reopened)).toBe(3);
+
+      yield* view.dismiss;
+
+      expect(SubscriptionRef.getUnsafe(view.reopened)).toBe(0);
+      expect(SubscriptionRef.getUnsafe(view.replaced)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("never asks to open in an archived Session", () =>
     Effect.gen(function* () {
       const { opens, to, state } = yield* setup(undefined, { archived: true });

@@ -7,7 +7,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it } from "vitest";
 import { fakeHandoffHost } from "./host.fixture.ts";
 import { BROWSER_IDLE_MS, BrowserError, type BrowserHostService } from "./host.ts";
-import { type BrowserStorage, makeBrowserSession } from "./session.ts";
+import { type BrowserStorage, makeBrowserSession, WATCH_WRITE_MS } from "./session.ts";
 
 /** A Durable Object's key-value storage, in memory. */
 const memoryStorage = (): BrowserStorage => {
@@ -162,5 +162,130 @@ describe("the Session's browser keep-alive", () => {
 
       expect(closes.count).toBe(1);
       expect(yield* session.closeAt).toBeUndefined();
+    }));
+});
+
+describe("the Session's browser keep-alive while a Browser Pane is in view", () => {
+  test("holds the idle close off while the Pane's heartbeat is fresh, and runs it once the heartbeat lapses", () =>
+    Effect.gen(function* () {
+      const { host, closes } = fakeHost();
+      const session = makeBrowserSession({ host, storage: memoryStorage() });
+
+      yield* session.touch;
+
+      // The Pane beats every 5 s for half an hour: the browser is never idle past the window.
+      for (let beat = 0; beat < 360; beat++) {
+        yield* TestClock.adjust(5_000);
+        yield* session.watch;
+        yield* session.closeIfIdle;
+      }
+
+      expect(closes.count).toBe(0);
+
+      // Written at most every `WATCH_WRITE_MS`, so the close time trails the last beat by less than that.
+      const at = (yield* session.closeAt) ?? 0;
+
+      expect(at).toBeGreaterThan(30 * 60_000 - WATCH_WRITE_MS + BROWSER_IDLE_MS);
+      expect(at).toBeLessThanOrEqual(30 * 60_000 + BROWSER_IDLE_MS);
+
+      // The Pane goes out of view: the last beat kept counts, and the browser closes once the window has passed since it.
+      yield* TestClock.adjust(at - 30 * 60_000 - 1);
+      yield* session.closeIfIdle;
+
+      expect(closes.count).toBe(0);
+
+      yield* TestClock.adjust(1);
+      yield* session.closeIfIdle;
+
+      expect(closes.count).toBe(1);
+      expect(yield* session.closeAt).toBeUndefined();
+    }));
+
+  test("keeps a use that came after the last beat, and a beat that came after the last use", () =>
+    Effect.gen(function* () {
+      const { host } = fakeHost();
+      const session = makeBrowserSession({ host, storage: memoryStorage() });
+
+      yield* session.watch;
+      yield* TestClock.adjust(1_000);
+      yield* session.touch;
+
+      expect(yield* session.closeAt).toBe(1_000 + BROWSER_IDLE_MS);
+
+      yield* TestClock.adjust(WATCH_WRITE_MS);
+      yield* session.watch;
+
+      expect(yield* session.closeAt).toBe(1_000 + WATCH_WRITE_MS + BROWSER_IDLE_MS);
+    }));
+
+  test("writes a beat down at most every WATCH_WRITE_MS, the first at once", () =>
+    Effect.gen(function* () {
+      const writes: number[] = [];
+      const inner = memoryStorage();
+      const { host } = fakeHost();
+
+      const storage: BrowserStorage = {
+        ...inner,
+        put: (key, value) => {
+          writes.push(1);
+          inner.put(key, value);
+        },
+      };
+
+      const session = makeBrowserSession({ host, storage });
+
+      yield* session.watch;
+
+      for (let beat = 0; beat < 5; beat++) {
+        yield* TestClock.adjust(5_000);
+        yield* session.watch;
+      }
+
+      expect(writes).toHaveLength(1);
+
+      yield* TestClock.adjust(WATCH_WRITE_MS);
+      yield* session.watch;
+
+      expect(writes).toHaveLength(2);
+    }));
+
+  test("says whether a beat set a close time where there was none, for the Session to arm its wake", () =>
+    Effect.gen(function* () {
+      const { host } = fakeHost();
+      const session = makeBrowserSession({ host, storage: memoryStorage() });
+
+      expect(yield* session.watch).toBe(true);
+      yield* TestClock.adjust(1_000);
+      expect(yield* session.watch).toBe(false);
+    }));
+
+  test("holds the idle close off across an eviction, and runs it once the beats stop", () =>
+    Effect.gen(function* () {
+      const storage = memoryStorage();
+      const { host, closes } = fakeHost();
+
+      yield* makeBrowserSession({ host, storage }).touch;
+      yield* TestClock.adjust(BROWSER_IDLE_MS - 1_000);
+      yield* makeBrowserSession({ host, storage }).watch;
+
+      // The object was evicted and woke at the alarm the first use set: the beat since holds the close off.
+      yield* TestClock.adjust(1_000);
+
+      const woken = makeBrowserSession({ host, storage });
+
+      yield* woken.closeIfIdle;
+
+      expect(closes.count).toBe(0);
+      expect(yield* woken.closeAt).toBe(BROWSER_IDLE_MS - 1_000 + BROWSER_IDLE_MS);
+
+      // No beat comes: it wakes again at that time and closes.
+      yield* TestClock.adjust(BROWSER_IDLE_MS - 1_000);
+
+      const later = makeBrowserSession({ host, storage });
+
+      yield* later.closeIfIdle;
+
+      expect(closes.count).toBe(1);
+      expect(yield* later.closeAt).toBeUndefined();
     }));
 });

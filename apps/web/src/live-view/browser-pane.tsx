@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off -- the owner's clock, for a pause between the Pane's own asks.
 // The Browser Pane (#238, ADR-0013): the Session's browser for the owner, in Owner tabs, at any time. It is a tab strip
 // (`owner-tab-strip.tsx`: each Owner tab by title, close, and **+**), a URL bar (back, forward, reload, and the tab's
 // URL, which Enter navigates) and the screen it shares with the Live View
@@ -6,19 +7,36 @@
 // gone (closed, or its browser closed or replaced), it says so and offers to open a new Owner tab, and a new one says it
 // replaced the one that is gone. An archived Session's Pane opens nothing: it shows an Owner tab still there, if any. It
 // opens only from the New pane (or the URL or the Session's layout); it never opens on its own.
+//
+// While it is in view (shown in the Pane area, the area not hidden, the page visible) its poll of the Owner tabs is the
+// heartbeat that keeps the Session's browser (#240); out of view the poll says nothing of it, and the browser closes once
+// the idle window passes. When the browser was closed or replaced, the Pane finds its Owner tab gone: in view, it asks to
+// open at once, which reopens every Owner tab at its address (no history, scroll, form state or logins) and says so.
 
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { ArrowLeft, ArrowRight, Globe, RotateCw, X } from "lucide-react";
-import { use, useEffect, useId, useRef, useState, type FormEvent, type RefObject } from "react";
+import {
+  use,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+  type RefObject,
+} from "react";
 import { useShownSessionId } from "../chat/conversation.ts";
 import { TreeBarScope } from "../chat/tree-actions.ts";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { BROWSER_PANE } from "../panes.ts";
+import { panesAtom } from "../panes-state.ts";
 import { settledFailureOf } from "../registry.ts";
 import { addressOf } from "./address.ts";
 import { liveViewStateAtom } from "./atoms.ts";
 import {
+  browserPaneInViewAtom,
   browserPaneKey,
   type BrowserPaneKey,
   browserPaneViewAtom,
@@ -29,6 +47,7 @@ import {
   ownerTabListAtom,
   ownerTabPageAtom,
   ownerTabReplacedAtom,
+  ownerTabsReopenedAtom,
 } from "./browser-pane-atoms.ts";
 import { keepFocus, LiveScreen } from "./live-screen.tsx";
 import { OwnerTabStrip } from "./owner-tab-strip.tsx";
@@ -216,18 +235,25 @@ const Gone = ({ pane }: { pane: BrowserPaneKey }) => {
   );
 };
 
-/** The note that the Owner tab shown replaced one that is gone, until dismissed. */
+/**
+ * The note that the Owner tab shown replaced one that is gone, or that the Owner tabs were reopened in a new browser (and
+ * what that cost), until dismissed.
+ */
 const Replaced = ({ pane }: { pane: BrowserPaneKey }) => {
   const replaced = useAtomValue(ownerTabReplacedAtom(pane));
+  const reopened = useAtomValue(ownerTabsReopenedAtom(pane));
   const dismiss = useAtomSet(dismissReplacedAtom(pane));
 
-  if (!replaced) return null;
+  if (!replaced && reopened === 0) return null;
 
   return (
     <div role="status" className="flex items-start gap-2 border-b px-3 py-1.5 text-xs">
       <p className="flex-1">
-        The Owner tab shown before is gone: it was closed, or the browser was closed or replaced.
-        This is another.
+        {reopened > 0
+          ? `The browser was closed or replaced, so ${
+              reopened === 1 ? "your Owner tab was" : `your ${reopened} Owner tabs were`
+            } reopened at ${reopened === 1 ? "its address" : "their addresses"}. Sign-ins and page state were lost.`
+          : "The Owner tab shown before is gone: it was closed, or the browser was closed or replaced. This is another."}
       </p>
       <Button
         variant="ghost"
@@ -245,11 +271,89 @@ const Replaced = ({ pane }: { pane: BrowserPaneKey }) => {
   );
 };
 
+/** Whether the page is visible, as the browser says it. */
+const useDocumentVisible = (): boolean =>
+  useSyncExternalStore(
+    (notify) => {
+      document.addEventListener("visibilitychange", notify);
+
+      return () => {
+        document.removeEventListener("visibilitychange", notify);
+      };
+    },
+    () => document.visibilityState === "visible",
+    () => true,
+  );
+
+/**
+ * Whether the Browser Pane is in view: its tab shown in the Pane area, the area not hidden, and the page visible (a Pane
+ * on a phone that was left in the background is not). The poll of the Owner tabs sends it as its heartbeat.
+ */
+const useInView = (sessionId: string): boolean => {
+  const shown = useAtomValue(
+    panesAtom,
+    ({ shown: tab, hidden }) => tab === BROWSER_PANE && !hidden,
+  );
+
+  const visible = useDocumentVisible();
+  const inView = shown && visible;
+  const setInView = useAtomSet(browserPaneInViewAtom(sessionId));
+
+  useEffect(() => {
+    setInView(inView);
+  }, [inView, setInView]);
+
+  // Unmounted, the Pane is not in view: nothing says so, the beats just stop.
+  useEffect(
+    () => () => {
+      setInView(false);
+    },
+    [setInView],
+  );
+
+  return inView;
+};
+
+/** The least time between two asks the Pane makes by itself to reopen its Owner tabs. */
+const AUTO_REOPEN_MIN_MS = 30_000;
+
+/**
+ * When the Owner tab is gone with Owner tabs on record (`lost`: the browser they were in was closed or replaced, not the
+ * last one closed by the owner) and the Pane is in view, ask to open at once (`owner_tab_view` with `open`, as the Pane's
+ * opening does): the Session's browser starts anew and every Owner tab is reopened at its address. Once per
+ * `AUTO_REOPEN_MIN_MS` at most, so a browser that cannot be kept does not make the Pane start one after another; Open a
+ * new Owner tab asks again by hand.
+ */
+const useReopenWhenInView = (pane: BrowserPaneKey, ended: boolean, inView: boolean): void => {
+  const reopen = useAtomRefresh(browserPaneViewAtom(pane));
+
+  const onRecord = useAtomValue(
+    ownerTabListAtom(pane.sessionId),
+    (listing) => (listing?.lost ?? 0) > 0,
+  );
+
+  const last = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!ended || !inView || !onRecord || pane.archived) return;
+
+    const now = Date.now();
+
+    if (last.current !== null && now - last.current < AUTO_REOPEN_MIN_MS) return;
+
+    last.current = now;
+    reopen();
+  }, [ended, inView, onRecord, pane.archived, reopen]);
+};
+
 /** The Browser Pane `pane`. */
 const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
   const view = browserPaneViewAtom(pane);
   const ended = useAtomValue(liveViewStateAtom(view), (state) => state.status === "ended");
   const focusWhenLive = useRef(false);
+  const inView = useInView(pane.sessionId);
+
+  useReopenWhenInView(pane, ended, inView);
 
   // The Owner tab shown is the Session's, so every device shows the same: this one's connection moves to it.
   const shown = useAtomValue(ownerTabListAtom(pane.sessionId), (listing) => listing?.shown);

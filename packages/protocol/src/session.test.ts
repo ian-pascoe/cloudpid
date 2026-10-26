@@ -93,6 +93,11 @@ describe("the Session socket messages", () => {
     const none = JSON.stringify({ type: "owner_tabs", tabs: [] });
 
     expect(await readServer(none)).toEqual(JSON.parse(none));
+
+    // With no browser, how many are on record to reopen.
+    const lost = JSON.stringify({ type: "owner_tabs", tabs: [], lost: 2 });
+
+    expect(await readServer(lost)).toEqual(JSON.parse(lost));
   });
 
   it("carry the Secret requests waiting for the owner, never a value", async () => {
@@ -159,6 +164,9 @@ describe("the Session socket messages", () => {
   it("read the Browser Pane's commands on its Owner tabs: list, open, show and close", async () => {
     expect(await readClient('{"type":"owner_tab_list","id":"c1"}')).toEqual(
       Option.some({ type: "owner_tab_list", id: "c1" }),
+    );
+    expect(await readClient('{"type":"owner_tab_list","id":"c1","watching":true}')).toEqual(
+      Option.some({ type: "owner_tab_list", id: "c1", watching: true }),
     );
     expect(await readClient('{"type":"owner_tab_open","id":"c2"}')).toEqual(
       Option.some({ type: "owner_tab_open", id: "c2" }),
