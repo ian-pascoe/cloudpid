@@ -25,6 +25,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * A clock that stands still, as workerd's does while code runs, so that jsdiff's `timeout` cannot fire and only the
+ * bound on the lines that differ is under test, however slow the machine.
+ */
+const stillClock = () => {
+  vi.spyOn(Date, "now").mockReturnValue(0);
+};
+
 describe("writeDetails", () => {
   it("records a patch of the whole text, and that the file was created, for a new file", () => {
     const details = writeDetails("src/a.txt", { kind: "missing" }, "one\ntwo\n");
@@ -161,7 +169,8 @@ describe("writeDetails", () => {
   });
 
   it("bounds the line-up without a clock: a large file whose every line differs is too large, and quickly", () => {
-    // workerd's `Date.now()` stands still while code runs, so only the bound on the lines that differ stops this.
+    stillClock();
+
     const old = lines(30_000, "old line");
     const next = lines(30_000, "new line");
 
@@ -173,11 +182,13 @@ describe("writeDetails", () => {
     const took = performance.now() - started;
 
     expect(details).toEqual({ path: "a.txt", tooLarge: true });
-    // About a third of a second here; the bound is what keeps it from being minutes.
+    // About 0.13 s here; the bound is what keeps it from being minutes.
     expect(took).toBeLessThan(3_000);
   });
 
   it("bounds a change in the middle of a file by the lines that differ, however its text is arranged", () => {
+    stillClock();
+
     const head = lines(5_000, "x");
     const tail = lines(5_000, "y");
 
@@ -206,14 +217,33 @@ describe("writeDetails", () => {
     expect(writeDetails("a.txt", { kind: "text", text: base }, "").patch).toBeDefined();
   });
 
-  it("still shows a rewrite of a file of a thousand lines", () => {
-    const details = writeDetails(
+  it("still shows a rewrite within the bound, and not one past it", () => {
+    stillClock();
+
+    // 400 lines out and 400 in is 800 lines that differ, under 1,000; 600 and 600 is 1,200.
+    const within = writeDetails(
       "a.txt",
-      { kind: "text", text: lines(900, "old") },
-      lines(900, "new"),
+      { kind: "text", text: lines(400, "old") },
+      lines(400, "new"),
     );
 
-    expect(details.patch).toBeDefined();
+    const past = writeDetails(
+      "a.txt",
+      { kind: "text", text: lines(600, "old") },
+      lines(600, "new"),
+    );
+
+    expect(within.patch).toBeDefined();
+    expect(past).toEqual({ path: "a.txt", tooLarge: true });
+  });
+
+  it("does not build the patch of a new file whose text alone passes 512 KiB", () => {
+    // Short lines: 300,000 of them is 600 KB, well within 1 MiB.
+    expect(writeDetails("a.txt", { kind: "missing" }, "ab\n".repeat(300_000))).toEqual({
+      path: "a.txt",
+      created: true,
+      tooLarge: true,
+    });
   });
 });
 

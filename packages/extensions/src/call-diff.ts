@@ -36,11 +36,11 @@ export const LINE_UP_BUDGET_MS = 1000;
 
 /**
  * The most lines added and removed together that a line-up looks for in a change in the middle of a file: jsdiff's
- * `maxEditLength`, which needs no clock. The work grows with its square: about 0.35 s of Node's time at this bound for a
- * file whose every line differs. A change at the end of a file (a new file, an append, a truncation) costs only its
- * length, so it is not held to it.
+ * `maxEditLength`, which needs no clock. The work grows with its square: about 0.13 s of Node's time at this bound for a
+ * file whose every line differs, against 0.5 s at 2,000. A change at the end of a file (a new file, an append, a
+ * truncation) costs only its length, so it is not held to it.
  */
-export const MAX_EDIT_LENGTH = 2000;
+export const MAX_EDIT_LENGTH = 1000;
 
 /** The bytes at the start of a file searched for a NUL, which marks it binary (git's rule). */
 export const BINARY_SCAN_BYTES = 8000;
@@ -80,6 +80,11 @@ export const writeDetails = (path: string, old: OldFile, content: string): Recor
   const before = old.kind === "text" ? old.text : "";
 
   if (byteLength(before) + byteLength(content) > MAX_DIFF_INPUT_BYTES) {
+    return { path, ...created, tooLarge: true };
+  }
+
+  // The patch of a new file holds all of its text, and more: if that alone passes the cap, there is no use building it.
+  if (old.kind === "missing" && storedBytes(content) > MAX_PATCH_BYTES) {
     return { path, ...created, tooLarge: true };
   }
 
