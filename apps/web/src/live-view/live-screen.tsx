@@ -166,7 +166,7 @@ const Status = ({ view }: { view: LiveViewAtom }) => {
   );
 };
 
-const Screen = ({ view }: { view: LiveViewAtom }) => {
+const Screen = ({ view, label }: { view: LiveViewAtom; label: string }) => {
   // Reading the Live View keeps it connected while the Pane is open, shown or not.
   const live = useAtomValue(view, (result) =>
     result.pipe(AsyncResult.value, Option.getOrUndefined),
@@ -260,7 +260,7 @@ const Screen = ({ view }: { view: LiveViewAtom }) => {
         <div
           ref={container}
           tabIndex={0}
-          aria-label="The agent's browser"
+          aria-label={label}
           className={cn(
             "absolute inset-0 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
             desktop ? "overflow-auto" : "overflow-hidden",
@@ -331,10 +331,16 @@ const Screen = ({ view }: { view: LiveViewAtom }) => {
 /**
  * The screen of the Live View `view` holds: its window strip and buttons above the page. Render it in a flex column
  * that gives it the height (it fills what its Pane's own chrome leaves), and read `liveViewStateAtom(view)` for when the
- * Live View ends.
+ * Live View ends. `label` names the page for assistive technology (the agent's browser, by default).
  */
-export const LiveScreen = ({ view }: { view: LiveViewAtom }) => (
+export const LiveScreen = ({
+  view,
+  label = "The agent's browser",
+}: {
+  view: LiveViewAtom;
+  label?: string;
+}) => (
   <DesktopLayout.Provider>
-    <Screen view={view} />
+    <Screen view={view} label={label} />
   </DesktopLayout.Provider>
 );

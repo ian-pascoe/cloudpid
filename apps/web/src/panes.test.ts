@@ -4,6 +4,7 @@ import { liveViewPaneKey } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   applyPaneAction,
+  BROWSER_PANE,
   conversationOfSubagentPane,
   NO_PANES,
   paneAreaOf,
@@ -126,6 +127,14 @@ describe("a Pane key", () => {
     expect(paneKeyOf("subagent:0")?.argument).toBe("0");
     expect(conversationOfSubagentPane("a2")).toBeUndefined();
     expect(conversationOfSubagentPane(undefined)).toBeUndefined();
+  });
+
+  it("knows the Browser Pane, one per Session", () => {
+    expect(paneKeyOf(BROWSER_PANE)?.type.label(undefined, lookups())).toEqual({
+      name: "Browser",
+    });
+    expect(BROWSER_PANE).toBe("browser");
+    expect(paneKeyOf("browser:1")).toBeUndefined();
   });
 });
 

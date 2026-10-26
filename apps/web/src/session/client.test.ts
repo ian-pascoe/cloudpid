@@ -1594,6 +1594,38 @@ describe("the catalog and Slash commands", () => {
   );
 
   it.effect(
+    "mints Live View links for the Browser Pane's Owner tab, opening it or not, and says why when it is gone",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const LINKS = {
+          ownerTabId: "owner-1",
+          tab: { targetId: "T1", link: "wss://live.example/T1?jwt=a" },
+          windows: [],
+        };
+
+        const opened = yield* asking(client.ownerTabView(true));
+        const gone = yield* asking(client.ownerTabView(false));
+
+        const [first, second] = latest()
+          .commands()
+          .filter((command) => command.type === "owner_tab_view");
+
+        expect(first).toEqual({ type: "owner_tab_view", id: first?.id, open: true });
+        expect(second).toEqual({ type: "owner_tab_view", id: second?.id, open: false });
+
+        yield* latest().say({ type: "result", id: first?.id, result: LINKS });
+        yield* latest().say({ type: "error", id: second?.id, message: "the Owner tab is gone" });
+
+        expect(yield* Fiber.join(opened)).toEqual(LINKS);
+        expect(yield* failureOf(gone)).toBe("the Owner tab is gone");
+      }),
+  );
+
+  it.effect(
     "loads a page of earlier History into the view of the conversation it was asked for",
     () =>
       Effect.gen(function* () {

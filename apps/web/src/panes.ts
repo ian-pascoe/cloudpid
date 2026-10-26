@@ -77,8 +77,8 @@ const subagentLabel = (argument: string | undefined, lookups: PaneLookups): Pane
 };
 
 /**
- * The Pane types: the New pane, the Subagents Pane and the Session tree Pane, one each per Session, a Subagent Pane per
- * subagent the owner opens (`subagent:<conversationId>`), and a Live View per Browser Handoff waiting
+ * The Pane types: the New pane, the Subagents Pane, the Session tree Pane and the Browser Pane, one each per Session, a
+ * Subagent Pane per subagent the owner opens (`subagent:<conversationId>`), and a Live View per Browser Handoff waiting
  * (`live-view:<requestId>`). The Terminal (#139) joins them here, and in the New pane's choices (`new-pane.tsx`) if the
  * owner opens it.
  */
@@ -92,6 +92,7 @@ export const PANE_TYPES = [
     label: subagentLabel,
   },
   { id: "tree", multiple: false, label: () => ({ name: "Tree" }) },
+  { id: "browser", multiple: false, label: () => ({ name: "Browser" }) },
   { id: "live-view", multiple: true, label: liveViewLabel },
 ] as const satisfies readonly PaneType[];
 
@@ -119,6 +120,9 @@ const currentKey = (key: string, types: readonly PaneType[]): string =>
 
 /** The key of the Session tree Pane. */
 export const TREE_PANE = "tree";
+
+/** The key of the Browser Pane: the Session's browser, in the owner's Owner tab. */
+export const BROWSER_PANE = "browser";
 
 /** What a Pane's component gets. */
 export interface PaneProps {
