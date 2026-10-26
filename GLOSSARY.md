@@ -205,7 +205,7 @@ A panel beside a conversation that shows something live the owner can look at or
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Session details**:
-A small panel over the top right of a Session's chat with what the owner follows of the Session while reading, one section each: for now the root agent's Todo List and the Session's subagents, each subagent opening its Subagent Pane. An icon button in the Session's header, always there, opens and closes it; with nothing to show it says so.
+A small panel over the top right of a Session's chat with what the owner follows of the Session while reading, one section each: for now the root agent's Todo List, the Session's subagents, each subagent opening its Subagent Pane, and the Changes in its Workspace, each file opening the Diff pane at it. An icon button in the Session's header, always there, opens and closes it; with nothing to show it says so.
 _Avoid_: Activity card, Activity overlay, Session preview (a preview is a pull request's preview stage), popover, todo panel
 
 **Session layout**:

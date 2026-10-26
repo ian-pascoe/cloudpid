@@ -205,7 +205,7 @@ A single cool, blue-slate family, light or dark by the system setting, with thre
 
 A two-column app shell at full viewport height (`100dvh`): a 288 px sidebar with a right border, and the main column. Below the `md` breakpoint (768 px) the two take turns: the Session list alone on `/`, and any page alone with a back arrow in its header.
 
-Pages and the transcript sit in a centered column capped at `max-w-3xl` (768 px) with 16 px side padding and 24 px top and bottom. Headers are a single row, 16 px horizontal and 10 px vertical padding, over a bottom border. The Pane area (Tasks, the Session tree, the Diff pane, the Live View, later Terminals) is a column to the right of the chat from `md` up, 384 px until dragged (288–720 px, kept per device), and takes the whole screen on a phone. The Session header reaches it through one icon button at its right end (`PanelRightOpen`/`PanelRightClose`), never a button per Pane type: an empty area opens on the New pane, which lists the Pane types to open.
+Pages and the transcript sit in a centered column capped at `max-w-3xl` (768 px) with 16 px side padding and 24 px top and bottom. Headers are a single row, 16 px horizontal and 10 px vertical padding, over a bottom border. The Pane area (Tasks, the Session tree, the Diff pane, the Live View, later Terminals) is a column to the right of the chat from `md` up, 384 px until dragged (from 288 px to 2,400 px, leaving the chat at least 320 px, kept per device; so the Diff pane's 900 px rail is in reach on a wide screen), and takes the whole screen on a phone. The Session header reaches it through one icon button at its right end (`PanelRightOpen`/`PanelRightClose`), never a button per Pane type: an empty area opens on the New pane, which lists the Pane types to open.
 
 Spacing is a 4 px grid: 8 px between related controls, 12–16 px between groups inside a card, 24 px between page sections. Lists are tight (2 px between items, 8 × 12 px item padding).
 
@@ -298,7 +298,7 @@ A header of two rows over a Ruled Line: the source picker (a 32 px native select
 
 ### Changes Chip
 
-In the Session header, before the Session details button, only while there are Changes: a ghost 32 px button with a 14 px file-diff icon, `n files` in 12 px Ink and `+a −d` in 12 px mono ("≈" before approximate counts in Faded Ink). On a phone it drops `n files` and keeps the icon and the counts. Its label reads the totals in words. The Session details' Changes section repeats it as a list: a 12 px Faded Ink heading "Changes" with _Open pane_, the totals as a row that washes on hover, each repo's totals in 12 px under it when there are several, then up to 10 files as rows (status letter, path in 12 px mono, counts) and "and n more" in 12 px Faded Ink.
+In the Session header, before the Session details button, only while there are Changes: a ghost 32 px button with a 14 px file-diff icon, `n files` in 12 px Ink and `+a −d` in 12 px mono ("≈" before approximate counts in Faded Ink). On a phone it drops `n files` and keeps the icon and the counts. Its label reads the totals in words. The Session details' Changes section repeats it as a list: a 12 px Faded Ink heading "Changes" with _Open pane_, the totals as a 14 px row that washes on hover, each repo's totals in 12 px under it when there are several, then up to 10 files as rows (status letter, path in 12 px mono, counts) and "and n more" in 12 px Faded Ink.
 
 ### Waiting-On-You Card
 
