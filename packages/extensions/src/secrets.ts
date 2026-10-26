@@ -24,6 +24,8 @@ export {
   type AskOutcome,
   type ForgetOutcome,
   type HeldSecret,
+  type KeepRequest,
+  type KeepResult,
   SECRET_LIFETIME_MS,
   SecretAsk,
   Secrets,

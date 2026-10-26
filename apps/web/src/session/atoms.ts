@@ -1,7 +1,12 @@
 // A Session's socket as atoms (ADR-0011): one `SessionClient` per Session, its state, narrow slices of that state (a
 // card that reads the task graph does not render for every token the root streams), and the commands.
 
-import { sessionSocketPath, type BrowserHandoffRequest, type WhenBusy } from "@cloudpid/protocol";
+import {
+  sessionSocketPath,
+  type BrowserHandoffRequest,
+  type SecretKeep,
+  type WhenBusy,
+} from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
@@ -193,19 +198,20 @@ export const abortAtom = Atom.family((sessionId: string) =>
   ),
 );
 
-/** The owner's answer to a Secret request: the values typed, or null when cancelled. */
+/** The owner's answer to a Secret request: the values typed, or null when cancelled, and what to do with them. */
 export interface SecretAnswer {
   readonly request: string;
   readonly values: Readonly<Record<string, string>> | null;
+  readonly keep?: SecretKeep;
 }
 
 /** Answer one of Session `sessionId`'s Secret requests. */
 export const answerSecretsAtom = Atom.family((sessionId: string) =>
   appRuntime.fn(
-    ({ request, values }: SecretAnswer, get) =>
+    ({ request, values, keep }: SecretAnswer, get) =>
       get
         .result(sessionClientAtom(sessionId))
-        .pipe(Effect.flatMap((client) => client.answerSecrets(request, values))),
+        .pipe(Effect.flatMap((client) => client.answerSecrets(request, values, keep))),
     { concurrent: true },
   ),
 );

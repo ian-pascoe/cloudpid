@@ -1228,6 +1228,57 @@ describe("the Agent changes", () => {
     }),
   );
 
+  it.effect(
+    "of the Secrets kept for every Environment load by the scope *, and a revert loads the Secrets again",
+    () =>
+      Effect.gen(function* () {
+        const asked: string[] = [];
+        let build = true;
+        let secretsAsked = 0;
+
+        const registry = registryWith({
+          listAgentChanges: ({ environment }) =>
+            Effect.sync(() => {
+              asked.push(environment);
+
+              return [];
+            }),
+          revertAgentChange: () =>
+            Effect.sync(() => {
+              build = false;
+
+              return { ...change(2), actor: "owner" as const, reverts: 1 };
+            }),
+          listEnvironmentSecrets: () =>
+            Effect.sync(() => {
+              secretsAsked += 1;
+
+              return [{ environment: null, name: "NPM_TOKEN", build, updatedAt: 1 }];
+            }),
+          listBuilds: () => Effect.succeed([]),
+        });
+
+        registry.mount(agentChangesAtom(EVERY_ENVIRONMENT));
+        registry.mount(environmentSecretsAtom);
+        yield* settled(registry, agentChangesAtom(EVERY_ENVIRONMENT));
+        expect(asked).toEqual(["*"]);
+        expect(AsyncResult.getOrThrow(yield* settled(registry, environmentSecretsAtom))).toEqual([
+          { environment: null, name: "NPM_TOKEN", build: true, updatedAt: 1 },
+        ]);
+
+        registry.mount(revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        registry.set(revertAgentChangeAtom(EVERY_ENVIRONMENT), 1);
+        yield* settled(registry, revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        yield* settled(registry, environmentSecretsAtom);
+
+        expect(secretsAsked).toBe(2);
+        expect(AsyncResult.getOrThrow(registry.get(environmentSecretsAtom))).toEqual([
+          { environment: null, name: "NPM_TOKEN", build: false, updatedAt: 1 },
+        ]);
+        registry.dispose();
+      }),
+  );
+
   it.effect("say why a revert was refused", () =>
     Effect.gen(function* () {
       const registry = registryWith({

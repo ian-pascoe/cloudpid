@@ -11,6 +11,7 @@ import type {
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { SecretKeep } from "./environment-secrets.ts";
 
 /**
  * The text the client sends to keep the socket alive, and the server's answer. The object answers it without waking,
@@ -122,14 +123,16 @@ export const Configure = Schema.Struct({
 
 /**
  * The owner's answer to Secret request `request` (`secret_requests`), entered in a masked form: a value per name, where
- * a missing or empty one skips that name, or `null` when the owner cancelled. Answered with `null`; fails when no such
- * request waits or a name was not requested.
+ * a missing or empty one skips that name, or `null` when the owner cancelled. `keep` is where the owner chose to keep
+ * the values (this Session only when it is left out). Answered with `null`; fails when no such request waits or a name
+ * was not requested.
  */
 export const SecretAnswer = Schema.Struct({
   type: Schema.Literal("secret_answer"),
   id: CommandId,
   request: Schema.String,
   values: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
+  keep: Schema.optionalKey(SecretKeep),
 });
 
 /**
@@ -425,6 +428,8 @@ export const SecretRequest = Schema.Struct({
   names: Schema.Array(Schema.String),
   /** Why the agent needs them. */
   reason: Schema.optionalKey(Schema.String),
+  /** Where the agent suggests keeping them: the choice the form starts with. The owner's choice is final. */
+  keep: Schema.optionalKey(SecretKeep),
 });
 
 export type SecretRequest = typeof SecretRequest.Type;

@@ -3,6 +3,7 @@ import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentRepo,
   type EnvironmentSecretRecord,
+  EVERY_ENVIRONMENT_SCOPE,
   ForkKind,
   MAX_ENVIRONMENT_SECRETS,
   type SessionOrigin,
@@ -143,7 +144,7 @@ export type StoredEnvironmentSecret = EnvironmentSecretRecord & { readonly seale
 export type SecretPut = EnvironmentSecretRecord | "missing" | "full";
 
 /** The scope column of the Secrets kept for every Environment; no Environment id can be it. */
-export const EVERY_ENVIRONMENT_SCOPE = "*";
+export { EVERY_ENVIRONMENT_SCOPE };
 
 /** Something left from before Environments (ADR-0016) whose Durable Object is still to be wiped. */
 export type LegacyObject = { readonly kind: "session" | "machine"; readonly id: string };

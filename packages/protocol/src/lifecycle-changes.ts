@@ -2,6 +2,7 @@
 // its name, its Repos, its creation and the Builds it asks for. Besides the Container settings (`variableField` and
 // the setting names), these are the `field`s of an Agent change. Shared by the server (which writes and reverts them)
 // and the web app (which labels them and offers a revert only where there is one).
+import { fieldSecret } from "./environment-secrets.ts";
 import { MAX_ENVIRONMENT_NAME_LENGTH } from "./registry.ts";
 
 /** The field of a change that renamed the Environment: the name before and after, as text. */
@@ -28,9 +29,13 @@ export const repoField = (name: string): string => `${REPO_FIELD}${name}`;
 export const fieldRepo = (field: string): string | null =>
   field.startsWith(REPO_FIELD) ? field.slice(REPO_FIELD.length) : null;
 
-/** Whether an Agent change's field has no revert: the creation of an Environment, and a Build asked for. */
+/**
+ * Whether an Agent change's field has no revert: the creation of an Environment, a Build asked for, and a Secret kept
+ * (the history holds no value to bring back; deleting a kept Secret needs the owner's Approval). A Secret's Build mark
+ * is reverted.
+ */
 export const unrevertableField = (field: string): boolean =>
-  field === CREATED_FIELD || field === BUILD_FIELD;
+  field === CREATED_FIELD || field === BUILD_FIELD || fieldSecret(field)?.kind === "kept";
 
 /**
  * Why `text` cannot be an Environment's name, or undefined when it can: after trimming, neither empty nor longer than

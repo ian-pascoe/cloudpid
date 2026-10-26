@@ -3,6 +3,7 @@
 import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type { EnvironmentsService } from "@cloudpid/extensions/environment";
+import type { SecretMarks } from "@cloudpid/extensions/environment";
 import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -14,12 +15,13 @@ const DEFAULT = { id: "default", name: "Default" } as const;
 const unused = () => Effect.die("the test Environments make no lifecycle change");
 
 /** Lifecycle operations that die when called, for Environments that make no such change. */
-export const unusedLifecycle: EnvironmentLifecycle = {
+export const unusedLifecycle: EnvironmentLifecycle & SecretMarks = {
   create: unused,
   rename: unused,
   addRepo: unused,
   removeRepo: unused,
   rebuild: unused,
+  markSecret: unused,
 };
 
 export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {

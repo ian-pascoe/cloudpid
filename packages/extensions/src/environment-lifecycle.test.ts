@@ -21,6 +21,7 @@ import {
   type RunChange,
 } from "./environment.ts";
 import { fakeLifecycle } from "./environment-lifecycle.fixture.ts";
+import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
@@ -43,6 +44,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
 
   const environments: EnvironmentsService = {
     ...lifecycle.service,
+    ...unusedSecretMarks,
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),

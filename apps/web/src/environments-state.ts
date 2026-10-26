@@ -344,7 +344,13 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
         registry("revertAgentChange", { environment: id, change }),
       ).pipe(
         Effect.asVoid,
-        changing([`agent-changes:${id}`, `environment-settings:${id}`, "builds", "environments"]),
+        changing([
+          `agent-changes:${id}`,
+          `environment-settings:${id}`,
+          "environment-secrets",
+          "builds",
+          "environments",
+        ]),
       ),
     { concurrent: true },
   ),
@@ -425,11 +431,12 @@ export const environmentDraftAtom = Atom.family((id: string) =>
 
 /**
  * Every kept Secret, of every Environment and for every Environment: names, scopes and build flags, never a value. A
- * section of the page is keyed by the Environment's id, or by `EVERY_ENVIRONMENT`.
+ * section of the page is keyed by the Environment's id, or by `EVERY_ENVIRONMENT`. Asked again every few seconds while the
+ * page is visible: a Session's agent keeps a Secret or marks one for the Build, which the page hears of no other way.
  */
 export const environmentSecretsAtom = RegistryClient.query("listEnvironmentSecrets", undefined, {
   reactivityKeys: ["environment-secrets"],
-});
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
 
 /** Why the Secrets could not load, or null. */
 export const environmentSecretsErrorAtom = Atom.map(environmentSecretsAtom, failureOf);

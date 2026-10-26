@@ -58,3 +58,46 @@ export const EnvironmentSecretRecord = Schema.Struct({
 });
 
 export type EnvironmentSecretRecord = typeof EnvironmentSecretRecord.Type;
+
+/**
+ * Where the owner keeps the Secrets a `secret_ask` form gets (`docs/spec.md` â Secrets): `session` holds them for this
+ * Session for the usual 15 minutes, `environment` keeps them for the Session's Environment and `all` for every
+ * Environment, as the Environments page does. The agent's `keep` only pre-selects one; the owner's choice is final.
+ */
+export const SecretKeep = Schema.Literals(["session", "environment", "all"]);
+
+export type SecretKeep = typeof SecretKeep.Type;
+
+const KEPT_SECRET_FIELD = "secrets.";
+
+const BUILD_MARK_SUFFIX = ".build";
+
+/**
+ * The field of the Agent change that records a Secret kept, by its name only: `secrets.<NAME>`, `kept` after it, and
+ * before it `kept` where the scope kept one of the name already (its value replaced), else none. There is no revert: the
+ * history holds no value to bring back.
+ */
+export const keptSecretField = (name: string): string => `${KEPT_SECRET_FIELD}${name}`;
+
+/** The field of the Agent change of a kept Secret's Build mark: `secrets.<NAME>.build`, with a boolean before and after. */
+export const secretBuildField = (name: string): string =>
+  `${KEPT_SECRET_FIELD}${name}${BUILD_MARK_SUFFIX}`;
+
+/** What a kept Secret's change holds, before (where it was kept already) and after. */
+export const KEPT_SECRET = "kept";
+
+/**
+ * The kept Secret an Agent change's field names, and whether it records the Secret kept (`kept`) or its Build mark
+ * changed (`build`); null for another field. A Secret Name holds no dot, so the two never mix.
+ */
+export const fieldSecret = (
+  field: string,
+): { readonly name: string; readonly kind: "kept" | "build" } | null => {
+  if (!field.startsWith(KEPT_SECRET_FIELD)) return null;
+
+  const rest = field.slice(KEPT_SECRET_FIELD.length);
+
+  return rest.endsWith(BUILD_MARK_SUFFIX)
+    ? { name: rest.slice(0, -BUILD_MARK_SUFFIX.length), kind: "build" }
+    : { name: rest, kind: "kept" };
+};

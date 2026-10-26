@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import type { SecretBuildMark } from "../registry/secret-changes.ts";
 import { unusedLifecycle } from "./environments.fixture.ts";
 import { type EnvironmentsRegistry, sessionEnvironments } from "./environments.ts";
 import { workspacePlacement } from "./workspace.ts";
@@ -31,6 +32,9 @@ const CHANGE: AgentChange = {
   revertedBy: null,
 };
 
+/** What the fake Registry answers a mark with. */
+type MarkAnswers = { mark: SecretBuildMark };
+
 const open = (
   answer: Effect.Success<
     ReturnType<EnvironmentsRegistry["changeEnvironment"]>
@@ -39,6 +43,16 @@ const open = (
   const handedOver: Array<{ object: string; overrides: Schema.Json }> = [];
   const upkept: string[] = [];
   const asked: unknown[] = [];
+  const markAsked: unknown[] = [];
+
+  // The mark the fake Registry answers.
+  const answers: MarkAnswers = {
+    mark: {
+      status: "changed",
+      environment: { id: "default", name: "Default" },
+      change: { ...CHANGE, field: "secrets.API_KEY.build", before: true, after: false },
+    },
+  };
 
   // SAFETY: the calls these tests make are answered; the rest are never reached.
   const registry = {
@@ -71,6 +85,12 @@ const open = (
         repos: [],
         directory: "/workspace",
         createdAt: 0,
+      }),
+    agentMarkSecretBuild: (input: Parameters<EnvironmentsRegistry["agentMarkSecretBuild"]>[0]) =>
+      Effect.sync(() => {
+        markAsked.push(input);
+
+        return answers.mark;
       }),
     changeEnvironment: (input: Parameters<EnvironmentsRegistry["changeEnvironment"]>[0]) =>
       Effect.sync(() => {
@@ -115,7 +135,16 @@ const open = (
     lifecycle: unusedLifecycle,
   });
 
-  return { environments, handedOver, upkept, asked };
+  return {
+    environments,
+    handedOver,
+    upkept,
+    asked,
+    markAsked,
+    setMark: (next: SecretBuildMark) => {
+      answers.mark = next;
+    },
+  };
 };
 
 const author = { conversation: 1, tool: "environment_variable_set", reason: "r" };
@@ -170,6 +199,67 @@ describe("the Session's Environments", () => {
 
     expect(handedOver).toEqual([]);
     expect(upkept).toEqual(["0000abcd"]);
+  });
+
+  it("mark a kept Secret for the Build, with the Session as the author, and keep the Environment's Build current", async () => {
+    const { environments, upkept, markAsked } = open();
+
+    const marked = await Effect.runPromise(
+      environments.markSecret({
+        environment: "default",
+        name: "API_KEY",
+        build: false,
+        author: { conversation: 1, tool: "environment_secret_build", reason: "r" },
+      }),
+    );
+
+    expect(marked).toMatchObject({ status: "changed", change: { field: "secrets.API_KEY.build" } });
+    expect(markAsked).toEqual([
+      {
+        environment: "default",
+        name: "API_KEY",
+        build: false,
+        author: { session: "s-1", conversation: 1, tool: "environment_secret_build", reason: "r" },
+      },
+    ]);
+    expect(upkept).toEqual(["default"]);
+  });
+
+  it("keep every Environment's Build current after the mark of a Secret kept for every Environment", async () => {
+    const { environments, upkept } = open();
+
+    await Effect.runPromise(
+      environments.markSecret({
+        environment: "*",
+        name: "NPM_TOKEN",
+        build: true,
+        author: { conversation: 1, tool: "environment_secret_build", reason: "r" },
+      }),
+    );
+
+    expect(upkept).toEqual(["default", "0000abcd"]);
+  });
+
+  it("run no upkeep after a mark that changed nothing", async () => {
+    const { environments, upkept, setMark } = open();
+
+    setMark({
+      status: "unchanged",
+      environment: { id: "default", name: "Default" },
+      build: true,
+    });
+
+    const marked = await Effect.runPromise(
+      environments.markSecret({
+        environment: "default",
+        name: "API_KEY",
+        build: true,
+        author: { conversation: 1, tool: "environment_secret_build", reason: "r" },
+      }),
+    );
+
+    expect(marked.status).toBe("unchanged");
+    expect(upkept).toEqual([]);
   });
 
   it("do nothing after a change that changed nothing or was refused", async () => {

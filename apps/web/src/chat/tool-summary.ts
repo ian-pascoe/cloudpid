@@ -175,6 +175,7 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
         return lifecycle(toolName, args);
       case "environment_variable_set":
       case "environment_variable_unset":
+      case "environment_secret_build":
         return variable(args);
       case "environment_container_resize":
         return inEnvironment(args, resize(args));

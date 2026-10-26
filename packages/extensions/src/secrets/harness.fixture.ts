@@ -42,7 +42,15 @@ import { codingToolsWith } from "../coding-tools.ts";
 import { secretsExtension } from "./extension.ts";
 import { scrubbingModels } from "./models.ts";
 import type { KeptSecret } from "./kept.ts";
-import { type SecretAsk, Secrets, secretsLayer, type SecretStorage } from "./store.ts";
+import type { SecretKeep } from "@cloudpid/protocol";
+import {
+  type KeepRequest,
+  type KeepResult,
+  type SecretAsk,
+  Secrets,
+  secretsLayer,
+  type SecretStorage,
+} from "./store.ts";
 import { openVault } from "./vault.ts";
 
 export const context = BACKGROUND_CONTEXT;
@@ -164,7 +172,10 @@ export const openSecretsHarness = async (
   beside: readonly Extension[] = [],
   /** The Secrets kept for the Session's Environment, as the Registry would hand them. */
   kept?: ReadonlyArray<KeptSecret>,
+  /** What keeps the Secrets the owner chooses to keep: it may change `registry.secrets`, which `kept` reads. */
+  keep?: (request: KeepRequest, registry: { secrets: KeptSecret[] }) => ReadonlyArray<KeepResult>,
 ) => {
+  const registry = { secrets: [...(kept ?? [])] };
   const runtime = ManagedRuntime.make(TestClock.layer());
   const execs: Exec[] = [];
   const recorded: JsonObject[] = [];
@@ -194,7 +205,11 @@ export const openSecretsHarness = async (
             Effect.sync(() => {
               announced.push(asks);
             }),
-          kept: kept === undefined ? undefined : Effect.succeed(kept),
+          kept: kept === undefined ? undefined : Effect.sync(() => registry.secrets),
+          keep:
+            keep === undefined
+              ? undefined
+              : (request) => Effect.sync(() => keep(request, registry)),
         }),
       );
     }),
@@ -213,7 +228,7 @@ export const openSecretsHarness = async (
   const [program, secretsExt] = extensions;
   const faux = fauxProvider();
   const models = createModels();
-  const registry = createRegistry();
+  const tools = createRegistry();
   let script: AssistantMessage[] = [];
 
   models.setProvider(faux.provider);
@@ -227,17 +242,17 @@ export const openSecretsHarness = async (
       return script.shift() ?? answer("done");
     }),
   );
-  registry.install(coding);
-  registry.install(resolving);
-  registry.install(defineExtension({ name: "program", tools: [program] }));
+  tools.install(coding);
+  tools.install(resolving);
+  tools.install(defineExtension({ name: "program", tools: [program] }));
 
-  for (const extension of beside) registry.install(extension);
+  for (const extension of beside) tools.install(extension);
 
-  registry.install(secretsExt);
+  tools.install(secretsExt);
 
   const harness = await Harness.open(
     new MemoryStorage(),
-    { models: scrubbed, registry, env: () => asEnv(new FakeEnv(execs)) },
+    { models: scrubbed, registry: tools, env: () => asEnv(new FakeEnv(execs)) },
     context,
   );
 
@@ -263,7 +278,7 @@ export const openSecretsHarness = async (
   };
 
   /** Wait for an ask, and answer it as the owner does in the masked form. */
-  const enter = async (values: Readonly<Record<string, string>> | null) => {
+  const enter = async (values: Readonly<Record<string, string>> | null, choice?: SecretKeep) => {
     await until(
       async () => (await runtime.runPromise(secrets.pending)).length > 0,
       "a Secret request",
@@ -271,7 +286,7 @@ export const openSecretsHarness = async (
 
     const [ask] = await runtime.runPromise(secrets.pending);
 
-    await runtime.runPromise(secrets.answer(ask!.id, values));
+    await runtime.runPromise(secrets.answer(ask!.id, values, choice));
 
     return ask!;
   };
@@ -308,6 +323,7 @@ export const openSecretsHarness = async (
   return {
     prompt,
     enter,
+    registry,
     hold,
     transcript,
     lastResult,

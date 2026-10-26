@@ -419,8 +419,9 @@ describe("a Session connection", () => {
         yield* watching(latest());
         yield* client.answerSecrets("12", { API_KEY: "value-typed-in" });
         yield* client.answerSecrets("12", null);
+        yield* client.answerSecrets("12", { API_KEY: "value-typed-in" }, "all");
 
-        expect(latest().commands().slice(-2)).toEqual([
+        expect(latest().commands().slice(-3)).toEqual([
           {
             type: "secret_answer",
             id: expect.any(String),
@@ -428,6 +429,13 @@ describe("a Session connection", () => {
             values: { API_KEY: "value-typed-in" },
           },
           { type: "secret_answer", id: expect.any(String), request: "12", values: null },
+          {
+            type: "secret_answer",
+            id: expect.any(String),
+            request: "12",
+            values: { API_KEY: "value-typed-in" },
+            keep: "all",
+          },
         ]);
       }),
     );

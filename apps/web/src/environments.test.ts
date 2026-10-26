@@ -396,6 +396,8 @@ describe("an Agent change", () => {
     expect(changeFieldText("variables.API_URL")).toBe("Variable API_URL");
     expect(changeFieldText("idleMinutes")).toBe("idleMinutes");
     expect(changeFieldText("name")).toBe("Name");
+    expect(changeFieldText("secrets.API_KEY")).toBe("Secret API_KEY");
+    expect(changeFieldText("secrets.API_KEY.build")).toBe("Secret API_KEY, for the Build");
     expect(changeFieldText("repos.api")).toBe("Repo api");
     expect(changeFieldText("environment")).toBe("Creation");
     expect(changeFieldText("build")).toBe("Build");
@@ -406,6 +408,11 @@ describe("an Agent change", () => {
     expect(revertible({ ...change, field: "build" })).toBe(false);
     expect(revertible({ ...change, field: "name" })).toBe(true);
     expect(revertible({ ...change, field: "repos.api" })).toBe(true);
+  });
+
+  it("can revert a Secret's Build mark, but not a Secret kept, which holds no value to bring back", () => {
+    expect(revertible({ ...change, field: "secrets.API_KEY.build" })).toBe(true);
+    expect(revertible({ ...change, field: "secrets.API_KEY" })).toBe(false);
   });
 
   it("says who made it and when, and can be reverted while it is the agent's and not reverted yet", () => {

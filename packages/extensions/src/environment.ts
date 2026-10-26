@@ -2,7 +2,7 @@
 // `environment_list`, `environment_get`, `environment_variable_set` and `environment_variable_unset`, and one tool for each
 // of the other Container settings (`environment_container_resize`, `environment_idle_time_set`,
 // `environment_setup_script_set`, `environment_start_script_set`, `environment_toolchains_set` and
-// `environment_ignore_set`). Each change is an
+// `environment_ignore_set`), and `environment_secret_build` for the Build mark of a kept Secret. Each change is an
 // Agent change: the Registry applies it as the owner's save is applied and records it, the Session hands a change to its
 // own Environment to its Workspace at once, and the Run's end notifies the owner of the changes it made
 // (`AgentChangeLog`). They are the root conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values
@@ -39,9 +39,17 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { SIZE_LINES } from "./container.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
+import { type SecretMarks, secretMarkTools } from "./environment-secret-marks.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
+
+export {
+  EVERY_ENVIRONMENT_ID,
+  EVERY_ENVIRONMENT_NAME,
+  type SecretMarked,
+  type SecretMarks,
+} from "./environment-secret-marks.ts";
 
 export const extensionName = "environment";
 
@@ -134,7 +142,8 @@ export type EnvironmentsService = {
     readonly change: SettingChange;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<AppliedChange, EnvironmentsError>;
-} & EnvironmentLifecycle;
+} & EnvironmentLifecycle &
+  SecretMarks;
 
 export class Environments extends Context.Service<Environments, EnvironmentsService>()(
   "@cloudpid/extensions/environment/Environments",
@@ -911,6 +920,7 @@ export const EnvironmentTools: Effect.Effect<
     });
 
   const lifecycle = yield* lifecycleTools({ environments, log, refuseSecrets, target, notFound });
+  const secretMarks = yield* secretMarkTools({ environments, log, refuseSecrets, target });
 
   return defineExtension({
     name: extensionName,
@@ -926,6 +936,7 @@ export const EnvironmentTools: Effect.Effect<
       toolchains,
       ignore,
       ...lifecycle,
+      ...secretMarks,
     ],
   });
 });

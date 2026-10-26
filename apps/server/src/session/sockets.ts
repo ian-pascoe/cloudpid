@@ -457,7 +457,9 @@ export const sessionSocketsLayer = (
           case "unwatch_usage":
             return unwatchUsage(socket).pipe(Effect.as(null));
           case "secret_answer":
-            return secrets.answer(message.request, message.values).pipe(Effect.as(null));
+            return secrets
+              .answer(message.request, message.values, message.keep)
+              .pipe(Effect.as(null));
         }
       };
 

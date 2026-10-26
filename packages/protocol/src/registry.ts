@@ -41,6 +41,18 @@ export const EnvironmentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z
 export const SecretScope = Schema.NullOr(EnvironmentId);
 
 /**
+ * The scope of the Agent changes of the Secrets kept for every Environment (`docs/spec.md` → Agent changes), where an
+ * Environment's are kept under its id. No Environment id can be it.
+ */
+export const EVERY_ENVIRONMENT_SCOPE = "*";
+
+/** Whose Agent changes `listAgentChanges` lists and `revertAgentChange` reverts: an Environment's, or those of every Environment. */
+export const AgentChangeScope = Schema.Union([
+  EnvironmentId,
+  Schema.Literal(EVERY_ENVIRONMENT_SCOPE),
+]);
+
+/**
  * The Environment a Session is made in when it names none: it is there from the start, has no Repos until the owner
  * adds some, and cannot be deleted.
  */
@@ -506,7 +518,7 @@ export class RegistryRpcs extends RpcGroup.make(
    * owner's reverts among them.
    */
   Rpc.make("listAgentChanges", {
-    payload: { environment: EnvironmentId },
+    payload: { environment: AgentChangeScope },
     success: Schema.Array(AgentChange),
     error: EnvironmentError,
   }),
@@ -516,7 +528,7 @@ export class RegistryRpcs extends RpcGroup.make(
    * change that is the owner's own revert. Each Workspace applies it at its next Container start, as any save.
    */
   Rpc.make("revertAgentChange", {
-    payload: { environment: EnvironmentId, change: Schema.Finite },
+    payload: { environment: AgentChangeScope, change: Schema.Finite },
     success: AgentChange,
     error: EnvironmentError,
   }),
