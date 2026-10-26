@@ -19,7 +19,16 @@ import {
   type LiveViewLinks,
   makeBrowserSession,
 } from "@cloudpid/extensions/browser";
+import {
+  type AgentChangeLog,
+  DeployCredentials,
+  Environments,
+  EnvironmentTools,
+} from "@cloudpid/extensions/environment";
+import { ApprovalTools, EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import { Approvals } from "@cloudpid/extensions/approvals";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
+import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/extensions/settings";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
 import type {
@@ -65,10 +74,14 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
+import type { SettingsChange } from "../registry/settings-changes.ts";
+import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
+import { sessionApprovalsLayer } from "./approvals.ts";
 import {
   reloadSessionExtensions,
   SessionSettings,
@@ -256,16 +269,29 @@ const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef"
 export class TestSession extends DurableObject {
   /**
    * The extensions this Session runs with, installed before any work resumes: `echo`, which uses Secrets, the secret
-   * tools, the browser tools over a test browser host, and `todo`; and, for a Session whose name starts with
-   * `tool-search-`, `tool_search` over the Registry's offered tools, which is installed again when they change.
+   * tools, the browser tools over a test browser host, and `todo`; for a Session whose name starts with
+   * `environment-`, the `environment_*` tools over `testEnvironments`; for one whose name starts with `settings-`,
+   * the `settings_*` tools and those that wait for Approval over the test Registry's Settings; and, for one whose name
+   * starts with `tool-search-`, `tool_search` over the Registry's offered tools, which is installed again when they
+   * change.
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | SessionSettings
+    | Harness
+    | Secrets
+    | BrowserHandoffs
+    | SessionSettings
+    | AgentChangeLog
+    | SettingsReload
+    | Approvals
   > {
     const { kv } = this.ctx.storage;
     const searching = this.#searching();
+    const changing = this.ctx.id.name?.startsWith("environment-") === true;
+    const configuring = this.ctx.id.name?.startsWith("settings-") === true;
+    const settingsRegistry = this.#settingsRegistry();
+    const session = this.ctx.id.name;
 
     return Effect.gen(function* () {
       const tool = yield* Echo;
@@ -277,7 +303,44 @@ export class TestSession extends DurableObject {
         Effect.provideService(BrowserSession, makeBrowserSession({ host, storage: kv })),
       );
 
-      const extensions = [echo, yield* secretsExtension([tool]), browser, yield* Todo];
+      const environment = changing
+        ? [
+            yield* EnvironmentTools.pipe(
+              Effect.provideService(Environments, testEnvironments(kv)),
+              Effect.provideService(DeployCredentials, { values: [] }),
+            ),
+          ]
+        : [];
+
+      const settings = configuring
+        ? [
+            yield* SettingsTools.pipe(
+              Effect.provideService(
+                SettingsAccess,
+                sessionSettingsAccess({ registry: settingsRegistry, session }),
+              ),
+              Effect.provideService(DeployCredentials, { values: [] }),
+            ),
+            yield* ApprovalTools.pipe(
+              Effect.provideService(
+                SettingsAccess,
+                sessionSettingsAccess({ registry: settingsRegistry, session }),
+              ),
+              Effect.provideService(Environments, testEnvironments(kv)),
+              Effect.provideService(EnvironmentRemoval, unusedRemoval),
+              Effect.provideService(DeployCredentials, { values: [] }),
+            ),
+          ]
+        : [];
+
+      const extensions = [
+        echo,
+        ...environment,
+        ...settings,
+        yield* secretsExtension([tool]),
+        browser,
+        yield* Todo,
+      ];
 
       if (!searching) return extensions;
 
@@ -355,8 +418,13 @@ export class TestSession extends DurableObject {
                 ctx.storage.kv.get<string>("reportMode") === "hanging" ? "200 millis" : "5 seconds",
               wakeAt: Effect.flatMap(Effect.service(Secrets), (held) => held.nextExpiry),
               onIdle: Effect.flatMap(
-                Effect.all([Effect.service(Secrets), Effect.service(BrowserHandoffs)]),
-                ([held, handoffs]) => Effect.all([held.dropAbandoned, handoffs.dropAbandoned]),
+                Effect.all([
+                  Effect.service(Secrets),
+                  Effect.service(BrowserHandoffs),
+                  Effect.service(Approvals),
+                ]),
+                ([held, handoffs, approvals]) =>
+                  Effect.all([held.dropAbandoned, handoffs.dropAbandoned, approvals.dropAbandoned]),
               ),
             }).pipe(
               Layer.provide(
@@ -416,6 +484,13 @@ export class TestSession extends DurableObject {
                 ),
               ),
             ),
+          ),
+          Layer.provideMerge(
+            sessionApprovalsLayer({
+              storage: ctx.storage.kv,
+              sockets: ctx,
+              notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
+            }),
           ),
           Layer.provideMerge(
             sessionSecretsLayer({
@@ -874,6 +949,11 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("settingsMode", mode);
   }
 
+  /** Script subagent `agent`'s responses apart from the Run's, which it takes otherwise. */
+  agentScript(agent: string, responses: readonly string[]): void {
+    this.ctx.storage.kv.put(`script:${agent}`, { responses, next: 0 } satisfies Script);
+  }
+
   script(responses: readonly string[]): void {
     this.ctx.storage.kv.put("script", { responses, next: 0 } satisfies Script);
   }
@@ -966,6 +1046,27 @@ export class TestSession extends DurableObject {
   /** This object's storage, as JSON, to check that no Secret value is in it. */
   storageDump(): string {
     return JSON.stringify([...this.ctx.storage.kv.list()]);
+  }
+
+  /** The Registry's Settings as the `settings_*` tools reach them: the test Registry the Session reports to. */
+  #settingsRegistry(): SettingsRegistry {
+    const registry = () => {
+      const name = this.ctx.storage.kv.get<string>("registry");
+
+      if (name === undefined) throw new Error("No Registry is set");
+
+      return this.env.REGISTRIES.getByName(name);
+    };
+
+    return {
+      getSettings: () => Effect.promise(() => registry().getSettings()),
+      changeSettings: ({ changes, author }) =>
+        Effect.promise(
+          // SAFETY: the stub's RPC result is the plain data the test Registry returned.
+          async () =>
+            (await registry().changeSettings(changes, author, Date.now())) as SettingsChange,
+        ),
+    };
   }
 
   /** The Registry's saved settings overrides; none while no Registry is set. */
@@ -1094,10 +1195,20 @@ export class TestSession extends DurableObject {
         { model: model.id, thinking: options?.reasoning } satisfies TestRequest,
       ]);
 
-      const script = this.ctx.storage.kv.get<Script>("script") ?? { responses: [], next: 0 };
+      // A subagent names itself in its instructions; one given a script of its own (`agentScript`) follows that one.
+      const agent = Object.values(sections)
+        .map((section) => /You are subagent `([^`]+)`/.exec(section)?.[1])
+        .find((found) => found !== undefined);
+
+      const key =
+        agent !== undefined && kv.get<Script>(`script:${agent}`) !== undefined
+          ? `script:${agent}`
+          : "script";
+
+      const script = this.ctx.storage.kv.get<Script>(key) ?? { responses: [], next: 0 };
       const text = script.responses[script.next] ?? "unscripted";
 
-      this.ctx.storage.kv.put("script", { ...script, next: script.next + 1 });
+      this.ctx.storage.kv.put(key, { ...script, next: script.next + 1 });
 
       if (text.startsWith("gate:")) {
         this.gated.resolve();

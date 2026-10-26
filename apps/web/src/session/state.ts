@@ -3,6 +3,7 @@
 
 import {
   EMPTY_VIEW,
+  type ApprovalRequest,
   type BrowserHandoffRequest,
   type ClientMessage,
   type SecretRequest,
@@ -99,6 +100,8 @@ export interface SessionState {
   readonly secretRequests: readonly SecretRequest[];
   /** How long an entered Secret is held, as the Session says. */
   readonly secretLifetimeMinutes: number;
+  /** Agent changes waiting for the owner's Approval, each shown as a card with Approve and Decline, oldest first. */
+  readonly approvalRequests: readonly ApprovalRequest[];
   /**
    * Browser Handoffs waiting for the owner; a Live View Pane mints its own links for one (`liveView`). Null until this
    * socket has listed them: a Pane closes for a handoff missing from a list it was sent, not from one not sent yet.
@@ -133,6 +136,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   failure: null,
   secretRequests: [],
   secretLifetimeMinutes: 15,
+  approvalRequests: [],
   browserHandoffRequests: null,
   threads: {},
   taskGraph: null,

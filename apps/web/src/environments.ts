@@ -5,12 +5,22 @@
 // shows of a Build and a Secret.
 
 import {
+  type AgentChange,
   type BuildView,
   branchProblem,
+  BUILD_FIELD,
+  CREATED_FIELD,
+  EVERY_ENVIRONMENT_SCOPE,
+  DELETED_FIELD,
   type EnvironmentSecretRecord,
+  fieldRepo,
+  fieldSecret,
+  fieldVariable,
+  NAME_FIELD,
   MAX_ENVIRONMENT_NAME_LENGTH,
   MAX_REPO_NAME_LENGTH,
   parseRepoSource,
+  unrevertableField,
   REPO_NAME,
   secretNameProblem,
   secretValueProblem,
@@ -29,6 +39,8 @@ import {
   toolchainsProblem,
   variableNameProblem,
 } from "@cloudpid/config";
+import * as Arr from "effect/Array";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import { relativeTime } from "./format.ts";
@@ -142,9 +154,17 @@ export const repoNameProblem = (text: string): string | null => {
     : "Use letters, digits, dots, underscores and dashes, starting with a letter or digit";
 };
 
+/** `type`'s line in a list of sizes: its name and what it offers, marked when it is `byDefault`. */
+const sizeLine = (type: InstanceType, byDefault: InstanceType): string =>
+  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === byDefault ? " (default)" : ""}`;
+
 /** An instance type's line in the Edit dialog's size list: its name and what it offers, the default marked as such. */
 export const instanceLabel = (type: InstanceType): string =>
-  `${type}: ${INSTANCE_DESCRIPTIONS[type]}${type === DEFAULT_CONTAINER_SETTINGS.instance ? " (default)" : ""}`;
+  sizeLine(type, DEFAULT_CONTAINER_SETTINGS.instance);
+
+/** An instance type's line in the Edit dialog's size limit list, the default limit marked as such. */
+export const sizeLimitLabel = (type: InstanceType): string =>
+  sizeLine(type, DEFAULT_CONTAINER_SETTINGS.maxInstance);
 
 /** Why `text` cannot be an idle time, or null when it can: a whole number of minutes, from 1 to a day. */
 export const idleMinutesProblem = (text: string): string | null => {
@@ -266,10 +286,99 @@ export const buildLine = (build: BuildView, now: number): string => {
 };
 
 /**
+ * A value an Agent change shows, in full: a variable's, a script's or the Toolchains' as written, a list of paths a line
+ * each, another setting's as JSON, and none as not set (an empty text as empty, an empty list as none).
+ */
+export const changeValueText = (value: AgentChange["before"]): string => {
+  if (value === null) return "not set";
+
+  if (Predicate.isString(value)) return value === "" ? "empty" : value;
+
+  if (Arr.isArray(value) && Arr.every(value, Predicate.isString)) {
+    return value.length === 0 ? "none" : value.join("\n");
+  }
+
+  return JSON.stringify(value);
+};
+
+/** The setting an Agent change's field names, as the page says it: `variables.API_URL` is the variable API_URL. */
+export const changeFieldText = (field: string): string => {
+  const variable = fieldVariable(field);
+
+  if (variable !== null) return `Variable ${variable}`;
+
+  const repo = fieldRepo(field);
+
+  if (repo !== null) return `Repo ${repo}`;
+
+  const secret = fieldSecret(field);
+
+  if (secret !== null) {
+    return secret.kind === "kept"
+      ? `Secret ${secret.name}`
+      : `Secret ${secret.name}, for the Build`;
+  }
+
+  switch (field) {
+    case NAME_FIELD:
+      return "Name";
+    case CREATED_FIELD:
+      return "Creation";
+    case DELETED_FIELD:
+      return "Deletion";
+    case BUILD_FIELD:
+      return "Build";
+    default:
+      return field;
+  }
+};
+
+/**
+ * What a call's card titles its Agent change with: the setting and where it is (`Variable API_URL in Default`), or, for
+ * an Environment deleted with the owner's Approval, that it was deleted (`docs/spec.md` → Approval).
+ */
+export const changeTitleText = (field: string, where: string): string =>
+  field === DELETED_FIELD
+    ? `Environment ${where} deleted`
+    : `${changeFieldText(field)} in ${where}`;
+
+/**
+ * A value of an Agent change to `field`, as `changeValueText` shows it, except that an Environment's deletion has
+ * "deleted" after it rather than none.
+ */
+export const fieldValueText = (field: string, value: AgentChange["before"]): string =>
+  field === DELETED_FIELD && value === null ? "deleted" : changeValueText(value);
+
+/**
+ * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it) and
+ * whether the owner approved it first (`docs/spec.md` → Approval), or the owner, reverting an earlier one.
+ */
+export const changeByline = (change: AgentChange, now: number): string => {
+  const when = relativeTime(change.at, now);
+
+  if (change.actor === "owner") {
+    return change.reverts === null
+      ? `You, ${when}`
+      : `You reverted change ${change.reverts}, ${when}`;
+  }
+
+  const tool = change.tool === null ? "" : `, with ${change.tool}`;
+
+  return `The agent, ${when}${tool}${change.approved === true ? ", approved by you" : ""}`;
+};
+
+/**
+ * Whether the owner can revert an Agent change: the agent's, not reverted yet, and not the making of an Environment or
+ * a Build asked for, which have no revert. The Registry decides the rest.
+ */
+export const revertible = (change: AgentChange): boolean =>
+  change.actor === "agent" && change.revertedBy === null && !unrevertableField(change.field);
+
+/**
  * The key of the Secrets kept for every Environment among the page's Secrets sections, which an Environment's id is
  * not (ids are hexadecimal, or `default`).
  */
-export const EVERY_ENVIRONMENT = "*";
+export const EVERY_ENVIRONMENT = EVERY_ENVIRONMENT_SCOPE;
 
 /** The scope the Registry takes for Secrets section `key`: the Environment's id, or null for every Environment. */
 export const secretScopeOf = (key: string): string | null =>

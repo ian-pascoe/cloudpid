@@ -1,5 +1,7 @@
 import type { Harness } from "@cloudpid/effect-durable";
 import { AgentsMd } from "@cloudpid/extensions/agents-md";
+import { ApprovalTools, type EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import type { Approvals } from "@cloudpid/extensions/approvals";
 import {
   Browser,
   type BrowserHost,
@@ -9,9 +11,20 @@ import {
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContainerTools, WorkspaceContainer } from "@cloudpid/extensions/container";
 import { ContextManagement } from "@cloudpid/extensions/context";
+import {
+  type AgentChangeLog,
+  type DeployCredentials,
+  EnvironmentTools,
+  type Environments,
+} from "@cloudpid/extensions/environment";
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
+import {
+  type SettingsAccess,
+  type SettingsReload,
+  SettingsTools,
+} from "@cloudpid/extensions/settings";
 import { Skills } from "@cloudpid/extensions/skills";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Todo } from "@cloudpid/extensions/todo";
@@ -26,8 +39,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * The extensions every Session's conversations run with: pi-durable's `read` (whose images the Session's `Images`
  * binding holds to the conversation's bound), `write`, and `edit`, and a `bash` that can run on the Worker Shell or the
  * Container, and `ls`, `find`, and `grep`, which work on the Session's Workspace (`./workspace.ts`) through the environment the Harness
- * builds for each call and the `WorkspaceFiles` they need; `restart_container`, which stops the Workspace's Container through
- * `WorkspaceContainer` when it no longer answers; `web_search` and `web_fetch`; `codemode`, whose scripts call
+ * builds for each call and the `WorkspaceFiles` they need; `container_restart`, which stops the Workspace's Container through
+ * `WorkspaceContainer` when it no longer answers, and `container_resize`, which restarts it at another size; `web_search` and `web_fetch`; `codemode`, whose scripts call
  * the tools above and run in the `CodemodeSandbox` (`./codemode.ts`); the subagent tools, which read their roles,
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
  * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; the `todo` tool,
@@ -39,8 +52,15 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * (`@cloudpid/extensions/agents-md`); and `browser`, which drives the
  * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
  * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
- * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through); and
- * `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
+ * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through);
+ * the `environment_*` tools, which read and change the Registry's Environments (`Environments`), refuse values that hold
+ * a Secret (`Secrets`) or the GitHub token (`DeployCredentials`), and keep each change for the Run's Notification
+ * (`AgentChangeLog`), the root conversation's only (`docs/spec.md` → Agent changes); the `settings_*` tools, which read
+ * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
+ * after a change (`SettingsReload`); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
+ * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `environment_container_size_limit_set`,
+ * `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
+ * (`docs/spec.md` → Approval); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
@@ -60,6 +80,13 @@ export const sessionExtensions: Effect.Effect<
   | BrowserHost
   | BrowserSession
   | BrowserHandoffs
+  | Environments
+  | DeployCredentials
+  | AgentChangeLog
+  | SettingsAccess
+  | SettingsReload
+  | Approvals
+  | EnvironmentRemoval
 > = Effect.all([
   CodingTools,
   Files,
@@ -73,6 +100,9 @@ export const sessionExtensions: Effect.Effect<
   // Before the secrets extension, whose wraps then run first: a path's Secret references are resolved when it looks.
   AgentsMd,
   ContainerTools,
+  EnvironmentTools,
+  SettingsTools,
+  ApprovalTools,
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),
 ]).pipe(

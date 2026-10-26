@@ -374,6 +374,90 @@ describe("the thread messages of a view", () => {
     expect(subagent(undefined)).not.toHaveProperty("artifact");
   });
 
+  it("puts the Agent change a call made on its card: the field, and its values before and after", () => {
+    const changed = (
+      details: NonNullable<
+        Extract<TranscriptMessage["parts"][number], { type: "tool-result" }>["details"]
+      >,
+    ) =>
+      toThreadMessages(
+        view({
+          messages: [
+            user("1", "set it"),
+            assistant("2", [
+              {
+                type: "tool-call",
+                id: "c1",
+                name: "environment_variable_set",
+                arguments: { name: "API_URL", value: "https://api.test", reason: "r" },
+              },
+            ]),
+            {
+              id: "r",
+              role: "tool",
+              timestamp: 3,
+              parts: [
+                {
+                  type: "tool-result",
+                  id: "c1",
+                  name: "environment_variable_set",
+                  content: [{ type: "text", text: "Set API_URL" }],
+                  error: false,
+                  details,
+                },
+              ],
+            },
+          ],
+        }),
+      )[1]?.content[0];
+
+    const change = {
+      environment: { id: "default", name: "Default" },
+      field: "variables.API_URL",
+      before: null,
+      after: "https://api.test",
+    };
+
+    expect(changed({ agentChange: { id: 3, ...change }, own: true })).toMatchObject({
+      artifact: { changes: [change] },
+    });
+    // A call that changed nothing has none.
+    expect(changed({ unchanged: { field: "variables.API_URL" } })).not.toHaveProperty("artifact");
+
+    // A `settings_*` call puts each setting it changed on its card, with no Environment.
+    expect(
+      changed({
+        agentChanges: [
+          { id: 1, field: "model", before: "a/b", after: "c/d" },
+          { id: 2, field: "thinkingLevel", before: "high", after: "low" },
+        ],
+      }),
+    ).toMatchObject({
+      artifact: {
+        changes: [
+          { field: "model", before: "a/b", after: "c/d" },
+          { field: "thinkingLevel", before: "high", after: "low" },
+        ],
+      },
+    });
+    expect(changed({ unchanged: ["model"], agentChanges: [] })).not.toHaveProperty("artifact");
+
+    // A change the owner approved first says so on its card; a declined call changed nothing.
+    expect(
+      changed({
+        approval: { approved: true },
+        agentChanges: [{ id: 4, field: "spendLimit.perSession", before: 5, after: 25 }],
+      }),
+    ).toMatchObject({
+      artifact: {
+        changes: [{ field: "spendLimit.perSession", before: 5, after: 25, approved: true }],
+      },
+    });
+    expect(changed({ approval: { approved: false, reason: "Not now" } })).not.toHaveProperty(
+      "artifact",
+    );
+  });
+
   it("puts the screenshots of a finished tool call on its card, besides its text", () => {
     const [, message] = toThreadMessages(
       view({

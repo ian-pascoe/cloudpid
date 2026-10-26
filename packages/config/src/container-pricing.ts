@@ -3,7 +3,7 @@
 // Containers on the Workers Paid plan (https://developers.cloudflare.com/containers/pricing/, 2026-10), applied to each
 // size's resources. Memory and disk are billed on the provisioned size for as long as the Container runs, CPU on active
 // use only. The monthly allowance the plan includes is the account's, not a Workspace's, so it is not taken off.
-import { type ContainerResources, type InstanceType } from "./container-settings.ts";
+import { INSTANCE_RESOURCES, type InstanceType } from "./container-settings.ts";
 
 /** US dollars per unit-second. */
 export const CONTAINER_PRICES = {
@@ -52,18 +52,6 @@ export const usageSumsCost = (sums: ContainerUsageSums) => ({
   cpu: sums.cpuTimeSec * CONTAINER_PRICES.vcpuSecond,
   egress: (sums.txBytes / 1e9) * CONTAINER_PRICES.egressGb,
 });
-
-/** The resources of every size: Cloudflare's limits page for its named types, `containerInstance`'s for the custom ones. */
-export const INSTANCE_RESOURCES: Readonly<Record<InstanceType, ContainerResources>> = {
-  lite: { vcpu: 1 / 16, memoryMib: 256, diskMb: 2_000 },
-  basic: { vcpu: 1 / 4, memoryMib: 1024, diskMb: 4_000 },
-  "standard-1": { vcpu: 1 / 2, memoryMib: 4096, diskMb: 8_000 },
-  "custom-1": { vcpu: 1, memoryMib: 3072, diskMb: 12_000 },
-  "standard-2": { vcpu: 1, memoryMib: 6144, diskMb: 12_000 },
-  "custom-2": { vcpu: 2, memoryMib: 6144, diskMb: 12_000 },
-  "standard-3": { vcpu: 2, memoryMib: 8192, diskMb: 16_000 },
-  "standard-4": { vcpu: 4, memoryMib: 12_288, diskMb: 20_000 },
-};
 
 /** What a Container of one size costs per second, in US dollars: memory and disk while it runs, CPU per busy second. */
 export type ContainerRates = {

@@ -37,6 +37,10 @@ const body = (event: PushEvent): string => {
         ? "Run failed"
         : `Run failed: ${event.reason}`;
     case "input": {
+      if (event.approval !== undefined) {
+        return `Approval needed: ${event.approval}${event.reason === undefined ? "" : ` (${event.reason})`}`;
+      }
+
       const asked = event.names.length === 0 ? "" : `: ${event.names.join(", ")}`;
 
       return `Needs input${asked}${event.reason === undefined ? "" : ` (${event.reason})`}`;
@@ -64,6 +68,10 @@ const target = (event: PushEvent, sessionId: string): string => {
   return event.url.startsWith("?") ? `${sessionPagePath(sessionId)}${event.url}` : event.url;
 };
 
+/** What a push's tag names: its kind, an Approval request apart from a Secret request, so neither replaces the other. */
+const tagKind = (event: PushEvent): string =>
+  event.kind === "input" && event.approval !== undefined ? "approval" : event.kind;
+
 /** The push for `event` in Session `session`, titled by the Session's title once it has one. */
 export const describeEvent = (
   event: PushEvent,
@@ -77,5 +85,5 @@ export const describeEvent = (
   ),
   body: brief(body(event), MAX_BODY),
   url: target(event, session.id),
-  tag: `${session.id}:${event.kind}`,
+  tag: `${session.id}:${tagKind(event)}`,
 });

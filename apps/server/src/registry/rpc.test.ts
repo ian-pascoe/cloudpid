@@ -1,10 +1,15 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS, SettingsError } from "@cloudpid/config";
+import type { AgentChangeRevert } from "./agent-changes.ts";
+import type { SettingsChangeRevert } from "./settings-changes.ts";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import {
+  type AgentChange,
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
+  fieldRepo,
+  fieldVariable,
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
   MAX_TITLE_LENGTH,
@@ -25,17 +30,19 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { isRegistryRpc } from "../routes.ts";
 import type { ForkPlan } from "../session/fork.ts";
 import { buildKey, type BuildRequest, type BuildState } from "../workspace/build-record.ts";
 import type { WorkspaceLookups } from "../session/lookups.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
+import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
@@ -72,6 +79,10 @@ const fakeRegistries = () => {
   const calls: string[] = [];
   /** The kept Secrets, values included, as the Registry DO would open them. */
   const keptSecrets: Array<EnvironmentSecretRecord & { readonly value: string }> = [];
+  /** The Agent changes recorded, oldest first. */
+  const agentChanges: AgentChange[] = [];
+  /** The Settings' Agent changes recorded, oldest first. */
+  const settingsChanges: AgentChange[] = [];
 
   /** What `environment` uses: its own over those kept for every Environment, by name. */
   const keptFor = (environment: string): ReadonlyArray<KeptSecret> => {
@@ -212,6 +223,21 @@ const fakeRegistries = () => {
         Effect.tap(() => Effect.sync(() => finished.set(id, plan))),
       ),
     releaseFork: (id) => sessionCall("releaseFork", id),
+    // The Session removes the subagent's Subagent Workspace with it, as `subagent_delete` does.
+    deleteSubagent: (id, agent) =>
+      sessionCall(`deleteSubagent(${agent})`, id).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            remove(
+              workspaces,
+              (workspace) =>
+                workspace.subagent?.session === id && workspace.subagent.agent === agent,
+            );
+
+            return [];
+          }),
+        ),
+      ),
   };
 
   /** Runs the next times a Workspace's object is wiped: what happens meanwhile. */
@@ -239,6 +265,7 @@ const fakeRegistries = () => {
   /** The Secrets each spare's object was handed with its set-up, and the Build. */
   const spareSecrets = new Map<string, ReadonlyArray<KeptSecret> | undefined>();
   const spareBuilds = new Map<string, BuildRecord["build"]>();
+  const workStates = new Map<string, ReadonlyArray<RepoWorkState>>();
   /** What the Registry recorded of each Environment's Build. */
   const buildRecords = new Map<string, BuildRecord>();
   const NO_BUILD: BuildRecord = { build: null, status: null };
@@ -264,6 +291,23 @@ const fakeRegistries = () => {
 
       buildSecrets.set(name, secrets);
 
+      // A Test Build object's: one at a time, by the id of the call that asked.
+      if (request.test !== undefined) {
+        const held = buildStateOf(name);
+
+        if (held.test?.id === request.test || held.test?.status === "building") return held;
+
+        const tested: BuildState = {
+          ...held,
+          test: { id: request.test, key: request.key, startedAt: 50, status: "building" },
+        };
+
+        buildObjects.set(name, tested);
+        buildRequests.set(name, request);
+
+        return tested;
+      }
+
       const state: BuildState = {
         ...buildStateOf(name),
         progress: {
@@ -278,6 +322,22 @@ const fakeRegistries = () => {
 
       return state;
     },
+    cancelBuild: async (name, id) => {
+      calls.push(`cancelBuild:${name}:${id}`);
+
+      const held = buildStateOf(name);
+
+      if (held.test?.id !== id || held.test.status !== "building") return held;
+
+      const cancelled: BuildState = {
+        ...held,
+        test: { ...held.test, status: "cancelled", finishedAt: 60 },
+      };
+
+      buildObjects.set(name, cancelled);
+
+      return cancelled;
+    },
     destroy: (name) => {
       const result = workspaceCall("destroyWorkspace", name);
 
@@ -287,6 +347,11 @@ const fakeRegistries = () => {
     },
     restartContainer: (name) => workspaceCall("restartContainer", name),
     carry: (name, branch, repos) => workspaceCall("carry", `${name}:${branch}:${repos.join(",")}`),
+    workState: async (name) => {
+      calls.push(`workState:${name}`);
+
+      return workStates.get(name) ?? [];
+    },
     prepareSpare: (name, setup) => {
       spareSecrets.set(name, "secrets" in setup ? setup.secrets : undefined);
       spareBuilds.set(name, setup.build ?? null);
@@ -565,6 +630,103 @@ const fakeRegistries = () => {
           },
         };
       }),
+    // The Session DO makes Agent changes, never the endpoint.
+    changeEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    agentCreateEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    agentRenameEnvironment: () => Effect.die("The endpoint makes no Agent change"),
+    agentAddRepo: () => Effect.die("The endpoint makes no Agent change"),
+    agentRemoveRepo: () => Effect.die("The endpoint makes no Agent change"),
+    recordRebuild: () => Effect.die("The endpoint makes no Agent change"),
+    agentMarkSecretBuild: () => Effect.die("The endpoint makes no Agent change"),
+    agentDeleteSecret: () => Effect.die("The endpoint makes no Agent change"),
+    keepAskedSecrets: () => Effect.die("The endpoint keeps no Secret for an ask"),
+    listAgentChanges: ({ environment }) =>
+      Effect.sync(() =>
+        environment === "*" || Arr.some(environments, (item) => item.id === environment)
+          ? Arr.filter(agentChanges, (change) => change.scope === environment).toReversed()
+          : null,
+      ),
+    // A revert of a variable, over the saved overrides, as the Registry DO's (`revertAgentChange`).
+    revertAgentChange: ({ environment, change }) =>
+      Effect.sync((): AgentChangeRevert => {
+        calls.push(`revertAgentChange:${change}`);
+
+        const found = Arr.findFirst(
+          agentChanges,
+          (item) => item.scope === environment && item.id === change,
+        );
+
+        if (Option.isNone(found)) return { status: "missing" };
+
+        if (found.value.actor === "owner")
+          return { status: "refused", message: "A revert is not undone" };
+
+        // A Repo put back or taken out changes the Environment's record, which the fake does not model.
+        if (fieldRepo(found.value.field) !== null) {
+          const repoRevert: AgentChange = {
+            ...found.value,
+            id: agentChanges.length + 1,
+            actor: "owner",
+            session: null,
+            conversation: null,
+            tool: null,
+            reason: `Reverted change ${change}`,
+            before: found.value.after,
+            after: found.value.before,
+            reverts: change,
+          };
+
+          agentChanges.push(repoRevert);
+
+          return { status: "reverted", change: repoRevert };
+        }
+
+        const name = fieldVariable(found.value.field) ?? found.value.field;
+
+        // SAFETY: the tests only save overrides of the settings' own shape.
+        const overrides = (overridesOf.get(environment) ?? {}) as {
+          readonly variables?: Readonly<Record<string, string>>;
+        };
+
+        const { [name]: now = null, ...others } = overrides.variables ?? {};
+
+        if (now !== found.value.after) {
+          return { status: "changed-since", field: found.value.field, current: now };
+        }
+
+        // The tests revert variables only, whose values are strings.
+        const before = Option.getOrNull(
+          Option.liftPredicate(found.value.before, Predicate.isString),
+        );
+
+        const variables = before === null ? others : { ...others, [name]: before };
+
+        overridesOf.set(environment, { ...overrides, variables });
+
+        const revert: AgentChange = {
+          ...found.value,
+          id: agentChanges.length + 1,
+          actor: "owner",
+          session: null,
+          conversation: null,
+          tool: null,
+          reason: `Reverted change ${change}`,
+          before: now,
+          after: found.value.before,
+          reverts: change,
+        };
+
+        agentChanges.push(revert);
+
+        return {
+          status: "reverted",
+          change: revert,
+          state: {
+            settings: { ...DEFAULT_CONTAINER_SETTINGS, variables },
+            overrides: { variables },
+          },
+        };
+      }),
     getWorkspace: ({ id }) =>
       Effect.sync(() =>
         Option.getOrNull(Arr.findFirst(workspaces, (workspace) => workspace.id === id)),
@@ -589,6 +751,12 @@ const fakeRegistries = () => {
         };
       }),
     listWorkspaces: () => Effect.sync(() => [...workspaces]),
+    // The endpoint makes no Subagent Workspace: a Session does (`subagent-workspaces.ts`).
+    createSubagentWorkspace: () => Effect.succeed({ refused: "no-session" as const }),
+    listSubagentWorkspaces: ({ session }) =>
+      Effect.sync(() =>
+        Arr.filter(workspaces, (workspace) => workspace.subagent?.session === session),
+      ),
     upkeepSpares: ({ environments: named }) =>
       Effect.sync(() => {
         calls.push(`upkeepSpares:${named === undefined ? "*" : Arr.join(named, ",")}`);
@@ -801,6 +969,50 @@ const fakeRegistries = () => {
         pushes.delete(endpoint);
       }),
     notify: () => Effect.void,
+    // The Session DO makes Agent changes, never the endpoint.
+    changeSettings: () => Effect.die("The endpoint makes no Agent change"),
+    listSettingsChanges: () => Effect.sync(() => settingsChanges.toReversed()),
+    // A revert of the model, as the Registry DO's (`revertSettingsChange`).
+    revertSettingsChange: ({ change }) =>
+      Effect.sync((): SettingsChangeRevert => {
+        calls.push(`revertSettingsChange:${change}`);
+
+        const found = Arr.findFirst(settingsChanges, (item) => item.id === change);
+
+        if (Option.isNone(found)) return { status: "missing" };
+
+        if (found.value.actor === "owner")
+          return { status: "refused", message: "A revert is not undone" };
+
+        if (found.value.after !== DEFAULT_SETTINGS.model) {
+          return {
+            status: "changed-since",
+            field: found.value.field,
+            current: DEFAULT_SETTINGS.model,
+          };
+        }
+
+        const revert: AgentChange = {
+          ...found.value,
+          id: settingsChanges.length + 1,
+          actor: "owner",
+          session: null,
+          conversation: null,
+          tool: null,
+          reason: `Reverted change ${change}`,
+          before: found.value.after,
+          after: found.value.before,
+          reverts: change,
+        };
+
+        settingsChanges.push(revert);
+
+        return {
+          status: "reverted",
+          change: revert,
+          state: { settings: DEFAULT_SETTINGS, overrides: {} },
+        };
+      }),
     updateSettings: ({ overrides }) =>
       Effect.sync(() => {
         calls.push("updateSettings");
@@ -833,6 +1045,8 @@ const fakeRegistries = () => {
     sessions,
     workspaces,
     environments,
+    agentChanges,
+    settingsChanges,
     sessionObjects,
     workspaceObjects,
     breakSession: (id: string, message: string) => {
@@ -898,6 +1112,8 @@ const fakeRegistries = () => {
     /** The upkeep of the Builds, built once per fake too. */
     buildUpkeep: buildUpkeep(registries, { workspaces: workspaceObjects, spares: upkeepOfSpares }),
     spareBuilds,
+    /** What each Workspace DO's clones read as (`workState`), by object name; nothing to push when unset. */
+    workStates,
     buildObjects,
     buildRequests,
     buildRecords,
@@ -1373,6 +1589,118 @@ it("deletes a Session without touching its Workspace while another Session, arch
   ]);
 });
 
+it("deletes a Session with its Subagent Workspaces: the Session's object, then each one's object and record, then the Session", async () => {
+  const fake = fakeRegistries();
+  const kept = await call(fake, (registry) => registry.createSession({}));
+
+  const session = await call(fake, (registry) =>
+    registry.createSession({ workspace: kept.workspace }),
+  );
+
+  fake.workspaces.push({
+    id: "5ab0a9e7",
+    environment: DEFAULT_ENVIRONMENT,
+    branch: "cloudpid/5ab0a9e7",
+    base: "main",
+    repos: [],
+    directory: "/workspace",
+    createdAt: 0,
+    subagent: { session: session.id, agent: "impl" },
+  });
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    "destroyWorkspace:ws:5ab0a9e7",
+    "deleteWorkspace:5ab0a9e7",
+    `deleteSession:${session.id}`,
+  ]);
+  expect(Arr.map(fake.workspaces, (workspace) => workspace.id)).toEqual([kept.workspace]);
+});
+
+it("removes a Subagent Workspace by deleting its subagent in its Session, and on its own once the Session is gone", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  const subagentWorkspace = (id: string, owner: string): WorkspaceRecord => ({
+    id,
+    environment: DEFAULT_ENVIRONMENT,
+    branch: `cloudpid/${id}`,
+    base: "main",
+    repos: [],
+    directory: "/workspace",
+    createdAt: 0,
+    subagent: { session: owner, agent: "impl" },
+  });
+
+  fake.workspaces.push(subagentWorkspace("5ab0a9e7", session.id));
+  fake.workspaces.push(subagentWorkspace("6cb0a9e7", "gone"));
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeWorkspace({ id: "5ab0a9e7" }));
+
+  expect(fake.calls).toContain(`deleteSubagent(impl):${session.id}`);
+  expect(lifecycle(fake)).toEqual([]);
+
+  await call(fake, (registry) => registry.removeWorkspace({ id: "6cb0a9e7" }));
+
+  expect(lifecycle(fake)).toEqual(["destroyWorkspace:ws:6cb0a9e7", "deleteWorkspace:6cb0a9e7"]);
+  expect(Arr.map(fake.workspaces, (workspace) => workspace.id)).toEqual([session.workspace]);
+});
+
+it("reads what a Workspace has not pushed, leaving out the Repos that hold nothing", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  expect(await call(fake, (registry) => registry.workspaceWork({ id: session.workspace }))).toEqual(
+    [],
+  );
+  expect(fake.calls).toContain(`workState:ws:${session.workspace}`);
+});
+
+it("never calls a Workspace clean whose clones are missing or not on its branch", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+  const workspace = fake.workspaces.find((each) => each.id === session.workspace)!;
+
+  const clone = (repo: string, head: string | null, cloned = true): RepoWorkState => ({
+    repo,
+    cloned,
+    uncommitted: 0,
+    unpushed: 0,
+    onRemote: true,
+    head,
+  });
+
+  fake.workStates.set(`ws:${session.workspace}`, [
+    clone("app", workspace.branch),
+    // A spare's clone the set-up never switched to the Workspace's branch, one never cloned, and a detached one.
+    { ...clone("api", "cloudpid/spare"), uncommitted: 1 },
+    clone("docs", null, false),
+    clone("web", null),
+  ]);
+
+  expect(await call(fake, (registry) => registry.workspaceWork({ id: session.workspace }))).toEqual(
+    [
+      {
+        repo: "api",
+        uncommitted: 1,
+        unpushed: 0,
+        unsettled: `not set up (on cloudpid/spare, not ${workspace.branch})`,
+      },
+      { repo: "docs", uncommitted: 0, unpushed: 0, unsettled: "not set up (no clone)" },
+      {
+        repo: "web",
+        uncommitted: 0,
+        unpushed: 0,
+        unsettled: `not set up (on a detached HEAD, not ${workspace.branch})`,
+      },
+    ],
+  );
+});
+
 it("removes a Workspace with its last Session: the Session, then the Workspace's object, then its record", async () => {
   const fake = fakeRegistries();
   const kept = await call(fake, (registry) => registry.createSession({}));
@@ -1519,9 +1847,11 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
     `destroyWorkspace:ws:${first.workspace}`,
     `deleteWorkspace:${first.workspace}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
     `deleteEnvironment:${id}`,
     // Again, for a Build asked for after the first wipe.
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
   ]);
   expect(await call(fake, (registry) => registry.listSessions())).toEqual([elsewhere]);
   expect(Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.id)).toEqual([
@@ -1532,7 +1862,7 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
   ).toEqual([DEFAULT_ENVIRONMENT]);
 });
 
-it("deletes an Environment with no Workspaces: its Build object, then its record, then its Build object again", async () => {
+it("deletes an Environment with no Workspaces: its Build and Test Build objects, then its record, then those objects again", async () => {
   const fake = fakeRegistries();
   const id = await makeEnvironment(fake, "Empty");
 
@@ -1540,8 +1870,10 @@ it("deletes an Environment with no Workspaces: its Build object, then its record
 
   expect(lifecycle(fake)).toEqual([
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
     `deleteEnvironment:${id}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
   ]);
 });
 
@@ -2042,6 +2374,195 @@ it("refuses the settings of an Environment the Registry does not list", async ()
   }
 });
 
+/** An Agent change that set variable `name` of `environment` from `before` to `after`, as the Registry records it. */
+const agentChange = (
+  id: number,
+  name: string,
+  before: string | null,
+  after: string | null,
+  environment = DEFAULT_ENVIRONMENT,
+): AgentChange => ({
+  id,
+  scope: environment,
+  at: id * 1_000,
+  actor: "agent",
+  session: "s-1",
+  conversation: 1,
+  tool: "environment_variable_set",
+  reason: "For the tests",
+  field: `variables.${name}`,
+  before,
+  after,
+  reverts: null,
+  revertedBy: null,
+});
+
+it("lists an Environment's Agent changes, newest first, and refuses an Environment it does not list", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push(agentChange(1, "A", null, "1"), agentChange(2, "B", null, "2"));
+
+  const listed = await call(fake, (registry) =>
+    registry.listAgentChanges({ environment: DEFAULT_ENVIRONMENT }),
+  );
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.listAgentChanges({ environment: "0000beef" })),
+  );
+
+  expect(Arr.map(listed, (change) => change.id)).toEqual([2, 1]);
+  expect(error.message).toBe('Environment "0000beef" does not exist');
+});
+
+it("lists the Agent changes of the Secrets kept for every Environment under the scope *, and takes it to revert one", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "NPM_TOKEN", null, "kept", "*"),
+    tool: "secret_ask",
+    field: "secrets.NPM_TOKEN",
+  });
+
+  const listed = await call(fake, (registry) => registry.listAgentChanges({ environment: "*" }));
+
+  expect(listed).toMatchObject([{ scope: "*", field: "secrets.NPM_TOKEN", after: "kept" }]);
+
+  // The payload is accepted (it is not a validation failure) and reaches the Registry, which has no such change.
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: "*", change: 9 })),
+  );
+
+  expect(error.message).toBe('Environment "*" has no change 9');
+});
+
+it("reverts an Agent change, answers the owner's change, and keeps the Build current after the answer", async () => {
+  const fake = fakeRegistries();
+
+  fake.overridesOf.set(DEFAULT_ENVIRONMENT, { variables: { A: "2" } });
+  fake.agentChanges.push(agentChange(1, "A", "1", "2"));
+
+  const reverted = await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  expect(reverted).toMatchObject({ actor: "owner", before: "2", after: "1", reverts: 1 });
+  expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "1" } });
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("keeps the spare Workspace and the Build current after a revert of a Repo", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, "https://github.com/o/app.git"),
+    tool: "environment_repo_add",
+    field: "repos.app",
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("refuses to revert an Agent change whose variable changed since, showing its value now", async () => {
+  const fake = fakeRegistries();
+
+  fake.overridesOf.set(DEFAULT_ENVIRONMENT, { variables: { A: "3" } });
+  fake.agentChanges.push(agentChange(1, "A", "1", "2"), agentChange(2, "B", "x", null));
+
+  const changed = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 })),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 9 })),
+  );
+
+  expect(changed).toBeInstanceOf(EnvironmentError);
+  expect(changed.message).toBe(
+    'variables.A has changed since: it is "3" now, so the change is not reverted',
+  );
+  expect(missing.message).toBe('Environment "default" has no change 9');
+  expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "3" } });
+});
+
+/** A Settings change that set the model from `before` to `after`, as the Registry records it. */
+const settingsChange = (id: number, before: string, after: string): AgentChange => ({
+  id,
+  scope: "settings",
+  at: id * 1_000,
+  actor: "agent",
+  session: "s-1",
+  conversation: 1,
+  tool: "settings_model_set",
+  reason: "For the tests",
+  field: "model",
+  before,
+  after,
+  reverts: null,
+  revertedBy: null,
+});
+
+it("lists the Settings' Agent changes, newest first", async () => {
+  const fake = fakeRegistries();
+
+  fake.settingsChanges.push(
+    settingsChange(1, "a/b", "c/d"),
+    settingsChange(2, "c/d", DEFAULT_SETTINGS.model),
+  );
+
+  const listed = await call(fake, (registry) => registry.listSettingsChanges());
+
+  expect(Arr.map(listed, (change) => change.id)).toEqual([2, 1]);
+});
+
+it("reverts a Settings change and answers the owner's change", async () => {
+  const fake = fakeRegistries();
+
+  fake.settingsChanges.push(
+    settingsChange(1, "anthropic/claude-haiku-5-5", DEFAULT_SETTINGS.model),
+  );
+
+  const reverted = await call(fake, (registry) => registry.revertSettingsChange({ change: 1 }));
+
+  expect(reverted).toMatchObject({
+    actor: "owner",
+    field: "model",
+    after: "anthropic/claude-haiku-5-5",
+    reverts: 1,
+  });
+});
+
+it("refuses to revert a Settings change whose setting changed since, or one that is not there, as the owner's save refuses", async () => {
+  const fake = fakeRegistries();
+
+  fake.settingsChanges.push(settingsChange(1, "anthropic/claude-haiku-5-5", "x/y"));
+
+  const changed = await call(fake, (registry) =>
+    Effect.flip(registry.revertSettingsChange({ change: 1 })),
+  );
+
+  const missing = await call(fake, (registry) =>
+    Effect.flip(registry.revertSettingsChange({ change: 9 })),
+  );
+
+  expect(changed).toBeInstanceOf(SettingsError);
+  expect(changed.message).toBe(
+    `model has changed since: it is "${DEFAULT_SETTINGS.model}" now, so the change is not reverted`,
+  );
+  expect(missing.message).toBe("The Settings have no change 9");
+});
+
 it("lists Workspaces of every Environment, newest first", async () => {
   const fake = fakeRegistries();
   const environment = await makeEnvironment(fake, "Cloudpid");
@@ -2432,8 +2953,10 @@ it("deletes an Environment's spare Workspace with it: its record, then its objec
     `forgetSpare:${spare}`,
     `destroyWorkspace:ws:${spare}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
     `deleteEnvironment:${id}`,
     `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
   ]);
 });
 
@@ -2594,6 +3117,151 @@ it("asks for a Build of an Environment with Toolchains only, and Rebuilds it", a
   expect(fake.calls).toContain(`startBuild:build:${environment}`);
 
   await call(fake, (registry) => registry.rebuildEnvironment({ environment }));
+});
+
+describe("a Test Build", () => {
+  /** An Environment with repo app and a Setup Script saved, its Build under way, and the upkeep's run done. */
+  const saved = async () => {
+    const fake = fakeRegistries();
+    const environment = await makeEnvironment(fake, "Cloudpid");
+
+    await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+    await call(fake, (registry) =>
+      registry.updateEnvironmentSettings({
+        environment,
+        overrides: { setupScript: "make deps", startScript: "make up", idleMinutes: 30 },
+      }),
+    );
+    await fake.runBackground();
+    fake.calls.length = 0;
+
+    return { fake, environment };
+  };
+
+  /** What `effect` succeeds with. */
+  const ok = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
+
+  /** Why `effect` fails. */
+  const refused = <A, E>(effect: Effect.Effect<A, E>) =>
+    effect.pipe(Effect.flip, Effect.runPromise);
+
+  it("asks the Test Build object for the saved settings with the proposed fields replaced, leaving the Build object alone", async () => {
+    const { fake, environment } = await saved();
+    const before = fake.buildObjects.get(`build:${environment}`);
+
+    const started = await ok(
+      fake.buildUpkeep.test.start({
+        environment,
+        id: "s-1/7",
+        proposed: { setupScript: "exit 1", variables: { CI: "1" } },
+      }),
+    );
+
+    expect(started).toMatchObject({ id: "s-1/7", status: "building" });
+    // Nothing is recorded: the Registry's record of the Build is the Build object's.
+    expect(buildCalls(fake)).toEqual([
+      `buildState:test-build:${environment}`,
+      `startBuild:test-build:${environment}`,
+    ]);
+
+    const repos = [{ name: "app", url: "https://github.com/acme/app.git" }];
+
+    const settings = {
+      setupScript: "exit 1",
+      startScript: "make up",
+      idleMinutes: 30,
+      variables: { CI: "1" },
+    };
+
+    expect(fake.buildRequests.get(`test-build:${environment}`)).toEqual({
+      key: await buildKey({
+        repos,
+        settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
+        image: "img-1",
+      }),
+      repos,
+      settings,
+      test: "s-1/7",
+    });
+    // The saved settings and the Build object are as they were, and nothing was recorded.
+    expect(fake.overridesOf.get(environment)).toEqual({
+      setupScript: "make deps",
+      startScript: "make up",
+      idleMinutes: 30,
+    });
+    expect(fake.buildObjects.get(`build:${environment}`)).toEqual(before);
+    expect(fake.buildRecords.get(environment)?.status).toMatchObject({ status: "building" });
+  });
+
+  it("takes the proposed Repos as the whole list", async () => {
+    const { fake, environment } = await saved();
+    const repos = [{ name: "web", url: "https://github.com/acme/web.git" }];
+
+    await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: { repos } }));
+
+    expect(fake.buildRequests.get(`test-build:${environment}`)?.repos).toEqual(repos);
+  });
+
+  it("refuses proposed settings the owner's save refuses, and a change that leaves nothing to build", async () => {
+    const { fake, environment } = await saved();
+
+    expect(
+      await refused(
+        fake.buildUpkeep.test.start({
+          environment,
+          id: "s-1/7",
+          proposed: { variables: { PATH: "/bin" } },
+        }),
+      ),
+    ).toContain("The proposed settings are refused: variables");
+    expect(
+      await refused(
+        fake.buildUpkeep.test.start({
+          environment,
+          id: "s-1/7",
+          proposed: { repos: [], setupScript: "" },
+        }),
+      ),
+    ).toContain("nothing to build");
+    expect(fake.calls).not.toContain(`startBuild:test-build:${environment}`);
+  });
+
+  it("is refused while another runs, and found again by its own id", async () => {
+    const { fake, environment } = await saved();
+
+    await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
+
+    expect(
+      await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} })),
+    ).toMatchObject({ id: "s-1/7", status: "building" });
+    expect(
+      await refused(fake.buildUpkeep.test.start({ environment, id: "s-2/1", proposed: {} })),
+    ).toContain("Another Test Build of the environment is under way");
+    expect(await ok(fake.buildUpkeep.test.state({ environment, id: "s-2/1" }))).toBeNull();
+  });
+
+  it("is cancelled through its object", async () => {
+    const { fake, environment } = await saved();
+
+    await ok(fake.buildUpkeep.test.start({ environment, id: "s-1/7", proposed: {} }));
+    await ok(fake.buildUpkeep.test.cancel({ environment, id: "s-1/7" }));
+
+    expect(fake.calls).toContain(`cancelBuild:test-build:${environment}:s-1/7`);
+    expect(await ok(fake.buildUpkeep.test.state({ environment, id: "s-1/7" }))).toMatchObject({
+      status: "cancelled",
+    });
+  });
+
+  it("refuses an Environment that is not there", async () => {
+    const fake = fakeRegistries();
+
+    expect(
+      await refused(
+        fake.buildUpkeep.test.start({ environment: "0000beef", id: "s-1/7", proposed: {} }),
+      ),
+    ).toContain("0000beef");
+    expect(fake.calls).not.toContain("startBuild:test-build:0000beef");
+  });
 });
 
 it("asks for a Build again when the settings a Build uses change, and not for a new idle time", async () => {
@@ -2851,6 +3519,33 @@ it("makes an Environment's Build again when the owner asks, though it is current
     since: 50,
     lastGoodAt: 10,
   });
+});
+
+it("answers whether a Rebuild asked for a Build, or found one of the wanted key under way, which it leaves alone", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+
+  const name = `build:${environment}`;
+  const rebuild = () => Effect.runPromise(fake.buildUpkeep.rebuild(environment));
+
+  expect(await rebuild()).toBe("asked");
+
+  const started = Arr.filter(fake.calls, (each) => each === `startBuild:${name}`).length;
+
+  expect(started).toBe(1);
+
+  // The Build object now answers that the Build of the key is under way.
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: null,
+    progress: { status: "building", key: await keyOf(fake, environment), startedAt: 1 },
+    attemptedAt: null,
+  });
+
+  expect(await rebuild()).toBe("underway");
+  expect(Arr.filter(fake.calls, (each) => each === `startBuild:${name}`)).toHaveLength(started);
 });
 
 it("refuses a Rebuild of an Environment that does not exist, or has nothing to build, or whose Build object cannot be reached", async () => {

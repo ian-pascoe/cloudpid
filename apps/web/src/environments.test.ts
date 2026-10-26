@@ -10,7 +10,12 @@ import {
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import type { EnvironmentSecretRecord, SessionRecord } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  DELETED_FIELD,
+  type EnvironmentSecretRecord,
+  type SessionRecord,
+} from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_SECRET_DRAFT,
@@ -23,6 +28,12 @@ import {
   secretVariable,
   secretWrite,
   buildLine,
+  changeByline,
+  changeFieldText,
+  changeTitleText,
+  changeValueText,
+  fieldValueText,
+  revertible,
   deleteConfirmed,
   environmentNameProblem,
   groupByEnvironment,
@@ -30,6 +41,7 @@ import {
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
+  sizeLimitLabel,
   optionalBranchProblem,
   parseVariables,
   repoNameProblem,
@@ -177,11 +189,30 @@ describe("instanceLabel", () => {
     expect(instanceLabel("custom-1")).toBe("custom-1: 1 vCPU, 3 GiB memory, 12 GB disk (default)");
     expect(instanceLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk");
     expect(instanceLabel("standard-2")).toBe("standard-2: 1 vCPU, 6 GiB memory, 12 GB disk");
+    expect(instanceLabel("custom-3")).toBe("custom-3: 3 vCPU, 9 GiB memory, 12 GB disk");
+  });
+
+  it("offers custom-3 between standard-3 and standard-4, in the size and the size limit pickers", () => {
+    expect(INSTANCE_TYPES.slice(INSTANCE_TYPES.indexOf("standard-3"))).toEqual([
+      "standard-3",
+      "custom-3",
+      "standard-4",
+    ]);
+    expect(sizeLimitLabel("custom-3")).toBe("custom-3: 3 vCPU, 9 GiB memory, 12 GB disk");
   });
 
   it("marks exactly one of the offered sizes", () => {
     expect(INSTANCE_TYPES.filter((type) => instanceLabel(type).endsWith("(default)"))).toEqual([
       DEFAULT_CONTAINER_SETTINGS.instance,
+    ]);
+  });
+});
+
+describe("sizeLimitLabel", () => {
+  it("marks custom-2, the default size limit", () => {
+    expect(sizeLimitLabel("custom-2")).toBe("custom-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
+    expect(INSTANCE_TYPES.filter((type) => sizeLimitLabel(type).endsWith("(default)"))).toEqual([
+      "custom-2",
     ]);
   });
 });
@@ -339,6 +370,89 @@ describe("buildLine", () => {
     ).toBe(
       "Build failed 1 hour ago: exit 1: npm ERR!. Meanwhile new workspaces start from the build of yesterday",
     );
+  });
+});
+
+describe("an Agent change", () => {
+  const NOW = 1_000_000_000_000;
+
+  const change: AgentChange = {
+    id: 3,
+    scope: "work",
+    at: NOW - 5 * 60_000,
+    actor: "agent",
+    session: "s-1",
+    conversation: 1,
+    tool: "environment_variable_set",
+    reason: "The tests read it",
+    field: "variables.API_URL",
+    before: null,
+    after: "https://api.test",
+    reverts: null,
+    revertedBy: null,
+  };
+
+  it("shows its values in full, a variable's as written and none as not set", () => {
+    expect(changeValueText(null)).toBe("not set");
+    expect(changeValueText("a\nb")).toBe("a\nb");
+    expect(changeValueText(30)).toBe("30");
+    expect(changeValueText("")).toBe("empty");
+    expect(changeValueText([])).toBe("none");
+    expect(changeValueText(["/data", "**/.big"])).toBe("/data\n**/.big");
+    expect(changeValueText({ a: 1 })).toBe('{"a":1}');
+    expect(changeFieldText("variables.API_URL")).toBe("Variable API_URL");
+    expect(changeFieldText("idleMinutes")).toBe("idleMinutes");
+    expect(changeFieldText("name")).toBe("Name");
+    expect(changeFieldText("secrets.API_KEY")).toBe("Secret API_KEY");
+    expect(changeFieldText("secrets.API_KEY.build")).toBe("Secret API_KEY, for the Build");
+    expect(changeFieldText("repos.api")).toBe("Repo api");
+    expect(changeFieldText("environment")).toBe("Creation");
+    expect(changeFieldText("build")).toBe("Build");
+  });
+
+  it("titles a call's change by setting and place, and an approved Environment delete as deleted", () => {
+    expect(changeTitleText("variables.API_URL", "Default")).toBe("Variable API_URL in Default");
+    expect(changeTitleText("spendLimit.perSession", "the Settings")).toBe(
+      "spendLimit.perSession in the Settings",
+    );
+    expect(changeTitleText(DELETED_FIELD, "qa-b-del")).toBe("Environment qa-b-del deleted");
+    // What the delete took before it, and that it is deleted after; any other none stays not set.
+    expect(fieldValueText(DELETED_FIELD, "1 Workspace with 1 Session")).toBe(
+      "1 Workspace with 1 Session",
+    );
+    expect(fieldValueText(DELETED_FIELD, null)).toBe("deleted");
+    expect(fieldValueText("variables.API_URL", null)).toBe("not set");
+  });
+
+  it("cannot revert the making of an Environment or a Build asked for", () => {
+    expect(revertible({ ...change, field: "environment" })).toBe(false);
+    expect(revertible({ ...change, field: "build" })).toBe(false);
+    expect(revertible({ ...change, field: "name" })).toBe(true);
+    expect(revertible({ ...change, field: "repos.api" })).toBe(true);
+  });
+
+  it("can revert a Secret's Build mark, but not a Secret kept, which holds no value to bring back", () => {
+    expect(revertible({ ...change, field: "secrets.API_KEY.build" })).toBe(true);
+    expect(revertible({ ...change, field: "secrets.API_KEY" })).toBe(false);
+  });
+
+  it("says who made it and when, and can be reverted while it is the agent's and not reverted yet", () => {
+    expect(changeByline(change, NOW)).toBe(
+      "The agent, 5 minutes ago, with environment_variable_set",
+    );
+    expect(
+      changeByline({ ...change, actor: "owner", tool: null, session: null, reverts: 2 }, NOW),
+    ).toBe("You reverted change 2, 5 minutes ago");
+    // A change the owner approved first says so.
+    expect(
+      changeByline(
+        { ...change, tool: "environment_container_size_limit_set", approved: true },
+        NOW,
+      ),
+    ).toBe("The agent, 5 minutes ago, with environment_container_size_limit_set, approved by you");
+    expect(revertible(change)).toBe(true);
+    expect(revertible({ ...change, revertedBy: 4 })).toBe(false);
+    expect(revertible({ ...change, actor: "owner", reverts: 2 })).toBe(false);
   });
 });
 

@@ -12,6 +12,7 @@
 // subagent tasks, notes, handoffs) are not wrapped: their references stay references, and the calls they lead to
 // resolve their own.
 import { defineEffectTool, effectHook, effectSection } from "@cloudpid/effect-durable";
+import { SecretKeep } from "@cloudpid/protocol";
 import type { JsonValue as DetailsJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/pi-ai";
@@ -31,6 +32,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { BackendEnv } from "../coding-tools.ts";
+import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
 import {
   isSecretName,
   referencedSecretNames,
@@ -64,6 +66,7 @@ export const SECRET_GUIDELINES = [
   "When a task needs a Secret such as an API key or password, call secret_ask instead of asking the user to paste it into the conversation; the user enters it in a masked form, and its value never reaches you.",
   `Use a held Secret as $${secretEnvName("NAME")} in bash commands, which keeps it off the command line, and as ${secretReference("NAME")} in other tool arguments. Tool output shows ${secretReference("NAME")} where a value was redacted.`,
   "Secrets expire 15 minutes after the user enters them; call secret_ask again for one that expired, and secret_forget for one no longer needed. Secrets the user keeps for the Environment do not expire and cannot be forgotten; secret_list shows them.",
+  'A Secret that every Session of an Environment needs (a database URL, a registry token) is better kept than asked for again each time: pass keep to secret_ask ("environment", or "all" for every Environment) to offer it. The user chooses in the form, this Session only by default, and the answer says what they chose.',
 ];
 
 const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));
@@ -270,6 +273,12 @@ const AskParameters = Schema.Struct({
   reason: Schema.optional(
     Schema.String.annotate({ description: "Why the Secrets are needed, shown to the user" }),
   ),
+  keep: Schema.optional(
+    SecretKeep.annotate({
+      description:
+        'Where to suggest keeping them: "session" (the default: held for this Session for 15 minutes), "environment" (kept for this Session\'s Environment, so every Session of it has them, without expiry) or "all" (kept for every Environment). It only pre-selects the choice in the form: the user always chooses among the three, and the answer says what they chose',
+    }),
+  ),
 });
 
 const ListParameters = Schema.Struct({
@@ -290,7 +299,9 @@ const usage = (name: string): string =>
 const askLine = (outcome: AskOutcome): string => {
   switch (outcome.status) {
     case "provided":
-      return `${outcome.name}: provided. ${usage(outcome.name)} Expires ${iso(outcome.expiresAt)}.`;
+      return `${outcome.name}: provided. ${usage(outcome.name)} Held for this Session only: it expires ${iso(outcome.expiresAt)}.${outcome.notKept === undefined ? "" : ` The user chose to keep it, but it could not be kept: ${outcome.notKept}`}`;
+    case "kept":
+      return `${outcome.name}: provided and ${keptWhere(outcome.scope)}, as the user chose; it does not expire. ${usage(outcome.name)}${outcome.shadowed === true ? " The Environment keeps its own Secret of this name, which wins in its Sessions over the one kept for every Environment." : ""}`;
     case "skipped":
       return `${outcome.name}: skipped by the user.`;
     case "cancelled":
@@ -321,17 +332,34 @@ const result = (
   details: { secrets: [...secrets] },
 });
 
-/** The outcome as details: JSON, with the expiry as an ISO time. */
-const outcomeDetails = (outcome: AskOutcome): { readonly [key: string]: DetailsJson } =>
-  outcome.status === "provided"
-    ? {
+/** The outcome as details: JSON, with the expiry as an ISO time and the scope of a kept Secret. */
+const outcomeDetails = (outcome: AskOutcome) => {
+  switch (outcome.status) {
+    case "provided": {
+      const held = {
         name: outcome.name,
         status: outcome.status,
         env: secretEnvName(outcome.name),
         reference: secretReference(outcome.name),
         expires_at: iso(outcome.expiresAt),
-      }
-    : { name: outcome.name, status: outcome.status };
+      };
+
+      return outcome.notKept === undefined ? held : { ...held, not_kept: outcome.notKept };
+    }
+
+    case "kept":
+      return {
+        name: outcome.name,
+        status: outcome.status,
+        scope: outcome.scope,
+        env: secretEnvName(outcome.name),
+        reference: secretReference(outcome.name),
+      };
+
+    default:
+      return { name: outcome.name, status: outcome.status };
+  }
+};
 
 /**
  * The `secrets` extension. The `resolving` tools (the coding and file tools, and `web_fetch`) run with Secrets; every
@@ -348,12 +376,12 @@ export const secretsExtension = (
     const ask = yield* defineEffectTool({
       name: "secret_ask",
       description:
-        "Ask the user to enter Secrets (API keys, passwords, tokens) in a masked form in their browser. Waits for the answer and returns how to reference each one; never its value.",
+        "Ask the user to enter Secrets (API keys, passwords, tokens) in a masked form in their browser. Waits for the answer and returns how to reference each one; never its value. The form lets the user keep what they enter for this Session only (the default, 15 minutes), for this Session's Environment or for every Environment, where it does not expire; keep only suggests one of the three, and the answer says which the user chose. A Secret kept this way is recorded in the Environment's Agent changes by name, and listed in the Run's Notification.",
       parameters: AskParameters,
       executionMode: "sequential",
       // An eviction cuts the wait off; the rerun waits for the same request, which the user still sees.
       replay: "safe",
-      execute: ({ names, reason }, api) =>
+      execute: ({ names, reason, keep }, api) =>
         Effect.gen(function* () {
           const shown = reason?.trim() === "" ? undefined : reason;
 
@@ -364,6 +392,8 @@ export const secretsExtension = (
           };
 
           if (shown !== undefined) request.reason = shown;
+
+          if (keep !== undefined) request.keep = keep;
 
           const outcomes = yield* secrets.ask(request);
 
@@ -451,6 +481,10 @@ export const secretsExtension = (
 
           // So the call's result is redacted of the kept Secrets (`afterTool`) also when it references none.
           yield* secrets.refresh;
+
+          // The `environment` tools save plain values as written and resolve no Secret Reference (`docs/spec.md` →
+          // Agent changes): a reference in their arguments is text, whether or not the Session holds it.
+          if (call.name.startsWith(ENVIRONMENT_TOOL_PREFIX)) return undefined;
 
           const names = [...referencedSecretNames(call.arguments)];
 

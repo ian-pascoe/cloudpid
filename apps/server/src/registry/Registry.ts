@@ -7,16 +7,48 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
+  AgentChange,
   EnvironmentBuildState,
+  EnvironmentRepo,
   EnvironmentSecretRecord,
   PushState,
   PushSubscription,
   SessionOrigin,
 } from "@cloudpid/protocol";
+import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
+import {
+  type AgentChangeAuthor,
+  type AgentChangeRevert,
+  changeEnvironment,
+  type ContainerFieldChange,
+  type EnvironmentChange,
+  openAgentChanges,
+  revertAgentChange,
+  wantsNewBuild,
+} from "./agent-changes.ts";
+import {
+  addRepoAs,
+  createEnvironmentAs,
+  type EnvironmentCreation,
+  type LifecycleChange,
+  type LifecycleChanged,
+  type LifecycleOutcome,
+  recordRebuildAs,
+  removeRepoAs,
+  renameEnvironmentAs,
+} from "./environment-lifecycle.ts";
+import {
+  deleteSecretAs,
+  markSecretBuildAs,
+  type SecretBuildMark,
+  type SecretDeletion,
+  EVERY_ENVIRONMENT_NAME,
+} from "./secret-changes.ts";
 import {
   buildSecretsOf,
   keepSecret,
+  keepSecretAs,
   type SecretsHandover,
   secretsHandover,
   type SecretWrite,
@@ -30,6 +62,13 @@ import type { PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
 import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
 import {
+  changeSettings,
+  revertSettingsChange,
+  type SettingsChange,
+  type SettingsChangeRevert,
+  type SettingsFieldChange,
+} from "./settings-changes.ts";
+import {
   readEnvironmentSettings,
   type EnvironmentSettingsState,
   writeEnvironmentSettings,
@@ -39,11 +78,13 @@ import {
   type EnvironmentDeletion,
   type EnvironmentNaming,
   type EnvironmentRecord,
+  EVERY_ENVIRONMENT_SCOPE,
   type LegacyObject,
   openRegistryStore,
   type RepoChange,
   type SessionRecord,
   type SessionRefusal,
+  type SubagentWorkspaceRefusal,
   type SessionStatus,
   type SpareUpkeep,
   type WorkspaceRecord,
@@ -85,6 +126,36 @@ export type EnvironmentSettingsUpdate =
   | { readonly status: "saved"; readonly state: EnvironmentSettingsState }
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
+
+/**
+ * How an Agent change to an Environment went (`changeEnvironment`): as `EnvironmentChange` says, a change also saying
+ * whether the Build upkeep after it asks for a new Build (`wantsNewBuild`).
+ */
+export type EnvironmentChangeAnswer =
+  | {
+      readonly status: "changed";
+      readonly environment: EnvironmentRecord;
+      readonly change: AgentChange;
+      readonly state: EnvironmentSettingsState;
+      readonly newBuild: boolean;
+    }
+  | Exclude<EnvironmentChange, { readonly status: "changed" }>;
+
+/** How keeping one Secret the owner chose to keep in a `secret_ask` form went: a message never holds the value. */
+export type KeptAskedResult =
+  | { readonly name: string; readonly status: "kept"; readonly shadowed: boolean }
+  | { readonly name: string; readonly status: "rejected"; readonly message: string };
+
+/** How keeping the Secrets of an answered `secret_ask` went. */
+export type KeptAsked =
+  /** The Registry does not list the Session. */
+  | { readonly status: "unknown" }
+  | {
+      readonly status: "done";
+      /** Where they were kept: the Session's Environment, or every Environment (id `*`). */
+      readonly environment: { readonly id: string; readonly name: string };
+      readonly results: ReadonlyArray<KeptAskedResult>;
+    };
 
 /** What the Registry DO answers over RPC. */
 export type RegistryMethods = {
@@ -170,6 +241,97 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly overrides: Schema.Json;
   }) => Effect.Effect<EnvironmentSettingsUpdate>;
+  /**
+   * An Agent change (`docs/spec.md` → Agent changes): give one of `environment`'s Container settings a new value, by the
+   * rules of `updateEnvironmentSettings`, and record it with its `author`. Says the values before and after and whether
+   * a new Build is wanted; a field that already has the value records nothing. The caller runs the Build upkeep after.
+   */
+  readonly changeEnvironment: (input: {
+    readonly environment: string;
+    readonly change: ContainerFieldChange;
+    /** The value the field must still have, for a change the owner approved against it (`docs/spec.md` → Approval). */
+    readonly expected?: { readonly value: Schema.Json | null } | undefined;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<EnvironmentChangeAnswer>;
+  /**
+   * The agent makes an Environment (`docs/spec.md` → Agent changes): `name` as the owner's `createEnvironment` checks
+   * it, `repos` (their directories and addresses, parsed by the caller) added, the default Container settings, recorded
+   * as an Agent change. The caller runs the spares' and Builds' upkeep after.
+   */
+  readonly agentCreateEnvironment: (input: {
+    readonly name: string;
+    readonly repos: ReadonlyArray<EnvironmentRepo>;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<EnvironmentCreation>;
+  /** The agent renames an Environment, as `renameEnvironment` does, and it is recorded. */
+  readonly agentRenameEnvironment: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleChange>;
+  /** The agent adds a Repo to an Environment, as `addRepo` does, and it is recorded. The caller runs the upkeep after. */
+  readonly agentAddRepo: (input: {
+    readonly environment: string;
+    readonly repo: EnvironmentRepo;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleChange>;
+  /** The agent takes a Repo out of an Environment, as `removeRepo` does, and it is recorded. The caller runs the upkeep after. */
+  readonly agentRemoveRepo: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleOutcome<LifecycleChanged>>;
+  /** Record that the agent asked for a new Build of an Environment, once it is under way. */
+  readonly recordRebuild: (input: {
+    readonly environment: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<LifecycleOutcome<LifecycleChanged>>;
+  /**
+   * An Agent change (`docs/spec.md` → Agent changes): mark the Secret `name` kept for `environment` (an Environment's id,
+   * or `*` for every Environment) for the Build, or take the mark off, as the owner's switch does, and record it with its
+   * `author`; a Secret that has the mark records nothing. The caller runs the Builds' upkeep after.
+   */
+  readonly agentMarkSecretBuild: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly build: boolean;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SecretBuildMark>;
+  /**
+   * An Agent change the owner approved (`docs/spec.md` → Approval): delete the Secret `name` kept for `environment` (an
+   * Environment's id, or `*` for every Environment), as the owner's delete does, and record it by name with its
+   * `author`, provided it was last changed at `expected.updatedAt` (as the owner saw it). The caller runs the Builds'
+   * upkeep after.
+   */
+  readonly agentDeleteSecret: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly expected?: { readonly updatedAt: number } | undefined;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SecretDeletion>;
+  /**
+   * Keep Secrets the owner chose to keep in the form of a `secret_ask` of `session`'s conversation `conversation`: for
+   * the Session's Environment (`scope` "environment") or for every Environment ("every"), sealed here as the owner's form
+   * on the Environments page seals them, by the same name and value rules. Each kept Secret is recorded by name in the
+   * scope's Agent changes as the owner's choice made on the agent's request (`reason` is the agent's). The caller runs
+   * the Builds' upkeep after. For the Session DO only: the values arrive over Durable Object RPC and are never answered.
+   */
+  readonly keepAskedSecrets: (input: {
+    readonly session: string;
+    readonly conversation: number;
+    readonly scope: "environment" | "every";
+    readonly reason: string;
+    readonly secrets: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  }) => Effect.Effect<KeptAsked>;
+  /** An Environment's Agent changes (or those of the Secrets kept for every Environment, `*`), newest first; null when it is not registered. */
+  readonly listAgentChanges: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<ReadonlyArray<AgentChange> | null>;
+  /** The owner's revert of an Agent change, unless its field has changed since. */
+  readonly revertAgentChange: (input: {
+    readonly environment: string;
+    readonly change: number;
+  }) => Effect.Effect<AgentChangeRevert>;
   /** The Workspace registered under `id`, or null. */
   readonly getWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceRecord | null>;
   /**
@@ -181,6 +343,22 @@ export type RegistryMethods = {
   }) => Effect.Effect<WorkspaceSetupWithSettings | null>;
   /** Every Workspace, newest first. */
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
+  /**
+   * Register a Subagent Workspace for subagent `agent` of Session `session` (`RegistryStore.createSubagentWorkspace`),
+   * under a fresh id unless the Environment's spare is taken; the one the subagent has already is answered again. A
+   * refusal says why.
+   */
+  readonly createSubagentWorkspace: (input: {
+    readonly session: string;
+    readonly agent: string;
+    readonly branch: string | null;
+    readonly base: string | null;
+    readonly limit: number;
+  }) => Effect.Effect<WorkspaceRecord | SubagentWorkspaceRefusal>;
+  /** Session `session`'s Subagent Workspaces, newest first. */
+  readonly listSubagentWorkspaces: (input: {
+    readonly session: string;
+  }) => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
   /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
   readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<Deletion>;
   /**
@@ -263,6 +441,21 @@ export type RegistryMethods = {
     readonly overrides: Schema.Json;
   }) => Effect.Effect<SettingsUpdate>;
   /**
+   * An Agent change to the Settings (`docs/spec.md` → Agent changes): give some of their fields new values, by the rules
+   * of `updateSettings`, and record each field that changed with its `author`; none of the values before or after is
+   * recorded for a field that already has its value. Sessions read the new settings when they next admit input.
+   */
+  readonly changeSettings: (input: {
+    readonly changes: ReadonlyArray<SettingsFieldChange>;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SettingsChange>;
+  /** The Settings' Agent changes, newest first. */
+  readonly listSettingsChanges: () => Effect.Effect<ReadonlyArray<AgentChange>>;
+  /** The owner's revert of a Settings change, unless its field has changed since. */
+  readonly revertSettingsChange: (input: {
+    readonly change: number;
+  }) => Effect.Effect<SettingsChangeRevert>;
+  /**
    * The VAPID public key to subscribe with, and whether a subscription at `endpoint` is kept. Pushes to a browser the
    * push service dropped are deleted on the next one, so a client asks before it trusts its own subscription.
    */
@@ -301,6 +494,7 @@ export const RegistryLive = Registry.make(
     Effect.map(({ state, push, secrets }) =>
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
+        const changes = openAgentChanges(state.raw.storage);
         const notify = pushNotifier({ store, vapid: push.vapid });
 
         // The kept Secrets' key, derived once, on first use: a malformed master key fails the calls that need it, not
@@ -424,6 +618,176 @@ export const RegistryLive = Registry.make(
 
               return { status: "saved", state: saved.success };
             }),
+          changeEnvironment: ({ environment, change, expected, author }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+
+              const outcome = changeEnvironment(
+                state.raw.storage,
+                store,
+                changes,
+                { environment, change, expected, author },
+                now,
+              );
+
+              if (outcome.status !== "changed") return outcome;
+
+              const { previous, ...changed } = outcome;
+
+              const newBuild = yield* Effect.promise(() =>
+                wantsNewBuild(outcome.environment.repos, previous, outcome.state.settings),
+              );
+
+              return { ...changed, newBuild } satisfies EnvironmentChangeAnswer;
+            }),
+          agentCreateEnvironment: ({ name, repos, author }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              let id = yield* newEnvironmentId;
+
+              while (store.getEnvironment(id) !== null) id = yield* newEnvironmentId;
+
+              return createEnvironmentAs(
+                state.raw.storage,
+                store,
+                changes,
+                { id, name, repos, author },
+                now,
+              );
+            }),
+          agentRenameEnvironment: ({ environment, name, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                renameEnvironmentAs(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, name, author },
+                  now,
+                ),
+              ),
+            ),
+          agentAddRepo: ({ environment, repo, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                addRepoAs(state.raw.storage, store, changes, { environment, repo, author }, now),
+              ),
+            ),
+          agentRemoveRepo: ({ environment, name, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                removeRepoAs(state.raw.storage, store, changes, { environment, name, author }, now),
+              ),
+            ),
+          recordRebuild: ({ environment, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                recordRebuildAs(state.raw.storage, store, changes, { environment, author }, now),
+              ),
+            ),
+          agentMarkSecretBuild: ({ environment, name, build, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                markSecretBuildAs(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, name, build, author },
+                  now,
+                ),
+              ),
+            ),
+          agentDeleteSecret: ({ environment, name, expected, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                deleteSecretAs(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, name, expected, author },
+                  now,
+                ),
+              ),
+            ),
+          keepAskedSecrets: ({ session, conversation, scope, reason, secrets: asked }) =>
+            Effect.gen(function* () {
+              const known = store.getSession(session);
+
+              if (known === null) return { status: "unknown" } satisfies KeptAsked;
+
+              const now = yield* Clock.currentTimeMillis;
+              const environment = scope === "every" ? null : known.environment;
+
+              // The reason is the agent's text and is kept as written: one that holds a value being kept is left out.
+              const author = {
+                session,
+                conversation,
+                tool: "secret_ask",
+                reason: Arr.some(asked, ({ value }) => reason.includes(value))
+                  ? "The user chose to keep the Secret in the form the agent asked it in"
+                  : reason,
+              };
+
+              const results: KeptAskedResult[] = [];
+
+              for (const { name, value } of asked) {
+                const kept = yield* Effect.flatMap(vault, (keys) =>
+                  keepSecretAs(
+                    state.raw.storage,
+                    store,
+                    changes,
+                    keys,
+                    { environment, name, value, sessionEnvironment: known.environment, author },
+                    now,
+                  ),
+                ).pipe(
+                  // A fixed message: what a failed seal says may hold more than the Registry should pass on.
+                  Effect.orElseSucceed(
+                    () =>
+                      ({
+                        status: "rejected",
+                        message: "The Secret cannot be kept: the Registry could not seal it",
+                      }) as const,
+                  ),
+                );
+
+                results.push(
+                  kept.status === "kept"
+                    ? { name, status: "kept", shadowed: kept.shadowed }
+                    : { name, status: "rejected", message: kept.message },
+                );
+              }
+
+              return {
+                status: "done",
+                environment:
+                  environment === null
+                    ? { id: EVERY_ENVIRONMENT_SCOPE, name: EVERY_ENVIRONMENT_NAME }
+                    : {
+                        id: known.environment,
+                        name: store.getEnvironment(known.environment)?.name ?? known.environment,
+                      },
+                results,
+              } satisfies KeptAsked;
+            }),
+          listAgentChanges: ({ environment }) =>
+            Effect.sync(() =>
+              environment !== EVERY_ENVIRONMENT_SCOPE && store.getEnvironment(environment) === null
+                ? null
+                : changes.list(environment),
+            ),
+          revertAgentChange: ({ environment, change }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                revertAgentChange(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, id: change },
+                  now,
+                ),
+              ),
+            ),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
           getWorkspaceSetup: ({ id }) =>
             Effect.suspend(() => {
@@ -432,6 +796,18 @@ export const RegistryLive = Registry.make(
               return setup === null ? Effect.succeed(null) : withSettings(setup);
             }),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
+          createSubagentWorkspace: (input) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              // Eight hex digits rarely collide; one that does (a spare's too) is drawn again.
+              let id = yield* newWorkspaceId;
+
+              while (store.getWorkspaceSetup(id) !== null) id = yield* newWorkspaceId;
+
+              return store.createSubagentWorkspace({ ...input, id }, now);
+            }),
+          listSubagentWorkspaces: ({ session }) =>
+            Effect.sync(() => store.listSubagentWorkspaces(session)),
           deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
           upkeepSpares: ({ environments }) =>
             Effect.gen(function* () {
@@ -531,6 +907,19 @@ export const RegistryLive = Registry.make(
                   ? SettingsUpdate.Saved({ state: saved.success })
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
+            ),
+          changeSettings: ({ changes: wanted, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                changeSettings(state.raw.storage, store, changes, { changes: wanted, author }, now),
+              ),
+            ),
+          listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
+          revertSettingsChange: ({ change }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                revertSettingsChange(state.raw.storage, store, changes, { id: change }, now),
+              ),
             ),
           getPush: ({ endpoint }) =>
             Effect.sync(() => ({

@@ -41,7 +41,7 @@ A Fork taken at the latest point of the source's active branch, so both Sessions
 _Avoid_: Copy, duplicate
 
 **Subagent**:
-A child agent whose conversation is owned by its parent within the same Session.
+A child agent whose conversation is owned by its parent within the same Session. It works in its parent's Workspace unless it has a Subagent Workspace.
 _Avoid_: Child session, worker, sub-session
 
 **Run**:
@@ -150,6 +150,10 @@ _Avoid_: Image, template, cache
 A Build the agent makes from proposed Environment changes before saving them, to check that they work. No Workspace starts from it, and it never replaces the Environment's last good Build.
 _Avoid_: Dry run, preview Build, draft Build
 
+**Subagent Workspace**:
+A Workspace made for one Subagent, in its parent's Environment and Session, on a branch of its own; it lasts as long as the Subagent.
+_Avoid_: Worktree, sandbox, child Session
+
 **Workspace removal**:
 Deleting a Workspace with its Sessions, files and Container. What it pushed stays on the remote; its uncommitted changes and unpushed commits are lost.
 _Avoid_: Cleanup (for the owner's action), reset
@@ -157,7 +161,7 @@ _Avoid_: Cleanup (for the owner's action), reset
 ## Execution
 
 **Container restart**:
-Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from its Environment's Build and runs its Start Scripts again; the files and Sessions stay. The owner's, from the Environments page. The agent's (`restart_container`, for a Container that no longer answers) keeps the Snapshot unless asked for a fresh one, so the next Container starts from it.
+Stopping a Workspace's Container and forgetting its Snapshot, so the next message or command starts one from its Environment's Build and runs its Start Scripts again; the files and Sessions stay. The owner's, from the Environments page. The agent's (`container_restart`, for a Container that no longer answers) keeps the Snapshot unless asked for a fresh one, so the next Container starts from it.
 _Avoid_: Reset (for the Container alone), reboot
 
 **Container resize**:
@@ -251,11 +255,11 @@ _Avoid_: Budget, quota, cap
 ## The agent's changes to its harness
 
 **Agent change**:
-A change the agent makes to an Environment or to the Settings, recorded with when, the Session, the reason and the values before and after, so the owner can see it and revert it.
+A change the agent makes to an Environment or to the Settings, recorded with when, the Session, the reason and the values before and after, so the owner can see it and revert it. Some have no revert: the making of an Environment (deleting one needs the owner's Approval), a Build asked for, and a Secret the owner kept in a `secret_ask` form on the agent's request or that the agent deleted with the owner's Approval (recorded by name only, as the history holds no value to bring back). A change the owner approved first is marked so; deleting an Environment is recorded nowhere, as its history goes with it.
 _Avoid_: Audit entry, self-modification (for one change), edit
 
 **Limit**:
-A setting that bounds what the agent may spend or start: the Spend limit, an Environment's size limit, the subagent depth. The agent changes one only with the owner's Approval.
+A setting that bounds what the agent may spend or start: the Spend limit, an Environment's size limit, the subagent depth, the Subagent Workspace limit (how many Subagent Workspaces one Session has at once). The agent changes one only with the owner's Approval.
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:

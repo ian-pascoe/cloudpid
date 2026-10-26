@@ -18,14 +18,17 @@ import {
   LiveDoc,
   type NextTaskState,
   ROOT_CONVERSATION_ID,
+  type Task,
   type TaskRuntime,
   type Tx,
 } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
+import * as EffectContext from "effect/Context";
 import * as Record from "effect/Record";
 import * as Option from "effect/Option";
 import { ROOT_AGENT } from "./ids.ts";
 import {
+  type AgentRecord,
   addTurn,
   answerText,
   conversationOf,
@@ -73,6 +76,24 @@ export type ReporterInput = {
   from: string;
 };
 
+/**
+ * The line a settled turn's result ends with, for an agent with a Subagent Workspace of its own (`handBackLine`): its
+ * branch and what it has not pushed, read as the turn settles. Never rejects.
+ */
+export type HandBack = (agent: AgentRecord, context: Context) => Promise<string | undefined>;
+
+/** The reporter task the extension installs, for the tools that start turns. */
+export class SubagentReporter extends EffectContext.Service<SubagentReporter, ReporterTask>()(
+  "@cloudpid/extensions/subagents/tasks/SubagentReporter",
+) {}
+
+/** A turn's result with the hand-back line it ends with, if any. */
+export const withHandBack = (text: string, handBack: string | undefined): string =>
+  handBack === undefined ? text : text === "" ? handBack : `${text}\n\n${handBack}`;
+
+/** The reporter task as the extension installs it (`reporterWith`). */
+export type ReporterTask = Task<ReporterInput, ReporterState, null, object>;
+
 type ReporterState =
   | { phase: "deliver" }
   /** Hold `report` until the parent is idle; `round` counts the times it was found busy again. */
@@ -109,6 +130,7 @@ export const startTurn = async (
   state: Draft<SubagentsState>,
   input: Omit<ReporterInput, "turnId">,
   now: number,
+  reporter: ReporterTask,
 ): Promise<string | undefined> => {
   const agent = state.agents[input.agentId];
   const owner = agent === undefined ? undefined : conversationOf(state, agent.parent);
@@ -119,15 +141,15 @@ export const startTurn = async (
 
   agent.nextTurn += 1;
 
-  const reporter = await tx.createTask(
-    Reporter,
+  const task = await tx.createTask(
+    reporter,
     { ...input, turnId },
     { ownership: { kind: "conversation" }, conversationId: owner, background: true },
   );
 
   addTurn(agent, {
     id: turnId,
-    reporter,
+    reporter: task,
     status: "running",
     startedAt: now,
     endedAt: null,
@@ -139,248 +161,275 @@ export const startTurn = async (
   return turnId;
 };
 
-/** Delivers one turn's input to an agent and its result to the agent's parent. */
-export const Reporter = defineTask<ReporterInput, ReporterState, null>({
-  name: "cloudpid.subagent-reporter",
-  version: 1,
-  initial: () => ({ phase: "deliver" }),
-  phases: {
-    deliver: async (reporter, runtime, context) => {
-      const { agentId, turnId, content, whenBusy, from } = reporter.input;
-      const state = (await runtime.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE;
-      const agent = state.agents[agentId];
+/**
+ * Delivers one turn's input to an agent and its result to the agent's parent. A result of an agent with a Subagent
+ * Workspace of its own ends with `handBack`'s line.
+ */
+export const reporterWith = (handBack: HandBack): ReporterTask => {
+  const definition: ReporterTask = defineTask<ReporterInput, ReporterState, null>({
+    name: "cloudpid.subagent-reporter",
+    version: 1,
+    initial: () => ({ phase: "deliver" }),
+    phases: {
+      deliver: async (reporter, runtime, context) => {
+        const { agentId, turnId, content, whenBusy, from } = reporter.input;
+        const state = (await runtime.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE;
+        const agent = state.agents[agentId];
 
-      const conversation =
-        agent === undefined ? undefined : await runtime.conversation(agent.conversationId, context);
-
-      // Deleted before its input was delivered.
-      if (conversation === undefined) {
-        await runtime.commit(() => completed(null), context);
-
-        return;
-      }
-
-      const submission = await conversation.submit(
-        {
-          type: "input",
-          content,
-          whenBusy,
-          requestId: `subagent-turn:${reporter.id}`,
-          entry: { kind: AGENT_INPUT_KIND, data: { from, agent_id: agentId, turn_id: turnId } },
-        },
-        context,
-      );
-
-      const settled = await submission.wait(context);
-
-      // One commit settles the turn and decides its delivery, so a restart never decides again.
-      await runtime.commit(async (tx) => {
-        // Table reads come before the commit's writes.
-        const answer =
-          settled.status === "done" && settled.type === "input" ? settled.answer : null;
-
-        const text = answer === null ? "" : await answerText(tx, answer);
-        const doc = await tx.doc(SubagentsDoc);
-        const record = doc.agents[agentId];
-
-        const settledTurn =
-          record === undefined
+        const conversation =
+          agent === undefined
             ? undefined
-            : Option.getOrUndefined(Arr.findFirst(record.turns, (each) => each.id === turnId));
+            : await runtime.conversation(agent.conversationId, context);
 
-        if (record === undefined || settledTurn === undefined) return completed(null);
+        // Deleted before its input was delivered.
+        if (conversation === undefined) {
+          await runtime.commit(() => completed(null), context);
 
-        const status: TurnStatus =
-          answer !== null ? "completed" : settled.reason === "aborted" ? "aborted" : "failed";
+          return;
+        }
 
-        const error = status === "failed" ? (settled.reason ?? "failed") : null;
-        const now = runtime.now();
-
-        settledTurn.status = status;
-        settledTurn.answer = answer;
-        settledTurn.error = error;
-        settledTurn.endedAt = now;
-
-        const next = (report: string | null): NextTaskState<ReporterState, null> => ({
-          status: "running",
-          checkpoint: { phase: "report", parent: record.parent, report, round: 0 },
-        });
-
-        // A wait blocked on this turn claims its result.
-        const waiting = Option.getOrUndefined(
-          Arr.findFirst(
-            Record.values(doc.waiters),
-            (waiter) =>
-              waiter.caller === record.parent &&
-              waiter.target === agentId &&
-              waiter.turnId === turnId &&
-              waiter.result === null,
-          ),
+        const submission = await conversation.submit(
+          {
+            type: "input",
+            content,
+            whenBusy,
+            requestId: `subagent-turn:${reporter.id}`,
+            entry: { kind: AGENT_INPUT_KIND, data: { from, agent_id: agentId, turn_id: turnId } },
+          },
+          context,
         );
 
-        // Several inputs steered into one run end in one answer, which reaches the parent once, whichever of their
-        // turns settles first: the turn that carries it is `wait`, `pending`, or `auto`, and the others `duplicate`.
-        const siblings =
-          answer === null
-            ? []
-            : Arr.filter(record.turns, (each) => each.id !== turnId && each.answer === answer);
+        const settled = await submission.wait(context);
 
-        const delivered = Arr.some(
-          siblings,
-          (each) => each.delivery === "wait" || each.delivery === "auto",
-        );
+        // Read before the commit, which holds the Session line: what the agent's own Workspace has not pushed.
+        const handBackLine =
+          agent?.workspace === undefined || settled.reason === "aborted"
+            ? undefined
+            : await handBack(agent, context);
 
-        if (waiting !== undefined) {
-          // A report still held for the same answer gives way to this wait.
-          for (const each of siblings) {
-            if (each.delivery === "pending") each.delivery = "duplicate";
+        // One commit settles the turn and decides its delivery, so a restart never decides again.
+        await runtime.commit(async (tx) => {
+          // Table reads come before the commit's writes.
+          const answer =
+            settled.status === "done" && settled.type === "input" ? settled.answer : null;
+
+          const text = answer === null ? "" : await answerText(tx, answer);
+          const doc = await tx.doc(SubagentsDoc);
+          const record = doc.agents[agentId];
+
+          const settledTurn =
+            record === undefined
+              ? undefined
+              : Option.getOrUndefined(Arr.findFirst(record.turns, (each) => each.id === turnId));
+
+          if (record === undefined || settledTurn === undefined) return completed(null);
+
+          const status: TurnStatus =
+            answer !== null ? "completed" : settled.reason === "aborted" ? "aborted" : "failed";
+
+          const error = status === "failed" ? (settled.reason ?? "failed") : null;
+          const now = runtime.now();
+
+          settledTurn.status = status;
+          settledTurn.answer = answer;
+          settledTurn.error = error;
+          settledTurn.endedAt = now;
+
+          if (handBackLine !== undefined) settledTurn.handBack = handBackLine;
+
+          const next = (report: string | null): NextTaskState<ReporterState, null> => ({
+            status: "running",
+            checkpoint: { phase: "report", parent: record.parent, report, round: 0 },
+          });
+
+          // A wait blocked on this turn claims its result.
+          const waiting = Option.getOrUndefined(
+            Arr.findFirst(
+              Record.values(doc.waiters),
+              (waiter) =>
+                waiter.caller === record.parent &&
+                waiter.target === agentId &&
+                waiter.turnId === turnId &&
+                waiter.result === null,
+            ),
+          );
+
+          // Several inputs steered into one run end in one answer, which reaches the parent once, whichever of their
+          // turns settles first: the turn that carries it is `wait`, `pending`, or `auto`, and the others `duplicate`.
+          const siblings =
+            answer === null
+              ? []
+              : Arr.filter(record.turns, (each) => each.id !== turnId && each.answer === answer);
+
+          const delivered = Arr.some(
+            siblings,
+            (each) => each.delivery === "wait" || each.delivery === "auto",
+          );
+
+          if (waiting !== undefined) {
+            // A report still held for the same answer gives way to this wait.
+            for (const each of siblings) {
+              if (each.delivery === "pending") each.delivery = "duplicate";
+            }
+
+            const elapsed_ms = now - waiting.startedAt;
+
+            waiting.result = waitEvent(
+              "turn",
+              agentId,
+              delivered
+                ? { turn_id: turnId, status, already_delivered: true, elapsed_ms }
+                : {
+                    turn_id: turnId,
+                    status,
+                    output: withHandBack(text, settledTurn.handBack),
+                    error,
+                    elapsed_ms,
+                  },
+            );
+            settledTurn.delivery = delivered ? "duplicate" : "wait";
+
+            return next(null);
           }
 
-          const elapsed_ms = now - waiting.startedAt;
+          if (siblings.length > 0) {
+            settledTurn.delivery = "duplicate";
 
-          waiting.result = waitEvent(
-            "turn",
-            agentId,
-            delivered
-              ? { turn_id: turnId, status, already_delivered: true, elapsed_ms }
-              : { turn_id: turnId, status, output: text, error, elapsed_ms },
+            return next(null);
+          }
+
+          // Stopped, or withdrawn while queued: nothing to report.
+          if (status === "aborted") {
+            settledTurn.delivery = "none";
+
+            return next(null);
+          }
+
+          // Reported once the parent is idle; a wait may claim it until then.
+          settledTurn.delivery = "pending";
+
+          return next(
+            `${envelope("result", agentId, turnId, status)}\n${withHandBack(
+              status === "completed" ? text : `The turn failed: ${error ?? "unknown error"}`,
+              settledTurn.handBack,
+            )}`,
           );
-          settledTurn.delivery = delivered ? "duplicate" : "wait";
+        }, context);
+      },
+      // Hold the report while the parent is busy, so a `subagent_wait` in its run can still claim the result instead
+      // of being told it was delivered while it sits queued. Once the parent is idle, report it: as an input to the
+      // root (`post`), or as a new turn of a parent that is itself a subagent, so that turn's answer is reported further
+      // up.
+      report: async (reporter, runtime, context) => {
+        const { parent, report, round } = reporter.state.checkpoint;
+        const { agentId, turnId } = reporter.input;
 
-          return next(null);
+        if (report === null) {
+          await runtime.commit(() => completed(null), context);
+
+          return;
         }
 
-        if (siblings.length > 0) {
-          settledTurn.delivery = "duplicate";
-
-          return next(null);
-        }
-
-        // Stopped, or withdrawn while queued: nothing to report.
-        if (status === "aborted") {
-          settledTurn.delivery = "none";
-
-          return next(null);
-        }
-
-        // Reported once the parent is idle; a wait may claim it until then.
-        settledTurn.delivery = "pending";
-
-        return next(
-          `${envelope("result", agentId, turnId, status)}\n${status === "completed" ? text : `The turn failed: ${error ?? "unknown error"}`}`,
+        const owner = reportTarget(
+          (await runtime.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE,
+          agentId,
+          parent,
         );
-      }, context);
-    },
-    // Hold the report while the parent is busy, so a `subagent_wait` in its run can still claim the result instead
-    // of being told it was delivered while it sits queued. Once the parent is idle, report it: as an input to the
-    // root (`post`), or as a new turn of a parent that is itself a subagent, so that turn's answer is reported further
-    // up.
-    report: async (reporter, runtime, context) => {
-      const { parent, report, round } = reporter.state.checkpoint;
-      const { agentId, turnId } = reporter.input;
 
-      if (report === null) {
+        if (owner !== undefined) await whenIdle(runtime, owner, context);
+
+        await runtime.commit(async (tx): Promise<NextTaskState<ReporterState, null>> => {
+          const doc = await tx.doc(SubagentsDoc);
+
+          const turn = Option.getOrUndefined(
+            Arr.findFirst(doc.agents[agentId]?.turns ?? [], (each) => each.id === turnId),
+          );
+
+          // Claimed by a wait meanwhile, or deleted.
+          if (turn?.delivery !== "pending") return completed(null);
+
+          const conversation = reportTarget(doc, agentId, parent);
+
+          if (conversation === undefined) {
+            turn.delivery = "none";
+
+            return completed(null);
+          }
+
+          if ((await tx.doc(LiveDoc, conversation)).run !== undefined) {
+            return {
+              status: "running",
+              checkpoint: { phase: "report", parent, report, round: round + 1 },
+            };
+          }
+
+          turn.delivery = "auto";
+
+          if (parent === ROOT_AGENT) {
+            return { status: "running", checkpoint: { phase: "post", report, conversation } };
+          }
+
+          await startTurn(
+            tx,
+            doc,
+            { agentId: parent, content: report, whenBusy: "followUp", from: agentId },
+            runtime.now(),
+            definition,
+          );
+
+          return completed(null);
+        }, context);
+      },
+      // The root has no reporter of its own: the report is submitted to it, once, by its request ID.
+      post: async (reporter, runtime, context) => {
+        const { report, conversation = ROOT_CONVERSATION_ID } = reporter.state.checkpoint;
+        const { agentId, turnId } = reporter.input;
+        const root = await runtime.conversation(conversation, context);
+
+        await root?.submit(
+          {
+            type: "input",
+            content: report,
+            whenBusy: "followUp",
+            requestId: `subagent-report:${reporter.id}`,
+            entry: {
+              kind: AGENT_INPUT_KIND,
+              data: { from: agentId, agent_id: agentId, turn_id: turnId },
+            },
+          },
+          context,
+        );
+
         await runtime.commit(() => completed(null), context);
-
-        return;
-      }
-
-      const owner = reportTarget(
-        (await runtime.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE,
-        agentId,
-        parent,
-      );
-
-      if (owner !== undefined) await whenIdle(runtime, owner, context);
-
-      await runtime.commit(async (tx): Promise<NextTaskState<ReporterState, null>> => {
+      },
+    },
+    // Aborted with its conversation's background work, as when its parent is deleted: the turn ends unreported.
+    abort: (reporter, runtime, context) =>
+      runtime.commit(async (tx) => {
         const doc = await tx.doc(SubagentsDoc);
 
         const turn = Option.getOrUndefined(
-          Arr.findFirst(doc.agents[agentId]?.turns ?? [], (each) => each.id === turnId),
+          Arr.findFirst(
+            doc.agents[reporter.input.agentId]?.turns ?? [],
+            (each) => each.id === reporter.input.turnId,
+          ),
         );
 
-        // Claimed by a wait meanwhile, or deleted.
-        if (turn?.delivery !== "pending") return completed(null);
-
-        const conversation = reportTarget(doc, agentId, parent);
-
-        if (conversation === undefined) {
+        if (turn?.status === "running") {
+          turn.status = "aborted";
           turn.delivery = "none";
-
-          return completed(null);
+          turn.endedAt = runtime.now();
         }
 
-        if ((await tx.doc(LiveDoc, conversation)).run !== undefined) {
-          return {
-            status: "running",
-            checkpoint: { phase: "report", parent, report, round: round + 1 },
-          };
-        }
+        // Stopped while its report was held for an idle parent: the owner stopped everything, so nothing is reported.
+        if (turn?.delivery === "pending") turn.delivery = "none";
 
-        turn.delivery = "auto";
+        return aborted();
+      }, context),
+  });
 
-        if (parent === ROOT_AGENT) {
-          return { status: "running", checkpoint: { phase: "post", report, conversation } };
-        }
-
-        await startTurn(
-          tx,
-          doc,
-          { agentId: parent, content: report, whenBusy: "followUp", from: agentId },
-          runtime.now(),
-        );
-
-        return completed(null);
-      }, context);
-    },
-    // The root has no reporter of its own: the report is submitted to it, once, by its request ID.
-    post: async (reporter, runtime, context) => {
-      const { report, conversation = ROOT_CONVERSATION_ID } = reporter.state.checkpoint;
-      const { agentId, turnId } = reporter.input;
-      const root = await runtime.conversation(conversation, context);
-
-      await root?.submit(
-        {
-          type: "input",
-          content: report,
-          whenBusy: "followUp",
-          requestId: `subagent-report:${reporter.id}`,
-          entry: {
-            kind: AGENT_INPUT_KIND,
-            data: { from: agentId, agent_id: agentId, turn_id: turnId },
-          },
-        },
-        context,
-      );
-
-      await runtime.commit(() => completed(null), context);
-    },
-  },
-  // Aborted with its conversation's background work, as when its parent is deleted: the turn ends unreported.
-  abort: (reporter, runtime, context) =>
-    runtime.commit(async (tx) => {
-      const doc = await tx.doc(SubagentsDoc);
-
-      const turn = Option.getOrUndefined(
-        Arr.findFirst(
-          doc.agents[reporter.input.agentId]?.turns ?? [],
-          (each) => each.id === reporter.input.turnId,
-        ),
-      );
-
-      if (turn?.status === "running") {
-        turn.status = "aborted";
-        turn.delivery = "none";
-        turn.endedAt = runtime.now();
-      }
-
-      // Stopped while its report was held for an idle parent: the owner stopped everything, so nothing is reported.
-      if (turn?.delivery === "pending") turn.delivery = "none";
-
-      return aborted();
-    }, context),
-});
+  return definition;
+};
 
 /** What a wait task blocks on. */
 export type WaitInput = {

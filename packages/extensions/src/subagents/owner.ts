@@ -13,15 +13,20 @@ import * as Record from "effect/Record";
 import { ROOT_AGENT } from "./ids.ts";
 import {
   agentOf,
+  deleteSubtree,
   EMPTY_STATE,
   SubagentsDoc,
   subtreeOf,
   type AgentRecord,
   type SubagentsState,
 } from "./state.ts";
+import type { SubagentWorkspaceHost } from "./workspaces.ts";
 
 /** What the owner reads and stops through: a Harness's Session documents and conversations. */
 export type OwnerHarness = Pick<Harness, "conversation" | "snapshot">;
+
+/** What the owner deletes an agent through: also the Harness's commits. */
+export type OwnerDeleteHarness = OwnerHarness & Pick<Harness, "commit">;
 
 const readState = async (harness: OwnerHarness, context: Context): Promise<SubagentsState> =>
   (await harness.snapshot(SubagentsDoc, context)) ?? EMPTY_STATE;
@@ -93,4 +98,60 @@ export const stopConversation = async (
       });
     }
   }
+};
+
+/** What an owner's delete did: the agents deleted, and why a Subagent Workspace of theirs is still there. */
+export type OwnerDeletion = {
+  readonly deleted: ReadonlyArray<string>;
+  readonly kept: ReadonlyArray<string>;
+};
+
+/**
+ * Delete agent `agentId` with everything below it, as `subagent_delete` with `discard: true` does (the owner confirmed
+ * losing what was not pushed): stop them, retire their IDs, end the waits on them, and remove their Subagent Workspaces
+ * through `workspaces`. An agent already deleted deletes nothing, and so does one that does not work in `workspace` (an
+ * agent that took the ID of one whose Workspace was left behind).
+ */
+export const deleteAgent = async (
+  harness: OwnerDeleteHarness,
+  agentId: string,
+  workspace: string,
+  workspaces: SubagentWorkspaceHost | undefined,
+  context: Context,
+): Promise<OwnerDeletion> => {
+  const agent = (await readState(harness, context)).agents[agentId];
+
+  if (agent === undefined || agentId === ROOT_AGENT || agent.workspace?.id !== workspace) {
+    return { deleted: [], kept: [] };
+  }
+
+  await stopConversation(harness, agent.conversationId, { subagents: true }, context);
+
+  const gone = await harness.commit(
+    async (tx) => deleteSubtree(await tx.doc(SubagentsDoc), agentId),
+    context,
+  );
+
+  // One spawned after the stop is deleted too: stop it now that it can spawn no more.
+  for (const each of gone) {
+    await (
+      await harness.conversation(each.conversationId, context)
+    )?.abort(context, { background: true });
+  }
+
+  const kept: string[] = [];
+
+  for (const { id, workspace } of gone) {
+    if (workspace === undefined || workspaces === undefined) continue;
+
+    try {
+      await workspaces.remove(workspace);
+    } catch (error) {
+      kept.push(
+        `The Subagent Workspace ${workspace.id} of ${id} could not be removed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  return { deleted: Arr.map(gone, (each) => each.id), kept };
 };

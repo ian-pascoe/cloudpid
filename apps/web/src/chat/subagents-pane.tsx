@@ -1,5 +1,6 @@
-// The Subagents Pane: the Session's subagents (each openable into its thread) and the background tasks running, from
-// the task graph the Session streams. The Todo List is the Activity card's, over the chat (`activity-card.tsx`).
+// The Subagents Pane: the Session's subagents (each openable into its thread, its header with its Subagent Workspace's
+// branch when it has one) and the background tasks running, from the task graph the Session streams. The Todo List is
+// the Activity card's, over the chat (`activity-card.tsx`).
 
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
@@ -13,7 +14,7 @@ import { agentRowOpenAtom } from "../session-layout-state.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
-import { AgentStatus, shortModel } from "./subagent-card.tsx";
+import { AgentBranch, AgentStatus, shortModel } from "./subagent-card.tsx";
 import { revealedAgentAtom } from "./subagents-state.ts";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
@@ -53,6 +54,9 @@ const AgentRow = ({ agent, depth }: RowProps) => {
           )}
           <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
             {shortModel(agent.model)}
+          </span>
+          <span className="min-w-0 text-muted-foreground">
+            <AgentBranch agent={agent} />
           </span>
         </button>
         <AgentStatus agent={agent} />

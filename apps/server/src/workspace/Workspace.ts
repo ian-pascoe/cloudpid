@@ -37,6 +37,8 @@ import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import type { InstructionFile } from "@cloudpid/extensions/agents-md-discovery";
 import type { ContainerUsage } from "@cloudpid/protocol";
+import type { InstanceType } from "@cloudpid/config";
+import type { ContainerResizeOutcome } from "@cloudpid/extensions/container";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -49,6 +51,7 @@ import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type ContainerUsageRecord } from "./container-usage.ts";
 import { ContainerLaunch, containerIgnore, type LaunchRecord } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
+import { ContainerResizes } from "./resize.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
   failure,
@@ -57,7 +60,12 @@ import {
   preparationHost,
   type WorkspaceSetup,
 } from "./prepare.ts";
-import { carryWorkspaceScript } from "@cloudpid/sandbox-image/workspaces";
+import {
+  carryWorkspaceScript,
+  parseWorkState,
+  type RepoWorkState,
+  workStateScript,
+} from "@cloudpid/sandbox-image/workspaces";
 import {
   workspaceBuildStore,
   type WorkspaceSettingsAnswer,
@@ -131,6 +139,9 @@ const LAST_USE_KEY = "cloudpid:container-last-use";
 const LAUNCH_KEY = "cloudpid:container-launch";
 const SNAPSHOT_KEY = "cloudpid:container-snapshot";
 
+/** Where the size the agent's resize recorded for the next launch is kept, until the idle stop (`ContainerResizes`). */
+const RESIZE_KEY = "cloudpid:container-resize";
+
 /** Where what the Containers have cost is kept (`ContainerUsageLedger`). */
 const USAGE_KEY = "cloudpid:container-usage";
 
@@ -148,6 +159,9 @@ const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
 
 /** How long carrying the clones to a Fork's new Workspace may take, in seconds: a Container start, then pushes. */
 const CARRY_TIMEOUT_SECONDS = 15 * 60;
+
+/** How long reading what the clones have not pushed may take, in seconds: a Container start, then local git. */
+const WORK_STATE_TIMEOUT_SECONDS = 5 * 60;
 
 /** How long the search of the disk for the GitHub token may take before the snapshot is given up on. */
 const SCAN_TIMEOUT_MS = 30_000;
@@ -172,6 +186,7 @@ export class Workspace extends ContainerHost {
   readonly #host: WorkspaceEnvHost;
   readonly #container: PerLaunchContainerBackend;
   readonly #idle: IdleStop;
+  readonly #resizes: ContainerResizes;
   readonly #usage: ContainerUsageLedger;
   readonly #snapshots: ContainerSnapshots;
   readonly #settings: ReturnType<typeof workspaceSettingsStore>;
@@ -242,10 +257,11 @@ export class Workspace extends ContainerHost {
       info: (message) => console.info(message),
     }));
 
-    // The size, idle time and Container-only paths of each launch are the Workspace's settings at that moment, and a
-    // snapshot is restored.
+    // The size, idle time and Container-only paths of each launch are the Workspace's settings at that moment (the size
+    // the agent's resize recorded instead of theirs), and a snapshot is restored.
     const launch = new ContainerLaunch({
       settings: async () => (await this.#settings.read()).settings,
+      resized: () => this.#resizes.recorded(),
       // Dependency directories, build output and caches stay in the Container, out of the Workspace (docs/spec.md →
       // Container and Toolchains): the built-in paths, then the Workspace's own, so its `!` patterns can take one back.
       // mise's Toolchains are on the Container's disk and need no entry. The local Container cannot keep any.
@@ -312,6 +328,21 @@ export class Workspace extends ContainerHost {
       await tally(usage.stopped());
     };
 
+    // The agent's resize snapshots and stops the Container as the idle stop does, and the idle stop forgets its size.
+    const resizes = (this.#resizes = new ContainerResizes({
+      settings: async () => (await this.#settings.read()).settings,
+      running: () => ctx.container?.running === true,
+      launched: async () => (await ctx.storage.get<LaunchRecord>(LAUNCH_KEY))?.instance,
+      load: () => ctx.storage.get<InstanceType>(RESIZE_KEY),
+      save: (size) => ctx.storage.put(RESIZE_KEY, size),
+      clear: async () => {
+        await ctx.storage.delete(RESIZE_KEY);
+      },
+      snapshot: () => launch.snapshot("resize"),
+      stop: destroyContainer,
+      info: (message) => console.info(message),
+    }));
+
     this.#idle = new IdleStop({
       idleMs: () => launch.idleMs(),
       now: () => Date.now(),
@@ -326,7 +357,8 @@ export class Workspace extends ContainerHost {
       snapshot: async () => {
         if (!(await this.#builds.isBuild())) await launch.snapshot("idle");
       },
-      stop: destroyContainer,
+      // The size the agent's resize recorded lasts until here.
+      stop: () => resizes.stopIdle(),
       used: () => void tally(usage.seen()),
       busy: (busy) => void tally(usage.busy(busy)),
     });
@@ -681,8 +713,9 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s): it is
-   * kept and begun at the alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
+   * Make this object's Environment's Build of `request` (docs/spec.md → Builds; the object is `buildObjectName`'s), or
+   * its Test Build of a request marked `test` (the object is `testBuildObjectName`'s): it is kept and begun at the
+   * alarm, so this answers at once, with the state then (`BuildRunner`). `secrets`, the
    * Environment's, are kept sealed apart from the request: those for the Build reach its Setup Scripts, and every one is
    * searched for before its snapshot.
    */
@@ -695,9 +728,20 @@ export class Workspace extends ContainerHost {
     return this.#builds.request(request);
   }
 
-  /** This Build object's last good Build, the one in progress or the last failure, and the image a launch would run now. */
+  /**
+   * This Build object's last good Build, the one in progress or the last failure, and the image a launch would run now;
+   * a Test Build object's latest Test Build.
+   */
   buildState(): Promise<BuildState> {
     return this.#builds.state();
+  }
+
+  /**
+   * Stop Test Build `id` (a Test Build object's, `testBuildObjectName`: its call was stopped): one under way has its
+   * Container stopped, and one that waits never begins (`BuildRunner.cancel`).
+   */
+  cancelBuild(id: string): Promise<BuildState> {
+    return this.#builds.cancel(id);
   }
 
   /**
@@ -716,15 +760,18 @@ export class Workspace extends ContainerHost {
    * Stop the Container and forget its snapshot (`LifecycleHost.restartContainer`), so the next command starts one from
    * the Environment's Build when there is a usable one, else from the image, bootstraps it and snapshots it. The files are the Workspace's and stay; what only the
    * Container's disk held is gone. Commands running in the Container end. The idle alarm finds no Container to stop.
+   * The size the agent's resize recorded is forgotten too: the owner starts the Workspace over, on its Environment's size.
    */
   async restartContainer(): Promise<void> {
     await this.stopContainer({ forgetSnapshot: true });
+    await this.#resizes.forget();
   }
 
   /**
-   * Stop the Container if it runs, at once and without a snapshot of its own (the agent's `restart_container`, which
+   * Stop the Container if it runs, at once and without a snapshot of its own (the agent's `container_restart`, which
    * works when computerd no longer answers: the platform stops the Container). The next command starts a Container
-   * from the snapshot the Workspace holds, as after an idle stop, with what its disk held when that was taken; with
+   * from the snapshot the Workspace holds, as after an idle stop, with what its disk held when that was taken, on the
+   * size the agent's resize recorded if there is one, which this keeps; with
    * `forgetSnapshot` it is forgotten first, as the owner's restart does (`restartContainer`). Commands running in the
    * Container end. Answers whether a Container was running.
    */
@@ -743,6 +790,24 @@ export class Workspace extends ContainerHost {
     });
 
     return { wasRunning };
+  }
+
+  /**
+   * Have the Container start on `size` until its idle stop (the agent's `container_resize`; docs/spec.md → Resize by the
+   * agent), within the Environment's size limit: a running Container is snapshotted and stopped (commands running there
+   * end), unless it already runs on `size`, and the next launch restores the snapshot on `size`. The resize holds the
+   * Container from the idle stop meanwhile, so the idle alarm does not stop it under the snapshot and forget the size.
+   */
+  async resizeContainer(options: { readonly size: InstanceType }): Promise<ContainerResizeOutcome> {
+    this.#spare.noteUse();
+
+    await this.#idle.begin();
+
+    try {
+      return await this.#resizes.resize(options.size);
+    } finally {
+      await this.#idle.end();
+    }
   }
 
   /**
@@ -778,6 +843,29 @@ export class Workspace extends ContainerHost {
     if (ran.exitCode !== 0) {
       throw failure(`The workspace's repos could not be carried to branch ${branch}`, ran);
     }
+  }
+
+  /**
+   * What this Workspace's clones of `repos` have not pushed of `branch` (`LifecycleHost.workState`): a Subagent
+   * Workspace's report and delete, and the warning a spawn from this one gives (`workStateScript`). It runs on the
+   * Container, starting it if it is stopped.
+   */
+  async workState(
+    branch: string,
+    repos: ReadonlyArray<string>,
+  ): Promise<ReadonlyArray<RepoWorkState>> {
+    this.#spare.noteUse();
+
+    const ran = await this.#ownHost(`computer:work-state:${this.ctx.id.toString()}`).run(
+      workStateScript(repos, branch),
+      WORK_STATE_TIMEOUT_SECONDS,
+    );
+
+    if (ran.exitCode !== 0) throw failure("The workspace's repos could not be read", ran);
+
+    // Its own lines have six tab-separated fields: anything else the run printed is left out, and a Repo it printed no
+    // line for is taken as not cloned.
+    return parseWorkState(ran.output, repos);
   }
 
   /**

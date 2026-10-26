@@ -11,6 +11,7 @@ import type {
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { SecretKeep } from "./environment-secrets.ts";
 
 /**
  * The text the client sends to keep the socket alive, and the server's answer. The object answers it without waking,
@@ -122,14 +123,32 @@ export const Configure = Schema.Struct({
 
 /**
  * The owner's answer to Secret request `request` (`secret_requests`), entered in a masked form: a value per name, where
- * a missing or empty one skips that name, or `null` when the owner cancelled. Answered with `null`; fails when no such
- * request waits or a name was not requested.
+ * a missing or empty one skips that name, or `null` when the owner cancelled. `keep` is where the owner chose to keep
+ * the values (this Session only when it is left out). Answered with `null`; fails when no such request waits or a name
+ * was not requested.
  */
 export const SecretAnswer = Schema.Struct({
   type: Schema.Literal("secret_answer"),
   id: CommandId,
   request: Schema.String,
   values: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
+  keep: Schema.optionalKey(SecretKeep),
+});
+
+/** The longest reason the owner may give with an answer to an Approval request. */
+export const MAX_APPROVAL_REASON = 500;
+
+/**
+ * The owner's answer to Approval request `request` (`approval_requests`): `approve` applies the change, as the request
+ * shows it; a decline changes nothing, and its `reason`, if any, reaches the agent. Answered with `null`; fails when no
+ * such request waits.
+ */
+export const ApprovalAnswer = Schema.Struct({
+  type: Schema.Literal("approval_answer"),
+  id: CommandId,
+  request: Schema.String,
+  approve: Schema.Boolean,
+  reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_APPROVAL_REASON))),
 });
 
 /**
@@ -324,6 +343,7 @@ export const ClientMessage = Schema.Union([
   Unwatch,
   Configure,
   SecretAnswer,
+  ApprovalAnswer,
   WatchTaskGraph,
   UnwatchTaskGraph,
   WatchUsage,
@@ -425,6 +445,8 @@ export const SecretRequest = Schema.Struct({
   names: Schema.Array(Schema.String),
   /** Why the agent needs them. */
   reason: Schema.optionalKey(Schema.String),
+  /** Where the agent suggests keeping them: the choice the form starts with. The owner's choice is final. */
+  keep: Schema.optionalKey(SecretKeep),
 });
 
 export type SecretRequest = typeof SecretRequest.Type;
@@ -439,6 +461,42 @@ export const SecretRequests = Schema.Struct({
   requests: Schema.Array(SecretRequest),
   /** How long an entered Secret is held. */
   lifetimeMinutes: Schema.Finite,
+});
+
+/**
+ * A call's request for the owner's Approval of an Agent change (GLOSSARY.md → Approval; `docs/spec.md` → Approval): a
+ * change to a Limit, or one no revert can undo. Every field is text the card shows as it is.
+ */
+export const ApprovalRequest = Schema.Struct({
+  /** What the answer names: the asking call's task, unique within the Session. */
+  id: Schema.String,
+  /** The conversation whose call asks. */
+  conversationId: ConversationId,
+  /** The tool that makes the change, such as `settings_spend_limit_set`. */
+  tool: Schema.String,
+  /** What it changes: an Environment, by name, or the Settings. */
+  target: Schema.String,
+  /** The change, in a few words: "Spend limit per Session", "Delete the Environment". */
+  change: Schema.String,
+  /** The value before; for a delete, what is deleted (an Environment's Workspaces and Sessions, a Secret's name). */
+  before: Schema.String,
+  /** The value after; for a delete, that nothing is left. */
+  after: Schema.String,
+  /** Why the agent makes it. */
+  reason: Schema.String,
+});
+
+export type ApprovalRequest = typeof ApprovalRequest.Type;
+
+/**
+ * The Approval requests waiting for the owner, oldest first. A client shows a card for each, with Approve and Decline,
+ * answered with `approval_answer`. Sent after `hello` on every connect (an empty list when none waits) and to every client
+ * whenever they change. A request outlives reconnects and evictions until it is answered or its call ends (Stop
+ * withdraws it).
+ */
+export const ApprovalRequests = Schema.Struct({
+  type: Schema.Literal("approval_requests"),
+  requests: Schema.Array(ApprovalRequest),
 });
 
 /**
@@ -483,6 +541,11 @@ export const GraphAgent = Schema.Struct({
   model: Schema.String,
   /** `working` while its conversation has live work, otherwise `idle`: it keeps its history and can take more input. */
   status: Schema.Literals(["working", "idle"]),
+  /**
+   * The branch of the Subagent Workspace it works in (its own, or the nearest ancestor's it shares); absent for one that
+   * works in the Session's Workspace.
+   */
+  branch: Schema.optionalKey(Schema.String),
 });
 
 export type GraphAgent = typeof GraphAgent.Type;
@@ -855,6 +918,7 @@ export const ServerMessage = Schema.Union([
   Result,
   ErrorMessage,
   SecretRequests,
+  ApprovalRequests,
   BrowserHandoffRequests,
   TaskGraphMessage,
   UsageMessage,

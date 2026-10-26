@@ -4,6 +4,7 @@
 // itself, asks an Environment's Build object for a Build, and has a Workspace carry its clones to a Fork's new one.
 
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
+import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import type { BuildRequest, BuildState } from "./build-record.ts";
 import type { WorkspaceSetup } from "./prepare.ts";
 
@@ -33,11 +34,18 @@ export type LifecycleHost = {
   startBuild(request: BuildRequest, secrets: ReadonlyArray<KeptSecret>): Promise<BuildState>;
   /** The Build object's Builds, and the image a launch would run now. */
   buildState(): Promise<BuildState>;
+  /** Stop Test Build `id` (a Test Build object's), if it is the one under way; answers the state then. */
+  cancelBuild(id: string): Promise<BuildState>;
   /**
    * Push the object's clones of `repos` to their remotes as `branch`, uncommitted Changes included, for a Fork or Clone
    * in a new Workspace on `branch` to start from. Rejects with why when any could not be; nothing is left pushed then.
    */
   carry(branch: string, repos: ReadonlyArray<string>): Promise<void>;
+  /**
+   * What the object's clones of `repos` have not pushed of `branch`: uncommitted Changes, and commits no remote branch has
+   * (`workStateScript`). Runs on the Container, starting it if it is stopped.
+   */
+  workState(branch: string, repos: ReadonlyArray<string>): Promise<ReadonlyArray<RepoWorkState>>;
 };
 
 /** The Workspaces' own objects, by object name (`workspaceObjectName`), as the main Worker reaches them. */
@@ -56,8 +64,16 @@ export type WorkspaceObjects = {
   ) => Promise<BuildState>;
   /** Build object `name`'s Builds (`LifecycleHost.buildState`). */
   readonly buildState: (name: string) => Promise<BuildState>;
+  /** Stop Test Build `id` of Test Build object `name` (`testBuildObjectName`; `LifecycleHost.cancelBuild`). */
+  readonly cancelBuild: (name: string, id: string) => Promise<BuildState>;
   /** Carry object `name`'s clones of `repos` to a new Workspace on `branch` (`LifecycleHost.carry`). */
   readonly carry: (name: string, branch: string, repos: ReadonlyArray<string>) => Promise<void>;
+  /** What object `name`'s clones of `repos` have not pushed of `branch` (`LifecycleHost.workState`). */
+  readonly workState: (
+    name: string,
+    branch: string,
+    repos: ReadonlyArray<string>,
+  ) => Promise<ReadonlyArray<RepoWorkState>>;
 };
 
 /** `WorkspaceObjects` over the Workspace DO namespace the main Worker binds. */
@@ -79,6 +95,8 @@ export const workspaceObjectsRemote = (namespace: {
     prepareSpare: (name, setup) => namespace.getByName(name).prepareSpare(setup),
     startBuild: (name, request, secrets) => namespace.getByName(name).startBuild(request, secrets),
     buildState: (name) => namespace.getByName(name).buildState(),
+    cancelBuild: (name, id) => namespace.getByName(name).cancelBuild(id),
     carry: (name, branch, repos) => namespace.getByName(name).carry(branch, repos),
+    workState: (name, branch, repos) => namespace.getByName(name).workState(branch, repos),
   };
 };

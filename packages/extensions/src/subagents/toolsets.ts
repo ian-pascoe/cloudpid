@@ -5,6 +5,8 @@
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { matchesPattern } from "../patterns.ts";
+import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
+import { SETTINGS_TOOL_PREFIX } from "../settings.ts";
 import { PARENT_ONLY_SECRET_TOOLS } from "../secrets/extension.ts";
 import type { Toolsets } from "./options.ts";
 
@@ -27,7 +29,17 @@ const COORDINATOR: ReadonlySet<string> = new Set(COORDINATOR_TOOLS);
  */
 export const PARENT_ONLY_TOOLS = ["context_rollover", ...PARENT_ONLY_SECRET_TOOLS] as const;
 
+/**
+ * The prefixes of the families of tools a child is never granted: the `environment_*` and `settings_*` tools change the
+ * harness itself (ADR-0019), which only the root conversation does, as only it asks for Secrets.
+ */
+export const PARENT_ONLY_TOOL_PREFIXES = [ENVIRONMENT_TOOL_PREFIX, SETTINGS_TOOL_PREFIX] as const;
+
 const PARENT_ONLY: ReadonlySet<string> = new Set(PARENT_ONLY_TOOLS);
+
+/** Whether tool `name` is the root conversation's only. */
+export const isParentOnly = (name: string): boolean =>
+  PARENT_ONLY.has(name) || Arr.some(PARENT_ONLY_TOOL_PREFIXES, (prefix) => name.startsWith(prefix));
 
 /** What `subagent`'s `tools` asks for: a preset, or exact tool names. Omitted: the caller's own ordinary tools. */
 export type ToolSelection = "none" | "read" | "modify" | ReadonlyArray<string>;
@@ -52,7 +64,7 @@ export const resolveTools = (
   ceiling: ReadonlyArray<string>,
   toolsets: Toolsets,
 ): Result.Result<ResolvedTools, string> => {
-  const grantable = Arr.filter(ceiling, (name) => !PARENT_ONLY.has(name));
+  const grantable = Arr.filter(ceiling, (name) => !isParentOnly(name));
 
   return resolveWithin(selection, grantable, toolsets);
 };

@@ -41,6 +41,18 @@ export const EnvironmentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z
 export const SecretScope = Schema.NullOr(EnvironmentId);
 
 /**
+ * The scope of the Agent changes of the Secrets kept for every Environment (`docs/spec.md` → Agent changes), where an
+ * Environment's are kept under its id. No Environment id can be it.
+ */
+export const EVERY_ENVIRONMENT_SCOPE = "*";
+
+/** Whose Agent changes `listAgentChanges` lists and `revertAgentChange` reverts: an Environment's, or those of every Environment. */
+export const AgentChangeScope = Schema.Union([
+  EnvironmentId,
+  Schema.Literal(EVERY_ENVIRONMENT_SCOPE),
+]);
+
+/**
  * The Environment a Session is made in when it names none: it is there from the start, has no Repos until the owner
  * adds some, and cannot be deleted.
  */
@@ -126,9 +138,30 @@ export const WorkspaceRecord = Schema.Struct({
   /** Where its Sessions work: its one repo's clone, or `/workspace` (`workspaceDirectory`). */
   directory: Schema.String,
   createdAt: Schema.Finite,
+  /**
+   * For a Subagent Workspace (GLOSSARY.md): the Session and the subagent (its canonical ID) it was made for. Absent for a
+   * Workspace Sessions are started in.
+   */
+  subagent: Schema.optionalKey(Schema.Struct({ session: Schema.String, agent: Schema.String })),
 });
 
 export type WorkspaceRecord = typeof WorkspaceRecord.Type;
+
+/**
+ * What one clone of a Workspace holds that is not on the remote, or not known to be (`workspaceWork`): one whose clone
+ * is missing or has another branch than the Workspace's checked out is listed too, as not set up.
+ */
+export const WorkspaceWork = Schema.Struct({
+  repo: Schema.String,
+  /** Uncommitted changes, untracked files that are not ignored included. */
+  uncommitted: Schema.Finite,
+  /** Commits of the Workspace's branch that no remote branch has. */
+  unpushed: Schema.Finite,
+  /** Why the clone is not known to hold the Workspace's work, in words (`not set up (on cloudpid/spare, not …)`). */
+  unsettled: Schema.optionalKey(Schema.String),
+});
+
+export type WorkspaceWork = typeof WorkspaceWork.Type;
 
 /** What `createSession` is told to make the Session a new Workspace. */
 export const NEW_WORKSPACE = "new";
@@ -229,6 +262,61 @@ export const ContainerSettingsState = Schema.Struct({
 });
 
 export type ContainerSettingsState = typeof ContainerSettingsState.Type;
+
+const VARIABLE_FIELD = "variables.";
+
+/** An Agent change's field for one of the variables: `variables.<NAME>`. Any other field is a setting's name. */
+export const variableField = (name: string): string => `${VARIABLE_FIELD}${name}`;
+
+/** The variable an Agent change's field names, or null for a field that is a setting's name. */
+export const fieldVariable = (field: string): string | null =>
+  field.startsWith(VARIABLE_FIELD) ? field.slice(VARIABLE_FIELD.length) : null;
+
+/** How many Agent changes each scope keeps: the oldest go once there are more. */
+export const MAX_AGENT_CHANGES = 200;
+
+/**
+ * The scope of the Settings' Agent changes, where an Environment's are kept under its id (`default`, or eight hex
+ * digits). A change's `field` is then a settings field (`settingsFieldPath` in `@cloudpid/config`).
+ */
+export const SETTINGS_SCOPE = "settings";
+
+/**
+ * One Agent change (GLOSSARY.md → Agent change; `docs/spec.md` → Agent changes): a change the agent made to an
+ * Environment or to the Settings, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`
+ * and `after` are its values then, null where it had none (a variable not set).
+ */
+export const AgentChange = Schema.Struct({
+  /** Its number, which grows with each change in the Registry. */
+  id: Schema.Finite,
+  /** The Environment's id. */
+  scope: Schema.String,
+  at: Schema.Finite,
+  /** Who made it: the agent, or the owner reverting an Agent change. */
+  actor: Schema.Literals(["agent", "owner"]),
+  /** The Session whose agent made it; null for the owner's. */
+  session: Schema.NullOr(Schema.String),
+  /** The conversation that called the tool, in that Session; null for the owner's. */
+  conversation: Schema.NullOr(Schema.Finite),
+  /** The tool that made it; null for the owner's. */
+  tool: Schema.NullOr(Schema.String),
+  /** Why: the agent's reason, or what the owner's revert undid. */
+  reason: Schema.String,
+  field: Schema.String,
+  before: Schema.NullOr(Schema.Json),
+  after: Schema.NullOr(Schema.Json),
+  /** The change this one reverted, for the owner's revert. */
+  reverts: Schema.NullOr(Schema.Finite),
+  /** The owner's revert of this change, once there is one. */
+  revertedBy: Schema.NullOr(Schema.Finite),
+  /**
+   * Set on a change the owner approved before it was made (GLOSSARY.md → Approval): one to a Limit, or a kept Secret
+   * deleted. Left out for every other change.
+   */
+  approved: Schema.optionalKey(Schema.Literal(true)),
+});
+
+export type AgentChange = typeof AgentChange.Type;
 
 /** The hosts of the push services browsers use: Google's FCM, Mozilla's autopush, Apple's and Windows'. */
 const PUSH_SERVICE_HOSTS: ReadonlyArray<(host: string) => boolean> = [
@@ -452,6 +540,25 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("listEnvironmentSecrets", { success: Schema.Array(EnvironmentSecretRecord) }),
   /**
+   * An Environment's Agent changes (`docs/spec.md` → Agent changes), newest first: the last `MAX_AGENT_CHANGES`, the
+   * owner's reverts among them.
+   */
+  Rpc.make("listAgentChanges", {
+    payload: { environment: AgentChangeScope },
+    success: Schema.Array(AgentChange),
+    error: EnvironmentError,
+  }),
+  /**
+   * Revert Agent change `change` of `environment`: write its `before` value back, recorded as the owner's change, which
+   * this answers. Refused with an `EnvironmentError` showing the value now when the field has changed since, and for a
+   * change that is the owner's own revert. Each Workspace applies it at its next Container start, as any save.
+   */
+  Rpc.make("revertAgentChange", {
+    payload: { environment: AgentChangeScope, change: Schema.Finite },
+    success: AgentChange,
+    error: EnvironmentError,
+  }),
+  /**
    * Keep a Secret for `environment` (null: every Environment), or replace the value of the one kept under `name`. The
    * value is sealed in the Registry and never comes back. `build` says whether it reaches the Environment's Build;
    * left out, a new Secret does not, and a replaced one keeps its flag. A value that is empty, holds a NUL or is over
@@ -526,10 +633,22 @@ export class RegistryRpcs extends RpcGroup.make(
   /**
    * Remove a Workspace (`GLOSSARY.md` → Workspace removal): every Session in it (archived ones too, each as
    * `deleteSession`), then its files and Container, uncommitted changes and unpushed commits included, then its record.
-   * What it pushed stays on the remote. A failure partway leaves what is not yet deleted, to try again.
+   * What it pushed stays on the remote. A failure partway leaves what is not yet deleted, to try again. A Subagent
+   * Workspace is removed as its Session's `subagent_delete` with `discard: true` removes it: its subagent is deleted
+   * with everything below it, and their Subagent Workspaces with them.
    */
   Rpc.make("removeWorkspace", {
     payload: { id: WorkspaceId },
+    error: EnvironmentError,
+  }),
+  /**
+   * What a Workspace's clones hold that is not on the remote: per Repo, its uncommitted changes and the commits of its
+   * branch that no remote branch has; Repos with none are left out. It runs on the Workspace's Container, starting it
+   * if it is stopped. For the confirmations that remove a Subagent Workspace, or delete its Session.
+   */
+  Rpc.make("workspaceWork", {
+    payload: { id: WorkspaceId },
+    success: Schema.Array(WorkspaceWork),
     error: EnvironmentError,
   }),
   /**
@@ -551,6 +670,22 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("updateSettings", {
     payload: { overrides: Schema.Json },
     success: SettingsState,
+    error: SettingsError,
+  }),
+  /**
+   * The Settings' Agent changes (`docs/spec.md` → Agent changes), newest first: the last `MAX_AGENT_CHANGES`, the
+   * owner's reverts among them. Each one's `field` names a setting (`model`, `roles.small.model`, `tools.offered`,
+   * `extensions.<extension>.<key>`).
+   */
+  Rpc.make("listSettingsChanges", { success: Schema.Array(AgentChange) }),
+  /**
+   * Revert Settings change `change`: write its `before` value back, recorded as the owner's change, which this answers.
+   * Refused with a `SettingsError` showing the value now when the field has changed since, and for a change that is the
+   * owner's own revert. A Session reads the settings when it next admits input.
+   */
+  Rpc.make("revertSettingsChange", {
+    payload: { change: Schema.Finite },
+    success: AgentChange,
     error: SettingsError,
   }),
   /**

@@ -7,6 +7,7 @@ import {
   type ContainerSettings,
 } from "@cloudpid/config";
 import {
+  type AgentChange,
   EnvironmentError,
   type ContainerSettingsState,
   type EnvironmentRecord,
@@ -15,6 +16,7 @@ import {
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
@@ -22,11 +24,13 @@ import { describe, expect, it } from "@effect/vitest";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import { pathAtom } from "./router.ts";
-import { sessionsAtom } from "./sessions.ts";
+import { REFRESH_INTERVAL, sessionsAtom } from "./sessions.ts";
 import {
   addRepoAtom,
   addRepoNameAtom,
   addRepoSourceAtom,
+  agentChangesAtom,
+  revertAgentChangeAtom,
   createEnvironmentAtom,
   deleteSecretAtom,
   environmentSecretsAtom,
@@ -44,6 +48,7 @@ import {
   environmentDraftAtom,
   environmentNamesAtom,
   environmentSettingsAtom,
+  environmentListAtom,
   environmentsAtom,
   newEnvironmentNameAtom,
   rebuildEnvironmentAtom,
@@ -53,11 +58,68 @@ import {
   restartContainerAtom,
   saveEnvironmentAtom,
   startSessionAtom,
+  describeWorkspaceWork,
+  subagentWorkspacesBelow,
+  subagentWorkspacesOf,
   workspaceBranchesAtom,
   workspaceListAtom,
   workspacesAtom,
 } from "./environments-state.ts";
 import { EMPTY_SECRET_DRAFT, EVERY_ENVIRONMENT } from "./environments.ts";
+
+describe("Subagent Workspaces on the Environments page", () => {
+  it("says what a Workspace has not pushed, per Repo", () => {
+    expect(
+      describeWorkspaceWork([
+        { repo: "app", uncommitted: 1, unpushed: 2 },
+        { repo: "docs", uncommitted: 3, unpushed: 0 },
+      ]),
+    ).toBe("app: 2 commits not pushed, 1 uncommitted change; docs: 3 uncommitted changes");
+    expect(
+      describeWorkspaceWork([
+        {
+          repo: "app",
+          uncommitted: 1,
+          unpushed: 0,
+          unsettled: "not set up (on cloudpid/spare, not cloudpid/0000abcd)",
+        },
+      ]),
+    ).toBe("app: not set up (on cloudpid/spare, not cloudpid/0000abcd), 1 uncommitted change");
+  });
+
+  it("finds a Session's Subagent Workspaces in the listing", () => {
+    const listed = {
+      id: "0000abcd",
+      environment: "default",
+      branch: "cloudpid/0000abcd",
+      base: null,
+      repos: [],
+      directory: "/workspace",
+      createdAt: 0,
+    };
+
+    const owned = { ...listed, id: "0000beef", subagent: { session: "s1", agent: "agent-1" } };
+
+    expect(subagentWorkspacesOf([listed, owned], "s1")).toEqual([owned]);
+    expect(subagentWorkspacesOf(null, "s1")).toEqual([]);
+
+    const below = {
+      ...listed,
+      id: "0000cafe",
+      subagent: { session: "s1", agent: "agent-1.agent-1" },
+    };
+
+    const sibling = { ...listed, id: "0000f00d", subagent: { session: "s1", agent: "agent-10" } };
+    const elsewhere = { ...below, id: "0000dead", subagent: { session: "s2", agent: "agent-1.x" } };
+
+    expect(
+      subagentWorkspacesBelow([listed, owned, below, sibling, elsewhere], {
+        session: "s1",
+        agent: "agent-1",
+      }),
+    ).toEqual([below]);
+  });
+});
 
 const environment = (
   id: string,
@@ -195,6 +257,34 @@ describe("the Environment list", () => {
         "Work",
       );
     }),
+  );
+
+  it.live(
+    "asks again on the visible-page tick, for what a Session's agent made or renamed",
+    () =>
+      Effect.gen(function* () {
+        const environments = [environment("default")];
+        const registry = holding(environments, []);
+
+        registry.mount(environmentsAtom);
+        registry.mount(environmentListAtom);
+        yield* settled(registry, environmentsAtom);
+        expect(registry.get(environmentListAtom)?.map((known) => known.name)).toEqual(["default"]);
+
+        // What the agent's tools do in the Registry, with no call from this page.
+        environments.unshift(environment("billing", "Billing"));
+        environments[1] = environment("default", "Main");
+
+        // One tick of the page, which asks every few seconds while it is visible.
+        yield* Effect.sleep(REFRESH_INTERVAL.pipe(Duration.sum(Duration.millis(500))));
+
+        expect(registry.get(environmentListAtom)?.map((known) => known.name)).toEqual([
+          "Billing",
+          "Main",
+        ]);
+        registry.dispose();
+      }),
+    10_000,
   );
 
   it.effect("says why a rename was refused", () =>
@@ -734,6 +824,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Work",
         instance: undefined,
+        maxInstance: undefined,
         idle: undefined,
         ignore: undefined,
         variables: undefined,
@@ -748,6 +839,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Work",
         instance: DEFAULT_CONTAINER_SETTINGS.instance,
+        maxInstance: DEFAULT_CONTAINER_SETTINGS.maxInstance,
         idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "",
         variables: "",
@@ -813,6 +905,7 @@ describe("the Edit dialog's draft", () => {
       registry.set(environmentDraftAtom("work"), {
         name: "Renamed",
         instance: other,
+        maxInstance: "standard-4",
         idle: undefined,
         ignore: "/data",
         variables: "A=1",
@@ -826,6 +919,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Renamed",
         instance: other,
+        maxInstance: "standard-4",
         idle: String(DEFAULT_CONTAINER_SETTINGS.idleMinutes),
         ignore: "/data",
         variables: "A=1",
@@ -845,6 +939,7 @@ describe("the Edit dialog's draft", () => {
       registry.set(environmentDraftAtom("work"), {
         name: "Work",
         instance: "lite",
+        maxInstance: "basic",
         idle: "20",
         ignore: "",
         variables: "",
@@ -858,6 +953,7 @@ describe("the Edit dialog's draft", () => {
       expect(registry.get(environmentDraftAtom("work"))).toEqual({
         name: "Work",
         instance: "lite",
+        maxInstance: "basic",
         idle: "20",
         ignore: "",
         variables: "",
@@ -1121,6 +1217,139 @@ describe("an Environment's Build", () => {
 
       expect(settledFailureOf(yield* settled(registry, rebuildEnvironmentAtom("work")))).toBe(
         "There is nothing to build.",
+      );
+      registry.dispose();
+    }),
+  );
+});
+
+describe("the Agent changes", () => {
+  const change = (id: number, revertedBy: number | null = null): AgentChange => ({
+    id,
+    scope: "work",
+    at: 1,
+    actor: "agent",
+    session: "s-1",
+    conversation: 1,
+    tool: "environment_variable_set",
+    reason: "The tests read it",
+    field: "variables.API_URL",
+    before: null,
+    after: "https://api.test",
+    reverts: null,
+    revertedBy,
+  });
+
+  it.effect("are listed, and a revert loads them and the settings again", () =>
+    Effect.gen(function* () {
+      const reverted: Array<{ environment: string; change: number }> = [];
+      let settingsAsked = 0;
+
+      const registry = registryWith({
+        listAgentChanges: ({ environment }) =>
+          Effect.succeed(
+            environment === "work" ? [change(1, reverted.length === 0 ? null : 2)] : [],
+          ),
+        revertAgentChange: (input) =>
+          Effect.sync(() => {
+            reverted.push(input);
+
+            return { ...change(2), actor: "owner" as const, reverts: 1 };
+          }),
+        getEnvironmentSettings: () =>
+          Effect.sync(() => {
+            settingsAsked += 1;
+
+            return { settings: DEFAULT_CONTAINER_SETTINGS, overrides: {} };
+          }),
+        listBuilds: () => Effect.succeed([]),
+      });
+
+      registry.mount(environmentSettingsAtom("work"));
+      registry.mount(agentChangesAtom("work"));
+      expect(AsyncResult.getOrThrow(yield* settled(registry, agentChangesAtom("work")))).toEqual([
+        change(1),
+      ]);
+
+      registry.mount(revertAgentChangeAtom("work"));
+      registry.set(revertAgentChangeAtom("work"), 1);
+      yield* settled(registry, revertAgentChangeAtom("work"));
+      yield* settled(registry, agentChangesAtom("work"));
+
+      expect(reverted).toEqual([{ environment: "work", change: 1 }]);
+      expect(AsyncResult.getOrThrow(registry.get(agentChangesAtom("work")))).toEqual([
+        change(1, 2),
+      ]);
+      expect(settingsAsked).toBe(2);
+      registry.dispose();
+    }),
+  );
+
+  it.effect(
+    "of the Secrets kept for every Environment load by the scope *, and a revert loads the Secrets again",
+    () =>
+      Effect.gen(function* () {
+        const asked: string[] = [];
+        let build = true;
+        let secretsAsked = 0;
+
+        const registry = registryWith({
+          listAgentChanges: ({ environment }) =>
+            Effect.sync(() => {
+              asked.push(environment);
+
+              return [];
+            }),
+          revertAgentChange: () =>
+            Effect.sync(() => {
+              build = false;
+
+              return { ...change(2), actor: "owner" as const, reverts: 1 };
+            }),
+          listEnvironmentSecrets: () =>
+            Effect.sync(() => {
+              secretsAsked += 1;
+
+              return [{ environment: null, name: "NPM_TOKEN", build, updatedAt: 1 }];
+            }),
+          listBuilds: () => Effect.succeed([]),
+        });
+
+        registry.mount(agentChangesAtom(EVERY_ENVIRONMENT));
+        registry.mount(environmentSecretsAtom);
+        yield* settled(registry, agentChangesAtom(EVERY_ENVIRONMENT));
+        expect(asked).toEqual(["*"]);
+        expect(AsyncResult.getOrThrow(yield* settled(registry, environmentSecretsAtom))).toEqual([
+          { environment: null, name: "NPM_TOKEN", build: true, updatedAt: 1 },
+        ]);
+
+        registry.mount(revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        registry.set(revertAgentChangeAtom(EVERY_ENVIRONMENT), 1);
+        yield* settled(registry, revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        yield* settled(registry, environmentSecretsAtom);
+
+        expect(secretsAsked).toBe(2);
+        expect(AsyncResult.getOrThrow(registry.get(environmentSecretsAtom))).toEqual([
+          { environment: null, name: "NPM_TOKEN", build: false, updatedAt: 1 },
+        ]);
+        registry.dispose();
+      }),
+  );
+
+  it.effect("say why a revert was refused", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        revertAgentChange: () =>
+          refused(
+            'variables.API_URL has changed since: it is "x" now, so the change is not reverted',
+          ),
+      });
+
+      registry.mount(revertAgentChangeAtom("work"));
+      registry.set(revertAgentChangeAtom("work"), 1);
+
+      expect(settledFailureOf(yield* settled(registry, revertAgentChangeAtom("work")))).toBe(
+        'variables.API_URL has changed since: it is "x" now, so the change is not reverted',
       );
       registry.dispose();
     }),

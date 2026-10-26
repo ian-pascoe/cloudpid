@@ -12,12 +12,17 @@ import {
   type SecretVaultError,
 } from "@cloudpid/extensions/secrets/core";
 import {
+  type AgentChange,
   type EnvironmentSecretRecord,
+  KEPT_SECRET,
+  keptSecretField,
+  MAX_ENVIRONMENT_SECRETS,
   secretNameProblem,
   secretValueProblem,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import { EVERY_ENVIRONMENT_SCOPE, type RegistryStore } from "./store.ts";
+import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
+import { EVERY_ENVIRONMENT_SCOPE, type RegistryStorage, type RegistryStore } from "./store.ts";
 
 /** The part of the Registry's store kept Secrets are read from and written to. */
 export type SecretsTable = Pick<RegistryStore, "getEnvironmentSecrets" | "putEnvironmentSecret">;
@@ -64,6 +69,92 @@ export const keepSecret = (
     );
 
     return put === "missing" || put === "full" ? { status: put } : { status: "saved", record: put };
+  });
+
+/** How the agent's `secret_ask` form kept a Secret the owner chose to keep. */
+export type SecretKept =
+  | {
+      readonly status: "kept";
+      readonly record: EnvironmentSecretRecord;
+      readonly change: AgentChange;
+      /** Set when the Session's Environment keeps its own Secret of the name, which wins over one for every Environment. */
+      readonly shadowed: boolean;
+    }
+  | { readonly status: "rejected"; readonly message: string };
+
+/**
+ * Keep `value` under `name` for `environment` (null: every Environment) as the owner's form on the Environments page
+ * does (`keepSecret`: the same name and value rules), because the owner chose to in a `secret_ask` form the agent asked
+ * for, and record that in the scope's Agent changes by name only (`keptSecretField`: kept after, kept before where the
+ * scope kept one of the name already). The record and the Secret are one step. `sessionEnvironment` is the asking
+ * Session's, which says whether a Secret kept for every Environment is shadowed there. A value never reaches the
+ * record, a message or a log.
+ */
+export const keepSecretAs = (
+  storage: Pick<RegistryStorage, "transactionSync">,
+  table: SecretsTable,
+  changes: AgentChanges,
+  vault: KeptVault,
+  input: {
+    readonly environment: string | null;
+    readonly name: string;
+    readonly value: string;
+    readonly sessionEnvironment: string;
+    readonly author: AgentChangeAuthor;
+  },
+  now: number,
+): Effect.Effect<SecretKept, SecretVaultError> =>
+  Effect.gen(function* () {
+    const problem = secretNameProblem(input.name) ?? secretValueProblem(input.value);
+
+    if (problem !== undefined) return { status: "rejected", message: problem };
+
+    const sealed = yield* vault.seal(binding(input.environment, input.name), input.value);
+
+    return storage.transactionSync((): SecretKept => {
+      const kept = table.getEnvironmentSecrets(input.environment ?? EVERY_ENVIRONMENT_SCOPE);
+
+      const before = kept.some(
+        (row) => row.environment === input.environment && row.name === input.name,
+      );
+
+      const put = table.putEnvironmentSecret(
+        { environment: input.environment, name: input.name, sealed, build: undefined },
+        now,
+      );
+
+      if (put === "missing")
+        return { status: "rejected", message: "The Environment does not exist" };
+
+      if (put === "full") {
+        return {
+          status: "rejected",
+          message: `At most ${MAX_ENVIRONMENT_SECRETS} Secrets are kept for ${input.environment === null ? "every environment" : "this environment"}: the user deletes one on the Environments page first`,
+        };
+      }
+
+      const change = changes.record({
+        scope: input.environment ?? EVERY_ENVIRONMENT_SCOPE,
+        at: now,
+        actor: "agent",
+        session: input.author.session,
+        conversation: input.author.conversation,
+        tool: input.author.tool,
+        reason: input.author.reason,
+        field: keptSecretField(input.name),
+        before: before ? KEPT_SECRET : null,
+        after: KEPT_SECRET,
+        reverts: null,
+      });
+
+      const shadowed =
+        input.environment === null &&
+        table
+          .getEnvironmentSecrets(input.sessionEnvironment)
+          .some((row) => row.environment !== null && row.name === input.name);
+
+      return { status: "kept", record: put, change, shadowed };
+    });
   });
 
 /**

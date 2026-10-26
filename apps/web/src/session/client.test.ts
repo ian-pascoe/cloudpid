@@ -419,8 +419,9 @@ describe("a Session connection", () => {
         yield* watching(latest());
         yield* client.answerSecrets("12", { API_KEY: "value-typed-in" });
         yield* client.answerSecrets("12", null);
+        yield* client.answerSecrets("12", { API_KEY: "value-typed-in" }, "all");
 
-        expect(latest().commands().slice(-2)).toEqual([
+        expect(latest().commands().slice(-3)).toEqual([
           {
             type: "secret_answer",
             id: expect.any(String),
@@ -428,6 +429,13 @@ describe("a Session connection", () => {
             values: { API_KEY: "value-typed-in" },
           },
           { type: "secret_answer", id: expect.any(String), request: "12", values: null },
+          {
+            type: "secret_answer",
+            id: expect.any(String),
+            request: "12",
+            values: { API_KEY: "value-typed-in" },
+            keep: "all",
+          },
         ]);
       }),
     );
@@ -448,6 +456,69 @@ describe("a Session connection", () => {
 
           expect(state().secretRequests).toEqual([]);
         }),
+    );
+  });
+
+  describe("Approval requests", () => {
+    const request = {
+      id: "7",
+      conversationId: 1,
+      tool: "settings_spend_limit_set",
+      target: "the Settings",
+      change: "Spend limit",
+      before: "$5 per Session",
+      after: "$25 per Session",
+      reason: "The migration needs more requests",
+    };
+
+    it.effect("shows the cards the Session says are waiting, until it says none are", () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+
+        expect(state().approvalRequests).toEqual([]);
+
+        yield* watching(latest());
+        yield* latest().say({ type: "approval_requests", requests: [request] });
+        expect(state().approvalRequests).toEqual([request]);
+
+        yield* latest().say({ type: "approval_requests", requests: [] });
+        expect(state().approvalRequests).toEqual([]);
+      }),
+    );
+
+    it.effect("sends Approve, and a Decline with the owner's reason only when there is one", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+        yield* client.answerApproval("7", true, "ignored for an Approve");
+        yield* client.answerApproval("7", false, "  Finish the cheap part first ");
+        yield* client.answerApproval("7", false, "   ");
+
+        expect(latest().commands().slice(-3)).toEqual([
+          { type: "approval_answer", id: expect.any(String), request: "7", approve: true },
+          {
+            type: "approval_answer",
+            id: expect.any(String),
+            request: "7",
+            approve: false,
+            reason: "Finish the cheap part first",
+          },
+          { type: "approval_answer", id: expect.any(String), request: "7", approve: false },
+        ]);
+      }),
+    );
+
+    it.effect("forgets the cards of a closed socket, as the next one says again which wait", () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+
+        yield* watching(latest());
+        yield* latest().say({ type: "approval_requests", requests: [request] });
+        yield* latest().drop();
+
+        expect(state().approvalRequests).toEqual([]);
+      }),
     );
   });
 

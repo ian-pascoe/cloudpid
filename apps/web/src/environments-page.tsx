@@ -1,7 +1,8 @@
 // @effect-diagnostics preferEffectArray:off -- JSX lists of cards, Repos, Workspaces and Sessions are native arrays.
 
-import { INSTANCE_TYPES, type InstanceType } from "@cloudpid/config";
+import { INSTANCE_TYPES, instanceLimitProblem, type InstanceType } from "@cloudpid/config";
 import {
+  type AgentChange,
   DEFAULT_ENVIRONMENT,
   MAX_ENVIRONMENT_NAME_LENGTH,
   MAX_REPO_NAME_LENGTH,
@@ -12,6 +13,7 @@ import {
   type SessionRecord,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
@@ -19,6 +21,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import {
   ArrowLeft,
+  Bot,
   GitBranch,
   GitFork,
   KeyRound,
@@ -26,6 +29,7 @@ import {
   Play,
   RotateCw,
   Trash2,
+  Undo2,
 } from "lucide-react";
 import {
   useAtom,
@@ -35,18 +39,24 @@ import {
   useAtomValue,
 } from "@effect/atom-react";
 import type { FormEvent } from "react";
+import { ChangeDiff } from "./change-diff.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "./components/ui/dialog.tsx";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
-import { navigate } from "./router.ts";
-import { SessionLink } from "./sidebar.tsx";
+import { cn } from "./lib/utils.ts";
+import { changeDiff } from "./line-diff.ts";
+import { navigate, sessionPath } from "./router.ts";
+import { SubagentWorkspaceLoss } from "./session-menu.tsx";
+import { SessionLink, sessionTitle } from "./sidebar.tsx";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
 import {
   addRepoAtom,
   addRepoNameAtom,
+  agentChangesAtom,
+  revertAgentChangeAtom,
   addRepoSourceAtom,
   createEnvironmentAtom,
   deleteEnvironmentAtom,
@@ -73,11 +83,18 @@ import {
   restartContainerAtom,
   saveEnvironmentAtom,
   startSessionAtom,
+  describeWorkspaceWork,
+  subagentWorkspacesBelow,
   workspaceListAtom,
+  workspaceWorkAtom,
   type EnvironmentDialog,
 } from "./environments-state.ts";
 import {
   buildLine,
+  changeByline,
+  changeFieldText,
+  changeValueText,
+  revertible,
   deleteConfirmed,
   EVERY_ENVIRONMENT,
   inheritedSecrets,
@@ -89,6 +106,7 @@ import {
   ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
+  sizeLimitLabel,
   parseVariables,
   repoNameProblem,
   scriptFieldProblem,
@@ -627,25 +645,63 @@ const StartupFields = ({
   </fieldset>
 );
 
-/** The Container fields of the Edit dialog: size, idle time and extra paths, saved together with the name. */
+/** A list of the sizes, by `label`, as `INSTANCE_TYPES` orders them. */
+const SizeSelect = ({
+  id,
+  value,
+  label,
+  onPick,
+  invalid = false,
+}: {
+  id: string;
+  value: InstanceType;
+  label: (type: InstanceType) => string;
+  onPick: (type: InstanceType) => void;
+  invalid?: boolean;
+}) => (
+  <NativeSelect
+    id={id}
+    value={value}
+    aria-invalid={invalid}
+    onChange={(event) => {
+      const picked = INSTANCE_TYPES.find((type) => type === event.target.value);
+
+      if (picked !== undefined) onPick(picked);
+    }}
+  >
+    {INSTANCE_TYPES.map((type) => (
+      <option key={type} value={type}>
+        {label(type)}
+      </option>
+    ))}
+  </NativeSelect>
+);
+
+/** The Container fields of the Edit dialog: size, size limit, idle time and extra paths, saved together with the name. */
 const ContainerFields = ({
   id,
   instance,
+  maxInstance,
+  limitProblem,
   idle,
   idleProblem,
   paths,
   pathsProblem,
   onInstance,
+  onMaxInstance,
   onIdle,
   onPaths,
 }: {
   id: string;
   instance: InstanceType;
+  maxInstance: InstanceType;
+  limitProblem: string | null;
   idle: string;
   idleProblem: string | null;
   paths: string;
   pathsProblem: string | null;
   onInstance: (instance: InstanceType) => void;
+  onMaxInstance: (maxInstance: InstanceType) => void;
   onIdle: (idle: string) => void;
   onPaths: (paths: string) => void;
 }) => (
@@ -655,21 +711,33 @@ const ContainerFields = ({
       <label htmlFor={`instance-${id}`} className="text-sm font-medium">
         Size
       </label>
-      <NativeSelect
+      <SizeSelect
         id={`instance-${id}`}
         value={instance}
-        onChange={(event) => {
-          const picked = INSTANCE_TYPES.find((type) => type === event.target.value);
-
-          if (picked !== undefined) onInstance(picked);
-        }}
-      >
-        {INSTANCE_TYPES.map((type) => (
-          <option key={type} value={type}>
-            {instanceLabel(type)}
-          </option>
-        ))}
-      </NativeSelect>
+        label={instanceLabel}
+        onPick={onInstance}
+      />
+    </div>
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={`max-instance-${id}`} className="text-sm font-medium">
+        Size limit
+      </label>
+      <SizeSelect
+        id={`max-instance-${id}`}
+        value={maxInstance}
+        label={sizeLimitLabel}
+        onPick={onMaxInstance}
+        invalid={limitProblem !== null}
+      />
+      {limitProblem === null ? (
+        <p className="text-xs text-muted-foreground">
+          The largest the size may be, and the largest the agent may restart a Workspace's Container
+          at (container_resize) until it is stopped for being idle. Sizes are ordered by memory,
+          then vCPU. The agent cannot raise it without you.
+        </p>
+      ) : (
+        <p className="text-xs text-destructive">{limitProblem}</p>
+      )}
     </div>
     <div className="flex flex-col gap-1.5">
       <label htmlFor={`idle-${id}`} className="text-sm font-medium">
@@ -740,7 +808,18 @@ const EditEnvironmentDialog = ({
   const [draft, setDraft] = useAtom(environmentDraftAtom(id));
   const [edited, save] = useAtom(saveEnvironmentAtom(id));
   const setDialog = useAtomSet(environmentDialogAtom(id));
-  const { name, instance, idle, ignore, variables, setupScript, startScript, toolchains } = draft;
+
+  const {
+    name,
+    instance,
+    maxInstance,
+    idle,
+    ignore,
+    variables,
+    setupScript,
+    startScript,
+    toolchains,
+  } = draft;
 
   const saved = loaded.pipe(
     AsyncResult.value,
@@ -755,6 +834,12 @@ const EditEnvironmentDialog = ({
   const nameProblem = environmentNameProblem(name, otherNames);
   const idleProblem = saved === undefined ? null : idleMinutesProblem(idle ?? "");
   const pathsProblem = ignore === undefined ? null : ignoreProblem(ignore);
+
+  const limitProblem =
+    instance === undefined || maxInstance === undefined
+      ? null
+      : (instanceLimitProblem({ instance, maxInstance }) ?? null);
+
   const renamed = name.trim() !== environment.name;
   const patterns = ignore === undefined ? [] : ignorePatternsFrom(ignore);
   const parsedVariables = parseVariables(variables ?? "");
@@ -769,7 +854,9 @@ const EditEnvironmentDialog = ({
   const settingsChanged =
     saved !== undefined &&
     instance !== undefined &&
+    maxInstance !== undefined &&
     (instance !== saved.instance ||
+      maxInstance !== saved.maxInstance ||
       idle !== String(saved.idleMinutes) ||
       patterns.join("\n") !== saved.ignore.join("\n") ||
       variablesText(typedVariables) !== variablesText(saved.variables) ||
@@ -780,6 +867,7 @@ const EditEnvironmentDialog = ({
   const invalid =
     nameProblem !== null ||
     idleProblem !== null ||
+    limitProblem !== null ||
     pathsProblem !== null ||
     variablesProblem !== null ||
     scriptsProblem !== null;
@@ -792,9 +880,10 @@ const EditEnvironmentDialog = ({
     save({
       name: renamed ? name.trim() : undefined,
       settings:
-        settingsChanged && instance !== undefined
+        settingsChanged && instance !== undefined && maxInstance !== undefined
           ? {
               instance,
+              maxInstance,
               idleMinutes: Number(idle),
               ignore: patterns,
               variables: typedVariables,
@@ -827,11 +916,13 @@ const EditEnvironmentDialog = ({
         />
         {nameProblem !== null && <p className="text-xs text-destructive">{nameProblem}</p>}
       </div>
-      {saved !== undefined && instance !== undefined ? (
+      {saved !== undefined && instance !== undefined && maxInstance !== undefined ? (
         <>
           <ContainerFields
             id={id}
             instance={instance}
+            maxInstance={maxInstance}
+            limitProblem={limitProblem}
             idle={idle ?? ""}
             idleProblem={idleProblem}
             paths={ignore ?? ""}
@@ -841,6 +932,9 @@ const EditEnvironmentDialog = ({
             }}
             onInstance={(picked) => {
               setDraft((current) => ({ ...current, instance: picked }));
+            }}
+            onMaxInstance={(picked) => {
+              setDraft((current) => ({ ...current, maxInstance: picked }));
             }}
             onIdle={(typed) => {
               setDraft((current) => ({ ...current, idle: typed }));
@@ -1043,6 +1137,127 @@ const BuildStatus = ({ id }: { id: string }) => {
   );
 };
 
+/** A value before or after an Agent change, in full: a variable's can be long, so it scrolls. */
+const ChangeValue = ({ label, value }: { label: string; value: AgentChange["before"] }) => (
+  <div className="flex min-w-0 flex-col gap-0.5">
+    <span className="text-xs text-muted-foreground">{label}</span>
+    <pre
+      className={cn(
+        "max-h-40 overflow-auto rounded bg-muted px-2 py-1 font-mono text-xs break-all whitespace-pre-wrap",
+        value === null && "text-muted-foreground italic",
+      )}
+    >
+      {changeValueText(value)}
+    </pre>
+  </div>
+);
+
+/** One Agent change: the setting, its values before and after, who made it and why, and a revert while it is the agent's. */
+export const AgentChangeRow = ({
+  change,
+  session,
+  reverting,
+  onRevert,
+}: {
+  change: AgentChange;
+  /** The Session that made it, when it is still listed. */
+  session: SessionRecord | undefined;
+  reverting: boolean;
+  onRevert: () => void;
+}) => {
+  // A script or the Toolchains is long: it shows as the lines that changed.
+  const diff = changeDiff(change.field, change.before, change.after);
+
+  return (
+    <li className="flex flex-col gap-1.5 rounded-md border p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="font-mono text-sm break-all">{changeFieldText(change.field)}</span>
+          <span className="text-xs text-muted-foreground">
+            {/* A change's time is read against the wall clock as the card renders. */}
+            {/* @effect-diagnostics-next-line globalDate:off */}
+            {changeByline(change, Date.now())}
+            {change.actor === "agent" && change.session !== null && session === undefined
+              ? ", in a session that is gone"
+              : null}
+          </span>
+          {session !== undefined && (
+            <SessionLink session={session} active={false} className="-ml-2 text-xs" />
+          )}
+        </div>
+        {revertible(change) ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={reverting}
+            aria-label={`Revert change ${change.id}: ${changeFieldText(change.field)}`}
+            onClick={onRevert}
+          >
+            <Undo2 aria-hidden />
+            Revert
+          </Button>
+        ) : change.revertedBy !== null ? (
+          <span className="shrink-0 text-xs text-muted-foreground">Reverted</span>
+        ) : null}
+      </div>
+      {change.reason !== "" && <p className="text-sm break-words">{change.reason}</p>}
+      {diff === undefined ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <ChangeValue label="Before" value={change.before} />
+          <ChangeValue label="After" value={change.after} />
+        </div>
+      ) : (
+        <ChangeDiff rows={diff} />
+      )}
+    </li>
+  );
+};
+
+/**
+ * Environment `id`'s Agent changes, newest first (`docs/spec.md` → Agent changes), each with the Session that made it
+ * and a revert. A revert the Registry refuses (its field has changed since) says why.
+ */
+const AgentChangesSection = ({
+  id,
+  sessions,
+}: {
+  id: string;
+  /** Every Session made in the Environment, archived ones included. */
+  sessions: readonly SessionRecord[];
+}) => {
+  const loaded = useAtomValue(agentChangesAtom(id));
+  const [reverted, revert] = useAtom(revertAgentChangeAtom(id));
+  const changes = loaded.pipe(AsyncResult.value, Option.getOrNull);
+  const loadError = failureOf(loaded);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">Agent changes</h3>
+      {changes === null ? (
+        <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
+      ) : changes.length === 0 ? (
+        <p className="text-xs text-muted-foreground">The agent has changed nothing here.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {changes.map((change) => (
+            <AgentChangeRow
+              key={change.id}
+              change={change}
+              session={sessions.find((session) => session.id === change.session)}
+              reverting={reverted.waiting}
+              onRevert={() => {
+                revert(change.id);
+              }}
+            />
+          ))}
+        </ul>
+      )}
+      <DialogProblem problem={settledFailureOf(reverted)} />
+    </div>
+  );
+};
+
 /** Confirm restarting a Workspace's Container, after saying what it keeps and what it loses. */
 const RestartContainerDialog = ({ id, workspace }: { id: string; workspace: WorkspaceRecord }) => {
   const [restarted, run] = useAtom(restartContainerAtom(id));
@@ -1172,10 +1387,155 @@ const RemoveWorkspaceDialog = ({
   );
 };
 
+/**
+ * What Workspace `id` holds that is not on the remote, read when the confirmation opens: what removing it loses.
+ */
+const UnpushedWork = ({ id }: { id: string }) => {
+  const work = useAtomValue(workspaceWorkAtom(id));
+
+  return AsyncResult.match(work, {
+    onInitial: () => (
+      <p role="status" className="text-xs text-muted-foreground">
+        Reading what it has not pushed…
+      </p>
+    ),
+    onFailure: () => (
+      <p role="alert" className="text-sm text-destructive">
+        What it has not pushed could not be read ({failureOf(work)}): it may hold work that is lost
+        with it.
+      </p>
+    ),
+    onSuccess: ({ value }) =>
+      value.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Everything in it is committed and pushed.</p>
+      ) : (
+        <p role="alert" className="text-sm text-destructive">
+          Not pushed, and lost with it: {describeWorkspaceWork(value)}.
+        </p>
+      ),
+  });
+};
+
+/**
+ * Confirm removing a Subagent Workspace by typing its branch: its subagent is deleted with it, as `subagent_delete`
+ * does, after naming what it has not pushed.
+ */
+const RemoveSubagentWorkspaceDialog = ({
+  id,
+  workspace,
+  agent,
+  session,
+}: {
+  id: string;
+  workspace: WorkspaceRecord;
+  agent: string;
+  /** The Session the subagent is in, when it is listed. */
+  session: SessionRecord | undefined;
+}) => {
+  const [typed, setTyped] = useAtom(removeWorkspaceTypedAtom(workspace.id));
+  const [removed, run] = useAtom(removeWorkspaceAtom(id));
+  const setDialog = useAtomSet(environmentDialogAtom(id));
+  const busy = removed.waiting;
+  const confirmed = deleteConfirmed(workspace.branch, typed);
+
+  // The Subagent Workspaces of the subagents below it, which go too: each that holds work not pushed is named.
+  const below = subagentWorkspacesBelow(useAtomValue(workspaceListAtom), {
+    session: workspace.subagent?.session ?? "",
+    agent,
+  });
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (!confirmed || busy) return;
+
+    run(workspace.id);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        <li>
+          Subagent <span className="font-mono">{agent}</span>
+          {session === undefined ? "" : ` of “${sessionTitle(session)}”`}, and every subagent below
+          it: their work stops and their IDs are retired.
+        </li>
+        <li>Its files and Container, and those of the Subagent Workspaces below it.</li>
+      </ul>
+      <UnpushedWork id={workspace.id} />
+      {below.length > 0 && (
+        <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-destructive">
+          {Arr.map(below, (each) => (
+            <SubagentWorkspaceLoss key={each.id} workspace={each} />
+          ))}
+        </ul>
+      )}
+      <p className="text-sm text-muted-foreground">
+        What was pushed to <span className="font-mono">{workspace.branch}</span> stays on the
+        remote.
+      </p>
+      <ConfirmField
+        id={`remove-workspace-confirm-${workspace.id}`}
+        expected={workspace.branch}
+        typed={typed}
+        busy={busy}
+        onTyped={setTyped}
+      />
+      <DialogProblem problem={settledFailureOf(removed)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy || !confirmed}>
+          {busy ? "Removing…" : "Remove workspace"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/** The subagent a Subagent Workspace was made for, linking to its Session. */
+const SubagentMark = ({
+  agent,
+  session,
+}: {
+  agent: string;
+  session: SessionRecord | undefined;
+}) => (
+  <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+    <Bot className="size-3.5 shrink-0" aria-hidden />
+    <span className="shrink-0">
+      subagent <span className="font-mono">{agent}</span>
+    </span>
+    {session !== undefined && (
+      <a
+        href={sessionPath(session.id)}
+        className="truncate underline-offset-2 hover:underline"
+        onClick={(event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+
+          event.preventDefault();
+          navigate(sessionPath(session.id));
+        }}
+      >
+        of {sessionTitle(session)}
+      </a>
+    )}
+  </span>
+);
+
 /** A Workspace in an Environment's card: its branch and how much is in it, with the actions on it. */
 const WorkspaceRow = ({
   workspace,
   sessions,
+  owner,
   starting,
   onStart,
   onRestart,
@@ -1184,6 +1544,8 @@ const WorkspaceRow = ({
   workspace: WorkspaceRecord;
   /** The Sessions in the Workspace, archived ones included. */
   sessions: readonly SessionRecord[];
+  /** For a Subagent Workspace: the Session its subagent is in, when it is listed. */
+  owner: SessionRecord | undefined;
   starting: boolean;
   onStart: () => void;
   onRestart: () => void;
@@ -1194,25 +1556,33 @@ const WorkspaceRow = ({
 
   return (
     <li className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-      <span className="flex min-w-0 items-center gap-2 text-sm">
-        <GitFork className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        <span className="truncate font-mono">{workspace.branch}</span>
-        <span className="shrink-0 text-xs text-muted-foreground">
-          {repos} {repos === 1 ? "repo" : "repos"} · {count ?? "no sessions"}
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="flex min-w-0 items-center gap-2 text-sm">
+          <GitFork className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="truncate font-mono">{workspace.branch}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {repos} {repos === 1 ? "repo" : "repos"}
+            {workspace.subagent === undefined ? ` · ${count ?? "no sessions"}` : ""}
+          </span>
         </span>
+        {workspace.subagent !== undefined && (
+          <SubagentMark agent={workspace.subagent.agent} session={owner} />
+        )}
       </span>
       <div className="flex items-center gap-1.5">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={starting}
-          aria-label={`New session in the ${workspace.branch} workspace`}
-          title={`New session in the ${workspace.branch} workspace`}
-          onClick={onStart}
-        >
-          <Play />
-          New session here
-        </Button>
+        {workspace.subagent === undefined && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={starting}
+            aria-label={`New session in the ${workspace.branch} workspace`}
+            title={`New session in the ${workspace.branch} workspace`}
+            onClick={onStart}
+          >
+            <Play />
+            New session here
+          </Button>
+        )}
         <Button
           size="icon"
           variant="ghost"
@@ -1361,6 +1731,7 @@ const EnvironmentCard = ({
       <DialogProblem problem={reposError} />
       <SecretsSection sectionKey={id} title="Secrets" empty="None kept for this environment." />
       <BuildStatus id={id} />
+      <AgentChangesSection id={id} sessions={sessions} />
       <div className="flex flex-col gap-2">
         <h3 className="text-xs font-medium text-muted-foreground">Workspaces</h3>
         {workspaces.length === 0 ? (
@@ -1374,6 +1745,7 @@ const EnvironmentCard = ({
                 key={workspace.id}
                 workspace={workspace}
                 sessions={sessions.filter((session) => session.workspace === workspace.id)}
+                owner={sessions.find((session) => session.id === workspace.subagent?.session)}
                 starting={starting}
                 onStart={() => {
                   start(workspace.id);
@@ -1438,13 +1810,21 @@ const EnvironmentCard = ({
         title={`Remove the ${removing?.branch ?? ""} workspace?`}
         description="Uncommitted changes and unpushed commits are lost for good."
       >
-        {removing !== null && (
-          <RemoveWorkspaceDialog
-            id={id}
-            workspace={removing}
-            sessions={sessions.filter((session) => session.workspace === removing.id)}
-          />
-        )}
+        {removing !== null &&
+          (removing.subagent === undefined ? (
+            <RemoveWorkspaceDialog
+              id={id}
+              workspace={removing}
+              sessions={sessions.filter((session) => session.workspace === removing.id)}
+            />
+          ) : (
+            <RemoveSubagentWorkspaceDialog
+              id={id}
+              workspace={removing}
+              agent={removing.subagent.agent}
+              session={sessions.find((session) => session.id === removing.subagent?.session)}
+            />
+          ))}
       </Dialog>
     </section>
   );
@@ -1499,6 +1879,7 @@ export const EnvironmentsPage = () => {
             title="Secrets for every environment"
             empty="None kept for every environment."
           />
+          <AgentChangesSection id={EVERY_ENVIRONMENT} sessions={sessions ?? []} />
         </section>
         <DialogProblem problem={error ?? sessionsError} />
         {environments === null ? (

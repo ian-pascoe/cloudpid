@@ -70,7 +70,15 @@ export const SCRIPT_RUN_MARGIN_SECONDS = 120;
 const REPORTED_OUTPUT = 2_000;
 
 /** How a script on the Container ended: its exit status (null when it did not run to the end), and its output's end. */
-export type ScriptRun = { readonly exitCode: number | null; readonly output: string };
+export type ScriptRun = {
+  readonly exitCode: number | null;
+  readonly output: string;
+  /**
+   * Set when the run was cut off by the platform, not by the script: the Container could not be reached, or its
+   * connection broke while the script ran (`output` then says why). The script may not have ended.
+   */
+  readonly lost?: true;
+};
 
 /** What readying one Workspace needs: its files, its Container, its settings, and somewhere to say what went wrong. */
 export type PreparationHost = {
@@ -256,13 +264,15 @@ export const runScript = async (
   );
 
   if (!result.ok) {
-    return {
-      exitCode: null,
-      output:
-        result.error.code === "timeout"
-          ? `it ran past ${timeoutSeconds / 60} minutes`
-          : result.error.message,
-    };
+    const { code, message } = result.error;
+
+    if (code === "timeout")
+      return { exitCode: null, output: `it ran past ${timeoutSeconds / 60} minutes` };
+
+    // `unknown`: the command started and its stream broke (a disposed RPC stub, a Container that went away).
+    return code === "unknown" || code === "shell_unavailable"
+      ? { exitCode: null, output: message, lost: true }
+      : { exitCode: null, output: message };
   }
 
   return { exitCode: result.value.exitCode, output };

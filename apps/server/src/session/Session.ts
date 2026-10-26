@@ -8,11 +8,15 @@ import {
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
+import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import { Approvals } from "@cloudpid/extensions/approvals";
+import { DeployCredentials, Environments } from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
-import { SubagentSettings } from "@cloudpid/extensions/subagents";
+import { SettingsAccess } from "@cloudpid/extensions/settings";
+import { SubagentSettings, SubagentWorkspaces } from "@cloudpid/extensions/subagents";
 import { ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
 import {
@@ -35,6 +39,18 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
+import { buildUpkeep } from "../registry/builds.ts";
+import { spareUpkeep } from "../registry/rpc.ts";
+import { removals } from "../registry/removal.ts";
+import { sumContainerUsage } from "./container-cost.ts";
+import { sessionSubagentWorkspaces } from "./subagent-workspaces.ts";
+import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
+import { sessionLifecycle } from "./environment-lifecycle.ts";
+import { runChanges } from "./agent-changes.ts";
+import { sessionEnvironments } from "./environments.ts";
+import { sessionEnvironmentRemoval } from "./environment-removal.ts";
+import { sessionApprovalsLayer } from "./approvals.ts";
+import { sessionSettingsAccess } from "./settings-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
 import { CodemodeSandbox, type CodemodeSandboxNamespace, remoteSandbox } from "./codemode.ts";
@@ -53,6 +69,7 @@ import {
 } from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
+import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
@@ -104,6 +121,21 @@ export const ModelProxyConfigLive = Layer.effect(
 );
 
 /**
+ * The GitHub token the Workspaces' commands get: a deploy-time secret, bound to the Worker by `Config.Redacted`, which
+ * the Session reads only to refuse it in a plain value (`docs/spec.md` → Agent changes).
+ */
+export class GitHubTokenConfig extends Context.Service<
+  GitHubTokenConfig,
+  { readonly token: Redacted.Redacted<string> }
+>()("@cloudpid/server/session/Session/GitHubTokenConfig") {}
+
+/** Reads `CLOUDPID_GITHUB_TOKEN`: from the deploying environment, then from the Worker's secrets. */
+export const GitHubTokenConfigLive = Layer.effect(
+  GitHubTokenConfig,
+  Config.all({ token: Config.Redacted("CLOUDPID_GITHUB_TOKEN") }),
+);
+
+/**
  * What the Session DO answers: its alarm, and its clients' sockets (`docs/spec.md` → Client and protocol). `fetch`
  * accepts a socket upgrade the main Worker forwards; the socket's events then reach the object directly.
  */
@@ -136,6 +168,15 @@ export type SessionMethods = {
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
   /** Take messages again once a Fork or Clone in a new Workspace carried this Session's files. */
   readonly releaseFork: () => Effect.Effect<void>;
+  /**
+   * Delete subagent `agent` with everything below it and their Subagent Workspaces: the owner removed its Subagent
+   * Workspace `workspace` (an agent that does not work in it is kept). Answers why a Subagent Workspace of theirs is
+   * still there, one line each.
+   */
+  readonly deleteSubagent: (input: {
+    readonly agent: string;
+    readonly workspace: string;
+  }) => Effect.Effect<ReadonlyArray<string>, SessionError>;
   /** Delete the Session's own state (`destroySession`): the owner deleted it, and the Registry forgets it next. */
   readonly destroy: () => Effect.Effect<void>;
   /**
@@ -150,20 +191,43 @@ export class Session extends Cloudflare.DurableObject<Session, SessionMethods>()
   errors: [SessionError],
 }) {}
 
+/** The Session objects as a Worker or another Session reaches them, by name. */
+type SessionNamespace = Pick<Cloudflare.DurableObject<Session>, "getByName">;
+
+/**
+ * Wipe Session `id`'s object (`SessionMethods.destroy`), then reset it. Once the wipe has answered, the object resets:
+ * that call fails by design (an abort fails the call that makes it), and a reset that does not happen only leaves an
+ * instance over empty storage until it is evicted. A wipe that fails dies.
+ */
+export const destroySessionObject =
+  (sessions: SessionNamespace) =>
+  (id: string): Effect.Effect<void> => {
+    const session = sessions.getByName(id);
+
+    return Effect.orDie(session.destroy()).pipe(
+      Effect.andThen(Effect.ignoreCause(session.reset())),
+    );
+  };
+
 export const SessionLive = Session.make(
   Effect.gen(function* () {
     return {
       proxy: yield* ModelProxyConfig,
+      github: yield* GitHubTokenConfig,
       secrets: yield* SecretsConfig,
       web: yield* WebConfig,
       registries: yield* Registry,
+      // The other Sessions' objects, which deleting an Environment the owner approved wipes (`environment_delete`).
+      // This class's own namespace, which alchemy hands its constructor (not `yield* Session`: this Layer provides it).
+      // SAFETY: the namespace of the class this constructor makes, whose objects answer `SessionMethods`.
+      sessions: (yield* Cloudflare.DurableObjectScope) as Cloudflare.DurableObject<Session>,
       state: yield* Cloudflare.DurableObjectState,
       // The raw environment: `ComputerExecutionEnv` needs the Workspace DO's own stub, not alchemy's Effect client.
       worker: yield* Cloudflare.WorkerEnvironment,
     };
   }).pipe(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
-    Effect.map(({ proxy, registries, secrets, state, web, worker }) =>
+    Effect.map(({ github, proxy, registries, sessions, secrets, state, web, worker }) =>
       Effect.gen(function* () {
         // One tracer for the object's life: its spans are custom spans of the Worker's trace (`docs/spec.md` → Telemetry).
         const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
@@ -267,6 +331,62 @@ export const SessionLive = Session.make(
           },
         });
 
+        // The Builds' upkeep after an Agent change, as the main Worker runs it after the owner's save, and the
+        // Environments the agent reads and changes.
+        // SAFETY: the same binding; the Workspace DO answers `LifecycleHost`'s calls and the Build object's.
+        const workspaceObjects = workspaceObjectsRemote(
+          worker[WORKSPACE_BINDING] as Parameters<typeof workspaceObjectsRemote>[0],
+        );
+
+        const spares = spareUpkeep(registries, { workspaces: workspaceObjects });
+        const builds = buildUpkeep(registries, { workspaces: workspaceObjects, spares });
+
+        const registryObject = registries.getByName(REGISTRY_NAME);
+
+        const environments = sessionEnvironments({
+          registry: registryObject,
+          session: name,
+          placement,
+          handOver: (object, overrides) =>
+            workspaces.getByName(object).updateContainerSettings(overrides),
+          builds,
+          lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
+        });
+
+        // The deletes the owner approved: an Environment with its Workspaces and Sessions, wiped as the owner's delete
+        // wipes them (`removals`, `registry/removal.ts`), and a kept Secret.
+        const environmentRemoval = sessionEnvironmentRemoval({
+          registry: registryObject,
+          session: name,
+          objects: {
+            workspaces: workspaceObjects,
+            sessions: { destroy: destroySessionObject(sessions) },
+          },
+          builds,
+        });
+
+        // The Session's Subagent Workspaces: registered by the Registry as the Session's, removed as a Workspace is.
+        const subagentWorkspaces = sessionSubagentWorkspaces({
+          registry: registryObject,
+          session: name,
+          placement,
+          objects: workspaceObjects,
+          remove: removals(registryObject, {
+            workspaces: workspaceObjects,
+            sessions: { destroy: destroySessionObject(sessions) },
+          }).removeSubagentWorkspace,
+          spares,
+          builds,
+          run: (effect) => runtime.runPromise(effect),
+        });
+
+        // The Agent changes waiting for the owner's Approval: kept here, shown on the sockets, and pushed.
+        const sessionApprovals = sessionApprovalsLayer({
+          storage: kv,
+          sockets: state.raw,
+          notify: notifyOwner,
+        });
+
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.
         const sandbox = remoteSandbox(
           // SAFETY: the Server Worker binds the sandbox DO namespace as `CODEMODE_SANDBOX` (`worker.ts`), a raw namespace.
@@ -317,18 +437,35 @@ export const SessionLive = Session.make(
                   .sessionSecrets({ session: name })
                   .pipe(
                     Effect.tap((kept) =>
-                      // @effect-diagnostics-next-line asyncFunction:off
-                      Effect.tryPromise(async () => {
-                        const { workspace: id } = await placement();
+                      Effect.gen(function* () {
+                        const { workspace: id } = yield* Effect.tryPromise(() => placement());
 
-                        if (id !== null) {
-                          await workspaces
-                            .getByName(workspaceObjectName(id))
-                            .updateEnvironmentSecrets(kept);
-                        }
+                        if (id === null) return;
+
+                        // The Session's Workspace, and each of its Subagent Workspaces.
+                        const subagents = yield* registries
+                          .getByName(REGISTRY_NAME)
+                          .listSubagentWorkspaces({ session: name });
+
+                        yield* Effect.tryPromise(() =>
+                          Promise.all(
+                            Arr.map([id, ...Arr.map(subagents, (each) => each.id)], (each) =>
+                              workspaces
+                                .getByName(workspaceObjectName(each))
+                                .updateEnvironmentSecrets(kept),
+                            ),
+                          ),
+                        );
                       }),
                     ),
                   ),
+          // What the owner chooses to keep in the form is saved in the Registry as the Environments page saves it.
+          keep: sessionKeepSecrets({
+            registry: registryObject,
+            session: name,
+            builds,
+            changes: runChanges(kv),
+          }),
         });
 
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed (with no Live View link).
@@ -361,13 +498,22 @@ export const SessionLive = Session.make(
                   ),
                 ),
                 reset: (reason) => state.raw.abort(reason),
-                // Read where the Session works, without readying the Workspace: it starts nothing.
+                // Read where the Session and its Subagent Workspaces work, without readying them: it starts nothing.
                 // @effect-diagnostics-next-line asyncFunction:off
-                containerUsage: async () => {
+                containerUsage: async (subagents) => {
                   const { workspace: id, object } = await placement();
 
-                  return id === null ? null : workspaces.getByName(object).containerUsage();
+                  if (id === null) return null;
+
+                  const read = await Promise.all(
+                    Arr.map([object, ...subagents], (each) =>
+                      workspaces.getByName(each).containerUsage(),
+                    ),
+                  );
+
+                  return sumContainerUsage(Arr.filter(read, (usage) => usage !== null));
                 },
+                subagentWorkspaces,
                 extensions: sessionExtensions.pipe(
                   // After every other extension, so each of their tools is named and its call is a span.
                   Effect.map((installed) => [
@@ -380,6 +526,19 @@ export const SessionLive = Session.make(
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(WorkspaceContainer, workspace.container),
+                  Effect.provideService(SubagentWorkspaces, subagentWorkspaces),
+                  Effect.provideService(Environments, environments),
+                  Effect.provideService(EnvironmentRemoval, environmentRemoval),
+                  Effect.provideService(
+                    SettingsAccess,
+                    sessionSettingsAccess({
+                      registry: registries.getByName(REGISTRY_NAME),
+                      session: name,
+                    }),
+                  ),
+                  Effect.provideService(DeployCredentials, {
+                    values: [Redacted.value(github.token)],
+                  }),
                   Effect.provideService(Images, images),
                   // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
@@ -398,18 +557,22 @@ export const SessionLive = Session.make(
                   Effect.all([Effect.service(Secrets), Effect.service(BrowserSession)]),
                   ([held, browser]) => wakeAt(held, browser),
                 ),
-                // A Secret request or Browser Handoff whose call is gone stops being shown, and an idle browser is closed.
+                // A Secret request, Browser Handoff or Approval request whose call is gone stops being shown, and an
+                // idle browser is closed.
                 onIdle: Effect.flatMap(
                   Effect.all([
                     Effect.service(Secrets),
                     Effect.service(BrowserSession),
                     Effect.service(BrowserHandoffs),
+                    Effect.service(Approvals),
                   ]),
-                  ([held, browser, handoffs]) => onIdle(held, browser, handoffs),
+                  ([held, browser, handoffs, approvals]) =>
+                    onIdle(held, browser, handoffs, approvals),
                 ),
               }),
             ),
             Layer.provideMerge(sessionSecrets),
+            Layer.provideMerge(sessionApprovals),
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),
             Layer.provide(Layer.mergeAll(registry, settings)),
@@ -467,6 +630,11 @@ export const SessionLive = Session.make(
               host.importFinish(plan).pipe(Effect.andThen(sockets.greetAgain)),
             ),
           releaseFork: () => invoked("session.fork.release", host.releaseFork),
+          deleteSubagent: ({ agent, workspace }) =>
+            invoked(
+              "session.subagent.delete",
+              host.deleteSubagent(agent, workspace).pipe(Effect.map((deletion) => deletion.kept)),
+            ),
           destroy: () =>
             invoked(
               "session.destroy",

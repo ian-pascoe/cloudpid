@@ -48,9 +48,12 @@ import { currentOptions, type SubagentOptions } from "./options.ts";
 import {
   agentOf,
   type AgentRecord,
+  type AgentWorkspace,
   answerText,
   childrenOf,
   conversationOf,
+  type DeletedAgent,
+  deleteSubtree,
   EMPTY_STATE,
   openWaiter,
   reportConversationOf,
@@ -60,8 +63,23 @@ import {
   type Turn,
   type WaitEvent,
   waitEvent,
+  workspaceOf,
 } from "./state.ts";
-import { Anchor, AGENT_INPUT_KIND, envelope, startTurn, WaitTask } from "./tasks.ts";
+import {
+  Anchor,
+  AGENT_INPUT_KIND,
+  envelope,
+  startTurn,
+  SubagentReporter,
+  WaitTask,
+  withHandBack,
+} from "./tasks.ts";
+import {
+  describeRepoWork,
+  SubagentWorkspaces,
+  unpushedWork,
+  workspacePreamble,
+} from "./workspaces.ts";
 import {
   coordinatorToolsFor,
   ordinaryTools,
@@ -232,6 +250,8 @@ type SpawnResult = {
   delegation: string;
   session_context: string;
   warnings: string[];
+  /** The child's Subagent Workspace, for `workspace: "new"`; null when it works in its parent's. */
+  workspace: { id: string; branch: string } | null;
 };
 
 const SpawnCall = callDoc<SpawnResult>("cloudpid.subagent-call.spawn");
@@ -245,6 +265,11 @@ const spawnText = (result: SpawnResult): string =>
   Arr.join(
     [
       `Spawned ${result.agent_id} (turn ${result.turn_id}) on ${result.model}:${result.thinking_level} with ${describeSelection(result)}, delegation ${result.delegation}.`,
+      ...(result.workspace === null
+        ? []
+        : [
+            `It works in Subagent Workspace ${result.workspace.id}, on branch ${result.workspace.branch}, with a Container of its own. You see its work only through the remote: its reports name its branch and what it has not pushed.`,
+          ]),
       ...Arr.map(result.warnings, (warning) => `warning: ${warning}`),
     ],
     "\n",
@@ -294,9 +319,130 @@ const SpawnParameters = Schema.Struct({
         "fanout lets the child spawn children of its own, below the depth cap; default none",
     }),
   ),
+  workspace: Schema.optionalKey(
+    Schema.Literals(["shared", "new"]).annotate({
+      description:
+        "Default shared: the child works in your Workspace, sharing its files and Container. new: a Workspace of its own (a Subagent Workspace) in your Environment, on a branch of its own, with its own Container, so parallel children do not contend for CPU and memory and a restart of one Container stops no one else. Its work reaches you only through the remote: it starts from the pushed base branch (your uncommitted and unpushed work does not reach it) and pushes its own branch. Limited per Session (the Subagent Workspace limit); subagent_delete removes it.",
+    }),
+  ),
+  base: Schema.optionalKey(
+    Schema.String.check(Schema.isMinLength(1)).annotate({
+      description:
+        'With workspace "new": the remote branch the child starts from; default the branch of your Workspace (push it first).',
+    }),
+  ),
+  branch: Schema.optionalKey(
+    Schema.String.check(Schema.isMinLength(1)).annotate({
+      description:
+        'With workspace "new": the child\'s own branch, which it pushes; default cloudpid/<its Workspace id>.',
+    }),
+  ),
 });
 
 type SpawnArgs = typeof SpawnParameters.Type;
+
+/**
+ * The ID `caller`'s next child gets: `requested`'s segment under the caller, or the next automatic `agent-<n>` (with the
+ * `n` to count on from); or why it cannot have it.
+ */
+const chooseId = (
+  state: SubagentsState,
+  caller: string,
+  requested: string | undefined,
+): { readonly id: string; readonly index?: number } | { readonly refused: string } => {
+  if (requested === undefined) {
+    let index = state.nextIndex[caller] ?? 1;
+
+    while (
+      state.agents[childAgentId(caller, `agent-${index}`)] !== undefined ||
+      state.tombstones.includes(childAgentId(caller, `agent-${index}`))
+    ) {
+      index += 1;
+    }
+
+    return { id: childAgentId(caller, `agent-${index}`), index };
+  }
+
+  const id = childAgentId(caller, requested);
+
+  if (state.tombstones.includes(id)) {
+    return {
+      refused: `${id} was deleted, and deleted IDs are never reused; choose another agent_id`,
+    };
+  }
+
+  const existing = state.agents[id];
+
+  if (existing !== undefined) {
+    const running = Arr.some(existing.turns, (turn) => turn.status === "running");
+
+    return {
+      refused: `${id} already exists and is ${running ? "running" : "idle"}; send it agent_message, delete it with subagent_delete, or choose another agent_id`,
+    };
+  }
+
+  return { id };
+};
+
+/**
+ * The Subagent Workspace a spawn with `workspace: "new"` starts its child in, made before the spawn's commit for the ID
+ * the child gets (`chooseId`), so a rerun after an eviction gets the same one again from the Session.
+ */
+const newWorkspace = Effect.fnUntraced(function* (
+  args: SpawnArgs,
+  state: SubagentsState,
+  caller: string,
+  options: SubagentOptions,
+) {
+  const host = yield* Effect.serviceOption(SubagentWorkspaces);
+
+  if (Option.isNone(host)) {
+    return yield* fail("This Session cannot make Workspaces for subagents; use workspace: shared");
+  }
+
+  const chosen = chooseId(state, caller, args.agent_id);
+
+  if ("refused" in chosen) return yield* fail(chosen.refused);
+
+  const made = yield* Effect.tryPromise({
+    try: () =>
+      host.value.create({
+        agent: chosen.id,
+        parent: workspaceOf(state, caller) ?? null,
+        base: args.base,
+        branch: args.branch,
+        limit: options.maxSubagentWorkspaces,
+      }),
+    catch: (cause) =>
+      SubagentError.make({
+        message:
+          cause instanceof Error ? cause.message : `The Workspace was not made: ${String(cause)}`,
+      }),
+  });
+
+  return { agent: chosen.id, ...made };
+});
+
+/**
+ * Remove the Subagent Workspace made for a spawn whose commit did not land (refused, or failed), so it neither stays
+ * listed under an agent ID that is not its agent's nor counts against the limit. Kept when an agent's record has it.
+ */
+const discardUnclaimed = (api: ToolExecutionApi, workspace: AgentWorkspace) =>
+  Effect.ignore(
+    Effect.gen(function* () {
+      const host = yield* Effect.serviceOption(SubagentWorkspaces);
+      const state = yield* readState(api);
+
+      const claimed = Arr.some(
+        Record.values(state.agents),
+        (agent) => agent.workspace?.id === workspace.id,
+      );
+
+      if (Option.isNone(host) || claimed) return;
+
+      yield* Effect.tryPromise(() => host.value.remove(workspace));
+    }),
+  );
 
 /** The model a spawn runs on, and the role it named. */
 const resolveModel = Effect.fnUntraced(function* (
@@ -391,44 +537,35 @@ const Spawn = defineEffectTool({
 
     const sessionContext = args.session_context ?? "omit";
     const delegation = args.delegation ?? "none";
+
+    if (args.workspace !== "new" && (args.base !== undefined || args.branch !== undefined)) {
+      return yield* fail('base and branch are only for workspace: "new"');
+    }
+
+    // Made last of what may refuse the spawn, so a refused one leaves no Workspace behind.
     const preamble = yield* parentContext(api, sessionContext, options.roles.small?.model ?? model);
+
+    const workspace =
+      args.workspace === "new" ? yield* newWorkspace(args, state, caller, options) : undefined;
+
     const now = yield* Clock.currentTimeMillis;
     const installed = api.registry.tools();
+    const reporter = yield* SubagentReporter;
 
     const result = yield* decide(api, SpawnCall, "spawn", async (tx) => {
       const doc = await tx.doc(SubagentsDoc);
+      const chosen = chooseId(doc, caller, args.agent_id);
 
-      let id: string;
+      if ("refused" in chosen) return refuse(chosen.refused);
 
-      if (args.agent_id === undefined) {
-        let index = doc.nextIndex[caller] ?? 1;
+      const { id } = chosen;
 
-        while (
-          doc.agents[childAgentId(caller, `agent-${index}`)] !== undefined ||
-          doc.tombstones.includes(childAgentId(caller, `agent-${index}`))
-        ) {
-          index += 1;
-        }
-
-        id = childAgentId(caller, `agent-${index}`);
-        doc.nextIndex[caller] = index + 1;
-      } else {
-        id = childAgentId(caller, args.agent_id);
-
-        if (doc.tombstones.includes(id)) {
-          refuse(`${id} was deleted, and deleted IDs are never reused; choose another agent_id`);
-        }
-
-        const existing = doc.agents[id];
-
-        if (existing !== undefined) {
-          const running = Arr.some(existing.turns, (turn) => turn.status === "running");
-
-          refuse(
-            `${id} already exists and is ${running ? "running" : "idle"}; send it agent_message, delete it with subagent_delete, or choose another agent_id`,
-          );
-        }
+      // The Workspace was made for the ID read before; a spawn in between took it.
+      if (workspace !== undefined && id !== workspace.agent) {
+        return refuse(`${workspace.agent} was taken while its Workspace was made; spawn again`);
       }
+
+      if (chosen.index !== undefined) doc.nextIndex[caller] = chosen.index + 1;
 
       const depth = agentDepth(id);
       const spawns = delegation === "fanout" && depth < options.maxSubagentDepth;
@@ -493,6 +630,8 @@ const Spawn = defineEffectTool({
         turns: [],
       };
 
+      if (workspace !== undefined) record.workspace = workspace.workspace;
+
       // A child of the root reports to the Session branch it was started from.
       doc.agents[id] = caller === ROOT_AGENT ? { ...record, origin: api.conversationId } : record;
 
@@ -503,11 +642,17 @@ const Spawn = defineEffectTool({
         doc,
         {
           agentId: id,
-          content: firstInput(preamble.preamble, args.task),
+          content: firstInput(
+            preamble.preamble,
+            workspace === undefined
+              ? args.task
+              : `${workspacePreamble(workspace.workspace)}\n\n${args.task}`,
+          ),
           whenBusy: "followUp",
           from: caller,
         },
         now,
+        reporter,
       );
 
       return {
@@ -522,9 +667,17 @@ const Spawn = defineEffectTool({
         tool_selection: selectionName,
         delegation,
         session_context: sessionContext,
-        warnings: [...resolved.warnings],
+        warnings: [...resolved.warnings, ...(workspace?.warnings ?? [])],
+        workspace:
+          workspace === undefined
+            ? null
+            : { id: workspace.workspace.id, branch: workspace.workspace.branch },
       } satisfies SpawnResult;
-    });
+    }).pipe(
+      Effect.tapError(() =>
+        workspace === undefined ? Effect.void : discardUnclaimed(api, workspace.workspace),
+      ),
+    );
 
     const spawned = spawnResult(result);
 
@@ -622,6 +775,7 @@ const Message = defineEffectTool({
 
     const content = `${envelope("message", caller, currentTurn(state, caller))}\n${message}`;
     const now = yield* Clock.currentTimeMillis;
+    const reporter = yield* SubagentReporter;
 
     const result = yield* decide(
       api,
@@ -665,6 +819,7 @@ const Message = defineEffectTool({
                 doc,
                 { agentId: target, content, whenBusy: "steer", from: caller },
                 now,
+                reporter,
               )) ?? null);
 
         return {
@@ -736,7 +891,12 @@ const waitText = (event: WaitEvent): string => {
         return `${head}. Its result was already delivered to you automatically; pass turn_id ${event.turn_id ?? ""} to read it again.`;
       }
 
-      if (event.error !== null) return `${head}: ${event.error}`;
+      // A failed turn's output is only what it hands back (`withHandBack`).
+      if (event.error !== null) {
+        return event.output === null || event.output === ""
+          ? `${head}: ${event.error}`
+          : `${head}: ${event.error}\n\n${event.output}`;
+      }
 
       return `${head}\n\n${event.output ?? ""}`;
     }
@@ -824,7 +984,10 @@ const Wait = defineEffectTool({
           };
         }
 
-        const output = turn.answer === null ? null : await answerText(tx, turn.answer);
+        const answer = turn.answer === null ? null : await answerText(tx, turn.answer);
+
+        const output =
+          turn.handBack === undefined ? answer : withHandBack(answer ?? "", turn.handBack);
 
         // Unreported, or held while this agent is busy: the wait claims it, and the held report is dropped.
         if (carrier?.delivery === null || carrier?.delivery === "pending") {
@@ -979,6 +1142,7 @@ const Status = defineEffectTool({
           model: `${child.contract.model}:${child.contract.thinkingLevel}`,
           turns: child.turns.length,
           child_count: childrenOf(state, child.id).length,
+          branch: child.workspace?.branch ?? null,
         })),
       );
 
@@ -990,7 +1154,7 @@ const Status = defineEffectTool({
                 Arr.map(
                   rows,
                   (row) =>
-                    `${row.agent_id}: ${row.state}, ${row.model}, ${row.turns} turns${row.child_count === 0 ? "" : `, ${row.child_count} children`}`,
+                    `${row.agent_id}: ${row.state}, ${row.model}, ${row.turns} turns${row.child_count === 0 ? "" : `, ${row.child_count} children`}${row.branch === null ? "" : `, own Workspace on ${row.branch}`}`,
                 ),
                 "\n",
               ),
@@ -1035,10 +1199,17 @@ const Status = defineEffectTool({
       })),
       latest_output: output,
       usage,
+      workspace:
+        agent.workspace === undefined
+          ? null
+          : { id: agent.workspace.id, branch: agent.workspace.branch },
     };
 
     const lines = [
       `${agent.id}: ${record.state}, ${contract.model}:${contract.thinkingLevel}${contract.role === null ? "" : ` (role ${contract.role})`}, delegation ${contract.delegation}, ${record.child_count} children, ${usage.total_tokens} tokens, $${usage.cost.toFixed(4)}`,
+      ...(agent.workspace === undefined
+        ? []
+        : [`Subagent Workspace ${agent.workspace.id} on branch ${agent.workspace.branch}`]),
       `tools (${contract.toolSelection}): ${contract.tools.length === 0 ? "none" : Arr.join(contract.tools, ", ")}`,
       ...(full ? [`capability ceiling: ${Arr.join(contract.ceiling, ", ")}`] : []),
       `turns: ${Arr.join(
@@ -1143,20 +1314,142 @@ const Cancel = defineEffectTool({
 const DeleteParameters = Schema.Struct({
   agent_id: CanonicalId("Direct child canonical agent ID"),
   recursive: Schema.optionalKey(Schema.Boolean),
+  discard: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "Delete a child (or one below it) whose Subagent Workspace has commits not pushed or uncommitted changes, losing them; default false refuses, naming them",
+    }),
+  ),
+});
+
+/**
+ * Why `agents`' Subagent Workspaces may not be removed: each that has work not pushed, in words, or that it could not be
+ * read. Undefined when none has any.
+ */
+const unpushedRefusal = Effect.fnUntraced(function* (agents: ReadonlyArray<AgentRecord>) {
+  const owned = Arr.flatMap(agents, (agent) =>
+    agent.workspace === undefined ? [] : [{ agent, workspace: agent.workspace }],
+  );
+
+  if (owned.length === 0) return undefined;
+
+  const host = yield* Effect.serviceOption(SubagentWorkspaces);
+
+  if (Option.isNone(host)) return undefined;
+
+  const found = yield* Effect.forEach(owned, ({ agent, workspace }) =>
+    Effect.map(Effect.result(Effect.tryPromise(() => host.value.workState(workspace))), (read) =>
+      Result.match(read, {
+        onFailure: (error) => [
+          `${agent.id} (branch ${workspace.branch}): what it has not pushed could not be read (${error.message})`,
+        ],
+        onSuccess: (states) => {
+          const pending = unpushedWork(states, workspace.branch);
+
+          return pending.length === 0
+            ? []
+            : [
+                `${agent.id} (branch ${workspace.branch}): ${Arr.join(
+                  Arr.map(pending, (state) => describeRepoWork(state, workspace.branch)),
+                  "; ",
+                )}`,
+              ];
+        },
+      }),
+    ),
+  );
+
+  const problems = Arr.flatten(found);
+
+  return problems.length === 0
+    ? undefined
+    : `Not deleted: work in its Subagent Workspaces is not pushed, or not known to be, and would be lost. ${Arr.join(problems, ". ")}. Push it, or pass discard: true to delete it anyway.`;
+});
+
+/**
+ * Remove the Subagent Workspaces of deleted agents (Workspace removal). What could not be removed is said, one line each:
+ * it stays listed on the Environments page for the owner to remove.
+ */
+const removeWorkspaces = Effect.fnUntraced(function* (
+  agents: ReadonlyArray<{ readonly id: string; readonly workspace?: AgentWorkspace }>,
+) {
+  const host = yield* Effect.serviceOption(SubagentWorkspaces);
+
+  if (Option.isNone(host)) return [];
+
+  const kept = yield* Effect.forEach(agents, ({ id, workspace }) =>
+    workspace === undefined
+      ? Effect.succeed([])
+      : Effect.match(
+          Effect.tryPromise(() => host.value.remove(workspace)),
+          {
+            onFailure: (error) => [
+              `The Subagent Workspace ${workspace.id} of ${id} could not be removed (${error.message}); the owner can remove it from the Environments page.`,
+            ],
+            onSuccess: () => [],
+          },
+        ),
+  );
+
+  return Arr.flatten(kept);
+});
+
+/** What a delete took out, recorded for its call: a rerun after an eviction stops and removes what it still has to. */
+type DeleteResult = { deleted: DeletedAgent[] };
+
+const DeleteCall = callDoc<DeleteResult>("cloudpid.subagent-call.delete");
+
+/** Stop what a delete took out that is still running, remove its Subagent Workspaces, and say so. */
+const finishDelete = Effect.fnUntraced(function* (
+  api: ToolExecutionApi,
+  target: string,
+  removed: ReadonlyArray<DeletedAgent>,
+  stopped: ReadonlySet<string>,
+) {
+  yield* stopAll(
+    api,
+    Arr.filter(removed, (agent) => !stopped.has(agent.id)),
+    true,
+  );
+
+  const deleted = Arr.map(removed, (agent) => agent.id);
+  const kept = yield* removeWorkspaces(removed);
+
+  return {
+    output: text(
+      Arr.join(
+        [
+          deleted.length === 0
+            ? `${target} was already deleted.`
+            : `Deleted ${Arr.join(deleted, ", ")}; their IDs are retired.`,
+          ...kept,
+        ],
+        "\n",
+      ),
+    ),
+    structuredOutput: { agent_id: target, deleted_agent_ids: deleted },
+  };
 });
 
 const Delete = defineEffectTool({
   name: "subagent_delete",
   description:
-    "Delete one direct child, stopping its work, and tombstone its ID so it is never reused. Recursive deletion includes its subtree and defaults to true.",
+    "Delete one direct child, stopping its work, and tombstone its ID so it is never reused. Recursive deletion includes its subtree and defaults to true. A deleted child's Subagent Workspace is removed with it; while one in the subtree has commits not pushed or uncommitted changes, the delete is refused naming them, unless discard is true.",
   parameters: DeleteParameters,
+  // A rerun after an eviction past the delete's commit finishes it: the Subagent Workspaces it took out are removed.
+  replay: "safe",
   execute: Effect.fnUntraced(function* (
-    { agent_id, recursive }: typeof DeleteParameters.Type,
+    { agent_id, recursive, discard }: typeof DeleteParameters.Type,
     api: ToolExecutionApi,
   ) {
+    const target = normalizeAgentId(agent_id);
+    const earlier = yield* recorded(api, DeleteCall);
+
+    if (Option.isSome(earlier))
+      return yield* finishDelete(api, target, earlier.value.deleted, new Set());
+
     const state = yield* readState(api);
     const caller = yield* callerOf(api, state);
-    const target = normalizeAgentId(agent_id);
 
     if (parentAgentId(target) === caller && Arr.contains(state.tombstones, target)) {
       return {
@@ -1178,57 +1471,21 @@ const Delete = defineEffectTool({
       );
     }
 
+    if (discard !== true) {
+      const refusal = yield* unpushedRefusal(subtree);
+
+      if (refusal !== undefined) return yield* fail(refusal);
+    }
+
     const { stopped } = yield* stopSubtree(api, target, true);
 
     // The subtree as it is now: a descendant spawned after the last scan is deleted too, and stopped below. Once its
     // conversation is unmapped, no deleted agent can spawn again.
-    const removed = yield* durable("delete", (context) =>
-      api.commit(async (tx) => {
-        const doc = await tx.doc(SubagentsDoc);
-        const gone: Stoppable[] = [];
+    const { deleted } = yield* decide(api, DeleteCall, "delete", async (tx) => ({
+      deleted: deleteSubtree(await tx.doc(SubagentsDoc), target),
+    }));
 
-        for (const agent of subtreeOf(doc, target)) {
-          delete doc.agents[agent.id];
-          delete doc.conversations[String(agent.conversationId)];
-          doc.tombstones.push(agent.id);
-          gone.push({ id: agent.id, conversationId: agent.conversationId });
-        }
-
-        const ids = Arr.map(gone, (agent) => agent.id);
-
-        for (const [key, waiter] of Record.toEntries(doc.waiters)) {
-          if (!ids.includes(waiter.target) || waiter.result !== null) continue;
-
-          const entry = doc.waiters[key];
-
-          if (entry !== undefined) {
-            entry.result = waitEvent("turn", waiter.target, {
-              turn_id: waiter.turnId,
-              status: "deleted",
-            });
-          }
-        }
-
-        return gone;
-      }, context),
-    );
-
-    yield* stopAll(
-      api,
-      Arr.filter(removed, (agent) => !stopped.has(agent.id)),
-      true,
-    );
-
-    const deleted = Arr.map(removed, (agent) => agent.id);
-
-    return {
-      output: text(
-        deleted.length === 0
-          ? `${target} was already deleted.`
-          : `Deleted ${Arr.join(deleted, ", ")}; their IDs are retired.`,
-      ),
-      structuredOutput: { agent_id: target, deleted_agent_ids: deleted },
-    };
+    return yield* finishDelete(api, target, deleted, stopped);
   }),
 });
 

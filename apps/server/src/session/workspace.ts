@@ -2,11 +2,19 @@
 // environment is a `ComputerExecutionEnv` over the Workspace's own Durable Object (`workspaceObjectName`), and `ls`,
 // `find`, and `grep` search the same Workspace's files. Every Session in a Workspace reaches the same DO, so they share
 // one tree and one Container. A Session works in its Workspace's directory (its one repo's clone, or `/workspace`) unless
-// a conversation names another `cwd`, once the Workspace is readied: its Repos cloned on its branch (`prepare.ts`).
+// a conversation names another `cwd`, once the Workspace is readied: its Repos cloned on its branch (`prepare.ts`). A
+// conversation with a Subagent Workspace (its agent's own, or its nearest ancestor's) works in that one instead, as the
+// Subagents document records it (ADR-0021).
 // @effect-diagnostics asyncFunction:off globalDate:off missingPipeableSignature:off
 import type { ComputerWorkspaceStub } from "@cloudpid/computer-env";
 import type { ContainerControl } from "@cloudpid/extensions/container";
-import type { FileSearch } from "@cloudpid/extensions/files";
+import type { ConversationTarget, FileSearch } from "@cloudpid/extensions/files";
+import {
+  type AgentWorkspace,
+  conversationWorkspace,
+  SubagentsDoc,
+} from "@cloudpid/extensions/subagents";
+import type { Context } from "@earendil-works/chord/context";
 import type { HarnessOptions } from "@earendil-works/pi-durable";
 import { WORKSPACE_ROOT, workspaceObjectName } from "../workspace/binding.ts";
 import type { Workspace } from "../workspace/Workspace.ts";
@@ -32,6 +40,7 @@ export type WorkspaceNamespace = {
       | "environmentSecretsUnavailable"
       | "containerUsage"
       | "stopContainer"
+      | "resizeContainer"
     >;
 };
 
@@ -94,54 +103,76 @@ export const cachedPlacement =
     return placement;
   };
 
+/** Where a conversation with a Subagent Workspace of its own works: that Workspace (`AgentWorkspace`). */
+export const subagentPlacement = (workspace: AgentWorkspace): Placement => ({
+  workspace: workspace.id,
+  object: workspace.object,
+  directory: workspace.directory,
+});
+
 /** How long a Workspace readied counts as ready before it is readied again, in milliseconds. */
 export const WORKSPACE_CHECKED_FOR = 60_000;
 
 /** Ready Workspace `id`: its settings, Build and Secrets handed over, then its Repos cloned (`prepareWorkspace`). */
 export type PrepareWorkspace = (id: string) => Promise<void>;
 
-/** What `readyPlacement` checks: where the Session works, and how its Workspace is readied. */
-export type ReadyPlacementOptions = {
-  readonly placement: () => Promise<Placement>;
+/** How Workspaces are readied, and the clock their readiness is counted by. */
+export type ReadinessOptions = {
   readonly prepare: PrepareWorkspace;
   /** The time in milliseconds; defaults to `Date.now`. */
   readonly now?: () => number;
 };
 
 /**
- * The Session's placement once its Workspace is ready: readied when the Session first works in it, and again at most
- * every `WORKSPACE_CHECKED_FOR`, so a Repo whose clone failed is tried again and changed settings reach the Workspace.
- * Callers meanwhile wait for the one readying in flight. One that fails fails the call and is tried again at the next.
+ * Ready a Workspace before it is worked in: when it is first used, and again at most every `WORKSPACE_CHECKED_FOR`, so
+ * a Repo whose clone failed is tried again and changed settings reach the Workspace. Each Workspace (the Session's, and
+ * each Subagent Workspace) is counted apart; callers meanwhile wait for its one readying in flight. One that fails
+ * fails the call and is tried again at the next.
  */
-export const readyPlacement = ({
-  placement,
+export const workspaceReadiness = ({
   prepare,
   now = Date.now,
-}: ReadyPlacementOptions): (() => Promise<Placement>) => {
-  let checkedAt: number | undefined;
-  let checking: Promise<void> | undefined;
+}: ReadinessOptions): ((workspace: string) => Promise<void>) => {
+  const checkedAt = new Map<string, number>();
+  const checking = new Map<string, Promise<void>>();
 
-  const readying = (workspace: string) => {
-    checking ??= prepare(workspace)
-      .then(() => {
-        checkedAt = now();
-      })
-      .finally(() => {
-        checking = undefined;
-      });
+  return (workspace) => {
+    const checked = checkedAt.get(workspace);
 
-    return checking;
+    if (checked !== undefined && now() - checked < WORKSPACE_CHECKED_FOR) return Promise.resolve();
+
+    const inFlight =
+      checking.get(workspace) ??
+      prepare(workspace)
+        .then(() => {
+          checkedAt.set(workspace, now());
+        })
+        .finally(() => {
+          checking.delete(workspace);
+        });
+
+    checking.set(workspace, inFlight);
+
+    return inFlight;
   };
+};
+
+/** What `readyPlacement` checks: where the Session works, and how its Workspace is readied. */
+export type ReadyPlacementOptions = ReadinessOptions & {
+  readonly placement: () => Promise<Placement>;
+};
+
+/** The Session's placement once its Workspace is ready (`workspaceReadiness`). */
+export const readyPlacement = ({
+  placement,
+  ...readiness
+}: ReadyPlacementOptions): (() => Promise<Placement>) => {
+  const ready = workspaceReadiness(readiness);
 
   return async () => {
     const placed = await placement();
-    const { workspace } = placed;
 
-    if (workspace === null) return placed;
-
-    if (checkedAt !== undefined && now() - checkedAt < WORKSPACE_CHECKED_FOR) return placed;
-
-    await readying(workspace);
+    if (placed.workspace !== null) await ready(placed.workspace);
 
     return placed;
   };
@@ -151,13 +182,18 @@ export type SessionWorkspaceOptions = {
   readonly namespace: WorkspaceNamespace;
   /** The Workspace the Session is bound to. Called at each use, so it may look it up. */
   readonly placement: () => Promise<Placement>;
-  /** Readies the Session's Workspace before its files are used. */
+  /** Readies a Workspace (the Session's, or a Subagent Workspace) before its files are used. */
   readonly prepare: PrepareWorkspace;
+  /** The time in milliseconds, for the readiness; defaults to `Date.now`. */
+  readonly now?: () => number;
 };
 
-/** What a Session runs its tools on. */
+/** A conversation, with what reads the Subagents document that says where it works. */
+type Conversation = Pick<ConversationTarget, "conversationId" | "read">;
+
+/** What a Session runs its tools on: each conversation's on its Subagent Workspace if it has one, else the Session's. */
 export type SessionWorkspace = {
-  /** `HarnessOptions.env`: a conversation's environment, in its `cwd` or in the Workspace's directory. */
+  /** `HarnessOptions.env`: a conversation's environment, in its `cwd` or in its Workspace's directory. */
   readonly env: NonNullable<HarnessOptions["env"]>;
   /**
    * A conversation's environment for the composer's lookups (its catalog of Skills and Prompt templates, its `@` menu),
@@ -165,31 +201,58 @@ export type SessionWorkspace = {
    * their Setup Scripts, which can take minutes on a Container that has to start first.
    */
   readonly lookupEnv: NonNullable<HarnessOptions["env"]>;
-  /** The Workspace's file search, for `ls`, `find`, and `grep`. */
-  readonly files: FileSearch;
+  /** A conversation's Workspace's file search, for `ls`, `find`, and `grep`. */
+  readonly files: (target: ConversationTarget) => FileSearch;
   /**
-   * The Workspace's Container, for `restart_container`. It does not ready the Workspace first: readying may need the
-   * Container, which is what a restart is for when it no longer answers.
+   * The Workspace's Container, for `container_restart` and `container_resize`. It does not ready the Workspace first:
+   * readying may need the Container, which is what a restart is for when it no longer answers. A resize is decided by
+   * the Environment's settings as the Workspace DO last had them handed over (at most a minute old while the Session
+   * works), as its launches are.
    */
   readonly container: ContainerControl;
 };
 
 export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorkspace => {
-  const ready = readyPlacement(options);
+  const readiness = workspaceReadiness(options);
 
-  const search = async () => {
-    const { ComputerFiles } = await computer();
+  /**
+   * Where `conversation` works: its Subagent Workspace (its own, or the nearest ancestor's), as the Subagents document
+   * records it, so it survives an eviction; else the Session's.
+   */
+  const placementOf = async (conversation: Conversation, context: Context): Promise<Placement> => {
+    const state = await conversation.read.snapshot(SubagentsDoc, context);
 
-    // The model's `ls`, `find` and `grep`: a search of a Container-only path runs on the Container (ADR-0018).
-    return new ComputerFiles(options.namespace.getByName((await ready()).object), {
-      reachContainer: true,
-    });
+    const own =
+      state === undefined ? undefined : conversationWorkspace(state, conversation.conversationId);
+
+    return own === undefined ? options.placement() : subagentPlacement(own);
   };
 
-  const files: FileSearch = {
-    readdir: async (path) => (await search()).readdir(path),
-    find: async (directory, pattern, found) => (await search()).find(directory, pattern, found),
-    grep: async (pattern, path, matched) => (await search()).grep(pattern, path, matched),
+  /** Where `conversation` works, once that Workspace is ready. */
+  const ready = async (conversation: Conversation, context: Context): Promise<Placement> => {
+    const placed = await placementOf(conversation, context);
+
+    if (placed.workspace !== null) await readiness(placed.workspace);
+
+    return placed;
+  };
+
+  const files = (target: ConversationTarget): FileSearch => {
+    const search = async () => {
+      const { ComputerFiles } = await computer();
+
+      // The model's `ls`, `find` and `grep`: a search of a Container-only path runs on the Container (ADR-0018).
+      return new ComputerFiles(
+        options.namespace.getByName((await ready(target, target.context)).object),
+        { reachContainer: true },
+      );
+    };
+
+    return {
+      readdir: async (path) => (await search()).readdir(path),
+      find: async (directory, pattern, found) => (await search()).find(directory, pattern, found),
+      grep: async (pattern, path, matched) => (await search()).grep(pattern, path, matched),
+    };
   };
 
   /** An environment in `cwd`; with `reachContainer`, its file operations on Container-only paths run on the Container. */
@@ -205,25 +268,31 @@ export const sessionWorkspace = (options: SessionWorkspaceOptions): SessionWorks
     });
   };
 
+  // A conversation's Container: a child's restart or resize stops only its own Subagent Workspace's.
   const container: ContainerControl = {
-    restart: async ({ fresh }) => {
-      const placed = await options.placement();
+    restart: async ({ fresh, target }) => {
+      const placed = await placementOf(target, target.context);
 
       return options.namespace.getByName(placed.object).stopContainer({ forgetSnapshot: fresh });
+    },
+    resize: async ({ size, target }) => {
+      const placed = await placementOf(target, target.context);
+
+      return options.namespace.getByName(placed.object).resizeContainer({ size });
     },
   };
 
   return {
-    env: async (target) => {
-      const placed = await ready();
+    env: async (target, context) => {
+      const placed = await ready(target, context);
 
-      // A conversation's own `cwd` first, then the Session's Workspace. The model's tools run on it, so a file of theirs
-      // on a Container-only path is reached through the Container (ADR-0018).
+      // A conversation's own `cwd` first, then its Workspace's directory. The model's tools run on it, so a file of
+      // theirs on a Container-only path is reached through the Container (ADR-0018).
       return envIn(placed, target.cwd ?? placed.directory, true);
     },
     // Lookups never start the Container: they see the Workspace's files only.
-    lookupEnv: async (target) => {
-      const placed = await options.placement();
+    lookupEnv: async (target, context) => {
+      const placed = await placementOf(target, context);
 
       return envIn(placed, target.cwd ?? placed.directory, false);
     },

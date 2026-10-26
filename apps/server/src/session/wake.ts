@@ -1,6 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over a few times and services.
 // What wakes a Session that has no work live, and what it does when it settles (`./host.ts`'s `wakeAt` and `onIdle`): one
 // alarm serves a held Secret's expiry and the browser's keep-alive, so neither needs an alarm of its own.
+import type { ApprovalsService } from "@cloudpid/extensions/approvals";
 import type { BrowserSessionService, BrowserHandoffsService } from "@cloudpid/extensions/browser";
 import type { SecretsService } from "@cloudpid/extensions/secrets";
 import * as Effect from "effect/Effect";
@@ -20,14 +21,17 @@ export const wakeAt = (
   Effect.zipWith(secrets.nextExpiry, browser.closeAt, (expiry, close) => earliest(expiry, close));
 
 /**
- * What the object does whenever it settles with no work live: clears the Secret requests and Browser Handoffs a call abandoned, and closes the
- * browser if it fell idle past its keep-alive. Only now is it known that no live run still drives the browser.
+ * What the object does whenever it settles with no work live: clears the Secret requests, Browser Handoffs and Approval
+ * requests a call abandoned, and closes the browser if it fell idle past its keep-alive. Only now is it known that no
+ * live run still drives the browser or waits for an answer.
  */
 export const onIdle = (
   secrets: Pick<SecretsService, "dropAbandoned">,
   browser: Pick<BrowserSessionService, "closeIfIdle">,
   handoffs: Pick<BrowserHandoffsService, "dropAbandoned">,
+  approvals: Pick<ApprovalsService, "dropAbandoned">,
 ): Effect.Effect<void> =>
-  Effect.all([secrets.dropAbandoned, handoffs.dropAbandoned, browser.closeIfIdle], {
-    discard: true,
-  });
+  Effect.all(
+    [secrets.dropAbandoned, handoffs.dropAbandoned, approvals.dropAbandoned, browser.closeIfIdle],
+    { discard: true },
+  );

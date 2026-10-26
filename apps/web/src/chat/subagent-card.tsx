@@ -1,11 +1,11 @@
-// A `subagent` tool call as a card: which agent it started (role, model) and whether it is working, opening into the
-// agent's live thread.
+// A `subagent` tool call as a card: which agent it started (role, model, and the branch of its Subagent Workspace when
+// it has one) and whether it is working, opening into the agent's live thread.
 
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { GraphAgent } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as Predicate from "effect/Predicate";
-import { Bot, ChevronRight, Loader } from "lucide-react";
+import { Bot, ChevronRight, GitBranch, Loader } from "lucide-react";
 import type { ReactNode } from "react";
 import { agentOfConversation } from "../session/agents.ts";
 import { taskGraphAtom } from "../session/atoms.ts";
@@ -24,6 +24,18 @@ export const AgentStatus = ({ agent }: { agent: GraphAgent | undefined }) =>
   ) : (
     <span className="text-xs text-muted-foreground">
       {agent === undefined ? "Not running" : "Idle"}
+    </span>
+  );
+
+/** The branch of the Subagent Workspace an agent works in, as the card and the panel show it; nothing without one. */
+export const AgentBranch = ({ agent }: { agent: GraphAgent | undefined }) =>
+  agent?.branch === undefined ? null : (
+    <span
+      className="flex min-w-0 items-center gap-1 text-xs"
+      title={`Works in a Subagent Workspace, on branch ${agent.branch}`}
+    >
+      <GitBranch className="size-3 shrink-0" aria-hidden />
+      <span className="truncate font-mono">{agent.branch}</span>
     </span>
   );
 
@@ -73,6 +85,7 @@ export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
         {agent !== undefined && (
           <span className="min-w-0 truncate font-mono text-xs">{shortModel(agent.model)}</span>
         )}
+        <AgentBranch agent={agent} />
         <span className="ml-auto shrink-0">
           <AgentStatus agent={agent} />
         </span>

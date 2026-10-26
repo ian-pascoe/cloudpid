@@ -33,8 +33,11 @@ export const SNAPSHOT_TIMEOUT_MS = 2 * 60_000;
 /** A snapshot lives 30 days from its creation or latest restore; one older than this is not trusted to still be there. */
 export const SNAPSHOT_MAX_AGE_MS = 29 * 24 * 60 * 60_000;
 
-/** Why a snapshot was taken: after an install, on idle stop, or as an Environment's Build (`build.ts`). */
-export type SnapshotReason = "install" | "idle" | "build";
+/**
+ * Why a snapshot was taken: after an install, on idle stop, before the agent's resize stops the Container (`resize.ts`), or
+ * as an Environment's Build (`build.ts`).
+ */
+export type SnapshotReason = "install" | "idle" | "resize" | "build";
 
 /** What the Workspace DO keeps of a snapshot: the platform's handle, and what it needs to decide to restore it. */
 export type SnapshotRecord = {

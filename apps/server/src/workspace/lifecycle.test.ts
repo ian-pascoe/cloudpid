@@ -33,8 +33,18 @@ const host = (calls: string[], overrides: Partial<LifecycleHost> = {}): Lifecycl
 
     return { image: "img", last: null, progress: null, attemptedAt: null };
   },
+  cancelBuild: async (id) => {
+    calls.push(`cancelBuild:${id}`);
+
+    return { image: "img", last: null, progress: null, attemptedAt: null };
+  },
   carry: async (branch, repos) => {
     calls.push(`carry:${branch}:${repos.length}`);
+  },
+  workState: async (branch) => {
+    calls.push(`workState:${branch}`);
+
+    return [];
   },
   ...overrides,
 });
@@ -101,6 +111,16 @@ describe("workspaceObjectsRemote", () => {
 
     expect(asked).toEqual(["build:5a5a5a5a", "build:5a5a5a5a"]);
     expect(calls).toEqual(["startBuild:k", "buildState"]);
+  });
+
+  it("asks an Environment's Test Build object to stop a Test Build", async () => {
+    const calls: string[] = [];
+    const { asked, remote } = namespace(host(calls));
+
+    await remote.cancelBuild("test-build:5a5a5a5a", "s-1/7");
+
+    expect(asked).toEqual(["test-build:5a5a5a5a"]);
+    expect(calls).toEqual(["cancelBuild:s-1/7"]);
   });
 
   it("asks the object to prepare itself as a spare, with what it is told", async () => {

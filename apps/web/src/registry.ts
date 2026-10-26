@@ -15,17 +15,19 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 
 /**
  * What a query listens to and a mutation invalidates: the Session list, the Environment list (with each one's Repos),
- * the Workspaces, an Environment's own Container settings by id, the kept Secrets (names only), the Environments'
- * Builds, the settings, and this browser's push subscription.
+ * the Workspaces, an Environment's own Container settings and Agent changes by id, the kept Secrets (names only), the
+ * Environments' Builds, the settings, and this browser's push subscription.
  */
 export type RegistryKey =
   | "sessions"
   | "environments"
   | "workspaces"
   | `environment-settings:${string}`
+  | `agent-changes:${string}`
   | "environment-secrets"
   | "builds"
   | "settings"
+  | "settings-changes"
   | "push";
 
 /** The main Worker's Registry, at `RPC_PATH` of the page's origin. */

@@ -7,7 +7,12 @@ import {
   type InstanceType,
   type ContainerSettings,
 } from "@cloudpid/config";
-import type { BuildView, ContainerSettingsState } from "@cloudpid/protocol";
+import type {
+  BuildView,
+  ContainerSettingsState,
+  WorkspaceRecord,
+  WorkspaceWork,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -26,10 +31,13 @@ import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
 import { createSession, visibleTickAtom } from "./sessions.ts";
 
-/** Every Environment, newest first, with its Repos. */
+/**
+ * Every Environment, newest first, with its Repos, asked again every few seconds while the page is visible: a Session's
+ * agent makes, renames and adds Repos to Environments, which the page hears of no other way.
+ */
 export const environmentsAtom = RegistryClient.query("listEnvironments", undefined, {
   reactivityKeys: ["environments"],
-});
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom), Atom.refreshOnWindowFocus);
 
 /** The Environments, newest first, as of the last answer; null until the first. */
 export const environmentListAtom = Atom.map(environmentsAtom, (result) =>
@@ -50,7 +58,7 @@ export const environmentNamesAtom = Atom.map(environmentListAtom, (environments)
  */
 export const buildsAtom = RegistryClient.query("listBuilds", undefined, {
   reactivityKeys: ["builds"],
-}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom), Atom.refreshOnWindowFocus);
 
 /** Where Environment `id`'s Build stands as of the last answer; null until the first, or for an Environment not listed. */
 export const environmentBuildAtom = Atom.family((id: string) =>
@@ -287,6 +295,60 @@ export const removeWorkspaceAtom = Atom.family((id: string) =>
 );
 
 /**
+ * What Workspace `id`'s clones hold that is not on the remote, per Repo (`workspaceWork`): read on its Container when a
+ * confirmation that would lose it opens, and again each time one does.
+ */
+export const workspaceWorkAtom = Atom.family((id: string) =>
+  RegistryClient.query("workspaceWork", { id }, { reactivityKeys: [`workspace-work:${id}`] }),
+);
+
+/** The Subagent Workspaces of Session `session`, as the last listing has them. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain lookup in a listing.
+export const subagentWorkspacesOf = (
+  workspaces: ReadonlyArray<WorkspaceRecord> | null,
+  session: string,
+): WorkspaceRecord[] =>
+  Arr.filter(workspaces ?? [], (workspace) => workspace.subagent?.session === session);
+
+/**
+ * The Subagent Workspaces of the subagents below `owner` (its descendants', whose IDs extend its own), which deleting it
+ * removes too.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain lookup in a listing.
+export const subagentWorkspacesBelow = (
+  workspaces: ReadonlyArray<WorkspaceRecord> | null,
+  owner: { readonly session: string; readonly agent: string },
+): WorkspaceRecord[] =>
+  Arr.filter(subagentWorkspacesOf(workspaces, owner.session), (workspace) =>
+    (workspace.subagent?.agent ?? "").startsWith(`${owner.agent}.`),
+  );
+
+/**
+ * What a Workspace holds that is not on the remote, in words: `app: 2 commits not pushed, 1 uncommitted change`, or
+ * `app: not set up (on cloudpid/spare, not cloudpid/1a2b3c4d)` for a clone whose work is not known.
+ */
+export const describeWorkspaceWork = (work: ReadonlyArray<WorkspaceWork>): string =>
+  Arr.join(
+    Arr.map(
+      work,
+      ({ repo, uncommitted, unpushed, unsettled }) =>
+        `${repo}: ${Arr.join(
+          [
+            ...(unsettled === undefined ? [] : [unsettled]),
+            ...(unpushed > 0
+              ? [`${unpushed} ${unpushed === 1 ? "commit" : "commits"} not pushed`]
+              : []),
+            ...(uncommitted > 0
+              ? [`${uncommitted} uncommitted ${uncommitted === 1 ? "change" : "changes"}`]
+              : []),
+          ],
+          ", ",
+        )}`,
+    ),
+    "; ",
+  );
+
+/**
  * Stop a Workspace's Container of Environment `id` and forget its saved disk; its files and Sessions stay. Once it is
  * stopped, the dialog closes.
  */
@@ -318,6 +380,42 @@ export const environmentSettingsAtom = Atom.family((id: string) =>
 );
 
 /**
+ * Environment `id`'s Agent changes (`docs/spec.md` → Agent changes), newest first, asked again every few seconds while
+ * its history is shown and the page is visible: a Session's agent makes them, which the page hears of no other way.
+ */
+export const agentChangesAtom = Atom.family((id: string) =>
+  RegistryClient.query(
+    "listAgentChanges",
+    { environment: id },
+    { reactivityKeys: [`agent-changes:${id}`] },
+  ).pipe(Atom.makeRefreshOnSignal(visibleTickAtom)),
+);
+
+/**
+ * Revert one of Environment `id`'s Agent changes, by its id: its value before is written back, as the owner's change.
+ * The Registry refuses one whose field has changed since, saying what it is now. The history, the settings and the
+ * Builds ask again either way.
+ */
+export const revertAgentChangeAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    (change: number) =>
+      RegistryClient.use((registry) =>
+        registry("revertAgentChange", { environment: id, change }),
+      ).pipe(
+        Effect.asVoid,
+        changing([
+          `agent-changes:${id}`,
+          `environment-settings:${id}`,
+          "environment-secrets",
+          "builds",
+          "environments",
+        ]),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/**
  * What the Edit dialog's form holds: the name, and the Container's size, idle time (minutes), paths, variables,
  * scripts and Toolchains as typed.
  */
@@ -325,6 +423,8 @@ export interface EnvironmentDraft {
   readonly name: string;
   /** Undefined until the Environment's settings have answered and nothing was picked. */
   readonly instance: InstanceType | undefined;
+  /** The size limit; undefined until the Environment's settings have answered and nothing was picked. */
+  readonly maxInstance: InstanceType | undefined;
   /** Undefined until the Environment's settings have answered and nothing was typed. */
   readonly idle: string | undefined;
   /** The extra Container-only paths, one per line; undefined until the settings have answered and nothing was typed. */
@@ -349,6 +449,7 @@ const filledFrom = (
     : {
         ...draft,
         instance: draft.instance ?? saved.settings.instance,
+        maxInstance: draft.maxInstance ?? saved.settings.maxInstance,
         idle: draft.idle ?? String(saved.settings.idleMinutes),
         ignore: draft.ignore ?? Arr.join(saved.settings.ignore, "\n"),
         variables: draft.variables ?? variablesText(saved.settings.variables),
@@ -370,6 +471,7 @@ export const environmentDraftAtom = Atom.family((id: string) =>
         Option.getOrElse(get.self<EnvironmentDraft>(), () => ({
           name: get(environmentNamesAtom)[id] ?? "",
           instance: undefined,
+          maxInstance: undefined,
           idle: undefined,
           ignore: undefined,
           variables: undefined,
@@ -388,11 +490,12 @@ export const environmentDraftAtom = Atom.family((id: string) =>
 
 /**
  * Every kept Secret, of every Environment and for every Environment: names, scopes and build flags, never a value. A
- * section of the page is keyed by the Environment's id, or by `EVERY_ENVIRONMENT`.
+ * section of the page is keyed by the Environment's id, or by `EVERY_ENVIRONMENT`. Asked again every few seconds while the
+ * page is visible: a Session's agent keeps a Secret or marks one for the Build, which the page hears of no other way.
  */
 export const environmentSecretsAtom = RegistryClient.query("listEnvironmentSecrets", undefined, {
   reactivityKeys: ["environment-secrets"],
-});
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
 
 /** Why the Secrets could not load, or null. */
 export const environmentSecretsErrorAtom = Atom.map(environmentSecretsAtom, failureOf);

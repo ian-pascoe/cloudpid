@@ -213,7 +213,7 @@ describe("the guard", () => {
     expect(guard.output.stdout).toContain(`${sending("SIGTERM", 4242, "node", 1911)}\n`);
     expect(notesIn(notes)).toEqual([
       expect.stringMatching(
-        /^cloudpid: the Container was nearly out of memory, so its memory guard stopped `node` \(pid 4242, 1911 MiB\) at \d\d:\d\d:\d\d UTC to keep the Container answering\. Run less at once \(fewer parallel tasks or test workers, such as turbo's --concurrency or vitest's --maxWorkers\), or give the Environment a larger Container size\.\n$/,
+        /^cloudpid: the Container was nearly out of memory, so its memory guard stopped `node` \(pid 4242, 1911 MiB\) at \d\d:\d\d:\d\d UTC to keep the Container answering\. Run less at once \(fewer parallel tasks or test workers, such as turbo's --concurrency or vitest's --maxWorkers\), or restart this Container at a larger size with the container_resize tool\.\n$/,
       ),
     ]);
   });

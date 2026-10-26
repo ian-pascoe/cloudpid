@@ -5,9 +5,12 @@
 // one Layer kept in a `ManagedRuntime`.
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import {
+  deleteAgent,
   isAgentConversation,
   EMPTY_SUBAGENTS_STATE as EMPTY_STATE,
+  type OwnerDeletion,
   stopConversation,
+  type SubagentWorkspaceHost,
   SubagentsDoc,
   type SubagentsState,
 } from "@cloudpid/extensions/subagents";
@@ -90,6 +93,9 @@ import * as Stream from "effect/Stream";
 import type * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
+import { AgentChangeLog } from "@cloudpid/extensions/environment";
+import { SettingsReload, type SettingsApplied } from "@cloudpid/extensions/settings";
+import { agentChangesNotice, runChanges } from "./agent-changes.ts";
 import {
   harnessSettings,
   SessionSettings,
@@ -208,8 +214,16 @@ export type SessionHostOptions<R = never> = {
    * instance, which reopens it.
    */
   readonly reset: (reason: string) => void;
-  /** The extensions the Session's conversations run with, installed before any work resumes. */
-  readonly extensions: Effect.Effect<readonly Extension[], never, Harness | SessionSettings | R>;
+  /**
+   * The extensions the Session's conversations run with, installed before any work resumes. Their Agent changes
+   * (`AgentChangeLog`) are kept for the Notification at the end of the Run, and the Settings they change are read
+   * again, and the root conversation's agent brought to the default, through `SettingsReload`.
+   */
+  readonly extensions: Effect.Effect<
+    readonly Extension[],
+    never,
+    Harness | SessionSettings | AgentChangeLog | SettingsReload | R
+  >;
   /**
    * Extensions that follow the settings: after a read that brought new values, given the extensions installed, the
    * values now and those before, it returns the ones to install over those of the same name (none when what they follow
@@ -244,10 +258,15 @@ export type SessionHostOptions<R = never> = {
    */
   readonly lookupEnv?: HarnessOptions["env"];
   /**
-   * What the Session's Workspace's Containers have cost, read with its usage (null: none ran, or the Session has no
-   * Workspace). A read that fails leaves it out of that message.
+   * What the Containers of the Session's Workspace and of `subagents`' Workspaces (each Subagent Workspace's object, as
+   * the Subagents document has it) have cost, read with its usage (null: none ran, or the Session has no Workspace). A
+   * read that fails leaves it out of that message.
    */
-  readonly containerUsage?: (() => Promise<ContainerUsage | null>) | undefined;
+  readonly containerUsage?:
+    | ((subagents: ReadonlyArray<string>) => Promise<ContainerUsage | null>)
+    | undefined;
+  /** The Session's Subagent Workspaces, which the owner's delete of a subagent removes. */
+  readonly subagentWorkspaces?: SubagentWorkspaceHost | undefined;
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
   /** How long a submitted message's expansion may take before it goes as typed. Defaults to `EXPAND_TIMEOUT`. */
@@ -368,6 +387,15 @@ export type SessionHostService = {
    * and withdraw its queued input, once it is idle. Subagents below it keep working unless `subagents` is true.
    */
   readonly abort: (options?: AbortOptions) => Effect.Effect<void, SessionError>;
+  /**
+   * Delete subagent `agent` with everything below it, as `subagent_delete` with `discard: true` does, Subagent Workspaces
+   * included: the owner removed its Subagent Workspace `workspace` from the Environments page, after a confirmation. An
+   * agent that does not work in `workspace` is not deleted.
+   */
+  readonly deleteSubagent: (
+    agent: string,
+    workspace: string,
+  ) => Effect.Effect<OwnerDeletion, SessionError>;
   /**
    * Close the Harness: admission is sealed and the commits it admitted settle, so nothing writes the storage after. Every
    * later call fails; the object is reset before it serves another. For a Session being deleted.
@@ -525,8 +553,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const onIdle =
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
 
+  /** The Agent changes of the Run, kept until its end notifies them. */
+  const changes = runChanges(storage.kv);
+
   // Before anything resumes, so resumed tool calls find their tools.
-  const installed = yield* options.extensions;
+  const installed = yield* options.extensions.pipe(
+    Effect.provideService(AgentChangeLog, { record: changes.record }),
+    Effect.provideService(SettingsReload, { apply: Effect.suspend(() => reloadSettings) }),
+  );
 
   for (const extension of installed) yield* harness.install(extension);
 
@@ -622,6 +656,34 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     yield* attempt("configure", () => conversation.configure(want, context));
   });
+
+  /**
+   * Read the settings again after the agent changed them, and bring the active branch's agent to the default, so its
+   * next request uses it. A read or a write that fails is logged and left: the Session carries on with the settings it
+   * last read, and reads them when it next admits input. Says whether the Session picked its own model and level.
+   */
+  const reloadSettings: Effect.Effect<SettingsApplied> = refreshSettings.pipe(
+    Effect.andThen(applyAgent.pipe(serially)),
+    Effect.andThen(Effect.suspend(() => usageChanged)),
+    Effect.catchCause((cause) =>
+      Effect.logWarning(
+        "Reading the settings after an Agent change failed; the Session reads them when it next admits input",
+        cause,
+      ),
+    ),
+    Effect.andThen(
+      Effect.sync(() => {
+        const pick = picked();
+
+        return {
+          picked: {
+            model: pick.model !== undefined,
+            thinkingLevel: pick.thinkingLevel !== undefined,
+          },
+        };
+      }),
+    ),
+  );
 
   const inspect = harness.inspect.pipe(fromHarness);
 
@@ -821,6 +883,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       NOTIFY_KEY,
       Arr.filter(pendingNotices(), (id) => !endedIds.has(id)),
     );
+
+    // Besides the Run's own: one Notification of the Agent changes it made, which wait for the next end if it fails.
+    const changed = yield* changes.pending;
+
+    if (changed.length > 0 && (yield* notifyOwner(agentChangesNotice(changed)))) {
+      yield* changes.drop(changed.length);
+    }
   }).pipe(
     Effect.catchCause((cause) => Effect.logWarning("Run notifications failed", cause)),
     notifying,
@@ -1527,7 +1596,15 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     warn: (message: string) => void,
   ): Promise<ContainerUsage | null> => {
     try {
-      return (await options.containerUsage?.()) ?? null;
+      if (options.containerUsage === undefined) return null;
+
+      const state = await harness.harness.snapshot(SubagentsDoc, context);
+
+      const subagents = Arr.flatMap(Record.values(state?.agents ?? {}), (agent) =>
+        agent.workspace === undefined ? [] : [agent.workspace.object],
+      );
+
+      return (await options.containerUsage(subagents)) ?? null;
     } catch (error) {
       warn(error instanceof Error ? error.message : String(error));
 
@@ -1813,6 +1890,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             ),
           ),
         ),
+      ),
+    deleteSubagent: (agent, workspace) =>
+      attempt("deleteSubagent", () =>
+        deleteAgent(harness.harness, agent, workspace, options.subagentWorkspaces, context),
       ),
     close: attempt("close", () => harness.harness.close(context)),
     taskGraph: taskGraphSummaries,

@@ -20,6 +20,7 @@ import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
+import * as Record from "effect/Record";
 import { matchesPattern } from "./patterns.ts";
 
 export const extensionName = "tool-search";
@@ -47,8 +48,36 @@ export const fixedToolSearchSettings = (offered: ReadonlyArray<string>) =>
  */
 export const ALWAYS_OFFERED: ReadonlyArray<string> = [TOOL_SEARCH_TOOL_NAME, "context_rollover"];
 
-/** The most deferred tools the prompt names; the rest are counted. */
-const LISTED = 40;
+/** The most deferred tools the prompt names on one line; past it, they are named a family to a line. */
+export const LISTED_ON_ONE_LINE = 40;
+
+/** A tool's family: its name up to its first `_` (`environment_` of `environment_get`), or the name itself. */
+const familyOf = (name: string): string => {
+  const cut = name.indexOf("_");
+
+  return cut === -1 ? name : name.slice(0, cut + 1);
+};
+
+/**
+ * `names` (sorted) a family to a line, each family of two or more as `- <prefix>*: <names>`, and the tools alone in
+ * theirs on a last line, so many deferred tools are named in full without one long line.
+ */
+const byFamily = (names: ReadonlyArray<string>): string => {
+  const families = Arr.groupBy(names, familyOf);
+  const lines: string[] = [];
+  const alone: string[] = [];
+
+  for (const family of Arr.sort(Record.keys(families), Order.String)) {
+    const members = families[family] ?? [];
+
+    if (members.length > 1) lines.push(`- ${family}*: ${Arr.join(members, ", ")}`);
+    else alone.push(...members);
+  }
+
+  if (alone.length > 0) lines.push(`- others: ${Arr.join(alone, ", ")}`);
+
+  return Arr.join(lines, "\n");
+};
 
 /** Whether the options offer tool `name`. */
 export const isOffered = (options: ToolSearchOptions, name: string): boolean =>
@@ -68,8 +97,9 @@ const withDeferral = (tool: ToolRegistration, defer: boolean): ToolRegistration 
 
 /**
  * What the model is told about deferred tools: every tool the settings defer, loaded or not (so the text changes only
- * when the settings or the extensions do, not at each load; the result of `tool_search` says what it loaded). Nothing
- * for an agent that has no `tool_search`, which could not load any of them.
+ * when the settings or the extensions do, not at each load; the result of `tool_search` says what it loaded), on one
+ * line, or a family to a line when there are many. Nothing for an agent that has no `tool_search`, which could not
+ * load any of them.
  */
 const deferredTools = section("deferred_tools", (input) => {
   const { agent } = input;
@@ -88,10 +118,11 @@ const deferredTools = section("deferred_tools", (input) => {
 
   if (names.length === 0) return undefined;
 
-  const shown = Arr.take(names, LISTED);
-  const more = names.length - shown.length;
+  const lead = `Tools the settings defer: each is offered once you load it with \`${TOOL_SEARCH_TOOL_NAME}\` (code mode scripts call them without loading):`;
 
-  return `Tools the settings defer: each is offered once you load it with \`${TOOL_SEARCH_TOOL_NAME}\` (code mode scripts call them without loading): ${Arr.join(shown, ", ")}${more > 0 ? `, and ${more} more` : ""}.`;
+  return names.length <= LISTED_ON_ONE_LINE
+    ? `${lead} ${Arr.join(names, ", ")}.`
+    : `${lead}\n${byFamily(names)}`;
 });
 
 /**

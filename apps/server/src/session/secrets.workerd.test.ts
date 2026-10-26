@@ -172,6 +172,49 @@ describe("Secrets over the Session socket", () => {
     expect(alarm).toBeGreaterThan(Date.now() + 14 * 60_000);
   });
 
+  it("carries the agent's suggestion to the form and the owner's final choice back, with no value anywhere", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.script([
+        `call:secret_ask:${JSON.stringify({ names: ["API_KEY"], reason: "call the API", keep: "environment" })}`,
+        "done",
+      ]),
+    );
+
+    const owner = await connect(stub);
+
+    owner.send({ type: "submit", id: "go", input: "Call the API" });
+
+    const request = only(await owner.next(isPending));
+
+    // The agent's `keep` only pre-selects the form's choice.
+    expect(request).toMatchObject({ names: ["API_KEY"], keep: "environment" });
+
+    // The owner chooses another scope; this Session has no Registry to keep it in, so it holds the Secret as it does
+    // an entered one, and the result says why.
+    owner.send({
+      type: "secret_answer",
+      id: "answer",
+      request: request.id,
+      values: { API_KEY: VALUE },
+      keep: "all",
+    });
+    await owner.next(isAnswer("answer"));
+    await idle(stub);
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.at(-1)).toContain("API_KEY");
+    expect(JSON.stringify(results)).not.toContain(VALUE);
+    expect(JSON.stringify(owner.received)).not.toContain(VALUE);
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.storageDump()),
+    ).not.toContain(VALUE);
+  });
+
   it("refuses an answer to a request that is not waiting", async () => {
     const client = await connect(env.SESSIONS.get(env.SESSIONS.newUniqueId()));
 

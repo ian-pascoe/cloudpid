@@ -31,7 +31,13 @@ import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
 import { workspaceLookups } from "./session/lookups.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
-import { ModelProxyConfigLive, Session, SessionLive } from "./session/Session.ts";
+import {
+  GitHubTokenConfigLive,
+  destroySessionObject,
+  ModelProxyConfigLive,
+  Session,
+  SessionLive,
+} from "./session/Session.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
@@ -165,21 +171,15 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // A Session's object is found anew for each call; any failure of the call is a defect the endpoint reports.
     const sessionObjects: SessionObjects = {
       stop: (id) => Effect.orDie(sessions.getByName(id).stopAll()),
-      destroy: (id) => {
-        const session = sessions.getByName(id);
-
-        // Once the wipe has answered, the object resets: that call fails by design (an abort fails the call that makes
-        // it), and a reset that does not happen only leaves an instance over empty storage until it is evicted.
-        return Effect.orDie(session.destroy()).pipe(
-          Effect.andThen(Effect.ignoreCause(session.reset())),
-        );
-      },
+      destroy: destroySessionObject(sessions),
       forkSource: (id, request) => Effect.orDie(sessions.getByName(id).forkSource(request)),
       exportEntries: (id, request) => Effect.orDie(sessions.getByName(id).exportEntries(request)),
       importStart: (id) => Effect.orDie(sessions.getByName(id).importStart()),
       importEntries: (id, entries) => Effect.orDie(sessions.getByName(id).importEntries(entries)),
       importFinish: (id, plan) => Effect.orDie(sessions.getByName(id).importFinish(plan)),
       releaseFork: (id) => Effect.orDie(sessions.getByName(id).releaseFork()),
+      deleteSubagent: (id, agent, workspace) =>
+        Effect.orDie(sessions.getByName(id).deleteSubagent({ agent, workspace })),
     };
 
     // Built once per isolate, so a cleanup that found nothing left is not asked again.
@@ -230,7 +230,14 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(
       SessionLive.pipe(
-        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
+        Layer.provide(
+          Layer.mergeAll(
+            ModelProxyConfigLive,
+            GitHubTokenConfigLive,
+            SecretsConfigLive,
+            WebConfigLive,
+          ),
+        ),
         Layer.provideMerge(
           RegistryLive.pipe(Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive))),
         ),

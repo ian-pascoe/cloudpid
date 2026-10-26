@@ -3,6 +3,7 @@
 // the schema's `Encoded` side is the overrides' shape: a deep partial of the settings that rejects keys it does not know.
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -213,9 +214,50 @@ const problemsOf = (error: Schema.SchemaError): ReadonlyArray<Problem> =>
     };
   });
 
+const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
+  Predicate.isObject(value) && !Arr.isArray(value);
+
+const isJsonArray = (value: Schema.Json): value is Schema.JsonArray => Arr.isArray(value);
+
+/** Tools that were renamed, by their former name: an offered list that names one offers it under its new name. */
+const RENAMED_TOOLS: ReadonlyMap<string, string> = new Map([
+  ["restart_container", "container_restart"],
+]);
+
+/**
+ * `overrides` with each renamed tool in `tools.offered` under its new name (once, where the list now names it twice), so
+ * a list saved before a rename keeps offering the tool, is not reported, and is saved with the new name. Patterns are
+ * left as they are.
+ */
+const withRenamedTools = (overrides: Schema.Json): Schema.Json => {
+  if (!isJsonObject(overrides)) return overrides;
+
+  const tools = overrides["tools"];
+
+  if (tools === undefined || !isJsonObject(tools)) return overrides;
+
+  const offered = tools["offered"];
+
+  if (offered === undefined || !isJsonArray(offered)) return overrides;
+
+  const renamed: Schema.JsonArray = Arr.dedupe(
+    Arr.map(offered, (entry) =>
+      Predicate.isString(entry) ? (RENAMED_TOOLS.get(entry) ?? entry) : entry,
+    ),
+  );
+
+  if (renamed.length === offered.length && Arr.every(offered, (entry, i) => entry === renamed[i])) {
+    return overrides;
+  }
+
+  const renamedTools = Record.map(tools, (entry, key) => (key === "offered" ? renamed : entry));
+
+  return Record.map(overrides, (entry, key) => (key === "tools" ? renamedTools : entry));
+};
+
 /** The settings `overrides` give over the defaults, or why they are not valid settings. */
 export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings, SettingsError> =>
-  Result.mapError(decodeOverrides(overrides), (error) =>
+  Result.mapError(decodeOverrides(withRenamedTools(overrides)), (error) =>
     SettingsError.make({
       message: Arr.join(
         Arr.map(problemsOf(error), (problem) => problem.line),
@@ -227,9 +269,6 @@ export const resolveSettings = (overrides: Schema.Json): Result.Result<Settings,
 /** The settings with every field at its default. */
 // @effect-diagnostics-next-line schemaSync:off -- the defaults are built once, at load, from a schema that cannot fail on `{}`.
 export const DEFAULT_SETTINGS: Settings = Schema.decodeSync(Settings)({});
-
-const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
-  Predicate.isObject(value) && !Arr.isArray(value);
 
 /** What of `value` differs from `base`; `undefined` when nothing does. A key `base` lacks is kept whole. */
 const difference = (value: Schema.Json, base: Schema.Json): Schema.Json | undefined => {
@@ -255,6 +294,93 @@ export const overridesFrom = (settings: Settings): SettingsOverrides =>
   // SAFETY: both sides are complete encodings of `Settings`, and the difference keeps only keys the first has.
   (difference(encodeSettings(settings), encodeSettings(DEFAULT_SETTINGS)) ??
     {}) as SettingsOverrides;
+
+const SETTINGS_ROOTS: ReadonlySet<string> = new Set(Record.keys(DEFAULT_SETTINGS));
+
+/** The field of one option of an extension: `extensions.<extension>.<key>`. */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const extensionField = (extension: string, key: string): string =>
+  `extensions.${extension}.${key}`;
+
+/**
+ * The keys a settings field leads through (`docs/spec.md` → Agent changes): a setting's dotted path (`thinkingLevel`,
+ * `roles.small.model`), or `extensions.<extension>.<key>` for an extension's option, whose key may hold dots (the
+ * extension's name may not). Undefined for a path that does not start at a setting or has an empty part.
+ */
+export const settingsFieldPath = (field: string): ReadonlyArray<string> | undefined => {
+  const parts = field.split(".");
+  const [root, extension, ...key] = parts;
+
+  if (root === undefined || !SETTINGS_ROOTS.has(root) || Arr.some(parts, (part) => part === "")) {
+    return undefined;
+  }
+
+  if (root !== "extensions") return parts;
+
+  return extension === undefined || key.length === 0
+    ? undefined
+    : [root, extension, Arr.join(key, ".")];
+};
+
+/** The value `field` has in `settings`: null where there is none (an option not set, a field that is not one). */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const settingsFieldValue = (settings: Settings, field: string): Schema.Json | null => {
+  const keys = settingsFieldPath(field);
+
+  if (keys === undefined) return null;
+
+  let found: unknown = settings;
+
+  for (const key of keys) {
+    found = Predicate.hasProperty(found, key) ? found[key] : undefined;
+  }
+
+  // The settings are plain JSON data: what the path leads to is JSON, or nothing.
+  return Option.getOrNull(decodeJson(found));
+};
+
+const decodeJson = Schema.decodeUnknownOption(Schema.Json);
+
+const decodeJsonObject = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json));
+
+/** `value` with `leaf` at `keys`, objects made on the way; null takes the leaf away, and an object left empty with it. */
+const withLeaf = (
+  value: Schema.JsonObject,
+  keys: ReadonlyArray<string>,
+  leaf: Schema.Json | null,
+): Schema.JsonObject => {
+  const [head, ...rest] = keys;
+
+  if (head === undefined) return value;
+
+  const { [head]: held, ...others } = value;
+
+  if (rest.length === 0) return leaf === null ? others : { ...others, [head]: leaf };
+
+  const inner = withLeaf(held !== undefined && isJsonObject(held) ? held : {}, rest, leaf);
+
+  return Record.isEmptyRecord(inner) ? others : { ...others, [head]: inner };
+};
+
+/**
+ * The overrides that make `settings` into settings where each of `changes` has its value (`settingsFieldPath`; null: the
+ * option is taken away), over what `settings` override already. A field that is not a setting changes nothing; the
+ * strict resolution of the result says whether the values are valid.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const overridesWithFields = (
+  settings: Settings,
+  changes: ReadonlyArray<{ readonly field: string; readonly value: Schema.Json | null }>,
+): Schema.Json =>
+  Arr.reduce(
+    changes,
+    Option.getOrElse(decodeJsonObject(overridesFrom(settings)), () => ({})),
+    (overrides, change) => {
+      const keys = settingsFieldPath(change.field);
+
+      return keys === undefined ? overrides : withLeaf(overrides, keys, change.value);
+    },
+  );
 
 /** `value` without what lies at `keys`, if anything does. */
 const omitPath = (value: Schema.Json, keys: ReadonlyArray<string>): Schema.Json => {
@@ -288,7 +414,7 @@ export type LenientSettings = {
  * reading what an earlier release saved.
  */
 export const resolveLeniently = (overrides: Schema.Json): LenientSettings => {
-  let rest = overrides;
+  let rest = withRenamedTools(overrides);
   const dropped: string[] = [];
 
   // Dropping a path settles its problem; a few rounds cover a document with several.
