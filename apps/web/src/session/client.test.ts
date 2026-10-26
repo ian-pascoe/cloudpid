@@ -1628,6 +1628,61 @@ describe("the catalog and Slash commands", () => {
   );
 
   it.effect(
+    "lists, opens, shows and closes the Browser Pane's Owner tabs, and keeps the tabs it is told of",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        yield* watching(latest());
+
+        expect(state().ownerTabs).toBeNull();
+
+        const listed = yield* asking(client.ownerTabs);
+        const opened = yield* asking(client.openOwnerTab);
+        const shown = yield* asking(client.showOwnerTab("a"));
+        const closed = yield* asking(client.closeOwnerTab("b"));
+
+        const [list, open, show, close] = latest()
+          .commands()
+          .filter(
+            (command) => typeof command.type === "string" && command.type.startsWith("owner_tab_"),
+          );
+
+        expect(list).toEqual({ type: "owner_tab_list", id: list?.id });
+        expect(open).toEqual({ type: "owner_tab_open", id: open?.id });
+        expect(show).toEqual({ type: "owner_tab_show", id: show?.id, ownerTabId: "a" });
+        expect(close).toEqual({ type: "owner_tab_close", id: close?.id, ownerTabId: "b" });
+
+        const one = { tabs: [{ id: "a", title: "Docs" }], shown: "a" };
+
+        yield* latest().say({ type: "result", id: list?.id, result: one });
+        expect(yield* Fiber.join(listed)).toEqual(one);
+        expect(state().ownerTabs).toEqual(one);
+
+        // Another device opened a tab: the Session sends every client the tabs.
+        const two = {
+          tabs: [
+            { id: "a", title: "Docs" },
+            { id: "b", title: "" },
+          ],
+          shown: "b",
+        };
+
+        yield* latest().say({ type: "owner_tabs", ...two });
+        expect(state().ownerTabs).toEqual(two);
+
+        yield* latest().say({ type: "result", id: open?.id, result: two });
+        yield* latest().say({ type: "result", id: show?.id, result: { ...two, shown: "a" } });
+        yield* latest().say({ type: "error", id: close?.id, message: "boom" });
+
+        expect(yield* Fiber.join(opened)).toEqual(two);
+        expect((yield* Fiber.join(shown)).shown).toBe("a");
+        expect(yield* failureOf(closed)).toBe("boom");
+        expect(state().ownerTabs?.shown).toBe("a");
+      }),
+  );
+
+  it.effect(
     "loads a page of earlier History into the view of the conversation it was asked for",
     () =>
       Effect.gen(function* () {

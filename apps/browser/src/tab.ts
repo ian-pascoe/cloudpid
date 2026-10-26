@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off schemaSync:off preferTypedSchemaDecoder:off
 // The tab an `agents/browser` scope works in, as `agents/browser` has stored it: a conversation's, for a Browser Handoff
-// (`./handoff.ts`), and an Owner tab's, for the Browser Pane (`./owner-tabs.ts`); and opening an Owner tab, and
-// forgetting one that is gone.
+// (`./handoff.ts`), and an Owner tab's, for the Browser Pane (`./owner-tabs.ts`); and opening an Owner tab, recording a
+// page a tab opened as one, and forgetting one that is gone.
 import {
   type Browser,
   type BrowserBinding,

@@ -267,4 +267,82 @@ describe("the Browser Pane's view of the Owner tab", () => {
       expect(failure.message).toContain("net::ERR_NAME_NOT_RESOLVED");
     }).pipe(Effect.scoped),
   );
+
+  it.effect(
+    "follows the Owner tab the Session says is shown: it connects afresh only to another one",
+    () =>
+      Effect.gen(function* () {
+        const fake = fakeBrowser();
+        const asked: boolean[] = [];
+        let shown = "owner-1";
+
+        const view = yield* openBrowserPaneView((open: boolean) =>
+          Effect.suspend(() => {
+            asked.push(open);
+
+            return fake.mint.pipe(
+              Effect.map((links): OwnerTabLinks => ({
+                ownerTabId: shown,
+                ...links,
+                opened: open,
+                replaced: false,
+              })),
+            );
+          }),
+        ).pipe(Effect.provide(fake.layer));
+
+        yield* settle;
+
+        // The one it shows, none, or no news: nothing happens.
+        yield* view.follow("owner-1");
+        yield* view.follow(undefined);
+        yield* settle;
+        expect(asked).toEqual([true]);
+
+        // Another device switched: the links are minted again, for the tab the Session shows.
+        shown = "owner-2";
+        yield* view.follow("owner-2");
+        yield* settle;
+        expect(asked).toEqual([true, false]);
+        expect(SubscriptionRef.getUnsafe(view.state).status).toBe("live");
+        expect(fake.to("T")).toHaveLength(2);
+
+        // It is on that tab now.
+        yield* view.follow("owner-2");
+        yield* settle;
+        expect(asked).toEqual([true, false]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "tells the Pane when a page of the Owner tab opens a window, which may be a tab of its own",
+    () =>
+      Effect.gen(function* () {
+        const fake = fakeBrowser();
+        let told = 0;
+
+        yield* openBrowserPaneView(
+          (open: boolean) =>
+            fake.mint.pipe(
+              Effect.map((links): OwnerTabLinks => ({
+                ownerTabId: "owner-1",
+                ...links,
+                opened: open,
+                replaced: false,
+              })),
+            ),
+          {
+            windowOpened: Effect.sync(() => {
+              told += 1;
+            }),
+          },
+        ).pipe(Effect.provide(fake.layer));
+
+        yield* settle;
+        yield* fake.to("T")[0]!.event("Page.windowOpen", { url: "https://example.com/next" });
+        yield* settle;
+
+        expect(told).toBe(1);
+      }).pipe(Effect.scoped),
+  );
 });

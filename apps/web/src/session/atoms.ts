@@ -89,6 +89,9 @@ export const browserHandoffRequestsAtom = slice(
 /** The Browser Handoffs waiting, or null until this socket has listed them (a Live View closes only on a list). */
 export const listedBrowserHandoffRequestsAtom = slice((state) => state.browserHandoffRequests);
 
+/** The Browser Pane's Owner tabs and the one shown, as this client last heard them; null until it has. */
+export const ownerTabsAtom = slice((state) => state.ownerTabs);
+
 /** The root conversation's Todo List. */
 export const todosAtom = slice((state) => state.todos);
 

@@ -161,6 +161,11 @@ export interface LiveView {
   readonly returned: Effect.Effect<void>;
   /** Try again after the Live View was lost. */
   readonly retry: Effect.Effect<void>;
+  /**
+   * Connect afresh now, with new links and the viewport applied again: the link source shows another tab than the one
+   * connected (a Browser Pane following the Owner tab another device switched to). Nothing once the Live View is over.
+   */
+  readonly reconnect: Effect.Effect<void>;
   /** Run `use` with the tab's connection; fails when it is not connected. */
   readonly withTab: <A>(
     use: (tab: TabHandle) => Effect.Effect<A, LiveViewError>,
@@ -637,6 +642,11 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
       }
     }).pipe(Effect.scoped),
     retry: Effect.suspend(() => (current.status === "lost" ? reconnect : Effect.void)),
+    reconnect: Effect.suspend(() =>
+      isOver()
+        ? Effect.void
+        : lock.withPermits(1)(Effect.sync(closeAll)).pipe(Effect.andThen(reconnect)),
+    ),
     withTab: (use) =>
       Effect.suspend(() =>
         tab === null

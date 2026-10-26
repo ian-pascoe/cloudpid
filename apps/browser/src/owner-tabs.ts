@@ -205,6 +205,7 @@ export class OwnerTabs {
     if (stored.tabs.length === 0) return { tabs: [] };
 
     const found = await this.#browser.tabsOf(stored.tabs.map(({ id }) => ownerTabScope(id)));
+
     const present = stored.tabs.flatMap(({ id }) => {
       const tab = found.get(ownerTabScope(id));
 
@@ -319,10 +320,12 @@ export class OwnerTabs {
     const titles = new Map(pages.map((page) => [page.targetId, page.title]));
     const targets = new Map([...present, ...joined].map(({ id, tab }) => [id, tab.targetId]));
 
-    return {
-      tabs: tabs.map(({ id }) => ({ id, title: titles.get(targets.get(id) ?? "") ?? "" })),
-      ...(shown === undefined ? {} : { shown }),
-    };
+    const entries = tabs.map(({ id }) => ({
+      id,
+      title: titles.get(targets.get(id) ?? "") ?? "",
+    }));
+
+    return shown === undefined ? { tabs: entries } : { tabs: entries, shown };
   }
 
   /** The Owner tabs by title and the one shown (`#sync`); starts nothing, and is empty when no browser runs. */
@@ -387,15 +390,10 @@ export class OwnerTabs {
       if (tab !== undefined) await this.#closePages(tab);
 
       const left = tabs.filter((other) => other.id !== id);
-      const next = shown === id ? (left[at] ?? left[at - 1]) : undefined;
+      // The one shown stays, or gives way to its neighbour on the right, else on the left.
+      const nowShown = shown === id ? (left[at] ?? left[at - 1])?.id : shown;
 
-      this.#save(
-        shown !== id
-          ? { tabs: left, ...(shown === undefined ? {} : { shown }) }
-          : next === undefined
-            ? { tabs: left }
-            : { tabs: left, shown: next.id },
-      );
+      this.#save(nowShown === undefined ? { tabs: left } : { tabs: left, shown: nowShown });
       await this.#forget([id]);
 
       return this.#sync();
