@@ -71,6 +71,7 @@ import {
 } from "./settings.ts";
 import { proxyModels } from "./models.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
+import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
@@ -627,6 +628,8 @@ export const SessionLive = Session.make(
             Layer.provideMerge(sessionBrowser),
             // The sockets mint the Browser Pane's links through it (`owner_tab_view`).
             Layer.provideMerge(sessionBrowserPane),
+            // The `browser` calls in Owner tabs, told to every client for the Browser Pane (`owner_tab_drivers`).
+            Layer.provideMerge(sessionOwnerTabDriversLayer(state.raw)),
             Layer.provide(Layer.mergeAll(registry, settings)),
             // Last, so the object's own Effects (those the host and the sockets run) make their spans there too.
             Layer.provideMerge(telemetryLayer(telemetry)),

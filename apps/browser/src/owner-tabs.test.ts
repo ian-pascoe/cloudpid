@@ -379,14 +379,14 @@ describe("the Browser Pane's several Owner tabs", () => {
       .filter((command) => command.method === "Target.closeTarget")
       .map((command) => command.params);
 
-  it("lists the Owner tabs in the order they were opened, by title, with the one shown, and not a conversation's tab", async () => {
+  it("lists the Owner tabs in the order they were opened, by title and URL, with the one shown, and not a conversation's tab", async () => {
     const { ownerTabs } = withTabs([...owners, page("conversation-tab", { title: "Agent's" })]);
 
     expect(await ownerTabs.tabs()).toEqual({
       tabs: [
-        { id: "a", title: "Tab A" },
-        { id: "b", title: "Tab B" },
-        { id: "c", title: "Tab C" },
+        { id: "a", title: "Tab A", url: "https://example.com/owner-a" },
+        { id: "b", title: "Tab B", url: "https://example.com/owner-b" },
+        { id: "c", title: "Tab C", url: "https://example.com/owner-c" },
       ],
       shown: "a",
     });
@@ -542,10 +542,10 @@ describe("the Browser Pane's several Owner tabs", () => {
     const listing = await ownerTabs.tabs();
 
     expect(listing.tabs).toEqual([
-      { id: "a", title: "Tab A" },
-      { id: "b", title: "Tab B" },
-      { id: "c", title: "Tab C" },
-      { id: "id-1", title: "Docs" },
+      { id: "a", title: "Tab A", url: "https://example.com/owner-a" },
+      { id: "b", title: "Tab B", url: "https://example.com/owner-b" },
+      { id: "c", title: "Tab C", url: "https://example.com/owner-c" },
+      { id: "id-1", title: "Docs", url: "https://example.com/link-page" },
     ]);
     expect(adopted).toEqual([[ownerTabScope("id-1"), "link-page"]]);
     expect(tabs.get(ownerTabScope("id-1"))?.targetId).toBe("link-page");

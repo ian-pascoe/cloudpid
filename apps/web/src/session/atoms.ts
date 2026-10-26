@@ -92,6 +92,9 @@ export const listedBrowserHandoffRequestsAtom = slice((state) => state.browserHa
 /** The Browser Pane's Owner tabs and the one shown, as this client last heard them; null until it has. */
 export const ownerTabsAtom = slice((state) => state.ownerTabs);
 
+/** The `browser` calls driving the owner's Owner tabs now. */
+export const ownerTabDriversAtom = slice((state) => state.ownerTabDrivers);
+
 /** The root conversation's Todo List. */
 export const todosAtom = slice((state) => state.todos);
 

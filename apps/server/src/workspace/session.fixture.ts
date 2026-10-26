@@ -6,7 +6,12 @@ import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
 import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
 import type { Approvals } from "@cloudpid/extensions/approvals";
-import { BrowserHost, BrowserSession, type BrowserHandoffs } from "@cloudpid/extensions/browser";
+import {
+  BrowserHost,
+  BrowserSession,
+  type BrowserHandoffs,
+  type OwnerTabDrivers,
+} from "@cloudpid/extensions/browser";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import {
   type AgentChangeLog,
@@ -108,7 +113,13 @@ export class TestWorkspaceSession extends TestSession {
   protected override hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | AgentChangeLog | SettingsReload | Approvals
+    | Harness
+    | Secrets
+    | BrowserHandoffs
+    | OwnerTabDrivers
+    | AgentChangeLog
+    | SettingsReload
+    | Approvals
   > {
     return sessionExtensions.pipe(
       // The tests of the Workspace delete nothing.

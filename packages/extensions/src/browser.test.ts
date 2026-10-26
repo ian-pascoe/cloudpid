@@ -15,6 +15,12 @@ import {
   type BrowserRun,
   BrowserSession,
   type BrowserSessionService,
+  makeOwnerTabDrivers,
+  MAX_OWNER_TAB_TITLE,
+  NO_OWNER_TABS,
+  type OwnerTabDriver,
+  OwnerTabDrivers,
+  type OwnerTabListing,
 } from "./browser.ts";
 import { fakeHandoffHost, LIVE_VIEW_TOKEN } from "./browser/host.fixture.ts";
 import { MAX_IMAGE_CHARACTERS } from "./images.ts";
@@ -36,12 +42,17 @@ const memoryStorage = () => {
   };
 };
 
-/** A fake browser host: it records every run it is asked for and answers with `reply`. */
-const fakeHost = (reply: (code: string) => Effect.Effect<BrowserRun, BrowserError>) => {
-  const runs: { code: string; conversationId: number }[] = [];
+/**
+ * A fake browser host: it records every run it is asked for and answers with `reply`; its Owner tabs are `ownerTabs`.
+ */
+const fakeHost = (
+  reply: (code: string) => Effect.Effect<BrowserRun, BrowserError>,
+  ownerTabs: OwnerTabListing = { tabs: [] },
+) => {
+  const runs: { code: string; conversationId: number; ownerTabId?: string }[] = [];
 
   const host: BrowserHostService = {
-    ...fakeHandoffHost().host,
+    ...fakeHandoffHost(undefined, { ownerTabs }).host,
     describe: Effect.succeed(DESCRIPTION),
     run: (input) =>
       Effect.suspend(() => {
@@ -74,12 +85,20 @@ const fakeSession = () => {
 const completed = (output: BrowserRun["output"]) =>
   Effect.succeed<BrowserRun>({ output, details: { status: "completed" } });
 
+/** Runs in Owner tabs that tell no one. */
+const untold = () => makeOwnerTabDrivers({ announce: () => Effect.void });
+
 /** The `browser` extension over `host`. */
-const extensionOver = (host: BrowserHostService, session = fakeSession().session) =>
+const extensionOver = (
+  host: BrowserHostService,
+  session = fakeSession().session,
+  drivers = untold(),
+) =>
   Effect.runPromise(
     Browser.pipe(
       Effect.provideService(BrowserHost, host),
       Effect.provideService(BrowserSession, session),
+      Effect.provideService(OwnerTabDrivers, drivers),
       Effect.provideService(
         BrowserHandoffs,
         makeBrowserHandoffs(
@@ -294,6 +313,241 @@ describe("the browser extension", () => {
   });
 });
 
+describe("the browser extension in the user's Owner tabs", () => {
+  // As the Browser Pane lists them: the URLs, which may carry a token, are for the owner alone.
+  const OWNER_TABS: OwnerTabListing = {
+    tabs: [
+      { id: "tab-a", title: "An article", url: "https://news.example/story?token=SECRET-A" },
+      { id: "tab-b", title: "Mail", url: "https://mail.example/inbox#code=SECRET-B" },
+    ],
+    shown: "tab-b",
+  };
+
+  /** Runs in Owner tabs, with each list the clients were told. */
+  const telling = () => {
+    const told: OwnerTabDriver[][] = [];
+
+    const drivers = makeOwnerTabDrivers({
+      announce: (current) =>
+        Effect.sync(() => {
+          told.push([...current]);
+        }),
+    });
+
+    return { drivers, told };
+  };
+
+  it("takes an optional tab: an Owner tab's ID, or the one the Browser Pane shows", async () => {
+    const { host } = fakeHost(() => completed([]));
+    const [tool] = (await extensionOver(host)).tools ?? [];
+
+    expect(JSON.stringify(tool?.parameters)).toMatch(/"tab"/);
+    expect(JSON.stringify(tool?.parameters)).toMatch(/browser_owner_tabs/);
+    expect(tool?.parameters).toMatchObject({ required: ["code"] });
+    expect(tool?.description).toMatch(/Owner tabs/);
+  });
+
+  it("runs the model's code in the Owner tab it names, by ID or as the one shown, and tells the clients while it drives it", async () => {
+    const { drivers, told } = telling();
+    const whileRunning: Array<ReadonlyArray<OwnerTabDriver>> = [];
+
+    const { host, runs } = fakeHost(
+      () =>
+        drivers.current.pipe(
+          Effect.tap((current) =>
+            Effect.sync(() => {
+              whileRunning.push(current);
+            }),
+          ),
+          Effect.andThen(completed([{ type: "text", text: "the article says X" }])),
+        ),
+      OWNER_TABS,
+    );
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Look"
+          ? call(
+              ["browser", { code: "read", tab: "tab-a" }],
+              ["browser", { code: "read shown", tab: "shown" }],
+              ["browser", { code: "mine" }],
+            )
+          : answer("Looked."),
+      {},
+      [await extensionOver(host, fakeSession().session, drivers)],
+    );
+
+    await session.prompt("Look");
+
+    expect(runs).toEqual([
+      { code: "read", conversationId: 1, ownerTabId: "tab-a" },
+      { code: "read shown", conversationId: 1, ownerTabId: "tab-b" },
+      { code: "mine", conversationId: 1 },
+    ]);
+    expect(await session.texts("toolResult")).toEqual([
+      "the article says X",
+      "the article says X",
+      "the article says X",
+    ]);
+    expect(whileRunning).toEqual([
+      [{ ownerTabId: "tab-a", conversationId: 1 }],
+      [{ ownerTabId: "tab-b", conversationId: 1 }],
+      [],
+    ]);
+    expect(told).toEqual([
+      [{ ownerTabId: "tab-a", conversationId: 1 }],
+      [],
+      [{ ownerTabId: "tab-b", conversationId: 1 }],
+      [],
+    ]);
+  });
+
+  it("names a subagent's run in an Owner tab by the subagent's conversation", async () => {
+    const { drivers, told } = telling();
+    const { host, runs } = fakeHost(() => completed([]), OWNER_TABS);
+
+    const session = await openSubagentHarness(
+      (request) => {
+        if (request.agent === "agent-1") {
+          return request.text.startsWith("Read")
+            ? call(["browser", { code: "child", tab: "tab-a" }])
+            : answer("Done.");
+        }
+
+        return request.text === "Start"
+          ? call(["subagent", { task: "Read the article" }])
+          : answer("Noted.");
+      },
+      {},
+      [await extensionOver(host, fakeSession().session, drivers)],
+    );
+
+    await session.prompt("Start");
+    await session.settle();
+
+    const child = runs.find((run) => run.code === "child");
+
+    expect(child?.conversationId).toBeGreaterThan(1);
+    expect(child?.ownerTabId).toBe("tab-a");
+    expect(told[0]).toEqual([{ ownerTabId: "tab-a", conversationId: child?.conversationId }]);
+    expect(told.at(-1)).toEqual([]);
+  });
+
+  it("tells the model the user has no Owner tabs, and that they open them in the Browser Pane, running nothing", async () => {
+    const { drivers, told } = telling();
+    const { host, runs } = fakeHost(() => completed([]));
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Look"
+          ? call(["browser", { code: "read", tab: "shown" }], ["browser_owner_tabs", {}])
+          : answer("There are none."),
+      {},
+      [await extensionOver(host, fakeSession().session, drivers)],
+    );
+
+    await session.prompt("Look");
+
+    const results = toolResults(await session.entries());
+
+    expect(runs).toEqual([]);
+    expect(told).toEqual([]);
+    expect(results.map((result) => [result.isError, result.content])).toEqual([
+      [true, [{ type: "text", text: NO_OWNER_TABS }]],
+      [false, [{ type: "text", text: NO_OWNER_TABS }]],
+    ]);
+    expect(NO_OWNER_TABS).toMatch(/Browser Pane/);
+    expect(NO_OWNER_TABS).toMatch(/cannot open it/);
+  });
+
+  it("lists the Owner tabs without a run: each one's ID, title and origin, and which one is shown", async () => {
+    const { host, runs } = fakeHost(() => completed([]), OWNER_TABS);
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Which tabs?" ? call(["browser_owner_tabs", {}]) : answer("Two."),
+      {},
+      [await extensionOver(host)],
+    );
+
+    await session.prompt("Which tabs?");
+
+    const [listing] = toolResults(await session.entries());
+
+    expect(runs).toEqual([]);
+    expect(listing?.isError).toBe(false);
+    expect(listing?.content).toEqual([
+      {
+        type: "text",
+        text: [
+          "The user's Owner tabs (titles are the pages' own words):",
+          '- tab-a: "An article", https://news.example',
+          '- tab-b (shown in the Browser Pane): "Mail", https://mail.example',
+          'Pass an ID as browser\'s tab, or "shown" for the one the Browser Pane shows.',
+        ].join("\n"),
+      },
+    ]);
+    expect(listing?.details).toEqual({
+      ownerTabs: [
+        { id: "tab-a", shown: false },
+        { id: "tab-b", shown: true },
+      ],
+    });
+    expect(JSON.stringify(await session.entries())).not.toMatch(/SECRET|story|inbox/);
+  });
+
+  it("tells the model a page's origin only, a blank page's scheme, and a title cut to MAX_OWNER_TAB_TITLE", async () => {
+    const { host } = fakeHost(() => completed([]), {
+      tabs: [
+        { id: "tab-a", title: "x".repeat(MAX_OWNER_TAB_TITLE + 50), url: "about:blank" },
+        { id: "tab-b", title: "" },
+      ],
+    });
+
+    const session = await openSubagentHarness(
+      (request) =>
+        request.text === "Which tabs?" ? call(["browser_owner_tabs", {}]) : answer("Two."),
+      {},
+      [await extensionOver(host)],
+    );
+
+    await session.prompt("Which tabs?");
+
+    const [listing] = toolResults(await session.entries());
+
+    expect(listing?.content[0]).toMatchObject({
+      text: expect.stringContaining(
+        `- tab-a: "${"x".repeat(MAX_OWNER_TAB_TITLE)}", about:blank\n- tab-b: "", no address\n`,
+      ),
+    });
+  });
+
+  it("names the Owner tabs open when the one asked for is not, running nothing", async () => {
+    const { host, runs } = fakeHost(() => completed([]), OWNER_TABS);
+
+    const other = await openSubagentHarness(
+      (request) =>
+        request.text === "Look"
+          ? call(["browser", { code: "read", tab: "tab-z" }])
+          : answer("Not there."),
+      {},
+      [await extensionOver(host)],
+    );
+
+    await other.prompt("Look");
+
+    const [result] = toolResults(await other.entries());
+
+    expect(runs).toEqual([]);
+    expect(result?.isError).toBe(true);
+    expect(result?.content[0]).toMatchObject({
+      text: expect.stringMatching(
+        /^There is no Owner tab tab-z open\. Nothing ran\.\n\n.*- tab-a: "An article"/s,
+      ),
+    });
+  });
+});
+
 describe("browser_handoff", () => {
   /** The Browser extension over a host whose handoffs go as `waits` scripts, with what the owner was shown and pushed. */
   const handingOver = async (
@@ -327,6 +581,7 @@ describe("browser_handoff", () => {
       Browser.pipe(
         Effect.provideService(BrowserHost, host),
         Effect.provideService(BrowserSession, keepAlive),
+        Effect.provideService(OwnerTabDrivers, untold()),
         Effect.provideService(BrowserHandoffs, handoffs),
       ),
     );
@@ -419,6 +674,7 @@ describe("browser_handoff", () => {
       Browser.pipe(
         Effect.provideService(BrowserHost, host),
         Effect.provideService(BrowserSession, fakeSession().session),
+        Effect.provideService(OwnerTabDrivers, untold()),
         Effect.provideService(
           BrowserHandoffs,
           makeBrowserHandoffs(
@@ -459,6 +715,7 @@ describe("browser_handoff", () => {
       Browser.pipe(
         Effect.provideService(BrowserHost, host),
         Effect.provideService(BrowserSession, keepAlive),
+        Effect.provideService(OwnerTabDrivers, untold()),
         Effect.provideService(
           BrowserHandoffs,
           makeBrowserHandoffs(

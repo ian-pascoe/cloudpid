@@ -2,20 +2,43 @@
 // The Browser Pane's tab strip (#239): each Owner tab by its title with the one shown marked, a close button on each, and
 // **+** for a new blank one. Which tab is shown is the Session's (the browser host's), so switching here switches the
 // owner's other devices too; the Pane's connection follows what the Session says (`followOwnerTabAtom`), not the click.
-// The titles are the pages' own: page content, shown as text.
+// The titles are the pages' own: page content, shown as text. A tab a `browser` call is driving has a mark, shown or
+// not, that names who drives it as the Pane's note does.
 
+import type { OwnerTabDriver } from "@cloudpid/protocol";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { Plus, X } from "lucide-react";
+import { Bot, Plus, X } from "lucide-react";
 import { cn } from "../lib/utils.ts";
 import { Button } from "../components/ui/button.tsx";
 import { settledFailureOf } from "../registry.ts";
+import { ownerTabDriversAtom } from "../session/atoms.ts";
 import {
   type BrowserPaneKey,
   ownerTabCommandAtom,
   ownerTabListAtom,
 } from "./browser-pane-atoms.ts";
 import { stripOf } from "./owner-tab-strip-model.ts";
+import { useDrivingNote } from "./use-driving-note.ts";
+
+/** The mark on a tab a `browser` call drives, which names who drives it (`useDrivingNote`) to a pointer and a reader. */
+const DrivenMark = ({
+  sessionId,
+  drivers,
+  ownerTabId,
+}: {
+  readonly sessionId: string;
+  readonly drivers: ReadonlyArray<OwnerTabDriver>;
+  readonly ownerTabId: string;
+}) => {
+  const note = useDrivingNote(sessionId, drivers, ownerTabId) ?? "The agent is driving this tab";
+
+  return (
+    <Bot className="size-3.5 shrink-0 animate-pulse text-primary" role="img" aria-label={note}>
+      <title>{note}</title>
+    </Bot>
+  );
+};
 
 /**
  * The tab strip of the Browser Pane `pane`. `onNew` runs when **+** is pressed, before the Session is asked: the Pane
@@ -30,6 +53,7 @@ export const OwnerTabStrip = ({
   readonly onNew: () => void;
 }) => {
   const listing = useAtomValue(ownerTabListAtom(pane.sessionId));
+  const drivers = useAtomValue(ownerTabDriversAtom(pane.sessionId));
   const commandAtom = ownerTabCommandAtom(pane.sessionId);
   const command = useAtomSet(commandAtom);
 
@@ -37,7 +61,7 @@ export const OwnerTabStrip = ({
     AsyncResult.isFailure(result) ? settledFailureOf(result) : null,
   );
 
-  const { tabs, canOpen } = stripOf(listing, pane.archived);
+  const { tabs, canOpen } = stripOf(listing, pane.archived, drivers);
 
   return (
     <div className="flex flex-col border-b">
@@ -48,7 +72,7 @@ export const OwnerTabStrip = ({
           className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
         >
           {tabs.map((tab) => {
-            const { shown, title } = tab;
+            const { shown, title, driven } = tab;
 
             return (
               <div
@@ -63,12 +87,15 @@ export const OwnerTabStrip = ({
                   role="tab"
                   aria-selected={shown}
                   title={title}
-                  className="h-full min-w-0 flex-1 truncate pl-2.5 text-left"
+                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 text-left"
                   onClick={() => {
                     if (!shown) command({ type: "show", id: tab.id });
                   }}
                 >
-                  {title}
+                  {driven && (
+                    <DrivenMark sessionId={pane.sessionId} drivers={drivers} ownerTabId={tab.id} />
+                  )}
+                  <span className="min-w-0 truncate">{title}</span>
                 </button>
                 <button
                   type="button"

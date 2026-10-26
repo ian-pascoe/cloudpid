@@ -5,6 +5,7 @@ import {
   EMPTY_VIEW,
   type ApprovalRequest,
   type BrowserHandoffRequest,
+  type OwnerTabDriver,
   type OwnerTabListing,
   type ClientMessage,
   type SecretRequest,
@@ -113,6 +114,8 @@ export interface SessionState {
    * to every client when one changes them); null until the Pane has asked. They hold no Live View link.
    */
   readonly ownerTabs: OwnerTabListing | null;
+  /** The `browser` calls driving the owner's Owner tabs now, for the Browser Pane to say so; none until the socket says. */
+  readonly ownerTabDrivers: readonly OwnerTabDriver[];
   /** The subagent threads being watched, by conversation ID. */
   readonly threads: Readonly<Record<string, ThreadState>>;
   /** The Session's subagents and background work, as of the last summary; null until it sends one. */
@@ -145,6 +148,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   approvalRequests: [],
   browserHandoffRequests: null,
   ownerTabs: null,
+  ownerTabDrivers: [],
   threads: {},
   taskGraph: null,
   usage: null,

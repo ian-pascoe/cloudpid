@@ -497,6 +497,62 @@ describe("the Browser Pane over the Session socket", () => {
     }
   });
 
+  it("tells every client which agent drives an Owner tab while a browser run works in it, and none on connect", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.script([
+        `call:browser:${JSON.stringify({ code: "async () => document.title", tab: "shown" })}`,
+        "The article says X.",
+      ]);
+    });
+
+    const owner = await connect(stub);
+    const other = await connect(stub);
+
+    const isDrivers = (
+      message: ServerMessage,
+    ): message is Extract<ServerMessage, { type: "owner_tab_drivers" }> =>
+      message.type === "owner_tab_drivers";
+
+    expect(await other.next(isDrivers)).toEqual({ type: "owner_tab_drivers", drivers: [] });
+
+    owner.send({ type: "owner_tab_open", id: "b-1" });
+    await owner.next(answerTo("b-1"));
+
+    const from = other.received.length;
+
+    owner.send({ type: "submit", id: "go", input: "What does my page say?" });
+
+    await vi.waitFor(
+      () =>
+        expect(other.received.slice(from).filter(isDrivers)).toEqual([
+          {
+            type: "owner_tab_drivers",
+            drivers: [{ ownerTabId: "owner-tab-1", conversationId: 1 }],
+          },
+          { type: "owner_tab_drivers", drivers: [] },
+        ]),
+      { timeout: 10_000 },
+    );
+    await idle(stub);
+
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.browserRuns()),
+    ).toEqual([
+      {
+        code: "async () => document.title",
+        conversationId: 1,
+        ownerTabId: "owner-tab-1",
+      },
+    ]);
+
+    // A client that connects now is told that none drives.
+    const late = await connect(stub);
+
+    expect(await late.next(isDrivers)).toEqual({ type: "owner_tab_drivers", drivers: [] });
+  });
+
   it("opens nothing for an archived Session: an ask to open is asked without, and the Pane is told there is none", async () => {
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
 

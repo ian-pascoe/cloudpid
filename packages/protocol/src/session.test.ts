@@ -145,6 +145,19 @@ describe("the Session socket messages", () => {
     });
   });
 
+  it("carry the runs driving the owner's Owner tabs, by Owner tab and conversation", async () => {
+    const text = JSON.stringify({
+      type: "owner_tab_drivers",
+      drivers: [{ ownerTabId: "a", conversationId: 3 }],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+    expect(await readServer('{"type":"owner_tab_drivers","drivers":[]}')).toEqual({
+      type: "owner_tab_drivers",
+      drivers: [],
+    });
+  });
+
   it("read a request for Live View links", async () => {
     expect(await readClient('{"type":"live_view","id":"c1","requestId":"12"}')).toEqual(
       Option.some({ type: "live_view", id: "c1", requestId: "12" }),

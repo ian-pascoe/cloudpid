@@ -7,6 +7,7 @@ import {
   type BrowserHost,
   type BrowserSession,
   type BrowserHandoffs,
+  type OwnerTabDrivers,
 } from "@cloudpid/extensions/browser";
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
 import { ContainerTools, WorkspaceContainer } from "@cloudpid/extensions/container";
@@ -50,8 +51,10 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); the `project_context`
  * section and the wraps of `read`, `edit` and `write` that put the Workspace's `AGENTS.md` files in front of the model
  * (`@cloudpid/extensions/agents-md`); and `browser`, which drives the
- * Session's one browser over CDP with a tab per conversation (`./browser.ts`) and is not one of them: its code is stored with
- * the run, so Secret references stay references there, while its results are redacted; and `browser_handoff`, which gives the owner the
+ * Session's one browser over CDP with a tab per conversation (`./browser.ts`), or in one of the owner's Owner tabs, told to the
+ * clients while it drives it (`OwnerTabDrivers`), and is not one of them: its code is stored with
+ * the run, so Secret references stay references there, while its results are redacted; `browser_owner_tabs`, which lists the
+ * Owner tabs; and `browser_handoff`, which gives the owner the
  * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through);
  * the `environment_*` tools, which read and change the Registry's Environments (`Environments`), refuse values that hold
  * a Secret (`Secrets`) or the GitHub token (`DeployCredentials`), and keep each change for the Run's Notification
@@ -80,6 +83,7 @@ export const sessionExtensions: Effect.Effect<
   | BrowserHost
   | BrowserSession
   | BrowserHandoffs
+  | OwnerTabDrivers
   | Environments
   | DeployCredentials
   | AgentChangeLog

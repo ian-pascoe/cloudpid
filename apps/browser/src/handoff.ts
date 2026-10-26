@@ -27,6 +27,7 @@ import {
   type HandoffStatus,
   LIVE_VIEW_HANDOFF_OVER,
   type LiveViewLinks,
+  originOf,
 } from "@cloudpid/extensions/browser/contract";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -178,19 +179,6 @@ const windowSession = async (live: Live, targetId: string): Promise<string> => {
   live.windowSessions.set(targetId, sessionId);
 
   return sessionId;
-};
-
-/** What the model may know of a window: its origin, never its URL (an OAuth redirect carries a code). */
-const originOf = (url: string): string => {
-  try {
-    const parsed = new URL(url);
-
-    if (parsed.origin !== "null") return parsed.origin;
-
-    return parsed.href === "about:blank" ? "about:blank" : parsed.protocol;
-  } catch {
-    return "(unknown)";
-  }
 };
 
 export class HandoffHost {

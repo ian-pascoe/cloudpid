@@ -63,6 +63,27 @@ export type { OwnerTabEntry, OwnerTabLinks, OwnerTabListing } from "@cloudpid/pr
 /** What `ownerTabView` fails with when the Owner tab shown, or its browser, is gone, exactly. */
 export { OWNER_TAB_GONE } from "@cloudpid/protocol/live-view";
 
+/** What the agent names the Owner tab the Browser Pane shows by, whatever its ID: `browser`'s `tab`. */
+export const SHOWN_OWNER_TAB = "shown";
+
+/**
+ * What the agent may know of a page's address: its origin, never its URL (an OAuth redirect carries a code, a link a
+ * token). `about:blank` for a blank page, the scheme of another page without an origin, and `(unknown)` for an address
+ * that does not parse. A Browser Handoff's windows and the Owner tabs are told this way.
+ */
+export const originOf = (url: string): string => {
+  if (!URL.canParse(url)) return "(unknown)";
+
+  const parsed = new URL(url);
+
+  if (parsed.origin !== "null") return parsed.origin;
+
+  return parsed.href === "about:blank" ? "about:blank" : parsed.protocol;
+};
+
+/** The longest Owner tab title the agent is told (`browser_owner_tabs`); the page's own words. */
+export const MAX_OWNER_TAB_TITLE = 200;
+
 /**
  * How a Browser Handoff was left: the origins (never the URLs) of the windows the tab opened that are still open, or no
  * `windowOrigins` when the host could not tell.
@@ -97,8 +118,12 @@ export type BrowserRun = {
 export type BrowserHostRpc = {
   /** The `browser` tool's description. */
   describe(): Promise<string>;
-  /** Run `code` in conversation `conversationId`'s tab. */
-  run(code: string, conversationId: number): Promise<BrowserRun>;
+  /**
+   * Run `code` in conversation `conversationId`'s tab or, given `ownerTabId`, in that Owner tab (its own scope), leaving
+   * the conversation's tab and the Owner tab's size as they are. An Owner tab that is not open when the call's turn
+   * comes, or that closes during the call, makes the result an error that says so.
+   */
+  run(code: string, conversationId: number, ownerTabId?: string): Promise<BrowserRun>;
   /** Close the browser; false when there was none. */
   close(): Promise<boolean>;
   /**
