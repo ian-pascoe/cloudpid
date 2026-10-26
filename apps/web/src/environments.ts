@@ -10,6 +10,7 @@ import {
   branchProblem,
   BUILD_FIELD,
   CREATED_FIELD,
+  EVERY_ENVIRONMENT_SCOPE,
   type EnvironmentSecretRecord,
   fieldRepo,
   fieldSecret,
@@ -356,7 +357,7 @@ export const revertible = (change: AgentChange): boolean =>
  * The key of the Secrets kept for every Environment among the page's Secrets sections, which an Environment's id is
  * not (ids are hexadecimal, or `default`).
  */
-export const EVERY_ENVIRONMENT = "*";
+export const EVERY_ENVIRONMENT = EVERY_ENVIRONMENT_SCOPE;
 
 /** The scope the Registry takes for Secrets section `key`: the Environment's id, or null for every Environment. */
 export const secretScopeOf = (key: string): string | null =>

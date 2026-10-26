@@ -2234,6 +2234,27 @@ it("lists an Environment's Agent changes, newest first, and refuses an Environme
   expect(error.message).toBe('Environment "0000beef" does not exist');
 });
 
+it("lists the Agent changes of the Secrets kept for every Environment under the scope *, and takes it to revert one", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "NPM_TOKEN", null, "kept", "*"),
+    tool: "secret_ask",
+    field: "secrets.NPM_TOKEN",
+  });
+
+  const listed = await call(fake, (registry) => registry.listAgentChanges({ environment: "*" }));
+
+  expect(listed).toMatchObject([{ scope: "*", field: "secrets.NPM_TOKEN", after: "kept" }]);
+
+  // The payload is accepted (it is not a validation failure) and reaches the Registry, which has no such change.
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: "*", change: 9 })),
+  );
+
+  expect(error.message).toBe('Environment "*" has no change 9');
+});
+
 it("reverts an Agent change, answers the owner's change, and keeps the Build current after the answer", async () => {
   const fake = fakeRegistries();
 
