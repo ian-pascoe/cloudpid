@@ -568,7 +568,7 @@ export const SessionLive = Session.make(
                       return [
                         ...installed,
                         tracingTools(telemetry.context, tools),
-                        changesRefreshingTools(tools, changes.written),
+                        changesRefreshingTools(tools, changes),
                       ];
                     }),
                   ),

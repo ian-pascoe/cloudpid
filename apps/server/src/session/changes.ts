@@ -70,6 +70,11 @@ export class ChangesBroadcast {
     return this.#listings;
   }
 
+  /** Whether anyone watches the Changes. */
+  get watched(): boolean {
+    return this.#listeners.size > 0;
+  }
+
   /** Send `listener` each update from now, the last list first if there is one; the result stops it. */
   subscribe(listener: (update: ChangesUpdate) => void): () => void {
     this.#listeners.add(listener);
@@ -158,7 +163,9 @@ export type SessionChangesService = {
   readonly updates: Stream.Stream<ChangesUpdate>;
   /** List the Changes again for every watcher (`manual`: the owner's Refresh, which may start the Container). */
   readonly refresh: (manual: boolean) => Effect.Effect<void>;
-  /** An agent may have changed the files: list them again shortly. Plain, for the tools' Promise code. */
+  /** Whether any client watches the Changes. Plain, for the tools' Promise code, as `written` is. */
+  readonly watched: () => boolean;
+  /** An agent may have changed the files: list them again shortly. */
   readonly written: () => void;
   /** One changed file's two sides; it never starts the Container. */
   readonly file: (query: ChangeFileQuery) => Effect.Effect<ChangeFile, SessionError>;
@@ -207,6 +214,7 @@ export const sessionChangesLayer = (
       return {
         updates,
         refresh: (manual) => Effect.promise(() => broadcast.refresh(manual)),
+        watched: () => broadcast.watched,
         written: () => broadcast.soon(),
         file: (query) =>
           Effect.tryPromise({
@@ -225,11 +233,12 @@ export const sessionChangesLayer = (
 /**
  * An extension that lists the Changes again after each call of `tools`' writing tools (`WRITING_TOOLS`) by a
  * conversation that works in the Session's own Workspace: a subagent's in a Subagent Workspace of its own changes files
- * the Session's Changes do not show. Install it after the extensions that bring the tools.
+ * the Session's Changes do not show. Nothing is read while no client watches them. Install it after the extensions that
+ * bring the tools.
  */
 export const changesRefreshingTools = (
   tools: ReadonlyArray<ToolRegistration>,
-  written: () => void,
+  changes: Pick<SessionChangesService, "watched" | "written">,
 ): Extension =>
   defineExtension({
     name: "changes",
@@ -242,15 +251,20 @@ export const changesRefreshingTools = (
             try {
               return await wrapped.execute(args, api, context);
             } finally {
-              void api.snapshot(SubagentsDoc, context).then(
-                (state) => {
-                  if (state === undefined || conversationWorkspace(state, api.conversationId) === undefined) {
-                    written();
-                  }
-                },
-                // Unknown: list them again, which costs one listing at most.
-                () => written(),
-              );
+              if (changes.watched()) {
+                void api.snapshot(SubagentsDoc, context).then(
+                  (state) => {
+                    if (
+                      state === undefined ||
+                      conversationWorkspace(state, api.conversationId) === undefined
+                    ) {
+                      changes.written();
+                    }
+                  },
+                  // Unknown: list them again, which costs one listing at most.
+                  () => changes.written(),
+                );
+              }
             }
           },
         })),

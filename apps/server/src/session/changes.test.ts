@@ -96,8 +96,11 @@ const api = (conversationId: number, workspace: boolean) =>
   }) as unknown as ToolExecutionApi;
 
 describe("the writing tools' wrap", () => {
-  const wrapped = (written: () => void) => {
-    const extension = changesRefreshingTools([tool("write"), tool("read"), tool("bash")], written);
+  const wrapped = (written: () => void, watched = true) => {
+    const extension = changesRefreshingTools([tool("write"), tool("read"), tool("bash")], {
+      watched: () => watched,
+      written,
+    });
 
     return new Map((extension.wraps ?? []).flatMap((wrap) => ("tool" in wrap ? [[wrap.tool, wrap] as const] : [])));
   };
@@ -125,5 +128,22 @@ describe("the writing tools' wrap", () => {
     await run.execute({}, api(7, true), context);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(written).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads nothing while no client watches the Changes", async () => {
+    const written = vi.fn();
+    const write = wrapped(written, false).get("write");
+
+    if (write === undefined || !("tool" in write)) throw new Error("write is not wrapped");
+
+    const read = vi.fn();
+    const counted: ToolExecutionApi = { ...api(1, false), snapshot: read };
+    // SAFETY: as above, the wrap only hands the context on.
+    const context = {} as never;
+
+    await write.wrap(tool("write")).execute({}, counted, context);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(read).not.toHaveBeenCalled();
+    expect(written).not.toHaveBeenCalled();
   });
 });
