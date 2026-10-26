@@ -18,9 +18,7 @@ export const browserPaneViewAtom = Atom.family((sessionId: string) =>
   appRuntime.atom((get) =>
     get
       .result(sessionClientAtom(sessionId))
-      .pipe(
-        Effect.flatMap((client) => openBrowserPaneView((open) => client.ownerTabView(open))),
-      ),
+      .pipe(Effect.flatMap((client) => openBrowserPaneView((open) => client.ownerTabView(open)))),
   ),
 );
 

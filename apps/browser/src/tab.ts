@@ -83,10 +83,7 @@ export const tabOf = (lookup: TabLookup, conversationId: number): Promise<Tab | 
  * Open a blank tab for scope `scope` and record it as the scope's tab. `Browser.connect` reattaches to the browser that
  * runs and starts one only when none does (or it is gone), so this never starts a second browser.
  */
-export const openTab = async (
-  browser: Pick<Browser, "connect">,
-  scope: string,
-): Promise<Tab> => {
+export const openTab = async (browser: Pick<Browser, "connect">, scope: string): Promise<Tab> => {
   const connection = await browser.connect({ scope });
 
   try {

@@ -232,7 +232,8 @@ describe("Browser Handoffs over the Session socket", () => {
 
     // A link reached the one answer to the asking client, and nothing else: no other message to any client, no push,
     // nothing the object stores, nor the transcript or the model's requests.
-    const asked = (message: ServerMessage) => answerTo("lv-1")(message) || answerTo("otv-1")(message);
+    const asked = (message: ServerMessage) =>
+      answerTo("lv-1")(message) || answerTo("otv-1")(message);
     const elsewhere = [...owner.received.filter((message) => !asked(message)), ...other.received];
 
     const surfaces = await runInDurableObject(stub, async (instance: TestSession) => [

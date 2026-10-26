@@ -134,13 +134,17 @@ export const openBrowserPaneView = Effect.fnUntraced(function* (
     page,
     navigate: (url) =>
       view.withTab((tab) =>
-        tab.call("Page.navigate", { url }, Navigated).pipe(
-          Effect.flatMap(({ errorText }) =>
-            errorText === undefined || errorText === ""
-              ? Effect.void
-              : Effect.fail(LiveViewError.make({ message: `The page did not open: ${errorText}` })),
+        tab
+          .call("Page.navigate", { url }, Navigated)
+          .pipe(
+            Effect.flatMap(({ errorText }) =>
+              errorText === undefined || errorText === ""
+                ? Effect.void
+                : Effect.fail(
+                    LiveViewError.make({ message: `The page did not open: ${errorText}` }),
+                  ),
+            ),
           ),
-        ),
       ),
     back: go(-1),
     forward: go(1),

@@ -105,7 +105,11 @@ describe("the Browser Pane's view of the Owner tab", () => {
     Effect.gen(function* () {
       const { history, page, to } = yield* setup();
 
-      expect(page()).toEqual({ url: "https://example.com/", canGoBack: false, canGoForward: false });
+      expect(page()).toEqual({
+        url: "https://example.com/",
+        canGoBack: false,
+        canGoForward: false,
+      });
 
       history.entries.push({ id: 2, url: "https://example.com/next", title: "Next" });
       history.currentIndex = 1;

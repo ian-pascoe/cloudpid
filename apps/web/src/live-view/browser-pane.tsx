@@ -155,8 +155,8 @@ const Gone = ({ sessionId }: { sessionId: string }) => {
       <Globe className="size-5 text-muted-foreground" aria-hidden />
       <p className="text-sm">The browser was closed or replaced, and this tab with it.</p>
       <p className="max-w-sm text-xs text-muted-foreground">
-        Pages and sign-ins of the old browser are gone. A new Owner tab opens in the Session's browser, starting one
-        if none runs.
+        Pages and sign-ins of the old browser are gone. A new Owner tab opens in the Session's
+        browser, starting one if none runs.
       </p>
       <Button size="sm" onClick={reopen}>
         Open a new Owner tab

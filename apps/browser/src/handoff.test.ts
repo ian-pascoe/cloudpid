@@ -5,7 +5,15 @@
 import type { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { BrowserGoneError, type CdpEvent, type CdpTransport } from "./cdp.ts";
-import { fakeTransport, linkTo, page, records, TOKEN, type Viewport, WINDOW_SIZE } from "./cdp.testing.ts";
+import {
+  fakeTransport,
+  linkTo,
+  page,
+  records,
+  TOKEN,
+  type Viewport,
+  WINDOW_SIZE,
+} from "./cdp.testing.ts";
 import { HandoffHost } from "./handoff.ts";
 
 const REQUEST = {

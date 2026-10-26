@@ -13,13 +13,7 @@
 // one. The tab strip (several Owner tabs), keeping them across a new browser, and the agent in them come later; the list
 // is here so they have somewhere to go.
 import { OWNER_TAB_GONE, type OwnerTabLinks } from "@cloudpid/extensions/browser/contract";
-import {
-  BrowserGoneError,
-  type CdpTransport,
-  isNoTarget,
-  mintLink,
-  windowsOf,
-} from "./cdp.ts";
+import { BrowserGoneError, type CdpTransport, isNoTarget, mintLink, windowsOf } from "./cdp.ts";
 import type { Tab } from "./tab.ts";
 
 /** The `agents/browser` scope of Owner tab `id`: its record names the tab and the browser it is in. */
