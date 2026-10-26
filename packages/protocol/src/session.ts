@@ -11,6 +11,7 @@ import type {
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { WorkspaceChanges } from "./changes.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 
 /**
@@ -180,6 +181,46 @@ export const WatchUsage = Schema.Struct({
 export const UnwatchUsage = Schema.Struct({
   type: Schema.Literal("unwatch_usage"),
   id: CommandId,
+});
+
+/**
+ * Stream the Changes of the Session's Workspace on this socket (`changes`): the last list follows at once when the
+ * Session has one, and the Session lists them again, once for every client. The watch outlives hibernation like a
+ * conversation's. Answered with `null`.
+ */
+export const WatchChanges = Schema.Struct({
+  type: Schema.Literal("watch_changes"),
+  id: CommandId,
+});
+
+/** Stop streaming the Changes on this socket. Answered with `null`. */
+export const UnwatchChanges = Schema.Struct({
+  type: Schema.Literal("unwatch_changes"),
+  id: CommandId,
+});
+
+/**
+ * List the Changes again, for every client that watches them: the page regained focus, the Diff pane opened, or the
+ * owner asked (`manual`). Only a manual one may start a stopped Container, for a repo that needs it, and the `changes`
+ * message says so while it does. Answered with `null` once the listing ended; its list (or the `error` saying why
+ * there is none) reaches the watching clients as any other.
+ */
+export const RefreshChanges = Schema.Struct({
+  type: Schema.Literal("refresh_changes"),
+  id: CommandId,
+  manual: Schema.optionalKey(Schema.Boolean),
+});
+
+/**
+ * Ask for one changed file's two sides: `path` in `repo`, and `oldPath` for a rename. Answered with a `ChangeFile`. It
+ * never starts the Container: a repo whose contents need it, while it is stopped, fails with why.
+ */
+export const ChangeFileRequest = Schema.Struct({
+  type: Schema.Literal("change_file"),
+  id: CommandId,
+  repo: Schema.String,
+  path: Schema.String,
+  oldPath: Schema.optionalKey(Schema.String),
 });
 
 /**
@@ -361,6 +402,10 @@ export const ClientMessage = Schema.Union([
   UnwatchTaskGraph,
   WatchUsage,
   UnwatchUsage,
+  WatchChanges,
+  UnwatchChanges,
+  RefreshChanges,
+  ChangeFileRequest,
 ]);
 
 export type ClientMessage = typeof ClientMessage.Type;
@@ -695,6 +740,17 @@ export const UsageMessage = Schema.Struct({
   ...SessionUsage.fields,
 });
 
+/**
+ * The Changes of the Session's Workspace, sent to every client that watches them (`watch_changes`) after each listing;
+ * each replaces the last. `startingContainer` is set while the owner's Refresh starts the Container for the repos
+ * marked `stale`.
+ */
+export const ChangesMessage = Schema.Struct({
+  type: Schema.Literal("changes"),
+  ...WorkspaceChanges.fields,
+  startingContainer: Schema.Boolean,
+});
+
 /** A Task of a conversation's Todo List: flat, in the order of its ID. */
 export const TodoTask = Schema.Struct({
   id: Schema.Int,
@@ -951,6 +1007,7 @@ export const ServerMessage = Schema.Union([
   BrowserHandoffRequests,
   TaskGraphMessage,
   UsageMessage,
+  ChangesMessage,
   TodosMessage,
 ]);
 

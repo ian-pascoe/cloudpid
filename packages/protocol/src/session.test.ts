@@ -326,6 +326,66 @@ describe("the Session socket messages", () => {
     );
   });
 
+  it("read the Changes commands: watch, unwatch, refresh (by hand or not) and one file's sides", async () => {
+    expect(await readClient('{"type":"watch_changes","id":"c"}')).toEqual(
+      Option.some({ type: "watch_changes", id: "c" }),
+    );
+    expect(await readClient('{"type":"unwatch_changes"}')).toEqual(
+      Option.some({ type: "unwatch_changes" }),
+    );
+    expect(await readClient('{"type":"refresh_changes","manual":true}')).toEqual(
+      Option.some({ type: "refresh_changes", manual: true }),
+    );
+    expect(
+      await readClient(
+        '{"type":"change_file","id":"f","repo":"app","path":"b.ts","oldPath":"a.ts"}',
+      ),
+    ).toEqual(
+      Option.some({ type: "change_file", id: "f", repo: "app", path: "b.ts", oldPath: "a.ts" }),
+    );
+    // A file is named by its repo and path.
+    expect(await readClient('{"type":"change_file","id":"f","path":"b.ts"}')).toEqual(
+      Option.none(),
+    );
+  });
+
+  it("carry a Workspace's Changes, each repo with its HEAD, files and whether it may be out of date", async () => {
+    const text = JSON.stringify({
+      type: "changes",
+      repos: [
+        {
+          repo: "app",
+          head: { commit: "a".repeat(40), branch: "main" },
+          files: [
+            { path: "b.ts", oldPath: "a.ts", status: "renamed", additions: 0, deletions: 0 },
+            {
+              path: "gen.ts",
+              status: "modified",
+              additions: 900,
+              deletions: 20,
+              approximate: true,
+              generated: true,
+            },
+            { path: "logo.png", status: "added", additions: null, deletions: null, binary: true },
+          ],
+          more: 3,
+          stale: false,
+        },
+        {
+          repo: "api",
+          head: { commit: null, branch: null },
+          files: [],
+          more: 0,
+          stale: true,
+          error: "The Container could not list them",
+        },
+      ],
+      startingContainer: true,
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+  });
+
   it("carry the Session's token and cost totals, and its spend limit or null for none", async () => {
     const usage = {
       input: 1200,

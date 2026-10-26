@@ -39,6 +39,8 @@ export type WorkspaceNamespace = {
       | "updateEnvironmentSecrets"
       | "environmentSecretsUnavailable"
       | "containerUsage"
+      | "changes"
+      | "changeFile"
       | "stopContainer"
       | "resizeContainer"
     >;

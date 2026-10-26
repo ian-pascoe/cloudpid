@@ -17,7 +17,13 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { constructions, REQUEST_COST, type TestSession } from "./host.fixture.ts";
+import {
+  CHANGES_TEST_DEBOUNCE_MS,
+  type ChangesFixture,
+  constructions,
+  REQUEST_COST,
+  type TestSession,
+} from "./host.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -886,6 +892,226 @@ describe("a usage watch", () => {
     expect(usages(await client.until((messages) => usages(messages).length === 1, before))).toEqual(
       [expect.objectContaining({ type: "usage", cost: 0, limit: null })],
     );
+  });
+});
+
+type ChangesMessage = Extract<ServerMessage, { type: "changes" }>;
+
+/** The `changes` messages among `messages`, in order. */
+const changeLists = (messages: readonly ServerMessage[]) =>
+  Arr.filter(messages, (message): message is ChangesMessage => message.type === "changes");
+
+/** One repo's Changes: a file edited, as the Workspace DO lists it, or its last list, "may be out of date". */
+const repoChanges = (path: string, stale = false) => ({
+  repo: "app",
+  head: { commit: "a".repeat(40), branch: "main" },
+  files: [{ path, status: "modified" as const, additions: 1, deletions: 1 }],
+  more: 0,
+  stale,
+});
+
+const setChanges = (stub: DurableObjectStub<TestSession>, fixture: ChangesFixture) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.setChanges(fixture));
+
+const changesCalls = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.changesCalls());
+
+describe("a Changes watch", () => {
+  it("lists the Changes once for every client that watches them, and sends each the list", async () => {
+    const stub = fresh();
+
+    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] }, delayMs: 50 });
+
+    const first = await connect(stub);
+    const second = await connect(stub);
+    const third = await connect(stub);
+
+    first.send({ type: "watch_changes", id: "watch" });
+    second.send({ type: "watch_changes", id: "watch" });
+    third.send({ type: "watch_changes", id: "watch" });
+    expect(await first.answer("watch")).toEqual({ type: "result", id: "watch", result: null });
+    await second.answer("watch");
+    await third.answer("watch");
+
+    const sent = { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false };
+
+    for (const client of [first, second, third]) {
+      expect(
+        changeLists(await client.until((messages) => changeLists(messages).length === 1)),
+      ).toEqual([sent]);
+    }
+
+    // The second and third watches came while the first listing ran: one more after it, for all three, where one
+    // listing per client would make three.
+    for (const client of [first, second, third]) {
+      await client.until((messages) => changeLists(messages).length === 2);
+    }
+
+    expect(await changesCalls(stub)).toEqual([false, false]);
+    expect(await recordedWatches(stub)).toEqual([
+      { watches: [], changes: true },
+      { watches: [], changes: true },
+      { watches: [], changes: true },
+    ]);
+
+    // A refresh (the page regained focus) is one listing, and is answered once its list is sent.
+    await setChanges(stub, { running: { repos: [repoChanges("b.ts")] } });
+    first.send({ type: "refresh_changes", id: "refresh" });
+    await first.answer("refresh");
+
+    const listsB = (messages: readonly ServerMessage[]) =>
+      Arr.some(changeLists(messages), (list) => list.repos[0]?.files[0]?.path === "b.ts");
+
+    await first.until(listsB);
+    await second.until(listsB);
+    await third.until(listsB);
+    expect(await changesCalls(stub)).toEqual([false, false, false]);
+
+    second.send({ type: "unwatch_changes", id: "unwatch" });
+    await second.answer("unwatch");
+    expect(await recordedWatches(stub)).toEqual(
+      expect.arrayContaining([
+        { watches: [], changes: true },
+        { watches: [], changes: false },
+      ]),
+    );
+  });
+
+  it("lists them again a while after an agent's writes, once for a burst", async () => {
+    const stub = fresh();
+
+    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] } });
+
+    const client = await connect(stub);
+
+    client.send({ type: "watch_changes", id: "watch" });
+    await client.until((messages) => changeLists(messages).length === 1);
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.wrote();
+      instance.wrote();
+      instance.wrote();
+    });
+    await client.until((messages) => changeLists(messages).length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 3 * CHANGES_TEST_DEBOUNCE_MS));
+
+    expect(changeLists(client.received)).toHaveLength(2);
+    expect(await changesCalls(stub)).toEqual([false, false]);
+  });
+
+  it("shows a repo that needs a stopped Container as last listed, and starts it only for the owner's Refresh", async () => {
+    const stub = fresh();
+
+    await setChanges(stub, {
+      running: { repos: [repoChanges("now.ts")] },
+      stopped: { repos: [repoChanges("before.ts", true)] },
+    });
+
+    const client = await connect(stub);
+
+    client.send({ type: "watch_changes", id: "watch" });
+    expect(
+      changeLists(await client.until((messages) => changeLists(messages).length === 1)),
+    ).toEqual([
+      { type: "changes", repos: [repoChanges("before.ts", true)], startingContainer: false },
+    ]);
+
+    // An agent's write never starts it.
+    await runInDurableObject(stub, (instance: TestSession) => instance.wrote());
+    await client.until((messages) => changeLists(messages).length === 2);
+    expect(await changesCalls(stub)).toEqual([false, false]);
+
+    const before = client.received.length;
+
+    client.send({ type: "refresh_changes", id: "refresh", manual: true });
+    await client.answer("refresh");
+
+    // "Starting the Container…" over the last list, then the fresh one.
+    expect(
+      changeLists(await client.until((messages) => changeLists(messages).length === 2, before)),
+    ).toEqual([
+      { type: "changes", repos: [repoChanges("before.ts", true)], startingContainer: true },
+      { type: "changes", repos: [repoChanges("now.ts")], startingContainer: false },
+    ]);
+    expect(await changesCalls(stub)).toEqual([false, false, true]);
+  });
+
+  it("tells the watchers when a listing fails, and keeps the watch", async () => {
+    const stub = fresh();
+
+    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] } });
+
+    const client = await connect(stub);
+
+    client.send({ type: "watch_changes", id: "watch" });
+    await client.until((messages) => changeLists(messages).length === 1);
+    await setChanges(stub, { running: { repos: [] }, fails: true });
+
+    const before = client.received.length;
+
+    client.send({ type: "refresh_changes", id: "refresh" });
+    await client.answer("refresh");
+
+    const failed = {
+      type: "error",
+      message: "Listing the Changes failed: The Workspace is unreachable",
+    };
+
+    expect(
+      await client.until(
+        (messages) => Arr.some(messages, (message) => message.type === "error"),
+        before,
+      ),
+    ).toEqual(expect.arrayContaining([failed]));
+    expect(changeLists(client.received.slice(before))).toEqual([]);
+
+    await setChanges(stub, { running: { repos: [repoChanges("b.ts")] } });
+    client.send({ type: "refresh_changes", id: "again" });
+    await client.answer("again");
+    await client.until((messages) => changeLists(messages).length === 2);
+    expect(changeLists(client.received).at(-1)?.repos).toEqual([repoChanges("b.ts")]);
+  });
+
+  it("answers a file's two sides, or why it cannot", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+
+    client.send({ type: "change_file", id: "file", repo: "app", path: "a.ts" });
+    expect(await client.answer("file")).toEqual({
+      type: "result",
+      id: "file",
+      result: { old: null, new: { kind: "text", text: "app/a.ts\n" } },
+    });
+
+    client.send({ type: "change_file", id: "missing", repo: "app", path: "missing" });
+    expect(await client.answer("missing")).toEqual({
+      type: "error",
+      id: "missing",
+      message: "No such file in the Workspace's repos",
+    });
+  });
+
+  it("survives hibernation: the woken Session lists them again on the same socket", async () => {
+    const stub = fresh();
+
+    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] } });
+
+    const client = await connect(stub);
+    const root = await client.root();
+
+    client.send({ type: "watch_changes", id: "watch" });
+    await client.until((messages) => changeLists(messages).length === 1);
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    // A message wakes it.
+    client.send({ type: "unwatch", id: "wake", conversationId: root });
+    await client.answer("wake");
+
+    expect(
+      changeLists(await client.until((messages) => changeLists(messages).length === 1, before)),
+    ).toEqual([{ type: "changes", repos: [repoChanges("a.ts")], startingContainer: false }]);
   });
 });
 

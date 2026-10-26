@@ -29,6 +29,7 @@ import {
   type EnvRequest,
   type EnvResponse,
   type HostOperation,
+  isContainerOnly,
   withHarnessKept,
   WorkspaceEnvHost,
 } from "@cloudpid/computer-env";
@@ -36,7 +37,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import type { InstructionFile } from "@cloudpid/extensions/agents-md-discovery";
-import type { ContainerUsage } from "@cloudpid/protocol";
+import type { ChangeFile, ContainerUsage, WorkspaceChanges } from "@cloudpid/protocol";
 import { currentInstanceName, type InstanceType, type StoredInstanceType } from "@cloudpid/config";
 import type { ContainerResizeOutcome } from "@cloudpid/extensions/container";
 import { DurableObject } from "cloudflare:workers";
@@ -46,6 +47,12 @@ import { type WorkspaceSecrets, workspaceSecretsStore } from "./environment-secr
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
+import {
+  type ChangeFileRequest,
+  type ChangesRequest,
+  type KeptChanges,
+  WorkspaceChangesModule,
+} from "./changes.ts";
 import { IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
@@ -156,6 +163,9 @@ const SPARE_KEY = "cloudpid:spare-preparation";
 /** Kept once a Session used the Workspace, so it is never prepared, nor stopped, as a spare again (`SparePreparation`). */
 const SPARE_USED_KEY = "cloudpid:spare-used";
 
+/** Where each repo's last list from the Container's git is kept (`WorkspaceChangesModule`), under `<key>:<repo>`. */
+const CHANGES_KEY = "cloudpid:changes";
+
 /** Where a Build's object keeps its Builds (`BuildRunner`); only a Build's object has it. */
 const BUILDS_KEY = "cloudpid:builds";
 
@@ -203,6 +213,8 @@ export class Workspace extends ContainerHost {
   /** The Environment's kept Secrets, as last handed over: sealed in storage, searched for before each snapshot. */
   readonly #environmentSecrets: WorkspaceSecrets;
   readonly #sql: SqlStorage;
+  /** The Changes of the Workspace's repos (`changes`, `changeFile`). */
+  readonly #changes: WorkspaceChangesModule;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
 
@@ -518,6 +530,25 @@ export class Workspace extends ContainerHost {
       run: (script, scriptEnv) => this.#runOnContainer(script, scriptEnv),
     });
     void ctx.blockConcurrencyWhile(() => this.#host.prepare(WORKSPACE_ROOT, Date.now()));
+
+    // The repos' Changes: read here with isomorphic-git, or by the Container's git for a repo that needs it, which only
+    // a call that may start the Container starts (ADR-0022).
+    this.#changes = new WorkspaceChangesModule({
+      files: () => this.#workspace.provider(),
+      containerOnly: async () => {
+        const ignore = await launch.ignore();
+        const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
+
+        return (path) => isContainerOnly(path, patterns);
+      },
+      running: () => ctx.container?.running === true,
+      run: (script) => this.#runOnContainer(script, {}),
+      kept: {
+        load: async (repo) => ctx.storage.kv.get<KeptChanges>(`${CHANGES_KEY}:${repo}`),
+        save: async (repo, changes) => ctx.storage.kv.put(`${CHANGES_KEY}:${repo}`, changes),
+      },
+      warn: (message) => console.warn(message),
+    });
   }
 
   /**
@@ -995,6 +1026,26 @@ export class Workspace extends ContainerHost {
     await this.#ready();
 
     return discoverWorkspaceInstructions(this.#host.readEnv(directory), directory);
+  }
+
+  /**
+   * The Changes of the repos `request.directory` covers (docs/spec.md → Diffs and review → Changes): listed here, or by
+   * the Container's git for a repo that needs it, which starts the Container only with `startContainer`; a repo that
+   * needs a stopped Container otherwise keeps its last list, marked `stale`.
+   */
+  async changes(request: ChangesRequest): Promise<WorkspaceChanges> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#changes.list(request);
+  }
+
+  /** One changed file's HEAD and working sides. It never starts the Container. */
+  async changeFile(request: ChangeFileRequest): Promise<ChangeFile> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#changes.file(request);
   }
 
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */

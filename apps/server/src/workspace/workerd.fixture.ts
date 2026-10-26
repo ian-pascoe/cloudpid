@@ -1,6 +1,6 @@
 // The Workspace test Worker: the Workspace DO, counting the RPC stubs it hands out and how many of them its clients
 // have disposed. Tests reach it through the `WORKSPACES` binding, as Session DOs will.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
 import {
   type Workspace as ComputerWorkspace,
   WorkspaceRuntimeExecHandleStub,
@@ -8,7 +8,10 @@ import {
   WorkspaceServiceProxy,
   WorkspaceStub,
 } from "@cloudflare/computer";
+import { ensureDirectory } from "@cloudpid/computer-env";
 import { RpcTarget } from "cloudflare:workers";
+import * as git from "isomorphic-git";
+import { type ChangesFiles, gitFs, WorkspaceChangesModule } from "./changes.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
 
@@ -147,11 +150,143 @@ export class TestWorkspace extends Workspace {
     execs: 0,
   };
 
+  /** The Workspace's files, once a stub was asked for. */
+  #files: ComputerWorkspace | undefined;
+
   liveStubs(): LiveStubs {
     return { ...this.#counter };
   }
 
+  /** The Workspace's own files, without a stub's counting. */
+  async #computer(): Promise<ComputerWorkspace> {
+    if (this.#files === undefined) (await this.__getWorkspaceStub())[Symbol.dispose]();
+
+    // SAFETY: asking for a stub above went through `workspaceStub`, which keeps the Workspace.
+    return this.#files!;
+  }
+
+  /** Write `files` (absolute paths) into the Workspace, as computer's sync would, making their directories. */
+  async putFiles(files: ReadonlyArray<readonly [string, Uint8Array | string]>): Promise<void> {
+    const workspace = await this.#computer();
+    const made = new Set<string>();
+
+    for (const [path, content] of files) {
+      const directory = path.slice(0, path.lastIndexOf("/"));
+
+      if (!made.has(directory)) {
+        await ensureDirectory(workspace.fs, directory);
+        made.add(directory);
+      }
+
+      await workspace.fs.writeFile(path, content);
+    }
+  }
+
+  /**
+   * For the Changes measurements (`changes.bench.workerd.test.ts`): what each of isomorphic-git's reads holds is kept
+   * until `releaseMeasured`, so the heap sampled from outside sees it. Timed by the caller: workerd's clock stands still
+   * while code runs.
+   */
+  #measured: unknown[] = [];
+
+  /**
+   * The Workspace's files, as the listing reads them. With `yieldEvery`, every that many reads waits for the next turn
+   * of the event loop, where the inspector answers the heap samples it cannot while code runs: it costs time, not memory.
+   */
+  async #measuredFiles(yieldEvery: number | undefined): Promise<ChangesFiles> {
+    const provider = (await this.#computer()).provider();
+
+    if (yieldEvery === undefined) return provider;
+
+    let reads = 0;
+
+    const paced = async <A>(read: Promise<A>): Promise<A> => {
+      const value = await read;
+
+      if (++reads % yieldEvery === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+
+      return value;
+    };
+
+    return {
+      readFile: (path, options) => paced(provider.readFile(path, options)),
+      stat: (path) => paced(provider.stat(path)),
+      lstat: (path) => paced(provider.lstat(path)),
+      readdir: (path) => paced(provider.readdir(path)),
+      readlink: (path) => paced(provider.readlink(path)),
+      readRangeSync: (path, offset, length) => provider.readRangeSync(path, offset, length),
+    };
+  }
+
+  /** isomorphic-git's `statusMatrix` of repo `dir`, as the listing reads it: how many files it tracks, and changed. */
+  async measureStatus(
+    dir: string,
+    yieldEvery?: number,
+  ): Promise<{ readonly tracked: number; readonly changed: number }> {
+    const fs = gitFs(await this.#measuredFiles(yieldEvery));
+    const cache = {};
+    const matrix = await git.statusMatrix({ fs, dir, cache, refresh: false });
+
+    this.#measured.push(matrix, cache);
+
+    return {
+      tracked: matrix.filter(([, inHead]) => inHead === 1).length,
+      changed: matrix.filter(([, inHead, inWorkdir]) => inHead !== inWorkdir).length,
+    };
+  }
+
+  /** isomorphic-git's `readBlob` of each of `paths` at repo `dir`'s HEAD, one cache for all: their bytes in all. */
+  async measureBlobs(dir: string, paths: readonly string[], yieldEvery?: number): Promise<number> {
+    const fs = gitFs(await this.#measuredFiles(yieldEvery));
+    const cache = {};
+    const oid = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    let bytes = 0;
+
+    for (const filepath of paths) {
+      const { blob } = await git.readBlob({ fs, dir, oid, filepath, cache });
+
+      bytes += blob.length;
+      this.#measured.push(blob);
+    }
+
+    this.#measured.push(cache);
+
+    return bytes;
+  }
+
+  /** The whole listing of `directory`, as `changes` runs it, with no tracked-file guard. */
+  async measureListing(directory: string, yieldEvery?: number): Promise<number> {
+    const files = await this.#measuredFiles(yieldEvery);
+
+    const listed = await new WorkspaceChangesModule({
+      files: () => files,
+      containerOnly: async () => () => false,
+      running: () => false,
+      run: () => Promise.reject(new Error("No Container in the measurements")),
+      kept: { load: async () => undefined, save: async () => {} },
+      warn: () => {},
+      maxTrackedFiles: Number.POSITIVE_INFINITY,
+    }).list({ directory, startContainer: false });
+
+    this.#measured.push(listed);
+
+    return listed.repos[0]?.files.length ?? 0;
+  }
+
+  releaseMeasured(): void {
+    this.#measured = [];
+  }
+
+  /** The bytes of file `path` in the Workspace. */
+  async fileBytes(path: string): Promise<Uint8Array> {
+    const workspace = await this.#computer();
+
+    return new Uint8Array(await new Response(await workspace.fs.readFile(path)).arrayBuffer());
+  }
+
   protected override workspaceStub(workspace: ComputerWorkspace): WorkspaceStub {
+    this.#files = workspace;
+
     return new CountedWorkspaceStub(workspace, this.#counter);
   }
 }

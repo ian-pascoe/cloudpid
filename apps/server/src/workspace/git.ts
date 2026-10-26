@@ -1,6 +1,7 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import { createGitClient, type GitClientFactory } from "@cloudflare/computer/git";
 import type { GitCliInput, GitCliResult } from "@cloudflare/computer/git";
+import * as Predicate from "effect/Predicate";
 
 /**
  * The most packfile bytes the Worker Shell's git reads. isomorphic-git reads a whole packfile into memory, and the
@@ -31,11 +32,33 @@ const gitDirectory = ({ argv, cwd = "/" }: GitCliInput) => {
   return segments;
 };
 
+/** What `packfileBytes` reads a repository's files through. */
+type PackFiles = {
+  readdir(path: string): Promise<ReadonlyArray<string | { readonly name: string }>>;
+  stat(path: string): Promise<{ readonly size: number }>;
+};
+
+/**
+ * The size of the packfiles of the repository whose `.git` is `gitdir`, which isomorphic-git reads whole. It rejects
+ * where there is no pack directory.
+ */
+export const packfileBytes = async (files: PackFiles, gitdir: string): Promise<number> => {
+  const pack = `${gitdir}/objects/pack`;
+  let bytes = 0;
+
+  for (const entry of await files.readdir(pack)) {
+    const name = Predicate.isString(entry) ? entry : entry.name;
+
+    if (name.endsWith(".pack")) bytes += (await files.stat(`${pack}/${name}`)).size;
+  }
+
+  return bytes;
+};
+
 /** The size of the packfiles of the repository `segments` is in (the nearest `.git` above it), 0 where there is none. */
 const packBytes = async (provider: Provider, segments: readonly string[]) => {
   for (let depth = segments.length; depth >= 0; depth--) {
     const git = `/${segments.slice(0, depth).join("/")}/.git`.replace("//", "/");
-    const pack = `${git}/objects/pack`;
 
     try {
       await provider.stat(git);
@@ -43,19 +66,7 @@ const packBytes = async (provider: Provider, segments: readonly string[]) => {
       continue;
     }
 
-    try {
-      // SAFETY: without `withFileTypes`, `readdir` lists names.
-      const names = (await provider.readdir(pack)) as string[];
-      let bytes = 0;
-
-      for (const name of names) {
-        if (name.endsWith(".pack")) bytes += (await provider.stat(`${pack}/${name}`)).size;
-      }
-
-      return bytes;
-    } catch {
-      return 0;
-    }
+    return packfileBytes(provider, git).catch(() => 0);
   }
 
   return 0;
