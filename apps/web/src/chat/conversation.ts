@@ -1,4 +1,4 @@
-// The Session a chat shows, for the components deep inside it (a subagent's card in the transcript, the Tasks Pane,
+// The Session a chat shows, for the components deep inside it (a subagent's card in the transcript, the Subagents Pane,
 // the composers), and the key of one of its conversations, which the composer's atoms are kept by.
 
 // @effect-diagnostics missingPipeableSignature:off -- a plain constructor of a key, not a combinator.

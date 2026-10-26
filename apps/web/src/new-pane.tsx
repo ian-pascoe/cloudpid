@@ -4,11 +4,11 @@
 
 import { useAtom } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { ListTree, Network, type LucideIcon } from "lucide-react";
+import { Bot, Network, type LucideIcon } from "lucide-react";
 import { use } from "react";
 import { TreeBarScope } from "./chat/tree-actions.ts";
-import { type TasksSummary, useTasksSummary } from "./chat/tasks-pane.tsx";
-import { NEW_PANE, TASKS_PANE, TREE_PANE } from "./panes.ts";
+import { useSubagentsWorking } from "./chat/subagents-pane.tsx";
+import { NEW_PANE, SUBAGENTS_PANE, TREE_PANE } from "./panes.ts";
 import { panesAtom } from "./panes-state.ts";
 
 /** One Pane the New pane offers. */
@@ -21,30 +21,20 @@ interface Choice {
   readonly status?: string | undefined;
 }
 
-/** What the Tasks Pane holds now: agents working, the Todo List's progress; undefined when there is neither. */
-const tasksStatus = ({ working, completed, total }: TasksSummary): string | undefined => {
-  const parts = [
-    ...(working > 0 ? [`${working} working`] : []),
-    ...(total > 0 ? [`${completed}/${total} done`] : []),
-  ];
-
-  return parts.length === 0 ? undefined : Arr.join(parts, " · ");
-};
-
 /** The New pane: the Panes the owner can open, the ones open already marked so. */
 export const NewPane = () => {
   const [{ open }, act] = useAtom(panesAtom);
   // An archived Session cannot move in its tree, so it offers none, as it has no `/tree`.
   const archived = use(TreeBarScope)?.archived === true;
-  const tasks = useTasksSummary();
+  const working = useSubagentsWorking();
 
   const choices: readonly Choice[] = [
     {
-      key: TASKS_PANE,
-      name: "Tasks",
-      description: "The Todo List, subagents and background work.",
-      icon: ListTree,
-      status: tasksStatus(tasks),
+      key: SUBAGENTS_PANE,
+      name: "Subagents",
+      description: "The subagents, each opening into its thread, and background work.",
+      icon: Bot,
+      status: working > 0 ? `${working} working` : undefined,
     },
     ...(archived
       ? []

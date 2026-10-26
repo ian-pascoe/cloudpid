@@ -1,43 +1,51 @@
-// The Tasks Pane: the Session's live work, its Todo List, its subagents (each openable into its thread) and the
-// background tasks running, from the task graph the Session streams.
+// The Subagents Pane: the Session's subagents (each openable into its thread) and the background tasks running, from
+// the task graph the Session streams. The Todo List is the Activity card's, over the chat (`activity-card.tsx`).
 
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
-import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { Square } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
-import {
-  abortAtom,
-  sessionStatusAtom,
-  sessionViewAtom,
-  taskGraphAtom,
-  todosAtom,
-} from "../session/atoms.ts";
+import { abortAtom, sessionViewAtom, taskGraphAtom } from "../session/atoms.ts";
+import { agentRowOpenAtom } from "../session-layout-state.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
 import { AgentStatus, shortModel } from "./subagent-card.tsx";
-import { TodoList } from "./todo-list.tsx";
-import { todoProgress } from "../session/todos.ts";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
 const kindLabel = (kind: string): string =>
   kind === "pi.compaction" ? "Compacting context" : kind;
 
+/**
+ * The conversation of the subagent the Subagents Pane of Session `sessionId` is asked to bring into sight (the Activity
+ * card asks it, opening the agent's row); its row scrolls to itself and clears it.
+ */
+export const revealedAgentAtom = Atom.family((_sessionId: string) =>
+  Atom.make<number | null>(null),
+);
+
 type RowProps = { agent: GraphAgent; depth: number };
 
-/** Whether one agent's row is open into its thread. */
-const RowOpen = ScopedAtom.make(() => Atom.make(false));
+const AgentRow = ({ agent, depth }: RowProps) => {
+  const sessionId = useShownSessionId();
+  const abort = useAtomSet(abortAtom(sessionId));
+  const [open, setOpen] = useAtom(agentRowOpenAtom(sessionId, agent.conversationId));
+  const [revealed, setRevealed] = useAtom(revealedAgentAtom(sessionId));
+  const row = useRef<HTMLLIElement>(null);
 
-const Row = ({ agent, depth }: RowProps) => {
-  const abort = useAtomSet(abortAtom(useShownSessionId()));
-  const [open, setOpen] = useAtom(RowOpen.use());
+  useEffect(() => {
+    if (revealed !== agent.conversationId) return;
+
+    row.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    setRevealed(null);
+  }, [revealed, agent.conversationId, setRevealed]);
 
   return (
-    <li>
+    <li ref={row} className="scroll-mt-3">
       <div className="flex items-center gap-2 py-1" style={{ paddingLeft: `${depth * 0.75}rem` }}>
         <button
           type="button"
@@ -81,12 +89,6 @@ const Row = ({ agent, depth }: RowProps) => {
   );
 };
 
-const AgentRow = (props: RowProps) => (
-  <RowOpen.Provider>
-    <Row {...props} />
-  </RowOpen.Provider>
-);
-
 const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   <li className="flex items-center gap-2 py-1 text-sm">
     <span className="min-w-0 flex-1 truncate">{kindLabel(task.kind)}</span>
@@ -97,35 +99,15 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   </li>
 );
 
-/** What the Session shown has going: agents working below the root, and the Todo List's tasks done of all. */
-export interface TasksSummary {
-  readonly working: number;
-  readonly completed: number;
-  readonly total: number;
-}
+/** How many agents below the root of the Session shown are working, for the Pane area's button and the New pane. */
+export const useSubagentsWorking = (): number =>
+  useAtomValue(taskGraphAtom(useShownSessionId()), (graph) => workingBelow(graph, "root").length);
 
-/** The Session shown's `TasksSummary`, for the Pane area's button and the New pane. */
-export const useTasksSummary = (): TasksSummary => {
-  const sessionId = useShownSessionId();
-
-  const working = useAtomValue(
-    taskGraphAtom(sessionId),
-    (graph) => workingBelow(graph, "root").length,
-  );
-
-  const todos = useAtomValue(todosAtom(sessionId));
-  const { total, completed } = todoProgress(todos);
-
-  return { working, completed, total };
-};
-
-/** The Tasks Pane: the Todo List, then the task graph, with Stop all while something below the root can be stopped. */
-export const TasksPane = () => {
+/** The Subagents Pane: the task graph, with Stop all while something below the root can be stopped. */
+export const SubagentsPane = () => {
   const sessionId = useShownSessionId();
   const abort = useAtomSet(abortAtom(sessionId));
   const graph = useAtomValue(taskGraphAtom(sessionId));
-  const todos = useAtomValue(todosAtom(sessionId));
-  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
   const running = useAtomValue(sessionViewAtom(sessionId), (view) => view.running);
   const stoppable = canStopAllBelow(graph, "root", running);
 
@@ -147,12 +129,11 @@ export const TasksPane = () => {
           </Button>
         </div>
       )}
-      <TodoList tasks={todos} stale={!live} className="mb-4" />
       {graph === null ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : graph.agents.length === 0 && graph.background.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          Nothing is running. Subagents and background work show here.
+          No subagents yet. Subagents and background work show here.
         </p>
       ) : (
         <>

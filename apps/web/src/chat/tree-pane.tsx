@@ -4,20 +4,16 @@
 
 import type { TreeNode } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
-import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import * as Atom from "effect/reactivity/Atom";
 import { use } from "react";
 import { NativeSelect } from "../components/ui/native-select.tsx";
 import { cn } from "../lib/utils.ts";
 import { messageOf } from "../registry.ts";
-import { isOwnerNode, pointOf, TREE_FILTERS, type TreeFilter, treeRows } from "../session/tree.ts";
+import { isOwnerNode, pointOf, TREE_FILTERS, treeRows } from "../session/tree.ts";
+import { treeFilterAtom } from "../session-layout-state.ts";
 import { useShownSessionId } from "./conversation.ts";
 import { ARCHIVED, TreeBarScope, useBusy, useMove, WHILE_BUSY } from "./tree-actions.ts";
 import { sessionTreeAtom } from "./tree-state.ts";
-
-/** The filter the Session tree Pane shows with. */
-const PaneFilter = ScopedAtom.make(() => Atom.make<TreeFilter>("default"));
 
 const RoleMark = ({ node }: { node: TreeNode }) => {
   switch (node.role) {
@@ -37,7 +33,7 @@ const RoleMark = ({ node }: { node: TreeNode }) => {
 const TreeList = () => {
   const sessionId = useShownSessionId();
   const result = useAtomValue(sessionTreeAtom(sessionId));
-  const [filter, setFilter] = useAtom(PaneFilter.use());
+  const [filter, setFilter] = useAtom(treeFilterAtom(sessionId));
   const archived = use(TreeBarScope)?.archived === true;
   const busy = useBusy(sessionId) || archived;
   const move = useMove();
@@ -132,8 +128,6 @@ const TreeList = () => {
  */
 export const SessionTreePane = () => (
   <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-    <PaneFilter.Provider>
-      <TreeList />
-    </PaneFilter.Provider>
+    <TreeList />
   </div>
 );

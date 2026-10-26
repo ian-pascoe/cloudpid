@@ -4,7 +4,7 @@
 //
 // The path says which page is shown. The query holds what the page's view has open, today the Session page's Panes:
 //
-// - `?pane=tasks`: one open Pane. Several are repeated values of `pane`, in tab order (`?pane=tasks&pane=terminal:1`),
+// - `?pane=subagents`: one open Pane. Several are repeated values of `pane`, in tab order (`?pane=subagents&pane=terminal:1`),
 //   not one comma-separated value: a Pane's key is free to hold a comma later, a repeated key needs no escaping rule of
 //   its own, and each `pane` reads as one tab. A key's `:` is written as it is, not as `%3A`, so a link stays readable.
 // - `shown=<key>` names the Pane shown when it is not the first `pane`. Without it (or when it names a Pane that is not
@@ -14,9 +14,10 @@
 //
 // Opening, closing and switching Panes *replace* the history entry (`replaceSearch`) instead of pushing one. A Pane is
 // part of how the page is laid out, as its scroll is, and Back is for leaving places: with a push, a reader who opened
-// Tasks, then the Terminal, would press Back three times to leave the Session, and the first presses would only undo
+// Subagents, then the Terminal, would press Back three times to leave the Session, and the first presses would only undo
 // what they had just chosen to look at. A link, a reload or a push tap still opens the Session with the same Panes,
-// as the entry's URL holds them. Moving to another page (`navigate`) drops the query: Panes belong to one Session.
+// as the entry's URL holds them. Moving to another page (`navigate`) drops the query: Panes belong to one Session, whose
+// layout on the device (`session-layout-state.ts`) shows them again when the Session is opened without a query.
 
 import * as Arr from "effect/Array";
 import * as Atom from "effect/reactivity/Atom";
@@ -28,7 +29,7 @@ export const navigate = (path: string): void => {
 };
 
 /**
- * Show `search` (a query: `?pane=tasks`, or `""` for none) on the same path, in place of the history entry's;
+ * Show `search` (a query: `?pane=subagents`, or `""` for none) on the same path, in place of the history entry's;
  * `searchAtom` hears of it like a back or forward.
  */
 export const replaceSearch = (search: string): void => {
@@ -70,7 +71,7 @@ const locationAtom = (
 export const pathAtom = locationAtom((location) => location.pathname, "/", navigate);
 
 /**
- * The page's query (`?pane=tasks`, or `""`), which changes with `replaceSearch` (or a write of this atom, which
+ * The page's query (`?pane=subagents`, or `""`), which changes with `replaceSearch` (or a write of this atom, which
  * replaces the history entry) and the browser's back and forward buttons. Without a window it is `""`.
  */
 export const searchAtom = locationAtom((location) => location.search, "", replaceSearch);

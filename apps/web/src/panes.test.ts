@@ -60,9 +60,9 @@ describe("a Pane key", () => {
     expect(paneKeyOf("", TYPES)).toBeUndefined();
   });
 
-  it("knows the Tasks Pane by default", () => {
-    expect(paneKeyOf("tasks")?.type.label(undefined, () => undefined)).toEqual({
-      name: "Tasks",
+  it("knows the Subagents Pane by default", () => {
+    expect(paneKeyOf("subagents")?.type.label(undefined, () => undefined)).toEqual({
+      name: "Subagents",
     });
     expect(paneKeyOf("terminal:1")).toBeUndefined();
   });
@@ -88,6 +88,13 @@ describe("the area a query holds", () => {
   it("is closed for a query with no Pane", () => {
     expect(paneAreaOf("", TYPES)).toEqual(NO_PANES);
     expect(paneAreaOf("?x=1", TYPES)).toEqual(NO_PANES);
+  });
+
+  it("opens the Subagents Pane for a link to the Tasks Pane it replaced", () => {
+    expect(paneAreaOf("?pane=tree&pane=tasks&shown=tasks")).toEqual(
+      area(["tree", "subagents"], "subagents"),
+    );
+    expect(paneAreaOf("?pane=tasks&pane=subagents")).toEqual(area(["subagents"]));
   });
 
   it("shows the only Pane, or the first when none is named", () => {

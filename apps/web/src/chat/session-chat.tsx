@@ -86,7 +86,7 @@ const LiveSession = ({
   const root = conversationKey(sessionId, undefined);
   const messages = useAtomValue(threadMessagesAtom(root));
   const queue = useAtomValue(threadQueueAtom(root));
-  // The cards and the Tasks Pane read the task graph, and the composer's context ring its usage: their atoms watch them
+  // The cards, the Activity card and the Subagents Pane read the task graph, and the composer's context ring its usage: their atoms watch them
   // for as long as the Session is shown.
   const taskGraph = useAtomValue(taskGraphAtom(sessionId));
 
@@ -179,7 +179,8 @@ export const SessionChat = ({
   const built = useAtomValue(sessionClientAtom(sessionId), AsyncResult.isSuccess);
 
   return built ? (
-    // Another Session starts over, as its page's own state (an agent's open row in the Tasks Pane) belongs to the one before.
+    // Another Session starts over, as its page's own state belongs to the one before; what the owner opened and collapsed
+    // is in each Session's layout (`session-layout-state.ts`), so it comes back with the Session.
     <LiveSession key={sessionId} sessionId={sessionId} title={title} rename={rename} {...page} />
   ) : null;
 };

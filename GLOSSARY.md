@@ -185,7 +185,7 @@ An interactive shell the owner runs on a Workspace's Container from a Session, i
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's tasks (the Tasks Pane), a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL.
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), the Session tree, a Terminal, a Live View, an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session's layout on the device, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is on the **Activity card**, a small card over the top right of the chat that also lists the subagents, each opening the Subagents Pane.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Offered tool**:

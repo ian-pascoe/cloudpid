@@ -5,7 +5,7 @@
 // none picks its own edge. One button in the Session's header (`PaneAreaToggle`) opens the area on the New pane, which
 // offers the Pane types, and hides and shows it after; the tab bar's + opens another New pane.
 
-import { useAtom, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import { PanelRightClose, PanelRightOpen, Plus, X } from "lucide-react";
@@ -20,7 +20,7 @@ import {
 } from "react";
 import { useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
-import { TasksPane, useTasksSummary } from "./chat/tasks-pane.tsx";
+import { SubagentsPane, useSubagentsWorking } from "./chat/subagents-pane.tsx";
 import { Button } from "./components/ui/button.tsx";
 import { cn } from "./lib/utils.ts";
 import { LiveViewPane } from "./live-view/live-view-pane.tsx";
@@ -29,7 +29,7 @@ import { NewPane } from "./new-pane.tsx";
 import {
   NEW_PANE,
   paneKeyOf,
-  TASKS_PANE,
+  SUBAGENTS_PANE,
   tabForKey,
   type AgentOfHandoff,
   type PaneProps,
@@ -42,12 +42,14 @@ import {
   paneWidthAtom,
   paneWidthForKey,
   panesAtom,
+  rememberPanesAtom,
+  widestPaneIn,
 } from "./panes-state.ts";
 
 /** The component each Pane type shows. A type in `PANE_TYPES` with none is a type error. */
 const PANE_COMPONENTS = {
   new: NewPane,
-  tasks: TasksPane,
+  subagents: SubagentsPane,
   tree: SessionTreePane,
   "live-view": LiveViewPane,
 } satisfies {
@@ -66,9 +68,14 @@ const ResizeHandle = ({
   controls: string;
 }) => {
   const [width, setWidth] = useAtom(paneWidthAtom);
+  // The page's room for the chat and the area together; the area may take all of it but the chat's least width.
+  const room = area.current?.parentElement?.clientWidth;
+  const widest = room === undefined ? MAX_PANE_WIDTH : widestPaneIn(room);
+  // A width kept from a wider window shows as the widest this one has room for, and the keys move from there.
+  const shown = Math.min(width, widest);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const next = paneWidthForKey(width, event.key, event.shiftKey);
+    const next = paneWidthForKey(shown, event.key, event.shiftKey, widest);
 
     if (next === undefined) return;
 
@@ -81,7 +88,7 @@ const ResizeHandle = ({
 
     const right = area.current?.getBoundingClientRect().right;
 
-    if (right !== undefined) setWidth(right - event.clientX);
+    if (right !== undefined) setWidth(Math.min(widest, right - event.clientX));
   };
 
   return (
@@ -91,8 +98,8 @@ const ResizeHandle = ({
       aria-label="Resize panes"
       aria-controls={controls}
       aria-valuemin={MIN_PANE_WIDTH}
-      aria-valuemax={MAX_PANE_WIDTH}
-      aria-valuenow={width}
+      aria-valuemax={widest}
+      aria-valuenow={shown}
       tabIndex={0}
       onKeyDown={onKeyDown}
       onPointerDown={(event) => {
@@ -121,14 +128,14 @@ const PANE_AREA_ID = "pane-area";
 
 /**
  * The header's button for the Pane area: it opens the New pane while no Pane is open, else hides the area or shows it
- * again. While subagents work and the Tasks Pane is not in sight, it says how many.
+ * again. While subagents work and the Subagents Pane is not in sight, it says how many.
  */
 export const PaneAreaToggle = () => {
   const [{ open, shown, hidden }, act] = useAtom(panesAtom);
-  const { working } = useTasksSummary();
+  const working = useSubagentsWorking();
   const visible = open.length > 0 && !hidden;
   const label = visible ? "Hide panes" : open.length > 0 ? "Show panes" : "Open a pane";
-  const badge = working > 0 && !(visible && shown === TASKS_PANE);
+  const badge = working > 0 && !(visible && shown === SUBAGENTS_PANE);
 
   return (
     <Button
@@ -159,9 +166,12 @@ export const PaneAreaToggle = () => {
 
 /**
  * The Pane area of the Session shown: nothing while no Pane is open. Hidden, it keeps its Panes mounted, so a Live View
- * stays connected and every Pane comes back as it was.
+ * stays connected and every Pane comes back as it was. What it has open is kept in the Session's layout, so it opens
+ * again as it was when the owner comes back to the Session.
  */
 export const PaneArea = () => {
+  useAtomMount(rememberPanesAtom(useShownSessionId()));
+
   const [{ open, shown, hidden }, act] = useAtom(panesAtom);
   const agentOfHandoff = useAgentOfHandoff();
   const [width] = useAtom(paneWidthAtom);

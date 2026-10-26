@@ -4,13 +4,12 @@
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { GraphAgent } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
-import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Predicate from "effect/Predicate";
-import * as Atom from "effect/reactivity/Atom";
 import { Bot, ChevronRight, Loader } from "lucide-react";
 import type { ReactNode } from "react";
 import { agentOfConversation } from "../session/agents.ts";
 import { taskGraphAtom } from "../session/atoms.ts";
+import { subagentCardOpenAtom } from "../session-layout-state.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import type { StartedSubagent } from "./subagent.ts";
@@ -38,13 +37,16 @@ type CardProps = {
   messages: ReactNode;
 };
 
-/** Whether one card is open. */
-const CardOpen = ScopedAtom.make(() => Atom.make(false));
+/**
+ * The card of a subagent: its ID, role and model, and its status from the task graph. Opening it watches the agent's
+ * conversation, and closing it stops, so a long list of subagents costs one watch per open card. Whether it is open is
+ * kept in the Session's layout.
+ */
+export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
+  const sessionId = useShownSessionId();
+  const [open, setOpen] = useAtom(subagentCardOpenAtom(sessionId, subagent.conversationId));
 
-const Card = ({ subagent, args, messages }: CardProps) => {
-  const [open, setOpen] = useAtom(CardOpen.use());
-
-  const agent = useAtomValue(taskGraphAtom(useShownSessionId()), (graph) =>
+  const agent = useAtomValue(taskGraphAtom(sessionId), (graph) =>
     agentOfConversation(graph, subagent.conversationId),
   );
 
@@ -56,7 +58,8 @@ const Card = ({ subagent, args, messages }: CardProps) => {
     <details
       open={open}
       onToggle={(event) => {
-        setOpen(event.currentTarget.open);
+        // A `details` rendered open fires a toggle too; only a change is kept.
+        if (event.currentTarget.open !== open) setOpen(event.currentTarget.open);
       }}
       className="group my-2 rounded-md border"
     >
@@ -82,13 +85,3 @@ const Card = ({ subagent, args, messages }: CardProps) => {
     </details>
   );
 };
-
-/**
- * The card of a subagent: its ID, role and model, and its status from the task graph. Opening it watches the agent's
- * conversation, and closing it stops, so a long list of subagents costs one watch per open card.
- */
-export const SubagentCard = (props: CardProps) => (
-  <CardOpen.Provider>
-    <Card {...props} />
-  </CardOpen.Provider>
-);
