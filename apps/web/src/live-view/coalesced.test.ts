@@ -62,4 +62,23 @@ describe("an effect coalesced", () => {
       expect(runs).toBe(2);
     }),
   );
+
+  it.effect("runs again after a run died", () =>
+    Effect.gen(function* () {
+      let runs = 0;
+
+      const once = coalesced(
+        Effect.suspend(() => {
+          runs += 1;
+
+          return Effect.die(new Error("boom"));
+        }),
+      );
+
+      yield* Effect.exit(once);
+      yield* Effect.exit(once);
+
+      expect(runs).toBe(2);
+    }),
+  );
 });

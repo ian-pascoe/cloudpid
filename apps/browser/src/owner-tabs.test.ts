@@ -416,6 +416,46 @@ describe("the Browser Pane's several Owner tabs", () => {
     expect(tabs.has(ownerTabScope("b"))).toBe(false);
   });
 
+  it("lists a tab a link opened before closing anything, so a close that fails leaves no scope in no list", async () => {
+    const targets = [
+      ...owners,
+      page("popup-b", { openerId: "owner-b", canAccessOpener: true }),
+      page("link-page", { openerId: "owner-b", canAccessOpener: false }),
+    ];
+
+    const store = records();
+    const tabs = new Map<string, Tab>();
+
+    for (const id of ["a", "b", "c"]) {
+      tabs.set(ownerTabScope(id), { browserSessionId: "browser-1", targetId: `owner-${id}` });
+    }
+
+    store.put("owner-tabs", { tabs: [{ id: "a" }, { id: "b" }, { id: "c" }], shown: "a" });
+
+    const failing = fakeTransport({
+      "Target.getTargets": { targetInfos: targets },
+      "Target.closeTarget": () => {
+        throw new Error("Browser Run is not answering");
+      },
+    });
+
+    const first = ownerTabsOver([failing], store, tabs);
+
+    await expect(first.ownerTabs.close("b")).rejects.toThrow(/not answering/);
+    expect(first.adopted).toEqual([[ownerTabScope("id-1"), "link-page"]]);
+    expect(first.ownerTabs.list().tabs.map(({ id }) => id)).toEqual(["a", "b", "c", "id-1"]);
+
+    // The next look finds the page already listed: it is not recorded again under a new ID.
+    const second = ownerTabsOver(
+      [fakeTransport({ "Target.getTargets": { targetInfos: targets } })],
+      store,
+      tabs,
+    );
+
+    await second.ownerTabs.tabs();
+    expect(second.adopted).toEqual([]);
+  });
+
   it("shows the neighbour on the right of the Owner tab shown when it closes, else on the left", async () => {
     const { ownerTabs } = withTabs(owners, "b");
 

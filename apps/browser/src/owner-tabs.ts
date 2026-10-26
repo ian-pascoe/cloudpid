@@ -251,11 +251,12 @@ export class OwnerTabs {
    * Make Owner tabs of the pages of `pages` that an Owner tab opened and that cannot reach their opener. A page descends
    * from an Owner tab through its openers, windows included; one that can reach its opener is a window and stays so.
    * Past `MAX_OWNER_TABS` a page is left alone, and one that cannot be recorded (its browser closed) is looked at again
-   * next time.
+   * next time. `browserSessionId` is the browser `pages` are in.
    */
   async #adopt(
     pages: ReadonlyArray<PageTarget>,
     present: ReadonlyArray<Present>,
+    browserSessionId: string,
   ): Promise<Joined[]> {
     const joined: Joined[] = [];
     const failed = new Set<string>();
@@ -285,7 +286,6 @@ export class OwnerTabs {
         if (!cannotReachOpener(page)) continue;
 
         const id = this.#newId();
-        const browserSessionId = present[0]?.tab.browserSessionId ?? "";
 
         try {
           const tab = await this.#browser.adoptTab(
@@ -363,7 +363,14 @@ export class OwnerTabs {
     }
 
     const outcome = await this.#withBrowser(first.tab, async (transport, pages) => {
-      const joined = await this.#adopt(pages, present);
+      const joined = await this.#adopt(pages, present, first.tab.browserSessionId);
+
+      // Listed before anything is closed: a close that fails leaves no scope record in no list, which the next look would
+      // adopt again under a new ID, two scopes on one page.
+      if (joined.length > 0) {
+        this.#save({ ...stored, tabs: [...stored.tabs, ...joined.map(({ id }) => ({ id }))] });
+      }
+
       const closed = present.find(({ id }) => id === closing);
 
       if (closed !== undefined) {
