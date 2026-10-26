@@ -4,8 +4,8 @@
 // Session on this device so that going back to a Session shows it as it was left. This module is the rules over it,
 // with no atoms and no React (`session-layout-state.ts` keeps it).
 //
-// It holds the Pane area (the Panes open, the one shown, whether the area is hidden), whether the Activity card is
-// expanded, which subagents are open in the Subagents Pane and in the transcript's cards, which of the transcript's
+// It holds the Pane area (the Panes open, the one shown, whether the area is hidden), whether the Activity overlay is
+// open, which subagents are open in the Subagents Pane and in the transcript's cards, which of the transcript's
 // disclosures (tool cards, thinking, Skills, notices) are open, and the Session tree Pane's filter. Only the Sessions
 // shown last are kept (`MAX_LAYOUTS`): a Session not opened for that long starts afresh.
 
@@ -13,22 +13,11 @@ import * as Schema from "effect/Schema";
 import { NO_PANES, paneAreaOf, searchWithPaneArea, type PaneArea } from "./panes.ts";
 import { TREE_FILTER_VALUES, type TreeFilter } from "./session/tree.ts";
 
-/**
- * The owner's choice for the Activity card: expanded or collapsed, made while the Todo List held `items`
- * (`todoItemsOf`) and was `settled` or not. It holds for as long as both still say the same: a new Todo List, or one
- * that settles (or has more to do again), shows as the card's default does.
- */
-export interface ActivityChoice {
-  readonly expanded: boolean;
-  readonly items: readonly string[];
-  readonly settled: boolean;
-}
-
 /** One Session's layout. */
 export interface SessionLayout {
   readonly panes: PaneArea;
-  /** Undefined while the owner has not expanded or collapsed the card. */
-  readonly activity: ActivityChoice | undefined;
+  /** Whether the Activity overlay is open: the owner opens and closes it from the header. */
+  readonly activityOpen: boolean;
   /** The conversations of the subagents open in the Subagents Pane. */
   readonly openAgents: readonly number[];
   /** The conversations of the subagent cards open in the transcript. */
@@ -41,7 +30,7 @@ export interface SessionLayout {
 /** A Session's layout until the owner changes it: nothing open, every default. */
 export const DEFAULT_LAYOUT: SessionLayout = {
   panes: NO_PANES,
-  activity: undefined,
+  activityOpen: false,
   openAgents: [],
   openCards: [],
   openDisclosures: [],
@@ -66,13 +55,7 @@ const StoredLayout = Schema.Struct({
       hidden: Schema.Boolean,
     }),
   ),
-  activity: Schema.optional(
-    Schema.Struct({
-      expanded: Schema.Boolean,
-      items: Schema.Array(Schema.String),
-      settled: Schema.Boolean,
-    }),
-  ),
+  activityOpen: Schema.optional(Schema.Boolean),
   openAgents: Schema.Array(Schema.Finite).pipe(Schema.optional),
   openCards: Schema.Array(Schema.Finite).pipe(Schema.optional),
   openDisclosures: Schema.Array(Schema.String).pipe(Schema.optional),
@@ -107,7 +90,7 @@ export const layoutOf = (stored: StoredLayouts, sessionId: string): SessionLayou
 
   return {
     panes: checkedPanes(found.panes),
-    activity: found.activity,
+    activityOpen: found.activityOpen ?? false,
     openAgents: found.openAgents ?? [],
     openCards: found.openCards ?? [],
     openDisclosures: found.openDisclosures ?? [],
@@ -171,38 +154,3 @@ const disclosureInThread = (disclosure: TranscriptDisclosure): string => {
 /** The key a disclosure's open state is kept under: its thread's conversation (`root` for the root's), then itself. */
 export const disclosureKey = (disclosure: TranscriptDisclosure): string =>
   `${disclosure.conversationId ?? "root"}/${disclosureInThread(disclosure)}`;
-
-/** What tells a Todo List from the next: its Todo Items, each as its ID and title. */
-export const todoItemsOf = (
-  items: ReadonlyArray<{ readonly id: number; readonly title: string }>,
-): readonly string[] => items.map((item) => `${item.id}:${item.title}`).slice(0, MAX_OPEN);
-
-/**
- * Whether `items` (`todoItemsOf`) are the Todo List `kept` was: one Todo Item at least is in both, so a list the agent
- * adds to, renames an item of or drops one from is the same list, and one it starts afresh is another. No items at all
- * is the same as no items.
- */
-export const sameTodoList = (kept: readonly string[], items: readonly string[]): boolean =>
-  kept.length === 0 ? items.length === 0 : items.some((item) => kept.includes(item));
-
-/**
- * Whether the Activity card is expanded: as the owner left it for the Todo List shown while it was as settled as it is
- * now, else expanded on a wide screen while there is something to follow (a Todo Item not done, or a subagent working),
- * and collapsed otherwise.
- */
-export const activityExpanded = ({
-  choice,
-  items,
-  wide,
-  settled,
-}: {
-  choice: ActivityChoice | undefined;
-  /** The Todo List shown (`todoItemsOf`). */
-  items: readonly string[];
-  wide: boolean;
-  /** Every Todo Item is done and no subagent is working. */
-  settled: boolean;
-}): boolean =>
-  choice !== undefined && choice.settled === settled && sameTodoList(choice.items, items)
-    ? choice.expanded
-    : wide && !settled;

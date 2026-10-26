@@ -96,6 +96,18 @@ export const subagentCardOpenAtom = (sessionId: string, conversationId: number) 
 export const disclosureOpenAtom = (sessionId: string, disclosure: TranscriptDisclosure) =>
   disclosures(sessionId)(disclosureKey(disclosure));
 
+/** Whether Session `sessionId`'s Activity overlay is open; writing it opens or closes it, kept in the layout. */
+export const activityOpenAtom = Atom.family((sessionId: string) => {
+  const layout = sessionLayoutAtom(sessionId);
+
+  return Atom.writable(
+    (get): boolean => get(layout).activityOpen,
+    (ctx, activityOpen: boolean) => {
+      ctx.set(layout, { activityOpen });
+    },
+  );
+});
+
 /** The filter Session `sessionId`'s tree Pane shows with; writing it keeps the new one in the layout. */
 export const treeFilterAtom = Atom.family((sessionId: string) => {
   const layout = sessionLayoutAtom(sessionId);

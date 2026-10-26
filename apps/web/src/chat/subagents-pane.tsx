@@ -1,6 +1,6 @@
 // The Subagents Pane: the Session's subagents (each openable into its thread, its header with its Subagent Workspace's
 // branch when it has one) and the background tasks running, from the task graph the Session streams. The Todo List is
-// the Activity card's, over the chat (`activity-card.tsx`).
+// the Activity overlay's, over the chat (`activity.tsx`).
 
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";

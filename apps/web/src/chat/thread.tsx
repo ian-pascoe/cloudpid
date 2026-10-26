@@ -28,7 +28,7 @@ import type { ConfigureChange } from "../session/state.ts";
 import type { ComposerCommand } from "./commands.ts";
 import { Composer } from "./composer.tsx";
 import { conversationKey, useShownSessionId } from "./conversation.ts";
-import { ActivityCard } from "./activity-card.tsx";
+import { ActivityOverlay } from "./activity.tsx";
 import { EarlierHistory } from "./earlier-history.tsx";
 import { ModelPicker, type PickerHandle } from "./model-picker.tsx";
 import { UsageBadge } from "./usage-badge.tsx";
@@ -427,9 +427,9 @@ export const Thread = ({
           `sr-only` statuses): without it they are placed against the document at their spot in the long thread, which
           makes the document itself scrollable under the app, and focus going back to a bar's button when a dialog
           closes then scrolls the whole app up, leaving a blank strip below. */}
-      {/* The Activity card floats over the transcript's top right, outside the scroller so it stays put as it scrolls. */}
+      {/* The Activity overlay floats over the transcript's top right, outside the scroller so it stays put as it scrolls. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <ActivityCard />
+        <ActivityOverlay />
         <ThreadPrimitive.Viewport className="relative min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
             <ThreadPrimitive.Empty>

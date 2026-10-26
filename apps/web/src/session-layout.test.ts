@@ -1,13 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Arr from "effect/Array";
 import {
-  activityExpanded,
   DEFAULT_LAYOUT,
   disclosureKey,
   layoutOf,
   MAX_LAYOUTS,
-  sameTodoList,
-  todoItemsOf,
   withLayout,
   withOpen,
   withShown,
@@ -19,11 +16,6 @@ const layout = (change: Partial<SessionLayout>): SessionLayout => ({
   ...change,
 });
 
-const PLAN = todoItemsOf([
-  { id: 1, title: "Read" },
-  { id: 2, title: "Build" },
-]);
-
 describe("a Session's layout on this device", () => {
   it("is the default for a Session it has not kept", () => {
     expect(layoutOf([], "a")).toEqual(DEFAULT_LAYOUT);
@@ -32,7 +24,7 @@ describe("a Session's layout on this device", () => {
   it("reads back as it was kept", () => {
     const kept = layout({
       panes: { open: ["subagents", "tree"], shown: "tree", hidden: true },
-      activity: { expanded: false, items: PLAN, settled: false },
+      activityOpen: true,
       openAgents: [3],
       openCards: [3, 4],
       openDisclosures: ["root/tool:call-1"],
@@ -107,87 +99,5 @@ describe("the things open in a layout", () => {
     expect(
       disclosureKey({ conversationId: undefined, kind: "thinking", messageId: "4", index: 1 }),
     ).toBe("root/thinking:4:1");
-  });
-});
-
-describe("whether the Todo List shown is the one a choice was made for", () => {
-  it("is while one Todo Item at least is the same", () => {
-    // Added to, renamed in part, or with its first Todo Item dropped, it is the same list.
-    expect(
-      sameTodoList(
-        PLAN,
-        todoItemsOf([
-          { id: 2, title: "Build" },
-          { id: 3, title: "Test" },
-        ]),
-      ),
-    ).toBe(true);
-    expect(
-      sameTodoList(
-        PLAN,
-        todoItemsOf([
-          { id: 1, title: "Read it all" },
-          { id: 2, title: "Build" },
-        ]),
-      ),
-    ).toBe(true);
-  });
-
-  it("is not once the agent starts afresh, though the first title is the same", () => {
-    expect(sameTodoList(PLAN, todoItemsOf([{ id: 7, title: "Read" }]))).toBe(false);
-  });
-
-  it("tells no list from a list", () => {
-    expect(sameTodoList([], [])).toBe(true);
-    expect(sameTodoList([], PLAN)).toBe(false);
-    expect(sameTodoList(PLAN, [])).toBe(false);
-  });
-});
-
-describe("whether the Activity card is expanded", () => {
-  it("follows the screen and what is going on until the owner chooses", () => {
-    expect(activityExpanded({ choice: undefined, items: PLAN, wide: true, settled: false })).toBe(
-      true,
-    );
-    // A phone keeps the chat in sight; a list all done needs no following.
-    expect(activityExpanded({ choice: undefined, items: PLAN, wide: false, settled: false })).toBe(
-      false,
-    );
-    expect(activityExpanded({ choice: undefined, items: PLAN, wide: true, settled: true })).toBe(
-      false,
-    );
-  });
-
-  it("is as the owner left it for the same Todo List", () => {
-    const collapsed = { expanded: false, items: PLAN, settled: false };
-    const expanded = { expanded: true, items: PLAN, settled: false };
-
-    expect(activityExpanded({ choice: collapsed, items: PLAN, wide: true, settled: false })).toBe(
-      false,
-    );
-    expect(activityExpanded({ choice: expanded, items: PLAN, wide: false, settled: false })).toBe(
-      true,
-    );
-  });
-
-  it("folds into the pill once everything is done, though the owner had expanded it", () => {
-    const expanded = { expanded: true, items: PLAN, settled: false };
-
-    expect(activityExpanded({ choice: expanded, items: PLAN, wide: true, settled: true })).toBe(
-      false,
-    );
-    // Expanded again once done, it stays so.
-    const again = { expanded: true, items: PLAN, settled: true };
-
-    expect(activityExpanded({ choice: again, items: PLAN, wide: true, settled: true })).toBe(true);
-  });
-
-  it("goes back to its default for a new Todo List", () => {
-    const collapsed = { expanded: false, items: PLAN, settled: false };
-    const fresh = todoItemsOf([{ id: 9, title: "Another" }]);
-
-    expect(activityExpanded({ choice: collapsed, items: fresh, wide: true, settled: false })).toBe(
-      true,
-    );
   });
 });

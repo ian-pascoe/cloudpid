@@ -1,4 +1,4 @@
-// What brings a subagent into sight in the Subagents Pane, from elsewhere on the Session's page (the Activity card).
+// What brings a subagent into sight in the Subagents Pane, from elsewhere on the Session's page (the Activity overlay).
 
 import * as Atom from "effect/reactivity/Atom";
 import { SUBAGENTS_PANE } from "../panes.ts";
