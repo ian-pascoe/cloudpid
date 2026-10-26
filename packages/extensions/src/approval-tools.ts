@@ -47,6 +47,7 @@ import {
   MAX_CHANGE_REASON,
 } from "./environment.ts";
 import { EVERY_ENVIRONMENT_ID, EVERY_ENVIRONMENT_NAME } from "./environment-secret-marks.ts";
+import { holdsPlaceholder } from "./secrets/references.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { Secrets } from "./secrets/store.ts";
 import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
@@ -243,16 +244,27 @@ export const ApprovalTools: Effect.Effect<
 
   for (const value of (yield* DeployCredentials).values) credentials.hold("GITHUB_TOKEN", value);
 
-  /** Fails, asking nothing, when the reason holds a Secret the Session holds or a deploy-time credential. */
+  /**
+   * Fails, asking nothing, when the reason holds a Secret the Session holds, a deploy-time credential, or a Secret
+   * Reference's placeholder, which these tools do not resolve (the card and the history would show the reference's
+   * text).
+   */
   const plainReason = (reason: string) =>
-    Effect.flatMap(secrets.refresh, () =>
-      secrets.redact(reason) === reason && credentials.redact(reason) === reason
-        ? Effect.void
-        : EnvironmentsError.make({
+    holdsPlaceholder(reason)
+      ? Effect.fail(
+          EnvironmentsError.make({
             message:
-              "Nothing was asked or saved: the reason holds the value of a Secret this Session holds, or of the GitHub token. Say why without it.",
+              "Nothing was asked or saved: the reason holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. Say why without it.",
           }),
-    );
+        )
+      : Effect.flatMap(secrets.refresh, () =>
+          secrets.redact(reason) === reason && credentials.redact(reason) === reason
+            ? Effect.void
+            : EnvironmentsError.make({
+                message:
+                  "Nothing was asked or saved: the reason holds the value of a Secret this Session holds, or of the GitHub token. Say why without it.",
+              }),
+        );
 
   /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
   const target = (id: string | undefined) =>

@@ -401,6 +401,34 @@ describe("the tools that wait for Approval", () => {
     expect(text).toContain("reason holds the value of a Secret");
     expect(asked).toEqual([]);
   });
+
+  it("refuse a reason that holds a Secret Reference's placeholder, held or not, asking nothing", async () => {
+    const { call, asked, calls } = await setUp();
+    /** A Secret Reference's placeholder, the double-brace form. */
+    const placeholder = (name: string) => `${"{{"}secret:${name}${"}}"}`;
+
+    for (const name of ["API_KEY", "NOT_HELD"]) {
+      const { result, text } = await call("settings_spend_limit_set", {
+        per_session: 10,
+        reason: `the key ${placeholder(name)} is billed`,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(text).toContain("the reference's text, not the Secret");
+    }
+
+    expect(asked).toEqual([]);
+
+    // An escaped placeholder is plain text.
+    const { result } = await call("settings_spend_limit_set", {
+      per_session: 10,
+      reason: `written as \\${placeholder("API_KEY")} in the docs`,
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(calls.settings).toHaveLength(1);
+  });
 });
 
 describe("settings_spend_limit_set", () => {
