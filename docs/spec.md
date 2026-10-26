@@ -427,7 +427,7 @@ The request and its answer:
 
 ## Diffs and review
 
-This section is being built. The design was settled on the map "Diff viewing and Reviews with @pierre/diffs" (#99), and each bullet links the ticket that holds the detail. Each slice of the build replaces its bullet with the full description as it lands. Terms are in GLOSSARY.md → _Diffs and review_ (Changes, Comparison, Call diff, Run diff, Annotation, Review). Where the diffs are computed is [ADR-0022](adr/0022-diffs-come-from-the-workspace-do.md).
+This section is being built, from the parent issue "Diff viewing and Reviews" (#235). The design was settled on the map "Diff viewing and Reviews with @pierre/diffs" (#99), and each bullet links the ticket that holds the detail. Each slice of the build replaces its bullet with the full description as it lands. Terms are in GLOSSARY.md → _Diffs and review_ (Changes, Comparison, Call diff, Run diff, Annotation, Review). Where the diffs are computed is [ADR-0022](adr/0022-diffs-come-from-the-workspace-do.md).
 
 - **Rendering:** [`@pierre/diffs`](https://diffs.com), pinned to an exact version.
   - Its theme is a CSS-variables theme in the notebook skin (`--diffs-*` beside the tokens), with additions and deletions in washes of Run Green and Brick Red.
