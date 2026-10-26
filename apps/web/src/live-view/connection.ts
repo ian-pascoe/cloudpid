@@ -106,15 +106,25 @@ const Evaluation = Schema.Struct({
 });
 
 /** Where a Live View gets its links: fresh ones for the tab and its windows on each call (good for 60 s). */
-export type LinkSource = Effect.Effect<LiveViewLinks, LiveViewError>;
+export type LinkSource = Effect.Effect<LiveViewLinks, LiveViewError | LiveViewOver>;
 
-/** What a link source fails with once it is over for good (a handoff that ended): the Live View ends instead of retrying. */
-export const liveViewOver = LiveViewError.make({ message: "The Live View is over." });
+/**
+ * What a link source (or `AttachTab`) fails with once it is over for good (a handoff that ended): the Live View ends
+ * instead of retrying. Matched by its tag.
+ */
+export class LiveViewOver extends Schema.TaggedError<
+  LiveViewOver,
+  { readonly brand: unique symbol }
+>()("LiveViewOver", { message: Schema.String }) {}
 
 /** The tab's connection, as a Pane that puts more on it than the screen does sees it. */
 export interface TabHandle {
   readonly call: CdpPage["call"];
-  /** Hear event `method` of the tab on each connection; `handler` runs in the Live View's scope. */
+  /**
+   * Hear event `method` on the connection this handle wraps only; `handler` runs in the Live View's scope. `attach`
+   * runs again on each connection, so a listener it adds applies to each; one added through `withTab` is lost when the
+   * tab reconnects.
+   */
   readonly on: <A>(
     method: string,
     schema: Schema.Decoder<A>,
@@ -126,9 +136,9 @@ export interface TabHandle {
 
 /**
  * Run on every connection of the tab, once its domains are enabled and before the Live View is `live`. Failing with
- * `liveViewOver` ends the Live View; any other failure fails the connection (it is tried again).
+ * `LiveViewOver` ends the Live View; any other failure fails the connection (it is tried again).
  */
-export type AttachTab = (tab: TabHandle) => Effect.Effect<void, LiveViewError>;
+export type AttachTab = (tab: TabHandle) => Effect.Effect<void, LiveViewError | LiveViewOver>;
 
 /** A Live View, for as long as its scope is open. */
 export interface LiveView {
@@ -237,9 +247,7 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
 
   /** Fresh links, without the windows that closed in the last `GONE_GRACE_MS`; the Live View ends when the source is over. */
   const links = Effect.gen(function* () {
-    const minted = yield* source.pipe(
-      Effect.tapError((error) => (error === liveViewOver ? end : Effect.void)),
-    );
+    const minted = yield* source.pipe(Effect.tapErrorTag("LiveViewOver", () => end));
 
     const now = yield* Clock.currentTimeMillis;
 
@@ -453,9 +461,7 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
       yield* enableDomains(page);
 
       if (attach !== undefined) {
-        yield* attach(tabHandle(page)).pipe(
-          Effect.tapError((error) => (error === liveViewOver ? end : Effect.void)),
-        );
+        yield* attach(tabHandle(page)).pipe(Effect.tapErrorTag("LiveViewOver", () => end));
       }
 
       // The source ended while this connected.
@@ -476,7 +482,7 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
     }),
   );
 
-  /** Connect again until it works, the handoff is over, or `RECONNECT_ATTEMPTS` failed: then the Live View is lost. */
+  /** Connect again until it works, the Live View is over, or `RECONNECT_ATTEMPTS` failed: then the Live View is lost. */
   const reconnect: Effect.Effect<void> = Effect.gen(function* () {
     if (isOver()) return;
 

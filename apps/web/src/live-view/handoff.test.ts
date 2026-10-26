@@ -8,7 +8,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { settle } from "../session/client.testing.ts";
 import { fakeBrowser } from "./connection.testing.ts";
 import { RETURN_PING_MS } from "./connection.ts";
-import { openHandoff } from "./handoff.ts";
+import { openHandoffLiveView } from "./handoff.ts";
 
 const HANDOFF = {
   targetId: "T",
@@ -20,13 +20,13 @@ const HANDOFF = {
 };
 
 /** A Browser Handoff's Live View over a fake Browser Run and Session. */
-const setup = () =>
+const setup = (handoffState: typeof HANDOFF = HANDOFF) =>
   Effect.gen(function* () {
     const fake = fakeBrowser({
-      answer: (method) => (method === "Cloudflare.getHandoffState" ? HANDOFF : undefined),
+      answer: (method) => (method === "Cloudflare.getHandoffState" ? handoffState : undefined),
     });
 
-    const view = yield* openHandoff(fake.mint).pipe(Effect.provide(fake.layer));
+    const view = yield* openHandoffLiveView(fake.mint).pipe(Effect.provide(fake.layer));
 
     yield* settle;
 
@@ -85,16 +85,9 @@ describe("a Browser Handoff's Live View", () => {
 
   it.effect("ends when the browser says the handoff is no longer active", () =>
     Effect.gen(function* () {
-      const fake = fakeBrowser({
-        answer: (method) =>
-          method === "Cloudflare.getHandoffState" ? { ...HANDOFF, active: false } : undefined,
-      });
+      const { state } = yield* setup({ ...HANDOFF, active: false });
 
-      const view = yield* openHandoff(fake.mint).pipe(Effect.provide(fake.layer));
-
-      yield* settle;
-
-      expect(SubscriptionRef.getUnsafe(view.state).status).toBe("ended");
+      expect(state().status).toBe("ended");
     }).pipe(Effect.scoped),
   );
 

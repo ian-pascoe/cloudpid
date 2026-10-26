@@ -20,7 +20,11 @@ import {
   sessionClientAtom,
   taskGraphAtom,
 } from "../session/atoms.ts";
-import { INITIAL_HANDOFF_STATE, openHandoff, type HandoffState } from "./handoff.ts";
+import {
+  INITIAL_BROWSER_HANDOFF_STATE,
+  openHandoffLiveView,
+  type BrowserHandoffState,
+} from "./handoff.ts";
 
 /** The Browser Handoff `requestId` of Session `sessionId`. */
 export interface LiveViewKey {
@@ -39,7 +43,7 @@ export const handoffLiveViewAtom = Atom.family((key: LiveViewKey) =>
   appRuntime.atom((get) =>
     get
       .result(sessionClientAtom(key.sessionId))
-      .pipe(Effect.flatMap((client) => openHandoff(client.liveView(key.requestId)))),
+      .pipe(Effect.flatMap((client) => openHandoffLiveView(client.liveView(key.requestId)))),
   ),
 );
 
@@ -50,9 +54,9 @@ const handoffRefAtom = Atom.family((key: LiveViewKey) =>
 );
 
 /** What the handoff says of itself (its instructions and deadline), empty until its Live View is connected. */
-export const handoffStateAtom = Atom.family((key: LiveViewKey) =>
-  Atom.make((get): HandoffState =>
-    AsyncResult.getOrElse(get(handoffRefAtom(key)), () => INITIAL_HANDOFF_STATE),
+export const browserHandoffStateAtom = Atom.family((key: LiveViewKey) =>
+  Atom.make((get): BrowserHandoffState =>
+    AsyncResult.getOrElse(get(handoffRefAtom(key)), () => INITIAL_BROWSER_HANDOFF_STATE),
   ),
 );
 

@@ -1,8 +1,8 @@
 // The Live View Pane (#154, ADR-0013): the agent's browser tab, live, for the owner to use while a Browser Handoff
 // waits. It is the handoff's chrome around the Live View's screen (`live-screen.tsx`): a header with the agent's
-// instructions, the deadline, Done and Failed, and the Pane's closing when the handoff ends. It is the only place that
-// knows the handoff's `requestId`. It opens only from the handoff card's Take over (or a push's link to it) and closes
-// when the handoff ends; closing it does not end the handoff.
+// instructions, the deadline, Done and Failed, and the Pane's closing when the handoff ends. The handoff's files
+// (`handoff*.ts` and this one) are the only ones that know its `requestId`. It opens only from the handoff card's Take
+// over (or a push's link to it) and closes when the handoff ends; closing it does not end the handoff.
 
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
@@ -20,7 +20,7 @@ import {
   finishLiveViewAtom,
   handoffLiveViewAtom,
   handoffRequestAtom,
-  handoffStateAtom,
+  browserHandoffStateAtom,
   liveViewKey,
   type LiveViewKey,
 } from "./handoff-atoms.ts";
@@ -86,7 +86,7 @@ const Header = ({ liveView }: { liveView: LiveViewKey }) => {
     (state) => state.status,
   );
 
-  const handoff = useAtomValue(handoffStateAtom(liveView));
+  const handoff = useAtomValue(browserHandoffStateAtom(liveView));
 
   const request = useAtomValue(handoffRequestAtom(liveView)) ?? undefined;
   const finish = useAtomSet(finishLiveViewAtom(liveView));

@@ -12,17 +12,21 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { LiveViewError } from "./cdp-socket.ts";
-import { liveViewOver, make, type AttachTab, type LiveView } from "./connection.ts";
+import { LiveViewOver, make, type AttachTab, type LiveView } from "./connection.ts";
 
 /** What the handoff says of itself, from its state. */
-export interface HandoffState {
+export interface BrowserHandoffState {
   /** What the agent asked for. */
   readonly instructions: string | null;
   /** When the handoff times out, in ms since the epoch. */
   readonly deadline: number | null;
 }
 
-export const INITIAL_HANDOFF_STATE: HandoffState = { instructions: null, deadline: null };
+/** What the handoff says before its Live View is connected: nothing. */
+export const INITIAL_BROWSER_HANDOFF_STATE: BrowserHandoffState = {
+  instructions: null,
+  deadline: null,
+};
 
 /** `Cloudflare.getHandoffState`'s answer: `timeout - durationMs` is the time left. */
 const GetHandoffState = Schema.Struct({
@@ -37,7 +41,7 @@ const Ignored = Schema.Unknown;
 /** A Live View with the handoff's state and the way to finish it. */
 export interface HandoffLiveView extends LiveView {
   /** The handoff's instructions and deadline: the same object until one changes. */
-  readonly handoff: SubscriptionRef.SubscriptionRef<HandoffState>;
+  readonly handoff: SubscriptionRef.SubscriptionRef<BrowserHandoffState>;
   /**
    * Done (`success`) or Failed with an optional `reason`: the viewport is cleared, then `Cloudflare.handoffComplete` is
    * sent on the tab's connection, as the hosted page does. The Live View ends.
@@ -49,15 +53,15 @@ export interface HandoffLiveView extends LiveView {
  * The Live View of a Browser Handoff, for as long as the scope is open, with `mint` asking the Session for fresh links
  * (`SessionClient.liveView`). It connects at once. Closing the scope closes its connections; it does not end the handoff.
  */
-export const openHandoff = Effect.fnUntraced(function* (
+export const openHandoffLiveView = Effect.fnUntraced(function* (
   mint: Effect.Effect<LiveViewLinks, { readonly message: string }>,
 ) {
-  const handoff = yield* SubscriptionRef.make(INITIAL_HANDOFF_STATE);
+  const handoff = yield* SubscriptionRef.make(INITIAL_BROWSER_HANDOFF_STATE);
 
   const links = mint.pipe(
     Effect.mapError((error) =>
       error.message === LIVE_VIEW_HANDOFF_OVER
-        ? liveViewOver
+        ? LiveViewOver.make({ message: error.message })
         : LiveViewError.make({ message: error.message }),
     ),
   );
@@ -68,7 +72,7 @@ export const openHandoff = Effect.fnUntraced(function* (
 
       const state = yield* tab.call("Cloudflare.getHandoffState", {}, GetHandoffState);
 
-      if (!state.active) return yield* liveViewOver;
+      if (!state.active) return yield* LiveViewOver.make({ message: "The handoff is over." });
 
       const now = yield* Clock.currentTimeMillis;
 

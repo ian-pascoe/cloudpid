@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Socket from "effect/socket/Socket";
 import { settle, type Value } from "../session/client.testing.ts";
-import { liveViewOver, type LinkSource } from "./connection.ts";
+import { LiveViewOver, type LinkSource } from "./connection.ts";
 
 type Listener = (event: Socket.WebSocketEvent) => void;
 
@@ -22,7 +22,7 @@ interface Sent {
 export type Answer = { readonly [key: string]: Value } | "silent";
 
 /** A page's CDP socket in a fake Browser Run: it opens at once and answers every command, as `answer` says. */
-export class FakePage implements Socket.WebSocketLike {
+class FakePage implements Socket.WebSocketLike {
   readyState = 0;
   readonly sent: Sent[] = [];
   private readonly listeners = new Map<string, Set<Listener>>();
@@ -103,6 +103,7 @@ export class FakePage implements Socket.WebSocketLike {
   }
 }
 
+/** The link to page `targetId`, the `n`th time links are minted. */
 export const link = (targetId: string, n: number) => `wss://live.example/page/${targetId}?jwt=${n}`;
 
 /**
@@ -150,7 +151,9 @@ export const fakeBrowser = (
     return Effect.succeed({ tab: { targetId: "T", link: link("T", mints) }, windows });
   });
 
-  const source: LinkSource = Effect.suspend(() => (over ? Effect.fail(liveViewOver) : minted));
+  const source: LinkSource = Effect.suspend(() =>
+    over ? Effect.fail(LiveViewOver.make({ message: "over" })) : minted,
+  );
 
   const mint = Effect.suspend(() =>
     over ? Effect.fail({ message: LIVE_VIEW_HANDOFF_OVER }) : minted,
@@ -175,6 +178,7 @@ export const fakeBrowser = (
   };
 };
 
+/** A screencast frame's params for `sessionId`, of a 390 × 700 page. */
 export const frame = (sessionId: number) => ({
   data: "jpeg",
   sessionId,
