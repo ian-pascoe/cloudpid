@@ -1627,6 +1627,13 @@ describe("the catalog and Slash commands", () => {
       }),
   );
 
+  const OWNER_TAB_COMMANDS = new Set<unknown>([
+    "owner_tab_list",
+    "owner_tab_open",
+    "owner_tab_show",
+    "owner_tab_close",
+  ]);
+
   it.effect(
     "lists, opens, shows and closes the Browser Pane's Owner tabs, and keeps the tabs it is told of",
     () =>
@@ -1644,7 +1651,7 @@ describe("the catalog and Slash commands", () => {
 
         const [list, open, show, close] = latest()
           .commands()
-          .filter((command) => String(command.type).startsWith("owner_tab_"));
+          .filter((command) => OWNER_TAB_COMMANDS.has(command.type));
 
         expect(list).toEqual({ type: "owner_tab_list", id: list?.id });
         expect(open).toEqual({ type: "owner_tab_open", id: open?.id });
