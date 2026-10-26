@@ -9,6 +9,7 @@ import * as Atom from "effect/reactivity/Atom";
 import { offeredToText } from "./offered-tools.ts";
 import { changing, failureOf, RegistryClient } from "./registry.ts";
 import { appRuntime } from "./runtime.ts";
+import { visibleTickAtom } from "./sessions.ts";
 import { spendLimitToText } from "./spend-limit.ts";
 
 /** The settings in force, and the overrides saved over the defaults. */
@@ -23,6 +24,14 @@ export const settingsStateAtom = Atom.map(settingsAtom, (result) =>
 
 /** Why the settings could not load, or null. */
 export const settingsLoadErrorAtom = Atom.map(settingsAtom, failureOf);
+
+/**
+ * The Settings' Agent changes (`docs/spec.md` → Agent changes), newest first, asked again every few seconds while the
+ * page is visible: a Session's agent makes them, which the page hears of no other way.
+ */
+export const settingsChangesAtom = RegistryClient.query("listSettingsChanges", undefined, {
+  reactivityKeys: ["settings-changes"],
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
 
 /** Whether the form was saved and not changed since: it then says so. */
 export const justSavedAtom = Atom.make(false);
@@ -84,3 +93,25 @@ export const offeredTextAtom = formPart((saved) => offeredToText(saved.tools.off
 
 /** What is typed in the spend limit's box; the draft holds what it parses to, when it parses. */
 export const limitTextAtom = formPart((saved) => spendLimitToText(saved.spendLimit.perSession));
+
+/**
+ * Revert one of the Settings' Agent changes, by its id: its value before is written back, as the owner's change. The
+ * Registry refuses one whose setting has changed since, saying what it is now. The settings and the history ask again
+ * either way, and once the revert is made the form shows what is saved now, not what it held before.
+ */
+export const revertSettingsChangeAtom = appRuntime.fn(
+  (change: number, get) =>
+    RegistryClient.use((registry) => registry("revertSettingsChange", { change })).pipe(
+      changing(["settings", "settings-changes"]),
+      Effect.andThen(RegistryClient.use((registry) => registry("getSettings", undefined))),
+      Effect.tap(({ settings }) =>
+        Effect.sync(() => {
+          get.set(settingsDraftAtom, settings);
+          get.set(offeredTextAtom, offeredToText(settings.tools.offered));
+          get.set(limitTextAtom, spendLimitToText(settings.spendLimit.perSession));
+        }),
+      ),
+      Effect.asVoid,
+    ),
+  { concurrent: true },
+);

@@ -31,15 +31,16 @@ export const runChanges = (kv: SettingsKv): RunChanges => {
 };
 
 /**
- * The Notification of a Run's Agent changes: each one's tool, Environment and field, oldest first. A tap opens the
- * Session, whose transcript has each change's card.
+ * The Notification of a Run's Agent changes: each one's tool, Environment (none for a change to the Settings) and field,
+ * oldest first. A tap opens the Session, whose transcript has each change's card.
  */
 export const agentChangesNotice = (changes: ReadonlyArray<RunChange>): PushNotice => ({
   kind: "notice",
   body: `${changes.length === 1 ? "1 Agent change" : `${changes.length} Agent changes`}: ${Arr.join(
-    Arr.map(
-      changes,
-      ({ tool, environmentName, field }) => `${tool} ${JSON.stringify(environmentName)} ${field}`,
+    Arr.map(changes, ({ tool, environmentName, field }) =>
+      environmentName === undefined
+        ? `${tool} ${field}`
+        : `${tool} ${JSON.stringify(environmentName)} ${field}`,
     ),
     "; ",
   )}`,

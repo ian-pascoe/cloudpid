@@ -26,6 +26,7 @@ import {
   EnvironmentTools,
 } from "@cloudpid/extensions/environment";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
+import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/extensions/settings";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
 import type {
@@ -72,6 +73,8 @@ import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { testEnvironments } from "./environments.fixture.ts";
+import type { SettingsChange } from "../registry/settings-changes.ts";
+import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionTotals } from "./spend.ts";
@@ -270,11 +273,14 @@ export class TestSession extends DurableObject {
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | SessionSettings | AgentChangeLog
+    Harness | Secrets | BrowserHandoffs | SessionSettings | AgentChangeLog | SettingsReload
   > {
     const { kv } = this.ctx.storage;
     const searching = this.#searching();
     const changing = this.ctx.id.name?.startsWith("environment-") === true;
+    const configuring = this.ctx.id.name?.startsWith("settings-") === true;
+    const settingsRegistry = this.#settingsRegistry();
+    const session = this.ctx.id.name;
 
     return Effect.gen(function* () {
       const tool = yield* Echo;
@@ -295,9 +301,22 @@ export class TestSession extends DurableObject {
           ]
         : [];
 
+      const settings = configuring
+        ? [
+            yield* SettingsTools.pipe(
+              Effect.provideService(
+                SettingsAccess,
+                sessionSettingsAccess({ registry: settingsRegistry, session }),
+              ),
+              Effect.provideService(DeployCredentials, { values: [] }),
+            ),
+          ]
+        : [];
+
       const extensions = [
         echo,
         ...environment,
+        ...settings,
         yield* secretsExtension([tool]),
         browser,
         yield* Todo,
@@ -990,6 +1009,27 @@ export class TestSession extends DurableObject {
   /** This object's storage, as JSON, to check that no Secret value is in it. */
   storageDump(): string {
     return JSON.stringify([...this.ctx.storage.kv.list()]);
+  }
+
+  /** The Registry's Settings as the `settings_*` tools reach them: the test Registry the Session reports to. */
+  #settingsRegistry(): SettingsRegistry {
+    const registry = () => {
+      const name = this.ctx.storage.kv.get<string>("registry");
+
+      if (name === undefined) throw new Error("No Registry is set");
+
+      return this.env.REGISTRIES.getByName(name);
+    };
+
+    return {
+      getSettings: () => Effect.promise(() => registry().getSettings()),
+      changeSettings: ({ changes, author }) =>
+        Effect.promise(
+          // SAFETY: the stub's RPC result is the plain data the test Registry returned.
+          async () =>
+            (await registry().changeSettings(changes, author, Date.now())) as SettingsChange,
+        ),
+    };
   }
 
   /** The Registry's saved settings overrides; none while no Registry is set. */

@@ -1,5 +1,6 @@
-// The Agent change an `environment_*` call made (`docs/spec.md` → Agent changes), as its card shows it: the
-// Environment, the field, and its values before and after, in full (a variable's value is plain).
+// The Agent changes an `environment_*` or `settings_*` call made (`docs/spec.md` → Agent changes), as its card shows
+// them: the Environment (none for the Settings), the field, and its values before and after, in full (a variable's value
+// is plain).
 
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { TranscriptPart } from "@cloudpid/protocol";
@@ -8,7 +9,8 @@ import * as Schema from "effect/Schema";
 
 /** A change as a card shows it. */
 export const ShownChange = Schema.Struct({
-  environment: Schema.Struct({ id: Schema.String, name: Schema.String }),
+  /** The Environment changed; absent for a change to the Settings. */
+  environment: Schema.optionalKey(Schema.Struct({ id: Schema.String, name: Schema.String })),
   field: Schema.String,
   before: Schema.NullOr(Schema.Json),
   after: Schema.NullOr(Schema.Json),
@@ -16,16 +18,34 @@ export const ShownChange = Schema.Struct({
 
 export type ShownChange = typeof ShownChange.Type;
 
-const decodeDetails = Schema.decodeUnknownOption(Schema.Struct({ agentChange: ShownChange }));
+const decodeDetails = Schema.decodeUnknownOption(
+  Schema.Union([
+    Schema.Struct({ agentChange: ShownChange }),
+    Schema.Struct({ agentChanges: Schema.Array(ShownChange) }),
+  ]),
+);
 
-const decodeArtifact = Schema.decodeUnknownOption(Schema.Struct({ change: ShownChange }));
+const decodeArtifact = Schema.decodeUnknownOption(
+  Schema.Struct({ changes: Schema.Array(ShownChange) }),
+);
 
-/** The change a result's details record, or none for a call that changed nothing. */
-export const madeChange = (
+/**
+ * The changes a result's details record: the one an `environment_*` call made (`agentChange`), or those of a
+ * `settings_*` call (`agentChanges`, one for each setting it changed); none for a call that changed nothing.
+ */
+export const madeChanges = (
   details: Extract<TranscriptPart, { type: "tool-result" }>["details"],
-): ShownChange | undefined =>
-  Option.getOrUndefined(Option.map(decodeDetails(details), (found) => found.agentChange));
+): ReadonlyArray<ShownChange> =>
+  Option.match(decodeDetails(details), {
+    onNone: () => [],
+    onSome: (found) => ("agentChange" in found ? [found.agentChange] : found.agentChanges),
+  });
 
-/** The change a card's artifact holds, if it does. */
-export const changeOf = (artifact: ToolCallMessagePartProps["artifact"]): ShownChange | undefined =>
-  Option.getOrUndefined(Option.map(decodeArtifact(artifact), (found) => found.change));
+/** The changes a card's artifact holds, if it holds any. */
+export const changesOf = (
+  artifact: ToolCallMessagePartProps["artifact"],
+): ReadonlyArray<ShownChange> =>
+  Option.match(decodeArtifact(artifact), {
+    onNone: () => [],
+    onSome: (found) => found.changes,
+  });

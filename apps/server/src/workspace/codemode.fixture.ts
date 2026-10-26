@@ -5,6 +5,7 @@ import { defineEffectTool, type Harness } from "@cloudpid/effect-durable";
 import type { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import type { AgentChangeLog } from "@cloudpid/extensions/environment";
 import type { Secrets } from "@cloudpid/extensions/secrets";
+import type { SettingsReload } from "@cloudpid/extensions/settings";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -19,7 +20,7 @@ export class TestCodemodeSession extends TestWorkspaceSession {
   protected override hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | AgentChangeLog
+    Harness | Secrets | BrowserHandoffs | AgentChangeLog | SettingsReload
   > {
     const { kv } = this.ctx.storage;
 

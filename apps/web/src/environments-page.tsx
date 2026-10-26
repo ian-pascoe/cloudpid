@@ -1147,7 +1147,7 @@ const ChangeValue = ({ label, value }: { label: string; value: AgentChange["befo
 );
 
 /** One Agent change: the setting, its values before and after, who made it and why, and a revert while it is the agent's. */
-const AgentChangeRow = ({
+export const AgentChangeRow = ({
   change,
   session,
   reverting,

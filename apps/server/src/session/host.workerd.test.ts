@@ -414,6 +414,77 @@ describe("a Session's agent", () => {
     expect(third).not.toContain("secret_list");
   });
 
+  it("runs the next request of the Run that changed the default on the new model, through settings_model_set", async () => {
+    const { stub, registry } = await registered("settings");
+
+    await script(
+      stub,
+      'call:settings_model_set:{"model":"anthropic/claude-sonnet-5-5","thinking_level":"low","reason":"The task is small"}',
+      "Changed.",
+    );
+    await ask(stub, 1);
+
+    expect(await requests(stub)).toEqual([
+      { model: "claude-opus-5-5", thinking: "high" },
+      { model: "claude-sonnet-5-5", thinking: "low" },
+    ]);
+    expect((await registry.getSettings()).overrides).toEqual({
+      model: "anthropic/claude-sonnet-5-5",
+      thinkingLevel: "low",
+    });
+    // Newest first: the thinking level was recorded after the model.
+    expect(await registry.listSettingsChanges()).toMatchObject([
+      { field: "thinkingLevel" },
+      { field: "model", tool: "settings_model_set", reason: "The task is small" },
+    ]);
+
+    await settles(async () =>
+      expect(
+        await runInDurableObject(stub, (instance: TestSession) => instance.notified()),
+      ).toEqual([
+        { kind: "finished" },
+        {
+          kind: "notice",
+          body: "2 Agent changes: settings_model_set model; settings_model_set thinkingLevel",
+        },
+      ]),
+    );
+  });
+
+  it("leaves a Session's own pick alone when the agent changes the default", async () => {
+    const { stub, registry } = await registered("settings");
+
+    await script(
+      stub,
+      'call:settings_model_set:{"model":"anthropic/claude-sonnet-5-5","reason":"r"}',
+      "Changed.",
+    );
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.configure({ model: { provider: "anthropic", modelId: "claude-haiku-5-5" } }),
+    );
+    await ask(stub, 1);
+
+    expect(await requests(stub)).toEqual([
+      { model: "claude-haiku-5-5", thinking: "high" },
+      { model: "claude-haiku-5-5", thinking: "high" },
+    ]);
+    expect((await registry.getSettings()).settings.model).toBe("anthropic/claude-sonnet-5-5");
+  });
+
+  it("refuses an invalid value with the owner's message, and records nothing", async () => {
+    const { stub, registry } = await registered("settings");
+
+    await script(
+      stub,
+      'call:settings_compaction_set:{"reserve_tokens":-1,"reason":"r"}',
+      "Refused.",
+    );
+    await ask(stub, 1);
+
+    expect(await registry.listSettingsChanges()).toEqual([]);
+    expect((await registry.getSettings()).overrides).toEqual({});
+  });
+
   it("applies the default in force when a new Session first runs", async () => {
     const { stub, registry } = await registered();
 

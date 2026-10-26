@@ -5,9 +5,13 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OFFERED_TOOLS,
   DEFAULT_SETTINGS,
+  extensionField,
   overridesFrom,
+  overridesWithFields,
   resolveLeniently,
   resolveSettings,
+  settingsFieldPath,
+  settingsFieldValue,
   SUPPORTED_MODELS,
   type Settings,
 } from "./settings.ts";
@@ -294,5 +298,97 @@ describe("resolving stale overrides leniently", () => {
 
     expect(settings).toEqual(DEFAULT_SETTINGS);
     expect(dropped).toHaveLength(1);
+  });
+});
+
+describe("the fields of the settings", () => {
+  it("names a setting by its dotted path, an extension's option by extension and key", () => {
+    expect(settingsFieldPath("model")).toEqual(["model"]);
+    expect(settingsFieldPath("roles.small.model")).toEqual(["roles", "small", "model"]);
+    expect(settingsFieldPath(extensionField("web", "searchProvider"))).toEqual([
+      "extensions",
+      "web",
+      "searchProvider",
+    ]);
+    // An option's key may hold dots; the extension's name may not.
+    expect(settingsFieldPath("extensions.web.a.b")).toEqual(["extensions", "web", "a.b"]);
+  });
+
+  it("refuses what is not a setting", () => {
+    expect(settingsFieldPath("bogus")).toBeUndefined();
+    expect(settingsFieldPath("")).toBeUndefined();
+    expect(settingsFieldPath("roles..model")).toBeUndefined();
+    expect(settingsFieldPath("extensions")).toBeUndefined();
+    expect(settingsFieldPath("extensions.web")).toBeUndefined();
+  });
+
+  it("reads a field's value from the settings, null where there is none", () => {
+    const settings = resolved({
+      thinkingLevel: "low",
+      extensions: { web: { searchProvider: "parallel" } },
+    });
+
+    expect(settingsFieldValue(settings, "thinkingLevel")).toBe("low");
+    expect(settingsFieldValue(settings, "model")).toBe(DEFAULT_SETTINGS.model);
+    expect(settingsFieldValue(settings, "roles.small.model")).toBe("anthropic/claude-haiku-5-5");
+    expect(settingsFieldValue(settings, "tools.offered")).toEqual([...DEFAULT_OFFERED_TOOLS]);
+    expect(settingsFieldValue(settings, "extensions.web.searchProvider")).toBe("parallel");
+    expect(settingsFieldValue(settings, "extensions.web.missing")).toBeNull();
+    expect(settingsFieldValue(settings, "spendLimit.perSession")).toBeNull();
+    expect(settingsFieldValue(settings, "bogus")).toBeNull();
+  });
+});
+
+describe("overrides with fields", () => {
+  it("gives the field its value over what the settings override already", () => {
+    const settings = resolved({ thinkingLevel: "low" });
+
+    expect(
+      overridesWithFields(settings, [
+        { field: "compaction.enabled", value: false },
+        { field: "roles.small.model", value: "anthropic/claude-sonnet-5-5" },
+      ]),
+    ).toEqual({
+      thinkingLevel: "low",
+      compaction: { enabled: false },
+      roles: { small: { model: "anthropic/claude-sonnet-5-5" } },
+    });
+  });
+
+  it("adds an extension's option, and takes it away with null, with its extension once it has none", () => {
+    const added = overridesWithFields(DEFAULT_SETTINGS, [
+      { field: "extensions.web.searchProvider", value: "exa" },
+      { field: "extensions.notes.level", value: 2 },
+    ]);
+
+    expect(added).toEqual({
+      extensions: { web: { searchProvider: "exa" }, notes: { level: 2 } },
+    });
+
+    expect(
+      overridesWithFields(resolved(added), [
+        { field: "extensions.web.searchProvider", value: null },
+      ]),
+    ).toEqual({ extensions: { notes: { level: 2 } } });
+  });
+
+  it("does not mutate the settings it is given", () => {
+    const settings = resolved({ extensions: { web: { searchProvider: "exa" } } });
+
+    overridesWithFields(settings, [{ field: "extensions.web.searchProvider", value: null }]);
+
+    expect(settings.extensions).toEqual({ web: { searchProvider: "exa" } });
+  });
+
+  it("resolves to settings where the fields have their values", () => {
+    const next = resolved(
+      overridesWithFields(DEFAULT_SETTINGS, [
+        { field: "tools.offered", value: ["read", "web_fetch"] },
+        { field: "branchSummary.skipPrompt", value: true },
+      ]),
+    );
+
+    expect(next.tools.offered).toEqual(["read", "web_fetch"]);
+    expect(next.branchSummary.skipPrompt).toBe(true);
   });
 });

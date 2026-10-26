@@ -47,6 +47,13 @@ export class SubagentSettings extends Context.Service<
 
 const Patterns = Schema.Array(Schema.String);
 
+/** The options of `extensions.subagents` that are lists of tool name patterns. */
+export const SUBAGENT_TOOLSET_OPTIONS: ReadonlyArray<string> = [
+  "baseToolset",
+  "readToolset",
+  "modifyToolset",
+];
+
 /** The extension's own options in the settings' `extensions.subagents`, each optional. */
 const ExtensionOptions = Schema.Struct({
   maxSubagentDepth: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),

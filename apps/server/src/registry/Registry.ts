@@ -15,6 +15,7 @@ import type {
   PushSubscription,
   SessionOrigin,
 } from "@cloudpid/protocol";
+import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
   type AgentChangeAuthor,
@@ -52,6 +53,13 @@ import { pushNotifier } from "../push/notify.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
 import { readSettings, type SettingsState, SettingsUpdate, writeSettings } from "./settings.ts";
+import {
+  changeSettings,
+  revertSettingsChange,
+  type SettingsChange,
+  type SettingsChangeRevert,
+  type SettingsFieldChange,
+} from "./settings-changes.ts";
 import {
   readEnvironmentSettings,
   type EnvironmentSettingsState,
@@ -351,6 +359,21 @@ export type RegistryMethods = {
   readonly updateSettings: (input: {
     readonly overrides: Schema.Json;
   }) => Effect.Effect<SettingsUpdate>;
+  /**
+   * An Agent change to the Settings (`docs/spec.md` → Agent changes): give some of their fields new values, by the rules
+   * of `updateSettings`, and record each field that changed with its `author`; none of the values before or after is
+   * recorded for a field that already has its value. Sessions read the new settings when they next admit input.
+   */
+  readonly changeSettings: (input: {
+    readonly changes: ReadonlyArray<SettingsFieldChange>;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SettingsChange>;
+  /** The Settings' Agent changes, newest first. */
+  readonly listSettingsChanges: () => Effect.Effect<ReadonlyArray<AgentChange>>;
+  /** The owner's revert of a Settings change, unless its field has changed since. */
+  readonly revertSettingsChange: (input: {
+    readonly change: number;
+  }) => Effect.Effect<SettingsChangeRevert>;
   /**
    * The VAPID public key to subscribe with, and whether a subscription at `endpoint` is kept. Pushes to a browser the
    * push service dropped are deleted on the next one, so a client asks before it trusts its own subscription.
@@ -704,6 +727,19 @@ export const RegistryLive = Registry.make(
                   ? SettingsUpdate.Saved({ state: saved.success })
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
+            ),
+          changeSettings: ({ changes: wanted, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                changeSettings(state.raw.storage, store, changes, { changes: wanted, author }, now),
+              ),
+            ),
+          listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
+          revertSettingsChange: ({ change }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                revertSettingsChange(state.raw.storage, store, changes, { id: change }, now),
+              ),
             ),
           getPush: ({ endpoint }) =>
             Effect.sync(() => ({

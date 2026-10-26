@@ -8,7 +8,7 @@ import type { SessionView, TranscriptMessage, TranscriptPart } from "@cloudpid/p
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { madeChange, type ShownChange } from "../chat/agent-change.ts";
+import { madeChanges, type ShownChange } from "../chat/agent-change.ts";
 import { liveCalls, type NestedCall, settledCalls } from "../chat/nested-calls.ts";
 import { type StartedSubagent, startedSubagent } from "../chat/subagent.ts";
 import { entryIdOf } from "./tree.ts";
@@ -124,7 +124,7 @@ const resolveCall = (
     const nested = settledCalls(result.details);
     const subagent = result.name === "subagent" ? startedSubagent(result.details) : undefined;
     const images = shownImages(result.content);
-    const change = madeChange(result.details);
+    const changes = madeChanges(result.details);
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
 
@@ -138,12 +138,12 @@ const resolveCall = (
 
     if (images.length > 0) artifact.images = images;
 
-    if (change !== undefined) artifact.change = change;
+    if (changes.length > 0) artifact.changes = changes;
 
     turn?.content.splice(
       index,
       1,
-      nested.length === 0 && subagent === undefined && images.length === 0 && change === undefined
+      nested.length === 0 && subagent === undefined && images.length === 0 && changes.length === 0
         ? resolved
         : { ...resolved, artifact },
     );
@@ -155,7 +155,7 @@ type CardArtifact = {
   nested?: NestedCall[];
   subagent?: StartedSubagent;
   images?: { readonly mimeType: string; readonly data: string }[];
-  change?: ShownChange;
+  changes?: ReadonlyArray<ShownChange>;
 };
 
 const userMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();

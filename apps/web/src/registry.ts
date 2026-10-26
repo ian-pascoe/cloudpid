@@ -27,6 +27,7 @@ export type RegistryKey =
   | "environment-secrets"
   | "builds"
   | "settings"
+  | "settings-changes"
   | "push";
 
 /** The main Worker's Registry, at `RPC_PATH` of the page's origin. */

@@ -103,6 +103,28 @@ const lifecycle = (toolName: string, args: Args): Option.Option<string> =>
     }),
   );
 
+/** What a `settings_model_set` call sets: the model, the thinking level, or both. */
+const defaultAgent = (args: Args): Option.Option<string> => {
+  const parts = Arr.getSomes([text(args, "model"), text(args, "thinking_level")]);
+
+  return parts.length === 0 ? Option.none() : Option.some(Arr.join(parts, " at "));
+};
+
+/** The role a `settings_role_set` call changes, and the model it gets. */
+const roleModel = (args: Args): Option.Option<string> =>
+  Option.map(text(args, "role"), (role) =>
+    Option.match(text(args, "model"), {
+      onNone: () => role,
+      onSome: (model) => `${role}: ${model}`,
+    }),
+  );
+
+/** The option of an extension a `settings_extension_set` call sets. */
+const extensionOption = (args: Args): Option.Option<string> =>
+  Option.flatMap(text(args, "extension"), (extension) =>
+    Option.map(text(args, "key"), (key) => `${extension}.${key}`),
+  );
+
 /** `line`, after the agent a call names when it names one. */
 const toAgent = (args: Args, line: Option.Option<string>): Option.Option<string> =>
   Option.map(line, (value) =>
@@ -163,6 +185,18 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "environment_toolchains_set":
       case "environment_ignore_set":
         return inEnvironment(args, firstLine(args, "reason"));
+      case "settings_model_set":
+        return defaultAgent(args);
+      case "settings_role_set":
+        return roleModel(args);
+      case "settings_tool_offer":
+      case "settings_tool_defer":
+        return text(args, "pattern");
+      case "settings_extension_set":
+        return extensionOption(args);
+      case "settings_compaction_set":
+      case "settings_branch_summary_set":
+        return firstLine(args, "reason");
       case "subagent":
         return toAgent(args, firstLine(args, "task"));
       case "agent_message":

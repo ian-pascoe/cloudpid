@@ -11,19 +11,25 @@ import {
   SUPPORTED_MODELS,
   THINKING_LEVELS,
 } from "@cloudpid/config";
+import * as Option from "effect/Option";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "./components/ui/button.tsx";
+import { AgentChangeRow } from "./environments-page.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { modelName } from "./models.ts";
 import { badOfferedEntries, offeredFromText, offeredToText } from "./offered-tools.ts";
 import { disablePushAtom, enablePushAtom, pushStatusValueAtom } from "./push-state.ts";
-import { failureOf } from "./registry.ts";
+import { failureOf, settledFailureOf } from "./registry.ts";
 import { navigate } from "./router.ts";
+import { sessionListAtom } from "./sessions.ts";
 import {
   justSavedAtom,
   limitTextAtom,
   offeredTextAtom,
+  revertSettingsChangeAtom,
+  settingsChangesAtom,
   settingsDraftAtom,
   settingsLoadErrorAtom,
   settingsStateAtom,
@@ -78,6 +84,51 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
     {children}
   </section>
 );
+
+/**
+ * What the agent changed in the Settings, newest first (`docs/spec.md` → Agent changes), each with a revert. A revert the
+ * Registry refuses (its setting has changed since) says why.
+ */
+const AgentChangesSection = () => {
+  const loaded = useAtomValue(settingsChangesAtom);
+  const sessions = useAtomValue(sessionListAtom);
+  const [reverted, revert] = useAtom(revertSettingsChangeAtom);
+  const changes = loaded.pipe(AsyncResult.value, Option.getOrNull);
+  const loadError = failureOf(loaded);
+
+  return (
+    <Section title="Agent changes">
+      <p className="text-sm text-muted-foreground">
+        What the agent changed here when you asked it to, newest first. Reverting one writes its old
+        value back, unless the setting has changed since.
+      </p>
+      {changes === null ? (
+        <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
+      ) : changes.length === 0 ? (
+        <p className="text-xs text-muted-foreground">The agent has changed nothing here.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {changes.map((change) => (
+            <AgentChangeRow
+              key={change.id}
+              change={change}
+              session={(sessions ?? []).find((session) => session.id === change.session)}
+              reverting={reverted.waiting}
+              onRevert={() => {
+                revert(change.id);
+              }}
+            />
+          ))}
+        </ul>
+      )}
+      {settledFailureOf(reverted) !== null && (
+        <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
+          {settledFailureOf(reverted)}
+        </p>
+      )}
+    </Section>
+  );
+};
 
 /** Whether this device gets a push when a Run ends, fails, or needs input. Takes effect at once, like no other setting here. */
 const NotificationsSection = () => {
@@ -406,6 +457,7 @@ export const SettingsPage = () => {
             onSave={save}
           />
         )}
+        <AgentChangesSection />
         <NotificationsSection />
       </div>
     </div>

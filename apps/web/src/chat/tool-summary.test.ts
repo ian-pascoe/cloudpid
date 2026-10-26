@@ -82,6 +82,28 @@ describe("toolSummary", () => {
     );
     expect(toolSummary("environment_rebuild", {})).toBeUndefined();
     expect(toolSummary("environment_rebuild", { id: "0000abcd" })).toBe("0000abcd");
+    expect(
+      toolSummary("settings_model_set", {
+        model: "anthropic/claude-sonnet-5-5",
+        thinking_level: "low",
+        reason: "r",
+      }),
+    ).toBe("anthropic/claude-sonnet-5-5 at low");
+    expect(toolSummary("settings_model_set", { thinking_level: "low" })).toBe("low");
+    expect(toolSummary("settings_model_set", { reason: "r" })).toBeUndefined();
+    expect(
+      toolSummary("settings_role_set", { role: "small", model: "anthropic/claude-haiku-5-5" }),
+    ).toBe("small: anthropic/claude-haiku-5-5");
+    expect(toolSummary("settings_tool_offer", { pattern: "web_fetch", reason: "r" })).toBe(
+      "web_fetch",
+    );
+    expect(toolSummary("settings_tool_defer", { pattern: "grep" })).toBe("grep");
+    expect(
+      toolSummary("settings_extension_set", { extension: "subagents", key: "readToolset" }),
+    ).toBe("subagents.readToolset");
+    expect(toolSummary("settings_compaction_set", { reason: "more room\nplease" })).toBe(
+      "more room",
+    );
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");

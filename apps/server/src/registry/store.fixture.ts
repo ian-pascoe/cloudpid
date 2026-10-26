@@ -6,18 +6,28 @@ import {
   openKeptVault,
   type SealedValue,
 } from "@cloudpid/extensions/secrets/core";
-import type {
-  EnvironmentRepo,
-  EnvironmentSecretRecord,
-  PushSubscription,
-  SessionOrigin,
+import {
+  type AgentChange,
+  type EnvironmentRepo,
+  type EnvironmentSecretRecord,
+  type PushSubscription,
+  SETTINGS_SCOPE,
+  type SessionOrigin,
 } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { keepSecret, openEnvironmentSecrets, type SecretWrite } from "./environment-secrets.ts";
 import type * as Schema from "effect/Schema";
+import { type AgentChangeAuthor, type AgentChanges, openAgentChanges } from "./agent-changes.ts";
 import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
+import {
+  changeSettings,
+  revertSettingsChange,
+  type SettingsChange,
+  type SettingsChangeRevert,
+  type SettingsFieldChange,
+} from "./settings-changes.ts";
 import {
   type BuildRecord,
   type Deletion,
@@ -41,10 +51,12 @@ import {
 
 export class TestRegistry extends DurableObject {
   readonly #store: RegistryStore;
+  readonly #changes: AgentChanges;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     this.#store = openRegistryStore(ctx.storage);
+    this.#changes = openAgentChanges(ctx.storage);
   }
 
   createSession(
@@ -263,5 +275,22 @@ export class TestRegistry extends DurableObject {
     if (Result.isFailure(saved)) throw new Error(saved.failure.message);
 
     return saved.success;
+  }
+
+  /** An Agent change to the Settings, as the Registry DO makes one. */
+  changeSettings(
+    changes: ReadonlyArray<SettingsFieldChange>,
+    author: AgentChangeAuthor,
+    now: number,
+  ): SettingsChange {
+    return changeSettings(this.ctx.storage, this.#store, this.#changes, { changes, author }, now);
+  }
+
+  listSettingsChanges(): ReadonlyArray<AgentChange> {
+    return this.#changes.list(SETTINGS_SCOPE);
+  }
+
+  revertSettingsChange(change: number, now: number): SettingsChangeRevert {
+    return revertSettingsChange(this.ctx.storage, this.#store, this.#changes, { id: change }, now);
   }
 }

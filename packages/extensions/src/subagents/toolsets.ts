@@ -6,6 +6,7 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { matchesPattern } from "../patterns.ts";
 import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
+import { SETTINGS_TOOL_PREFIX } from "../settings.ts";
 import { PARENT_ONLY_SECRET_TOOLS } from "../secrets/extension.ts";
 import type { Toolsets } from "./options.ts";
 
@@ -29,10 +30,10 @@ const COORDINATOR: ReadonlySet<string> = new Set(COORDINATOR_TOOLS);
 export const PARENT_ONLY_TOOLS = ["context_rollover", ...PARENT_ONLY_SECRET_TOOLS] as const;
 
 /**
- * The prefixes of the families of tools a child is never granted: the `environment_*` tools change the harness itself
- * (ADR-0019), which only the root conversation does, as only it asks for Secrets.
+ * The prefixes of the families of tools a child is never granted: the `environment_*` and `settings_*` tools change the
+ * harness itself (ADR-0019), which only the root conversation does, as only it asks for Secrets.
  */
-export const PARENT_ONLY_TOOL_PREFIXES = [ENVIRONMENT_TOOL_PREFIX] as const;
+export const PARENT_ONLY_TOOL_PREFIXES = [ENVIRONMENT_TOOL_PREFIX, SETTINGS_TOOL_PREFIX] as const;
 
 const PARENT_ONLY: ReadonlySet<string> = new Set(PARENT_ONLY_TOOLS);
 

@@ -18,6 +18,11 @@ import {
 import { Files, WorkspaceFiles } from "@cloudpid/extensions/files";
 import { type Images, ResultImages } from "@cloudpid/extensions/images";
 import { type Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
+import {
+  type SettingsAccess,
+  type SettingsReload,
+  SettingsTools,
+} from "@cloudpid/extensions/settings";
 import { Skills } from "@cloudpid/extensions/skills";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Todo } from "@cloudpid/extensions/todo";
@@ -48,7 +53,9 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through);
  * the `environment_*` tools, which read and change the Registry's Environments (`Environments`), refuse values that hold
  * a Secret (`Secrets`) or the GitHub token (`DeployCredentials`), and keep each change for the Run's Notification
- * (`AgentChangeLog`), the root conversation's only (`docs/spec.md` → Agent changes); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
+ * (`AgentChangeLog`), the root conversation's only (`docs/spec.md` → Agent changes); the `settings_*` tools, which read
+ * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
+ * after a change (`SettingsReload`); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/spec.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
  * `Config.Redacted` so the stack binds them as secrets.
@@ -71,6 +78,8 @@ export const sessionExtensions: Effect.Effect<
   | Environments
   | DeployCredentials
   | AgentChangeLog
+  | SettingsAccess
+  | SettingsReload
 > = Effect.all([
   CodingTools,
   Files,
@@ -85,6 +94,7 @@ export const sessionExtensions: Effect.Effect<
   AgentsMd,
   ContainerTools,
   EnvironmentTools,
+  SettingsTools,
   // Every tool result's images held to one result's budget before it is stored.
   Effect.succeed(ResultImages),
 ]).pipe(

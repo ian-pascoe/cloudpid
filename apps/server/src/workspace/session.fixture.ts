@@ -14,6 +14,7 @@ import {
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import type { Secrets } from "@cloudpid/extensions/secrets";
+import { SettingsAccess, type SettingsReload } from "@cloudpid/extensions/settings";
 import { SubagentSettings, subagentOptions } from "@cloudpid/extensions/subagents";
 import { fixedToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { WebConfig } from "@cloudpid/extensions/web";
@@ -71,10 +72,15 @@ export class TestWorkspaceSession extends TestSession {
   protected override hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | AgentChangeLog
+    Harness | Secrets | BrowserHandoffs | AgentChangeLog | SettingsReload
   > {
     return sessionExtensions.pipe(
       Effect.provideService(Environments, testEnvironments(this.ctx.storage.kv)),
+      // The tests of the Workspace call no `settings_*` tool.
+      Effect.provideService(SettingsAccess, {
+        get: Effect.die("No Settings"),
+        change: () => Effect.die("No Settings"),
+      }),
       Effect.provideService(DeployCredentials, { values: [] }),
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
       Effect.provideService(WorkspaceContainer, this.#workspace().container),

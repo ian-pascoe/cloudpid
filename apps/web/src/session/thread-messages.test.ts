@@ -419,10 +419,28 @@ describe("the thread messages of a view", () => {
     };
 
     expect(changed({ agentChange: { id: 3, ...change }, own: true })).toMatchObject({
-      artifact: { change },
+      artifact: { changes: [change] },
     });
     // A call that changed nothing has none.
     expect(changed({ unchanged: { field: "variables.API_URL" } })).not.toHaveProperty("artifact");
+
+    // A `settings_*` call puts each setting it changed on its card, with no Environment.
+    expect(
+      changed({
+        agentChanges: [
+          { id: 1, field: "model", before: "a/b", after: "c/d" },
+          { id: 2, field: "thinkingLevel", before: "high", after: "low" },
+        ],
+      }),
+    ).toMatchObject({
+      artifact: {
+        changes: [
+          { field: "model", before: "a/b", after: "c/d" },
+          { field: "thinkingLevel", before: "high", after: "low" },
+        ],
+      },
+    });
+    expect(changed({ unchanged: ["model"], agentChanges: [] })).not.toHaveProperty("artifact");
   });
 
   it("puts the screenshots of a finished tool call on its card, besides its text", () => {
