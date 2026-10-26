@@ -9,7 +9,7 @@
 //
 // Live View links (ADR-0013) are minted only when the owner's Live View asks (`liveView`), for 60 s, Browser Run's
 // minimum, and go back to the Session for the client that asked: nothing here keeps or logs one. Each names its page
-// (`targetId`): without one, Browser Run picks the newest page of the browser, not the handed-over tab.
+// (`targetId`, `./cdp.ts`): without one, Browser Run picks the newest page of the browser, not the handed-over tab.
 //
 // The owner's Live View sets the size of the page it shows (`Emulation.setDeviceMetricsOverride`, one override shared by
 // every connection), and closing that connection does not undo it. So whenever a handoff ends, however it ended, the
@@ -31,34 +31,19 @@ import {
 } from "@cloudpid/extensions/browser/contract";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-
-/** What a CDP command takes: JSON. */
-export type CdpParams = { readonly [key: string]: Schema.Json };
-
-/** A CDP event, as the connection hands it over. */
-export type CdpEvent = {
-  readonly method: string;
-  readonly params?: Schema.Json | undefined;
-  readonly sessionId?: string | undefined;
-};
+import {
+  ask,
+  BrowserGoneError,
+  type CdpTransport,
+  isNoTarget,
+  mintLink,
+  windowsOf,
+} from "./cdp.ts";
 
 /** The replies this module reads: the fields it needs of what Browser Run answers. */
 const Attached = Schema.Struct({ sessionId: Schema.String });
-const LiveView = Schema.Struct({ webSocketDebuggerUrl: Schema.String });
 const Started = Schema.Struct({ handoffId: Schema.String });
 const State = Schema.Struct({ active: Schema.Boolean });
-
-const Targets = Schema.Struct({
-  targetInfos: Schema.Array(
-    Schema.Struct({
-      targetId: Schema.String,
-      type: Schema.String,
-      title: Schema.String,
-      url: Schema.String,
-      openerId: Schema.optionalKey(Schema.String),
-    }),
-  ),
-});
 
 /** A tab's size as its page reads it. */
 const Viewport = Schema.Struct({
@@ -85,17 +70,6 @@ const Complete = Schema.Struct({
   reason: Schema.optionalKey(Schema.String),
 });
 
-/** One CDP connection to a Browser Run session. */
-export type CdpTransport = {
-  /** Send a command, in the CDP session `sessionId` when given; resolves with its result, rejects on an error or a timeout. */
-  send(method: string, params?: CdpParams, sessionId?: string): Promise<Schema.Json>;
-  /** Called for every event; one listener. */
-  onEvent(listener: (event: CdpEvent) => void): void;
-  /** Called once when the connection ends. */
-  onClose(listener: () => void): void;
-  close(): void;
-};
-
 /** What the host's browser provides a handoff. */
 export type HandoffBrowser = {
   /**
@@ -116,11 +90,6 @@ export type HandoffRecords = {
   delete(key: string): boolean;
   list<T>(options: { readonly prefix: string }): Iterable<[string, T]>;
 };
-
-/** Browser Run no longer has the browser or the tab of a handoff: it cannot go on. */
-export class BrowserGoneError extends Error {
-  override readonly name = "BrowserGoneError";
-}
 
 type Completion = { readonly success: boolean; readonly reason?: string | undefined };
 
@@ -169,9 +138,6 @@ const RETAIN_MS = 5 * 60_000;
 /** How long a tombstone is kept: longer than a start can stay in flight or be retried. */
 const TOMBSTONE_MS = 60 * 60_000;
 
-/** How long a Live View link may start a connection: Browser Run's minimum. */
-const LIVE_VIEW_MS = 60_000;
-
 /** How many times the agent's viewport is set before the host gives up and says so. */
 const RESTORE_TRIES = 2;
 
@@ -182,20 +148,6 @@ const EVENT_GRACE_MS = 1_500;
 const CLEANUP_MS = 5_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/**
- * Send `method` and read the fields `reply` names of its answer: an answer without them fails. It goes in the tab's
- * session, or to the browser itself when `cdpSessionId` is undefined.
- */
-const ask = async <A>(
-  live: { readonly transport: CdpTransport; readonly cdpSessionId: string | undefined },
-  method: string,
-  params: CdpParams,
-  reply: Schema.Decoder<A>,
-): Promise<A> =>
-  Schema.decodeUnknownSync(reply)(await live.transport.send(method, params, live.cdpSessionId), {
-    onExcessProperty: "ignore",
-  });
 
 /** The size of the page `live.cdpSessionId` is attached to, as the page reads it. */
 const readViewport = (live: {
@@ -227,40 +179,6 @@ const windowSession = async (live: Live, targetId: string): Promise<string> => {
   live.windowSessions.set(targetId, sessionId);
 
   return sessionId;
-};
-
-/**
- * The pages tab `tabId` opened, directly or through a page it opened, from Browser Run's targets on the browser: pop-ups
- * and new tabs, `noopener` ones included, all name their opener (`openerId`, the spike, #152). A page with no opener (a
- * tab the agent made with `Target.createTarget`, another conversation's) is not one of them.
- */
-const windowsOf = async (live: Live, tabId: string) => {
-  const { targetInfos } = await ask(
-    { transport: live.transport, cdpSessionId: undefined },
-    "Target.getTargets",
-    {},
-    Targets,
-  );
-
-  const pages = targetInfos.filter((target) => target.type === "page");
-  const found: Array<(typeof pages)[number] & { readonly openerId: string }> = [];
-  const openers = [tabId];
-
-  // Breadth first, so a window comes after the one that opened it; a page is taken once, whatever its opener says.
-  for (let next = openers.shift(); next !== undefined; next = openers.shift()) {
-    for (const target of pages) {
-      if (
-        target.openerId === next &&
-        target.targetId !== tabId &&
-        !found.some((window) => window.targetId === target.targetId)
-      ) {
-        found.push({ ...target, openerId: next });
-        openers.push(target.targetId);
-      }
-    }
-  }
-
-  return found;
 };
 
 /** What the model may know of a window: its origin, never its URL (an OAuth redirect carries a code). */
@@ -350,7 +268,7 @@ export class HandoffHost {
 
       await this.#setViewport(live, live.cdpSessionId, viewport);
 
-      for (const { targetId } of await windowsOf(live, record.targetId)) {
+      for (const { targetId } of await windowsOf(live.transport, record.targetId)) {
         await this.#restoreWindow(live, targetId, record.windowViewports?.[targetId]).catch(
           (error: Error) => {
             console.warn(`Giving a handoff's window its viewport back failed: ${String(error)}`);
@@ -457,7 +375,7 @@ export class HandoffHost {
       transport.close();
 
       // Browser Run says the tab is not there: the handoff cannot go on, which is more than a failed attempt.
-      if (error instanceof Error && /no target|not found/i.test(error.message)) {
+      if (isNoTarget(error)) {
         throw new BrowserGoneError(error.message, { cause: error });
       }
 
@@ -598,20 +516,10 @@ export class HandoffHost {
 
     const live = await this.#connection(record);
 
-    const mint = async (targetId: string, cdpSessionId: string | undefined) =>
-      (
-        await ask(
-          { transport: live.transport, cdpSessionId },
-          "Cloudflare.getLiveView",
-          { mode: "tab", expiresInMs: LIVE_VIEW_MS, targetId },
-          LiveView,
-        )
-      ).webSocketDebuggerUrl;
-
     const [tab, found] = await Promise.all([
       // The tab's in its own session, as the handoff's other commands; the windows' on the browser.
-      mint(record.targetId, live.cdpSessionId),
-      windowsOf(live, record.targetId),
+      mintLink(live.transport, record.targetId, live.cdpSessionId),
+      windowsOf(live.transport, record.targetId),
     ]);
 
     await this.#noteWindowSizes(requestId, live, found);
@@ -621,7 +529,7 @@ export class HandoffHost {
         targetId,
         openerId,
         title,
-        link: await mint(targetId, undefined),
+        link: await mintLink(live.transport, targetId),
       })),
     );
 
@@ -837,7 +745,7 @@ export class HandoffHost {
             }
 
             // Before the viewports, which take a few commands per window: the origins are what the model is told.
-            windowOrigins = (await windowsOf(live, record.targetId)).map(({ url }) =>
+            windowOrigins = (await windowsOf(live.transport, record.targetId)).map(({ url }) =>
               originOf(url),
             );
 
