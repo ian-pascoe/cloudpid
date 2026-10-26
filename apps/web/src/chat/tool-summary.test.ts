@@ -116,6 +116,21 @@ describe("toolSummary", () => {
     expect(toolSummary("settings_compaction_set", { reason: "more room\nplease" })).toBe(
       "more room",
     );
+    // The tools that wait for the owner's Approval.
+    expect(toolSummary("settings_spend_limit_set", { per_session: 25, reason: "r" })).toBe(
+      "$25 per Session",
+    );
+    expect(toolSummary("settings_spend_limit_set", { per_session: null, reason: "r" })).toBe(
+      "no limit",
+    );
+    expect(toolSummary("settings_subagent_depth_set", { depth: 3, reason: "r" })).toBe("depth 3");
+    expect(
+      toolSummary("environment_container_size_limit_set", { id: "0000abcd", size: "custom-3" }),
+    ).toBe("0000abcd: limit custom-3");
+    expect(toolSummary("environment_delete", { id: "0000abcd", reason: "r" })).toBe("0000abcd");
+    expect(toolSummary("environment_secret_delete", { id: "*", name: "NPM_TOKEN" })).toBe(
+      "NPM_TOKEN in *",
+    );
     expect(toolSummary("subagent_status", {})).toBeUndefined();
     expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
     expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");

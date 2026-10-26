@@ -48,6 +48,7 @@ export const sessionSettingsAccess = ({
           } satisfies AppliedSettingsChange;
         case "unchanged":
         case "rejected":
+        case "changed-since":
           return answer;
       }
     }),

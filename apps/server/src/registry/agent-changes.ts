@@ -45,6 +45,8 @@ export type AgentChangeAuthor = {
   readonly conversation: number;
   readonly tool: string;
   readonly reason: string;
+  /** Set when the owner approved the change before it was made (GLOSSARY.md → Approval). */
+  readonly approved?: true | undefined;
 };
 
 /**
@@ -74,6 +76,8 @@ export type EnvironmentChange =
     }
   /** The value is not one the setting takes, said as the owner's save says it: nothing was saved. */
   | { readonly status: "rejected"; readonly message: string }
+  /** The field no longer has the value the change was approved against (`expected`): it is `current`, and nothing was saved. */
+  | { readonly status: "changed-since"; readonly current: Schema.Json | null }
   | { readonly status: "missing" };
 
 /** How the owner's revert of an Agent change went. */
@@ -94,14 +98,16 @@ export type AgentChangeRevert =
   | { readonly status: "refused"; readonly message: string }
   | { readonly status: "missing" };
 
-/** Why a change of `field`, one of the fields with no revert, is not reverted. */
-const unrevertableMessage = (field: string): string => {
+/** Why `change`, of one of the fields with no revert, is not reverted. */
+const unrevertableMessage = ({ field, after }: AgentChange): string => {
   if (field === CREATED_FIELD) {
     return "Making an environment is not reverted: deleting one needs your approval, so delete it from its card's menu";
   }
 
-  return fieldSecret(field) === null
-    ? "A Build asked for is not reverted"
+  if (fieldSecret(field) === null) return "A Build asked for is not reverted";
+
+  return after === null
+    ? "A deleted secret is not brought back: the history holds no value, so keep it again in the Secrets section"
     : "Keeping a secret is not reverted: the history holds no value to bring back, so delete the secret itself in the Secrets section";
 };
 
@@ -160,6 +166,7 @@ type AgentChangeRow = {
   after: string | null;
   reverts: number | null;
   reverted_by: number | null;
+  approved: number;
 };
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
@@ -168,24 +175,42 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
 const valueOf = (text: string | null): Schema.Json | null =>
   text === null ? null : Option.getOrNull(decodeJson(text));
 
-const toChange = (row: AgentChangeRow): AgentChange => ({
-  id: row.id,
-  scope: row.scope,
-  at: row.at,
-  actor: row.actor === "owner" ? "owner" : "agent",
-  session: row.session,
-  conversation: row.conversation,
-  tool: row.tool,
-  reason: row.reason,
-  field: row.field,
-  before: valueOf(row.before),
-  after: valueOf(row.after),
-  reverts: row.reverts,
-  revertedBy: row.reverted_by,
-});
+const toChange = (row: AgentChangeRow): AgentChange => {
+  const change: AgentChange = {
+    id: row.id,
+    scope: row.scope,
+    at: row.at,
+    actor: row.actor === "owner" ? "owner" : "agent",
+    session: row.session,
+    conversation: row.conversation,
+    tool: row.tool,
+    reason: row.reason,
+    field: row.field,
+    before: valueOf(row.before),
+    after: valueOf(row.after),
+    reverts: row.reverts,
+    revertedBy: row.reverted_by,
+  };
 
-/** What a change records: everything but its number, which the table gives it. */
-type NewAgentChange = Omit<AgentChange, "id" | "revertedBy">;
+  // Only a change the owner approved says so (`docs/spec.md` → Approval).
+  return row.approved === 1 ? { ...change, approved: true } : change;
+};
+
+/**
+ * What a change records: everything but its number, which the table gives it, and whether the owner approved it first
+ * (absent or false: not).
+ */
+type NewAgentChange = Omit<AgentChange, "id" | "revertedBy" | "approved"> & {
+  readonly approved?: boolean | undefined;
+};
+
+/** `change` as it is recorded under `id`, with no revert yet; marked approved only when the owner approved it. */
+export const asRecorded = (change: NewAgentChange, id: number): AgentChange => {
+  const { approved, ...made } = change;
+  const recorded: AgentChange = { ...made, id, revertedBy: null };
+
+  return approved === true ? { ...recorded, approved: true } : recorded;
+};
 
 /** The Agent changes the Registry keeps, by scope (an Environment's id). */
 export type AgentChanges = {
@@ -218,8 +243,8 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
     record: (change) => {
       const [row] = sql
         .exec<{ id: number }>(
-          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
           change.scope,
           change.at,
           change.actor,
@@ -231,6 +256,7 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
           change.before === null ? null : JSON.stringify(change.before),
           change.after === null ? null : JSON.stringify(change.after),
           change.reverts,
+          change.approved === true ? 1 : 0,
         )
         .toArray();
 
@@ -246,7 +272,7 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
       // SQLite answers the row it inserted; one that does not is a broken store, not a change to report.
       if (row === undefined) throw new Error("Recording an Agent change returned no id");
 
-      return { ...change, id: row.id, revertedBy: null };
+      return asRecorded(change, row.id);
     },
     list: (scope) =>
       Arr.map(
@@ -292,7 +318,8 @@ const current = (store: RegistryStore, environment: string) => {
 /**
  * Apply the agent's `change` to `environment`'s Container settings as the owner's save does (`writeEnvironmentSettings`:
  * the same rules, one problem per line), and record it as an Agent change by `author`. A field that already has the
- * value records nothing.
+ * value records nothing. With `expected`, the change is made only while the field has that value: the one the owner
+ * saw when they approved it.
  */
 export const changeEnvironment = (
   storage: RegistryStorage,
@@ -301,10 +328,12 @@ export const changeEnvironment = (
   {
     environment,
     change,
+    expected,
     author,
   }: {
     readonly environment: string;
     readonly change: ContainerFieldChange;
+    readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: AgentChangeAuthor;
   },
   now: number,
@@ -322,6 +351,10 @@ export const changeEnvironment = (
 
     if (sameJson(before, change.value)) {
       return { status: "unchanged", environment: known.record, value: before };
+    }
+
+    if (expected !== undefined && !sameJson(before, expected.value)) {
+      return { status: "changed-since", current: before };
     }
 
     const saved = writeEnvironmentSettings(overridesWith(known.settings, change));
@@ -342,6 +375,7 @@ export const changeEnvironment = (
       before,
       after: fieldValue(saved.success.settings, change.field),
       reverts: null,
+      approved: author.approved,
     });
 
     return {
@@ -388,7 +422,7 @@ export const revertAgentChange = (
     if (unrevertableField(change.field)) {
       return {
         status: "refused",
-        message: unrevertableMessage(change.field),
+        message: unrevertableMessage(change),
       };
     }
 

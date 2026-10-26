@@ -18,10 +18,15 @@ import { type DocumentStore, readSettings, type SettingsState, writeSettings } f
 /** What the Settings' changes need of the Registry's storage. */
 export type SettingsStorage = { readonly transactionSync: <A>(body: () => A) => A };
 
-/** One setting given a new value: `field` is a settings field, and a `value` of null takes an option away. */
+/**
+ * One setting given a new value: `field` is a settings field, and a `value` of null takes an option away. With
+ * `expected`, the setting is changed only while it has that value (null: not set): the one the owner saw when they
+ * approved the change.
+ */
 export type SettingsFieldChange = {
   readonly field: string;
   readonly value: Schema.Json | null;
+  readonly expected?: { readonly value: Schema.Json | null } | undefined;
 };
 
 /** How an Agent change to the Settings went. */
@@ -40,7 +45,13 @@ export type SettingsChange =
   /** Every field already had its value: nothing was saved or recorded. */
   | { readonly status: "unchanged" }
   /** Not values the settings take, said as the owner's save says it: nothing was saved. */
-  | { readonly status: "rejected"; readonly message: string };
+  | { readonly status: "rejected"; readonly message: string }
+  /** A field no longer has the value it was approved against: it is `current`, and nothing was saved. */
+  | {
+      readonly status: "changed-since";
+      readonly field: string;
+      readonly current: Schema.Json | null;
+    };
 
 /** How the owner's revert of a Settings change went. */
 export type SettingsChangeRevert =
@@ -98,7 +109,23 @@ export const changeSettings = (
 
     if (differing.length === 0) return { status: "unchanged" };
 
-    const saved = writeSettings(documents, overridesWithFields(known.settings, differing), now);
+    const moved = Arr.findFirst(
+      differing,
+      ({ expected, before }) => expected !== undefined && !sameJson(before, expected.value),
+    );
+
+    if (Option.isSome(moved)) {
+      return { status: "changed-since", field: moved.value.field, current: moved.value.before };
+    }
+
+    const saved = writeSettings(
+      documents,
+      overridesWithFields(
+        known.settings,
+        Arr.map(differing, ({ field, value }) => ({ field, value })),
+      ),
+      now,
+    );
 
     if (Result.isFailure(saved)) return { status: "rejected", message: saved.failure.message };
 
@@ -115,6 +142,7 @@ export const changeSettings = (
         before,
         after: settingsFieldValue(saved.success.settings, field),
         reverts: null,
+        approved: author.approved,
       }),
     );
 

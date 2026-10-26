@@ -288,6 +288,11 @@ export const AgentChange = Schema.Struct({
   reverts: Schema.NullOr(Schema.Finite),
   /** The owner's revert of this change, once there is one. */
   revertedBy: Schema.NullOr(Schema.Finite),
+  /**
+   * Set on a change the owner approved before it was made (GLOSSARY.md → Approval): one to a Limit, or a kept Secret
+   * deleted. Left out for every other change.
+   */
+  approved: Schema.optionalKey(Schema.Literal(true)),
 });
 
 export type AgentChange = typeof AgentChange.Type;

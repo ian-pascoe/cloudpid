@@ -39,6 +39,7 @@ const inRegistry = <A>(
     ) => ReturnType<typeof revertAgentChange>;
     readonly changes: ReturnType<typeof openAgentChanges>;
     readonly store: ReturnType<typeof openRegistryStore>;
+    readonly storage: DurableObjectStorage;
   }) => A,
 ) =>
   runInDurableObject(env.REGISTRIES.get(env.REGISTRIES.newUniqueId()), (_: TestRegistry, state) => {
@@ -47,6 +48,7 @@ const inRegistry = <A>(
 
     return body({
       store,
+      storage: state.storage,
       changes,
       change: (change, at = 1_000, environment = DEFAULT_ENVIRONMENT) =>
         changeEnvironment(state.storage, store, changes, { environment, change, author }, at),
@@ -58,6 +60,68 @@ const inRegistry = <A>(
 const setVariable = (name: string, value: string | null): ContainerFieldChange => ({
   field: variableField(name),
   value,
+});
+
+describe("an Agent change the owner approved", () => {
+  const approved: AgentChangeAuthor = {
+    session: "s-1",
+    conversation: 1,
+    tool: "environment_container_size_limit_set",
+    reason: "The build needs more memory",
+    approved: true,
+  };
+
+  it("is made while the field has the value the owner saw, and recorded as approved", async () => {
+    const [outcome, listed] = await inRegistry(({ store, storage, changes }) => [
+      changeEnvironment(
+        storage,
+        store,
+        changes,
+        {
+          environment: DEFAULT_ENVIRONMENT,
+          change: { field: "maxInstance", value: "custom-3" },
+          expected: { value: "custom-2" },
+          author: approved,
+        },
+        1_000,
+      ),
+      changes.list(DEFAULT_ENVIRONMENT),
+    ]);
+
+    expect(outcome).toMatchObject({
+      status: "changed",
+      change: { field: "maxInstance", before: "custom-2", after: "custom-3", approved: true },
+    });
+    expect(listed).toMatchObject([{ field: "maxInstance", approved: true }]);
+  });
+
+  it("is not made when the field changed since the owner was asked, saying what it is now", async () => {
+    const [outcome, saved, listed] = await inRegistry(({ store, storage, changes }) => {
+      // The owner set the limit on the Environments page meanwhile.
+      store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, { maxInstance: "standard-4" });
+
+      return [
+        changeEnvironment(
+          storage,
+          store,
+          changes,
+          {
+            environment: DEFAULT_ENVIRONMENT,
+            change: { field: "maxInstance", value: "custom-3" },
+            expected: { value: "custom-2" },
+            author: approved,
+          },
+          1_000,
+        ),
+        store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+        changes.list(DEFAULT_ENVIRONMENT),
+      ];
+    });
+
+    expect(outcome).toEqual({ status: "changed-since", current: "standard-4" });
+    expect(saved).toEqual({ maxInstance: "standard-4" });
+    expect(listed).toEqual([]);
+  });
 });
 
 describe("an Agent change to an Environment", () => {

@@ -39,8 +39,10 @@ import {
   renameEnvironmentAs,
 } from "./environment-lifecycle.ts";
 import {
+  deleteSecretAs,
   markSecretBuildAs,
   type SecretBuildMark,
+  type SecretDeletion,
   EVERY_ENVIRONMENT_NAME,
 } from "./secret-changes.ts";
 import {
@@ -246,6 +248,8 @@ export type RegistryMethods = {
   readonly changeEnvironment: (input: {
     readonly environment: string;
     readonly change: ContainerFieldChange;
+    /** The value the field must still have, for a change the owner approved against it (`docs/spec.md` → Approval). */
+    readonly expected?: { readonly value: Schema.Json | null } | undefined;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<EnvironmentChangeAnswer>;
   /**
@@ -292,6 +296,18 @@ export type RegistryMethods = {
     readonly build: boolean;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<SecretBuildMark>;
+  /**
+   * An Agent change the owner approved (`docs/spec.md` → Approval): delete the Secret `name` kept for `environment` (an
+   * Environment's id, or `*` for every Environment), as the owner's delete does, and record it by name with its
+   * `author`, provided it was last changed at `expected.updatedAt` (as the owner saw it). The caller runs the Builds'
+   * upkeep after.
+   */
+  readonly agentDeleteSecret: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly expected?: { readonly updatedAt: number } | undefined;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SecretDeletion>;
   /**
    * Keep Secrets the owner chose to keep in the form of a `secret_ask` of `session`'s conversation `conversation`: for
    * the Session's Environment (`scope` "environment") or for every Environment ("every"), sealed here as the owner's form
@@ -585,7 +601,7 @@ export const RegistryLive = Registry.make(
 
               return { status: "saved", state: saved.success };
             }),
-          changeEnvironment: ({ environment, change, author }) =>
+          changeEnvironment: ({ environment, change, expected, author }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
 
@@ -593,7 +609,7 @@ export const RegistryLive = Registry.make(
                 state.raw.storage,
                 store,
                 changes,
-                { environment, change, author },
+                { environment, change, expected, author },
                 now,
               );
 
@@ -660,6 +676,18 @@ export const RegistryLive = Registry.make(
                   store,
                   changes,
                   { environment, name, build, author },
+                  now,
+                ),
+              ),
+            ),
+          agentDeleteSecret: ({ environment, name, expected, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                deleteSecretAs(
+                  state.raw.storage,
+                  store,
+                  changes,
+                  { environment, name, expected, author },
                   now,
                 ),
               ),

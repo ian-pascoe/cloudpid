@@ -2,7 +2,7 @@
 // on the Settings page, one tool for each thing it may change: `settings_get`, `settings_model_set`,
 // `settings_role_set`, `settings_tool_offer`, `settings_tool_defer`, `settings_compaction_set`,
 // `settings_branch_summary_set` and `settings_extension_set`. The Limits (`spendLimit.perSession` and the subagent
-// depth) are not among them: they wait for the owner's Approval. Each change is an Agent change: the Registry applies it
+// depth) are not among them: their tools wait for the owner's Approval (`./approval-tools.ts`). Each change is an Agent change: the Registry applies it
 // as the owner's save is applied and records it, the Session reads the Settings again at once, and the Run's end
 // notifies the owner of the changes it made (`AgentChangeLog`). They are the root conversation's only
 // (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when its reason or its text
@@ -39,7 +39,7 @@ import { matchesPattern } from "./patterns.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
-import { SUBAGENT_TOOLSET_OPTIONS } from "./subagents/options.ts";
+import { DEFAULT_MAX_SUBAGENT_DEPTH, SUBAGENT_TOOLSET_OPTIONS } from "./subagents/options.ts";
 import { ALWAYS_OFFERED } from "./tool-search.ts";
 
 export const extensionName = "settings";
@@ -55,10 +55,14 @@ export type SettingsView = {
   readonly problem?: string | undefined;
 };
 
-/** One setting given a new value: a settings field (`model`, `roles.small.hint`, …); null takes an option away. */
+/**
+ * One setting given a new value: a settings field (`model`, `roles.small.hint`, …); null takes an option away. With
+ * `expected`, it is changed only while it has that value (null: not set), the one the owner saw when they approved it.
+ */
 export type SettingsFieldChange = {
   readonly field: string;
   readonly value: Schema.Json | null;
+  readonly expected?: { readonly value: Schema.Json | null } | undefined;
 };
 
 /** How an Agent change to the Settings went, as the Session reports it. */
@@ -73,7 +77,13 @@ export type AppliedSettingsChange =
   /** Every field already had its value: nothing was saved or recorded. */
   | { readonly status: "unchanged" }
   /** Not values the settings take, said as the owner's save says it: nothing was saved. */
-  | { readonly status: "rejected"; readonly message: string };
+  | { readonly status: "rejected"; readonly message: string }
+  /** A field no longer has the value it was approved against: it is `current`, and nothing was saved. */
+  | {
+      readonly status: "changed-since";
+      readonly field: string;
+      readonly current: Schema.Json | null;
+    };
 
 /** Reaching the Settings failed; its message is what the model sees. */
 export class SettingsAccessError extends Schema.TaggedError<
@@ -212,7 +222,12 @@ export const describeSettings = (view: SettingsView): string => {
         "branchSummary.skipPrompt",
         settings.branchSummary.skipPrompt,
       ),
-      `${line("Spend limit per Session (US dollars)", "spendLimit.perSession", settings.spendLimit.perSession)}. A Limit: only the user changes it.`,
+      `${line("Spend limit per Session (US dollars)", "spendLimit.perSession", settings.spendLimit.perSession)}. A Limit: settings_spend_limit_set changes it once the user approves.`,
+      `${line(
+        "Subagent depth (levels of subagents below the root)",
+        extensionField("subagents", "maxSubagentDepth"),
+        settings.extensions.subagents?.maxSubagentDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH,
+      )}. A Limit: settings_subagent_depth_set changes it once the user approves.`,
       `Extension options: ${options.length === 0 ? "none" : `\n${Arr.join(options, "\n")}`}`,
       ...(view.problem === undefined
         ? []
@@ -317,6 +332,11 @@ export const SettingsTools: Effect.Effect<
         case "rejected":
           return yield* SettingsAccessError.make({
             message: `Nothing was saved: ${answer.message}`,
+          });
+        // Only a change made against an expected value, which these tools never give.
+        case "changed-since":
+          return yield* SettingsAccessError.make({
+            message: `Nothing was saved: ${answer.field} changed meanwhile, to ${shown(answer.current)}`,
           });
         case "unchanged":
           return {

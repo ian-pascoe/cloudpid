@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { keepSecretAs, openEnvironmentSecrets, type SecretKept } from "./environment-secrets.ts";
-import { markSecretBuildAs } from "./secret-changes.ts";
+import { deleteSecretAs, markSecretBuildAs } from "./secret-changes.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { EVERY_ENVIRONMENT_SCOPE, openRegistryStore } from "./store.ts";
 
@@ -344,5 +344,130 @@ describe("the agent's change of a kept Secret's Build mark", () => {
       field: "secrets.API_KEY.build",
       current: null,
     });
+  });
+});
+
+describe("a kept Secret the agent deletes with the owner's Approval", () => {
+  const approved: AgentChangeAuthor = {
+    session: "s-1",
+    conversation: 1,
+    tool: "environment_secret_delete",
+    reason: "The key was rotated",
+    approved: true,
+  };
+
+  it("is deleted and recorded by name, marked approved, with no value and no revert", async () => {
+    const [deleted, left, reverted, dump] = await inRegistry(
+      async ({ keep, store, changes, revert, dump }) => {
+        await keep("API_KEY", DEFAULT_ENVIRONMENT);
+
+        const outcome = deleteSecretAs(
+          { transactionSync: (body) => body() },
+          store,
+          changes,
+          { environment: DEFAULT_ENVIRONMENT, name: "API_KEY", author: approved },
+          2_000,
+        );
+
+        return [outcome, store.listEnvironmentSecrets(), revert(DEFAULT_ENVIRONMENT, 2), dump()];
+      },
+    );
+
+    expect(deleted).toMatchObject({
+      status: "deleted",
+      environment: { id: DEFAULT_ENVIRONMENT },
+      change: {
+        actor: "agent",
+        tool: "environment_secret_delete",
+        field: "secrets.API_KEY",
+        before: "kept",
+        after: null,
+        approved: true,
+      },
+    });
+    expect(left).toEqual([]);
+    expect(reverted).toMatchObject({ status: "refused" });
+    expect(dump).not.toContain(VALUE);
+  });
+
+  it("is absent, recording nothing, when no Secret of the name is kept in the scope", async () => {
+    const [absent, missing, history] = await inRegistry(async ({ keep, store, changes }) => {
+      await keep("NPM_TOKEN", null);
+
+      const remove = (environment: string) =>
+        deleteSecretAs(
+          { transactionSync: (body) => body() },
+          store,
+          changes,
+          { environment, name: "NPM_TOKEN", author: approved },
+          2_000,
+        );
+
+      return [remove(DEFAULT_ENVIRONMENT), remove("0000beef"), changes.list(DEFAULT_ENVIRONMENT)];
+    });
+
+    expect(absent).toMatchObject({ status: "absent" });
+    expect(missing).toEqual({ status: "missing" });
+    expect(history).toEqual([]);
+  });
+
+  it("is deleted only while it is as the owner saw it, recording nothing otherwise", async () => {
+    const [changedSince, left, history, deleted] = await inRegistry(
+      async ({ keep, store, changes }) => {
+        await keep("API_KEY", DEFAULT_ENVIRONMENT);
+
+        const [kept] = store.listEnvironmentSecrets();
+
+        const remove = (updatedAt: number) =>
+          deleteSecretAs(
+            { transactionSync: (body) => body() },
+            store,
+            changes,
+            {
+              environment: DEFAULT_ENVIRONMENT,
+              name: "API_KEY",
+              expected: { updatedAt },
+              author: approved,
+            },
+            2_000,
+          );
+
+        const recordedBefore = changes.list(DEFAULT_ENVIRONMENT).length;
+        // The owner was shown an earlier value of the Secret.
+        const refused = remove((kept?.updatedAt ?? 0) - 1);
+        const listed = store.listEnvironmentSecrets().length;
+        const recorded = changes.list(DEFAULT_ENVIRONMENT).length - recordedBefore;
+
+        return [refused, listed, recorded, remove(kept?.updatedAt ?? 0)];
+      },
+    );
+
+    expect(changedSince).toMatchObject({
+      status: "changed-since",
+      environment: { id: DEFAULT_ENVIRONMENT },
+    });
+    expect(left).toBe(1);
+    expect(history).toBe(0);
+    expect(deleted).toMatchObject({ status: "deleted" });
+  });
+
+  it("deletes a Secret kept for every Environment in the scope *", async () => {
+    const [deleted, left] = await inRegistry(async ({ keep, store, changes }) => {
+      await keep("NPM_TOKEN", null);
+
+      return [
+        deleteSecretAs(
+          { transactionSync: (body) => body() },
+          store,
+          changes,
+          { environment: EVERY_ENVIRONMENT_SCOPE, name: "NPM_TOKEN", author: approved },
+          2_000,
+        ),
+        store.listEnvironmentSecrets(),
+      ];
+    });
+
+    expect(deleted).toMatchObject({ status: "deleted", change: { scope: "*", approved: true } });
+    expect(left).toEqual([]);
   });
 });

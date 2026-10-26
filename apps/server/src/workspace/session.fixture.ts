@@ -4,6 +4,8 @@
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import type { Harness } from "@cloudpid/effect-durable";
+import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import type { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHost, BrowserSession, type BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import {
@@ -24,7 +26,7 @@ import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
-import { testEnvironments } from "../session/environments.fixture.ts";
+import { testEnvironments, unusedRemoval } from "../session/environments.fixture.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
 import { type Placement, sessionWorkspace } from "../session/workspace.ts";
@@ -72,9 +74,11 @@ export class TestWorkspaceSession extends TestSession {
   protected override hostExtensions(): Effect.Effect<
     readonly Extension[],
     never,
-    Harness | Secrets | BrowserHandoffs | AgentChangeLog | SettingsReload
+    Harness | Secrets | BrowserHandoffs | AgentChangeLog | SettingsReload | Approvals
   > {
     return sessionExtensions.pipe(
+      // The tests of the Workspace delete nothing.
+      Effect.provideService(EnvironmentRemoval, unusedRemoval),
       Effect.provideService(Environments, testEnvironments(this.ctx.storage.kv)),
       // The tests of the Workspace call no `settings_*` tool.
       Effect.provideService(SettingsAccess, {

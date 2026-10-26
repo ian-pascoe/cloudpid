@@ -10,7 +10,12 @@ import {
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import type { AgentChange, EnvironmentSecretRecord, SessionRecord } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  DELETED_FIELD,
+  type EnvironmentSecretRecord,
+  type SessionRecord,
+} from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_SECRET_DRAFT,
@@ -25,7 +30,9 @@ import {
   buildLine,
   changeByline,
   changeFieldText,
+  changeTitleText,
   changeValueText,
+  fieldValueText,
   revertible,
   deleteConfirmed,
   environmentNameProblem,
@@ -403,6 +410,20 @@ describe("an Agent change", () => {
     expect(changeFieldText("build")).toBe("Build");
   });
 
+  it("titles a call's change by setting and place, and an approved Environment delete as deleted", () => {
+    expect(changeTitleText("variables.API_URL", "Default")).toBe("Variable API_URL in Default");
+    expect(changeTitleText("spendLimit.perSession", "the Settings")).toBe(
+      "spendLimit.perSession in the Settings",
+    );
+    expect(changeTitleText(DELETED_FIELD, "qa-b-del")).toBe("Environment qa-b-del deleted");
+    // What the delete took before it, and that it is deleted after; any other none stays not set.
+    expect(fieldValueText(DELETED_FIELD, "1 Workspace with 1 Session")).toBe(
+      "1 Workspace with 1 Session",
+    );
+    expect(fieldValueText(DELETED_FIELD, null)).toBe("deleted");
+    expect(fieldValueText("variables.API_URL", null)).toBe("not set");
+  });
+
   it("cannot revert the making of an Environment or a Build asked for", () => {
     expect(revertible({ ...change, field: "environment" })).toBe(false);
     expect(revertible({ ...change, field: "build" })).toBe(false);
@@ -422,6 +443,13 @@ describe("an Agent change", () => {
     expect(
       changeByline({ ...change, actor: "owner", tool: null, session: null, reverts: 2 }, NOW),
     ).toBe("You reverted change 2, 5 minutes ago");
+    // A change the owner approved first says so.
+    expect(
+      changeByline(
+        { ...change, tool: "environment_container_size_limit_set", approved: true },
+        NOW,
+      ),
+    ).toBe("The agent, 5 minutes ago, with environment_container_size_limit_set, approved by you");
     expect(revertible(change)).toBe(true);
     expect(revertible({ ...change, revertedBy: 4 })).toBe(false);
     expect(revertible({ ...change, actor: "owner", reverts: 2 })).toBe(false);

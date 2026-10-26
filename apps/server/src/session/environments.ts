@@ -190,7 +190,7 @@ export const sessionEnvironments = ({
 
         return marked;
       }),
-    change: ({ environment, change, author }) =>
+    change: ({ environment, change, expected, author }) =>
       Effect.gen(function* () {
         if (session === undefined) {
           return yield* EnvironmentsError.make({
@@ -201,12 +201,14 @@ export const sessionEnvironments = ({
         const answer = yield* registry.changeEnvironment({
           environment,
           change,
+          expected,
           author: { session, ...author },
         });
 
         switch (answer.status) {
           case "rejected":
           case "missing":
+          case "changed-since":
             return answer;
           case "unchanged":
             return {

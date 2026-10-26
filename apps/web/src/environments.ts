@@ -11,6 +11,7 @@ import {
   BUILD_FIELD,
   CREATED_FIELD,
   EVERY_ENVIRONMENT_SCOPE,
+  DELETED_FIELD,
   type EnvironmentSecretRecord,
   fieldRepo,
   fieldSecret,
@@ -323,6 +324,8 @@ export const changeFieldText = (field: string): string => {
       return "Name";
     case CREATED_FIELD:
       return "Creation";
+    case DELETED_FIELD:
+      return "Deletion";
     case BUILD_FIELD:
       return "Build";
     default:
@@ -331,8 +334,24 @@ export const changeFieldText = (field: string): string => {
 };
 
 /**
- * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it), or
- * the owner, reverting an earlier one.
+ * What a call's card titles its Agent change with: the setting and where it is (`Variable API_URL in Default`), or, for
+ * an Environment deleted with the owner's Approval, that it was deleted (`docs/spec.md` → Approval).
+ */
+export const changeTitleText = (field: string, where: string): string =>
+  field === DELETED_FIELD
+    ? `Environment ${where} deleted`
+    : `${changeFieldText(field)} in ${where}`;
+
+/**
+ * A value of an Agent change to `field`, as `changeValueText` shows it, except that an Environment's deletion has
+ * "deleted" after it rather than none.
+ */
+export const fieldValueText = (field: string, value: AgentChange["before"]): string =>
+  field === DELETED_FIELD && value === null ? "deleted" : changeValueText(value);
+
+/**
+ * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it) and
+ * whether the owner approved it first (`docs/spec.md` → Approval), or the owner, reverting an earlier one.
  */
 export const changeByline = (change: AgentChange, now: number): string => {
   const when = relativeTime(change.at, now);
@@ -343,7 +362,9 @@ export const changeByline = (change: AgentChange, now: number): string => {
       : `You reverted change ${change.reverts}, ${when}`;
   }
 
-  return `The agent, ${when}${change.tool === null ? "" : `, with ${change.tool}`}`;
+  const tool = change.tool === null ? "" : `, with ${change.tool}`;
+
+  return `The agent, ${when}${tool}${change.approved === true ? ", approved by you" : ""}`;
 };
 
 /**

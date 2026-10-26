@@ -616,6 +616,7 @@ const fakeRegistries = () => {
     agentRemoveRepo: () => Effect.die("The endpoint makes no Agent change"),
     recordRebuild: () => Effect.die("The endpoint makes no Agent change"),
     agentMarkSecretBuild: () => Effect.die("The endpoint makes no Agent change"),
+    agentDeleteSecret: () => Effect.die("The endpoint makes no Agent change"),
     keepAskedSecrets: () => Effect.die("The endpoint keeps no Secret for an ask"),
     listAgentChanges: ({ environment }) =>
       Effect.sync(() =>

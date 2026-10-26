@@ -24,11 +24,15 @@ export type PushEvent =
   | { readonly kind: "finished" }
   /** A Run ended without one: a model error, a restart limit. `reason` is the error's text, when there is one. */
   | { readonly kind: "failed"; readonly reason?: string | undefined }
-  /** The agent waits for the owner to enter Secrets. */
+  /**
+   * The agent waits for the owner: to enter the Secrets `names`, or, with `approval`, to approve the change it names
+   * (`docs/spec.md` → Approval).
+   */
   | {
       readonly kind: "input";
       readonly names: ReadonlyArray<string>;
       readonly reason?: string | undefined;
+      readonly approval?: string | undefined;
     };
 
 /** The longest `PushNotice.url` that is sent: with the rest of a push it must fit one 4096-octet message. */

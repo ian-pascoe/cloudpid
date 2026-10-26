@@ -8,6 +8,8 @@ import {
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
+import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import { Approvals } from "@cloudpid/extensions/approvals";
 import { DeployCredentials, Environments } from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
@@ -43,6 +45,8 @@ import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
 import { sessionLifecycle } from "./environment-lifecycle.ts";
 import { runChanges } from "./agent-changes.ts";
 import { sessionEnvironments } from "./environments.ts";
+import { sessionEnvironmentRemoval } from "./environment-removal.ts";
+import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { type BrowserHostNamespace, remoteBrowserHost } from "./browser.ts";
@@ -175,6 +179,24 @@ export class Session extends Cloudflare.DurableObject<Session, SessionMethods>()
   errors: [SessionError],
 }) {}
 
+/** The Session objects as a Worker or another Session reaches them, by name. */
+type SessionNamespace = Pick<Cloudflare.DurableObject<Session>, "getByName">;
+
+/**
+ * Wipe Session `id`'s object (`SessionMethods.destroy`), then reset it. Once the wipe has answered, the object resets:
+ * that call fails by design (an abort fails the call that makes it), and a reset that does not happen only leaves an
+ * instance over empty storage until it is evicted. A wipe that fails dies.
+ */
+export const destroySessionObject =
+  (sessions: SessionNamespace) =>
+  (id: string): Effect.Effect<void> => {
+    const session = sessions.getByName(id);
+
+    return Effect.orDie(session.destroy()).pipe(
+      Effect.andThen(Effect.ignoreCause(session.reset())),
+    );
+  };
+
 export const SessionLive = Session.make(
   Effect.gen(function* () {
     return {
@@ -183,13 +205,17 @@ export const SessionLive = Session.make(
       secrets: yield* SecretsConfig,
       web: yield* WebConfig,
       registries: yield* Registry,
+      // The other Sessions' objects, which deleting an Environment the owner approved wipes (`environment_delete`).
+      // This class's own namespace, which alchemy hands its constructor (not `yield* Session`: this Layer provides it).
+      // SAFETY: the namespace of the class this constructor makes, whose objects answer `SessionMethods`.
+      sessions: (yield* Cloudflare.DurableObjectScope) as Cloudflare.DurableObject<Session>,
       state: yield* Cloudflare.DurableObjectState,
       // The raw environment: `ComputerExecutionEnv` needs the Workspace DO's own stub, not alchemy's Effect client.
       worker: yield* Cloudflare.WorkerEnvironment,
     };
   }).pipe(
     // The outer Effect resolves the shared services; this inner one runs once per instance, in its constructor.
-    Effect.map(({ github, proxy, registries, secrets, state, web, worker }) =>
+    Effect.map(({ github, proxy, registries, sessions, secrets, state, web, worker }) =>
       Effect.gen(function* () {
         // One tracer for the object's life: its spans are custom spans of the Worker's trace (`docs/spec.md` → Telemetry).
         const telemetry = workersTelemetry(yield* Effect.promise(workersTracing));
@@ -315,6 +341,25 @@ export const SessionLive = Session.make(
           lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
         });
 
+        // The deletes the owner approved: an Environment with its Workspaces and Sessions, wiped as the owner's delete
+        // wipes them (`removals`, `registry/removal.ts`), and a kept Secret.
+        const environmentRemoval = sessionEnvironmentRemoval({
+          registry: registryObject,
+          session: name,
+          objects: {
+            workspaces: workspaceObjects,
+            sessions: { destroy: destroySessionObject(sessions) },
+          },
+          builds,
+        });
+
+        // The Agent changes waiting for the owner's Approval: kept here, shown on the sockets, and pushed.
+        const sessionApprovals = sessionApprovalsLayer({
+          storage: kv,
+          sockets: state.raw,
+          notify: notifyOwner,
+        });
+
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.
         const sandbox = remoteSandbox(
           // SAFETY: the Server Worker binds the sandbox DO namespace as `CODEMODE_SANDBOX` (`worker.ts`), a raw namespace.
@@ -436,6 +481,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(WorkspaceFiles, workspace.files),
                   Effect.provideService(WorkspaceContainer, workspace.container),
                   Effect.provideService(Environments, environments),
+                  Effect.provideService(EnvironmentRemoval, environmentRemoval),
                   Effect.provideService(
                     SettingsAccess,
                     sessionSettingsAccess({
@@ -464,18 +510,22 @@ export const SessionLive = Session.make(
                   Effect.all([Effect.service(Secrets), Effect.service(BrowserSession)]),
                   ([held, browser]) => wakeAt(held, browser),
                 ),
-                // A Secret request or Browser Handoff whose call is gone stops being shown, and an idle browser is closed.
+                // A Secret request, Browser Handoff or Approval request whose call is gone stops being shown, and an
+                // idle browser is closed.
                 onIdle: Effect.flatMap(
                   Effect.all([
                     Effect.service(Secrets),
                     Effect.service(BrowserSession),
                     Effect.service(BrowserHandoffs),
+                    Effect.service(Approvals),
                   ]),
-                  ([held, browser, handoffs]) => onIdle(held, browser, handoffs),
+                  ([held, browser, handoffs, approvals]) =>
+                    onIdle(held, browser, handoffs, approvals),
                 ),
               }),
             ),
             Layer.provideMerge(sessionSecrets),
+            Layer.provideMerge(sessionApprovals),
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),
             Layer.provide(Layer.mergeAll(registry, settings)),

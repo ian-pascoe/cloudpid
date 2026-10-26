@@ -441,6 +441,21 @@ describe("the thread messages of a view", () => {
       },
     });
     expect(changed({ unchanged: ["model"], agentChanges: [] })).not.toHaveProperty("artifact");
+
+    // A change the owner approved first says so on its card; a declined call changed nothing.
+    expect(
+      changed({
+        approval: { approved: true },
+        agentChanges: [{ id: 4, field: "spendLimit.perSession", before: 5, after: 25 }],
+      }),
+    ).toMatchObject({
+      artifact: {
+        changes: [{ field: "spendLimit.perSession", before: 5, after: 25, approved: true }],
+      },
+    });
+    expect(changed({ approval: { approved: false, reason: "Not now" } })).not.toHaveProperty(
+      "artifact",
+    );
   });
 
   it("puts the screenshots of a finished tool call on its card, besides its text", () => {

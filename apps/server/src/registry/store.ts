@@ -656,6 +656,11 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
     sql.exec("CREATE INDEX agent_changes_by_scope ON agent_changes (scope, id DESC)");
     sql.exec("CREATE INDEX agent_changes_by_reverts ON agent_changes (reverts)");
   },
+  // 18: whether the owner approved an Agent change before it was made (GLOSSARY.md → Approval): 1 for one to a Limit or a
+  // kept Secret deleted, 0 for every other, all of those stored before.
+  (sql) => {
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN approved INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */

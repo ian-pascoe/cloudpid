@@ -187,6 +187,16 @@ export interface SessionClient {
     keep?: SecretKeep,
   ) => Effect.Effect<void>;
   /**
+   * Answer Approval request `request` (`docs/spec.md` → Approval): `approve` lets the agent make the change; a Decline
+   * may give the agent the owner's `reason`. The Session's next `approval_requests` closes the card, and a refusal (the
+   * request was answered elsewhere, or its call ended) shows as `failure`.
+   */
+  readonly answerApproval: (
+    request: string,
+    approve: boolean,
+    reason?: string,
+  ) => Effect.Effect<void>;
+  /**
    * Abort the root conversation's work and withdraw its queued input, or a subagent's when `conversationId` names
    * it. With `subagents`, the agents below it stop too; otherwise they keep working.
    */
@@ -505,6 +515,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "picked"
         | "secretRequests"
         | "secretLifetimeMinutes"
+        | "approvalRequests"
         | "browserHandoffRequests"
         | "taskGraph"
         | "usage"
@@ -685,8 +696,13 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       thread.commandId = null;
     }
 
-    // The next socket says again which Secret requests and Browser Handoffs wait.
-    current = { ...current, secretRequests: [], browserHandoffRequests: null };
+    // The next socket says again which Secret requests, Approval requests and Browser Handoffs wait.
+    current = {
+      ...current,
+      secretRequests: [],
+      approvalRequests: [],
+      browserHandoffRequests: null,
+    };
 
     if (stopped) return;
 
@@ -773,6 +789,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "browser_handoff_requests":
         update({ browserHandoffRequests: message.requests });
+
+        return;
+      case "approval_requests":
+        update({ approvalRequests: message.requests });
 
         return;
       case "events": {
@@ -1188,6 +1208,20 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         };
 
         if (keep !== undefined) answer.keep = keep;
+
+        send(answer);
+      }),
+    answerApproval: (request, approve, reason) =>
+      step(() => {
+        const answer: Types.Mutable<Extract<ClientMessage, { type: "approval_answer" }>> = {
+          type: "approval_answer",
+          id: nextCommandId(),
+          request,
+          approve,
+        };
+
+        // Only a Decline carries the owner's reason to the agent.
+        if (!approve && reason !== undefined && reason.trim() !== "") answer.reason = reason.trim();
 
         send(answer);
       }),

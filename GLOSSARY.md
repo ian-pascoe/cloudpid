@@ -243,7 +243,7 @@ _Avoid_: Budget, quota, cap
 ## The agent's changes to its harness
 
 **Agent change**:
-A change the agent makes to an Environment or to the Settings, recorded with when, the Session, the reason and the values before and after, so the owner can see it and revert it. Three have no revert: the making of an Environment (deleting one needs the owner's Approval), a Build asked for, and a Secret the owner kept in a `secret_ask` form on the agent's request (recorded by name only, as the history holds no value to bring back).
+A change the agent makes to an Environment or to the Settings, recorded with when, the Session, the reason and the values before and after, so the owner can see it and revert it. Some have no revert: the making of an Environment (deleting one needs the owner's Approval), a Build asked for, and a Secret the owner kept in a `secret_ask` form on the agent's request or that the agent deleted with the owner's Approval (recorded by name only, as the history holds no value to bring back). A change the owner approved first is marked so; deleting an Environment is recorded nowhere, as its history goes with it.
 _Avoid_: Audit entry, self-modification (for one change), edit
 
 **Limit**:

@@ -33,6 +33,7 @@ import { UsageBadge } from "./usage-badge.tsx";
 import { Messages } from "./messages.tsx";
 import { BrowserHandoffRequests } from "./handoff-prompt.tsx";
 import { SecretRequests } from "./secret-form.tsx";
+import { ApprovalRequests } from "./approval-card.tsx";
 import type { Rename } from "./title-state.ts";
 
 /** An archived Session: read-only until the owner unarchives it, which resolves to null or why it failed. */
@@ -436,6 +437,7 @@ export const Thread = ({
       <div className="px-4">
         <BrowserHandoffRequests />
         <SecretRequests />
+        <ApprovalRequests />
       </div>
       {archived === undefined ? (
         <Composer

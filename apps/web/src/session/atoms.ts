@@ -76,6 +76,9 @@ export const secretRequestsAtom = slice((state) => state.secretRequests);
 /** How long an entered Secret is held, as the Session says. */
 export const secretLifetimeMinutesAtom = slice((state) => state.secretLifetimeMinutes);
 
+/** The Agent changes waiting for the owner's Approval. */
+export const approvalRequestsAtom = slice((state) => state.approvalRequests);
+
 const NO_HANDOFFS: readonly BrowserHandoffRequest[] = [];
 
 /** The Browser Handoffs waiting for the owner: none until the socket lists them. */
@@ -204,6 +207,24 @@ export interface SecretAnswer {
   readonly values: Readonly<Record<string, string>> | null;
   readonly keep?: SecretKeep;
 }
+
+/** The owner's answer to an Approval request: Approve, or Decline with an optional reason for the agent. */
+export interface ApprovalAnswerInput {
+  readonly request: string;
+  readonly approve: boolean;
+  readonly reason?: string;
+}
+
+/** Answer one of Session `sessionId`'s Approval requests. */
+export const answerApprovalAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    ({ request, approve, reason }: ApprovalAnswerInput, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.answerApproval(request, approve, reason))),
+    { concurrent: true },
+  ),
+);
 
 /** Answer one of Session `sessionId`'s Secret requests. */
 export const answerSecretsAtom = Atom.family((sessionId: string) =>

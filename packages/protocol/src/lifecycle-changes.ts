@@ -10,9 +10,16 @@ export const NAME_FIELD = "name";
 
 /**
  * The field of the change that made the Environment: nothing before, and after it the name and the Repos it was made
- * with. There is no revert: deleting an Environment needs the owner's Approval.
+ * with. There is no revert: deleting an Environment needs the owner's Approval (`environment_delete`).
  */
 export const CREATED_FIELD = "environment";
+
+/**
+ * The field of the Environment's delete the owner approved (`environment_delete`, `docs/spec.md` → Approval): before it
+ * what was deleted, in words, and nothing after. It is shown on the call's card and in the Run's Notification only: the
+ * Environment's history is deleted with it.
+ */
+export const DELETED_FIELD = "deleted";
 
 /** The field of a change that asked for a Build: there is no revert. */
 export const BUILD_FIELD = "build";
