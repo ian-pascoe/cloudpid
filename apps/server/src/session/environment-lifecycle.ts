@@ -176,17 +176,22 @@ export const sessionLifecycle = ({
       Effect.gen(function* () {
         const owner = yield* author;
 
-        if ((yield* registry.getEnvironment({ id: environment })) === null) {
-          return { status: "missing" as const };
-        }
+        const known = yield* registry.getEnvironment({ id: environment });
+
+        if (known === null) return { status: "missing" as const };
 
         // Why the Build was not asked for, as the owner's Rebuild says it: nothing to build, or the Build object failed.
-        const refused = yield* builds.rebuild(environment).pipe(
-          Effect.as(undefined),
-          Effect.catch((message) => Effect.succeed(message)),
+        const asked = yield* builds.rebuild(environment).pipe(
+          Effect.map((answer) => ({ answer })),
+          Effect.catch((message) => Effect.succeed({ message })),
         );
 
-        if (refused !== undefined) return { status: "rejected" as const, message: refused };
+        if ("message" in asked) return { status: "rejected" as const, message: asked.message };
+
+        // A Build of the same key was under way: nothing was asked for, so nothing is recorded.
+        if (asked.answer === "underway") {
+          return { status: "unchanged" as const, environment: changedEnvironment(known) };
+        }
 
         return recordedChange(
           yield* registry.recordRebuild({ environment, author: { session: owner, ...by } }),

@@ -357,6 +357,19 @@ describe("environment_rebuild", () => {
     ]);
   });
 
+  it("says a Build is under way already, and records nothing a second time", async () => {
+    const { tool, logged } = await setUp();
+
+    await run(tool("environment_rebuild"), { reason: "The base image moved" });
+
+    const again = await run(tool("environment_rebuild"), { reason: "Once more" });
+
+    expect(text(again)).toContain("is already under way");
+    expect(text(again)).toContain("nothing was recorded");
+    expect(again.details).toMatchObject({ unchanged: { environment: { id: "default" } } });
+    expect(logged).toHaveLength(1);
+  });
+
   it("refuses an Environment with nothing to build, saying why, and records nothing", async () => {
     const { tool, logged } = await setUp();
 

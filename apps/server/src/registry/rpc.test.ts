@@ -3056,6 +3056,33 @@ it("makes an Environment's Build again when the owner asks, though it is current
   });
 });
 
+it("answers whether a Rebuild asked for a Build, or found one of the wanted key under way, which it leaves alone", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "acme/app" }));
+
+  const name = `build:${environment}`;
+  const rebuild = () => Effect.runPromise(fake.buildUpkeep.rebuild(environment));
+
+  expect(await rebuild()).toBe("asked");
+
+  const started = Arr.filter(fake.calls, (each) => each === `startBuild:${name}`).length;
+
+  expect(started).toBe(1);
+
+  // The Build object now answers that the Build of the key is under way.
+  fake.buildObjects.set(name, {
+    image: "img-1",
+    last: null,
+    progress: { status: "building", key: await keyOf(fake, environment), startedAt: 1 },
+    attemptedAt: null,
+  });
+
+  expect(await rebuild()).toBe("underway");
+  expect(Arr.filter(fake.calls, (each) => each === `startBuild:${name}`)).toHaveLength(started);
+});
+
 it("refuses a Rebuild of an Environment that does not exist, or has nothing to build, or whose Build object cannot be reached", async () => {
   const fake = fakeRegistries();
   const environment = await makeEnvironment(fake, "Cloudpid");

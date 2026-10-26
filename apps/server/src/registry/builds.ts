@@ -97,8 +97,11 @@ export type Builds = {
   readonly all: Effect.Effect<void>;
   /** Keep `environment`'s Build current, as after its Repos or settings changed. */
   readonly of: (environment: string) => Effect.Effect<void>;
-  /** Make `environment`'s Build again now (the owner's Rebuild). */
-  readonly rebuild: (environment: string) => Effect.Effect<void, string>;
+  /**
+   * Make `environment`'s Build again now (the owner's Rebuild). Answers "underway" when a Build of the wanted key was under
+   * way already, which asks for nothing.
+   */
+  readonly rebuild: (environment: string) => Effect.Effect<"asked" | "underway", string>;
 };
 
 const sameJson = Schema.toEquivalence(Schema.Json);
@@ -123,8 +126,8 @@ export const buildUpkeep = (
     readonly spares: Pick<Spares, "of">;
   },
 ): Builds => {
-  /** Keep one Environment's Build current; whether a Build was asked for or is under way. */
-  const keep = (work: BuildWork, force: boolean) =>
+  /** Keep one Environment's Build current: what was asked of its Build object, and whether a Build was asked for or is under way. */
+  const keepAsking = (work: BuildWork, force: boolean) =>
     Effect.gen(function* () {
       const registry = registries.getByName(REGISTRY_NAME);
       const name = buildObjectName(work.environment);
@@ -157,7 +160,7 @@ export const buildUpkeep = (
         if ((yield* registry.getEnvironment({ id: work.environment })) === null) {
           yield* Effect.promise(() => workspaces.destroy(name));
 
-          return false;
+          return { asked, busy: false };
         }
       }
 
@@ -177,10 +180,17 @@ export const buildUpkeep = (
         }
       }
 
-      return (
-        asked !== undefined || (answered.progress !== null && answered.progress.status !== "failed")
-      );
+      return {
+        asked,
+        busy:
+          asked !== undefined ||
+          (answered.progress !== null && answered.progress.status !== "failed"),
+      };
     });
+
+  /** Keep one Environment's Build current; whether a Build was asked for or is under way. */
+  const keep = (work: BuildWork, force: boolean) =>
+    Effect.map(keepAsking(work, force), ({ busy }) => busy);
 
   /** Keep the Builds of `environments` (all when undefined) current; whether there was anything to do. */
   const keepAll = (environments: ReadonlyArray<string> | undefined) =>
@@ -239,11 +249,14 @@ export const buildUpkeep = (
         }
 
         quietUntil = 0;
-        yield* keep(work, true).pipe(
+
+        const { asked } = yield* keepAsking(work, true).pipe(
           Effect.catchCause((cause) =>
             Effect.fail(`Could not ask for the Build: ${reason(cause)}`),
           ),
         );
+
+        return asked === undefined ? "underway" : "asked";
       }),
   };
 };

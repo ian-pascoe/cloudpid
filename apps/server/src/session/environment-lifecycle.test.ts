@@ -34,7 +34,7 @@ type Asked = Parameters<LifecycleRegistry[Exclude<keyof LifecycleRegistry, "getE
 type Options = {
   readonly answer?: Answer;
   /** What the Builds answer to a request for a Build: nothing, or why not. */
-  readonly rebuild?: Effect.Effect<void, string>;
+  readonly rebuild?: Effect.Effect<"asked" | "underway", string>;
   /** The Session's id; null for a Session the Registry does not list. */
   readonly session?: string | null;
   readonly known?: boolean;
@@ -42,7 +42,7 @@ type Options = {
 
 const open = ({
   answer = "changed",
-  rebuild = Effect.void,
+  rebuild = Effect.succeed("asked" as const),
   session = "s-1",
   known = true,
 }: Options = {}) => {
@@ -265,6 +265,16 @@ describe("asking for a Build", () => {
         message: "nothing to build",
       },
     );
+    expect(asked).toEqual([]);
+  });
+
+  it("records nothing when a Build of the same key is under way already", async () => {
+    const { lifecycle, asked, upkept } = open({ rebuild: Effect.succeed("underway" as const) });
+
+    expect(await Effect.runPromise(lifecycle.rebuild({ environment: "0000abcd", author }))).toEqual(
+      { status: "unchanged", environment: { id: "0000abcd", name: "Other" } },
+    );
+    expect(upkept).toEqual(["rebuild:0000abcd"]);
     expect(asked).toEqual([]);
   });
 

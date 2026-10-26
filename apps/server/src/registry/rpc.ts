@@ -857,7 +857,7 @@ export const serveRegistryRpc = <R = never>(
         ),
       rebuildEnvironment: ({ environment }) =>
         knownEnvironment(environment).pipe(
-          Effect.andThen(builds.rebuild(environment).pipe(Effect.mapError(failed))),
+          Effect.andThen(builds.rebuild(environment).pipe(Effect.asVoid, Effect.mapError(failed))),
         ),
       listEnvironmentSecrets: () => registry.listEnvironmentSecrets(),
       setEnvironmentSecret: ({ environment, name, value, build }) =>

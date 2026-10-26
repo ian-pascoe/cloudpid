@@ -82,11 +82,14 @@ export type EnvironmentLifecycle = {
     readonly name: string;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<RecordOutcome<RecordMade>, EnvironmentsError>;
-  /** Ask for a new Build now, as the owner's Rebuild does, and record it once it is under way. */
+  /**
+   * Ask for a new Build now, as the owner's Rebuild does, and record it once it is under way; "unchanged" when a Build
+   * of the same Repos and settings was under way already, which records nothing.
+   */
   readonly rebuild: (input: {
     readonly environment: string;
     readonly author: ChangeAuthor;
-  }) => Effect.Effect<RecordOutcome<RecordMade>, EnvironmentsError>;
+  }) => Effect.Effect<RecordChanged, EnvironmentsError>;
 };
 
 const Id = Schema.String.annotate({
@@ -429,6 +432,13 @@ export const lifecycleTools = ({
             author: { conversation: api.conversationId, tool: "environment_rebuild", reason },
           }),
         );
+
+        if (answer.status === "unchanged") {
+          return unchangedResult(
+            `A Build of ${named(answer.environment)} for its current Repos and settings is already under way: nothing was asked for, and nothing was recorded. environment_get shows how it goes.`,
+            answer.environment,
+          );
+        }
 
         const { environment, change } = answer;
 

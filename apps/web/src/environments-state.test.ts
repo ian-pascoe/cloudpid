@@ -16,6 +16,7 @@ import {
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
@@ -23,7 +24,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import { pathAtom } from "./router.ts";
-import { sessionsAtom } from "./sessions.ts";
+import { REFRESH_INTERVAL, sessionsAtom } from "./sessions.ts";
 import {
   addRepoAtom,
   addRepoNameAtom,
@@ -47,6 +48,7 @@ import {
   environmentDraftAtom,
   environmentNamesAtom,
   environmentSettingsAtom,
+  environmentListAtom,
   environmentsAtom,
   newEnvironmentNameAtom,
   rebuildEnvironmentAtom,
@@ -198,6 +200,34 @@ describe("the Environment list", () => {
         "Work",
       );
     }),
+  );
+
+  it.live(
+    "asks again on the visible-page tick, for what a Session's agent made or renamed",
+    () =>
+      Effect.gen(function* () {
+        const environments = [environment("default")];
+        const registry = holding(environments, []);
+
+        registry.mount(environmentsAtom);
+        registry.mount(environmentListAtom);
+        yield* settled(registry, environmentsAtom);
+        expect(registry.get(environmentListAtom)?.map((known) => known.name)).toEqual(["default"]);
+
+        // What the agent's tools do in the Registry, with no call from this page.
+        environments.unshift(environment("billing", "Billing"));
+        environments[1] = environment("default", "Main");
+
+        // One tick of the page, which asks every few seconds while it is visible.
+        yield* Effect.sleep(REFRESH_INTERVAL.pipe(Duration.sum(Duration.millis(500))));
+
+        expect(registry.get(environmentListAtom)?.map((known) => known.name)).toEqual([
+          "Billing",
+          "Main",
+        ]);
+        registry.dispose();
+      }),
+    10_000,
   );
 
   it.effect("says why a rename was refused", () =>

@@ -32,7 +32,7 @@ import { createSession, visibleTickAtom } from "./sessions.ts";
  */
 export const environmentsAtom = RegistryClient.query("listEnvironments", undefined, {
   reactivityKeys: ["environments"],
-}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom), Atom.refreshOnWindowFocus);
 
 /** The Environments, newest first, as of the last answer; null until the first. */
 export const environmentListAtom = Atom.map(environmentsAtom, (result) =>
@@ -53,7 +53,7 @@ export const environmentNamesAtom = Atom.map(environmentListAtom, (environments)
  */
 export const buildsAtom = RegistryClient.query("listBuilds", undefined, {
   reactivityKeys: ["builds"],
-}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
+}).pipe(Atom.makeRefreshOnSignal(visibleTickAtom), Atom.refreshOnWindowFocus);
 
 /** Where Environment `id`'s Build stands as of the last answer; null until the first, or for an Environment not listed. */
 export const environmentBuildAtom = Atom.family((id: string) =>

@@ -44,6 +44,8 @@ export const fakeLifecycle = () => {
   ]);
 
   const calls: LifecycleCall[] = [];
+  // The Environments whose Build was asked for: a second request finds it under way.
+  const building = new Set<string>();
   let next = 1;
   let made = 0;
 
@@ -213,6 +215,15 @@ export const fakeLifecycle = () => {
               "The environment has no repos, no Setup Script and no Toolchains: there is nothing to build",
           };
         }
+
+        if (building.has(environment)) {
+          return {
+            status: "unchanged" as const,
+            environment: { id: found.id, name: found.name },
+          };
+        }
+
+        building.add(environment);
 
         return {
           status: "changed" as const,
