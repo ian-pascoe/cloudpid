@@ -358,7 +358,14 @@ describe("the Session socket messages", () => {
           head: { commit: "a".repeat(40), branch: "main" },
           files: [
             { path: "b.ts", oldPath: "a.ts", status: "renamed", additions: 0, deletions: 0 },
-            { path: "gen.ts", status: "modified", additions: 900, deletions: 20, approximate: true, generated: true },
+            {
+              path: "gen.ts",
+              status: "modified",
+              additions: 900,
+              deletions: 20,
+              approximate: true,
+              generated: true,
+            },
             { path: "logo.png", status: "added", additions: null, deletions: null, binary: true },
           ],
           more: 3,

@@ -25,7 +25,10 @@ const gap = () => new Promise((resolve) => setTimeout(resolve, GAP_MS));
 const YIELD_EVERY = 20;
 
 /** Run `phase`, logging when it started and ended, and how long it took. */
-const timed = async <A>(label: string, phase: () => Promise<A>): Promise<{ result: A; ms: number }> => {
+const timed = async <A>(
+  label: string,
+  phase: () => Promise<A>,
+): Promise<{ result: A; ms: number }> => {
   const start = Date.now();
   const result = await phase();
   const end = Date.now();

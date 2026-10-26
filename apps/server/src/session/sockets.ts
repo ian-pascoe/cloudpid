@@ -425,7 +425,9 @@ export const sessionSocketsLayer = (
             Stream.runForEach((update) =>
               send(
                 socket,
-                update.kind === "changes" ? update.message : { type: "error", message: update.message },
+                update.kind === "changes"
+                  ? update.message
+                  : { type: "error", message: update.message },
               ),
             ),
             FiberMap.run(fibers, CHANGES),

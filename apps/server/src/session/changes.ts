@@ -29,7 +29,11 @@ export const CHANGES_DEBOUNCE_MS = 1_000;
 export const WRITING_TOOLS: ReadonlySet<string> = new Set(["edit", "write", "bash", "codemode"]);
 
 /** One changed file, as a client asks for its two sides. */
-export type ChangeFileQuery = { readonly repo: string; readonly path: string; readonly oldPath?: string };
+export type ChangeFileQuery = {
+  readonly repo: string;
+  readonly path: string;
+  readonly oldPath?: string;
+};
 
 /** Where the Changes come from: the Session's Workspace, in the directory the Session works in. */
 export type ChangesSource = {

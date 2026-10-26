@@ -66,7 +66,8 @@ const workspace = (
 
   /** The Workspace DO's files: the root, as `/workspace`. */
   const files: ChangesFiles = {
-    readFile: (path, options) => fsp.readFile(root + path.slice(WORKSPACE_ROOT.length), options ?? null),
+    readFile: (path, options) =>
+      fsp.readFile(root + path.slice(WORKSPACE_ROOT.length), options ?? null),
     stat: (path) => fsp.stat(root + path.slice(WORKSPACE_ROOT.length)),
     lstat: (path) => fsp.lstat(root + path.slice(WORKSPACE_ROOT.length)),
     readdir: (path) => fsp.readdir(root + path.slice(WORKSPACE_ROOT.length)),
@@ -77,7 +78,10 @@ const workspace = (
 };
 
 /** A module over `space`, its Container started by a call that may start it, and its runs and kept lists recorded. */
-const module = (space: ReturnType<typeof workspace>, options: { readonly maxTrackedFiles?: number } = {}) => {
+const module = (
+  space: ReturnType<typeof workspace>,
+  options: { readonly maxTrackedFiles?: number } = {},
+) => {
   const kept = new Map<string, KeptChanges>();
   const container = { running: false, runs: 0, fails: false };
 
@@ -113,7 +117,11 @@ describe("the Changes module", () => {
   it("lists a repo whose .gitattributes git applies through the Container, and keeps the list for when it stops", async () => {
     const space = workspace(
       "app",
-      { ".gitattributes": "* text=auto eol=lf\n*.gen.ts linguist-generated\n", "a.txt": "one\ntwo\n", "b.gen.ts": "x\n" },
+      {
+        ".gitattributes": "* text=auto eol=lf\n*.gen.ts linguist-generated\n",
+        "a.txt": "one\ntwo\n",
+        "b.gen.ts": "x\n",
+      },
       { "a.txt": "one\r\ntwo\r\n", "b.gen.ts": "y\n", "c.txt": "new\n" },
     );
 
@@ -122,7 +130,13 @@ describe("the Changes module", () => {
 
     // Automatic, with the Container stopped: nothing to show yet, "may be out of date", and the Container stays stopped.
     expect((await changes.list({ ...request, startContainer: false })).repos).toEqual([
-      { repo: "app", head: { commit: expect.any(String), branch: "main" }, files: [], more: 0, stale: true },
+      {
+        repo: "app",
+        head: { commit: expect.any(String), branch: "main" },
+        files: [],
+        more: 0,
+        stale: true,
+      },
     ]);
     expect(container.runs).toBe(0);
 
@@ -133,16 +147,24 @@ describe("the Changes module", () => {
     ];
 
     expect((await changes.list({ ...request, startContainer: true })).repos).toEqual([
-      { repo: "app", head: { commit: expect.any(String), branch: "main" }, files: listed, more: 0, stale: false },
+      {
+        repo: "app",
+        head: { commit: expect.any(String), branch: "main" },
+        files: listed,
+        more: 0,
+        stale: false,
+      },
     ]);
     expect(container.runs).toBe(1);
     expect(kept.get("app")).toEqual({ files: listed, more: 0 });
 
     // Running, an automatic refresh uses it too.
     space.write("d.txt", "more\n");
-    expect((await changes.list({ ...request, startContainer: false })).repos[0]?.files.map((file) => file.path)).toEqual(
-      ["b.gen.ts", "c.txt", "d.txt"],
-    );
+    expect(
+      (await changes.list({ ...request, startContainer: false })).repos[0]?.files.map(
+        (file) => file.path,
+      ),
+    ).toEqual(["b.gen.ts", "c.txt", "d.txt"]);
     expect(container.runs).toBe(2);
 
     // Stopped again: the last list, "may be out of date".
@@ -156,13 +178,19 @@ describe("the Changes module", () => {
   });
 
   it("says why when the Container's listing fails, and still shows the last list", async () => {
-    const space = workspace("app", { ".gitattributes": "* text\n", "a.txt": "a\n" }, { "a.txt": "b\n" });
+    const space = workspace(
+      "app",
+      { ".gitattributes": "* text\n", "a.txt": "a\n" },
+      { "a.txt": "b\n" },
+    );
     const { changes, container } = module(space);
 
     await changes.list({ directory: "/workspace", startContainer: true });
     container.fails = true;
 
-    expect((await changes.list({ directory: "/workspace", startContainer: true })).repos[0]).toMatchObject({
+    expect(
+      (await changes.list({ directory: "/workspace", startContainer: true })).repos[0],
+    ).toMatchObject({
       stale: true,
       files: [{ path: "a.txt", status: "modified" }],
       error: expect.stringContaining("git: no"),
@@ -172,18 +200,30 @@ describe("the Changes module", () => {
   it("sends a repo with more tracked files than the guard to the Container", async () => {
     const space = workspace("app", { "a.txt": "a\n", "b.txt": "b\n" }, { "a.txt": "c\n" });
 
-    expect((await module(space, { maxTrackedFiles: 2 }).changes.list({ directory: "/workspace", startContainer: false })).repos[0]).toMatchObject(
-      { stale: false, files: [{ path: "a.txt", status: "modified", additions: 1, deletions: 1 }] },
-    );
+    expect(
+      (
+        await module(space, { maxTrackedFiles: 2 }).changes.list({
+          directory: "/workspace",
+          startContainer: false,
+        })
+      ).repos[0],
+    ).toMatchObject({
+      stale: false,
+      files: [{ path: "a.txt", status: "modified", additions: 1, deletions: 1 }],
+    });
 
     const guarded = module(space, { maxTrackedFiles: 1 });
 
-    expect((await guarded.changes.list({ directory: "/workspace", startContainer: false })).repos[0]).toMatchObject({
+    expect(
+      (await guarded.changes.list({ directory: "/workspace", startContainer: false })).repos[0],
+    ).toMatchObject({
       stale: true,
       files: [],
     });
     expect(guarded.container.runs).toBe(0);
-    expect((await guarded.changes.list({ directory: "/workspace", startContainer: true })).repos[0]).toMatchObject({
+    expect(
+      (await guarded.changes.list({ directory: "/workspace", startContainer: true })).repos[0],
+    ).toMatchObject({
       stale: false,
       files: [{ path: "a.txt", status: "modified", additions: 1, deletions: 1 }],
     });
@@ -194,11 +234,16 @@ describe("the Changes module", () => {
 
     // A pack over the cap: isomorphic-git does not read it.
     mkdirSync(join(space.root, "app/.git/objects/pack"), { recursive: true });
-    writeFileSync(join(space.root, "app/.git/objects/pack/pack-big.pack"), new Uint8Array(16 * 1024 * 1024 + 1));
+    writeFileSync(
+      join(space.root, "app/.git/objects/pack/pack-big.pack"),
+      new Uint8Array(16 * 1024 * 1024 + 1),
+    );
 
     const { changes, container } = module(space);
 
-    await expect(changes.file({ repo: "app", path: "a.txt" })).rejects.toThrow(/needs the Container, which is stopped/);
+    await expect(changes.file({ repo: "app", path: "a.txt" })).rejects.toThrow(
+      /needs the Container, which is stopped/,
+    );
     expect(container.runs).toBe(0);
   });
 });

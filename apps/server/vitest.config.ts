@@ -8,7 +8,10 @@ const workerd = "src/**/*.workerd.test.ts";
  * Workspace DO tests run in their own test Worker, which hosts the Workspace DO and the Worker Shell's loader: the
  * environment conformance cases and the Changes (over repos real git made, `changes.setup.ts`).
  */
-const workspaceEnv = ["src/workspace/env.workerd.test.ts", "src/workspace/changes*.workerd.test.ts"];
+const workspaceEnv = [
+  "src/workspace/env.workerd.test.ts",
+  "src/workspace/changes*.workerd.test.ts",
+];
 
 /** Every other Workspace test (Sessions and tools on a Workspace) runs in a test Worker that also hosts a Session host. */
 const onWorkspace = "src/workspace/**/*.workerd.test.ts";

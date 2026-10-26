@@ -932,8 +932,12 @@ describe("a Changes watch", () => {
 
     const sent = { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false };
 
-    expect(changeLists(await first.until((messages) => changeLists(messages).length === 1))).toEqual([sent]);
-    expect(changeLists(await second.until((messages) => changeLists(messages).length === 1))).toEqual([sent]);
+    expect(
+      changeLists(await first.until((messages) => changeLists(messages).length === 1)),
+    ).toEqual([sent]);
+    expect(
+      changeLists(await second.until((messages) => changeLists(messages).length === 1)),
+    ).toEqual([sent]);
     // The second watch came while the first listing ran: one more after it, for both, and never one per client.
     await first.until((messages) => changeLists(messages).length === 2);
     expect(await changesCalls(stub)).toEqual([false, false]);
@@ -997,7 +1001,9 @@ describe("a Changes watch", () => {
     const client = await connect(stub);
 
     client.send({ type: "watch_changes", id: "watch" });
-    expect(changeLists(await client.until((messages) => changeLists(messages).length === 1))).toEqual([
+    expect(
+      changeLists(await client.until((messages) => changeLists(messages).length === 1)),
+    ).toEqual([
       { type: "changes", repos: [repoChanges("before.ts", true)], startingContainer: false },
     ]);
 
@@ -1037,7 +1043,10 @@ describe("a Changes watch", () => {
     client.send({ type: "refresh_changes", id: "refresh" });
     await client.answer("refresh");
 
-    const failed = { type: "error", message: "Listing the Changes failed: The Workspace is unreachable" };
+    const failed = {
+      type: "error",
+      message: "Listing the Changes failed: The Workspace is unreachable",
+    };
 
     expect(
       await client.until(
@@ -1091,9 +1100,9 @@ describe("a Changes watch", () => {
     client.send({ type: "unwatch", id: "wake", conversationId: root });
     await client.answer("wake");
 
-    expect(changeLists(await client.until((messages) => changeLists(messages).length === 1, before))).toEqual([
-      { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false },
-    ]);
+    expect(
+      changeLists(await client.until((messages) => changeLists(messages).length === 1, before)),
+    ).toEqual([{ type: "changes", repos: [repoChanges("a.ts")], startingContainer: false }]);
   });
 });
 

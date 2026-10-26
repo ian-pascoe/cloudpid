@@ -575,7 +575,9 @@ export class TestSession extends DurableObject {
               ),
             ),
           ),
-          Layer.provideMerge(sessionChangesLayer(this.#changesSource(), { debounceMs: CHANGES_TEST_DEBOUNCE_MS })),
+          Layer.provideMerge(
+            sessionChangesLayer(this.#changesSource(), { debounceMs: CHANGES_TEST_DEBOUNCE_MS }),
+          ),
           Layer.provideMerge(
             sessionApprovalsLayer({
               storage: ctx.storage.kv,
@@ -629,7 +631,10 @@ export class TestSession extends DurableObject {
       list: async (startContainer) => {
         const fixture = kv.get<ChangesFixture>(CHANGES_FIXTURE_KEY);
 
-        kv.put(CHANGES_CALLS_KEY, [...(kv.get<boolean[]>(CHANGES_CALLS_KEY) ?? []), startContainer]);
+        kv.put(CHANGES_CALLS_KEY, [
+          ...(kv.get<boolean[]>(CHANGES_CALLS_KEY) ?? []),
+          startContainer,
+        ]);
 
         if (fixture === undefined) return null;
 
@@ -639,7 +644,9 @@ export class TestSession extends DurableObject {
 
         if (startContainer) kv.put(CHANGES_FIXTURE_KEY, { ...fixture, started: true });
 
-        return startContainer || fixture.started === true ? fixture.running : (fixture.stopped ?? fixture.running);
+        return startContainer || fixture.started === true
+          ? fixture.running
+          : (fixture.stopped ?? fixture.running);
       },
       file: async (query) => {
         if (query.path === "missing") throw new Error("No such file in the Workspace's repos");

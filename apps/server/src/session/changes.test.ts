@@ -53,10 +53,9 @@ describe("the Changes broadcast", () => {
     await Promise.all([first, second, third]);
 
     expect(calls).toEqual([false, true]);
-    expect(updates.map((update) => update.kind === "changes" && update.message.repos[0]?.files[0]?.path)).toEqual([
-      "1.ts",
-      "2.ts",
-    ]);
+    expect(
+      updates.map((update) => update.kind === "changes" && update.message.repos[0]?.files[0]?.path),
+    ).toEqual(["1.ts", "2.ts"]);
 
     // A new watcher is sent the last list at once.
     const late: ChangesUpdate[] = [];
@@ -102,7 +101,11 @@ describe("the writing tools' wrap", () => {
       written,
     });
 
-    return new Map((extension.wraps ?? []).flatMap((wrap) => ("tool" in wrap ? [[wrap.tool, wrap] as const] : [])));
+    return new Map(
+      (extension.wraps ?? []).flatMap((wrap) =>
+        "tool" in wrap ? [[wrap.tool, wrap] as const] : [],
+      ),
+    );
   };
 
   it("wraps only the tools that write", () => {

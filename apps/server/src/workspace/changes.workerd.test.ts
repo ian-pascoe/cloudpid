@@ -23,7 +23,9 @@ const workspace = (): DurableObjectStub<TestWorkspace> =>
 const place = (stub: DurableObjectStub<TestWorkspace>, name: string, as: string = name) => {
   const files: RepoFiles = repos[name] ?? {};
 
-  return stub.putFiles(Object.entries(files).map(([path, base64]) => [`/workspace/${as}/${path}`, bytesOf(base64)]));
+  return stub.putFiles(
+    Object.entries(files).map(([path, base64]) => [`/workspace/${as}/${path}`, bytesOf(base64)]),
+  );
 };
 
 const sameBytes = (left: Uint8Array, right: Uint8Array) =>
@@ -49,13 +51,31 @@ describe("the Workspace DO's Changes", () => {
           // Renamed and edited: a deletion and an addition, as the blobs differ.
           { path: "edited-moved.txt", status: "added", additions: 31, deletions: 0 },
           { path: "edited.txt", status: "deleted", additions: 0, deletions: 30 },
-          { path: "gen/out.gen.ts", status: "modified", additions: 1, deletions: 1, generated: true },
+          {
+            path: "gen/out.gen.ts",
+            status: "modified",
+            additions: 1,
+            deletions: 1,
+            generated: true,
+          },
           { path: "gone.txt", status: "deleted", additions: 0, deletions: 1 },
           // Over 1 MiB: listed, with no counts the Workspace DO could know without reading it all.
-          { path: "grows.txt", status: "modified", additions: null, deletions: null, tooLarge: true },
+          {
+            path: "grows.txt",
+            status: "modified",
+            additions: null,
+            deletions: null,
+            tooLarge: true,
+          },
           { path: "logo.bin", status: "modified", additions: null, deletions: null, binary: true },
           // Renamed with the same blob: paired.
-          { path: "moved/same.txt", oldPath: "same.txt", status: "renamed", additions: 0, deletions: 0 },
+          {
+            path: "moved/same.txt",
+            oldPath: "same.txt",
+            status: "renamed",
+            additions: 0,
+            deletions: 0,
+          },
           { path: "new.txt", status: "added", additions: 2, deletions: 0 },
           // Too many changes to line up in a second: whole-file numbers, "≈".
           {
@@ -65,7 +85,13 @@ describe("the Workspace DO's Changes", () => {
             deletions: REWRITE_LINES,
             approximate: true,
           },
-          { path: "vendor/keep.js", status: "modified", additions: 1, deletions: 1, vendored: false },
+          {
+            path: "vendor/keep.js",
+            status: "modified",
+            additions: 1,
+            deletions: 1,
+            vendored: false,
+          },
           { path: "vendor/lib.js", status: "modified", additions: 1, deletions: 1, vendored: true },
           // Not `target/built.txt`: tracked, but on a Container-only path, so the Workspace DO never holds it. Nor the
           // ignored `out/ignored.js`.
@@ -89,7 +115,9 @@ describe("the Workspace DO's Changes", () => {
       old: { kind: "text", text: lines(10) },
       new: { kind: "text", text: `${lines(10).replace("line 1\n", "line one\n")}line 10\n` },
     });
-    expect(await stub.changeFile({ repo: "basic", path: "moved/same.txt", oldPath: "same.txt" })).toEqual({
+    expect(
+      await stub.changeFile({ repo: "basic", path: "moved/same.txt", oldPath: "same.txt" }),
+    ).toEqual({
       old: { kind: "text", text: lines(30, "same") },
       new: { kind: "text", text: lines(30, "same") },
     });
@@ -110,7 +138,11 @@ describe("the Workspace DO's Changes", () => {
       new: { kind: "text", text: "fresh\nfile\n" },
     });
     // Caught at once: a stub's rejected call left to `expect().rejects` is reported as unhandled too.
-    const refused = (path: string) => stub.changeFile({ repo: "basic", path }).then(() => undefined, (cause: unknown) => String(cause));
+    const refused = (path: string) =>
+      stub.changeFile({ repo: "basic", path }).then(
+        () => undefined,
+        (cause: unknown) => String(cause),
+      );
 
     expect(await refused("../escape")).toMatch(/No such file/);
     expect(await refused(".git/config")).toMatch(/No such file/);
@@ -125,17 +157,28 @@ describe("the Workspace DO's Changes", () => {
     await place(stub, "tiny", "cap-b");
 
     const untracked = (repo: string, count: number) =>
-      Array.from({ length: count }, (_, index) => [`/workspace/${repo}/new/${String(index).padStart(4, "0")}.txt`, `${index}\n`] as const);
+      Array.from(
+        { length: count },
+        (_, index) =>
+          [`/workspace/${repo}/new/${String(index).padStart(4, "0")}.txt`, `${index}\n`] as const,
+      );
 
     await stub.putFiles([...untracked("cap-a", 1_500), ...untracked("cap-b", 600)]);
 
     const listed = await stub.changes({ directory: "/workspace", startContainer: false });
 
-    expect(listed.repos.map(({ repo, files, more }) => ({ repo, files: files.length, more }))).toEqual([
+    expect(
+      listed.repos.map(({ repo, files, more }) => ({ repo, files: files.length, more })),
+    ).toEqual([
       { repo: "cap-a", files: 1_500, more: 0 },
       { repo: "cap-b", files: MAX_CHANGED_FILES - 1_500, more: 100 },
     ]);
-    expect(listed.repos[1]?.files[0]).toEqual({ path: "new/0000.txt", status: "added", additions: 1, deletions: 0 });
+    expect(listed.repos[1]?.files[0]).toEqual({
+      path: "new/0000.txt",
+      status: "added",
+      additions: 1,
+      deletions: 0,
+    });
   });
 
   it("sends a repo with .gitattributes rules git applies to the Container, and never starts it on its own", async () => {
@@ -144,7 +187,9 @@ describe("the Workspace DO's Changes", () => {
     await place(stub, "attributed");
 
     // The Container is stopped: the repo keeps its last list (none yet), "may be out of date".
-    expect(await stub.changes({ directory: "/workspace/attributed", startContainer: false })).toEqual({
+    expect(
+      await stub.changes({ directory: "/workspace/attributed", startContainer: false }),
+    ).toEqual({
       repos: [
         {
           repo: "attributed",
@@ -158,21 +203,29 @@ describe("the Workspace DO's Changes", () => {
     expect((await stub.liveStubs()).container).toBe(0);
 
     // The owner's Refresh may start it: the listing goes to the Container, which this test Worker refuses.
-    const refreshed = await stub.changes({ directory: "/workspace/attributed", startContainer: true });
+    const refreshed = await stub.changes({
+      directory: "/workspace/attributed",
+      startContainer: true,
+    });
 
     expect((await stub.liveStubs()).container).toBe(1);
-    expect(refreshed.repos[0]).toMatchObject({ stale: true, error: expect.stringContaining("no Container") });
+    expect(refreshed.repos[0]).toMatchObject({
+      stale: true,
+      error: expect.stringContaining("no Container"),
+    });
   });
 
   it("sends a repo whose packs are over 16 MB to the Container", async () => {
     const stub = workspace();
 
     await place(stub, "tiny");
-    await stub.putFiles([["/workspace/tiny/.git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1)]]);
-
-    expect((await stub.changes({ directory: "/workspace/tiny", startContainer: false })).repos).toEqual([
-      expect.objectContaining({ repo: "tiny", stale: true, files: [] }),
+    await stub.putFiles([
+      ["/workspace/tiny/.git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1)],
     ]);
+
+    expect(
+      (await stub.changes({ directory: "/workspace/tiny", startContainer: false })).repos,
+    ).toEqual([expect.objectContaining({ repo: "tiny", stale: true, files: [] })]);
     expect((await stub.liveStubs()).container).toBe(0);
   });
 });

@@ -33,7 +33,10 @@ export type ContainerRepoChanges =
  * untracked files that are not ignored; `.git/index` itself is only read. A repo with no commit is compared with the
  * empty tree.
  */
-export const changesScript = (repos: ReadonlyArray<string>, root: string = WORKSPACE_ROOT): string => `set -u -o pipefail
+export const changesScript = (
+  repos: ReadonlyArray<string>,
+  root: string = WORKSPACE_ROOT,
+): string => `set -u -o pipefail
 root=${shellQuote(root)}
 repos=(${repos.map(shellQuote).join(" ")})
 work=$(mktemp -d)
@@ -68,7 +71,8 @@ exit 0
 `;
 
 /** The bytes `text` (base64) holds. */
-const bytesOf = (text: string): Uint8Array => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+const bytesOf = (text: string): Uint8Array =>
+  Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
 
 const decoder = new TextDecoder();
 
@@ -92,7 +96,7 @@ type RawRecord = {
 const rawRecords = (fields: readonly string[]): RawRecord[] => {
   const records: RawRecord[] = [];
 
-  for (let at = 0; at < fields.length; ) {
+  for (let at = 0; at < fields.length;) {
     const meta = fields[at++] ?? "";
     const [, , oldId = "", , status = ""] = meta.slice(1).split(" ");
     const letter = status.charAt(0);
@@ -116,7 +120,7 @@ type Counts = { readonly additions: number | null; readonly deletions: number | 
 const numstatCounts = (fields: readonly string[]): Counts[] => {
   const counts: Counts[] = [];
 
-  for (let at = 0; at < fields.length; ) {
+  for (let at = 0; at < fields.length;) {
     const [added = "", deleted = "", path = ""] = (fields[at++] ?? "").split("\t");
 
     // A rename's line ends with an empty path; its two paths are the next fields.

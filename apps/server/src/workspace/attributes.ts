@@ -151,7 +151,10 @@ export const readAttributes = (text: string | undefined): RootAttributes => {
     if (line === "" || line.startsWith("#")) continue;
 
     const [pattern, rest] = splitPattern(line);
-    const tokens = rest.trim().split(/\s+/).filter((token) => token !== "");
+    const tokens = rest
+      .trim()
+      .split(/\s+/)
+      .filter((token) => token !== "");
 
     if (tokens.some((token) => COMPARED.has(nameOf(token)))) compares = true;
 

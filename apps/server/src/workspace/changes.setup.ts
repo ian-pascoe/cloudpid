@@ -4,7 +4,15 @@
 // tests write the working tree from the same generator.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { TestProject } from "vitest/node";
@@ -57,7 +65,10 @@ const collect = (root: string, skip: (path: string) => boolean): RepoFiles => {
  */
 const repo = (
   head: Readonly<Record<string, Content>>,
-  change: (tree: { write: (path: string, content: Content) => void; remove: (path: string) => void }) => void,
+  change: (tree: {
+    write: (path: string, content: Content) => void;
+    remove: (path: string) => void;
+  }) => void,
   skip: (path: string) => boolean = () => false,
 ): RepoFiles => {
   const dir = mkdtempSync(join(tmpdir(), "changes-repo-"));
@@ -89,7 +100,10 @@ const repo = (
 
 /** The rewritten file: as many lines, every one changed and reordered. */
 const rewritten = () =>
-  Array.from({ length: REWRITE_LINES }, (_, index) => `rewritten ${(index * 7919) % REWRITE_LINES} line\n`).join("");
+  Array.from(
+    { length: REWRITE_LINES },
+    (_, index) => `rewritten ${(index * 7919) % REWRITE_LINES} line\n`,
+  ).join("");
 
 const basic = () =>
   repo(
@@ -104,7 +118,8 @@ const basic = () =>
       "rewrite.txt": lines(REWRITE_LINES),
       // Tracked, but on a Container-only path (`/*/target`): the Workspace DO never holds it.
       "target/built.txt": "built\n",
-      ".gitattributes": "*.gen.ts linguist-generated\nvendor/** linguist-vendored\nvendor/keep.js -linguist-vendored\n",
+      ".gitattributes":
+        "*.gen.ts linguist-generated\nvendor/** linguist-vendored\nvendor/keep.js -linguist-vendored\n",
       ".gitignore": "out/\n",
       "gen/out.gen.ts": "a\n",
       "vendor/lib.js": "v\n",

@@ -90,8 +90,22 @@ describe("the Container's Changes listing", () => {
             binary: false,
             oldBytes: lines(20).length,
           },
-          { path: "edit.txt", status: "modified", additions: 2, deletions: 1, binary: false, oldBytes: 14 },
-          { path: "gone.txt", status: "deleted", additions: 0, deletions: 1, binary: false, oldBytes: 4 },
+          {
+            path: "edit.txt",
+            status: "modified",
+            additions: 2,
+            deletions: 1,
+            binary: false,
+            oldBytes: 14,
+          },
+          {
+            path: "gone.txt",
+            status: "deleted",
+            additions: 0,
+            deletions: 1,
+            binary: false,
+            oldBytes: 4,
+          },
           {
             path: "moved-and-edited.txt",
             oldPath: "moved.txt",
@@ -101,7 +115,14 @@ describe("the Container's Changes listing", () => {
             binary: false,
             oldBytes: lines(20, "moved").length,
           },
-          { path: "new.txt", status: "added", additions: 1, deletions: 0, binary: false, oldBytes: null },
+          {
+            path: "new.txt",
+            status: "added",
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            oldBytes: null,
+          },
         ],
       },
     ]);
@@ -123,7 +144,10 @@ describe("the Container's Changes listing", () => {
   });
 
   it("marks what git takes for binary, with no counts, and leaves ignored files out", () => {
-    const repo = workspace({ "logo.png": new Uint8Array([137, 80, 0, 1, 2]), ".gitignore": "out/\n" });
+    const repo = workspace({
+      "logo.png": new Uint8Array([137, 80, 0, 1, 2]),
+      ".gitignore": "out/\n",
+    });
 
     repo.write("logo.png", new Uint8Array([137, 80, 0, 9, 9, 9]));
     repo.write("out/built.js", "ignored\n");
@@ -154,7 +178,14 @@ describe("the Container's Changes listing", () => {
       {
         repo: "app",
         files: [
-          { path: "first.txt", status: "added", additions: 1, deletions: 0, binary: false, oldBytes: null },
+          {
+            path: "first.txt",
+            status: "added",
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            oldBytes: null,
+          },
         ],
       },
       { repo: "other", files: [] },

@@ -97,9 +97,11 @@ export type ChangesOptions = {
   /** Whether the Container runs now. */
   readonly running: () => boolean;
   /** Run `script` on the Container, starting it if it is stopped. */
-  readonly run: (
-    script: string,
-  ) => Promise<{ readonly exitCode: number | null; readonly stdout: string; readonly stderr: string }>;
+  readonly run: (script: string) => Promise<{
+    readonly exitCode: number | null;
+    readonly stdout: string;
+    readonly stderr: string;
+  }>;
   readonly kept: {
     readonly load: (repo: string) => Promise<KeptChanges | undefined>;
     readonly save: (repo: string, changes: KeptChanges) => Promise<void>;
@@ -205,8 +207,7 @@ const blobId = async (bytes: Uint8Array): Promise<string> => {
 };
 
 /** git's rule: a NUL in the first 8,000 bytes. */
-const isBinary = (bytes: Uint8Array): boolean =>
-  bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+const isBinary = (bytes: Uint8Array): boolean => bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0);
 
 /** The number of lines `bytes` holds, a last one without its newline included. */
 const lineCount = (bytes: Uint8Array): number => {
@@ -217,10 +218,12 @@ const lineCount = (bytes: Uint8Array): number => {
   return bytes.length > 0 && bytes[bytes.length - 1] !== 10 ? count + 1 : count;
 };
 
-const errorText = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
+const errorText = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
 
 const isNotFound = (cause: unknown): boolean =>
-  Predicate.hasProperty(cause, "code") && (cause.code === "NotFoundError" || cause.code === "ENOENT");
+  Predicate.hasProperty(cause, "code") &&
+  (cause.code === "NotFoundError" || cause.code === "ENOENT");
 
 /** One side of a file as the listing read it: never its bytes, which are let go as each file is done. */
 type SideFacts = {
@@ -241,7 +244,11 @@ type Row = {
   readonly approximate?: boolean;
 };
 
-type Counted = { readonly additions: number; readonly deletions: number; readonly approximate?: boolean };
+type Counted = {
+  readonly additions: number;
+  readonly deletions: number;
+  readonly approximate?: boolean;
+};
 
 /** Why a repo needs the Container's git, or undefined when the Workspace DO can list it. */
 type Fallback = { readonly reason: string };
@@ -308,7 +315,9 @@ export class WorkspaceChangesModule {
     const covered = await this.#repos(request.directory);
 
     const repos =
-      request.repos === undefined ? covered : covered.filter((repo) => request.repos?.includes(repo));
+      request.repos === undefined
+        ? covered
+        : covered.filter((repo) => request.repos?.includes(repo));
 
     const containerOnly = await this.#options.containerOnly();
     const deadline = this.#now() + LISTING_COUNT_BUDGET_MS;
@@ -338,11 +347,7 @@ export class WorkspaceChangesModule {
   }
 
   /** Where `repo` stands and how it is listed: by the Workspace DO itself, or by the Container's git and why. */
-  async #plan(
-    repo: string,
-    containerOnly: ContainerOnly,
-    deadline: number,
-  ): Promise<RepoPlan> {
+  async #plan(repo: string, containerOnly: ContainerOnly, deadline: number): Promise<RepoPlan> {
     const files = this.#files();
     const fs = readOnly(files);
     const dir = `${WORKSPACE_ROOT}/${repo}`;
@@ -357,11 +362,21 @@ export class WorkspaceChangesModule {
     if (fallback !== undefined) return { repo, head, attributes, listed: fallback };
 
     try {
-      return { repo, head, attributes, listed: await this.#listOwn(fs, dir, head, attributes, containerOnly, deadline) };
+      return {
+        repo,
+        head,
+        attributes,
+        listed: await this.#listOwn(fs, dir, head, attributes, containerOnly, deadline),
+      };
     } catch (cause) {
       this.#options.warn(`changes: isomorphic-git failed in ${repo}: ${errorText(cause)}`);
 
-      return { repo, head, attributes, listed: { reason: `isomorphic-git failed: ${errorText(cause)}` } };
+      return {
+        repo,
+        head,
+        attributes,
+        listed: { reason: `isomorphic-git failed: ${errorText(cause)}` },
+      };
     }
   }
 
@@ -404,7 +419,12 @@ export class WorkspaceChangesModule {
       })
       .map(([path, inHead, inWorkdir]) => ({
         path,
-        status: inHead === 0 ? ("added" as const) : inWorkdir === 0 ? ("deleted" as const) : ("modified" as const),
+        status:
+          inHead === 0
+            ? ("added" as const)
+            : inWorkdir === 0
+              ? ("deleted" as const)
+              : ("modified" as const),
       }))
       .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
@@ -426,7 +446,10 @@ export class WorkspaceChangesModule {
       });
     }
 
-    return { files: withRenames(rows).map((entry) => withFlags(entry, attributes)), total: changed.length };
+    return {
+      files: withRenames(rows).map((entry) => withFlags(entry, attributes)),
+      total: changed.length,
+    };
   }
 
   async #headSide(fs: Fs, dir: string, commit: string | null, path: string, cache: GitCache) {
@@ -533,7 +556,9 @@ export class WorkspaceChangesModule {
       for (const repo of parseChanges(ran.stdout)) listed.set(repo.repo, repo);
 
       if (ran.exitCode !== 0) {
-        this.#options.warn(`changes: the Container's listing exited ${ran.exitCode}: ${ran.stderr}`);
+        this.#options.warn(
+          `changes: the Container's listing exited ${ran.exitCode}: ${ran.stderr}`,
+        );
       }
 
       // A repo it printed nothing for was not listed: say why rather than keep the last list as if nothing happened.
@@ -548,7 +573,11 @@ export class WorkspaceChangesModule {
     } catch (cause) {
       this.#options.warn(`changes: the Container's listing failed: ${errorText(cause)}`);
 
-      for (const repo of repos) listed.set(repo, { repo, error: `The Container could not list the Changes: ${errorText(cause)}` });
+      for (const repo of repos)
+        listed.set(repo, {
+          repo,
+          error: `The Container could not list the Changes: ${errorText(cause)}`,
+        });
     }
 
     return listed;
@@ -563,11 +592,23 @@ export class WorkspaceChangesModule {
     const { repo, head } = plan;
 
     if (!("reason" in plan.listed)) {
-      return { repo, head, files: plan.listed.files, more: plan.listed.total - Math.min(plan.listed.total, this.#maxFiles), stale: false };
+      return {
+        repo,
+        head,
+        files: plan.listed.files,
+        more: plan.listed.total - Math.min(plan.listed.total, this.#maxFiles),
+        stale: false,
+      };
     }
 
     const kept = await this.#options.kept.load(repo).catch(() => undefined);
-    const stale = { repo, head, files: [...(kept?.files ?? [])], more: kept?.more ?? 0, stale: true };
+    const stale = {
+      repo,
+      head,
+      files: [...(kept?.files ?? [])],
+      more: kept?.more ?? 0,
+      stale: true,
+    };
 
     if (container === undefined) return stale;
 
@@ -593,7 +634,8 @@ export class WorkspaceChangesModule {
               () => null,
             );
 
-      const tooLarge = (file.oldBytes ?? 0) > MAX_CHANGE_SIDE_BYTES || (newBytes ?? 0) > MAX_CHANGE_SIDE_BYTES;
+      const tooLarge =
+        (file.oldBytes ?? 0) > MAX_CHANGE_SIDE_BYTES || (newBytes ?? 0) > MAX_CHANGE_SIDE_BYTES;
 
       listed.push(
         withFlags(
@@ -638,10 +680,18 @@ export class WorkspaceChangesModule {
       throw new Error(`${repo} is not a repo of the Workspace`);
     });
 
-    return { old: await this.#headFile(files, fs, dir, oldPath), new: await this.#workingFile(fs, dir, path) };
+    return {
+      old: await this.#headFile(files, fs, dir, oldPath),
+      new: await this.#workingFile(fs, dir, path),
+    };
   }
 
-  async #headFile(files: ChangesFiles, fs: Fs, dir: string, path: string): Promise<ChangeSide | null> {
+  async #headFile(
+    files: ChangesFiles,
+    fs: Fs,
+    dir: string,
+    path: string,
+  ): Promise<ChangeSide | null> {
     const head = await readHead(fs, dir);
 
     if (head.commit === null) return null;
@@ -659,7 +709,9 @@ export class WorkspaceChangesModule {
     }
 
     if (!this.#options.running()) {
-      throw new Error("This file's HEAD side needs the Container, which is stopped: refresh the Changes by hand");
+      throw new Error(
+        "This file's HEAD side needs the Container, which is stopped: refresh the Changes by hand",
+      );
     }
 
     const repo = dir.slice(WORKSPACE_ROOT.length + 1);
@@ -668,7 +720,9 @@ export class WorkspaceChangesModule {
 
     if (read === null) return null;
 
-    return read.blob === undefined ? { kind: "too_large", bytes: read.bytes } : sideOf(read.blob, read.bytes);
+    return read.blob === undefined
+      ? { kind: "too_large", bytes: read.bytes }
+      : sideOf(read.blob, read.bytes);
   }
 
   async #workingFile(fs: Fs, dir: string, path: string): Promise<ChangeSide | null> {
@@ -707,7 +761,10 @@ const sideOf = (bytes: Uint8Array, size: number): ChangeSide => {
 const isRepoPath = (path: string): boolean => {
   const segments = path.split("/");
 
-  return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..") && segments[0] !== ".git";
+  return (
+    segments.every((segment) => segment !== "" && segment !== "." && segment !== "..") &&
+    segments[0] !== ".git"
+  );
 };
 
 /** The repo's HEAD: its commit (null before the first) and branch (null when detached). */
@@ -780,7 +837,9 @@ const withRenames = (rows: readonly Row[]): ChangeEntry[] => {
     if (removed.has(row)) continue;
 
     const from = paired.get(row);
-    const tooLarge = [row.old, row.new].some((each) => each !== undefined && each.bytes > MAX_CHANGE_SIDE_BYTES);
+    const tooLarge = [row.old, row.new].some(
+      (each) => each !== undefined && each.bytes > MAX_CHANGE_SIDE_BYTES,
+    );
 
     entries.push(
       entryOf({
