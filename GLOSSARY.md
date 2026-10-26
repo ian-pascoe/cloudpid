@@ -197,7 +197,7 @@ An interactive shell the owner runs on a Workspace's Container from a Session, i
 _Avoid_: Console, shell (alone), PTY
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the diffs (the Diff pane), an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the Browser Pane, the diffs (the Diff pane), an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Session details**:
@@ -295,3 +295,11 @@ _Avoid_: Handoff (alone), takeover, live view (for the act)
 **Live View**:
 A Pane that shows an agent's browser tab, and the windows it opened, live and lets the owner use it, open while a Browser Handoff waits.
 _Avoid_: Viewer, screencast, hosted Live View (that is Browser Run's own page)
+
+**Browser Pane**:
+A Pane, one per Session, that shows the Session's browser for the owner to use at any time, in an Owner tab, with a URL bar, apart from any Browser Handoff. It shares the Live View's screen and input, and opens only when the owner opens it.
+_Avoid_: Browser (alone, for the Pane), Live View (for this Pane)
+
+**Owner tab**:
+A tab of the Session's shared browser that the owner opened in the Browser Pane, apart from the conversations' tabs but sharing their cookies and logins. The owner may have several; the Browser Pane shows one of them. It lasts as long as the browser it is in.
+_Avoid_: User tab, the owner's tab (for a conversation's tab the owner took over in a Browser Handoff)
