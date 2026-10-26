@@ -196,6 +196,10 @@ _Avoid_: OOM killer (the kernel's, which acts too late to save the Container)
 An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as a Pane. The agent does not see it.
 _Avoid_: Console, shell (alone), PTY
 
+**Container preview**:
+A dev server running in a Workspace's Container, opened in the Session's browser, for the owner in the Browser Pane and for the agent's `browser`.
+_Avoid_: Preview (alone: that is a pull request's preview stage), tunnel, port forward
+
 **Pane**:
 A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the Browser Pane, the diffs (the Diff pane), an open file. Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
