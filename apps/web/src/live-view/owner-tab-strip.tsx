@@ -2,8 +2,10 @@
 // The Browser Pane's tab strip (#239): each Owner tab by its title with the one shown marked, a close button on each, and
 // **+** for a new blank one. Which tab is shown is the Session's (the browser host's), so switching here switches the
 // owner's other devices too; the Pane's connection follows what the Session says (`followOwnerTabAtom`), not the click.
-// The titles are the pages' own: page content, shown as text. A tab a `browser` run is driving says so, shown or not.
+// The titles are the pages' own: page content, shown as text. A tab a `browser` call is driving has a mark, shown or
+// not, that names who drives it as the Pane's note does.
 
+import type { OwnerTabDriver } from "@cloudpid/protocol";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Bot, Plus, X } from "lucide-react";
@@ -17,6 +19,26 @@ import {
   ownerTabListAtom,
 } from "./browser-pane-atoms.ts";
 import { stripOf } from "./owner-tab-strip-model.ts";
+import { useDrivingNote } from "./use-driving-note.ts";
+
+/** The mark on a tab a `browser` call drives, which names who drives it (`useDrivingNote`) to a pointer and a reader. */
+const DrivenMark = ({
+  sessionId,
+  drivers,
+  ownerTabId,
+}: {
+  readonly sessionId: string;
+  readonly drivers: ReadonlyArray<OwnerTabDriver>;
+  readonly ownerTabId: string;
+}) => {
+  const note = useDrivingNote(sessionId, drivers, ownerTabId) ?? "The agent is driving this tab";
+
+  return (
+    <Bot className="size-3.5 shrink-0 animate-pulse text-primary" role="img" aria-label={note}>
+      <title>{note}</title>
+    </Bot>
+  );
+};
 
 /**
  * The tab strip of the Browser Pane `pane`. `onNew` runs when **+** is pressed, before the Session is asked: the Pane
@@ -71,11 +93,7 @@ export const OwnerTabStrip = ({
                   }}
                 >
                   {driven && (
-                    <Bot
-                      className="size-3.5 shrink-0 animate-pulse text-primary"
-                      role="img"
-                      aria-label="The agent is driving this tab"
-                    />
+                    <DrivenMark sessionId={pane.sessionId} drivers={drivers} ownerTabId={tab.id} />
                   )}
                   <span className="min-w-0 truncate">{title}</span>
                 </button>

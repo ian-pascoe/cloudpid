@@ -1,14 +1,16 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a plain function over native arrays, not a combinator.
-// What the Browser Pane says while the agent drives an Owner tab (`docs/spec.md` → Browser → Browser Pane): the runs the
-// Session says work in Owner tabs (`owner_tab_drivers`), for the Owner tab shown, named as the owner knows each agent:
-// "The agent" for the root agent's, a subagent by its ID and role.
+// What the Browser Pane says while the agent drives an Owner tab (`docs/spec.md` → Browser → Browser Pane): the
+// `browser` calls the Session says work in Owner tabs (`owner_tab_drivers`), for one Owner tab, named as the owner knows
+// each agent: "The agent" for the root agent's, a subagent by its ID and role.
+
+import type { OwnerTabDriver } from "@cloudpid/protocol";
 
 /**
- * Who is driving Owner tab `ownerTabId`, as the Pane says it, or null when no run works in it. `agentOf` names the agent
- * whose conversation a run is: undefined for the root agent's (or one the task graph does not list).
+ * Who is driving Owner tab `ownerTabId`, as the Pane says it, or null when no call works in it. `agentOf` names the
+ * agent whose conversation a call is: undefined for the root agent's (or one the task graph does not list).
  */
 export const drivingNote = (
-  drivers: ReadonlyArray<{ readonly ownerTabId: string; readonly conversationId: number }>,
+  drivers: ReadonlyArray<OwnerTabDriver>,
   ownerTabId: string | null,
   agentOf: (conversationId: number) => string | undefined,
 ): string | null => {

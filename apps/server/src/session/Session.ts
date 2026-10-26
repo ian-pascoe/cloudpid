@@ -628,7 +628,7 @@ export const SessionLive = Session.make(
             Layer.provideMerge(sessionBrowser),
             // The sockets mint the Browser Pane's links through it (`owner_tab_view`).
             Layer.provideMerge(sessionBrowserPane),
-            // The `browser` runs in Owner tabs, told to every client for the Browser Pane (`owner_tab_drivers`).
+            // The `browser` calls in Owner tabs, told to every client for the Browser Pane (`owner_tab_drivers`).
             Layer.provideMerge(sessionOwnerTabDriversLayer(state.raw)),
             Layer.provide(Layer.mergeAll(registry, settings)),
             // Last, so the object's own Effects (those the host and the sockets run) make their spans there too.

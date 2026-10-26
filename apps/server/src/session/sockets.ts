@@ -157,14 +157,13 @@ export const ownerTabsMessage = (tabs: OwnerTabListing): ServerMessage => ({
   ...tabs,
 });
 
-/** The `owner_tab_drivers` message for `drivers`, which every client is sent: which runs work in Owner tabs now. */
-export const ownerTabDrivers = (drivers: ReadonlyArray<OwnerTabDriver>): ServerMessage => ({
+/**
+ * The `owner_tab_drivers` message for `drivers`, which every client is sent: which `browser` calls work in Owner tabs
+ * now.
+ */
+export const ownerTabDriversMessage = (drivers: ReadonlyArray<OwnerTabDriver>): ServerMessage => ({
   type: "owner_tab_drivers",
-  drivers: Arr.map(drivers, (driver) => ({
-    ownerTabId: driver.ownerTabId,
-    // SAFETY: a driver's conversation is the running call's, a pi-durable conversation ID.
-    conversationId: driver.conversationId as ConversationId,
-  })),
+  drivers,
 });
 
 /**
@@ -723,8 +722,8 @@ export const sessionSocketsLayer = (
         // can tell "none waits" (a Live View Pane whose handoff is gone closes) from "not heard yet".
         yield* send(server, browserHandoffRequests(yield* handoffs.pending));
 
-        // Which runs drive the owner's Owner tabs, an empty list too: a client that reconnects drops what it showed.
-        yield* send(server, ownerTabDrivers(yield* drivers.current));
+        // Which calls drive the owner's Owner tabs, an empty list too: a client that reconnects drops what it showed.
+        yield* send(server, ownerTabDriversMessage(yield* drivers.current));
 
         // Approval requests wait with no deadline; sent when none waits too, so a client clears the cards it held.
         yield* send(server, approvalRequests(yield* approvals.pending));

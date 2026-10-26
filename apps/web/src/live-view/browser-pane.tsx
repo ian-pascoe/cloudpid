@@ -6,7 +6,7 @@
 // none; closing it leaves the tab open in the browser, so opening it again shows the same page. When the Owner tab is
 // gone (closed, or its browser closed or replaced), it says so and offers to open a new Owner tab, and a new one says it
 // replaced the one that is gone. An archived Session's Pane opens nothing: it shows an Owner tab still there, if any. It
-// opens only from the New pane (or the URL or the Session's layout); it never opens on its own. While a `browser` run
+// opens only from the New pane (or the URL or the Session's layout); it never opens on its own. While a `browser` call
 // works in an Owner tab, the tab strip marks it, and over the screen the Pane says the agent (or which subagent) is
 // driving the one shown.
 //
@@ -37,8 +37,7 @@ import { Input } from "../components/ui/input.tsx";
 import { BROWSER_PANE } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
 import { settledFailureOf } from "../registry.ts";
-import { agentLabel } from "../session/agents.ts";
-import { ownerTabDriversAtom, taskGraphAtom } from "../session/atoms.ts";
+import { ownerTabDriversAtom } from "../session/atoms.ts";
 import { addressOf } from "./address.ts";
 import { liveViewStateAtom } from "./atoms.ts";
 import {
@@ -55,9 +54,9 @@ import {
   ownerTabReplacedAtom,
   ownerTabsReopenedAtom,
 } from "./browser-pane-atoms.ts";
-import { drivingNote } from "./driving.ts";
 import { keepFocus, LiveScreen } from "./live-screen.tsx";
 import { OwnerTabStrip } from "./owner-tab-strip.tsx";
+import { useDrivingNote } from "./use-driving-note.ts";
 
 /**
  * Back, forward, reload and the URL bar, over the Owner tab. `focusWhenLive` says the owner asked for a new Owner tab:
@@ -353,7 +352,7 @@ const useReopenWhenInView = (pane: BrowserPaneKey, ended: boolean, inView: boole
   }, [ended, inView, onRecord, pane.archived, reopen]);
 };
 
-/** Who drives the Owner tab shown, named from the task graph, which is watched only while a run drives it. */
+/** Who drives the Owner tab shown (`useDrivingNote`), over the screen. */
 const DrivingNote = ({
   pane,
   drivers,
@@ -363,11 +362,7 @@ const DrivingNote = ({
   drivers: readonly OwnerTabDriver[];
   ownerTabId: string;
 }) => {
-  const graph = useAtomValue(taskGraphAtom(pane.sessionId));
-
-  const note = drivingNote(drivers, ownerTabId, (conversationId) =>
-    agentLabel(graph, conversationId),
-  );
+  const note = useDrivingNote(pane.sessionId, drivers, ownerTabId);
 
   if (note === null) return null;
 
@@ -382,7 +377,7 @@ const DrivingNote = ({
   );
 };
 
-/** That the agent is driving the Owner tab shown (`shown`), while a `browser` run works in it. */
+/** That the agent is driving the Owner tab shown (`shown`), while a `browser` call works in it. */
 const Driving = ({
   pane,
   shown: ownerTabId,

@@ -638,21 +638,21 @@ export const BrowserHandoffRequests = Schema.Struct({
   requests: Schema.Array(BrowserHandoffRequest),
 });
 
-/** A `browser` run working in an Owner tab: the Owner tab (`OwnerTabLinks`' `ownerTabId`) and whose run it is. */
+/** A `browser` call working in an Owner tab: the Owner tab (`OwnerTabLinks`' `ownerTabId`) and whose call it is. */
 export const OwnerTabDriver = Schema.Struct({
   ownerTabId: Schema.String,
-  /** The conversation whose run it is: the root agent's, or a subagent's (the task graph names it). */
+  /** The conversation whose call it is: the root agent's, or a subagent's (the task graph names it). */
   conversationId: ConversationId,
 });
 
 export type OwnerTabDriver = typeof OwnerTabDriver.Type;
 
 /**
- * The runs working in the owner's Owner tabs now, each Owner tab and conversation once, so the Browser Pane can show
+ * The `browser` calls working in the owner's Owner tabs now, each Owner tab and conversation once, so the Browser Pane can show
  * that the agent (or which subagent) is driving the tab, for the owner to tell their clicks from the agent's. Sent after
  * `hello` on every connect (an empty list when none drives) and to every client whenever it changes.
  */
-export const OwnerTabDrivers = Schema.Struct({
+export const OwnerTabDriversMessage = Schema.Struct({
   type: Schema.Literal("owner_tab_drivers"),
   drivers: Schema.Array(OwnerTabDriver),
 });
@@ -1126,7 +1126,7 @@ export const ServerMessage = Schema.Union([
   ApprovalRequests,
   BrowserHandoffRequests,
   OwnerTabsMessage,
-  OwnerTabDrivers,
+  OwnerTabDriversMessage,
   TaskGraphMessage,
   UsageMessage,
   ChangesMessage,

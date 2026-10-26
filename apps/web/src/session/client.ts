@@ -726,7 +726,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       thread.commandId = null;
     }
 
-    // The next socket says again which Secret requests, Approval requests and Browser Handoffs wait, and which runs drive
+    // The next socket says again which Secret requests, Approval requests and Browser Handoffs wait, and which calls drive
     // Owner tabs.
     current = {
       ...current,

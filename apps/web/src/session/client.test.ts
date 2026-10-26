@@ -565,7 +565,7 @@ describe("a Session connection", () => {
     const driver = { ownerTabId: "a", conversationId: 3 };
 
     it.effect(
-      "shows which runs drive the Owner tabs until the Session says none do, or the socket closes",
+      "shows which browser calls drive the Owner tabs until the Session says none do, or the socket closes",
       () =>
         Effect.gen(function* () {
           const { latest, state } = yield* setup();

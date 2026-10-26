@@ -114,7 +114,7 @@ export interface SessionState {
    * to every client when one changes them); null until the Pane has asked. They hold no Live View link.
    */
   readonly ownerTabs: OwnerTabListing | null;
-  /** The `browser` runs driving the owner's Owner tabs now, for the Browser Pane to say so; none until the socket says. */
+  /** The `browser` calls driving the owner's Owner tabs now, for the Browser Pane to say so; none until the socket says. */
   readonly ownerTabDrivers: readonly OwnerTabDriver[];
   /** The subagent threads being watched, by conversation ID. */
   readonly threads: Readonly<Record<string, ThreadState>>;

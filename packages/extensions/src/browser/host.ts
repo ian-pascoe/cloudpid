@@ -32,6 +32,7 @@ export {
   type LiveViewWindow,
   MAX_HANDOFF_INSTRUCTIONS,
   MAX_OWNER_TAB_TITLE,
+  originOf,
   OWNER_TAB_GONE,
   type OwnerTabEntry,
   type OwnerTabLinks,
@@ -52,7 +53,7 @@ export type BrowserHostService = {
    * Run `code`, an async arrow function over the `cdp` global, in the tab of conversation `conversationId`: each
    * conversation has an active tab of its own in the Session's one browser, while cookies and logins are shared. Given
    * `ownerTabId`, it runs in that Owner tab instead, leaving the conversation's tab and the Owner tab's size as they are;
-   * an Owner tab that is not open, or closes during the run, makes the run an error result that says so.
+   * an Owner tab that is not open, or closes during the call, makes the result an error that says so.
    */
   readonly run: (input: {
     readonly code: string;

@@ -7,8 +7,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { BrowserRun } from "@cloudpid/extensions/browser/contract";
 import type { BrowserBinding } from "agents/browser";
-import { describe, expect, it } from "vitest";
+import type { BrowserSource } from "agents/browser/pi";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserHost } from "./BrowserHost.ts";
+import { confinedToOwnerTabs } from "./owner-tab-agent.ts";
 
 declare global {
   namespace Cloudflare {
@@ -179,7 +181,7 @@ const openOwnerTab = async (host: BrowserHost) => {
   return { id: links.ownerTabId, page: links.tab.targetId };
 };
 
-describe("a run in an Owner tab", () => {
+describe("a call in an Owner tab", () => {
   it("runs there, and leaves the conversation's own tab and active tab as they were", () =>
     withHost(async (host, run) => {
       expect(textOf(await host.run(WHERE, 1))).toContain("in page-1");
@@ -213,32 +215,118 @@ describe("a run in an Owner tab", () => {
       expect(textOf(await host.run(WHERE, 7))).not.toContain(`in ${owner.page}`);
     }));
 
-  it("never changes the Owner tab's size, and never opens or switches to another tab", () =>
+  it("refuses, by name, the commands that would size the Owner tab, capture past its viewport, open a tab, or attach to, show, close or auto-attach to another page", () =>
     withHost(async (host, run) => {
+      // The conversation's tab, page-1: another page the Owner tab's call must leave alone.
+      await host.run(WHERE, 1);
+
       const owner = await openOwnerTab(host);
+      const before = run.state.sent.length;
+
+      const refusedMethods = [
+        "Emulation.setDeviceMetricsOverride",
+        "Emulation.clearDeviceMetricsOverride",
+        "Page.captureScreenshot",
+        "Target.createTarget",
+        "Target.closeTarget",
+        "Target.activateTarget",
+        "Target.setAutoAttach",
+      ];
 
       for (const code of [
         'async () => cdp.send({ method: "Emulation.setDeviceMetricsOverride", params: { width: 1, height: 1, deviceScaleFactor: 1, mobile: false }, sessionId: "active" })',
         'async () => cdp.send({ method: "Emulation.clearDeviceMetricsOverride", sessionId: "active" })',
+        'async () => cdp.send({ method: "Page.captureScreenshot", params: { captureBeyondViewport: true }, sessionId: "active" })',
         'async () => cdp.send({ method: "Target.createTarget", params: { url: "about:blank" } })',
-        'async () => cdp.attachToTarget({ targetId: "page-9" })',
+        'async () => cdp.attachToTarget({ targetId: "page-1" })',
+        'async () => cdp.send({ method: "Target.closeTarget", params: { targetId: "page-1" } })',
+        'async () => cdp.send({ method: "Target.activateTarget", params: { targetId: "page-1" } })',
+        'async () => cdp.send({ method: "Target.setAutoAttach", params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true } })',
       ]) {
         const refused = await host.run(code, 1, owner.id);
 
         expect(refused.isError).toBe(true);
         expect(textOf(refused)).toMatch(
-          /Browser Pane sets its size|In an Owner tab you work in that tab alone/,
+          /Browser Pane sets its size|resizes the page while it captures|In an Owner tab you work in that tab alone/,
         );
       }
 
-      expect(run.state.sent.map((sent) => sent.method)).not.toContain(
-        "Emulation.setDeviceMetricsOverride",
-      );
-      expect(run.state.sent.map((sent) => sent.method)).not.toContain(
-        "Emulation.clearDeviceMetricsOverride",
-      );
-      expect(run.state.pages.size).toBe(1);
+      const sent = run.state.sent.slice(before);
+
+      for (const method of refusedMethods) {
+        expect(sent.map((command) => command.method)).not.toContain(method);
+      }
+
+      expect(sent.filter((command) => command.page === "page-1")).toEqual([]);
+      expect([...run.state.pages.keys()]).toEqual(["page-1", owner.page]);
       expect(textOf(await host.run(WHERE, 1, owner.id))).toContain(`in ${owner.page}`);
+    }));
+
+  it("leaves a conversation's tab unconfined after a call in an Owner tab: it opens tabs and sets its size as before", () =>
+    withHost(async (host, run) => {
+      const owner = await openOwnerTab(host);
+
+      expect(textOf(await host.run(WHERE, 1, owner.id))).toContain(`in ${owner.page}`);
+
+      const before = run.state.sent.length;
+
+      const mine = await host.run(
+        'async () => { await cdp.send({ method: "Emulation.setDeviceMetricsOverride", params: { width: 800, height: 600, deviceScaleFactor: 1, mobile: false }, sessionId: "active" }); return (await cdp.send({ method: "Target.createTarget", params: { url: "about:blank" } })).targetId; }',
+        1,
+      );
+
+      expect(mine.isError).not.toBe(true);
+
+      const methods = run.state.sent.slice(before).map((command) => command.method);
+
+      expect(methods).toContain("Emulation.setDeviceMetricsOverride");
+      expect(methods.filter((method) => method === "Target.createTarget")).toHaveLength(2);
+      expect(
+        run.state.sent
+          .slice(before)
+          .filter((command) => command.method === "Emulation.setDeviceMetricsOverride")
+          .map((command) => command.page),
+      ).not.toContain(owner.page);
+    }));
+
+  it("runs a call queued behind a long one in the same Owner tab only if the tab is still open when its turn comes", () =>
+    withHost(async (host, run) => {
+      const owner = await openOwnerTab(host);
+
+      const slow = host.run(
+        'async () => { await cdp.send({ method: "Runtime.evaluate", params: { expression: "1" }, sessionId: "active" }); await new Promise((done) => setTimeout(done, 500)); return "slow"; }',
+        1,
+        owner.id,
+      );
+
+      const queued = host.run(WHERE, 7, owner.id);
+
+      await vi.waitFor(() =>
+        expect(
+          run.state.sent.some(
+            (command) => command.method === "Runtime.evaluate" && command.page === owner.page,
+          ),
+        ).toBe(true),
+      );
+
+      // The owner closes the tab while the first call works.
+      run.state.pages.delete(owner.page);
+
+      const from = run.state.sent.length;
+      const [first, second] = await Promise.all([slow, queued]);
+
+      expect(textOf(first)).toMatch(
+        new RegExp(`^The Owner tab ${owner.id} was closed during the call`),
+      );
+      expect(second.isError).toBe(true);
+      expect(textOf(second)).toBe(
+        `The Owner tab ${owner.id} is closed: the owner closed it, or its browser was closed or replaced. Nothing ran.`,
+      );
+      expect(run.state.sent.slice(from).map((command) => command.method)).not.toContain(
+        "Target.createTarget",
+      );
+      expect(run.state.pages.size).toBe(0);
+      expect(run.state.created).toBe(1);
     }));
 
   it("fails without running anything when the Owner tab is closed, or there is no such Owner tab", () =>
@@ -263,7 +351,7 @@ describe("a run in an Owner tab", () => {
       expect(run.state.pages.size).toBe(0);
     }));
 
-  it("ends with an error that says so when the Owner tab is closed during the run", () =>
+  it("ends with an error that says so when the Owner tab is closed during the call", () =>
     withHost(async (host) => {
       const owner = await openOwnerTab(host);
 
@@ -275,7 +363,7 @@ describe("a run in an Owner tab", () => {
 
       expect(ended.isError).toBe(true);
       expect(textOf(ended)).toMatch(
-        new RegExp(`^The Owner tab ${owner.id} was closed during the run`),
+        new RegExp(`^The Owner tab ${owner.id} was closed during the call`),
       );
     }));
 });
@@ -329,4 +417,47 @@ describe("two Owner tabs", () => {
       expect(run.state.sent.map((sent) => sent.method)).not.toContain("Runtime.evaluate");
       expect(run.state.created).toBe(1);
     }));
+});
+
+describe("a connection to an Owner tab's scope", () => {
+  /** A source that records the scopes it is asked to connect, and connects none. */
+  const recording = () => {
+    const asked: Array<string | undefined> = [];
+
+    const source: BrowserSource = {
+      name: "recording",
+      connect: (options) => {
+        asked.push(options?.scope);
+
+        return Promise.reject(new Error("connected"));
+      },
+    };
+
+    return { source, asked };
+  };
+
+  it("is not made while the Owner tab is not open, so no browser starts and no blank tab opens in its place", async () => {
+    const { source, asked } = recording();
+    const confined = confinedToOwnerTabs(source, () => Promise.resolve(undefined));
+
+    await expect(confined.connect({ scope: "owner-tab:a" })).rejects.toThrow(
+      "The Owner tab a is closed: the owner closed it, or its browser was closed or replaced. Nothing ran.",
+    );
+    expect(asked).toEqual([]);
+
+    // A conversation's scope is connected as it is, whatever the Owner tabs.
+    await expect(confined.connect({ scope: "conversation:1" })).rejects.toThrow("connected");
+    expect(asked).toEqual(["conversation:1"]);
+  });
+
+  it("is made while the Owner tab is open", async () => {
+    const { source, asked } = recording();
+
+    const confined = confinedToOwnerTabs(source, () =>
+      Promise.resolve({ browserSessionId: "s1", targetId: "page-1" }),
+    );
+
+    await expect(confined.connect({ scope: "owner-tab:a" })).rejects.toThrow("connected");
+    expect(asked).toEqual(["owner-tab:a"]);
+  });
 });

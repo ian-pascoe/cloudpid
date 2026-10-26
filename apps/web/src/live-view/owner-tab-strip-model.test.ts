@@ -1,6 +1,13 @@
 // @effect-diagnostics preferEffectArray:off
+import type { ConversationId, OwnerTabDriver } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { stripOf } from "./owner-tab-strip-model.ts";
+
+const driver = (ownerTabId: string, conversationId: number): OwnerTabDriver => ({
+  ownerTabId,
+  // SAFETY: a test's conversations are plain numbers, as pi-durable's are.
+  conversationId: conversationId as ConversationId,
+});
 
 describe("the Browser Pane's tab strip", () => {
   it("lists the Owner tabs by title, marks the one shown, and calls a page without a title a new tab", () => {
@@ -30,7 +37,7 @@ describe("the Browser Pane's tab strip", () => {
     expect(stripOf({ tabs: [{ id: "a", title: "Docs" }], shown: "a" }, true).canOpen).toBe(false);
   });
 
-  it("marks the Owner tabs a browser run is driving, whether shown or not, and only those", () => {
+  it("marks the Owner tabs a browser call is driving, whether shown or not, and only those", () => {
     const { tabs } = stripOf(
       {
         tabs: [
@@ -41,11 +48,7 @@ describe("the Browser Pane's tab strip", () => {
         shown: "a",
       },
       false,
-      [
-        { ownerTabId: "b", conversationId: 1 },
-        { ownerTabId: "b", conversationId: 4 },
-        { ownerTabId: "gone", conversationId: 2 },
-      ],
+      [driver("b", 1), driver("b", 4), driver("gone", 2)],
     );
 
     expect(tabs.map(({ id, driven }) => [id, driven])).toEqual([

@@ -29,7 +29,7 @@ import { DurableObject } from "cloudflare:workers";
 import * as Predicate from "effect/Predicate";
 import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
-import { confinedToOwnerTabs, runInOwnerTab } from "./owner-tab-agent.ts";
+import { confinedToOwnerTabs, OwnerTabCalls } from "./owner-tab-agent.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
 import {
   adoptTab,
@@ -79,6 +79,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   readonly #tool: PiBrowserTool;
   readonly #handoffs: HandoffHost;
   readonly #ownerTabs: OwnerTabs;
+  readonly #ownerTabCalls: OwnerTabCalls;
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
@@ -90,7 +91,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     // One tool for every scope: it builds a scope's connector when first asked, and runs each scope's calls in turn.
     this.#tool = browserTool({
       ctx,
-      browser: confinedToOwnerTabs(this.#browser),
+      browser: confinedToOwnerTabs(this.#browser, (scope) => tabIn(this.#lookup, scope)),
       loader: env.LOADER,
       scope: scopeOf,
     });
@@ -124,6 +125,10 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
       },
     });
+    this.#ownerTabCalls = new OwnerTabCalls({
+      list: () => this.#ownerTabs.list(),
+      tabOf: (scope) => tabIn(this.#lookup, scope),
+    });
   }
 
   /** Where the stored records say the scopes' tabs are, read without starting anything. */
@@ -154,7 +159,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   }
 
   /**
-   * Run `code` in conversation `conversationId`'s tab or, given `ownerTabId`, in that Owner tab (`runInOwnerTab`). The
+   * Run `code` in conversation `conversationId`'s tab or, given `ownerTabId`, in that Owner tab (`OwnerTabCalls`). The
    * result is the tool result `browserTool` makes: its output as text, a screenshot as an image part, and its details.
    */
   run(code: string, conversationId: number, ownerTabId?: string): Promise<BrowserRun> {
@@ -162,11 +167,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
       return this.#runIn(code, conversationId, conversationScope(conversationId));
     }
 
-    return runInOwnerTab(
-      ownerTabId,
-      { list: () => this.#ownerTabs.list(), tabOf: (scope) => tabIn(this.#lookup, scope) },
-      (scope) => this.#runIn(code, conversationId, scope),
-    );
+    return this.#ownerTabCalls.run(ownerTabId, (scope) => this.#runIn(code, conversationId, scope));
   }
 
   async #runIn(code: string, conversationId: number, scope: string): Promise<BrowserRun> {
