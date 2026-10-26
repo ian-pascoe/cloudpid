@@ -1605,6 +1605,8 @@ describe("the catalog and Slash commands", () => {
           ownerTabId: "owner-1",
           tab: { targetId: "T1", link: "wss://live.example/T1?jwt=a" },
           windows: [],
+          opened: true,
+          replaced: false,
         };
 
         const opened = yield* asking(client.ownerTabView(true));

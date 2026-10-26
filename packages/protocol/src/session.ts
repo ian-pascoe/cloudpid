@@ -858,11 +858,16 @@ export type LiveViewLinks = typeof LiveViewLinks.Type;
 
 /**
  * The answer to `owner_tab_view`: the Owner tab the Browser Pane shows (`ownerTabId`, which names it in the browser host,
- * not a CDP target), with fresh links to it and to each window it opened that is still open.
+ * not a CDP target), with fresh links to it and to each window it opened that is still open. An ask with `open` says
+ * whether it opened the Owner tab (`opened`: none of the owner's was still there, so the browser may have been started
+ * too) and whether the one shown before is gone (`replaced`: its browser was closed or replaced, or it was closed), so
+ * the Pane can say why it shows another; an ask without `open` does neither.
  */
 export const OwnerTabLinks = Schema.Struct({
   ownerTabId: Schema.String,
   ...LiveViewLinks.fields,
+  opened: Schema.Boolean,
+  replaced: Schema.Boolean,
 });
 
 export type OwnerTabLinks = typeof OwnerTabLinks.Type;

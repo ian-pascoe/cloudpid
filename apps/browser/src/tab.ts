@@ -1,6 +1,7 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off schemaSync:off preferTypedSchemaDecoder:off
 // The tab an `agents/browser` scope works in, as `agents/browser` has stored it: a conversation's, for a Browser Handoff
-// (`./handoff.ts`), and an Owner tab's, for the Browser Pane (`./owner-tabs.ts`); and opening an Owner tab.
+// (`./handoff.ts`), and an Owner tab's, for the Browser Pane (`./owner-tabs.ts`); and opening an Owner tab, and
+// forgetting one that is gone.
 import {
   type Browser,
   type BrowserBinding,
@@ -8,7 +9,10 @@ import {
   BrowserRenderingError,
   listBrowserTargets,
 } from "agents/browser";
-import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
+
+/** What `Target.createTarget` answers: the new page's target; any other field is ignored. */
+const decodeCreated = Schema.decodeUnknownSync(Schema.Struct({ targetId: Schema.String }));
 
 /** The part of a `Browser` the lookup reads: its name, its store, and Browser Run. */
 export type TabLookup = {
@@ -34,6 +38,9 @@ export const browserKey = (name: string): string => `browser:session:${name}`;
 
 export const scopeKey = (name: string, scope: string): string =>
   `browser:scope:${name.length}:${name}:${scope}`;
+
+/** The lock `agents/browser` writes every scope record of browser `name` under: their keys' prefix (private too). */
+const scopesLockKey = (name: string): string => scopeKey(name, "");
 
 /**
  * The tab scope `scope` works in, if its browser is still there. `agents/browser` keeps it in the scope's record beside
@@ -87,14 +94,10 @@ export const openTab = async (browser: Pick<Browser, "connect">, scope: string):
   const connection = await browser.connect({ scope });
 
   try {
-    const created = await connection.cdp.send("Target.createTarget", { url: "about:blank" });
-
-    const targetId =
-      Predicate.isObject(created) && "targetId" in created && Predicate.isString(created.targetId)
-        ? created.targetId
-        : undefined;
-
-    if (targetId === undefined) throw new Error("Browser Run opened no tab");
+    const { targetId } = decodeCreated(
+      await connection.cdp.send("Target.createTarget", { url: "about:blank" }),
+      { onExcessProperty: "ignore" },
+    );
 
     // False when the browser was closed or replaced meanwhile: the tab is not where the record would say.
     if (!(await connection.setActiveTarget(targetId))) {
@@ -104,5 +107,25 @@ export const openTab = async (browser: Pick<Browser, "connect">, scope: string):
     return { browserSessionId: connection.sessionId, targetId };
   } finally {
     connection.cdp.disconnect();
+  }
+};
+
+/**
+ * Delete scope `scope`'s record, under the lock `agents/browser` writes scope records under: for a scope that is done
+ * with (an Owner tab that is gone), so it does not count against `MAX_BROWSER_SCOPES`. Its tab, if still open, is left.
+ */
+export const forgetScope = async (
+  {
+    name,
+    store,
+  }: { readonly name: string; readonly store: Pick<BrowserSessionStore, "acquireLock" | "delete"> },
+  scope: string,
+): Promise<void> => {
+  const lock = await store.acquireLock(scopesLockKey(name));
+
+  try {
+    await store.delete(scopeKey(name, scope));
+  } finally {
+    await lock.release();
   }
 };

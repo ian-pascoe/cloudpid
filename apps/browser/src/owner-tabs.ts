@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off cryptoRandomUUID:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off cryptoRandomUUID:off globalConsole:off
 // The Browser Pane's Owner tabs in the browser host (`docs/spec.md` → Browser, ADR-0013): pages of the Session's one
 // shared browser (ADR-0007) that the owner opened, apart from the conversations' tabs but sharing their cookies and
 // logins. Each Owner tab is a scope of `agents/browser` of its own (`owner-tab:<id>`), whose record names the tab and the
@@ -10,10 +10,11 @@
 // which starts and opens nothing). Each answer is fresh 60-second links to the tab and its windows, minted as a
 // Browser Handoff's are (`./cdp.ts`), for the Session to answer the asking client alone. A tab whose browser was closed
 // or replaced, or that was closed, is gone: `view(false)` says so (`OWNER_TAB_GONE`), and the Pane offers to open a new
-// one. The tab strip (several Owner tabs), keeping them across a new browser, and the agent in them come later; the list
-// is here so they have somewhere to go.
+// one; `view(true)` shows another and says the one shown before is gone (`replaced`). The tab strip (several Owner
+// tabs), keeping them across a new browser, and the agent in them come later; the list is here so they have somewhere
+// to go.
 import { OWNER_TAB_GONE, type OwnerTabLinks } from "@cloudpid/extensions/browser/contract";
-import { BrowserGoneError, type CdpTransport, isNoTarget, mintLink, windowsOf } from "./cdp.ts";
+import { BrowserGoneError, type CdpTransport, isNoTarget, mintViewLinks } from "./cdp.ts";
 import type { Tab } from "./tab.ts";
 
 /** The `agents/browser` scope of Owner tab `id`: its record names the tab and the browser it is in. */
@@ -28,6 +29,8 @@ export type OwnerTabsBrowser = {
   readonly tabOf: (scope: string) => Promise<Tab | undefined>;
   /** Open a blank tab for scope `scope`, in the browser that runs or in a new one when none does, and record it. */
   readonly openTab: (scope: string) => Promise<Tab>;
+  /** Delete scope `scope`'s record: an Owner tab that is gone, done with. */
+  readonly forget: (scope: string) => Promise<void>;
   /** A new CDP connection to Browser Run session `browserSessionId`. */
   readonly connect: (browserSessionId: string) => Promise<CdpTransport>;
 };
@@ -38,7 +41,7 @@ export type OwnerTabRecords = {
   put<T>(key: string, value: T): void;
 };
 
-/** The owner's tabs, in the order they were opened, and the one the Browser Pane shows. */
+/** The Owner tabs, in the order they were opened, and the one the Browser Pane shows. */
 export type OwnerTabList = {
   readonly tabs: ReadonlyArray<{ readonly id: string }>;
   readonly shown?: string;
@@ -51,12 +54,15 @@ const EMPTY: OwnerTabList = { tabs: [] };
 /** The tab shown, found: its `id` and where it is. */
 type Shown = { readonly id: string; readonly tab: Tab };
 
+/** The tab an ask with `open` shows, and what it did to show it (`OwnerTabLinks`' `opened` and `replaced`). */
+type Opened = { readonly shown: Shown; readonly opened: boolean; readonly replaced: boolean };
+
 export class OwnerTabs {
   readonly #records: OwnerTabRecords;
   readonly #browser: OwnerTabsBrowser;
   readonly #newId: () => string;
   /** Opening in flight, so that two Panes opening at once open one Owner tab. */
-  #opening: Promise<Shown> | undefined;
+  #opening: Promise<Opened> | undefined;
 
   constructor(options: {
     readonly records: OwnerTabRecords;
@@ -91,26 +97,32 @@ export class OwnerTabs {
 
   /**
    * The Owner tab shown, or, when it is gone, another of the owner's that is still there, or else a new one, opened (in
-   * the browser that runs, or a new one) and shown. The ones that are gone leave the list.
+   * the browser that runs, or a new one) and shown. The ones that are gone leave the list, and their scope records go.
    */
-  #open(): Promise<Shown> {
-    this.#opening ??= (async () => {
+  #open(): Promise<Opened> {
+    this.#opening ??= (async (): Promise<Opened> => {
       const shown = await this.#shown();
 
-      if (shown !== undefined) return shown;
+      if (shown !== undefined) return { shown, opened: false, replaced: false };
 
       const list = this.list();
       const left: Array<{ readonly id: string }> = [];
+      const gone: string[] = [];
       let found: Shown | undefined;
 
       for (const { id } of list.tabs) {
         const tab = id === list.shown ? undefined : await this.#browser.tabOf(ownerTabScope(id));
 
-        if (tab === undefined) continue;
+        if (tab === undefined) {
+          gone.push(id);
+          continue;
+        }
 
         left.push({ id });
         found ??= { id, tab };
       }
+
+      const opened = found === undefined;
 
       if (found === undefined) {
         const id = this.#newId();
@@ -120,13 +132,25 @@ export class OwnerTabs {
       }
 
       this.#save({ tabs: left, shown: found.id });
+      await this.#forget(gone);
 
-      return found;
+      return { shown: found, opened, replaced: list.shown !== undefined };
     })().finally(() => {
       this.#opening = undefined;
     });
 
     return this.#opening;
+  }
+
+  /** Delete the scope records of Owner tabs `ids`, which are gone; one that cannot be deleted is left. */
+  async #forget(ids: ReadonlyArray<string>): Promise<void> {
+    for (const id of ids) {
+      try {
+        await this.#browser.forget(ownerTabScope(id));
+      } catch (error) {
+        console.warn(`Forgetting an Owner tab that is gone failed: ${String(error)}`);
+      }
+    }
   }
 
   /**
@@ -135,11 +159,20 @@ export class OwnerTabs {
    * has none still there; without it, a tab that is gone (or none) fails with `OWNER_TAB_GONE`.
    */
   async view(open: boolean): Promise<OwnerTabLinks> {
-    const shown = open ? await this.#open() : await this.#shown();
+    const found: Opened | undefined = open
+      ? await this.#open()
+      : await this.#shown().then((shown) =>
+          shown === undefined ? undefined : { shown, opened: false, replaced: false },
+        );
 
-    if (shown === undefined) throw new Error(OWNER_TAB_GONE);
+    if (found === undefined) throw new Error(OWNER_TAB_GONE);
 
-    const { id, tab } = shown;
+    const {
+      shown: { id, tab },
+      opened,
+      replaced,
+    } = found;
+
     let transport: CdpTransport;
 
     try {
@@ -151,23 +184,10 @@ export class OwnerTabs {
     }
 
     try {
-      const [link, found] = await Promise.all([
-        mintLink(transport, tab.targetId),
-        windowsOf(transport, tab.targetId),
-      ]);
-
-      const windows = await Promise.all(
-        found.map(async ({ targetId, openerId, title }) => ({
-          targetId,
-          openerId,
-          title,
-          link: await mintLink(transport, targetId),
-        })),
-      );
-
-      return { ownerTabId: id, tab: { targetId: tab.targetId, link }, windows };
+      return { ownerTabId: id, ...(await mintViewLinks(transport, tab)), opened, replaced };
     } catch (error) {
-      // Browser Run says the tab is not there (it closed since the records were read).
+      // Browser Run says the tab is not there (it closed since the records were read). A window that closed is left
+      // out of the links instead.
       if (isNoTarget(error)) throw new Error(OWNER_TAB_GONE, { cause: error });
 
       throw error;

@@ -150,6 +150,8 @@ describe("the Session's browser host", () => {
       ownerTabId: "owner-1",
       tab: { targetId: "tab-9", link: "wss://live.example/o" },
       windows: [],
+      opened: true,
+      replaced: false,
     };
 
     const host = remoteBrowserHost(

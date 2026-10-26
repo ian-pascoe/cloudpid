@@ -115,7 +115,8 @@ export type BrowserHostRpc = {
   /**
    * Mint fresh Live View links (60 s) to the Owner tab the Browser Pane shows and the windows it opened, for the owner's
    * client that asked. With `open` (the Pane opening), the browser is started when none runs and an Owner tab opened and
-   * shown when the owner has none. Fails with `OWNER_TAB_GONE` when the tab or its browser is gone and `open` is false.
+   * shown when the owner has none, and the answer says whether it opened one and whether the one shown before is gone.
+   * Fails with `OWNER_TAB_GONE` when the tab or its browser is gone and `open` is false.
    */
   ownerTabView(open: boolean): Promise<OwnerTabLinks>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */

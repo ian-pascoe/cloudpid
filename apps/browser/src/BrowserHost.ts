@@ -28,7 +28,7 @@ import { DurableObject } from "cloudflare:workers";
 import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
-import { openTab, tabIn, tabOf } from "./tab.ts";
+import { forgetScope, openTab, tabIn, tabOf } from "./tab.ts";
 
 /** What the browser Worker binds (`resource.ts`). */
 export type BrowserHostEnv = {
@@ -83,6 +83,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
         tabOf: (scope) =>
           tabIn({ name: this.#browser.name, store: this.#store, binding: env.BROWSER }, scope),
         openTab: (scope) => openTab(this.#browser, scope),
+        forget: (scope) => forgetScope({ name: this.#browser.name, store: this.#store }, scope),
         connect: (browserSessionId) => openCdpSocket(env.BROWSER, browserSessionId),
       },
     });
@@ -138,8 +139,8 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
 
   /**
    * Mint 60-second Live View links to the Owner tab the owner's Browser Pane shows and the windows it opened; with `open`
-   * (the Pane opening), start the browser when none runs and open an Owner tab when the owner has none. They go only to
-   * the Session DO, which answers the one client that asked; none is kept.
+   * (the Pane opening), start the browser when none runs and open an Owner tab when the owner has none, saying so. They
+   * go only to the Session DO, which answers the one client that asked; none is kept.
    */
   ownerTabView(open: boolean): Promise<OwnerTabLinks> {
     return this.#ownerTabs.view(open);

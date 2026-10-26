@@ -11,16 +11,24 @@ import {
   type StoredBrowserSession,
 } from "agents/browser";
 import { describe, expect, it } from "vitest";
-import { openTab, tabIn, tabOf } from "./tab.ts";
+import { forgetScope, openTab, tabIn, tabOf } from "./tab.ts";
 
 const memoryStore = (): ListableBrowserSessionStore & {
   readonly records: Map<string, StoredBrowserSession>;
+  /** The keys locked, in order. */
+  readonly locked: string[];
 } => {
   const records = new Map<string, StoredBrowserSession>();
+  const locked: string[] = [];
 
   return {
     records,
-    acquireLock: () => ({ release: () => undefined }),
+    locked,
+    acquireLock: (key) => {
+      locked.push(key);
+
+      return { release: () => undefined };
+    },
     get: (key) => records.get(key),
     set: (key, value) => void records.set(key, structuredClone(value)),
     delete: (key) => void records.delete(key),
@@ -213,5 +221,29 @@ describe("opening an Owner tab", () => {
     expect(second.browserSessionId).not.toBe(first.browserSessionId);
     expect(await tabIn(lookup, "owner-tab:a")).toBeUndefined();
     expect(await tabIn(lookup, "owner-tab:b")).toEqual(second);
+  });
+
+  it("forgets an Owner tab's scope record under the scope records' lock, leaving the others", async () => {
+    const { browser, lookup, store, work } = setup();
+    const sessionId = await work(5, "tab-1");
+
+    await openTab(browser, "owner-tab:a");
+
+    const scopes = () =>
+      [...store.records.keys()].filter((key) => key.startsWith("browser:scope:"));
+
+    expect(scopes()).toHaveLength(2);
+
+    // The lock `Browser` itself takes to write a scope record, so a forget never races one.
+    const lock = store.locked.at(-1);
+
+    store.locked.length = 0;
+    await forgetScope(lookup, "owner-tab:a");
+
+    expect(store.locked).toEqual([lock]);
+    expect(scopes()).toHaveLength(1);
+    expect(scopes()[0]).toContain("conversation:5");
+    expect(await tabIn(lookup, "owner-tab:a")).toBeUndefined();
+    expect(await tabOf(lookup, 5)).toEqual({ browserSessionId: sessionId, targetId: "tab-1" });
   });
 });

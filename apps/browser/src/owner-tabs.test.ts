@@ -4,6 +4,7 @@
 // browser is gone is said to be gone rather than replaced unasked.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { OWNER_TAB_GONE } from "@cloudpid/extensions/browser/contract";
+import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { BrowserGoneError } from "./cdp.ts";
 import { fakeTransport, linkTo, page, records, TOKEN } from "./cdp.testing.ts";
@@ -23,6 +24,7 @@ const ownerTabsOver = (
 ) => {
   const opened: string[] = [];
   const connected: string[] = [];
+  const forgotten: string[] = [];
   let ids = 0;
 
   const ownerTabs = new OwnerTabs({
@@ -41,6 +43,12 @@ const ownerTabsOver = (
 
         return tab;
       },
+      forget: (scope) => {
+        forgotten.push(scope);
+        tabs.delete(scope);
+
+        return Promise.resolve();
+      },
       connect: (browserSessionId) => {
         connected.push(browserSessionId);
 
@@ -55,7 +63,7 @@ const ownerTabsOver = (
     },
   });
 
-  return { ownerTabs, store, tabs, opened, connected };
+  return { ownerTabs, store, tabs, opened, connected, forgotten };
 };
 
 /** The targets of a browser with Owner tab `owner-1` and a pop-up it opened, which opened one of its own. */
@@ -86,6 +94,8 @@ describe("the Browser Pane's Owner tabs", () => {
         { targetId: "popup-1", openerId: "owner-1", title: "Sign in", link: linkTo("popup-1") },
         { targetId: "popup-2", openerId: "popup-1", title: "Consent", link: linkTo("popup-2") },
       ],
+      opened: true,
+      replaced: false,
     });
 
     expect(opened).toEqual([ownerTabScope("id-1")]);
@@ -123,7 +133,9 @@ describe("the Browser Pane's Owner tabs", () => {
     expect(opened).toHaveLength(1);
     expect(again.ownerTabId).toBe("id-1");
     expect(again.tab).toEqual({ targetId: "owner-1", link: linkTo("owner-1") });
+    expect([again.opened, again.replaced]).toEqual([false, false]);
     expect(reconnect.tab.targetId).toBe("owner-1");
+    expect([reconnect.opened, reconnect.replaced]).toEqual([false, false]);
     expect(ownerTabs.list()).toEqual({ tabs: [{ id: "id-1" }], shown: "id-1" });
   });
 
@@ -159,7 +171,10 @@ describe("the Browser Pane's Owner tabs", () => {
   });
 
   it("says the Owner tab is gone when its browser was closed or replaced, and opens a new one only when asked to", async () => {
-    const { ownerTabs, tabs, opened } = ownerTabsOver([fakeTransport(), fakeTransport()]);
+    const { ownerTabs, tabs, opened, forgotten } = ownerTabsOver([
+      fakeTransport(),
+      fakeTransport(),
+    ]);
 
     await ownerTabs.view(true);
 
@@ -168,14 +183,64 @@ describe("the Browser Pane's Owner tabs", () => {
 
     await gone(ownerTabs.view(false));
     expect(opened).toHaveLength(1);
+    expect(forgotten).toEqual([]);
 
-    // The owner opens a new Owner tab: it is shown, and the gone one leaves the list.
+    // The owner opens a new Owner tab: it is shown, said to replace the one that is gone, and the gone one leaves the
+    // list, its scope record deleted.
     const fresh = await ownerTabs.view(true);
 
     expect(fresh.ownerTabId).toBe("id-2");
     expect(fresh.tab.targetId).toBe("owner-2");
+    expect([fresh.opened, fresh.replaced]).toEqual([true, true]);
     expect(opened).toEqual([ownerTabScope("id-1"), ownerTabScope("id-2")]);
+    expect(forgotten).toEqual([ownerTabScope("id-1")]);
     expect(ownerTabs.list()).toEqual({ tabs: [{ id: "id-2" }], shown: "id-2" });
+  });
+
+  it("shows another Owner tab still there in place of the one that is gone, opening none, and says it replaced it", async () => {
+    const store = records();
+    const tabs = new Map<string, Tab>();
+
+    tabs.set(ownerTabScope("b"), { browserSessionId: "browser-1", targetId: "owner-b" });
+    store.put("owner-tabs", { tabs: [{ id: "a" }, { id: "b" }], shown: "a" });
+
+    const { ownerTabs, opened, forgotten } = ownerTabsOver([fakeTransport()], store, tabs);
+    const shown = await ownerTabs.view(true);
+
+    expect(shown.ownerTabId).toBe("b");
+    expect([shown.opened, shown.replaced]).toEqual([false, true]);
+    expect(opened).toEqual([]);
+    expect(forgotten).toEqual([ownerTabScope("a")]);
+    expect(ownerTabs.list()).toEqual({ tabs: [{ id: "b" }], shown: "b" });
+  });
+
+  it("leaves out a window that closes between the listing and its link, still minting the others", async () => {
+    const cdp = fakeTransport({
+      "Target.getTargets": {
+        targetInfos: [
+          page("owner-1"),
+          page("popup-1", { openerId: "owner-1", title: "Sign in" }),
+          page("popup-2", { openerId: "owner-1", title: "Help" }),
+        ],
+      },
+      "Cloudflare.getLiveView": (params) => {
+        const asked = params?.["targetId"];
+        const targetId = Predicate.isString(asked) ? asked : "";
+
+        // The sign-in pop-up closed once the windows were listed.
+        if (targetId === "popup-1") throw new Error("No target with given id found");
+
+        return { webSocketDebuggerUrl: linkTo(targetId) };
+      },
+    });
+
+    const { ownerTabs } = ownerTabsOver([cdp]);
+    const links = await ownerTabs.view(true);
+
+    expect(links.tab).toEqual({ targetId: "owner-1", link: linkTo("owner-1") });
+    expect(links.windows).toEqual([
+      { targetId: "popup-2", openerId: "owner-1", title: "Help", link: linkTo("popup-2") },
+    ]);
   });
 
   it("says the Owner tab is gone when Browser Run no longer has its browser or its page", async () => {
