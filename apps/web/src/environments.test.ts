@@ -10,7 +10,12 @@ import {
 } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import type { AgentChange, EnvironmentSecretRecord, SessionRecord } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  DELETED_FIELD,
+  type EnvironmentSecretRecord,
+  type SessionRecord,
+} from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_SECRET_DRAFT,
@@ -25,7 +30,9 @@ import {
   buildLine,
   changeByline,
   changeFieldText,
+  changeTitleText,
   changeValueText,
+  fieldValueText,
   revertible,
   deleteConfirmed,
   environmentNameProblem,
@@ -401,6 +408,20 @@ describe("an Agent change", () => {
     expect(changeFieldText("repos.api")).toBe("Repo api");
     expect(changeFieldText("environment")).toBe("Creation");
     expect(changeFieldText("build")).toBe("Build");
+  });
+
+  it("titles a call's change by setting and place, and an approved Environment delete as deleted", () => {
+    expect(changeTitleText("variables.API_URL", "Default")).toBe("Variable API_URL in Default");
+    expect(changeTitleText("spendLimit.perSession", "the Settings")).toBe(
+      "spendLimit.perSession in the Settings",
+    );
+    expect(changeTitleText(DELETED_FIELD, "qa-b-del")).toBe("Environment qa-b-del deleted");
+    // What the delete took before it, and that it is deleted after; any other none stays not set.
+    expect(fieldValueText(DELETED_FIELD, "1 Workspace with 1 Session")).toBe(
+      "1 Workspace with 1 Session",
+    );
+    expect(fieldValueText(DELETED_FIELD, null)).toBe("deleted");
+    expect(fieldValueText("variables.API_URL", null)).toBe("not set");
   });
 
   it("cannot revert the making of an Environment or a Build asked for", () => {

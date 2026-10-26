@@ -334,6 +334,22 @@ export const changeFieldText = (field: string): string => {
 };
 
 /**
+ * What a call's card titles its Agent change with: the setting and where it is (`Variable API_URL in Default`), or, for
+ * an Environment deleted with the owner's Approval, that it was deleted (`docs/spec.md` → Approval).
+ */
+export const changeTitleText = (field: string, where: string): string =>
+  field === DELETED_FIELD
+    ? `Environment ${where} deleted`
+    : `${changeFieldText(field)} in ${where}`;
+
+/**
+ * A value of an Agent change to `field`, as `changeValueText` shows it, except that an Environment's deletion has
+ * "deleted" after it rather than none.
+ */
+export const fieldValueText = (field: string, value: AgentChange["before"]): string =>
+  field === DELETED_FIELD && value === null ? "deleted" : changeValueText(value);
+
+/**
  * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it) and
  * whether the owner approved it first (`docs/spec.md` → Approval), or the owner, reverting an earlier one.
  */

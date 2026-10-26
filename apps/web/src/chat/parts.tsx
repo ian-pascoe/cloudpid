@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
 import { ChangeDiff } from "../change-diff.tsx";
-import { changeFieldText, changeValueText } from "../environments.ts";
+import { changeTitleText, fieldValueText } from "../environments.ts";
 import { changeDiff } from "../line-diff.ts";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
@@ -142,13 +142,13 @@ const Change = ({ change }: { change: ShownChange }) => {
   return (
     <div className="mt-2 first:mt-0">
       <div className="text-xs font-medium text-muted-foreground">
-        {changeFieldText(change.field)} in {change.environment?.name ?? "the Settings"}
+        {changeTitleText(change.field, change.environment?.name ?? "the Settings")}
         {change.approved === true && " · approved by you"}
       </div>
       {diff === undefined ? (
         <>
-          <Output label="Before" text={changeValueText(change.before)} />
-          <Output label="After" text={changeValueText(change.after)} />
+          <Output label="Before" text={fieldValueText(change.field, change.before)} />
+          <Output label="After" text={fieldValueText(change.field, change.after)} />
         </>
       ) : (
         <div className="mt-1">
