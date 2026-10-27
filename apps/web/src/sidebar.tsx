@@ -101,8 +101,9 @@ export interface ShownPage {
 
 /**
  * A Session in the list, with its "⋯" menu at the right. On a screen with a pointer the button shows on hover or keyboard
- * focus (and while its menu is open); on a touch screen it always shows. A Session with subagents has a button that
- * shows them under it, as a tree by parent (ADR-0024), each opening its Subagent page.
+ * focus (and while its menu is open); on a touch screen it always shows. A Session with subagents has a chevron at its
+ * left that shows them under it, as a tree by parent (ADR-0024), each opening its Subagent page; every row keeps room
+ * for it, so the titles line up.
  */
 const SessionItem = ({
   session,
@@ -129,17 +130,13 @@ const SessionItem = ({
           session={session}
           active={active}
           contains={here && !active}
-          className={hasAgents ? "pr-12" : "pr-10"}
+          className="pr-10 pl-6"
         />
         <SessionMenu
           session={session}
           environmentName={environmentName}
           actions={actions}
-          className={cn(
-            "absolute right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 group-has-[:popover-open]:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100",
-            // Above the subagents' button, which sits under it.
-            hasAgents ? "top-1 size-7" : "top-1.5",
-          )}
+          className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 group-has-[:popover-open]:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
         />
         {hasAgents && (
           <SubagentsToggle
