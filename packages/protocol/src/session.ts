@@ -3,16 +3,14 @@
 // Effect `Schema`: commands carry an optional `id` that a `result` or `error` answers, and every watched conversation
 // streams `events` batches whose first batch is a `snapshot`.
 import { InstanceType, ModelId, ThinkingLevel } from "@cloudpid/config";
-import type {
-  AgentEvent,
-  ConversationId as PiConversationId,
-  EntryRecord,
-} from "@earendil-works/pi-durable";
+import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { Annotation, AnnotationDraft, MAX_ANNOTATION_ID, MAX_ANNOTATIONS } from "./annotations.ts";
 import { WorkspaceChanges } from "./changes.ts";
 import { PageRef } from "./attached-pages.ts";
+import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 
 /**
@@ -52,14 +50,7 @@ export const UserInput = Schema.Union([
 
 export type UserInput = typeof UserInput.Type;
 
-/** A conversation's ID within its Session: pi-durable's positive integer. */
-export const ConversationId = Schema.declare(
-  (input): input is PiConversationId =>
-    Predicate.isNumber(input) && Number.isSafeInteger(input) && input > 0,
-  { identifier: "ConversationId" },
-);
-
-export type ConversationId = typeof ConversationId.Type;
+export { ConversationId } from "./conversation-id.ts";
 
 /** A command's correlation ID: an answered command gets a `result` or an `error` with it. */
 const CommandId = Schema.optionalKey(Schema.String);
@@ -74,6 +65,11 @@ const CommandId = Schema.optionalKey(Schema.String);
  * owner's words; a tab that is gone fails the command. The screen of a shown tab travels as an image of `input`, after
  * the typed text and the Attachments' paths and before the Attachments' images, in the order of `pages`. Answered with
  * `{ submissionId }`.
+ *
+ * With `annotations`, the IDs of drafts addressed to that conversation (`annotations`), it is a Review: the input is its
+ * summary (it may be empty), and the Session renders the drafts as Markdown after it. It is refused when one of them is
+ * gone ("Your drafts changed: check them and send again"); the drafts are deleted once the Session takes it, and come
+ * back when Stop withdraws it before it was placed.
  */
 export const Submit = Schema.Struct({
   type: Schema.Literal("submit"),
@@ -83,6 +79,12 @@ export const Submit = Schema.Struct({
   whenBusy: Schema.optionalKey(WhenBusy),
   requestId: Schema.optionalKey(Schema.String),
   pages: PageRef.pipe(Schema.Array, Schema.optionalKey),
+  annotations: Schema.optionalKey(
+    Schema.Array(Schema.String.check(Schema.isMaxLength(MAX_ANNOTATION_ID))).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(MAX_ANNOTATIONS),
+    ),
+  ),
 });
 
 /**
@@ -156,6 +158,23 @@ export const ApprovalAnswer = Schema.Struct({
   request: Schema.String,
   approve: Schema.Boolean,
   reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_APPROVAL_REASON))),
+});
+
+/**
+ * Save a draft Annotation (`annotations`), new or edited: the last save wins. Refused past `MAX_ANNOTATIONS` drafts.
+ * Answered with `null`; every client is sent the new list.
+ */
+export const AnnotationSave = Schema.Struct({
+  type: Schema.Literal("annotation_save"),
+  id: CommandId,
+  annotation: AnnotationDraft,
+});
+
+/** Delete draft `annotationId`; one that is gone is not an error. Answered with `null`; every client is sent the list. */
+export const AnnotationDelete = Schema.Struct({
+  type: Schema.Literal("annotation_delete"),
+  id: CommandId,
+  annotationId: Schema.String.check(Schema.isMaxLength(MAX_ANNOTATION_ID)),
 });
 
 /**
@@ -457,6 +476,8 @@ export const ClientMessage = Schema.Union([
   Configure,
   SecretAnswer,
   ApprovalAnswer,
+  AnnotationSave,
+  AnnotationDelete,
   WatchTaskGraph,
   UnwatchTaskGraph,
   WatchUsage,
@@ -614,6 +635,16 @@ export type ApprovalRequest = typeof ApprovalRequest.Type;
 export const ApprovalRequests = Schema.Struct({
   type: Schema.Literal("approval_requests"),
   requests: Schema.Array(ApprovalRequest),
+});
+
+/**
+ * The Session's draft Annotations, oldest first: each client shows them in their diffs and as chips in the composer of
+ * the conversation they go to. Sent after `hello` on every connect (an empty list when there are none) and to every
+ * client whenever they change: a save, a delete, a send, a withdrawn Review's drafts coming back, or the outdated check.
+ */
+export const AnnotationsMessage = Schema.Struct({
+  type: Schema.Literal("annotations"),
+  annotations: Schema.Array(Annotation),
 });
 
 /**
@@ -1132,6 +1163,7 @@ export const ServerMessage = Schema.Union([
   ErrorMessage,
   SecretRequests,
   ApprovalRequests,
+  AnnotationsMessage,
   BrowserHandoffRequests,
   OwnerTabsMessage,
   OwnerTabDriversMessage,

@@ -37,6 +37,7 @@ import type {
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
+import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
 import { skillBlocksIn, userEntryData } from "./user-entry.ts";
 
 /**
@@ -84,6 +85,8 @@ export type TranscriptMessage = {
   readonly skills?: readonly TranscriptSkill[];
   /** The pages attached to an owner's message, which shows a chip for each instead of the block the model got. */
   readonly pages?: readonly AttachedPage[];
+  /** A Review's Annotations, each with its quote and the owner's text: the message shows its summary instead. */
+  readonly review?: readonly ShownReviewAnnotation[];
 };
 
 const userParts = (content: UserMessage["content"]): TranscriptPart[] =>
@@ -180,7 +183,8 @@ const withoutPageBlock = (parts: readonly TranscriptPart[]): TranscriptPart[] =>
  * An owner's message the Session expanded or attached pages to, as the owner typed it: the typed text in place of the
  * expansion, which is the message's first text part (left as it is when the owner typed none), its other parts as they
  * were but for the block of page content, which a chip per page replaces, and each expanded Skill with the block the
- * model got.
+ * model got. A Review shows its summary, or "Review: n Annotations" without one, and carries its Annotations, read from
+ * the Markdown that ends the first text.
  */
 const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
   const data = userEntryData(entry);
@@ -192,11 +196,24 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
   const parts = data.pages === undefined ? all : withoutPageBlock(all);
   const first = parts.findIndex((part) => part.type === "text");
   const expanded = parts[first];
-  const blocks = skillBlocksIn(expanded?.type === "text" ? expanded.text : "", data);
-  const typed: TranscriptPart = { type: "text", text: data.display };
+  const text = expanded?.type === "text" ? expanded.text : "";
+  const review = data.review === undefined ? undefined : shownReview(text, data.review);
+
+  // The Skills' blocks are in what comes before the Review's Markdown.
+  const blocks = skillBlocksIn(
+    data.review === undefined
+      ? text
+      : text.slice(0, Math.max(0, text.length - data.review.length)).trimEnd(),
+    data,
+  );
+
+  const display =
+    review !== undefined && data.display.trim() === "" ? reviewTitle(review.length) : data.display;
+
+  const typed: TranscriptPart = { type: "text", text: display };
 
   const shown =
-    data.display === ""
+    display === ""
       ? parts
       : first === -1
         ? [typed, ...parts]
@@ -210,9 +227,12 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
     skills: data.skills.map((skill, index) => ({ ...skill, text: blocks[index] ?? "" })),
   };
 
-  return data.pages === undefined || data.pages.length === 0
-    ? projected
-    : { ...projected, pages: data.pages };
+  const paged =
+    data.pages === undefined || data.pages.length === 0
+      ? projected
+      : { ...projected, pages: data.pages };
+
+  return review === undefined ? paged : { ...paged, review };
 };
 
 /**
