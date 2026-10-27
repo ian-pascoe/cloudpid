@@ -128,6 +128,13 @@ export const withPaneParams = (search: string, params: PaneParams): string => {
 export const sessionPath = (sessionId: string): string =>
   `/sessions/${encodeURIComponent(sessionId)}`;
 
+/**
+ * The Subagent page of agent `agentId` (its canonical ID, such as `agent-1.reviewer`, never reused in its Session) in
+ * Session `sessionId`: the Session page scoped to that subagent (GLOSSARY.md → Subagent page).
+ */
+export const subagentPath = (sessionId: string, agentId: string): string =>
+  `${sessionPath(sessionId)}/agents/${encodeURIComponent(agentId)}`;
+
 /** The settings page. */
 export const SETTINGS_PATH = "/settings";
 
@@ -146,12 +153,19 @@ export const DRAFT_PATH = "/new";
 /** Whether a page path shows the draft. */
 export const isDraftPath = (path: string): boolean => /^\/new\/?$/.test(path);
 
-/** The Session a page path shows, if any. */
-export const sessionIdOf = (path: string): string | undefined => {
-  const encoded = /^\/sessions\/([^/]+)\/?$/.exec(path)?.[1];
+/** `encoded` decoded, or undefined when it is not a valid encoding (a hand-edited link). */
+const decoded = (encoded: string | undefined): string | undefined => {
+  if (encoded === undefined) return undefined;
 
-  return encoded === undefined ? undefined : decodeURIComponent(encoded);
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return undefined;
+  }
 };
+
+/** A Session's page, or one of its Subagent pages: the Session's ID, then the agent's when it is a Subagent page. */
+const SESSION_PAGE = /^\/sessions\/([^/]+)(?:\/agents\/([^/]+))?\/?$/;
 
 /** What a page path shows. */
 export type Page =
@@ -159,6 +173,7 @@ export type Page =
   | { readonly kind: "environments" }
   | { readonly kind: "draft" }
   | { readonly kind: "session"; readonly sessionId: string }
+  | { readonly kind: "subagent"; readonly sessionId: string; readonly agentId: string }
   | { readonly kind: "empty" };
 
 /** What `path` shows. */
@@ -169,13 +184,38 @@ export const pageOf = (path: string): Page => {
 
   if (isDraftPath(path)) return { kind: "draft" };
 
-  const sessionId = sessionIdOf(path);
+  const match = SESSION_PAGE.exec(path);
+  const sessionId = decoded(match?.[1]);
+  const agentId = decoded(match?.[2]);
 
-  return sessionId === undefined ? { kind: "empty" } : { kind: "session", sessionId };
+  if (sessionId === undefined || (match?.[2] !== undefined && agentId === undefined)) {
+    return { kind: "empty" };
+  }
+
+  return agentId === undefined
+    ? { kind: "session", sessionId }
+    : { kind: "subagent", sessionId, agentId };
+};
+
+/** The Session a page path shows, if any: a Subagent page shows its Session too, scoped to one subagent. */
+export const sessionIdOf = (path: string): string | undefined => {
+  const page = pageOf(path);
+
+  return page.kind === "session" || page.kind === "subagent" ? page.sessionId : undefined;
+};
+
+/** The subagent whose Subagent page a path shows, by its canonical ID, if it is one. */
+export const agentIdOf = (path: string): string | undefined => {
+  const page = pageOf(path);
+
+  return page.kind === "subagent" ? page.agentId : undefined;
 };
 
 /** What the page shows now. */
 export const pageAtom = Atom.map(pathAtom, pageOf);
 
-/** The Session the page shows, if any. */
+/** The Session the page shows, if any: on a Subagent page, the subagent's Session. */
 export const sessionIdAtom = Atom.map(pathAtom, sessionIdOf);
+
+/** The subagent whose Subagent page is shown, if one is. */
+export const agentIdAtom = Atom.map(pathAtom, agentIdOf);

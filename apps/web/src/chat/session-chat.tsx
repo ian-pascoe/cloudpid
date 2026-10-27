@@ -19,6 +19,7 @@ import {
   taskGraphAtom,
   usageAtom,
 } from "../session/atoms.ts";
+import { changesKey } from "../session/changes-key.ts";
 import type { ConnectionStatus } from "../session/state.ts";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
@@ -33,7 +34,8 @@ import type { Rename } from "./title-state.ts";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
-const CONNECTION_NOTICE: Partial<Record<ConnectionStatus, ReactNode>> = {
+/** What the page says over the chat while the Session's socket is not live, and why. */
+export const CONNECTION_NOTICE: Partial<Record<ConnectionStatus, ReactNode>> = {
   connecting: "Connecting…",
   reconnecting: "Connection lost. Reconnecting…",
   "signed-out": (
@@ -98,7 +100,7 @@ const LiveSession = ({
 
   useAtomMount(usageAtom(sessionId));
   // The Changes, for the Session details and the Diff pane: asked again as the owner comes back to the page.
-  useChangesWatch(sessionId);
+  useChangesWatch(changesKey(sessionId));
   // Deleted (here or elsewhere): its socket closed saying so, and the page leaves it.
   useAtomMount(leaveWhenDeletedAtom(sessionId));
   // A first message written in the draft is sent now that the Session's client is built.

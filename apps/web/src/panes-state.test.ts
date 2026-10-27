@@ -19,7 +19,8 @@ import {
 } from "./panes-state.ts";
 import { RegistryClient } from "./registry.ts";
 import { fakeRegistryLayer } from "./registry.testing.ts";
-import { navigate } from "./router.ts";
+import { navigate, sessionPath, subagentPath } from "./router.ts";
+import { layoutKey } from "./session-layout.ts";
 import { stubWindow } from "./router.testing.ts";
 import { sessionLayoutAtom } from "./session-layout-state.ts";
 import { keyValueStoreLayer } from "./storage.ts";
@@ -282,6 +283,57 @@ describe("the Panes a Session was left with", () => {
 
     navigate("/sessions/b");
     expect(registry.get(panesAtom).open).toEqual(["tree"]);
+  });
+});
+
+describe("the Panes of a Subagent page", () => {
+  it("are its own, apart from its Session page's and from another subagent's", () => {
+    stubWindow(sessionPath("a"));
+    const registry = registryOver();
+
+    registry.mount(panesAtom);
+    registry.set(panesAtom, { type: "open", key: "tree" });
+
+    navigate(subagentPath("a", "agent-1"));
+    expect(registry.get(panesAtom).open).toEqual([]);
+    registry.set(panesAtom, { type: "open", key: "diff" });
+
+    navigate(subagentPath("a", "agent-2"));
+    expect(registry.get(panesAtom).open).toEqual([]);
+
+    navigate(sessionPath("a"));
+    expect(registry.get(panesAtom).open).toEqual(["tree"]);
+
+    navigate(subagentPath("a", "agent-1"));
+    expect(registry.get(panesAtom).open).toEqual(["diff"]);
+    expect(registry.get(sessionLayoutAtom(layoutKey("a", "agent-1"))).panes.open).toEqual(["diff"]);
+    expect(registry.get(sessionLayoutAtom(layoutKey("a"))).panes.open).toEqual(["tree"]);
+  });
+
+  it("do not open the Session tree Pane, from the page or a link", () => {
+    stubWindow(`${subagentPath("a", "agent-1")}?pane=tree&pane=subagents`);
+    const registry = registryOver();
+
+    registry.mount(panesAtom);
+    expect(registry.get(panesAtom)).toEqual(SUBAGENTS);
+
+    registry.set(panesAtom, { type: "open", key: "tree" });
+    expect(registry.get(panesAtom)).toEqual(SUBAGENTS);
+  });
+
+  it("are the ones a link opened, once the page heard of it", () => {
+    stubWindow(subagentPath("a", "agent-1"));
+    const registry = registryOver();
+
+    registry.mount(panesAtom);
+    navigate(`${subagentPath("a", "agent-1")}?pane=subagents`);
+    registry.mount(rememberPanesAtom(layoutKey("a", "agent-1")));
+
+    navigate(sessionPath("a"));
+    expect(registry.get(panesAtom).open).toEqual([]);
+
+    navigate(subagentPath("a", "agent-1"));
+    expect(registry.get(panesAtom)).toEqual(SUBAGENTS);
   });
 });
 

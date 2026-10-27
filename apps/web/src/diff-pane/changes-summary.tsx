@@ -1,12 +1,14 @@
-// The Changes outside the Diff pane (`docs/spec.md` → Diffs and review → Diff pane): the watch the Session's page keeps
-// while it is open, and the section of the Session details, the only summary of them. The section shows only while there
+// The Changes outside the Diff pane (`docs/spec.md` → Diffs and review → Diff pane): the watch a Session's page (or a
+// Subagent page, on the subagent's) keeps while it is open, and the section of the Session details, the only summary of
+// them. The section shows only while there
 // are Changes, and opens the Pane: the totals and "and n more" at the top, a file at that file.
 
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import { CircleAlert, PanelRightOpen } from "lucide-react";
-import { useShownSessionId } from "../chat/conversation.ts";
+import { useShownChanges } from "../chat/conversation.ts";
 import { changesAtom } from "../session/atoms.ts";
+import type { ChangesKey } from "../session/changes-key.ts";
 import { changesPreview, filesLabel, groupedByRepo, repoTotals } from "./changes.ts";
 import { ChangedFileRow, DiffTally } from "./parts.tsx";
 import { openDiffPaneAtom } from "./target.ts";
@@ -16,12 +18,12 @@ import { changesOnReturnAtom, changesTotalsAtom } from "./watch.ts";
 export const DETAILS_FILES = 10;
 
 /**
- * Watch Session `sessionId`'s Changes while its page is open, for the Session details, and ask for them again whenever the owner
- * comes back to the page (`page-return.ts`).
+ * Watch the Changes `key` names while the page is open, for the Session details, and ask for them again whenever the
+ * owner comes back to the page (`page-return.ts`).
  */
-export const useChangesWatch = (sessionId: string) => {
-  useAtomMount(changesAtom(sessionId));
-  useAtomMount(changesOnReturnAtom(sessionId));
+export const useChangesWatch = (key: ChangesKey) => {
+  useAtomMount(changesAtom(key));
+  useAtomMount(changesOnReturnAtom(key));
 };
 
 /**
@@ -29,11 +31,11 @@ export const useChangesWatch = (sessionId: string) => {
  * root) with "may be out of date", then the first files, each opening the Diff pane at it, and "and n more".
  */
 export const ChangesSection = () => {
-  const sessionId = useShownSessionId();
-  const changes = useAtomValue(changesAtom(sessionId));
-  const open = useAtomSet(openDiffPaneAtom(sessionId));
+  const key = useShownChanges();
+  const changes = useAtomValue(changesAtom(key));
+  const open = useAtomSet(openDiffPaneAtom(key));
   const repos = changes?.repos ?? [];
-  const totals = useAtomValue(changesTotalsAtom(sessionId));
+  const totals = useAtomValue(changesTotalsAtom(key));
 
   if (totals.files === 0) return null;
 
