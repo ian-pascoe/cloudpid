@@ -26,7 +26,11 @@ export const fakeSkills = () => {
 
   /** What each Environment keeps, by `<environment>:<name>`. */
   const kept = new Map<string, Readonly<Record<string, string>>>();
-  const saves: Array<{ environment: string; folder: string; files: Readonly<Record<string, string>> }> = [];
+  const saves: Array<{
+    environment: string;
+    folder: string;
+    files: Readonly<Record<string, string>>;
+  }> = [];
   let refusal: string | undefined;
   let next = 1;
 
@@ -122,7 +126,8 @@ export const fakeSkills = () => {
   };
 };
 
-const notFound = (path: string) => err<never, FileError>(new FileError("not_found", `No such file: ${path}`, path));
+const notFound = (path: string) =>
+  err<never, FileError>(new FileError("not_found", `No such file: ${path}`, path));
 
 /**
  * A Workspace's files for a save to read: each file's content by its absolute path, and the symbolic links among them.
@@ -139,22 +144,27 @@ export const fakeFolderEnv = (
     Arr.some([...Record.keys(files), ...links], (file) => file.startsWith(`${path}/`));
 
   return {
-    absolutePath: (path) =>
-      Promise.resolve(ok(path.startsWith("/") ? path : `/workspace/${path}`)),
+    absolutePath: (path) => Promise.resolve(ok(path.startsWith("/") ? path : `/workspace/${path}`)),
     fileInfo: (path) => {
       const content = files[path];
       const name = path.slice(path.lastIndexOf("/") + 1);
 
       if (content !== undefined) {
-        return Promise.resolve(ok({ name, path, kind: "file" as const, size: bytes(content).length, mtimeMs: 0 }));
+        return Promise.resolve(
+          ok({ name, path, kind: "file" as const, size: bytes(content).length, mtimeMs: 0 }),
+        );
       }
 
       return Promise.resolve(
-        isDirectory(path) ? ok({ name, path, kind: "directory" as const, size: 0, mtimeMs: 0 }) : notFound(path),
+        isDirectory(path)
+          ? ok({ name, path, kind: "directory" as const, size: 0, mtimeMs: 0 })
+          : notFound(path),
       );
     },
     listFiles: (path) => {
-      const below = Arr.filter([...Record.keys(files), ...links], (file) => file.startsWith(`${path}/`));
+      const below = Arr.filter([...Record.keys(files), ...links], (file) =>
+        file.startsWith(`${path}/`),
+      );
 
       return Promise.resolve(
         ok({

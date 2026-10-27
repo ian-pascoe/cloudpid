@@ -78,7 +78,10 @@ export const contentHash = async (text: string): Promise<string> =>
 /** `files` hashed, for a save: made before the transaction that keeps them, as hashing is not synchronous. */
 export const hashFiles = async (files: SkillFiles): Promise<Hashed> => {
   const entries = await Promise.all(
-    Arr.map(Record.toEntries(files), async ([path, text]) => [path, await contentHash(text), text] as const),
+    Arr.map(
+      Record.toEntries(files),
+      async ([path, text]) => [path, await contentHash(text), text] as const,
+    ),
   );
 
   return {
@@ -193,7 +196,10 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
 const pathProblem = (path: string): string | undefined => {
   if (path.includes("\\")) return `${path}: a path may not hold a backslash`;
 
-  return Arr.some(path.split("/"), (segment) => segment === "" || segment === "." || segment === "..")
+  return Arr.some(
+    path.split("/"),
+    (segment) => segment === "" || segment === "." || segment === "..",
+  )
     ? `${path}: a path may not hold an empty, \`.\` or \`..\` segment`
     : undefined;
 };
@@ -211,7 +217,10 @@ const declaredSkill = (
     };
   }
 
-  const { name, description } = frontmatter as { readonly name?: unknown; readonly description?: unknown };
+  const { name, description } = frontmatter as {
+    readonly name?: unknown;
+    readonly description?: unknown;
+  };
 
   if (!Predicate.isString(name)) return { problem: "SKILL.md's frontmatter sets no name" };
 
@@ -240,7 +249,9 @@ export type CheckedSkill = { readonly name: string; readonly description: string
 export const checkSkill = (
   folder: string,
   files: SkillFiles,
-): { readonly ok: true; readonly skill: CheckedSkill } | { readonly ok: false; readonly message: string } => {
+):
+  | { readonly ok: true; readonly skill: CheckedSkill }
+  | { readonly ok: false; readonly message: string } => {
   const problems: string[] = [];
   const skillMd = files["SKILL.md"];
 
@@ -305,7 +316,10 @@ export const hashBundle = async (set: SkillSet): Promise<HashedBundle> => ({
   names: new Set(Arr.map(Record.keys(set.files), skillOf)),
   hashes: Object.fromEntries(
     await Promise.all(
-      Arr.map(Record.toEntries(set.files), async ([path, text]) => [path, await contentHash(text)] as const),
+      Arr.map(
+        Record.toEntries(set.files),
+        async ([path, text]) => [path, await contentHash(text)] as const,
+      ),
     ),
   ),
 });
@@ -371,14 +385,23 @@ export const mergeSkills = async (
   );
 
   return {
-    hash: await contentHash(Arr.join(Arr.map(ordered, ({ path, hash }) => `${path}\0${hash}\n`), "")),
+    hash: await contentHash(
+      Arr.join(
+        Arr.map(ordered, ({ path, hash }) => `${path}\0${hash}\n`),
+        "",
+      ),
+    ),
     names: [...new Set([...taken, ...bundle.names])],
     entries: ordered,
   };
 };
 
 /** The Skill set `merged` describes, with its texts: the bundle's from the bundle, the others from `skills`. */
-export const skillSetOf = (merged: MergedSkills, bundle: HashedBundle, skills: Skills): SkillSet => {
+export const skillSetOf = (
+  merged: MergedSkills,
+  bundle: HashedBundle,
+  skills: Skills,
+): SkillSet => {
   const kept = skills.contents(
     Arr.flatMap(merged.entries, ({ hash, bundled }) => (bundled ? [] : [hash])),
   );
@@ -414,7 +437,9 @@ const decodeChangeValue = Schema.decodeUnknownOption(SkillChangeValue);
 
 /** The files an Agent change of a Skill records, or null where there were none (or the value is not a Skill's). */
 export const changeFiles = (value: AgentChange["before"]): HashedFiles | null =>
-  value === null ? null : Option.getOrNull(Option.map(decodeChangeValue(value), ({ files }) => files));
+  value === null
+    ? null
+    : Option.getOrNull(Option.map(decodeChangeValue(value), ({ files }) => files));
 
 /** How the agent's save of a Skill went. */
 export type SkillSave =
@@ -606,7 +631,10 @@ const filesOf = (skills: Skills, hashes: HashedFiles | null): ReadonlyArray<Skil
 export const skillChangeFiles = (
   skills: Skills,
   change: AgentChange,
-): { readonly before: ReadonlyArray<SkillFile> | null; readonly after: ReadonlyArray<SkillFile> | null } | null =>
+): {
+  readonly before: ReadonlyArray<SkillFile> | null;
+  readonly after: ReadonlyArray<SkillFile> | null;
+} | null =>
   fieldSkill(change.field) === null
     ? null
     : {

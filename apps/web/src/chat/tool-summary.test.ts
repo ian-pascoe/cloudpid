@@ -66,7 +66,10 @@ describe("toolSummary", () => {
       toolSummary("environment_secret_build", { id: "*", name: "NPM_TOKEN", build: true }),
     ).toBe("NPM_TOKEN for every environment");
     expect(
-      toolSummary("environment_skill_save", { path: "/workspace/.cloudpid/tmp/release", reason: "r" }),
+      toolSummary("environment_skill_save", {
+        path: "/workspace/.cloudpid/tmp/release",
+        reason: "r",
+      }),
     ).toBe("/workspace/.cloudpid/tmp/release");
     expect(toolSummary("environment_skill_remove", { id: "0000abcd", name: "release" })).toBe(
       "release in 0000abcd",

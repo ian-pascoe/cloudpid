@@ -57,7 +57,9 @@ const inRegistry = <A>(
     ) => Promise<ReturnType<typeof saveSkillAs>>;
     readonly remove: (name: string, at?: number) => ReturnType<typeof removeSkillAs>;
     readonly revert: (id: number, at?: number) => ReturnType<typeof revertAgentChange>;
-    readonly set: (environment?: string) => Promise<{ hash: string; files: Record<string, string> }>;
+    readonly set: (
+      environment?: string,
+    ) => Promise<{ hash: string; files: Record<string, string> }>;
     readonly skills: ReturnType<typeof openSkills>;
     readonly changes: ReturnType<typeof openAgentChanges>;
     readonly store: ReturnType<typeof openRegistryStore>;
@@ -94,7 +96,11 @@ const inRegistry = <A>(
             skills,
             changes,
             bundle,
-            { environment: DEFAULT_ENVIRONMENT, name, author: { ...author, tool: "environment_skill_remove" } },
+            {
+              environment: DEFAULT_ENVIRONMENT,
+              name,
+              author: { ...author, tool: "environment_skill_remove" },
+            },
             at,
           ),
         revert: (id, at = 3_000) =>
@@ -129,7 +135,11 @@ describe("saving an Environment's Skill", () => {
       shadows: false,
     });
     expect(listed).toEqual([
-      expect.objectContaining({ name: "release", description: "What release does.", savedAt: 1_000 }),
+      expect.objectContaining({
+        name: "release",
+        description: "What release does.",
+        savedAt: 1_000,
+      }),
     ]);
     expect(set.files).toEqual({
       "release/SKILL.md": release["SKILL.md"],
@@ -147,7 +157,10 @@ describe("saving an Environment's Skill", () => {
 
   it("hides a bundled Skill of the same name", async () => {
     const own = { "SKILL.md": skillMd("pr", "Our own pr.") };
-    const [saved, set] = await inRegistry(async ({ save, set }) => [await save("pr", own), await set()]);
+    const [saved, set] = await inRegistry(async ({ save, set }) => [
+      await save("pr", own),
+      await set(),
+    ]);
 
     expect(saved).toMatchObject({ status: "saved", shadows: true });
     expect(set.files).toEqual({
@@ -196,13 +209,33 @@ describe("saving an Environment's Skill", () => {
   });
 
   it.each([
-    ["a name with capitals", "Release", { "SKILL.md": skillMd("Release") }, "lowercase letters, digits and hyphens"],
+    [
+      "a name with capitals",
+      "Release",
+      { "SKILL.md": skillMd("Release") },
+      "lowercase letters, digits and hyphens",
+    ],
     ["two hyphens in a row", "re--lease", { "SKILL.md": skillMd("re--lease") }, "two in a row"],
-    ["a name over 64 characters", "a".repeat(65), { "SKILL.md": skillMd("a".repeat(65)) }, "more than the 64"],
-    ["a name that is not the folder's", "releases", { "SKILL.md": skillMd("release") }, "must be the same"],
+    [
+      "a name over 64 characters",
+      "a".repeat(65),
+      { "SKILL.md": skillMd("a".repeat(65)) },
+      "more than the 64",
+    ],
+    [
+      "a name that is not the folder's",
+      "releases",
+      { "SKILL.md": skillMd("release") },
+      "must be the same",
+    ],
     ["no SKILL.md", "release", { "README.md": "Hi.\n" }, "no SKILL.md"],
     ["no frontmatter", "release", { "SKILL.md": "# Release\n" }, "no YAML frontmatter"],
-    ["no description", "release", { "SKILL.md": "---\nname: release\n---\n" }, "sets no description"],
+    [
+      "no description",
+      "release",
+      { "SKILL.md": "---\nname: release\n---\n" },
+      "sets no description",
+    ],
     [
       "a description over 1024 characters",
       "release",
@@ -210,14 +243,24 @@ describe("saving an Environment's Skill", () => {
       "more than the 1024",
     ],
     ["a binary file", "release", { ...release, "logo.bin": "PNG\0\0" }, "a binary file"],
-    ["a file over 128 KB", "release", { ...release, "big.md": "x".repeat(128 * 1024 + 1) }, "more than the 131072"],
+    [
+      "a file over 128 KB",
+      "release",
+      { ...release, "big.md": "x".repeat(128 * 1024 + 1) },
+      "more than the 131072",
+    ],
     [
       "a credential",
       "release",
       { ...release, "env.md": `token: ghp_${"a".repeat(36)}` },
       "looks like a credential",
     ],
-    ["a local path", "release", { ...release, "where.md": "See /home/ian/notes.\n" }, "a local path"],
+    [
+      "a local path",
+      "release",
+      { ...release, "where.md": "See /home/ian/notes.\n" },
+      "a local path",
+    ],
     ["a path with ..", "release", { ...release, "../escape.md": "Out.\n" }, "`..` segment"],
   ])("refuses %s, saying why, and saves and records nothing", async (_, folder, files, message) => {
     const [saved, listed, changed] = await inRegistry(async ({ save, skills, changes }) => [
@@ -260,7 +303,10 @@ describe("saving an Environment's Skill", () => {
 
 describe("a Skill's Agent changes", () => {
   it("record the files before and after by hash, which skillChangeFiles gives back as text", async () => {
-    const edited = { ...release, "SKILL.md": skillMd("release", "What release does.", "New steps.") };
+    const edited = {
+      ...release,
+      "SKILL.md": skillMd("release", "What release does.", "New steps."),
+    };
 
     const [listed, files] = await inRegistry(async ({ save, changes, skills }) => {
       await save("release", release);
@@ -299,21 +345,23 @@ describe("a Skill's Agent changes", () => {
   it("revert a save to the files before, and a new Skill's save by removing it", async () => {
     const edited = { "SKILL.md": skillMd("release", "Edited.") };
 
-    const [afterFirst, afterSecond] = await inRegistry(async ({ save, revert, skills, changes }) => {
-      await save("release", release);
-      await save("release", edited, 2_000);
+    const [afterFirst, afterSecond] = await inRegistry(
+      async ({ save, revert, skills, changes }) => {
+        await save("release", release);
+        await save("release", edited, 2_000);
 
-      const [latest, first] = changes.list(DEFAULT_ENVIRONMENT);
+        const [latest, first] = changes.list(DEFAULT_ENVIRONMENT);
 
-      expect(await revert(latest!.id)).toMatchObject({ status: "reverted" });
+        expect(await revert(latest!.id)).toMatchObject({ status: "reverted" });
 
-      const restored = skills.get(DEFAULT_ENVIRONMENT, "release");
+        const restored = skills.get(DEFAULT_ENVIRONMENT, "release");
 
-      // The first save's own revert: the Skill it made is removed.
-      expect(await revert(first!.id, 4_000)).toMatchObject({ status: "reverted" });
+        // The first save's own revert: the Skill it made is removed.
+        expect(await revert(first!.id, 4_000)).toMatchObject({ status: "reverted" });
 
-      return [restored, skills.get(DEFAULT_ENVIRONMENT, "release")];
-    });
+        return [restored, skills.get(DEFAULT_ENVIRONMENT, "release")];
+      },
+    );
 
     expect(afterFirst).toMatchObject({ description: "What release does." });
     expect(afterFirst?.files).toHaveProperty(["references/steps.md"]);
@@ -321,20 +369,22 @@ describe("a Skill's Agent changes", () => {
   });
 
   it("revert a removal by bringing the Skill back", async () => {
-    const [removed, restored, set] = await inRegistry(async ({ save, remove, revert, changes, skills, set }) => {
-      await save("release", release);
+    const [removed, restored, set] = await inRegistry(
+      async ({ save, remove, revert, changes, skills, set }) => {
+        await save("release", release);
 
-      const gone = remove("release");
-      const [removal] = changes.list(DEFAULT_ENVIRONMENT);
+        const gone = remove("release");
+        const [removal] = changes.list(DEFAULT_ENVIRONMENT);
 
-      expect(removal).toMatchObject({ field: skillField("release"), after: null });
-      expect(await revert(removal!.id)).toMatchObject({
-        status: "reverted",
-        change: { actor: "owner", before: null },
-      });
+        expect(removal).toMatchObject({ field: skillField("release"), after: null });
+        expect(await revert(removal!.id)).toMatchObject({
+          status: "reverted",
+          change: { actor: "owner", before: null },
+        });
 
-      return [gone, skills.get(DEFAULT_ENVIRONMENT, "release"), await set()];
-    });
+        return [gone, skills.get(DEFAULT_ENVIRONMENT, "release"), await set()];
+      },
+    );
 
     expect(removed).toMatchObject({ status: "removed", bundled: false });
     expect(restored).toMatchObject({ name: "release", description: "What release does." });
@@ -374,9 +424,7 @@ describe("the texts of a Skill's files", () => {
       await save("stays", { "SKILL.md": skillMd("stays") }, 2_000, "0000abcd");
 
       const has = (text: string) =>
-        storage.sql
-          .exec("SELECT 1 FROM skill_files WHERE content = ?", text)
-          .toArray().length > 0;
+        storage.sql.exec("SELECT 1 FROM skill_files WHERE content = ?", text).toArray().length > 0;
 
       // The removal still refers to them: they are kept.
       const before = has("Only here.\n");
@@ -400,11 +448,23 @@ describe("the texts of a Skill's files", () => {
       const hashed = await hashFiles({ "SKILL.md": skillMd("mine") });
 
       // As the owner's own save would keep it, with no change.
-      skills.put("0000abcd", { name: "mine", description: "What mine does.", files: hashed.files }, hashed.contents, 1_000);
-      skills.put("0000abcd", { name: "yours", description: "What yours does.", files: hashed.files }, hashed.contents, 1_000);
+      skills.put(
+        "0000abcd",
+        { name: "mine", description: "What mine does.", files: hashed.files },
+        hashed.contents,
+        1_000,
+      );
+      skills.put(
+        "0000abcd",
+        { name: "yours", description: "What yours does.", files: hashed.files },
+        hashed.contents,
+        1_000,
+      );
 
       const count = () =>
-        storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM skill_files").toArray()[0]?.count;
+        storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM skill_files")
+          .toArray()[0]?.count;
 
       const removed = removeSkill(storage, skills, { environment: "0000abcd", name: "mine" });
       const afterRemove = count();

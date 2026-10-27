@@ -89,10 +89,17 @@ type Result = Awaited<ReturnType<ToolRegistration["execute"]>>;
 const run = (
   tool: ToolRegistration,
   args: Readonly<Record<string, unknown>>,
-  env: Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile"> = fakeFolderEnv({}),
+  env: Pick<
+    ExecutionEnv,
+    "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile"
+  > = fakeFolderEnv({}),
 ): Promise<Result> =>
   // SAFETY: the arguments are the tool's JSON parameters, and the save reads only these of the environment.
-  tool.execute(args as never, { conversationId: ROOT_CONVERSATION_ID, env } as ToolExecutionApi, BACKGROUND_CONTEXT);
+  tool.execute(
+    args as never,
+    { conversationId: ROOT_CONVERSATION_ID, env } as ToolExecutionApi,
+    BACKGROUND_CONTEXT,
+  );
 
 const text = (result: Result): string =>
   Arr.join(
@@ -146,7 +153,9 @@ describe("environment_skill_save", () => {
         files: { "SKILL.md": SKILL_MD, "references/steps.md": "1. Tag.\n" },
       },
     ]);
-    expect(text(result)).toContain("Saved the new Skill release for Environment \"Default\" (default) (2 files)");
+    expect(text(result)).toContain(
+      'Saved the new Skill release for Environment "Default" (default) (2 files)',
+    );
     expect(text(result)).toContain("served now at /workspace/.agents/skills/release (read-only)");
     expect(text(result)).toContain("next Context Window");
     expect(result.details).toMatchObject({
@@ -171,7 +180,9 @@ describe("environment_skill_save", () => {
       scratch(),
     );
 
-    expect(text(result)).toContain("next readying; this Session's Workspace, of another Environment, does not");
+    expect(text(result)).toContain(
+      "next readying; this Session's Workspace, of another Environment, does not",
+    );
   });
 
   it("records nothing for the files the Environment keeps already", async () => {
@@ -188,10 +199,14 @@ describe("environment_skill_save", () => {
   it("passes on the Registry's refusal, saying why", async () => {
     const { tool, refuse, logged } = await setUp();
 
-    refuse("SKILL.md's name: \"Release\" may hold only lowercase letters, digits and hyphens");
+    refuse('SKILL.md\'s name: "Release" may hold only lowercase letters, digits and hyphens');
 
     const message = await failure(
-      run(tool("environment_skill_save"), { path: "/workspace/.cloudpid/tmp/release", reason: "r" }, scratch()),
+      run(
+        tool("environment_skill_save"),
+        { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+        scratch(),
+      ),
     );
 
     expect(message).toContain("Nothing was saved:");
@@ -200,7 +215,11 @@ describe("environment_skill_save", () => {
   });
 
   it.each([
-    ["a binary file", { "/workspace/.cloudpid/tmp/release/logo.png": new Uint8Array([137, 80, 0, 1]) }, "logo.png: a binary file"],
+    [
+      "a binary file",
+      { "/workspace/.cloudpid/tmp/release/logo.png": new Uint8Array([137, 80, 0, 1]) },
+      "logo.png: a binary file",
+    ],
     [
       "a file over 128 KB",
       { "/workspace/.cloudpid/tmp/release/big.md": "x".repeat(128 * 1024 + 1) },
@@ -216,7 +235,11 @@ describe("environment_skill_save", () => {
 
     expect(
       await failure(
-        run(tool("environment_skill_save"), { path: "/workspace/.cloudpid/tmp/release", reason: "r" }, scratch(more)),
+        run(
+          tool("environment_skill_save"),
+          { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+          scratch(more),
+        ),
       ),
     ).toContain(message);
     expect(saves).toEqual([]);
@@ -241,7 +264,9 @@ describe("environment_skill_save", () => {
     const { tool, saves } = await setUp();
 
     expect(
-      await failure(run(tool("environment_skill_save"), { path: "/tmp/release", reason: "r" }, scratch())),
+      await failure(
+        run(tool("environment_skill_save"), { path: "/tmp/release", reason: "r" }, scratch()),
+      ),
     ).toContain("is not in the Workspace's files");
     expect(
       await failure(
@@ -267,7 +292,11 @@ describe("environment_skill_save", () => {
 
     expect(
       await failure(
-        run(tool("environment_skill_save"), { id: "*", path: "/workspace/.cloudpid/tmp/release", reason: "r" }, scratch()),
+        run(
+          tool("environment_skill_save"),
+          { id: "*", path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+          scratch(),
+        ),
       ),
     ).toContain('The id "*"');
   });
@@ -277,12 +306,23 @@ describe("environment_skill_remove", () => {
   it("removes a Skill the Environment keeps, saying what is served in its place", async () => {
     const { tool, logged, kept } = await setUp();
 
-    await run(tool("environment_skill_save"), { path: "/workspace/.cloudpid/tmp/release", reason: "r" }, scratch());
+    await run(
+      tool("environment_skill_save"),
+      { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+      scratch(),
+    );
 
-    const result = await run(tool("environment_skill_remove"), { name: "release", reason: "Not used" });
+    const result = await run(tool("environment_skill_remove"), {
+      name: "release",
+      reason: "Not used",
+    });
 
-    expect(text(result)).toContain("Removed the Skill release from Environment \"Default\" (default)");
-    expect(text(result)).toContain("Nothing is served at /workspace/.agents/skills/release any more");
+    expect(text(result)).toContain(
+      'Removed the Skill release from Environment "Default" (default)',
+    );
+    expect(text(result)).toContain(
+      "Nothing is served at /workspace/.agents/skills/release any more",
+    );
     expect(result.details).toMatchObject({ agentChange: { field: "skills.release", after: null } });
     expect(kept.size).toBe(0);
     expect(logged.at(-1)).toEqual({
@@ -295,7 +335,9 @@ describe("environment_skill_remove", () => {
   it("refuses a Skill the Environment does not keep, pointing to environment_get", async () => {
     const { tool, logged } = await setUp();
 
-    const message = await failure(run(tool("environment_skill_remove"), { name: "pr", reason: "r" }));
+    const message = await failure(
+      run(tool("environment_skill_remove"), { name: "pr", reason: "r" }),
+    );
 
     expect(message).toContain('keeps no Skill named "pr"');
     expect(message).toContain("environment_get");
@@ -319,7 +361,9 @@ describe("environment_get", () => {
       true,
     );
 
-    expect(shown).toContain("Skills (its own, served read-only at /workspace/.agents/skills/<name>");
+    expect(shown).toContain(
+      "Skills (its own, served read-only at /workspace/.agents/skills/<name>",
+    );
     expect(shown).toContain("\n  release (saved 1970-01-01T00:00:00.000Z): Cut a release.");
   });
 });

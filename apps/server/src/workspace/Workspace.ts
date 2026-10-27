@@ -1110,7 +1110,8 @@ export class Workspace extends ContainerHost {
     if (skills !== undefined) {
       const mounted = await this.#updateSkills(skills);
 
-      if (!mounted.ok) console.warn(`workspace.spare: its Skill set was refused: ${mounted.message}`);
+      if (!mounted.ok)
+        console.warn(`workspace.spare: its Skill set was refused: ${mounted.message}`);
     }
 
     return this.#spare.request(stored);

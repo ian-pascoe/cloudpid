@@ -104,8 +104,14 @@ describe("skillFileDiffs", () => {
       ],
     });
 
-    expect(Arr.map(diffs, ({ path, status, rows }) => ({ path, status, rows: shown(rows) }))).toEqual([
-      { path: "SKILL.md", status: "changed", rows: [" ---", " name: a", " ---", "-Old step.", "+New step."] },
+    expect(
+      Arr.map(diffs, ({ path, status, rows }) => ({ path, status, rows: shown(rows) })),
+    ).toEqual([
+      {
+        path: "SKILL.md",
+        status: "changed",
+        rows: [" ---", " name: a", " ---", "-Old step.", "+New step."],
+      },
       { path: "gone.md", status: "removed", rows: ["-bye"] },
       { path: "new.md", status: "added", rows: ["+hi"] },
     ]);

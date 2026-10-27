@@ -40,7 +40,11 @@ export type SkillSaved =
       readonly handed: boolean;
     }
   /** The Environment keeps the Skill with these files already: nothing was saved or recorded. */
-  | { readonly status: "unchanged"; readonly environment: ChangedEnvironment; readonly name: string }
+  | {
+      readonly status: "unchanged";
+      readonly environment: ChangedEnvironment;
+      readonly name: string;
+    }
   /** The Skill is not one a save keeps, each problem a line: nothing was saved. */
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
@@ -109,7 +113,8 @@ const MAX_FILES = 500;
 /** What the save reads of the call's environment: the Workspace's files, never a command. */
 type FolderEnv = Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile">;
 
-const refused = (message: string) => EnvironmentsError.make({ message: `Nothing was saved: ${message}` });
+const refused = (message: string) =>
+  EnvironmentsError.make({ message: `Nothing was saved: ${message}` });
 
 const attempt = <A>(what: string, run: () => Promise<A>) =>
   Effect.tryPromise({
@@ -158,7 +163,9 @@ export const readSkillFolder = (
     }
 
     if (info.value.kind !== "directory") {
-      return yield* refused(`${directory} is not a folder: give the Skill's folder, which holds its SKILL.md`);
+      return yield* refused(
+        `${directory} is not a folder: give the Skill's folder, which holds its SKILL.md`,
+      );
     }
 
     if (env.listFiles === undefined) return yield* refused("this environment cannot list a folder");
@@ -210,7 +217,9 @@ export const readSkillFolder = (
       total += size.ok ? size.value.size : 0;
 
       if (total > MAX_SKILL_BYTES) {
-        problems.push(`The files are more than the ${MAX_SKILL_BYTES} bytes a Skill may be together`);
+        problems.push(
+          `The files are more than the ${MAX_SKILL_BYTES} bytes a Skill may be together`,
+        );
         break;
       }
 
@@ -242,7 +251,8 @@ export const readSkillFolder = (
 const servedAt = (name: string): string => `${SKILLS_ROOT}/${name}`;
 
 /** An Environment as a result names it. */
-const named = ({ id, name }: ChangedEnvironment): string => `Environment ${JSON.stringify(name)} (${id})`;
+const named = ({ id, name }: ChangedEnvironment): string =>
+  `Environment ${JSON.stringify(name)} (${id})`;
 
 /** What a result says of where a change reaches. */
 const reach = (environment: ChangedEnvironment, handed: boolean, own: boolean): string =>
@@ -260,7 +270,13 @@ const PROMPT_NOTE =
  * would record the change again. Built here, not at the module's top: `environment.ts` imports this file, so its
  * exports are not there yet then.
  */
-export const skillTools = ({ environments, log, refuseSecrets, target, notFound }: SkillToolDeps) => {
+export const skillTools = ({
+  environments,
+  log,
+  refuseSecrets,
+  target,
+  notFound,
+}: SkillToolDeps) => {
   const Reason = Schema.String.check(
     Schema.isMinLength(1),
     Schema.isMaxLength(MAX_CHANGE_REASON),
@@ -327,7 +343,9 @@ export const skillTools = ({ environments, log, refuseSecrets, target, notFound 
                   text: `${named(saved.environment)} keeps the Skill ${saved.name} with these files already: nothing changed, and nothing was recorded. It is at ${servedAt(saved.name)}.`,
                 },
               ],
-              details: { unchanged: { environment: saved.environment, field: `skills.${saved.name}` } },
+              details: {
+                unchanged: { environment: saved.environment, field: `skills.${saved.name}` },
+              },
             };
           case "saved": {
             const { change } = saved;

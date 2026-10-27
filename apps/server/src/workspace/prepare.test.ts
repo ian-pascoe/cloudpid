@@ -175,7 +175,10 @@ const cloned = ["/workspace/app/.git", "/workspace/api/.git"];
 
 describe("readying a Workspace", () => {
   it("hands the object its Environment's Skill set before any script runs, and none when the set-up has none", async () => {
-    const set: SkillSet = { hash: "merged-1", files: { "release/SKILL.md": "---\nname: release\n---\n" } };
+    const set: SkillSet = {
+      hash: "merged-1",
+      files: { "release/SKILL.md": "---\nname: release\n---\n" },
+    };
     const handed = host([], [{ exitCode: 0, output: "" }]);
 
     await handed.prepare({ ...setup, skills: set });

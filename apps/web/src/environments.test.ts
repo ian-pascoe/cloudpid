@@ -448,9 +448,9 @@ describe("an Agent change", () => {
 
   it("shows a Skill's change as the Skill, its values as its files' paths", () => {
     expect(changeFieldText("skills.release")).toBe("Skill release");
-    expect(
-      changeValueText({ files: { "references/a.md": "h2", "SKILL.md": "h1" } }),
-    ).toBe("SKILL.md\nreferences/a.md");
+    expect(changeValueText({ files: { "references/a.md": "h2", "SKILL.md": "h1" } })).toBe(
+      "SKILL.md\nreferences/a.md",
+    );
     expect(changeValueText({ files: {} })).toBe("no files");
   });
 

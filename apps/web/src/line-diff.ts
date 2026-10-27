@@ -139,7 +139,10 @@ export type SkillFileDiff = {
  * The files an Agent change of a Skill added, removed or changed, by path, each with the diff of its text (an added
  * file all `+`, a removed one all `-`); the files it left as they were are left out.
  */
-export const skillFileDiffs = ({ before, after }: SkillChangeFiles): ReadonlyArray<SkillFileDiff> => {
+export const skillFileDiffs = ({
+  before,
+  after,
+}: SkillChangeFiles): ReadonlyArray<SkillFileDiff> => {
   const left = new Map(Arr.map(before ?? [], (file) => [file.path, file.text] as const));
   const right = new Map(Arr.map(after ?? [], (file) => [file.path, file.text] as const));
   const paths = Arr.sort(Arr.dedupe([...left.keys(), ...right.keys()]), (a: string, b: string) =>
