@@ -263,6 +263,14 @@ export type SessionHostOptions<R = never> = {
    * request whose call was abandoned while the object was evicted.
    */
   readonly onIdle?: Effect.Effect<void, never, R>;
+  /**
+   * Runs the moment the Session has gone idle after work, before anything else of its settling: closes the Last run and
+   * ends it in the background (`runs.ts`), so it never delays the owner's notification. Given a way to read the newest
+   * entry of a conversation.
+   */
+  readonly onSettled?: (
+    newest: (conversationId: ConversationId) => Promise<number>,
+  ) => Effect.Effect<void, never, R>;
   /** Builds a conversation's execution environment for each use (`HarnessOptions.env`): the Session's Workspace. */
   readonly env?: HarnessOptions["env"];
   /**
@@ -609,6 +617,22 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const onIdle =
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
+
+  /** The newest entry of a conversation, 0 when it has none. */
+  const newestEntry = async (conversationId: ConversationId): Promise<number> => {
+    const conversation = await harness.harness.conversation(conversationId, context);
+
+    if (conversation === undefined) return 0;
+
+    const page = await conversation.entries({}, 1, undefined, context);
+
+    return page.items[0]?.id ?? 0;
+  };
+
+  const onSettled =
+    options.onSettled === undefined
+      ? Effect.void
+      : Effect.provideContext(options.onSettled(newestEntry), services);
 
   /** The Agent changes of the Run, kept until its end notifies them. */
   const changes = runChanges(storage.kv);
@@ -1010,6 +1034,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           waiting = false;
         }),
       ),
+      // At once, before any step that waits, so a write of the next prompt finds the Run closed.
+      Effect.andThen(onSettled),
       Effect.andThen(settle),
       Effect.andThen(notifyRunEnds),
       // Also here, so a first Run an eviction cut short is named once the next instance has finished it.

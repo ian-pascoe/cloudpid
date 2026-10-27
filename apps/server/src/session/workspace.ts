@@ -44,6 +44,10 @@ export type WorkspaceNamespace = {
       | "comparisonSources"
       | "compare"
       | "comparisonFile"
+      | "runStart"
+      | "runEnd"
+      | "runDiff"
+      | "runFile"
       | "stopContainer"
       | "resizeContainer"
     >;

@@ -12,6 +12,8 @@ import type { ConversationKey } from "../session/conversation-key.ts";
 export interface DiffTarget {
   readonly file: string | null;
   readonly at: number;
+  /** The source to show it in: the Last run's ("Show changes"); absent, the Changes. */
+  readonly source?: "run";
 }
 
 /** The place the Diff pane on the Changes `key` names is asked to show, until it has. */
@@ -23,14 +25,14 @@ let asks = 0;
 
 /**
  * Open the page's Diff pane on the Changes `key` names (or show it where it is open) at a changed file, or at the top
- * for `null`.
+ * for a `null` file, in the Changes or, for `source: "run"` ("Show changes"), in the Last run.
  */
 export const openDiffPaneAtom = Atom.family((key: ConversationKey) =>
   Atom.writable(
     (get) => get(diffTargetAtom(key)),
-    (ctx, file: string | null) => {
+    (ctx, where: Omit<DiffTarget, "at">) => {
       asks += 1;
-      ctx.set(diffTargetAtom(key), { file, at: asks });
+      ctx.set(diffTargetAtom(key), { ...where, at: asks });
       ctx.set(panesAtom, { type: "open", key: DIFF_PANE });
     },
   ),

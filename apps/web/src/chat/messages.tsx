@@ -11,6 +11,7 @@ import * as Arr from "effect/Array";
 import { ChevronRight, Globe } from "lucide-react";
 import * as Predicate from "effect/Predicate";
 import { KeptDetails, MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
+import { ShowChanges } from "./show-changes.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent.ts";
 import { ReviewChips } from "../review/review-chips.tsx";
@@ -174,6 +175,7 @@ const AssistantMessage = () => {
       />
       <FailureNotice />
       <AnswerBar answer={answer} />
+      <ShowChanges answer={answer} />
     </MessagePrimitive.Root>
   );
 };

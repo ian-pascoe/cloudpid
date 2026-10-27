@@ -21,6 +21,7 @@ import {
   HEARTBEAT,
   HistoryPage,
   Navigated,
+  RunDiff,
   SessionTree,
   LiveViewLinks,
   OwnerTabLinks,
@@ -238,6 +239,15 @@ export interface SessionClient {
     query: Omit<Extract<ClientMessage, { type: "comparison_file" }>, "type" | "id">,
   ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
+   * The Run diff of the Session's Last run (`docs/spec.md` → Diffs and review → Run diff), or null while no Run has written.
+   * A live Run's list is made again at each ask. It never starts the Container. Fails as `catalog` does.
+   */
+  readonly runDiff: Effect.Effect<RunDiff | null, SessionCommandError>;
+  /** One file of the Last run: its start copy's side and its end copy's. It never starts the Container. Fails as `catalog` does. */
+  readonly runFile: (
+    query: Omit<Extract<ClientMessage, { type: "run_file" }>, "type" | "id">,
+  ) => Effect.Effect<ChangeFile, SessionCommandError>;
+  /**
    * Save draft Annotation `annotation`, new or edited (`docs/spec.md` → Diffs and review → Annotations and Reviews): done
    * once the Session has it, and every client then has the new list in `annotations`. Fails as `catalog` does, and with
    * the Session's refusal past 100 drafts.
@@ -439,6 +449,8 @@ const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
 const decodeComparisonSources = Schema.decodeUnknownOption(ComparisonSources);
 
 const decodeCompareResult = Schema.decodeUnknownOption(CompareResult);
+
+const decodeRunDiff = Schema.decodeUnknownOption(Schema.NullOr(RunDiff));
 
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
@@ -647,6 +659,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "usage"
         | "changes"
         | "conversationChanges"
+        | "lastRun"
         | "todos"
         | "activeBranch"
         | "treeVersion"
@@ -915,6 +928,11 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         return;
       }
+
+      case "last_run":
+        update({ lastRun: message.lastRun });
+
+        return;
 
       case "todos": {
         if (message.conversationId === root) {
@@ -1553,6 +1571,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ),
     comparisonFile: (query) =>
       request((id) => ({ type: "comparison_file", id, ...query }), decodeChangeFile),
+    runDiff: request((id) => ({ type: "run_diff", id }), decodeRunDiff),
+    runFile: (query) => request((id) => ({ type: "run_file", id, ...query }), decodeChangeFile),
     saveAnnotation: (annotation) =>
       request(
         (id) => ({ type: "annotation_save", id, annotation }),

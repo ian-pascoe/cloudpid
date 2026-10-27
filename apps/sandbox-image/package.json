@@ -11,7 +11,8 @@
     "./workspaces": "./src/workspaces.ts",
     "./builds": "./src/builds.ts",
     "./changes": "./src/changes.ts",
-    "./comparison": "./src/comparison.ts"
+    "./comparison": "./src/comparison.ts",
+    "./runs": "./src/runs.ts"
   },
   "scripts": {
     "typecheck": "tsc",

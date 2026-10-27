@@ -129,7 +129,7 @@ The checkbox on a file of a pull request Comparison with which the owner marks i
 _Avoid_: Reviewed, seen, read mark
 
 **Run diff**:
-The change one Run made to the files in its Workspace's Repos, from its start to its end, whoever wrote them.
+The change one Run made to the files in its Workspace's Repos, from its start to its end, whoever wrote them. _Last run_ is the Run diff of a Session's latest Run that wrote files, the only one kept (with the Runs its drafts still name): live while the Run works, frozen once it ended. It is measured from a copy of each Repo's files made before the Run's first write, so what the Run found already changed does not count; a Repo the copy could not be made of (its files need a stopped Container, or too many differed from HEAD) is said to be not captured.
 _Avoid_: Turn diff, last turn (for the thing)
 
 **Call diff**:
@@ -137,7 +137,7 @@ The change one file-writing tool call made to one file, as recorded when it ran.
 _Avoid_: Per-call diff, edit diff
 
 **Annotation**:
-What the owner writes on a range of lines on one side of a diff (a Call diff, the Changes, or a Comparison), with those lines quoted as they were. It is a draft, kept in its Session and the same on every device, until it is sent in a Review. A draft on the Changes or a Comparison (This branch's or a pull request's) whose lines have changed since is outdated; one whose lines only moved goes with them (on a Comparison, to the new head).
+What the owner writes on a range of lines on one side of a diff (a Call diff, the Changes, a Comparison, or the Last run), with those lines quoted as they were. It is a draft, kept in its Session and the same on every device, until it is sent in a Review. A draft on the Changes or a Comparison (This branch's or a pull request's) whose lines have changed since is outdated; one whose lines only moved goes with them (on a Comparison, to the new head).
 _Avoid_: Comment, remark, note (that is an agent's Note)
 
 **Review**:

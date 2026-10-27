@@ -11,6 +11,8 @@ export * from "./comparison.ts";
 
 export * from "./environment-secrets.ts";
 
+export * from "./last-run.ts";
+
 export * from "./lifecycle-changes.ts";
 
 export * from "./live-view.ts";

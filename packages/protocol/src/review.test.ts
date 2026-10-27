@@ -268,6 +268,52 @@ describe("renderReview", () => {
     expect(both).toContain("### Pull request #7 in `lib` 'T' at `2222222`");
   });
 
+  it("heads the Last run's drafts by file, between the pull requests and the Call diffs, saying whether the Run had ended", () => {
+    const onRun = (overrides: Partial<Annotation> = {}): Annotation => ({
+      ...onChanges({ id: "r1", text: "Why here?" }),
+      source: {
+        kind: "run",
+        conversationId: conversation,
+        run: "run1abc",
+        repo: "app",
+        start: "1111111",
+        end: "2222222",
+      },
+      ...overrides,
+    });
+
+    const { markdown } = renderReview([
+      onCall(),
+      onRun(),
+      onRun({ id: "r2", path: "src/b.ts" }),
+      onBranch(),
+      onChanges(),
+    ]);
+
+    expect(markdown.split("\n").filter((line) => line.startsWith("### "))).toEqual([
+      "### Uncommitted Changes in `app`",
+      "### Branch `feat/x` against `main` at `abc1234`",
+      "### Your changes in your last run to `/workspace/app/src/a.ts`: lines as of the end of that run",
+      "### Your changes in your last run to `/workspace/app/src/b.ts`: lines as of the end of that run",
+      "### Your `edit` call on `/workspace/app/README.md`: lines as of that call",
+    ]);
+
+    const live = renderReview([
+      onRun({
+        source: {
+          kind: "run",
+          conversationId: conversation,
+          run: "run1abc",
+          repo: "app",
+          start: "1111111",
+          end: null,
+        },
+      }),
+    ]).markdown;
+
+    expect(live).toContain("lines as of now");
+  });
+
   it("says when the lines have changed since, or are no longer in the diff", () => {
     const { markdown } = renderReview([
       onChanges({ status: "outdated" }),

@@ -129,7 +129,7 @@ const OpenInDiffPane = ({ path }: { path: string }) => {
       size="sm"
       className="h-7 px-2 text-xs text-muted-foreground"
       onClick={() => {
-        open(file?.id ?? null);
+        open({ file: file?.id ?? null });
       }}
     >
       Open in Diff pane

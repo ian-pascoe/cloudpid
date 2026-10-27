@@ -137,6 +137,9 @@ const groupKey = (annotation: Annotation): string => {
       return `branch:${source.repo}`;
     case "pull":
       return `pull:${source.repo}:${source.number}`;
+    case "run":
+      // One group a file: its heading names the file.
+      return `run:${source.run}:${source.repo}:${annotation.path}`;
     case "call":
       return `call:${source.conversationId}:${source.callId}:${source.nested ?? ""}`;
   }
@@ -178,6 +181,13 @@ const headOf = (group: readonly Annotation[]): Annotation | undefined => {
   );
 };
 
+/**
+ * The heading of a Last run file's group: the lines are as of the end of that run, or as of now while the Run is live
+ * (its Annotations are then checked as the Changes' are, and the lines may still move).
+ */
+export const runHeading = (path: string, live: boolean): string =>
+  `Your changes in your last run to ${inlineCode(path)}: lines as of ${live ? "now" : "the end of that run"}`;
+
 /** The heading of a source's group; a pull request's names its repo when `shared` says another repo has one of its number. */
 const groupHeading = (annotation: Annotation, shared: ReadonlySet<number>): string => {
   const { source } = annotation;
@@ -189,6 +199,8 @@ const groupHeading = (annotation: Annotation, shared: ReadonlySet<number>): stri
       return `${source.branch === null ? `Detached at ${inlineCode(shortSha(source.head))}` : `Branch ${inlineCode(source.branch)}`} against ${inlineCode(source.base)} at ${inlineCode(shortSha(source.mergeBase))}`;
     case "pull":
       return `Pull request #${source.number}${shared.has(source.number) ? ` in ${inlineCode(source.repo)}` : ""} '${source.title.replace(/\s+/g, " ").trim()}' at ${inlineCode(shortSha(source.head))}`;
+    case "run":
+      return runHeading(annotationPath(annotation), source.end === null);
     case "call":
       return `Your ${inlineCode(source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
   }
@@ -241,7 +253,7 @@ const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 
 /** Removed lines before added ones. */
 const sideOrder = (annotation: Annotation): number => (annotation.side === "old" ? 0 : 1);
 
-/** Where a source's group sits in a Review: the Changes, the branches, the pull requests, then the Call diffs. */
+/** Where a source's group sits in a Review: the Changes, the branches, the pull requests, the Last run, then the Call diffs. */
 const sourceRank = (annotation: Annotation): number => {
   switch (annotation.source.kind) {
     case "changes":
@@ -250,14 +262,17 @@ const sourceRank = (annotation: Annotation): number => {
       return 1;
     case "pull":
       return 2;
-    case "call":
+    case "run":
       return 3;
+    case "call":
+      return 4;
   }
 };
 
 /**
  * The groups of a Review: the Changes first, by repo, then the branches, by repo, then the pull requests, by repo and
- * number, then the Call diffs, in the order of their first draft; within each, its Annotations by file, then line, then side (removed lines first where both sides
+ * number, then the Last run's files, then the Call diffs, in the order of their first draft; within each, its
+ * Annotations by file, then line, then side (removed lines first where both sides
  * start at one), then end.
  */
 const ordered = (annotations: readonly Annotation[]): Annotation[][] => {

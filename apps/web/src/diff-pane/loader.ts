@@ -65,6 +65,10 @@ export interface LoaderServices {
   readonly comparisonFile: (
     query: ChangeFileQuery & { readonly mergeBase: string; readonly head: string },
   ) => Effect.Effect<ChangeFile, { readonly message: string }>;
+  /** A file of the Last run, between its start copy and its end copy (the working tree while the Run is live). */
+  readonly runFile: (
+    query: ChangeFileQuery,
+  ) => Effect.Effect<ChangeFile, { readonly message: string }>;
   readonly lineUp: (request: LineUpRequest) => Effect.Effect<LineUp, { readonly message: string }>;
 }
 
@@ -175,13 +179,15 @@ export const fileLoader = (
       return Effect.gen(function* () {
         const before = (yield* SubscriptionRef.get(loads)).loaded.get(file.id)?.contents;
 
-        const answer = yield* file.branch === undefined
-          ? services.changeFile(query)
-          : services.comparisonFile({
-              ...query,
-              mergeBase: file.branch.mergeBase,
-              head: file.branch.head,
-            });
+        const answer = yield* file.run !== undefined
+          ? services.runFile(query)
+          : file.branch === undefined
+            ? services.changeFile(query)
+            : services.comparisonFile({
+                ...query,
+                mergeBase: file.branch.mergeBase,
+                head: file.branch.head,
+              });
 
         return yield* contentsOf(services, want, answer, before);
       }).pipe(

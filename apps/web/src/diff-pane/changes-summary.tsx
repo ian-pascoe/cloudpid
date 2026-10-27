@@ -43,7 +43,7 @@ export const ChangesSection = () => {
   const { shown, more } = changesPreview(repos, DETAILS_FILES);
 
   const atTop = () => {
-    open(null);
+    open({ file: null });
   };
 
   return (
@@ -111,7 +111,7 @@ export const ChangesSection = () => {
                 entry={entry}
                 path={path}
                 onOpen={() => {
-                  open(id);
+                  open({ file: id });
                 }}
                 className="rounded px-1.5 py-1"
               />

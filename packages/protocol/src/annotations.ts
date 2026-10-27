@@ -93,12 +93,32 @@ export const PullSource = Schema.Struct({
 
 export type PullSource = typeof PullSource.Type;
 
+/**
+ * An Annotation on a repo's file in the Last run (`docs/spec.md` → Diffs and review → Run diff): the conversation whose
+ * Run it is, the Run, the repo, and the commits of the Run's start and end copies. While the Run is live `end` is null
+ * and the drafts follow the Changes' outdated rule; once it ended they are checked a last time and never again.
+ */
+export const RunSource = Schema.Struct({
+  kind: Schema.Literal("run"),
+  conversationId: ConversationId,
+  /** The Run's ID (`LastRun.run`). */
+  run: Schema.String.check(Schema.isMaxLength(64)),
+  repo: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  /** The commit of the start copy. */
+  start: Schema.String.check(Schema.isMaxLength(64)),
+  /** The commit of the end copy; null while the Run is live. */
+  end: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64))),
+});
+
+export type RunSource = typeof RunSource.Type;
+
 /** Where an Annotation was drawn. */
 export const AnnotationSource = Schema.Union([
   CallDiffSource,
   ChangesSource,
   BranchSource,
   PullSource,
+  RunSource,
 ]);
 
 export type AnnotationSource = typeof AnnotationSource.Type;
@@ -213,8 +233,8 @@ export const cutQuote = (lines: readonly string[], more = 0, clipped = false): Q
 };
 
 /**
- * The absolute path of an Annotation's file: a Call diff's as recorded, a changed file's (in the Changes or a
- * Comparison) in its repo's clone.
+ * The absolute path of an Annotation's file: a Call diff's as recorded, a changed file's (in the Changes, a Comparison or
+ * a Run) in its repo's clone.
  */
 export const annotationPath = (annotation: Pick<AnnotationDraft, "source" | "path">): string =>
   annotation.source.kind === "call"
@@ -249,7 +269,8 @@ export const rangeLabel = (annotation: Pick<AnnotationDraft, "start" | "end">): 
 
 /**
  * Whether two sources are the same diff: the same call (and nested call), the same repo's Changes, the same repo's
- * This branch, or the same pull request (whatever pair of commits it was written against).
+ * This branch or the same pull request (whatever pair of commits it was written against), or the same repo in the same
+ * Run.
  */
 export const sameSource = (a: AnnotationSource, b: AnnotationSource): boolean => {
   switch (a.kind) {
@@ -266,5 +287,7 @@ export const sameSource = (a: AnnotationSource, b: AnnotationSource): boolean =>
       return b.kind === "branch" && a.repo === b.repo;
     case "pull":
       return b.kind === "pull" && a.repo === b.repo && a.number === b.number;
+    case "run":
+      return b.kind === "run" && a.run === b.run && a.repo === b.repo;
   }
 };

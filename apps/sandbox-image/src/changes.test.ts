@@ -143,6 +143,21 @@ describe("the Container's Changes listing", () => {
     expect(repo.sh("git status --porcelain", repo.dir)).toBe(" M a.txt\n?? new.txt\n");
   });
 
+  it("lists a same-size edit made in the instant the index was written, as git does: the copy keeps the index's time", () => {
+    const repo = workspace({ "a.txt": "one\n", "b.txt": "b\n" });
+
+    // The stat data git compares is the size and the second only, and the file is edited to the same size and put back to
+    // its time, with the index dated the same second: a racily clean entry, which only the index's own time tells apart.
+    repo.sh(
+      "git config core.checkStat minimal && touch -d @1700000000 a.txt && git update-index --refresh",
+      repo.dir,
+    );
+    repo.write("a.txt", "two\n");
+    repo.sh("touch -d @1700000000 a.txt .git/index", repo.dir);
+
+    expect(repo.list()[0]).toMatchObject({ files: [{ path: "a.txt", status: "modified" }] });
+  });
+
   it("marks what git takes for binary, with no counts, and leaves ignored files out", () => {
     const repo = workspace({
       "logo.png": new Uint8Array([137, 80, 0, 1, 2]),
@@ -193,6 +208,37 @@ describe("the Container's Changes listing", () => {
     ]);
   });
 
+  it("compares with a commit instead of HEAD when given one (a Run's start copy), and refuses what is not an id", () => {
+    const repo = workspace({ "a.txt": "a\n", "b.txt": "b\n" });
+
+    repo.write("a.txt", "a2\n");
+
+    // The start copy: the working tree as it is now, saved as a commit.
+    const start = repo
+      .sh(
+        "export GIT_INDEX_FILE=$(mktemp -u) && git add -A && git commit-tree -p HEAD -m copy $(git write-tree)",
+        repo.dir,
+      )
+      .trim();
+
+    repo.write("b.txt", "b2\n");
+    repo.write("new.txt", "fresh\n");
+    repo.sh("git add -A && git commit -q -m second", repo.dir);
+    repo.write("a.txt", "a3\n");
+
+    const files = (listing: ReturnType<typeof parseChanges>) =>
+      listing.flatMap((each) => ("files" in each ? each.files.map((file) => file.path) : []));
+
+    // Against HEAD only a.txt differs; against the start copy, what the Run did: a commit hides nothing.
+    expect(files(repo.list())).toEqual(["a.txt"]);
+    expect(files(parseChanges(repo.sh(changesScript(["app"], repo.root, start))))).toEqual([
+      "a.txt",
+      "b.txt",
+      "new.txt",
+    ]);
+    expect(() => changesScript(["app"], repo.root, "HEAD; rm -rf /")).toThrow("Not a commit id");
+  });
+
   it("takes a listing cut off midway for an error", () => {
     expect(parseChanges("repo\tapp\nraw\t\n")).toEqual([
       { repo: "app", error: "The Container's listing stopped short" },
@@ -215,5 +261,22 @@ describe("the Container's HEAD side of a file", () => {
       bytes: lines(100).length,
     });
     expect(parseHeadBlob(repo.sh(headBlobScript("app", "nope.txt", 100, repo.root)))).toBeNull();
+  });
+
+  it("prints the side at a commit when given one, and refuses what is not an id", () => {
+    const repo = workspace({ "a.txt": "first\n" });
+    const first = repo.sh("git rev-parse HEAD", repo.dir).trim();
+
+    repo.write("a.txt", "second\n");
+    repo.sh("git commit -q -am second", repo.dir);
+
+    const at = (commit: string) =>
+      parseHeadBlob(repo.sh(headBlobScript("app", "a.txt", 1024, repo.root, commit)));
+
+    expect(at(first)?.blob).toEqual(new TextEncoder().encode("first\n"));
+    expect(parseHeadBlob(repo.sh(headBlobScript("app", "a.txt", 1024, repo.root)))?.bytes).toBe(7);
+    expect(() => headBlobScript("app", "a.txt", 1024, repo.root, "--all")).toThrow(
+      "Not a commit id",
+    );
   });
 });

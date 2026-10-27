@@ -6,6 +6,9 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import { shellQuote, WORKSPACE_ROOT } from "./toolchains.ts";
 
+/** The empty tree's id (SHA-1): what a repo with no commit is compared with and copied onto. */
+export const EMPTY_TREE_ID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /** A changed file as the Container's git lists it. */
 export type ContainerChange = {
   readonly path: string;
@@ -31,13 +34,19 @@ export type ContainerRepoChanges =
  * and the HEAD blobs' `cat-file` sizes, each base64 on one line) and `ok`, or an `error` line (git's message, base64).
  * The index each repo's git reads is a copy in a temp directory on the Container's disk, where `git add -N` records the
  * untracked files that are not ignored; `.git/index` itself is only read. A repo with no commit is compared with the
- * empty tree.
+ * empty tree. With `base` (a commit's full id: a Run's start copy), each repo is compared with that commit instead of
+ * its HEAD.
  */
 export const changesScript = (
   repos: ReadonlyArray<string>,
   root: string = WORKSPACE_ROOT,
-): string => `set -u -o pipefail
+  base?: string,
+): string => {
+  if (base !== undefined && !COMMIT_ID.test(base)) throw new Error(`Not a commit id: ${base}`);
+
+  return `set -u -o pipefail
 root=${shellQuote(root)}
+base_commit=${shellQuote(base ?? "")}
 repos=(${repos.map(shellQuote).join(" ")})
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -47,10 +56,12 @@ for repo in \${repos[@]+"\${repos[@]}"}; do
   printf 'repo\\t%s\\n' "$repo"
   rm -f "$work"/*
   export GIT_INDEX_FILE="$work/index"
-  if [ -f "$dir/.git/index" ]; then cp "$dir/.git/index" "$GIT_INDEX_FILE"; fi
+  if [ -f "$dir/.git/index" ]; then cp -p "$dir/.git/index" "$GIT_INDEX_FILE"; fi
   base=HEAD
-  if ! git -C "$dir" rev-parse --quiet --verify HEAD >/dev/null 2>&1; then
-    base=$(git -C "$dir" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)
+  if [ -n "$base_commit" ]; then
+    base=$base_commit
+  elif ! git -C "$dir" rev-parse --quiet --verify HEAD >/dev/null 2>&1; then
+    base=$(git -C "$dir" hash-object -t tree /dev/null 2>/dev/null || echo ${EMPTY_TREE_ID})
   fi
   diff=(git -C "$dir" -c core.quotepath=off -c diff.renames=true diff "$base" -M --no-ext-diff --no-textconv --no-color -z)
   if git -C "$dir" add --intent-to-add . 2>"$work/err" \\
@@ -69,6 +80,10 @@ for repo in \${repos[@]+"\${repos[@]}"}; do
 done
 exit 0
 `;
+};
+
+/** A commit's full id: 40 or 64 hex digits. */
+const COMMIT_ID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 /** The bytes `text` (base64) holds. */
 export const bytesOf = (text: string): Uint8Array =>
@@ -229,22 +244,29 @@ export const parseChanges = (stdout: string): ContainerRepoChanges[] => {
 
 /**
  * The bash script that prints the HEAD side of `path` in `repo`: a `size` line, then, unless it is over `maxBytes`, a
- * `blob` line (the bytes, base64); nothing when HEAD has no such file.
+ * `blob` line (the bytes, base64); nothing when HEAD has no such file. With `commit` (a full id: a Run's copy), the
+ * side at that commit instead.
  */
 export const headBlobScript = (
   repo: string,
   path: string,
   maxBytes: number,
   root: string = WORKSPACE_ROOT,
-): string => `set -u -o pipefail
+  commit?: string,
+): string => {
+  if (commit !== undefined && !COMMIT_ID.test(commit))
+    throw new Error(`Not a commit id: ${commit}`);
+
+  return `set -u -o pipefail
 dir=${shellQuote(`${root}/${repo}`)}
-spec=${shellQuote(`HEAD:${path}`)}
+spec=${shellQuote(`${commit ?? "HEAD"}:${path}`)}
 size=$(git -C "$dir" cat-file -s "$spec" 2>/dev/null) || exit 0
 printf 'size\\t%s\\n' "$size"
 if [ "$size" -le ${maxBytes} ]; then
   printf 'blob\\t%s\\n' "$(git -C "$dir" cat-file blob "$spec" | base64 | tr -d '\\n')"
 fi
 `;
+};
 
 /** What `headBlobScript` printed: the blob's size and its bytes (absent over the limit), or null when there is none. */
 export const parseHeadBlob = (

@@ -36,6 +36,7 @@ import { SessionChanges } from "./changes.ts";
 import { SessionComparisons } from "./comparisons.ts";
 import { attempt, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
+import { SessionRuns } from "./runs.ts";
 import {
   checked,
   checkQuote,
@@ -123,7 +124,7 @@ export const sessionReviewsLayer = (
 ): Layer.Layer<
   SessionReviews,
   never,
-  SessionHost | SessionChanges | SessionComparisons | AnnotationStore | Harness
+  SessionHost | SessionChanges | SessionComparisons | SessionRuns | AnnotationStore | Harness
 > =>
   Layer.effect(
     SessionReviews,
@@ -131,6 +132,7 @@ export const sessionReviewsLayer = (
       const host = yield* SessionHost;
       const changes = yield* SessionChanges;
       const comparisons = yield* SessionComparisons;
+      const runs = yield* SessionRuns;
       const store = yield* AnnotationStore;
       const harness = yield* Harness;
       const scope = yield* Effect.scope;
@@ -345,10 +347,88 @@ export const sessionReviewsLayer = (
         ).pipe(Effect.map((found) => found.flat()));
       };
 
+      /**
+       * What a check finds of the drafts on the Last run that are not final yet (`end` unset): their file in the Run diff
+       * as the Workspace has it now, compared as the Changes' are. When the Run has ended, a draft that was checked against
+       * its end takes the end copy's commit, which freezes it: an ended Run's sides never change, so it is not checked again.
+       * A repo listed from the Container's git while it is stopped says nothing.
+       */
+      const runFindings = (drafts: ReadonlyArray<Annotation>) => {
+        const open = drafts.filter(
+          (draft) => draft.source.kind === "run" && draft.source.end === null,
+        );
+
+        if (open.length === 0) return Effect.succeed([]);
+
+        return Effect.gen(function* () {
+          const diff = yield* runs.diff;
+
+          if (diff === null) return [];
+
+          const last = diff.live ? undefined : yield* runs.lastRun;
+
+          const found = yield* checkFiles(
+            open,
+            (draft) =>
+              draft.source.kind === "run" && draft.source.run === diff.run
+                ? `${draft.source.repo}\u0000${draft.path}`
+                : undefined,
+            (first): Located => {
+              if (first.source.kind !== "run") return { kind: "unknown" };
+
+              const { repo: name } = first.source;
+              const repo = diff.repos.find((each) => each.repo === name);
+
+              if (repo === undefined || repo.error !== undefined || repo.stale) {
+                return { kind: "unknown" };
+              }
+
+              const entry = repo.files.find((file) => file.path === first.path);
+
+              if (entry === undefined)
+                return repo.more > 0 ? { kind: "unknown" } : { kind: "gone" };
+
+              const at = { repo: name, path: entry.path };
+
+              return {
+                kind: "file",
+                read: runs.file(
+                  entry.oldPath === undefined ? at : { ...at, oldPath: entry.oldPath },
+                ),
+                after: (before, result) => checked(before, result, null),
+              };
+            },
+          );
+
+          if (last === undefined || last === null) return found;
+
+          return found.map(({ before, after }) => {
+            const { source } = after;
+
+            const end =
+              source.kind === "run" ? last.repos.find((r) => r.repo === source.repo)?.end : null;
+
+            return source.kind === "run" && end !== null && end !== undefined
+              ? { before, after: { ...after, source: { ...source, end } } }
+              : { before, after };
+          });
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Checking the drafts on the Last run failed", error).pipe(
+              Effect.as([]),
+            ),
+          ),
+        );
+      };
+
       /** Check `drafts` against `repos` and put what was found in place, under the one permit; answer what was found. */
       const checkAndKeep = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) =>
-        Effect.all([findings(drafts, repos), branchFindings(drafts, repos)]).pipe(
-          Effect.map(([onChanges, onBranch]) => [...onChanges, ...onBranch]),
+        Effect.all([
+          findings(drafts, repos),
+          branchFindings(drafts, repos),
+          runFindings(drafts),
+        ]).pipe(
+          Effect.map(([onChanges, onBranch, onRun]) => [...onChanges, ...onBranch, ...onRun]),
           Effect.tap((found) => store.checked(found)),
           checking,
         );
@@ -394,7 +474,24 @@ export const sessionReviewsLayer = (
         );
       });
 
-      yield* Effect.addFinalizer(() => Effect.sync(stop));
+      // The Last run ended: its drafts are checked against its end copy, the last time.
+      const stopRuns = runs.observeEnded(() => {
+        run(
+          store.list.pipe(
+            Effect.flatMap((drafts) => runFindings(drafts)),
+            Effect.tap((found) => store.checked(found)),
+            checking,
+            Effect.catchCause((cause) => Effect.logWarning("Checking the drafts failed", cause)),
+          ),
+        );
+      });
+
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          stop();
+          stopRuns();
+        }),
+      );
 
       /** Forget pending Review `submissionId`, bringing its drafts back when it was withdrawn before it was placed. */
       const settleOne = (submissionId: number) =>
