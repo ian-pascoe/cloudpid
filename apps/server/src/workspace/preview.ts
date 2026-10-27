@@ -252,13 +252,14 @@ export class ContainerPreview {
   async #open(request: Request, url: URL, port: number): Promise<Response> {
     const path = url.searchParams.get("path") ?? "/";
     const protocols = url.searchParams.get("protocols") ?? "";
+    const cookie = request.headers.get("cookie");
+
     // The upgrade the browser would have sent: from the page's origin, with its cookies.
     const headers = new Headers({
       host: devServerHost(port),
       upgrade: "websocket",
       origin: url.origin,
     });
-    const cookie = request.headers.get("cookie");
 
     if (protocols !== "") headers.set("sec-websocket-protocol", protocols);
 
