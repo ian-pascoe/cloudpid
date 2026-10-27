@@ -1,11 +1,14 @@
-// The bundled and repo skills on a Workspace, through Sessions and the environment (docs/spec.md → Filesystem and tools).
+// The bundled and repo skills on a Workspace, and the Skill set it holds, through Sessions and the environment
+// (docs/spec.md → Filesystem and tools).
 // They live in their own file so no file of the `workerd-session` project grows large (#64).
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 
 const DEPLOY_SKILL =
@@ -111,6 +114,151 @@ describe("the bundled skills", () => {
     expect(results[2]).toBe("notes.txt:1: Test-Driven Development");
     expect(results[3]).toContain("tdd/SKILL.md");
     expect(results[4]).toBe("SKILL.md:6: # Test-Driven Development");
+  });
+});
+
+describe("the Skill set a Workspace holds", () => {
+  const skill = (name: string, description: string) =>
+    `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
+
+  /** What the Worker Shell lists under the mount, one path per line, and the Skills the `skills` section lists. */
+  const seen = async (slug: string) => {
+    const { results, sections } = await sessionOn(slug).runFull([
+      call("bash", {
+        command: "cd /workspace/.agents/skills && find . -type f",
+        backend: "worker",
+      }),
+    ]);
+
+    return {
+      files: (results[0] ?? "").trim().split("\n").sort(),
+      section: sections["skills"] ?? "",
+    };
+  };
+
+  it("is the bundle until a set is handed over", async () => {
+    const slug = uniqueWorkspace();
+    const { files } = await seen(slug);
+
+    expect(files).toEqual(
+      Object.keys(BUNDLED_SKILLS.files)
+        .map((path) => `./${path}`)
+        .sort(),
+    );
+    expect(await env.WORKSPACES.getByName(slug).skillSetHash()).toBe(BUNDLED_SKILLS.version);
+  });
+
+  it("replaces the mount's files when a set is handed over, in the files, the Worker Shell and the skills section", async () => {
+    const slug = uniqueWorkspace();
+    const workspace = env.WORKSPACES.getByName(slug);
+
+    // The bundle is mounted first, as in a Workspace a Session already used.
+    expect((await seen(slug)).section).toContain("<name>tdd</name>");
+
+    await workspace.updateSkills({
+      hash: "sha256:one",
+      files: {
+        "deploy/SKILL.md": skill("deploy", "Deploy to staging."),
+        "deploy/steps.md": "1. build\n",
+        "review/SKILL.md": skill("review", "Review a change."),
+      },
+    });
+
+    const first = await seen(slug);
+
+    expect(first.files).toEqual(["./deploy/SKILL.md", "./deploy/steps.md", "./review/SKILL.md"]);
+    expect(first.section).toContain("<name>deploy</name>");
+    expect(first.section).toContain(
+      "<location>/workspace/.agents/skills/review/SKILL.md</location>",
+    );
+    expect(first.section).not.toContain("<name>tdd</name>");
+    expect(await workspace.skillSetHash()).toBe("sha256:one");
+
+    // A file changed, one added, and a file and a whole Skill removed.
+    await workspace.updateSkills({
+      hash: "sha256:two",
+      files: {
+        "deploy/SKILL.md": skill("deploy", "Deploy to production."),
+        "lint/SKILL.md": skill("lint", "Lint the repo."),
+      },
+    });
+
+    const second = await seen(slug);
+
+    const { results } = await sessionOn(slug).runFull([
+      call("read", { path: "/workspace/.agents/skills/deploy/SKILL.md" }),
+      call("ls", { path: "/workspace/.agents/skills" }),
+    ]);
+
+    expect(second.files).toEqual(["./deploy/SKILL.md", "./lint/SKILL.md"]);
+    expect(second.section).toContain("<description>Deploy to production.</description>");
+    expect(second.section).toContain("<name>lint</name>");
+    expect(second.section).not.toContain("<name>review</name>");
+    expect(results[0]).toContain("description: Deploy to production.");
+    expect(results[1]).toBe("deploy/\nlint/");
+  });
+
+  it("is left as it is by a set with the hash it already has", async () => {
+    const slug = uniqueWorkspace();
+    const workspace = env.WORKSPACES.getByName(slug);
+
+    await workspace.updateSkills({
+      hash: "sha256:same",
+      files: { "deploy/SKILL.md": skill("deploy", "Deploy to staging.") },
+    });
+    await workspace.updateSkills({
+      hash: "sha256:same",
+      files: { "other/SKILL.md": skill("other", "Something else.") },
+    });
+
+    const { files, section } = await seen(slug);
+
+    expect(files).toEqual(["./deploy/SKILL.md"]);
+    expect(section).not.toContain("<name>other</name>");
+  });
+
+  it("stays read-only after a hand-over, whichever tool writes", async () => {
+    const slug = uniqueWorkspace();
+
+    await seen(slug);
+    await env.WORKSPACES.getByName(slug).updateSkills({
+      hash: "sha256:ro",
+      files: { "deploy/SKILL.md": skill("deploy", "Deploy to staging.") },
+    });
+
+    const { results } = await sessionOn(slug).runFull([
+      call("write", { path: "/workspace/.agents/skills/deploy/NOTES.md", content: "mine\n" }),
+      call("write", { path: "/workspace/.agents/skills/mine/SKILL.md", content: DEPLOY_SKILL }),
+      call("bash", { command: "rm /workspace/.agents/skills/deploy/SKILL.md", backend: "worker" }),
+      call("bash", {
+        command: "echo x > /workspace/.agents/skills/deploy/SKILL.md",
+        backend: "worker",
+      }),
+    ]);
+
+    for (const result of results) {
+      expect(result).toContain("read-only mount at /workspace/.agents/skills");
+    }
+
+    expect((await seen(slug)).files).toEqual(["./deploy/SKILL.md"]);
+  });
+
+  it("refuses a set whose paths leave the mount, and keeps the one it holds", async () => {
+    const slug = uniqueWorkspace();
+    const workspace = env.WORKSPACES.getByName(slug);
+
+    // In the object: a stub's rejected call is reported as an unhandled rejection by the test pool.
+    const refused = await runInDurableObject(workspace, (instance) =>
+      instance.updateSkills({ hash: "sha256:bad", files: { "../escape/SKILL.md": "x" } }).then(
+        () => "handed over",
+        (cause: unknown) => String(cause),
+      ),
+    );
+
+    expect(refused).toContain("must not contain '..' segments");
+
+    expect(await workspace.skillSetHash()).toBe(BUNDLED_SKILLS.version);
+    expect((await seen(slug)).section).toContain("<name>tdd</name>");
   });
 });
 

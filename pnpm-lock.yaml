@@ -163,6 +163,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  '@cloudflare/computer@0.6.0': ec5e8392c2aaa81da429bab15b09fcf67edbb64f23583f53355dcc1bc528145c
   '@cloudflare/vitest-plugin@1.4.6': 63f9eb8de2aab95f3e176eb48f3659337ee1665a54b45cb5322223f1b25179b1
   alchemy@2.0.0-beta.83: 5c9a5bc12e095b54c98fd8955d5a679a25a18824556b973ce734faf7eaee07e8
 
@@ -270,7 +271,7 @@ importers:
     dependencies:
       '@cloudflare/computer':
         specifier: ^0.6.0
-        version: 0.6.0(@cloudflare/workers-types@5.20261021.1)(@platformatic/vfs@0.5.0)(just-bash@3.6.0(supports-color@10.2.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
+        version: 0.6.0(patch_hash=ec5e8392c2aaa81da429bab15b09fcf67edbb64f23583f53355dcc1bc528145c)(@cloudflare/workers-types@5.20261021.1)(@platformatic/vfs@0.5.0)(just-bash@3.6.0(supports-color@10.2.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
       '@cloudpid/browser':
         specifier: workspace:*
         version: link:../browser
@@ -450,7 +451,7 @@ importers:
     dependencies:
       '@cloudflare/computer':
         specifier: ^0.6.0
-        version: 0.6.0(@cloudflare/workers-types@5.20261021.1)(@platformatic/vfs@0.5.0)(just-bash@3.6.0(supports-color@10.2.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
+        version: 0.6.0(patch_hash=ec5e8392c2aaa81da429bab15b09fcf67edbb64f23583f53355dcc1bc528145c)(@cloudflare/workers-types@5.20261021.1)(@platformatic/vfs@0.5.0)(just-bash@3.6.0(supports-color@10.2.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)
       '@earendil-works/chord':
         specifier: ^1.3.0
         version: 1.3.0
@@ -6641,7 +6642,7 @@ snapshots:
       '@modelcontextprotocol/sdk': 1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.6.7)
       zod: 4.6.7
 
-  '@cloudflare/computer@0.6.0(@cloudflare/workers-types@5.20261021.1)(@platformatic/vfs@0.5.0)(just-bash@3.6.0(supports-color@10.2.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)':
+  '@cloudflare/computer@0.6.0(patch_hash=ec5e8392c2aaa81da429bab15b09fcf67edbb64f23583f53355dcc1bc528145c)(@cloudflare/workers-types@5.20261021.1)(@platformatic/vfs@0.5.0)(just-bash@3.6.0(supports-color@10.2.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.5)':
     dependencies:
       capnweb: 0.10.0
     optionalDependencies:

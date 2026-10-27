@@ -7,7 +7,6 @@
 import {
   noopObserver,
   Workspace as ComputerWorkspace,
-  WorkerBundle,
   type WorkspaceObserver,
   type WorkspaceStub,
 } from "@cloudflare/computer";
@@ -53,7 +52,7 @@ import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import { type WorkspaceSecrets, workspaceSecretsStore } from "./environment-secrets.ts";
-import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
+import { checkSkillSet, type SkillSet, skillSetMount, skillSetStore } from "./skill-set.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import {
@@ -255,6 +254,8 @@ export class Workspace extends ContainerHost {
   readonly #containerPreview: ContainerPreview;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
+  /** The Skill set the mount at `SKILLS_MOUNT` serves: the bundle until one is handed over (`updateSkills`). */
+  readonly #skills: ReturnType<typeof skillSetStore>;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
@@ -262,6 +263,11 @@ export class Workspace extends ContainerHost {
     this.#settings = workspaceSettingsStore(ctx.storage);
     this.#environmentBuild = workspaceBuildStore(ctx.storage);
     this.#sql = ctx.storage.sql;
+
+    const skills = (this.#skills = skillSetStore({
+      kv: ctx.storage.kv,
+      transactionSync: (closure) => ctx.storage.transactionSync(closure),
+    }));
 
     let vault: Promise<KeptVault> | undefined;
 
@@ -509,9 +515,9 @@ export class Workspace extends ContainerHost {
 
     this.#workspace = new ComputerWorkspace({
       storage: ctx.storage,
-      // The bundled skills (`skills/`) ship in this Worker and appear read-only in every Workspace: a write under the
-      // mount fails with EROFS, and a deploy that changes the files replaces the copy.
-      mounts: { [SKILLS_MOUNT]: WorkerBundle(BUNDLED_SKILLS) },
+      // The Skill set the Workspace holds (the bundled skills, `skills/`, until another is handed over) appears
+      // read-only: a write under the mount fails with EROFS, and a set of another hash replaces the copy.
+      mounts: { [SKILLS_MOUNT]: skillSetMount(() => skills.current()) },
       observer: this.#containerUseObserver(),
       // The Worker Shell's `git` runs on computer's git client. `bash` routes only a few read-only subcommands there
       // (`bash-routing.ts`): the Container's real git is the only one that writes `.git`.
@@ -1167,14 +1173,56 @@ export class Workspace extends ContainerHost {
 
   /**
    * The skills a conversation in `cwd` can use: the `skills` section's discovery, run next to the files, so a request
-   * costs this one call instead of a listing per directory and a read per skill. The bundled skills are known from the
-   * bundle and parsed once per version, and only the repo's own are read.
+   * costs this one call instead of a listing per directory and a read per skill. The Skill set the Workspace holds is
+   * known from memory and parsed once per hash, and only the repo's own are read.
    */
   async skills(cwd: string): Promise<ReadonlyArray<Skill>> {
     this.#spare.noteUse();
     await this.#ready();
 
-    return discoverWorkspaceSkills(this.#host.readEnv(cwd), BUNDLED_SKILLS);
+    return discoverWorkspaceSkills(this.#host.readEnv(cwd), this.#skills.current());
+  }
+
+  /** The hash of the Skill set the Workspace holds, so a set is handed over only when its hash differs. */
+  skillSetHash(): string {
+    this.#spare.noteUse();
+
+    return this.#skills.current().hash;
+  }
+
+  /**
+   * Keep `set` as the Skill set the mount at `/workspace/.agents/skills` serves (ADR-0026), and copy it into the files
+   * at once: computer clears the mount and writes the set, so a file the set lacks is gone. A set with the hash held does
+   * nothing; one whose paths leave the mount is refused, and nothing changes. No other call of this object runs during
+   * the copy, so each sees the whole old set or the whole new one. A Container that runs keeps its copy of the old set
+   * until it starts again (docs/spec.md → Filesystem and tools → Skills).
+   */
+  async updateSkills(set: SkillSet): Promise<void> {
+    this.#spare.noteUse();
+
+    const checked = checkSkillSet(set);
+
+    if (checked.hash === this.#skills.current().hash) return;
+
+    // The first index (and the move of what the Workspace had at the mount before) happens before any hand-over.
+    await this.#ready();
+
+    // A failure inside `blockConcurrencyWhile` resets the object: it is carried out and thrown here instead.
+    const failed = await this.ctx.blockConcurrencyWhile(async () => {
+      if (checked.hash === this.#skills.current().hash) return undefined;
+
+      try {
+        this.#skills.replace(checked);
+        await this.#workspace.remount();
+
+        return undefined;
+      } catch (cause) {
+        // computer indexes the mount again at the next call (`#ready`), from the set kept.
+        return { cause };
+      }
+    });
+
+    if (failed !== undefined) throw failed.cause;
   }
 
   /**
