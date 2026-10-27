@@ -122,19 +122,20 @@ const useLocated = (
   } | null>(null);
 
   useEffect(() => {
-    const wanted = key === "" ? [] : key.split("\n");
+    // Only areas, or no drafts: nothing to find.
+    if (key === "") {
+      setLocated({ key, url, rects: new Map() });
+
+      return;
+    }
+
+    const wanted = key.split("\n");
     let reading = false;
     let stopped = false;
     let soon: ReturnType<typeof setTimeout> | null = null;
 
     const read = () => {
       if (reading || stopped) return;
-
-      if (wanted.length === 0) {
-        setLocated({ key, url, rects: new Map() });
-
-        return;
-      }
 
       reading = true;
       void page.evaluate(locateScript(wanted), Located).then((answer) => {
@@ -447,6 +448,13 @@ const AnnotateLayer = ({
     const element = layer.current;
 
     if (element === null) return;
+
+    // The keys go to the page while the screen has the focus: none while annotating.
+    const focused = document.activeElement;
+
+    if (focused instanceof HTMLElement && element.parentElement?.contains(focused) === true) {
+      focused.blur();
+    }
 
     const wheel = (event: WheelEvent) => {
       page.wheel(event);
