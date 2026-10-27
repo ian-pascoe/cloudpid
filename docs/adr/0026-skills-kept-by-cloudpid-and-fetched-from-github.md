@@ -1,0 +1,32 @@
+---
+status: accepted
+---
+
+# Skills are kept by cloudpid and fetched from GitHub, with none bundled
+
+cloudpid shipped a fixed set of Skills copied from the owner's local pi config, mounted read-only in every Workspace and changed only by a deploy. It is to ship none (see Rollout under Consequences). An Environment can have Skills of its own, and Skills can be kept for every Environment, as variables and Secrets are (GLOSSARY.md → Skill, Skill source). A Repo's own Skills, committed in its `.agents/skills`, still beat both. cloudpid keeps each Skill's files itself, in the Registry, and fetches them from GitHub in the Worker. It does not run the `skills` CLI (`npx skills`, skills.sh) to do so.
+
+- **Content, not references.** The Registry stores every Skill's files for its scope (an Environment, or `*` for every Environment). It keeps the Skill source with them (repo, path, the ref named, the commit it resolved to) and a content hash. Files are stored once per content hash, so the current sets and the Agent change history (which keeps the files before and after each change) share them, and content no change or set refers to any more is dropped when the history is pruned. The checks the bundle had (text only, 128 KB per file, 1 MB per Skill, nothing that looks like a credential or a local path) apply when a Skill is saved.
+- **Pinned.** A Skill stays as it was fetched until someone updates it: the owner from the Environments page, or the agent through a tool. An update fetches the ref's latest commit. A daily check marks Skills whose folder's tree SHA has moved as having an update available, and never applies the update.
+- **The agent edits.** The agent can write new Skills and edit installed ones. Its saves persist for the scope, as Agent changes that show the files before and after and can be reverted. A Skill with a Skill source that the agent edited is marked modified, and an update refuses to overwrite it unless asked.
+- **Fetching** runs in the Worker. It lists the repo with GitHub's Trees API through the GitHub App's tokens (ADR-0025), which also reach private repos where the app is installed. It picks the Skill folders with a port of the CLI's `SKILL.md` path rules (MIT), then reads the files at the commit. skills.sh is used only for search (`/api/search`). The agent may still run `npx skills` in a Container for sources this does not cover (GitLab, other git hosts, well-known indexes) and save the result as it saves a Skill it wrote.
+- **Delivery.** The Registry merges the two scopes, an Environment's own over those for every Environment, and hands the merged set to the Workspace DO with the Container settings when it readies a Workspace, only when the set's hash changed. The DO mounts the set read-only at `/workspace/.agents/skills`, the mount the bundle used. Discovery needs no Container, so a new Session's first prompt lists them. The mount's files reach a Container only through the Workspace's sync, never through the image, a Build or a Snapshot, so Skills are not part of a Build's key.
+- **Approval.** A change to the Skills kept for every Environment waits for the owner's Approval: a Skill there steers every future Session, so it is where a prompt-injected agent would plant instructions. So does the revert of such a change. A change to an Environment's own Skills does not wait.
+
+## Considered options
+
+- **The `skills` CLI as the fetcher**, run on a Container in a scratch directory (`npx skills add … --copy`), with cloudpid saving what it wrote. It needs no fetching code of our own, but every install and update needs a running Container, the Environments page included (a Build-like object just to fetch). We would also depend on the CLI's flags and behaviour, which change between releases: `check` is documented as read-only and applies updates. The package has no library entry point (no `main` or `exports`), so it can only be run as a program.
+- **References only**: each scope keeps a `skills-lock.json` and every Container's bootstrap runs `npx skills experimental_install`. It leans on the CLI the most. But a new Workspace has no Skills until its Container has started, which is after the first prompt was built. Every Container start needs GitHub. A Skill the agent wrote has nowhere to live.
+- **A GitHub repo per scope**, where an edit is a commit. It gives history for free, but every edit the agent makes needs a push, and every Environment needs a repo set up first.
+- **skills.sh's download endpoint** (`/api/download/{owner}/{repo}/{skill}`). It is the least code, but it is undocumented, serves only the latest version with no pinning, and covers only public repos that skills.sh indexes.
+- **Keeping a bundle of defaults.** It is what a deploy-time copy of the owner's config was. Skills that change only with a deploy are what this decision removes.
+
+Hermes Agent made the same choice (it keeps its Skills with a lock of their source revision and hash, fetches through GitHub's API rather than `git`, lets the agent manage Skills through a tool, and skips edited Skills on update). The Anthropic Skills API also keeps Skills as versioned snapshots of their files.
+
+## Consequences
+
+- Only GitHub sources can be installed from the page and the tools. Other sources go through the agent and `npx skills`.
+- Skills can now change during a Session, so the `skills` prompt section is read once per Context Window, as `project_context` is, to keep the prompt cache. A Skill installed or saved mid-Session reaches the list at the next Handoff or Session, and the tool's result gives its path so the agent can use it at once.
+- Rollout: every merge to `main` deploys `prod`, so the change lands in steps. Until the last step, the bundle stays as the lowest layer of the merged set, under the Skills for every Environment. Before it is removed, the agent installs each bundled Skill again from the repo it was copied from, for every Environment, and saves the copies that differ from that repo's (such as `pr`) from the repo's `skills/`, with no Skill source. Each of these waits for the owner's Approval. Nothing migrates the bundled Skills in code, and no Workspace is ever left without them. Existing Workspaces' `.pre-bundle` directories stay.
+- GitHub's rate limit is each installation's, and the daily update check spends from it.
+- `skills/`, its licences and notices, `scripts/sync-skills.mjs` and the generated manifest are deleted. `scripts/skills-checks.ts` moves to the save path.
