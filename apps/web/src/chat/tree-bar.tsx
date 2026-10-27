@@ -37,6 +37,7 @@ import {
   pointOf,
   siblingsOf,
 } from "../session/tree.ts";
+import { loadChunk } from "../lazy-chunk.ts";
 import { useShownSessionId } from "./conversation.ts";
 import { messageText } from "./message-text.ts";
 import {
@@ -200,7 +201,10 @@ const CopyButton = ({ formatted }: { formatted: boolean }) => {
             aria-label={COPY_STATES.idle.tip}
             onClick={() => {
               const html = formatted
-                ? import("./markdown-html.ts").then(({ markdownHtml }) => markdownHtml(text))
+                ? // A chunk that is gone (`stale-build.ts`) fails the rich write, which leaves the text copy.
+                  loadChunk(() => import("./markdown-html.ts")).then(({ markdownHtml }) =>
+                    markdownHtml(text),
+                  )
                 : undefined;
 
               void copyToClipboard(text, html).then((done) => {

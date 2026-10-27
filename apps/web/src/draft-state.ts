@@ -11,6 +11,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { outgoingMessage } from "./chat/attachments.ts";
 import {
   type AttachmentsState,
+  draftAttachmentsAtom,
   draftAttachmentsProgramAtom,
   draftWaitingFor,
   sentAttachments,
@@ -28,6 +29,18 @@ import type { OutgoingMessage } from "./session/state.ts";
 
 /** What is typed in the draft. The page has one. */
 export const draftTextAtom = Atom.make("").pipe(Atom.keepAlive);
+
+/**
+ * Whether the draft holds what a reload would lose: text, or Attachments (files or Owner tabs). It is kept while the
+ * app is open, so it can hold them off screen; `stale-build.ts` asks before it reloads.
+ */
+export const draftHeldAtom = Atom.readable((get): boolean => {
+  const attachments = get(draftAttachmentsAtom);
+
+  return (
+    get(draftTextAtom).trim() !== "" || attachments.items.length > 0 || attachments.pages.length > 0
+  );
+});
 
 /** The Workspace picked in the draft: `NEW_WORKSPACE`, or the id of one of the chosen Environment. */
 export const draftWorkspaceAtom = Atom.make<string>(NEW_WORKSPACE).pipe(Atom.keepAlive);

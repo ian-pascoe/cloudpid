@@ -49,8 +49,8 @@ import { Workspaces } from "./workspace/resource.ts";
  * The web app (`apps/web`), built at deploy time and served as static assets by this Worker: a request that matches a
  * file is answered by the asset layer without waking the Worker, a navigation to an unknown path (`/sessions/:id`)
  * gets `index.html`, and every other request (the Session socket, `/rpc`) reaches the Worker, a missing `/assets/…`
- * file among them (a 404 there, `missingAsset`). The Worker's bundle
- * folds the build step away, so only the deploy runs it.
+ * file among them (a 404 there, `missingAsset`). The Worker's bundle folds the build step away, so only the deploy
+ * runs it.
  */
 const webAssets = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;

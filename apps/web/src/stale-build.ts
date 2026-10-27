@@ -1,14 +1,13 @@
 // @effect-diagnostics missingPipeableSignature:off globalDate:off preferEffectArray:off -- plain functions over the page's events, storage, clock and DOM fields, not combinators.
 
-// Recovering from a stale build (`docs/spec.md` → Client and protocol → Web app). The main Worker keeps only the
-// current build's files, so a tab left open across a deploy asks for chunks and stylesheets (`/assets/<name>-<hash>.js`)
-// that are gone. Vite then fires `vite:preloadError` on `window`; the page reloads once to fetch the new build, unless a
-// reload has just been made (the new build cannot be reached either: it would loop) or the owner has typed something a
-// reload would lose (then the lazy part shows "This app was updated — Reload", `lazy-chunk.tsx`, and the owner reloads
-// when ready).
+// Recovering from a stale build: the one place that explains it, with `docs/spec.md` → UI → Serving and deploys. The main
+// Worker keeps only the current build's files, so a tab left open across a deploy asks for chunks and stylesheets
+// (`/assets/<name>-<hash>.js`) that are gone. Vite then fires `vite:preloadError` on `window`; the page reloads once to
+// fetch the new build, unless a reload has just been made (it would loop) or the owner has typed something a reload
+// would lose. Then the lazy part shows the notice with a Reload button (`lazy-view.tsx`).
 
 /** Where the time of the last reload is kept: the tab's `sessionStorage`, which a reload keeps and a new tab starts without. */
-export const RELOAD_STAMP_KEY = "cloudpid:stale-build-reload";
+const RELOAD_STAMP_KEY = "cloudpid:stale-build-reload";
 
 /** A reload this soon after the last one is not made again: the build the first one fetched is the one that fails. */
 export const RELOAD_GAP_MS = 60_000;
@@ -48,7 +47,7 @@ export interface StaleBuildPage {
   readonly readStamp: () => string | null;
   /** Keeps the stamp; may throw where `sessionStorage` is off. */
   readonly writeStamp: (value: string) => void;
-  /** Whether a text field of the page (the composer's, the draft's, a settings editor) holds text. */
+  /** Whether the page holds text or Attachments that are not sent: a text field with text, or a draft kept off screen. */
   readonly unsentText: () => boolean;
   readonly reload: () => void;
   /** Listens for Vite's `vite:preloadError`; returns the unlisten. */
@@ -57,15 +56,16 @@ export interface StaleBuildPage {
   ) => () => void;
 }
 
-/** The page itself. */
-export const browserPage: StaleBuildPage = {
+/** The page itself; `draftHeld` says whether the new-Session draft, which outlives its page, holds anything. */
+export const browserPage = (draftHeld: () => boolean): StaleBuildPage => ({
   now: () => Date.now(),
   readStamp: () => window.sessionStorage.getItem(RELOAD_STAMP_KEY),
   writeStamp: (value) => {
     window.sessionStorage.setItem(RELOAD_STAMP_KEY, value);
   },
   unsentText: () =>
-    Array.from(document.querySelectorAll("textarea")).some((field) => field.value.trim() !== ""),
+    Array.from(document.querySelectorAll("textarea")).some((field) => field.value.trim() !== "") ||
+    draftHeld(),
   reload: () => {
     window.location.reload();
   },
@@ -76,7 +76,7 @@ export const browserPage: StaleBuildPage = {
       window.removeEventListener("vite:preloadError", listener);
     };
   },
-};
+});
 
 /**
  * What the page does on `vite:preloadError`: reload and take the error over (`preventDefault`, so Vite does not throw
@@ -109,7 +109,7 @@ export const handlePreloadError =
   };
 
 /** Reloads the page, once in `RELOAD_GAP_MS`, when a chunk of an older build is gone. Returns the unlisten. */
-export const installStaleBuildReload = (page: StaleBuildPage = browserPage): (() => void) => {
+export const installStaleBuildReload = (page: StaleBuildPage): (() => void) => {
   const handle = handlePreloadError(page);
 
   return page.onPreloadError((event) => {
