@@ -310,6 +310,21 @@ describe("draft Annotations", () => {
       ),
     ).toEqual(["on-changes"]);
   });
+
+  it("are not copied into a Fork or Clone", async () => {
+    const stub = fresh();
+    const target = "fork-of-a-session-with-drafts";
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      await instance.saveAnnotation(onCall());
+      await instance.forkInto(target, { quiet: "none" });
+      expect(await instance.annotations()).toHaveLength(1);
+    });
+
+    await runInDurableObject(env.SESSIONS.getByName(target), async (copy: TestSession) => {
+      expect(await copy.annotations()).toEqual([]);
+    });
+  });
 });
 
 describe("a Review", () => {
@@ -357,6 +372,18 @@ describe("a Review", () => {
       display: "Two things.",
       review: { annotations: [expect.objectContaining({ path: "src/a.ts" }), expect.anything()] },
     });
+
+    // Going back to it with /tree puts only the summary in the composer.
+    const tree = await runInDurableObject(stub, (instance: TestSession) => instance.tree());
+    const review = tree.nodes.find((node) => node.role === "user");
+
+    expect(review?.text).toBe("Two things.");
+
+    const went = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.navigate({ entryId: review?.id ?? 0, position: "before" }),
+    );
+
+    expect(went).toMatchObject({ navigated: { text: "Two things." } });
   });
 
   it("is refused when a draft it names is gone or goes elsewhere, and keeps the drafts", async () => {

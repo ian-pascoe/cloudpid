@@ -76,9 +76,7 @@ const EditorBox = ({
       <textarea
         aria-label={label}
         aria-describedby={editor.error === null ? undefined : errorId}
-        // The owner opened it to write.
-        // oxlint-disable-next-line jsx-a11y/no-autofocus
-        autoFocus
+        ref={focusNextFrame}
         rows={3}
         maxLength={MAX_ANNOTATION_TEXT}
         value={editor.text}
@@ -123,6 +121,22 @@ const EditorBox = ({
       </div>
     </div>
   );
+};
+
+/**
+ * Focus a textarea the owner opened to write in a frame after it mounts: it is slotted into the diff's shadow root,
+ * where `autoFocus` finds it not yet in the document. Module-level, so React calls it once per mount.
+ */
+const focusNextFrame = (node: HTMLTextAreaElement | null) => {
+  if (node === null) return;
+
+  const frame = requestAnimationFrame(() => {
+    node.focus();
+  });
+
+  return () => {
+    cancelAnimationFrame(frame);
+  };
 };
 
 /** The frame of an Annotation in a diff: under its lines, in the page's type, not the code's. */

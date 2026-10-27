@@ -77,10 +77,9 @@ const rowIndex = (rows: readonly Row[], number: number, side: SelectionSide | un
   rows.findIndex((row) => (side === "deletions" ? row.old === number : row.new === number));
 
 /**
- * The lines `range` picks in `diff`, on one side: the new file's when it takes an added line or only context, the old
- * file's when it takes removed lines and no added one. Across a change, the draft is on what the change made. The range
- * runs from the side's first picked line to its last, and stops at a gap the diff does not draw (between two hunks of a
- * patch), so its quote is whole. Undefined when it picks no line.
+ * The lines `range` picks in `diff`, on the side where it started: a drag across sides is cut there, so a draft is on
+ * one file's lines. The range runs from that side's first picked line to its last, and stops at a gap the diff does not
+ * draw (between two hunks of a patch), so its quote is whole. Undefined when it picks no line of that side.
  */
 export const pickLines = (
   diff: FileDiffMetadata,
@@ -93,12 +92,7 @@ export const pickLines = (
   if (from === -1 || to === -1) return undefined;
 
   const picked = rows.slice(Math.min(from, to), Math.max(from, to) + 1);
-  const added = picked.some((row) => row.old === undefined);
-  const removed = picked.some((row) => row.new === undefined);
-
-  // Only context: the side the selection started on.
-  const side: AnnotationSide =
-    added || (!removed && range.side !== "deletions") ? "new" : "old";
+  const side: AnnotationSide = range.side === "deletions" ? "old" : "new";
 
   const numbers = picked.flatMap((row) => {
     const number = row[side];

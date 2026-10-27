@@ -46,9 +46,12 @@ describe("pickLines", () => {
     });
   });
 
-  it("puts a selection across a change on what the change made, context included", () => {
+  it("cuts a selection across sides at the side where it started, context included", () => {
     expect(
       pickLines(diff(), { start: 11, side: "deletions", end: 13, endSide: "additions" }),
+    ).toMatchObject({ side: "old", start: 11, end: 12, quote: ["eleven", "twelve"] });
+    expect(
+      pickLines(diff(), { start: 13, side: "additions", end: 11, endSide: "deletions" }),
     ).toMatchObject({ side: "new", start: 11, end: 13, quote: ["eleven", "TWELVE", "thirteen"] });
   });
 
