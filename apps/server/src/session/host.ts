@@ -9,6 +9,7 @@ import {
   conversationWorkspace,
   deleteAgent,
   isAgentConversation,
+  isAgentConversationIn,
   EMPTY_SUBAGENTS_STATE as EMPTY_STATE,
   type OwnerDeletion,
   stopConversation,
@@ -426,12 +427,20 @@ export type SessionHostService = {
   readonly close: Effect.Effect<void, SessionError>;
   /**
    * The Subagent Workspace conversation `conversationId` works in (its agent's own, or its nearest ancestor's), or
-   * undefined for one that works in the Session's Workspace. Fails for a conversation that is neither a Session branch
-   * nor a live subagent's.
+   * undefined for one that works in the Session's Workspace. Fails for a conversation that is no agent's: neither a
+   * Session branch (the root agent's) nor a live subagent's.
    */
   readonly workspaceOf: (
     conversationId: ConversationId,
   ) => Effect.Effect<AgentWorkspace | undefined, SessionError>;
+  /**
+   * `workspaceOf` as it stands, then again each time it changes: a Subagent Workspace given to the conversation's agent
+   * or to an ancestor. Fails once the conversation is no agent's (its subagent deleted), or when the Harness ends the
+   * watch.
+   */
+  readonly workspaces: (
+    conversationId: ConversationId,
+  ) => Stream.Stream<AgentWorkspace | undefined, SessionError>;
   /**
    * A summary of the Session's task graph: the current one first, then one after each change that alters it, at most one
    * every `TASK_GRAPH_INTERVAL`. Fails when the Harness ends its watch.
@@ -1028,17 +1037,25 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           }),
         );
 
-  /** The conversation of a live subagent, `conversationId`; anything else fails. */
-  const subagentConversation = (conversationId: ConversationId) =>
+  /** Why `conversationId` cannot be addressed: it is no agent's. */
+  const notAnAgent = (conversationId: ConversationId) =>
+    SessionError.make({
+      operation: "agent",
+      message: `Conversation ${conversationId} is not the root or a subagent of this Session`,
+    });
+
+  /** Fails unless `conversationId` is an agent's: a Session branch's or a live subagent's. */
+  const agentConversation = (conversationId: ConversationId) =>
     attempt("agent", () => isAgentConversation(harness.harness, conversationId, context)).pipe(
       Effect.filterOrFail(
         (known) => known,
-        () =>
-          SessionError.make({
-            operation: "agent",
-            message: `Conversation ${conversationId} is not the root or a subagent of this Session`,
-          }),
+        () => notAnAgent(conversationId),
       ),
+    );
+
+  /** The conversation of a live subagent, `conversationId`; anything else fails. */
+  const subagentConversation = (conversationId: ConversationId) =>
+    agentConversation(conversationId).pipe(
       Effect.andThen(
         attempt("conversation", () => harness.harness.conversation(conversationId, context)),
       ),
@@ -1939,6 +1956,51 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     );
 
+  /**
+   * The Subagent Workspace `conversationId` works in, then again at each change of the Subagents document that changes
+   * it; fails once the conversation is no agent's. The document does not exist until the first spawn: until then only
+   * the Session's branches are agents', and they work in the Session's Workspace, so there is nothing to follow.
+   */
+  const workspaces = (conversationId: ConversationId) =>
+    Stream.callback<AgentWorkspace | undefined, SessionError>((queue) =>
+      Effect.acquireRelease(
+        attempt("watchWorkspace", async () => {
+          const watch = await harness.harness.watchDoc(SubagentsDoc, context);
+
+          const publish = (read: Readonly<SubagentsState> | null | undefined): void => {
+            const state = read ?? EMPTY_STATE;
+
+            if (isAgentConversationIn(state, conversationId)) {
+              Queue.offerUnsafe(queue, conversationWorkspace(state, conversationId));
+            } else {
+              Queue.failCauseUnsafe(queue, Cause.fail(notAnAgent(conversationId)));
+            }
+          };
+
+          publish(watch?.value);
+          watch?.start((state) => {
+            publish(state);
+
+            return Promise.resolve();
+          });
+          void watch?.closed.then((end) =>
+            Queue.failCauseUnsafe(
+              queue,
+              Cause.fail(
+                SessionError.make({ operation: "watchWorkspace", message: watchEnded(end) }),
+              ),
+            ),
+          );
+
+          return watch;
+        }),
+        (watch) => Effect.promise(async () => watch?.stop()),
+      ),
+    ).pipe(
+      // The document changes with every agent's status too, which leaves the Workspace as it was.
+      Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
+    );
+
   /** The Tasks a Todo document holds, as clients are sent them. */
   const tasksOf = (state: Readonly<TodoState> | null): ReadonlyArray<TodoTask> =>
     Arr.map(state?.tasks ?? [], (task) => {
@@ -2111,28 +2173,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Effect.andThen(attempt("close", () => harness.harness.close(context))),
     ),
     workspaceOf: (conversationId) =>
-      attempt("workspace", async () => {
-        if (!(await isAgentConversation(harness.harness, conversationId, context))) {
-          return null;
-        }
-
-        const state = await harness.harness.snapshot(SubagentsDoc, context);
-
-        return {
-          workspace: state === undefined ? undefined : conversationWorkspace(state, conversationId),
-        };
-      }).pipe(
-        Effect.flatMap((found) =>
-          found === null
-            ? Effect.fail(
-                SessionError.make({
-                  operation: "workspace",
-                  message: `Conversation ${conversationId} is not the root or a subagent of this Session`,
-                }),
-              )
-            : Effect.succeed(found.workspace),
+      agentConversation(conversationId).pipe(
+        Effect.andThen(attempt("workspace", () => harness.harness.snapshot(SubagentsDoc, context))),
+        Effect.map((state) =>
+          state === undefined ? undefined : conversationWorkspace(state, conversationId),
         ),
       ),
+    workspaces,
     taskGraph: taskGraphSummaries,
     usage: usageUpdates,
     events,

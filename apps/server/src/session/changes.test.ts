@@ -175,6 +175,48 @@ describe("the Changes of each Workspace", () => {
     expect(counts.get("session")).toBe(1);
     expect(asked).toEqual(["ws:w:a.ts", "session:b.ts"]);
   });
+
+  it("keeps nothing for a Subagent Workspace nobody watches", async () => {
+    const counts = new Map<string, number>();
+    const asked: string[] = [];
+
+    const program = Effect.gen(function* () {
+      const changes = yield* SessionChanges;
+
+      // Nobody to send a list to: no listing, and a file is read from the Workspace all the same.
+      yield* changes.refresh(SUBAGENT_WORKSPACE, true);
+      yield* changes.file(SUBAGENT_WORKSPACE, { repo: "app", path: "a.ts" });
+      const before = counts.get("ws:w");
+
+      // A watch lists it; once it ends, nothing is left to refresh or to list after a write.
+      yield* changes.updates(SUBAGENT_WORKSPACE).pipe(Stream.take(1), Stream.runDrain);
+      const watching = counts.get("ws:w");
+
+      yield* changes.refresh(SUBAGENT_WORKSPACE, false);
+      changes.written(SUBAGENT_WORKSPACE);
+
+      return { before, watching, watched: changes.watched() };
+    });
+
+    const result = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(
+          sessionChangesLayer(
+            {
+              session: source("session", counts, asked),
+              subagent: (workspace) => source(workspace.object, counts, asked),
+            },
+            { debounceMs: 1 },
+          ),
+        ),
+      ),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(result).toEqual({ before: undefined, watching: 1, watched: false });
+    expect(counts.get("ws:w")).toBe(1);
+    expect(asked).toEqual(["ws:w:a.ts"]);
+  });
 });
 
 describe("the writing tools' wrap", () => {
@@ -185,7 +227,7 @@ describe("the writing tools' wrap", () => {
     const extension = changesRefreshingTools([tool("write"), tool("read"), tool("bash")], {
       watched: () => watched,
       written,
-      writtenSomewhere: () => {},
+      writtenInUnknownWorkspace: () => {},
     });
 
     return new Map(

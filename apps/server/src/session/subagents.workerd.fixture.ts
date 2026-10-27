@@ -61,6 +61,9 @@ const RELEASED = "released";
 const AGENT_REPORTS = "agent-reports";
 const AGENT_REPORTS_FAIL = "agent-reports-fail";
 
+/** What `followWorkspaces` saw so far (null: the Session's Workspace), and why its stream ended, if it did. */
+type FollowedWorkspaces = { seen: (AgentWorkspace | null)[]; ended?: string };
+
 /** The shortest time between two reports of the subagents, short so a test sees the throttled ones. */
 export const AGENTS_REPORT_TEST_MS = 100;
 
@@ -267,6 +270,47 @@ export class TestSubagentSession extends DurableObject {
             const record = (await tx.doc(SubagentsDoc)).agents[agent];
 
             if (record !== undefined) record.workspace = { ...workspace };
+          }, context),
+        ),
+      ),
+    );
+  }
+
+  #followed: FollowedWorkspaces = { seen: [] };
+
+  /** Follow conversation `id`'s Workspace (`SessionHost.workspaces`) in the background, in this instance. */
+  followWorkspaces(id: ConversationId): void {
+    const followed: FollowedWorkspaces = { seen: [] };
+
+    this.#followed = followed;
+    void this.#runtime.runPromise(
+      Stream.unwrap(Effect.map(SessionHost, (host) => host.workspaces(id))).pipe(
+        Stream.runForEach((workspace) => Effect.sync(() => followed.seen.push(workspace ?? null))),
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            followed.ended = error.message;
+          }),
+        ),
+      ),
+    );
+  }
+
+  followedWorkspaces(): FollowedWorkspaces {
+    return { ...this.#followed, seen: [...this.#followed.seen] };
+  }
+
+  /** Take subagent `agent` out of the Subagents document, as deleting it does. */
+  forgetAgent(agent: string): Promise<void> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(Harness, ({ harness }) =>
+        callDurable("commit", (context) =>
+          harness.commit(async (tx) => {
+            const state = await tx.doc(SubagentsDoc);
+            const conversationId = state.agents[agent]?.conversationId;
+
+            delete state.agents[agent];
+
+            if (conversationId !== undefined) delete state.conversations[String(conversationId)];
           }, context),
         ),
       ),

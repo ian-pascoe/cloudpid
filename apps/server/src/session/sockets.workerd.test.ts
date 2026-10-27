@@ -1205,6 +1205,55 @@ describe("a Changes watch", () => {
     // Nothing is watched.
     expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
   });
+
+  it("ends a conversation's Changes watch that outlived its subagent, telling the client which, and keeps the others", async () => {
+    const stub = fresh();
+
+    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] } });
+
+    const client = await connect(stub);
+    // SAFETY: a number the Session never gave out: a subagent deleted while the object hibernated.
+    const gone = ((await client.root()) + 40) as ConversationId;
+
+    client.send({ type: "watch_changes", id: "session" });
+    await client.answer("session");
+    // As the attachment of a socket that watched it before the subagent was deleted.
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      for (const socket of state.getWebSockets()) {
+        socket.serializeAttachment({ watches: [], changes: true, conversationChanges: [gone] });
+      }
+    });
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    client.send({ type: "unwatch", id: "wake", conversationId: await client.root() });
+    await client.answer("wake");
+
+    const received = await client.until(
+      (messages) =>
+        Arr.some(messages, (message) => message.type === "error") &&
+        changeLists(messages).length >= 1,
+      before,
+    );
+
+    // Not a Session-wide failure: the Changes watch it names ended.
+    expect(Arr.filter(received, (message) => message.type === "error")).toEqual([
+      {
+        type: "error",
+        changes: true,
+        ended: true,
+        conversationId: gone,
+        message: `Changes watch of conversation ${gone} ended: Conversation ${gone} is not the root or a subagent of this Session`,
+      },
+    ]);
+    expect(changeLists(received)).toEqual([
+      { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false },
+    ]);
+    expect(await recordedWatches(stub)).toEqual([
+      { watches: [], changes: true, conversationChanges: [] },
+    ]);
+  });
 });
 
 /** The Todo Lists among `messages`, of conversation `conversationId`, in order. */

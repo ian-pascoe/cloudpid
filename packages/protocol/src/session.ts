@@ -193,8 +193,10 @@ export const UnwatchUsage = Schema.Struct({
  * Stream the Changes of the Session's Workspace on this socket (`changes`), or, when `conversationId` names a subagent's
  * conversation, of that conversation's Workspace (its Subagent Workspace, else its nearest ancestor's, else the
  * Session's; ADR-0024): the last list follows at once when the Session has one, and the Session lists them again, once
- * for every client. A socket may watch several, one per `conversationId` (none for the Session's). The watch outlives
- * hibernation like a conversation's. Answered with `null`.
+ * for every client. A conversation's watch follows it to another Workspace (a Subagent Workspace given to its agent
+ * later), and ends, with an `error` marked `changes` and `ended`, once the conversation is no longer an agent's. A
+ * socket may watch several, one per `conversationId` (none for the Session's). The watch outlives hibernation like a
+ * conversation's. Answered with `null`; fails for a conversation that is no agent's.
  */
 export const WatchChanges = Schema.Struct({
   type: Schema.Literal("watch_changes"),
@@ -1120,16 +1122,19 @@ export const Result = Schema.Struct({
 
 /**
  * Something failed. With `id`, the command with that `id` failed, or could not be read. With `conversationId`, the
- * watch of that conversation ended and is dropped: watch it again to resume. With `changes`, a listing of the Changes
- * failed, and the last `changes` message stands (the watch goes on); `conversationId` then names the Changes watch, as
- * `watch_changes` did (absent: the Session's), and no conversation watch ends. With none, a message without a readable
- * `id` could not be read.
+ * watch of that conversation ended and is dropped: watch it again to resume. With `changes`, it is about a Changes
+ * watch, which `conversationId` names as `watch_changes` did (absent: the Session's), and no conversation watch ends:
+ * without `ended`, a listing failed, and the last `changes` message stands (the watch goes on); with `ended`, the watch
+ * ended and is dropped, as its conversation is no longer an agent's (a subagent deleted), so watching it again fails
+ * too. With none of them, a message without a readable `id` could not be read.
  */
 export const ErrorMessage = Schema.Struct({
   type: Schema.Literal("error"),
   id: Schema.optionalKey(Schema.String),
   conversationId: Schema.optionalKey(ConversationId),
   changes: Schema.optionalKey(Schema.Literal(true)),
+  /** With `changes`: the Changes watch ended and is dropped, rather than one listing failing. */
+  ended: Schema.optionalKey(Schema.Literal(true)),
   message: Schema.String,
 });
 

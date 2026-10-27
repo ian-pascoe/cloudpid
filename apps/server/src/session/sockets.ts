@@ -215,6 +215,18 @@ const changesUpdate = (
   return conversationId === undefined ? message : { ...message, conversationId };
 };
 
+/**
+ * The `error` that ends the Changes watch `conversationId` names: its conversation is no agent's any more (a subagent
+ * deleted), so the client drops it rather than watching it again.
+ */
+const changesEnded = (conversationId: ConversationId, message: string): ErrorMessage => ({
+  type: "error",
+  changes: true,
+  ended: true,
+  conversationId,
+  message: `Changes watch of conversation ${conversationId} ended: ${message}`,
+});
+
 const readAttachment = (socket: WebSocket): Attachment =>
   Option.getOrElse(decodeAttachment(socket.deserializeAttachment()), () => ({ watches: [] }));
 
@@ -484,16 +496,34 @@ export const sessionSocketsLayer = (
        * Send `socket` the Changes `conversationId` names (none: the Session's), replacing that watch if it has it: the
        * last list at once if there is one, then each listing, which every client watching the same Workspace shares.
        * Each message names the conversation as the client did. A listing that fails tells the client, and the watch goes
-       * on; a conversation that names no Workspace fails before anything is watched.
+       * on. A conversation's watch follows it to another Workspace, and ends, telling the client, once the conversation
+       * is no agent's; one that is none already fails before anything is watched.
        */
       const watchChanges = (socket: WebSocket, conversationId: ConversationId | undefined) =>
         Effect.gen(function* () {
-          const workspace = yield* changesWorkspace(conversationId);
+          yield* changesWorkspace(conversationId);
+
           const fibers = yield* watchesOf(socket);
 
+          const updates: Stream.Stream<ChangesUpdate, SessionError> =
+            conversationId === undefined
+              ? changes.updates(undefined)
+              : host
+                  .workspaces(conversationId)
+                  .pipe(Stream.switchMap((workspace) => changes.updates(workspace)));
+
           yield* setChangesWatched(socket, conversationId, true);
-          yield* changes.updates(workspace).pipe(
+          yield* updates.pipe(
             Stream.runForEach((update) => send(socket, changesUpdate(update, conversationId))),
+            Effect.catch((error) =>
+              setChangesWatched(socket, conversationId, false).pipe(
+                Effect.andThen(
+                  conversationId === undefined
+                    ? Effect.void
+                    : send(socket, changesEnded(conversationId, error.message)),
+                ),
+              ),
+            ),
             FiberMap.run(fibers, changesKey(conversationId)),
           );
         });
@@ -808,10 +838,9 @@ export const sessionSocketsLayer = (
             Effect.catch((error) =>
               setChangesWatched(socket, conversationId, false).pipe(
                 Effect.andThen(
-                  send(socket, {
-                    type: "error",
-                    message: `Changes watch of conversation ${conversationId} ended: ${error.message}`,
-                  }),
+                  conversationId === undefined
+                    ? Effect.void
+                    : send(socket, changesEnded(conversationId, error.message)),
                 ),
               ),
             ),

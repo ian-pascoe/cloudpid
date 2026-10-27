@@ -132,10 +132,6 @@ export class ChangesBroadcast {
     }, this.#options.debounceMs ?? CHANGES_DEBOUNCE_MS);
   }
 
-  file(query: ChangeFileRequest): Promise<ChangeFile> {
-    return this.#source.file(query);
-  }
-
   async #loop(manual: boolean): Promise<void> {
     let next: { readonly manual: boolean } | undefined = { manual };
 
@@ -185,7 +181,7 @@ export type SessionChangesService = {
   /** An agent may have changed `workspace`'s files: list them again shortly, if anyone watches them. */
   readonly written: (workspace: ChangesWorkspace) => void;
   /** An agent may have changed files, in a Workspace not known: list every watched Workspace's again shortly. */
-  readonly writtenSomewhere: () => void;
+  readonly writtenInUnknownWorkspace: () => void;
   /** One changed file's two sides, in `workspace`; it never starts the Container. */
   readonly file: (
     workspace: ChangesWorkspace,
@@ -209,21 +205,25 @@ export const sessionChangesLayer = (
       const run = Effect.runForkWith(yield* Effect.context<never>());
       const broadcasts = new Map<string, ChangesBroadcast>();
 
+      const sourceOf = (workspace: ChangesWorkspace): ChangesSource =>
+        workspace === undefined ? sources.session : sources.subagent(workspace);
+
+      /**
+       * `workspace`'s broadcast, made if it has none. Only a watch makes one for a Subagent Workspace, and its release
+       * forgets it once nobody watches; the Session's own is kept.
+       */
       const broadcastOf = (workspace: ChangesWorkspace): ChangesBroadcast => {
         const key = keyOf(workspace);
         const known = broadcasts.get(key);
 
         if (known !== undefined) return known;
 
-        const made = new ChangesBroadcast(
-          workspace === undefined ? sources.session : sources.subagent(workspace),
-          {
-            ...options,
-            warn: (message, cause) => {
-              run(Effect.logWarning(message, cause));
-            },
+        const made = new ChangesBroadcast(sourceOf(workspace), {
+          ...options,
+          warn: (message, cause) => {
+            run(Effect.logWarning(message, cause));
           },
-        );
+        });
 
         broadcasts.set(key, made);
 
@@ -263,15 +263,22 @@ export const sessionChangesLayer = (
       return {
         updates,
         refresh: (workspace, manual) =>
-          Effect.promise(() => broadcastOf(workspace).refresh(manual)),
+          Effect.promise(() => {
+            // A Subagent Workspace nobody watches has nobody to send a list to: its first watch lists it.
+            const broadcast =
+              workspace === undefined ? broadcastOf(workspace) : broadcasts.get(keyOf(workspace));
+
+            return broadcast?.refresh(manual) ?? Promise.resolve();
+          }),
         watched: () => Arr.some([...broadcasts.values()], (broadcast) => broadcast.watched),
         written: (workspace) => broadcasts.get(keyOf(workspace))?.soon(),
-        writtenSomewhere: () => {
+        writtenInUnknownWorkspace: () => {
           for (const broadcast of broadcasts.values()) broadcast.soon();
         },
         file: (workspace, query) =>
           Effect.tryPromise({
-            try: () => broadcastOf(workspace).file(query),
+            // Straight from the source: a file needs no broadcast, and one made for it would outlive every watch.
+            try: () => sourceOf(workspace).file(query),
             catch: (cause) =>
               SessionError.make({
                 operation: "changeFile",
@@ -290,7 +297,7 @@ export const sessionChangesLayer = (
  */
 export const changesRefreshingTools = (
   tools: ReadonlyArray<ToolRegistration>,
-  changes: Pick<SessionChangesService, "watched" | "written" | "writtenSomewhere">,
+  changes: Pick<SessionChangesService, "watched" | "written" | "writtenInUnknownWorkspace">,
 ): Extension =>
   defineExtension({
     name: "changes",
@@ -313,7 +320,7 @@ export const changesRefreshingTools = (
                     );
                   },
                   // Unknown: list every watched Workspace's again, which costs one listing each at most.
-                  () => changes.writtenSomewhere(),
+                  () => changes.writtenInUnknownWorkspace(),
                 );
               }
             }

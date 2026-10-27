@@ -3,7 +3,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { REQUEST_COST } from "./priced.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
@@ -484,4 +484,41 @@ it("reports a subagent's Subagent Workspace branch, and resolves a conversation 
       instance.workspaceOf(stranger),
     ),
   ).toEqual({ failure: expect.stringMatching(/not the root or a subagent/) });
+});
+
+it("follows a conversation's Workspace as its agent is given one, and ends once the agent is gone", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+  const child = await delegateQuietly(stub);
+
+  const workspace = {
+    id: "0000c0de",
+    branch: "cloudpid/child",
+    object: "ws:0000c0de",
+    directory: "/workspace/app",
+  };
+
+  const followed = () =>
+    runInDurableObject(stub, (instance: TestSubagentSession) => instance.followedWorkspaces());
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) => {
+    instance.followWorkspaces(child);
+  });
+  await vi.waitFor(async () => expect((await followed()).seen).toEqual([null]));
+
+  // Given a Subagent Workspace later: the Changes move to it, once.
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.giveWorkspace("agent-1", workspace),
+  );
+  await vi.waitFor(async () => expect((await followed()).seen).toEqual([null, workspace]));
+
+  // Deleted: the stream ends, saying why.
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.forgetAgent("agent-1"),
+  );
+  await vi.waitFor(async () =>
+    expect(await followed()).toEqual({
+      seen: [null, workspace],
+      ended: `Conversation ${child} is not the root or a subagent of this Session`,
+    }),
+  );
 });
