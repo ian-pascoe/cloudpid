@@ -70,12 +70,60 @@ export const canStopAllBelow = (
   );
 };
 
-/** How deep `agent` is: 0 for a child of the root. */
-export const depthOf = (graph: TaskGraphSummary, agent: GraphAgent): number => {
+/**
+ * The agents below `agentId` (`root` for all), at any depth, in the graph's order (parents before their children): a
+ * Subagent page's Subagents Pane and Session details list its subtree.
+ */
+export const agentsBelow = (graph: TaskGraphSummary | null, agentId: string): GraphAgent[] =>
+  graph === null
+    ? []
+    : agentId === "root"
+      ? [...graph.agents]
+      : graph.agents.filter((agent) => isBelowAgent(graph, agentId, agent.parent));
+
+/**
+ * The part of the task graph a Subagent page shows: the agents below `agentId`, and the background work of it and of
+ * them.
+ */
+export const subtreeGraph = (
+  graph: TaskGraphSummary | null,
+  agentId: string,
+): TaskGraphSummary | null => {
+  if (graph === null || agentId === "root") return graph;
+
+  const agents = agentsBelow(graph, agentId);
+  const ids = new Set([agentId, ...agents.map((agent) => agent.id)]);
+
+  return { agents, background: graph.background.filter((task) => ids.has(task.agent)) };
+};
+
+/**
+ * The branch of the Workspace conversation `conversationId` works in: its Subagent Workspace's (its own, or its nearest
+ * ancestor's), or undefined for the Session's Workspace, which the root conversation (`undefined`) works in, and so does
+ * a conversation the graph does not list.
+ */
+const workspaceBranchOf = (
+  graph: TaskGraphSummary | null,
+  conversationId: number | undefined,
+): string | undefined =>
+  conversationId === undefined ? undefined : agentOfConversation(graph, conversationId)?.branch;
+
+/**
+ * Whether conversations `one` and `other` (undefined: the root's) work in the same Workspace, so the Changes one's page
+ * shows hold what the other wrote: the task graph names each Subagent Workspace by its branch.
+ */
+export const sameWorkspace = (
+  graph: TaskGraphSummary | null,
+  one: number | undefined,
+  other: number | undefined,
+): boolean => workspaceBranchOf(graph, one) === workspaceBranchOf(graph, other);
+
+/** How deep `agent` is below `from` (the root by default): 0 for a child of it. */
+export const depthOf = (graph: TaskGraphSummary, agent: GraphAgent, from = "root"): number => {
   const parents = new Map(graph.agents.map((each) => [each.id, each.parent]));
   let depth = 0;
 
-  for (let parent = agent.parent; parent !== "root"; depth += 1) {
+  for (let parent = agent.parent; parent !== from && parent !== "root"; depth += 1) {
     const next = parents.get(parent);
 
     if (next === undefined) break;

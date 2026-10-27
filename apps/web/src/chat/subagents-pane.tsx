@@ -1,7 +1,7 @@
 // The Subagents Pane: the Session's subagents (each row with its Subagent Workspace's branch when it has one, and
 // opening the agent's conversation in a Subagent Pane of its own, `subagent-pane.tsx`) and the background tasks
-// running, from the task graph the Session streams. The Todo List is in the Session details, over the chat
-// (`session-details.tsx`).
+// running, from the task graph the Session streams. On a Subagent page it lists that subagent's subtree, and the
+// background work of it and below it. The Todo List is in the Session details, over the chat (`session-details.tsx`).
 
 import * as Arr from "effect/Array";
 import type { GraphAgent, GraphBackgroundTask } from "@cloudpid/protocol";
@@ -10,9 +10,14 @@ import { Square } from "lucide-react";
 import { Button } from "../components/ui/button.tsx";
 import { subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
-import { canStopAllBelow, depthOf, workingBelow } from "../session/agents.ts";
-import { abortAtom, sessionViewAtom, taskGraphAtom } from "../session/atoms.ts";
-import { useShownSessionId } from "./conversation.ts";
+import { canStopAllBelow, depthOf, subtreeGraph, workingBelow } from "../session/agents.ts";
+import { abortAtom, conversationRunningAtom, taskGraphAtom } from "../session/atoms.ts";
+import {
+  conversationKey,
+  useShownAgentId,
+  useShownSessionId,
+  useShownSubagent,
+} from "./conversation.ts";
 import { AgentStatus, AgentStopButton, AgentSummary } from "./subagent-card.tsx";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
@@ -54,17 +59,36 @@ const BackgroundRow = ({ task }: { task: GraphBackgroundTask }) => (
   </li>
 );
 
-/** How many agents below the root of the Session shown are working, for the Pane area's button and the New pane. */
-export const useSubagentsWorking = (): number =>
-  useAtomValue(taskGraphAtom(useShownSessionId()), (graph) => workingBelow(graph, "root").length);
+/**
+ * How many agents below the one the page shows (the root, or a Subagent page's subagent) are working, for the Pane
+ * area's button and the New pane.
+ */
+export const useSubagentsWorking = (): number => {
+  const agentId = useShownAgentId();
 
-/** The Subagents Pane: the task graph, with Stop all while something below the root can be stopped. */
+  return useAtomValue(
+    taskGraphAtom(useShownSessionId()),
+    (graph) => workingBelow(graph, agentId).length,
+  );
+};
+
+/**
+ * The Subagents Pane: the task graph (below the subagent, on a Subagent page), with Stop all while something below can
+ * be stopped.
+ */
 export const SubagentsPane = () => {
   const sessionId = useShownSessionId();
+  const subagent = useShownSubagent();
+  const agentId = useShownAgentId();
   const abort = useAtomSet(abortAtom(sessionId));
-  const graph = useAtomValue(taskGraphAtom(sessionId));
-  const running = useAtomValue(sessionViewAtom(sessionId), (view) => view.running);
-  const stoppable = canStopAllBelow(graph, "root", running);
+  const whole = useAtomValue(taskGraphAtom(sessionId));
+
+  const running = useAtomValue(
+    conversationRunningAtom(conversationKey(sessionId, subagent?.conversationId)),
+  );
+
+  const stoppable = canStopAllBelow(whole, agentId, running);
+  const graph = subtreeGraph(whole, agentId);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-3">
@@ -74,9 +98,17 @@ export const SubagentsPane = () => {
             type="button"
             variant="destructive"
             size="sm"
-            title="Stop every subagent"
+            title={
+              subagent === undefined
+                ? "Stop every subagent"
+                : `Stop ${subagent.agentId} and every subagent below it`
+            }
             onClick={() => {
-              abort({ subagents: true });
+              abort(
+                subagent === undefined
+                  ? { subagents: true }
+                  : { conversationId: subagent.conversationId, subagents: true },
+              );
             }}
           >
             <Square />
@@ -97,7 +129,12 @@ export const SubagentsPane = () => {
               <h4 className="text-xs font-medium text-muted-foreground">Subagents</h4>
               <ul className="mt-1">
                 {Arr.map(graph.agents, (agent) => (
-                  <AgentRow key={agent.id} agent={agent} depth={depthOf(graph, agent)} />
+                  <AgentRow
+                    key={agent.id}
+                    agent={agent}
+                    // On a Subagent page, depth counts from its subagent: its children are the first level.
+                    depth={depthOf(whole ?? graph, agent, agentId)}
+                  />
                 ))}
               </ul>
             </section>

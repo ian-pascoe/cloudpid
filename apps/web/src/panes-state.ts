@@ -1,8 +1,8 @@
 // @effect-diagnostics missingPipeableSignature:off -- a plain function of a width and a key.
 
-// The Pane area as atoms: the Panes open and the one shown are the URL's query, also kept in the Session's layout on
-// this device (`session-layout-state.ts`) so the Session shows them again when it is opened without them; the area's
-// width is a view preference kept on this device.
+// The Pane area as atoms: the Panes open and the one shown are the URL's query, also kept in the page's layout on
+// this device (`session-layout-state.ts`: the Session page's, or a Subagent page's own) so the page shows them again
+// when it is opened without them; the area's width is a view preference kept on this device.
 
 import * as Match from "effect/Match";
 import * as Atom from "effect/reactivity/Atom";
@@ -10,62 +10,68 @@ import * as Schema from "effect/Schema";
 import {
   applyPaneAction,
   paneAreaOf,
+  paneTypesOf,
   samePaneArea,
   searchWithPaneArea,
   type PaneAction,
   type PaneArea,
 } from "./panes.ts";
-import { paneParamsOf, searchAtom, sessionIdAtom } from "./router.ts";
+import { agentIdAtom, paneParamsOf, searchAtom } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
-import { sessionLayoutAtom } from "./session-layout-state.ts";
+import { sessionLayoutAtom, shownLayoutKeyAtom } from "./session-layout-state.ts";
 
 /** Whether `search` names any Pane: then it says what is open, else the Session's layout does. */
 const namesPanes = (search: string): boolean => paneParamsOf(search).keys.length > 0;
 
+/** The Pane types the page shown opens: a Subagent page's lack the Session tree Pane. */
+const shownPaneTypesAtom = Atom.map(agentIdAtom, (agentId) => paneTypesOf(agentId !== undefined));
+
 /**
  * The Panes open and the one shown: the page's query when it names any (a link, a reload, a push tap), else the Panes
- * the Session shown was left with (going to a Session drops the query). Writing a `PaneAction` opens, closes or
- * switches a Pane by replacing the history entry's query (Back leaves the Session, not the Pane: `router.ts` says why),
- * and keeps the area in the Session's layout.
+ * the page shown was left with (going to a page drops the query), from its layout: the Session page's, or the Subagent
+ * page's own. Writing a `PaneAction` opens, closes or switches a Pane by replacing the history entry's query (Back
+ * leaves the page, not the Pane: `router.ts` says why), and keeps the area in the page's layout.
  */
 export const panesAtom = Atom.writable(
   (get): PaneArea => {
     const search = get(searchAtom);
-    const sessionId = get(sessionIdAtom);
+    const key = get(shownLayoutKeyAtom);
+    const types = get(shownPaneTypesAtom);
 
-    if (sessionId === undefined || namesPanes(search)) return paneAreaOf(search);
+    if (key === undefined || namesPanes(search)) return paneAreaOf(search, types);
 
-    return get(sessionLayoutAtom(sessionId)).panes;
+    return get(sessionLayoutAtom(key)).panes;
   },
   (ctx, action: PaneAction) => {
     const area = ctx.get(panesAtom);
-    const next = applyPaneAction(area, action);
+    const next = applyPaneAction(area, action, ctx.get(shownPaneTypesAtom));
 
     if (next === area) return;
 
     ctx.set(searchAtom, searchWithPaneArea(ctx.get(searchAtom), next));
 
-    const sessionId = ctx.get(sessionIdAtom);
+    const key = ctx.get(shownLayoutKeyAtom);
 
-    if (sessionId === undefined) return;
+    if (key === undefined) return;
 
-    ctx.set(sessionLayoutAtom(sessionId), { panes: next });
+    ctx.set(sessionLayoutAtom(key), { panes: next });
   },
 );
 
 /**
- * Keeps the Panes a query names in the layout of Session `sessionId` while it is shown, so the ones a link or a push tap
- * opened are there when the owner comes back from another Session. Mounted by the Session's page.
+ * Keeps the Panes a query names in the layout under `key` (`layoutKey`) while its page is shown, so the ones a link or a
+ * push tap opened are there when the owner comes back from another page. Mounted by the Session's page and each
+ * Subagent page.
  */
-export const rememberPanesAtom = Atom.family((sessionId: string) =>
+export const rememberPanesAtom = Atom.family((key: string) =>
   Atom.make((get) => {
     get.subscribe(
       searchAtom,
       (search) => {
-        if (get.once(sessionIdAtom) !== sessionId || !namesPanes(search)) return;
+        if (get.once(shownLayoutKeyAtom) !== key || !namesPanes(search)) return;
 
-        const area = paneAreaOf(search);
-        const layout = sessionLayoutAtom(sessionId);
+        const area = paneAreaOf(search, get.once(shownPaneTypesAtom));
+        const layout = sessionLayoutAtom(key);
 
         if (!samePaneArea(get.once(layout).panes, area)) get.set(layout, { panes: area });
       },

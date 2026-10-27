@@ -1,8 +1,9 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- short native lists of IDs, and plain helpers.
 
 // A Session page's layout (GLOSSARY.md → Session layout): what the owner opened, collapsed and picked on it, kept per
-// Session on this device so that going back to a Session shows it as it was left. This module is the rules over it,
-// with no atoms and no React (`session-layout-state.ts` keeps it).
+// Session on this device so that going back to a Session shows it as it was left. Each Subagent page has a layout of
+// its own, apart from its Session's (`layoutKey`). This module is the rules over it, with no atoms and no React
+// (`session-layout-state.ts` keeps it).
 //
 // It holds the Pane area (the Panes open, the one shown, whether the area is hidden), whether the Session details are
 // open, which of the transcript's subagent cards are open, which of the transcript's disclosures (tool cards,
@@ -13,6 +14,14 @@
 import * as Schema from "effect/Schema";
 import { NO_PANES, paneAreaOf, searchWithPaneArea, type PaneArea } from "./panes.ts";
 import { TREE_FILTER_VALUES, type TreeFilter } from "./session/tree.ts";
+
+/**
+ * The key a page's layout is kept under: the Session's ID for its Session page, and the Session's and the agent's for a
+ * Subagent page, so the two never share one. A Session ID holds no `/` (a UUIDv7), so no Session's key is a Subagent
+ * page's.
+ */
+export const layoutKey = (sessionId: string, agentId?: string): string =>
+  agentId === undefined ? sessionId : `${sessionId}/agents/${agentId}`;
 
 /** One Session's layout. */
 export interface SessionLayout {
@@ -60,7 +69,10 @@ const StoredLayout = Schema.Struct({
   treeFilter: Schema.optional(Schema.Literals(TREE_FILTER_VALUES)),
 });
 
-/** The layouts this device keeps, the Session shown last first. */
+/**
+ * The layouts this device keeps, the page shown last first. `sessionId` is the page's layout key (`layoutKey`): it was
+ * the Session's ID alone before Subagent pages had layouts, which is still a Session page's key.
+ */
 export const StoredLayouts = Schema.Array(
   Schema.Struct({ sessionId: Schema.String, layout: StoredLayout }),
 );

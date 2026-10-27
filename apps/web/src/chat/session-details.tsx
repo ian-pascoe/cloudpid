@@ -1,12 +1,14 @@
 // Session details (GLOSSARY.md → Session details): a small panel over the top right of the chat with what the owner
 // follows of the Session while reading, in sections: the root agent's Todo List, the Session's subagents, each
-// subagent opening its Subagent Pane, and the Changes in its Workspace, each file opening the Diff pane at it. An icon button in the Session's header opens and closes it, whatever there
-// is to show; whether it is open is kept in the Session's layout.
+// subagent opening its Subagent Pane (or its Subagent page), and the Changes in its Workspace, each file opening the
+// Diff pane at it. On a Subagent page they are the subagent's: its Todo List, the subagents below it, and the Changes
+// of its Workspace. An icon button in the page's header opens and closes it, whatever there is to show; whether it is
+// open is kept in the page's layout.
 
 import type { GraphAgent, TodoTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { PanelRightOpen, SquareMenu } from "lucide-react";
+import { ExternalLink, PanelRightOpen, SquareMenu } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { ChangesSection } from "../diff-pane/changes-summary.tsx";
@@ -14,9 +16,18 @@ import { changesTotalsAtom } from "../diff-pane/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { SUBAGENTS_PANE, subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
-import { sessionStatusAtom, taskGraphAtom, todosAtom } from "../session/atoms.ts";
+import { navigate, subagentPath } from "../router.ts";
+import { agentsBelow } from "../session/agents.ts";
+import { conversationTodosAtom, sessionStatusAtom, taskGraphAtom } from "../session/atoms.ts";
 import { detailsOpenAtom } from "../session-layout-state.ts";
-import { useShownSessionId } from "./conversation.ts";
+import {
+  conversationKey,
+  useShownAgentId,
+  useShownChanges,
+  useShownLayoutKey,
+  useShownSessionId,
+  useShownSubagent,
+} from "./conversation.ts";
 import { AgentStatus } from "./subagent-card.tsx";
 import { TodoList } from "./todo-list.tsx";
 
@@ -26,13 +37,22 @@ const PANEL_ID = "session-details";
 /** The header's button, which takes the focus back when the panel closes from inside. */
 const BUTTON_ID = "session-details-button";
 
-/** What the Session shown has to follow: the root's Todo List and the subagents. */
+/**
+ * What the page shown has to follow: the root's Todo List and the subagents on the Session page; on a Subagent page,
+ * the subagent's Todo List (its thread's, which the page watches) and the subagents below it.
+ */
 const useDetails = () => {
   const sessionId = useShownSessionId();
-  const items = useAtomValue(todosAtom(sessionId));
+  const subagent = useShownSubagent();
+  const agentId = useShownAgentId();
+
+  const items = useAtomValue(
+    conversationTodosAtom(conversationKey(sessionId, subagent?.conversationId)),
+  );
+
   const graph = useAtomValue(taskGraphAtom(sessionId));
 
-  return { items, agents: graph?.agents ?? [] };
+  return { items, agents: agentsBelow(graph, agentId) };
 };
 
 /** Whether anything is going on: a Todo Item not done, or a subagent working. */
@@ -45,7 +65,7 @@ const busy = (items: readonly TodoTask[], agents: readonly GraphAgent[]): boolea
  * closed, carries a dot when something is going on. Changes are not something going on: they light no dot.
  */
 export const SessionDetailsButton = () => {
-  const [open, setOpen] = useAtom(detailsOpenAtom(useShownSessionId()));
+  const [open, setOpen] = useAtom(detailsOpenAtom(useShownLayoutKey()));
   const { items, agents } = useDetails();
   const dot = !open && busy(items, agents);
   const label = open ? "Hide session details" : "Show session details";
@@ -82,19 +102,23 @@ export const SessionDetailsButton = () => {
   );
 };
 
-/** A subagent in Session details: opens its Subagent Pane, or shows it where it is open. */
+/**
+ * A subagent in Session details: opens its Subagent Pane, or shows it where it is open; the icon beside it opens its
+ * Subagent page.
+ */
 const AgentButton = ({ agent }: { agent: GraphAgent }) => {
   const actOnPanes = useAtomSet(panesAtom);
+  const page = subagentPath(useShownSessionId(), agent.id);
 
   return (
-    <li>
+    <li className="flex items-center gap-1">
       <button
         type="button"
         onClick={() => {
           actOnPanes({ type: "open", key: subagentPaneKey(agent.conversationId) });
         }}
-        title={`Open ${agent.id}`}
-        className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-accent"
+        title={`Open ${agent.id} in a pane`}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-accent"
       >
         <span className="min-w-0 truncate font-mono text-[0.8125rem]">{agent.id}</span>
         {agent.role !== null && (
@@ -104,6 +128,20 @@ const AgentButton = ({ agent }: { agent: GraphAgent }) => {
           <AgentStatus agent={agent} />
         </span>
       </button>
+      <a
+        href={page}
+        aria-label={`Open the page of ${agent.id}`}
+        title={`Open the page of ${agent.id}`}
+        onClick={(event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+
+          event.preventDefault();
+          navigate(page);
+        }}
+        className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground [&_svg]:size-3.5"
+      >
+        <ExternalLink aria-hidden />
+      </a>
     </li>
   );
 };
@@ -142,10 +180,10 @@ const SubagentsSection = ({ agents }: { agents: readonly GraphAgent[] }) => {
  */
 export const SessionDetails = () => {
   const sessionId = useShownSessionId();
-  const [open, setOpen] = useAtom(detailsOpenAtom(sessionId));
+  const [open, setOpen] = useAtom(detailsOpenAtom(useShownLayoutKey()));
   const { items, agents } = useDetails();
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
-  const changed = useAtomValue(changesTotalsAtom(sessionId), (totals) => totals.files > 0);
+  const changed = useAtomValue(changesTotalsAtom(useShownChanges()), (totals) => totals.files > 0);
 
   if (!open) return null;
 

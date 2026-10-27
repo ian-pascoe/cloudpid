@@ -1,6 +1,8 @@
 // A subagent's live thread: its conversation, watched on the Session's socket, with a composer to steer or queue input
 // and to stop it. It is a nested assistant-ui runtime of its own, so it has its own messages, running state and queue.
-// A transcript's card shows it in a box of its own height; a Subagent Pane, filling the Pane (`fill`).
+// A transcript's card shows it in a box of its own height; a Subagent Pane, filling the Pane (`fill`); a Subagent page,
+// as the page's chat (`page`): as wide as the Session's, its Todo List in the Session details, read-only in an archived
+// Session.
 
 import {
   AssistantRuntimeProvider,
@@ -30,20 +32,32 @@ import { TodoList } from "./todo-list.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
+/** How a subagent's thread shows: in a card's box, filling a Subagent Pane, or as a Subagent page's chat. */
+export type ChildThreadLayout = "card" | "pane" | "page";
+
+/** What a Subagent page puts in its chat besides the thread: the Session's requests, and whether it is read-only. */
+export interface ChildThreadPage {
+  /** Over the composer: the Browser Handoffs, Secret requests and Approval requests waiting for the owner. */
+  readonly requests?: ReactNode;
+  /** In place of the composer, for an archived Session: the thread is read-only. */
+  readonly archived?: ReactNode;
+}
+
 const LiveChildThread = ({
   sessionId,
   conversationId,
   thread,
   messages,
-  fill,
+  layout,
+  page,
 }: {
   sessionId: string;
   conversationId: number;
   thread: ThreadState;
   /** The transcript's messages, rendered inside this thread's own runtime. */
   messages: ReactNode;
-  /** Whether it takes the height of its column (a Subagent Pane) rather than a box of its own (a card). */
-  fill: boolean;
+  layout: ChildThreadLayout;
+  page: ChildThreadPage | undefined;
 }) => {
   const submit = useAtomSet(submitAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));
@@ -76,6 +90,9 @@ const LiveChildThread = ({
   const problem = thread.failure ?? thread.view.error;
   // A file dropped on the subagent's thread attaches to its composer, not the Session's.
   const dropZone = useRef<HTMLDivElement>(null);
+  const fill = layout !== "card";
+  const wide = layout === "page";
+  const archived = page?.archived;
 
   return (
     // A subagent's thread is not the Session tree's: its messages have no bar.
@@ -91,9 +108,15 @@ const LiveChildThread = ({
               className={cn(
                 "min-h-16 overflow-y-auto",
                 fill ? "flex-1 overscroll-y-contain" : "max-h-96",
+                wide && "relative",
               )}
             >
-              <div className="flex flex-col gap-4 py-2">
+              <div
+                className={cn(
+                  "flex flex-col",
+                  wide ? "mx-auto w-full max-w-3xl gap-6 px-4 py-6" : "gap-4 py-2",
+                )}
+              >
                 <ThreadPrimitive.Empty>
                   <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
                 </ThreadPrimitive.Empty>
@@ -102,27 +125,39 @@ const LiveChildThread = ({
               </div>
             </ThreadPrimitive.Viewport>
             {problem !== null && (
-              <p role="alert" className="pb-2 text-sm text-destructive">
+              <p
+                role="alert"
+                className={cn(
+                  "text-sm text-destructive",
+                  wide ? "mx-auto w-full max-w-3xl px-4 pb-2" : "pb-2",
+                )}
+              >
                 {problem}
               </p>
             )}
-            <TodoList tasks={thread.todos} stale={!live} className="border-t pt-2" />
-            <Composer
-              compact
-              who={agent?.id ?? "the agent"}
-              conversationId={conversationId}
-              dropZone={dropZone}
-              steerLane={thread.queue.steer}
-              followUpLane={thread.queue.followUp}
-              sending={thread.sending}
-              onStopAll={
-                stopAll
-                  ? () => {
-                      abort({ conversationId, subagents: true });
-                    }
-                  : undefined
-              }
-            />
+            {/* A Subagent page shows the Todo List in its Session details, as the Session page does the root's. */}
+            {!wide && <TodoList tasks={thread.todos} stale={!live} className="border-t pt-2" />}
+            {page?.requests}
+            {archived === undefined ? (
+              <Composer
+                compact={!wide}
+                who={agent?.id ?? "the agent"}
+                conversationId={conversationId}
+                dropZone={dropZone}
+                steerLane={thread.queue.steer}
+                followUpLane={thread.queue.followUp}
+                sending={thread.sending}
+                onStopAll={
+                  stopAll
+                    ? () => {
+                        abort({ conversationId, subagents: true });
+                      }
+                    : undefined
+                }
+              />
+            ) : (
+              archived
+            )}
           </ThreadPrimitive.Root>
         </AssistantRuntimeProvider>
       </ThreadConversation>
@@ -132,16 +167,19 @@ const LiveChildThread = ({
 
 /**
  * The live thread of the subagent that runs conversation `conversationId`; watched while this is shown. With `fill`, it
- * takes the height of the column it is in, its composer at the bottom.
+ * takes the height of the column it is in, its composer at the bottom; with `page`, it is a Subagent page's chat.
  */
 export const ChildThread = ({
   conversationId,
   messages,
   fill = false,
+  page,
 }: {
   conversationId: number;
   messages: ReactNode;
   fill?: boolean;
+  /** Set on a Subagent page, where the thread is the page's chat. */
+  page?: ChildThreadPage | undefined;
 }) => {
   const sessionId = useShownSessionId();
   // Reading the thread watches it on the Session's socket, for as long as this is shown.
@@ -165,7 +203,8 @@ export const ChildThread = ({
       conversationId={conversationId}
       thread={thread}
       messages={messages}
-      fill={fill}
+      layout={page !== undefined ? "page" : fill ? "pane" : "card"}
+      page={page}
     />
   );
 };

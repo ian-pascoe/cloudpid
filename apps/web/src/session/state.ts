@@ -140,8 +140,13 @@ export interface SessionState {
   readonly taskGraph: TaskGraphSummary | null;
   /** What the Session has spent and its spend limit, as of the last message; null until it sends one. */
   readonly usage: SessionUsage | null;
-  /** The Changes, as of the last list; null until the Session sends one. */
+  /** The Changes of the Session's Workspace, as of the last list; null until the Session sends one. */
   readonly changes: ChangesState | null;
+  /**
+   * The Changes of subagent conversations' Workspaces that Subagent pages watch (ADR-0024), by conversation ID, each as
+   * of its last list; a conversation is listed once the Session sends its first list, and dropped when it is unwatched.
+   */
+  readonly conversationChanges: Readonly<Record<string, ChangesState>>;
   /** The active branch's Todo List, as of the last one the Session sent; empty until it sends one. */
   readonly todos: readonly TodoTask[];
   /**
@@ -173,6 +178,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   taskGraph: null,
   usage: null,
   changes: null,
+  conversationChanges: {},
   todos: [],
   activeBranch: null,
   treeVersion: 0,

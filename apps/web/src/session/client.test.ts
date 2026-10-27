@@ -1583,6 +1583,135 @@ describe("the Changes on a Session connection", () => {
       expect(yield* Fiber.join(file)).toEqual(sides);
     }),
   );
+
+  it.effect(
+    "of a subagent's conversation are watched apart from the Session's, while a Subagent page holds them",
+    () =>
+      Effect.gen(function* () {
+        const { client, sockets, latest, state } = yield* setup();
+
+        yield* client.watchChanges;
+
+        const page = yield* Scope.make();
+
+        yield* client.watchConversationChanges(3).pipe(Scope.provide(page));
+        // A second reader shares the watch.
+        const other = yield* Scope.make();
+
+        yield* client.watchConversationChanges(3).pipe(Scope.provide(other));
+        yield* watching(latest());
+
+        const watches = () =>
+          latest()
+            .commands()
+            .filter((command) => command.type === "watch_changes");
+
+        expect(watches()).toEqual([
+          { type: "watch_changes", id: expect.any(String) },
+          { type: "watch_changes", id: expect.any(String), conversationId: 3 },
+        ]);
+
+        yield* latest().say({
+          type: "changes",
+          conversationId: 3,
+          repos: [repo],
+          startingContainer: false,
+        });
+        expect(state().changes).toBeNull();
+        expect(state().conversationChanges).toEqual({
+          "3": { repos: [repo], startingContainer: false, listing: 1, failure: null },
+        });
+
+        yield* latest().say({ type: "changes", repos: [], startingContainer: false });
+        expect(state().changes).toMatchObject({ repos: [], listing: 1 });
+        expect(state().conversationChanges["3"]).toMatchObject({ repos: [repo], listing: 1 });
+
+        // A failed listing names its watch: the subagent's list stands, the Session's is untouched.
+        yield* latest().say({
+          type: "error",
+          changes: true,
+          conversationId: 3,
+          message: "Listing the Changes failed: unreachable",
+        });
+        expect(state().conversationChanges["3"]).toEqual({
+          repos: [repo],
+          startingContainer: false,
+          listing: 1,
+          failure: "Listing the Changes failed: unreachable",
+        });
+        expect(state().changes?.failure).toBeNull();
+
+        yield* latest().drop();
+        yield* advance(1_000);
+        yield* sockets[1]!.open();
+        yield* sockets[1]!.say({ type: "hello", root: 1 });
+
+        expect(
+          sockets[1]!.commands().filter((command) => command.type === "watch_changes"),
+        ).toEqual([
+          { type: "watch_changes", id: expect.any(String) },
+          { type: "watch_changes", id: expect.any(String), conversationId: 3 },
+        ]);
+
+        yield* Scope.close(page, Exit.void).pipe(Effect.andThen(settle));
+        expect(
+          sockets[1]!.commands().filter((command) => command.type === "unwatch_changes"),
+        ).toEqual([]);
+
+        yield* Scope.close(other, Exit.void).pipe(Effect.andThen(settle));
+        expect(
+          sockets[1]!.commands().filter((command) => command.type === "unwatch_changes"),
+        ).toEqual([{ type: "unwatch_changes", id: expect.any(String), conversationId: 3 }]);
+        expect(state().conversationChanges).toEqual({});
+
+        // A list still on its way when the watch ended is dropped.
+        yield* sockets[1]!.say({
+          type: "changes",
+          conversationId: 3,
+          repos: [repo],
+          startingContainer: false,
+        });
+        expect(state().conversationChanges).toEqual({});
+      }),
+  );
+
+  it.effect("of a subagent's conversation are refreshed and read there", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* watching(latest());
+
+      const refresh = yield* asking(client.refreshChanges(true, 3));
+      const file = yield* asking(client.changeFile({ repo: "web", path: "src/a.ts" }, 3));
+
+      const refreshAsk = latest()
+        .commands()
+        .find((command) => command.type === "refresh_changes");
+
+      const fileAsk = latest()
+        .commands()
+        .find((command) => command.type === "change_file");
+
+      expect(refreshAsk).toEqual({
+        type: "refresh_changes",
+        id: refreshAsk?.id,
+        manual: true,
+        conversationId: 3,
+      });
+      expect(fileAsk).toEqual({
+        type: "change_file",
+        id: fileAsk?.id,
+        conversationId: 3,
+        repo: "web",
+        path: "src/a.ts",
+      });
+
+      yield* latest().say({ type: "result", id: refreshAsk?.id, result: null });
+      yield* latest().say({ type: "result", id: fileAsk?.id, result: { old: null, new: null } });
+      yield* Fiber.join(refresh);
+      yield* Fiber.join(file);
+    }),
+  );
 });
 
 describe("Todo Lists on a Session connection", () => {
