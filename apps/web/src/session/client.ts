@@ -993,6 +993,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         }
 
         const failed = message.id === undefined ? undefined : threadWatchOf(message.id);
+
         const changesRefused =
           message.id === undefined ? undefined : changesCommands.get(message.id);
 
