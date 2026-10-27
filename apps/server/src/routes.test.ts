@@ -1,6 +1,6 @@
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { expect, it } from "vitest";
-import { attachmentRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { attachmentRoute, isAssetPath, isRegistryRpc, sessionSocketId } from "./routes.ts";
 
 const request = (method: string, path: string) =>
   HttpServerRequest.fromWeb(new Request(`http://worker.test${path}`, { method }));
@@ -12,6 +12,17 @@ it("routes a Session's socket by its ID, and nothing else", () => {
   expect(sessionSocketId(request("POST", `/sessions/${session}/socket`))).toBeUndefined();
   expect(sessionSocketId(request("GET", "/sessions/not-a-session/socket"))).toBeUndefined();
   expect(sessionSocketId(request("GET", `/sessions/${session}`))).toBeUndefined();
+});
+
+it("knows a request for a file under /assets/, whatever the method", () => {
+  expect(isAssetPath(request("GET", "/assets/patch-view-iLOTrZXd.js"))).toBe(true);
+  expect(isAssetPath(request("GET", "/assets/index-CDZ3SOBd.css?v=1"))).toBe(true);
+  expect(isAssetPath(request("HEAD", "/assets/a/b.js"))).toBe(true);
+  expect(isAssetPath(request("GET", "/assets"))).toBe(false);
+  expect(isAssetPath(request("GET", "/assetsx/a.js"))).toBe(false);
+  expect(isAssetPath(request("GET", `/sessions/${session}`))).toBe(false);
+  expect(isAssetPath(request("GET", `/sessions/${session}/assets/a.js`))).toBe(false);
+  expect(isAssetPath(request("GET", "/"))).toBe(false);
 });
 
 it("routes Registry RPC calls", () => {

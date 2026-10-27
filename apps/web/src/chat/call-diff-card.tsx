@@ -3,18 +3,20 @@
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { lazy, Suspense, useId, useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { findChange } from "../diff-pane/changes.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
 import { openDiffPaneAtom } from "../diff-pane/target.ts";
 import { changesAtom, taskGraphAtom } from "../session/atoms.ts";
+import { lazyChunk } from "../lazy-chunk.ts";
+import { LazyView } from "../lazy-view.tsx";
 import { useWidth } from "../use-width.ts";
 import { useShownSessionId, useThreadConversation } from "./conversation.ts";
 import { type CallDiff, callDiffCounts, capPatch, diffStyleFor } from "../call-diff.ts";
 
 // The library, its highlighter and its theme are a chunk of their own, fetched when the first diff opens.
-const PatchView = lazy(() => import("./patch-view.tsx"));
+const PatchView = lazyChunk(() => import("./patch-view.tsx"));
 
 /** What shows where a Call diff has no patch to show. */
 const UNAVAILABLE = "Too large to show here";
@@ -71,9 +73,9 @@ const DiffBox = ({
   }
 
   return (
-    <Suspense fallback={<p className="p-2 text-sm text-muted-foreground">Loading the diff…</p>}>
+    <LazyView fallback={<p className="p-2 text-sm text-muted-foreground">Loading the diff…</p>}>
       <PatchView patch={patch} diffStyle={diffStyleFor(width)} />
-    </Suspense>
+    </LazyView>
   );
 };
 
