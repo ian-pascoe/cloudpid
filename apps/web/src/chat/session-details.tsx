@@ -8,7 +8,7 @@
 import type { GraphAgent, TodoTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { ExternalLink, PanelRightOpen, SquareMenu } from "lucide-react";
+import { PanelRightOpen, SquareMenu } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { ChangesSection } from "../diff-pane/changes-summary.tsx";
@@ -16,19 +16,17 @@ import { changesTotalsAtom } from "../diff-pane/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { SUBAGENTS_PANE, subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
-import { navigate, subagentPath } from "../router.ts";
-import { agentsBelow } from "../session/agents.ts";
+import { childrenOf } from "../session/agents.ts";
 import { conversationTodosAtom, sessionStatusAtom, taskGraphAtom } from "../session/atoms.ts";
 import { detailsOpenAtom } from "../session-layout-state.ts";
 import {
   conversationKey,
-  useShownAgentId,
   useShownChanges,
   useShownLayoutKey,
   useShownSessionId,
   useShownSubagent,
 } from "./conversation.ts";
-import { AgentStatus } from "./subagent-card.tsx";
+import { AgentStatus, OpenPageLink } from "./subagent-card.tsx";
 import { TodoList } from "./todo-list.tsx";
 
 /** The panel's element, which the header's button controls: a Session page has one. */
@@ -38,13 +36,13 @@ const PANEL_ID = "session-details";
 const BUTTON_ID = "session-details-button";
 
 /**
- * What the page shown has to follow: the root's Todo List and the subagents on the Session page; on a Subagent page,
- * the subagent's Todo List (its thread's, which the page watches) and the subagents below it.
+ * What the page shown has to follow: the root's Todo List and every subagent on the Session page; on a Subagent page,
+ * the subagent's Todo List (its thread's, which the page watches) and the subagents it started (its Subagents Pane
+ * lists the whole subtree).
  */
 const useDetails = () => {
   const sessionId = useShownSessionId();
   const subagent = useShownSubagent();
-  const agentId = useShownAgentId();
 
   const items = useAtomValue(
     conversationTodosAtom(conversationKey(sessionId, subagent?.conversationId)),
@@ -52,7 +50,10 @@ const useDetails = () => {
 
   const graph = useAtomValue(taskGraphAtom(sessionId));
 
-  return { items, agents: agentsBelow(graph, agentId) };
+  return {
+    items,
+    agents: subagent === undefined ? (graph?.agents ?? []) : childrenOf(graph, subagent.agentId),
+  };
 };
 
 /** Whether anything is going on: a Todo Item not done, or a subagent working. */
@@ -108,7 +109,6 @@ export const SessionDetailsButton = () => {
  */
 const AgentButton = ({ agent }: { agent: GraphAgent }) => {
   const actOnPanes = useAtomSet(panesAtom);
-  const page = subagentPath(useShownSessionId(), agent.id);
 
   return (
     <li className="flex items-center gap-1">
@@ -128,20 +128,7 @@ const AgentButton = ({ agent }: { agent: GraphAgent }) => {
           <AgentStatus agent={agent} />
         </span>
       </button>
-      <a
-        href={page}
-        aria-label={`Open the page of ${agent.id}`}
-        title={`Open the page of ${agent.id}`}
-        onClick={(event) => {
-          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-          event.preventDefault();
-          navigate(page);
-        }}
-        className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground [&_svg]:size-3.5"
-      >
-        <ExternalLink aria-hidden />
-      </a>
+      <OpenPageLink agentId={agent.id} className="rounded" />
     </li>
   );
 };

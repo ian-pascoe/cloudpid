@@ -10,7 +10,7 @@ import * as Socket from "effect/socket/Socket";
 import { afterEach, beforeEach, vi } from "vitest";
 import { fakeRegistryLayer } from "../registry.testing.ts";
 import { appRuntime } from "../runtime.ts";
-import { changesKey } from "./changes-key.ts";
+import { conversationKey } from "./conversation-key.ts";
 import {
   changesAtom,
   sessionPickedAtom,
@@ -305,12 +305,12 @@ describe("a Session's atoms", () => {
       const { registry, latest } = setup();
 
       registry.mount(sessionStatusAtom("s1"));
-      registry.mount(changesAtom(changesKey("s1")));
+      registry.mount(changesAtom(conversationKey("s1", undefined)));
 
       // Keyed by value, as the page and its Diff pane each make the key.
-      expect(changesAtom(changesKey("s1", 3))).toBe(changesAtom(changesKey("s1", 3)));
+      expect(changesAtom(conversationKey("s1", 3))).toBe(changesAtom(conversationKey("s1", 3)));
 
-      const subagent = registry.mount(changesAtom(changesKey("s1", 3)));
+      const subagent = registry.mount(changesAtom(conversationKey("s1", 3)));
 
       yield* settle;
       yield* live(latest());
@@ -340,8 +340,8 @@ describe("a Session's atoms", () => {
         startingContainer: false,
       });
 
-      expect(registry.get(changesAtom(changesKey("s1", 3)))?.repos).toHaveLength(1);
-      expect(registry.get(changesAtom(changesKey("s1")))).toBeNull();
+      expect(registry.get(changesAtom(conversationKey("s1", 3)))?.repos).toHaveLength(1);
+      expect(registry.get(changesAtom(conversationKey("s1", undefined)))).toBeNull();
 
       subagent();
       yield* settle;

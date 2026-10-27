@@ -8,7 +8,7 @@ import * as Arr from "effect/Array";
 import { CircleAlert, PanelRightOpen } from "lucide-react";
 import { useShownChanges } from "../chat/conversation.ts";
 import { changesAtom } from "../session/atoms.ts";
-import type { ChangesKey } from "../session/changes-key.ts";
+import type { ConversationKey } from "../session/conversation-key.ts";
 import { changesPreview, filesLabel, groupedByRepo, repoTotals } from "./changes.ts";
 import { ChangedFileRow, DiffTally } from "./parts.tsx";
 import { openDiffPaneAtom } from "./target.ts";
@@ -21,7 +21,7 @@ export const DETAILS_FILES = 10;
  * Watch the Changes `key` names while the page is open, for the Session details, and ask for them again whenever the
  * owner comes back to the page (`page-return.ts`).
  */
-export const useChangesWatch = (key: ChangesKey) => {
+export const useChangesWatch = (key: ConversationKey) => {
   useAtomMount(changesAtom(key));
   useAtomMount(changesOnReturnAtom(key));
 };

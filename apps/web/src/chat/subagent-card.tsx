@@ -9,7 +9,8 @@ import { Bot, ChevronRight, ExternalLink, GitBranch, Loader, Square } from "luci
 import type { ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
-import { navigate, subagentPath } from "../router.ts";
+import { InAppLink } from "../in-app-link.tsx";
+import { subagentPath } from "../router.ts";
 import { agentOfConversation } from "../session/agents.ts";
 import { abortAtom, taskGraphAtom } from "../session/atoms.ts";
 import { subagentCardOpenAtom } from "../session-layout-state.ts";
@@ -79,18 +80,13 @@ export const OpenPageLink = ({
   const href = subagentPath(useShownSessionId(), agentId);
 
   return (
-    <a
+    <InAppLink
       href={href}
       aria-label={`Open the page of ${agentId}`}
       title={`Open the page of ${agentId}`}
       onClick={(event) => {
         // Inside a card's summary, a click must not also toggle the card.
         event.stopPropagation();
-
-        if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-        event.preventDefault();
-        navigate(href);
       }}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground [&_svg]:size-3.5",
@@ -98,7 +94,7 @@ export const OpenPageLink = ({
       )}
     >
       <ExternalLink aria-hidden />
-    </a>
+    </InAppLink>
   );
 };
 

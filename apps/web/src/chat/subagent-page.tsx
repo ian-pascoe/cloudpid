@@ -1,6 +1,6 @@
 // A Subagent page (GLOSSARY.md → Subagent page; ADR-0024): the Session page scoped to one subagent. Its chat is the
-// subagent's conversation (its thread, with its composer); its Session details hold its Todo List, the subagents below
-// it and the Changes of its conversation's Workspace; its Pane area is its own (its Diff pane on those Changes, its
+// subagent's conversation (its thread, with its composer); its Session details hold its Todo List, the subagents it
+// started and the Changes of its conversation's Workspace; its Pane area is its own (its Diff pane on those Changes, its
 // subtree in the Subagents Pane, no Session tree Pane; the Session's shared browser and Live Views as on the Session
 // page), kept in a Session layout of its own. It stays a part of its Session: Usage, the Spend limit and the Session's
 // menu are the Session page's, and its header offers only the subagent's own Stop. The page names the subagent by its
@@ -12,10 +12,11 @@ import { ArrowLeft, ChevronRight } from "lucide-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { ReactNode } from "react";
 import { useChangesWatch } from "../diff-pane/changes-summary.tsx";
+import { InAppLink } from "../in-app-link.tsx";
 import { PaneArea, PaneAreaToggle } from "../pane-area.tsx";
 import { navigate, sessionPath } from "../router.ts";
 import { sessionClientAtom, sessionStatusAtom, taskGraphAtom } from "../session/atoms.ts";
-import { changesKey } from "../session/changes-key.ts";
+import { conversationKey } from "../session/conversation-key.ts";
 import { layoutKey } from "../session-layout.ts";
 import { showLayoutAtom } from "../session-layout-state.ts";
 import { ApprovalRequests } from "./approval-card.tsx";
@@ -33,24 +34,14 @@ import { type Archived, ArchivedBanner } from "./thread.tsx";
 import { TreeBarScope } from "./tree-actions.ts";
 
 /** The link back to the Session's page, as the breadcrumb's first step. */
-const SessionCrumb = ({ sessionId, title }: { sessionId: string; title: string | undefined }) => {
-  const href = sessionPath(sessionId);
-
-  return (
-    <a
-      href={href}
-      onClick={(event) => {
-        if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-        event.preventDefault();
-        navigate(href);
-      }}
-      className="min-w-0 truncate text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-    >
-      {title ?? "Session"}
-    </a>
-  );
-};
+const SessionCrumb = ({ sessionId, title }: { sessionId: string; title: string | undefined }) => (
+  <InAppLink
+    href={sessionPath(sessionId)}
+    className="min-w-0 truncate text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+  >
+    {title ?? "Session"}
+  </InAppLink>
+);
 
 /**
  * The page's header: on a phone, the way back to the list; the breadcrumb (the Session's title, linking back to its
@@ -144,7 +135,7 @@ const LiveSubagent = ({
   archived: Archived | undefined;
 }) => {
   // The subagent's Changes, for the Session details and the Diff pane: asked again as the owner comes back to the page.
-  useChangesWatch(changesKey(sessionId, agent.conversationId));
+  useChangesWatch(conversationKey(sessionId, agent.conversationId));
 
   return (
     <ShownSubagentContext value={{ agentId: agent.id, conversationId: agent.conversationId }}>

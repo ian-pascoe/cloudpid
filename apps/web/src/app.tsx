@@ -133,7 +133,7 @@ export const App = () => {
   useAtomMount(pushSyncAtom);
   // The shown Session's group in the list expands as it is shown, even while the list is hidden (a phone).
   useAtomMount(revealShownAtom);
-  // A Session's subagents, collapsed in the list while it was shown, reveal again the next time it is.
+  // A Session's subagents, collapsed in the list on its page, reveal again the next time it is shown.
   useAtomMount(forgetDismissedAtom);
 
   const page = useAtomValue(pageAtom);

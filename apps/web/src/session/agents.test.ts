@@ -5,6 +5,7 @@ import {
   agentLabel,
   agentOfConversation,
   agentsBelow,
+  childrenOf,
   canStopAllBelow,
   depthOf,
   sameWorkspace,
@@ -92,6 +93,18 @@ describe("the agents of a task graph", () => {
     expect(agentsBelow(deep, "agent-2")).toEqual([]);
     expect(agentsBelow(deep, "root")).toHaveLength(4);
     expect(agentsBelow(null, "agent-1")).toEqual([]);
+  });
+
+  it("lists the agents an agent started itself, not those they started", () => {
+    const deep: TaskGraphSummary = {
+      ...graph,
+      agents: [...graph.agents, agent("agent-1.a.x", "agent-1.a", 5, "idle")],
+    };
+
+    expect(childrenOf(deep, "agent-1").map((each) => each.id)).toEqual(["agent-1.a"]);
+    expect(childrenOf(deep, "agent-1.a").map((each) => each.id)).toEqual(["agent-1.a.x"]);
+    expect(childrenOf(deep, "agent-2")).toEqual([]);
+    expect(childrenOf(null, "agent-1")).toEqual([]);
   });
 
   it("cuts the graph to a subagent's subtree, with the background work of it and below it", () => {

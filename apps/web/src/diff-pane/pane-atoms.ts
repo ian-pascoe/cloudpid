@@ -10,7 +10,7 @@ import type * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { appRuntime } from "../runtime.ts";
 import { changesAtom, sessionClientAtom } from "../session/atoms.ts";
-import type { ChangesKey } from "../session/changes-key.ts";
+import type { ConversationKey } from "../session/conversation-key.ts";
 import type { SessionCommandError } from "../session/client.ts";
 import { foldedFiles, paneFilesOf, type PaneFile } from "./pane-files.ts";
 import {
@@ -25,7 +25,7 @@ import { diffTargetAtom } from "./target.ts";
 /** The atoms of one Diff pane. */
 export interface PaneAtoms {
   /** The Changes it shows: the Session's on its page, a subagent conversation's on a Subagent page. */
-  readonly changes: ChangesKey;
+  readonly changes: ConversationKey;
   /** What the owner folded and where the Pane is held; a place asked for (`diffTargetAtom`) is taken in. */
   readonly ui: Atom.Writable<PaneUi, PaneUiAction>;
   readonly files: Atom.Atom<readonly PaneFile[]>;
@@ -37,7 +37,7 @@ export interface PaneAtoms {
 }
 
 /** The atoms of a Diff pane on the Changes `changes` names. */
-export const paneAtomsOf = (changes: ChangesKey): PaneAtoms => {
+export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
   const { sessionId, conversationId } = changes;
   const target = diffTargetAtom(changes);
   const own = Atom.make<PaneUi>(INITIAL_PANE_UI);
@@ -80,6 +80,6 @@ export const paneAtomsOf = (changes: ChangesKey): PaneAtoms => {
 };
 
 /** The atoms of the Diff pane mounted here; its provider takes the key of the Changes it shows. */
-export const DiffPaneScope = ScopedAtom.make((changes: ChangesKey) =>
+export const DiffPaneScope = ScopedAtom.make((changes: ConversationKey) =>
   Atom.make(paneAtomsOf(changes)),
 );

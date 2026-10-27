@@ -6,7 +6,7 @@
 import * as Atom from "effect/reactivity/Atom";
 import { DIFF_PANE } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
-import type { ChangesKey } from "../session/changes-key.ts";
+import type { ConversationKey } from "../session/conversation-key.ts";
 
 /** A place to show: a changed file by its ID (`changes.ts`), or the top for `null`; `at` tells two asks apart. */
 export interface DiffTarget {
@@ -15,7 +15,7 @@ export interface DiffTarget {
 }
 
 /** The place the Diff pane on the Changes `key` names is asked to show, until it has. */
-export const diffTargetAtom = Atom.family((_key: ChangesKey) =>
+export const diffTargetAtom = Atom.family((_key: ConversationKey) =>
   Atom.make<DiffTarget | null>(null).pipe(Atom.keepAlive),
 );
 
@@ -25,7 +25,7 @@ let asks = 0;
  * Open the page's Diff pane on the Changes `key` names (or show it where it is open) at a changed file, or at the top
  * for `null`.
  */
-export const openDiffPaneAtom = Atom.family((key: ChangesKey) =>
+export const openDiffPaneAtom = Atom.family((key: ConversationKey) =>
   Atom.writable(
     (get) => get(diffTargetAtom(key)),
     (ctx, file: string | null) => {

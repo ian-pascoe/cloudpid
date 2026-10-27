@@ -1,7 +1,7 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- a list's relative times are read against the wall clock as it renders, and its rows are JSX lists over native arrays.
 
 import { type SessionRecord, UNTITLED_SESSION } from "@cloudpid/protocol";
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import {
   ChevronRight,
   FolderGit2,
@@ -9,7 +9,6 @@ import {
   PanelLeftOpen,
   Plus,
   Settings as SettingsIcon,
-  Square,
   X,
 } from "lucide-react";
 import {
@@ -18,32 +17,19 @@ import {
   useRef,
   type CSSProperties,
   type KeyboardEvent,
-  type MouseEvent,
   type PointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
+import { InAppLink } from "./in-app-link.tsx";
 import { cn } from "./lib/utils.ts";
-import {
-  DRAFT_PATH,
-  ENVIRONMENTS_PATH,
-  navigate,
-  SETTINGS_PATH,
-  sessionPath,
-  subagentPath,
-} from "./router.ts";
+import { DRAFT_PATH, ENVIRONMENTS_PATH, navigate, SETTINGS_PATH, sessionPath } from "./router.ts";
 import { listProblemAtom, noticeAtom } from "./app-state.ts";
 import { groupCollapsedAtom, groupKey, type ListSection } from "./collapsed-groups.ts";
-import {
-  indentOf,
-  subagentRows,
-  subagentsExpandedAtom,
-  workingCount,
-  type SubagentRow,
-} from "./list-subagents.ts";
-import { stopAgentAtom } from "./session/atoms.ts";
+import { subagentRows, subagentsExpandedAtom } from "./list-subagents.ts";
+import { SubagentList, SubagentsToggle } from "./sidebar-subagents.tsx";
 import { useSessionActions } from "./session-actions.ts";
 import { type SessionActions, SessionMenu } from "./session-menu.tsx";
 import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
@@ -68,14 +54,6 @@ const SessionPlaceNote = ({ session }: { session: SessionRecord }) => {
   return branch === undefined ? null : <span className="truncate font-mono">{branch}</span>;
 };
 
-/** A link that opens `href` in the app, or as the browser does with a modifier or another button (a new tab). */
-const openInApp = (href: string) => (event: MouseEvent<HTMLAnchorElement>) => {
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-  event.preventDefault();
-  navigate(href);
-};
-
 export const SessionLink = ({
   session,
   active,
@@ -88,10 +66,9 @@ export const SessionLink = ({
   contains?: boolean;
   className?: string;
 }) => (
-  <a
+  <InAppLink
     href={sessionPath(session.id)}
     aria-current={active ? "page" : undefined}
-    onClick={openInApp(sessionPath(session.id))}
     className={cn(
       "flex flex-col gap-0.5 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
       active && "bg-accent text-accent-foreground",
@@ -113,7 +90,7 @@ export const SessionLink = ({
         </span>
       )}
     </span>
-  </a>
+  </InAppLink>
 );
 
 /** The page shown, as the list marks it: a Session's page, or one of its Subagent pages. */
@@ -121,134 +98,6 @@ export interface ShownPage {
   readonly sessionId: string;
   readonly agentId?: string | undefined;
 }
-
-/**
- * Stops one subagent's conversation from the list (its subagents keep working), through the Session's socket, which it
- * opens for as long as the button is shown if the Session's page does not have it open: the list knows the agent by
- * its ID alone (`stopAgentAtom`). Shown on hover or keyboard focus, always on a touch screen.
- */
-const SubagentStopButton = ({ sessionId, agentId }: { sessionId: string; agentId: string }) => {
-  const stop = useAtomSet(stopAgentAtom(sessionId));
-
-  return (
-    <button
-      type="button"
-      aria-label={`Stop ${agentId}`}
-      title={`Stop ${agentId}`}
-      onClick={() => {
-        stop(agentId);
-      }}
-      className="absolute top-1/2 right-1.5 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors group-focus-within/agent:opacity-100 group-hover/agent:opacity-100 hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 pointer-coarse:opacity-100 [&_svg]:size-3.5"
-    >
-      <Square aria-hidden />
-    </button>
-  );
-};
-
-/**
- * A subagent under its Session: its ID and role, then its branch and whether it works, linking to its Subagent page;
- * indented one step per level below the root, at most `MAX_INDENT`. While it works, and its Session is not archived,
- * a Stop at the right.
- */
-const SubagentItem = ({
-  session,
-  row,
-  current,
-}: {
-  session: SessionRecord;
-  row: SubagentRow;
-  current: boolean;
-}) => {
-  const { agent } = row;
-  const href = subagentPath(session.id, agent.id);
-  const working = agent.status === "working";
-  const stoppable = working && session.archivedAt === null;
-  // One step is 0.75rem past the Session's own text, which starts at 0.75rem.
-  const indent: CSSProperties = { paddingLeft: `${1.5 + indentOf(row.depth) * 0.75}rem` };
-
-  return (
-    <li className="group/agent relative">
-      <a
-        href={href}
-        aria-current={current ? "page" : undefined}
-        onClick={openInApp(href)}
-        style={indent}
-        className={cn(
-          "flex flex-col gap-0.5 rounded-md py-1.5 pr-3 text-sm transition-colors hover:bg-accent",
-          stoppable && "pr-10",
-          current && "bg-accent text-accent-foreground",
-        )}
-      >
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate font-mono text-[0.8125rem]">{agent.id}</span>
-          {agent.role !== null && (
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-              {agent.role}
-            </span>
-          )}
-        </span>
-        <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-          {agent.branch !== undefined && (
-            <span className="min-w-0 truncate font-mono">{agent.branch}</span>
-          )}
-          {working ? (
-            <span className="flex shrink-0 items-center gap-1.5">
-              <span className="pulse-dot size-1.5 rounded-full bg-success" aria-hidden />
-              Working
-            </span>
-          ) : (
-            <span className="shrink-0">Idle</span>
-          )}
-        </span>
-      </a>
-      {stoppable && <SubagentStopButton sessionId={session.id} agentId={agent.id} />}
-    </li>
-  );
-};
-
-/**
- * The button that shows and hides a Session's subagents under its row, with how many it has; collapsed, a pulse dot
- * while one works. Apart from the row's link, so a click on the row still opens the Session.
- */
-const SubagentsToggle = ({
-  session,
-  expanded,
-  controls,
-  onToggle,
-}: {
-  session: SessionRecord;
-  expanded: boolean;
-  controls: string;
-  onToggle: () => void;
-}) => {
-  const count = session.agents?.length ?? 0;
-  const working = workingCount(session);
-  const showsWorking = !expanded && working > 0;
-  const label = `${count} ${count === 1 ? "subagent" : "subagents"}${working > 0 ? `, ${working} working` : ""}`;
-
-  return (
-    <button
-      type="button"
-      aria-expanded={expanded}
-      aria-controls={expanded ? controls : undefined}
-      aria-label={`${expanded ? "Hide" : "Show"} subagents: ${label}`}
-      title={`${expanded ? "Hide" : "Show"} subagents`}
-      onClick={onToggle}
-      className="absolute right-1.5 bottom-1 flex h-[1.125rem] items-center gap-1 rounded px-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
-      <ChevronRight
-        className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")}
-        aria-hidden
-      />
-      <span className="tabular" aria-hidden>
-        {count}
-      </span>
-      {showsWorking && (
-        <span className="pulse-dot size-1.5 shrink-0 rounded-full bg-success" aria-hidden />
-      )}
-    </button>
-  );
-};
 
 /**
  * A Session in the list, with its "⋯" menu at the right. On a screen with a pointer the button shows on hover or keyboard
@@ -296,6 +145,7 @@ const SessionItem = ({
           <SubagentsToggle
             session={session}
             expanded={expanded}
+            locked={here && !active}
             controls={listId}
             onToggle={() => {
               setExpanded(!expanded);
@@ -304,20 +154,12 @@ const SessionItem = ({
         )}
       </div>
       {hasAgents && expanded && (
-        <ul
+        <SubagentList
           id={listId}
-          aria-label={`Subagents of ${sessionTitle(session)}`}
-          className="flex flex-col gap-0.5 pt-0.5"
-        >
-          {rows.map((row) => (
-            <SubagentItem
-              key={row.agent.id}
-              session={session}
-              row={row}
-              current={here && shown.agentId === row.agent.id}
-            />
-          ))}
-        </ul>
+          session={session}
+          rows={rows}
+          currentAgent={here ? shown.agentId : undefined}
+        />
       )}
     </li>
   );
@@ -446,17 +288,11 @@ const PageLink = ({
   label: string;
   iconOnly?: boolean;
 }) => (
-  <a
+  <InAppLink
     href={href}
     aria-current={active ? "page" : undefined}
     aria-label={iconOnly ? label : undefined}
     title={iconOnly ? label : undefined}
-    onClick={(event) => {
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-      event.preventDefault();
-      navigate(href);
-    }}
     className={cn(
       "flex items-center rounded-md text-sm transition-colors hover:bg-accent [&_svg]:size-4",
       iconOnly ? "size-9 justify-center" : "gap-2 px-3 py-2",
@@ -465,7 +301,7 @@ const PageLink = ({
   >
     {icon}
     {!iconOnly && label}
-  </a>
+  </InAppLink>
 );
 
 /**

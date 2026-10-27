@@ -152,8 +152,15 @@ describe("a Session's subagents in the list", () => {
     registry.set(subagentsExpandedAtom("a"), false);
     expect(registry.get(subagentsExpandedAtom("a"))).toBe(false);
 
-    // A Subagent page of the same Session keeps the owner's collapse.
+    // A Subagent page of the same Session shows its row whatever the owner collapsed on the Session's page…
     registry.set(pathAtom, subagentPath("a", "agent-1"));
+    expect(registry.get(subagentsExpandedAtom("a"))).toBe(true);
+    // …and cannot be collapsed itself.
+    registry.set(subagentsExpandedAtom("a"), false);
+    expect(registry.get(subagentsExpandedAtom("a"))).toBe(true);
+
+    // Back on the Session's page, the owner's collapse stands.
+    registry.set(pathAtom, sessionPath("a"));
     expect(registry.get(subagentsExpandedAtom("a"))).toBe(false);
 
     registry.set(pathAtom, sessionPath("b"));

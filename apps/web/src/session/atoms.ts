@@ -17,7 +17,7 @@ import * as Atom from "effect/reactivity/Atom";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { appRuntime } from "../runtime.ts";
-import type { ChangesKey } from "./changes-key.ts";
+import type { ConversationKey } from "./conversation-key.ts";
 import { make } from "./client.ts";
 import {
   INITIAL_SESSION_STATE,
@@ -147,7 +147,7 @@ export const usageAtom = Atom.family((sessionId: string) =>
  * Watches the Changes `key` names while mounted: the Session's for as long as its client lives (a new socket asks
  * again), a subagent conversation's until nothing mounts this any more.
  */
-const watchingChangesAtom = Atom.family(({ sessionId, conversationId }: ChangesKey) =>
+const watchingChangesAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
   appRuntime.atom((get) =>
     get
       .result(sessionClientAtom(sessionId))
@@ -161,7 +161,7 @@ const watchingChangesAtom = Atom.family(({ sessionId, conversationId }: ChangesK
   ),
 );
 
-const changesFieldAtom = Atom.family(({ sessionId, conversationId }: ChangesKey) =>
+const changesFieldAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
   Atom.map(sessionStateAtom(sessionId), (state) =>
     conversationId === undefined
       ? state.changes
@@ -170,11 +170,11 @@ const changesFieldAtom = Atom.family(({ sessionId, conversationId }: ChangesKey)
 );
 
 /**
- * The Changes `key` names (`changes-key.ts`): the Session's Workspace's, or a subagent conversation's Workspace's; null
- * until the Session lists them. Asks the Session to send them while read. The Session's page reads its own for as long
+ * The Changes of the conversation `key` names (`conversation-key.ts`): the Session's Workspace's for the root's, or a
+ * subagent conversation's Workspace's; null until the Session lists them. Asks the Session to send them while read. The Session's page reads its own for as long
  * as it is open, for the Session details, and a Subagent page the subagent's.
  */
-export const changesAtom = Atom.family((key: ChangesKey) =>
+export const changesAtom = Atom.family((key: ConversationKey) =>
   Atom.make((get) => {
     get.mount(watchingChangesAtom(key));
 
@@ -224,19 +224,12 @@ export const threadAtom = Atom.family((key: ThreadKey) =>
  * Whether a conversation of a Session is running: the root's (`conversationId` undefined) as the Session's view says,
  * a subagent's as its thread does, which this watches while read.
  */
-export const conversationRunningAtom = Atom.family(
-  ({
-    sessionId,
-    conversationId,
-  }: {
-    readonly sessionId: string;
-    readonly conversationId: number | undefined;
-  }) =>
-    Atom.make((get): boolean =>
-      conversationId === undefined
-        ? get(sessionViewAtom(sessionId)).running
-        : get(threadAtom({ sessionId, conversationId }))?.view.running === true,
-    ),
+export const conversationRunningAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
+  Atom.make((get): boolean =>
+    conversationId === undefined
+      ? get(sessionViewAtom(sessionId)).running
+      : get(threadAtom({ sessionId, conversationId }))?.view.running === true,
+  ),
 );
 
 const NO_TODOS: readonly TodoTask[] = [];
@@ -245,19 +238,12 @@ const NO_TODOS: readonly TodoTask[] = [];
  * The Todo List of a conversation of a Session: the root's (`conversationId` undefined), or a subagent's from its
  * thread, which this watches while read.
  */
-export const conversationTodosAtom = Atom.family(
-  ({
-    sessionId,
-    conversationId,
-  }: {
-    readonly sessionId: string;
-    readonly conversationId: number | undefined;
-  }) =>
-    Atom.make((get): readonly TodoTask[] =>
-      conversationId === undefined
-        ? get(todosAtom(sessionId))
-        : (get(threadAtom({ sessionId, conversationId }))?.todos ?? NO_TODOS),
-    ),
+export const conversationTodosAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
+  Atom.make((get): readonly TodoTask[] =>
+    conversationId === undefined
+      ? get(todosAtom(sessionId))
+      : (get(threadAtom({ sessionId, conversationId }))?.todos ?? NO_TODOS),
+  ),
 );
 
 /** What to submit, and to which conversation: the root's when `conversationId` is absent. */
