@@ -5,6 +5,8 @@
 // one Layer kept in a `ManagedRuntime`.
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import {
+  type AgentWorkspace,
+  conversationWorkspace,
   deleteAgent,
   isAgentConversation,
   EMPTY_SUBAGENTS_STATE as EMPTY_STATE,
@@ -124,6 +126,7 @@ import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file
 import { inputProblem, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
+import { AgentsReport, sessionAgentsOf } from "./agents-report.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
 import { type NavigateRequest, sessionBranches } from "./branches.ts";
 import { branchIds } from "./tree.ts";
@@ -274,6 +277,8 @@ export type SessionHostOptions<R = never> = {
   readonly subagentWorkspaces?: SubagentWorkspaceHost | undefined;
   /** How long a report to the Registry may take before it counts as failed. Defaults to `REPORT_TIMEOUT`. */
   readonly reportTimeout?: Duration.Input;
+  /** The shortest time between two writes of the subagents to the Registry. Defaults to `AGENTS_REPORT_INTERVAL_MS`. */
+  readonly agentsReportMs?: number;
   /** How long a submitted message's expansion may take before it goes as typed. Defaults to `EXPAND_TIMEOUT`. */
   readonly expandTimeout?: Duration.Input;
 };
@@ -419,6 +424,14 @@ export type SessionHostService = {
    * later call fails; the object is reset before it serves another. For a Session being deleted.
    */
   readonly close: Effect.Effect<void, SessionError>;
+  /**
+   * The Subagent Workspace conversation `conversationId` works in (its agent's own, or its nearest ancestor's), or
+   * undefined for one that works in the Session's Workspace. Fails for a conversation that is neither a Session branch
+   * nor a live subagent's.
+   */
+  readonly workspaceOf: (
+    conversationId: ConversationId,
+  ) => Effect.Effect<AgentWorkspace | undefined, SessionError>;
   /**
    * A summary of the Session's task graph: the current one first, then one after each change that alters it, at most one
    * every `TASK_GRAPH_INTERVAL`. Fails when the Harness ends its watch.
@@ -826,6 +839,39 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         );
 
+  const runAgents = Effect.runForkWith(yield* Effect.context<never>());
+  const writeAgents = Effect.runPromiseWith(yield* Effect.context<never>());
+
+  /**
+   * The Session's subagents as the Registry lists them (ADR-0024): written when they change (`watchAgents`, below), at
+   * most once an interval, and whenever the Session settles, so at each start and after a stop. A write that fails is
+   * written again by the heartbeat, as a status report is.
+   */
+  const agentsReport = new AgentsReport({
+    read: async () => {
+      const graph = await harness.harness.taskGraph(context);
+
+      try {
+        const state = await harness.harness.snapshot(SubagentsDoc, context);
+
+        return sessionAgentsOf(summarizeTaskGraph(graph.value, state ?? EMPTY_STATE).agents);
+      } finally {
+        graph.dispose();
+      }
+    },
+    write: (agents) =>
+      writeAgents(
+        registry.reportAgents(agents).pipe(Effect.timeout(options.reportTimeout ?? REPORT_TIMEOUT)),
+      ),
+    intervalMs: options.agentsReportMs,
+    warn: (message, cause) => {
+      runAgents(Effect.logWarning(message, cause));
+    },
+  });
+
+  /** Write the subagents now if they are due, and say whether the Registry has them. */
+  const settleAgents = Effect.promise(() => agentsReport.settle());
+
   /** The alarm once no work is live: deleted, unless the object must wake later anyway. */
   const rest = wakeAt.pipe(
     Effect.flatMap((at) =>
@@ -837,11 +883,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const arm = (next: Wake) =>
     next.active
-      ? // The heartbeat first: a report that cannot be made must not leave live work unwoken.
-        armHeartbeat.pipe(Effect.andThen(report("running")), Effect.asVoid)
-      : // Report before deleting the heartbeat: an unreported end keeps it, to report again.
+      ? // The heartbeat first: a report that cannot be made must not leave live work unwoken. Each beat writes again
+        // the subagents a failed write left due.
+        armHeartbeat.pipe(
+          Effect.andThen(report("running")),
+          Effect.andThen(Effect.sync(() => agentsReport.retry())),
+          Effect.asVoid,
+        )
+      : // Report before deleting the heartbeat: an unreported end, or subagents unwritten, keep it, to report again.
         onIdle.pipe(
           Effect.andThen(report("idle")),
+          Effect.flatMap((told) => Effect.map(settleAgents, (written) => told && written)),
           Effect.flatMap((told) => (told ? rest : armHeartbeat)),
         );
 
@@ -1935,6 +1987,61 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
     );
 
+  /**
+   * Follow the task graph and the Subagents document, which does not exist until the first spawn and changes alone when
+   * an idle agent is deleted or given a Workspace, for the Registry's summary of the subagents. Started before work
+   * resumes, so no change is missed; one that cannot start leaves the summary to each settle.
+   */
+  yield* Effect.acquireRelease(
+    attempt("watchAgents", async () => {
+      const graph = await harness.harness.watchTaskGraph(context);
+      let doc: DocumentWatch<SubagentsState> | undefined;
+      let following: Promise<void> | undefined;
+
+      /** Watch the document once it exists; one that does not yet, or fails to, is tried at the next change. */
+      const watchDoc = async (): Promise<void> => {
+        try {
+          doc = await harness.harness.watchDoc(SubagentsDoc, context);
+        } catch (error) {
+          runAgents(Effect.logWarning("Watching the Subagents document failed", error));
+        }
+
+        doc?.start(() => {
+          agentsReport.changed();
+
+          return Promise.resolve();
+        });
+      };
+
+      const followDoc = (): Promise<void> => {
+        following ??= watchDoc().finally(() => {
+          following = undefined;
+        });
+
+        return following;
+      };
+
+      await followDoc();
+      graph.start(async () => {
+        if (doc === undefined) await followDoc();
+
+        agentsReport.changed();
+      });
+
+      return { graph, doc: () => doc };
+    }),
+    (watch) =>
+      Effect.promise(async () => {
+        agentsReport.stop();
+        await watch.graph.stop();
+        await watch.doc()?.stop();
+      }),
+  ).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("Watching the subagents for the Registry failed", error),
+    ),
+  );
+
   yield* wakeAndResume;
 
   // A `/compact` that was waiting for a Run when the last instance went away waits again.
@@ -1959,7 +2066,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     navigate: (request) => branches.navigate(request).pipe(Effect.tap(usageChanged)),
     switchBranch: (conversationId) =>
       branches.switchBranch(conversationId).pipe(Effect.tap(usageChanged)),
-    stopEverything: branches.stopEverything,
+    // What stopped reaches the Registry's summary of the subagents at once: an archived Session keeps it.
+    stopEverything: branches.stopEverything.pipe(Effect.andThen(settleAgents), Effect.asVoid),
     forkSource: forks.forkSource,
     exportEntries: forks.exportEntries,
     importStart: forks.importStart,
@@ -1999,7 +2107,32 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       attempt("deleteSubagent", () =>
         deleteAgent(harness.harness, agent, workspace, options.subagentWorkspaces, context),
       ),
-    close: attempt("close", () => harness.harness.close(context)),
+    close: Effect.sync(() => agentsReport.stop()).pipe(
+      Effect.andThen(attempt("close", () => harness.harness.close(context))),
+    ),
+    workspaceOf: (conversationId) =>
+      attempt("workspace", async () => {
+        if (!(await isAgentConversation(harness.harness, conversationId, context))) {
+          return null;
+        }
+
+        const state = await harness.harness.snapshot(SubagentsDoc, context);
+
+        return {
+          workspace: state === undefined ? undefined : conversationWorkspace(state, conversationId),
+        };
+      }).pipe(
+        Effect.flatMap((found) =>
+          found === null
+            ? Effect.fail(
+                SessionError.make({
+                  operation: "workspace",
+                  message: `Conversation ${conversationId} is not the root or a subagent of this Session`,
+                }),
+              )
+            : Effect.succeed(found.workspace),
+        ),
+      ),
     taskGraph: taskGraphSummaries,
     usage: usageUpdates,
     events,

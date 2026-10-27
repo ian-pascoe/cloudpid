@@ -138,6 +138,40 @@ describe("the Registry store", () => {
     expect(await registry.listSessions()).toEqual([]);
   });
 
+  it("keeps the subagents a Session reports, without touching its status or updatedAt, and ignores one it does not know", async () => {
+    const registry = fresh();
+
+    const created = await registry.createSession(
+      { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d") },
+      1_000,
+    );
+
+    // A Session that never reported has none, not an empty list.
+    expect(created).not.toHaveProperty("agents");
+    expect(await registry.getSession("s-1")).not.toHaveProperty("agents");
+
+    const agents = [
+      { id: "agent-1", parent: "root", role: null, status: "working", branch: "cloudpid/x" },
+      { id: "agent-1.reviewer", parent: "agent-1", role: "small", status: "idle" },
+    ] as const;
+
+    await registry.setSessionAgents("s-1", agents);
+    expect(await registry.getSession("s-1")).toEqual({ ...created, agents });
+    expect(await registry.listSessions()).toEqual([{ ...created, agents }]);
+
+    await registry.setSessionAgents("s-1", []);
+    expect(await registry.getSession("s-1")).toEqual({ ...created, agents: [] });
+
+    // Archived, it still takes the last report (the one after its stop) and keeps it.
+    await registry.archiveSession("s-1", 5_000);
+    await registry.setSessionAgents("s-1", agents);
+    expect(await registry.getSession("s-1")).toEqual({ ...created, archivedAt: 5_000, agents });
+
+    await registry.setSessionAgents("ghost", agents);
+    expect(await registry.getSession("ghost")).toBeNull();
+    expect(await registry.listSessions()).toHaveLength(1);
+  });
+
   it("refuses to list or write a status it does not know", async () => {
     const registry = fresh();
 

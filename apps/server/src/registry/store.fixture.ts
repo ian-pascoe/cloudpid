@@ -40,6 +40,7 @@ import {
   type RepoChange,
   type SecretPut,
   type StoredEnvironmentSecret,
+  type SessionAgent,
   type SessionRecord,
   type SessionRefusal,
   type SessionStatus,
@@ -94,6 +95,10 @@ export class TestRegistry extends DurableObject {
 
   setSessionStatus(id: string, status: SessionStatus, now: number): void {
     this.#store.setSessionStatus(id, status, now);
+  }
+
+  setSessionAgents(id: string, agents: ReadonlyArray<SessionAgent>): void {
+    this.#store.setSessionAgents(id, agents);
   }
 
   renameSession(id: string, title: string): SessionRecord | null {

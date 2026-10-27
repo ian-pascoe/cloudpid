@@ -232,6 +232,7 @@ const task = (options: {
 
   const registry: SessionRegistry["Service"] = {
     report: () => Effect.void,
+    reportAgents: () => Effect.void,
     notify: () => Effect.void,
     titleWanted: Effect.suspend(() => {
       asked += 1;

@@ -260,6 +260,10 @@ export const SessionLive = Session.make(
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
               : registries.getByName(REGISTRY_NAME).setSessionStatus({ id: name, status }),
+          reportAgents: (agents) =>
+            name === undefined
+              ? ReportError.make({ message: "The Session's name is unknown" })
+              : registries.getByName(REGISTRY_NAME).setSessionAgents({ id: name, agents }),
           notify: (event) =>
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
