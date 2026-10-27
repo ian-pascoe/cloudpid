@@ -1,7 +1,7 @@
 // The line diff of an Agent change's long values (docs/spec.md → Agent changes).
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
-import { changeDiff, diffLines, foldDiff } from "./line-diff.ts";
+import { changeDiff, diffLines, foldDiff, skillFileDiffs } from "./line-diff.ts";
 
 /** A text of `count` lines, each made by `line`. */
 const numbered = (count: number, line: (index: number) => string): string =>
@@ -86,5 +86,35 @@ describe("changeDiff", () => {
     expect(changeDiff("ignore", [], ["/a"])).toBeUndefined();
     expect(changeDiff("variables.A", "1", "2")).toBeUndefined();
     expect(changeDiff("setupScript", 1, "x")).toBeUndefined();
+  });
+});
+
+describe("skillFileDiffs", () => {
+  it("diffs each file a Skill's change added, removed or changed, by path, leaving out the ones it kept", () => {
+    const diffs = skillFileDiffs({
+      before: [
+        { path: "SKILL.md", text: "---\nname: a\n---\nOld step.\n" },
+        { path: "gone.md", text: "bye\n" },
+        { path: "kept.md", text: "same\n" },
+      ],
+      after: [
+        { path: "SKILL.md", text: "---\nname: a\n---\nNew step.\n" },
+        { path: "kept.md", text: "same\n" },
+        { path: "new.md", text: "hi\n" },
+      ],
+    });
+
+    expect(Arr.map(diffs, ({ path, status, rows }) => ({ path, status, rows: shown(rows) }))).toEqual([
+      { path: "SKILL.md", status: "changed", rows: [" ---", " name: a", " ---", "-Old step.", "+New step."] },
+      { path: "gone.md", status: "removed", rows: ["-bye"] },
+      { path: "new.md", status: "added", rows: ["+hi"] },
+    ]);
+  });
+
+  it("shows a new Skill's files all added, and a removed one's all removed", () => {
+    const files = [{ path: "SKILL.md", text: "x\n" }];
+
+    expect(skillFileDiffs({ before: null, after: files })).toMatchObject([{ status: "added" }]);
+    expect(skillFileDiffs({ before: files, after: null })).toMatchObject([{ status: "removed" }]);
   });
 });

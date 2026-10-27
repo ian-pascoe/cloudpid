@@ -446,6 +446,14 @@ describe("an Agent change", () => {
     expect(changeFieldText("build")).toBe("Build");
   });
 
+  it("shows a Skill's change as the Skill, its values as its files' paths", () => {
+    expect(changeFieldText("skills.release")).toBe("Skill release");
+    expect(
+      changeValueText({ files: { "references/a.md": "h2", "SKILL.md": "h1" } }),
+    ).toBe("SKILL.md\nreferences/a.md");
+    expect(changeValueText({ files: {} })).toBe("no files");
+  });
+
   it("titles a call's change by setting and place, and an approved Environment delete as deleted", () => {
     expect(changeTitleText("variables.API_URL", "Default")).toBe("Variable API_URL in Default");
     expect(changeTitleText("spendLimit.perSession", "the Settings")).toBe(

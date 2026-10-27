@@ -15,6 +15,7 @@ import {
   type EnvironmentSecretRecord,
   fieldRepo,
   fieldSecret,
+  fieldSkill,
   fieldVariable,
   NAME_FIELD,
   MAX_ENVIRONMENT_NAME_LENGTH,
@@ -321,13 +322,30 @@ export const buildLine = (build: BuildView, now: number): string => {
 };
 
 /**
- * A value an Agent change shows, in full: a variable's, a script's or the Toolchains' as written, a list of paths a line
+ * The paths of a Skill's files, sorted, when `value` is what an Agent change of a Skill records (`{ files: { path:
+ * hash } }`); undefined for any other value.
+ */
+const skillFilesOf = (value: AgentChange["before"]): readonly string[] | undefined =>
+  Predicate.isObject(value) &&
+  !Arr.isArray(value) &&
+  Predicate.isObject(value.files) &&
+  !Arr.isArray(value.files) &&
+  Record.keys(value).length === 1
+    ? Record.keys(value.files).toSorted()
+    : undefined;
+
+/**
+ * A value an Agent change shows, in full: a Skill's as its files' paths, a variable's, a script's or the Toolchains' as written, a list of paths a line
  * each, another setting's as JSON, and none as not set (an empty text as empty, an empty list as none).
  */
 export const changeValueText = (value: AgentChange["before"]): string => {
   if (value === null) return "not set";
 
   if (Predicate.isString(value)) return value === "" ? "empty" : value;
+
+  const files = skillFilesOf(value);
+
+  if (files !== undefined) return files.length === 0 ? "no files" : files.join("\n");
 
   if (Arr.isArray(value) && Arr.every(value, Predicate.isString)) {
     return value.length === 0 ? "none" : value.join("\n");
@@ -345,6 +363,10 @@ export const changeFieldText = (field: string): string => {
   const repo = fieldRepo(field);
 
   if (repo !== null) return `Repo ${repo}`;
+
+  const skill = fieldSkill(field);
+
+  if (skill !== null) return `Skill ${skill}`;
 
   const secret = fieldSecret(field);
 
