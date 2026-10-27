@@ -133,11 +133,11 @@ The change one file-writing tool call made to one file, as recorded when it ran.
 _Avoid_: Per-call diff, edit diff
 
 **Annotation**:
-The owner's note on a line range of a diff, kept as a draft until it is sent in a Review.
+What the owner writes on a range of lines on one side of a diff (a Call diff, or the Changes), with those lines quoted as they were. It is a draft, kept in its Session and the same on every device, until it is sent in a Review. A draft on the Changes whose lines have changed since is outdated; one whose lines only moved goes with them.
 _Avoid_: Comment, remark, note (that is an agent's Note)
 
 **Review**:
-A batch of Annotations the owner sends to one conversation as a single message.
+The owner's draft Annotations for one conversation sent together as a single message, after an optional summary the owner types.
 _Avoid_: Feedback, comment batch, code review (for the message)
 
 ## Environments, Repos and Workspaces

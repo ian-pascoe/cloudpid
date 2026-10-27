@@ -5,6 +5,7 @@ import {
   answerOf,
   entriesOf,
   shownPages,
+  shownReview,
   shownSkills,
   toThreadMessages,
 } from "./thread-messages.ts";
@@ -129,6 +130,28 @@ describe("the thread messages of a view", () => {
     expect(shownPages(message?.metadata?.custom)).toEqual([page]);
     expect(shownSkills(message?.metadata?.custom)).toEqual([]);
     expect(shownPages(undefined)).toEqual([]);
+  });
+
+  it("keeps a Review's Annotations, for its chips", () => {
+    const annotation = {
+      source: { kind: "changes" as const, repo: "app", head: null },
+      path: "src/a.ts",
+      side: "new" as const,
+      start: 2,
+      end: 3,
+      more: 0,
+      file: "/workspace/app/src/a.ts",
+      quote: ["b", "c"],
+      text: "Why?",
+    };
+
+    const [message] = toThreadMessages(
+      view({ messages: [{ ...user("1", "Have a look"), review: [annotation] }] }),
+    );
+
+    expect(message?.content).toEqual([{ type: "text", text: "Have a look" }]);
+    expect(shownReview(message?.metadata?.custom)).toEqual([annotation]);
+    expect(shownReview(undefined)).toEqual([]);
   });
 
   it("maps an image in a user message to a data URL", () => {

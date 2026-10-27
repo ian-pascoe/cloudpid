@@ -12,8 +12,10 @@ import { changesAtom, taskGraphAtom } from "../session/atoms.ts";
 import { lazyChunk } from "../lazy-chunk.ts";
 import { LazyView } from "../lazy-view.tsx";
 import { useWidth } from "../use-width.ts";
-import { useShownChanges, useThreadConversation } from "./conversation.ts";
+import { useShownChanges, useShownSessionId, useThreadConversation } from "./conversation.ts";
 import { type CallDiff, callDiffCounts, capPatch, diffStyleFor } from "../call-diff.ts";
+import { type CallRef, useCallAnchor } from "../review/call-anchor.ts";
+import type { DiffAnchor } from "../review/drafts.ts";
 
 // The library, its highlighter and its theme are a chunk of their own, fetched when the first diff opens.
 const PatchView = lazyChunk(() => import("./patch-view.tsx"));
@@ -53,11 +55,15 @@ const DiffBox = ({
   diff,
   patch,
   width,
+  anchor,
 }: {
   diff: CallDiff;
   patch: string | undefined;
   width: number | undefined;
+  anchor: DiffAnchor | undefined;
 }) => {
+  const sessionId = useShownSessionId();
+
   if (diff.unavailable === true) {
     return <p className="p-2 text-sm text-muted-foreground">{UNAVAILABLE}</p>;
   }
@@ -74,7 +80,12 @@ const DiffBox = ({
 
   return (
     <LazyView fallback={<p className="p-2 text-sm text-muted-foreground">Loading the diff…</p>}>
-      <PatchView patch={patch} diffStyle={diffStyleFor(width)} />
+      <PatchView
+        patch={patch}
+        diffStyle={diffStyleFor(width)}
+        sessionId={sessionId}
+        anchor={anchor}
+      />
     </LazyView>
   );
 };
@@ -129,18 +140,22 @@ const OpenInDiffPane = ({ path }: { path: string }) => {
 /**
  * What an opened card shows for a Call diff: the file's path (with a "new file" mark for a create) and the diff, split or
  * stacked by the card's width and cut at the line cap until "Show all" is pressed. A card's arguments and result sit
- * behind a toggle; the calls a `codemode` card lists have none.
+ * behind a toggle; the calls a `codemode` card lists have none. The owner drafts Annotations on it from its gutter.
  */
 export const CallDiffBody = ({
   diff,
   path,
   call,
+  callRef,
 }: {
   diff: CallDiff;
   path: string | undefined;
   /** The card's arguments and result, as they show on a card with no diff. */
   call?: ReactNode;
+  /** The call it was drawn from, which drafts on it anchor to. */
+  callRef: Omit<CallRef, "path">;
 }) => {
+  const anchor = useCallAnchor({ ...callRef, path: diff.path ?? path });
   const [showAll, setShowAll] = useState(false);
   const [showCall, setShowCall] = useState(false);
   const { ref, width } = useWidth();
@@ -176,7 +191,12 @@ export const CallDiffBody = ({
         )}
       </div>
       <div className="mt-2 overflow-hidden rounded border">
-        <DiffBox diff={diff} patch={showAll ? diff.patch : capped?.patch} width={width} />
+        <DiffBox
+          diff={diff}
+          patch={showAll ? diff.patch : capped?.patch}
+          width={width}
+          anchor={anchor}
+        />
       </div>
       {capped?.capped === true && !showAll && (
         <Button

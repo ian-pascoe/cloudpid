@@ -7,6 +7,7 @@ import type { ThreadMessageLike } from "@assistant-ui/react";
 import {
   AttachedPage,
   type SessionView,
+  ShownReviewAnnotation,
   type TranscriptMessage,
   type TranscriptPart,
 } from "@cloudpid/protocol";
@@ -182,7 +183,7 @@ export type ShownSkill = typeof ShownSkill.Type;
 
 const decodeSkills = Schema.decodeUnknownOption(Schema.Array(ShownSkill));
 
-/** What a message's metadata keeps for this app: a notice's `title`, a user message's `skills`. */
+/** What a message's metadata keeps for this app: a notice's `title`, a user message's `skills` and `review`. */
 type MessageCustom = NonNullable<NonNullable<ThreadMessageLike["metadata"]>["custom"]>;
 
 /** The Skills a user message's metadata keeps; none when it has none. */
@@ -194,6 +195,12 @@ const decodePages = Schema.decodeUnknownOption(Schema.Array(AttachedPage));
 /** The pages attached to a user message, as its metadata keeps them; none when it has none. */
 export const shownPages = (custom: MessageCustom | undefined): readonly AttachedPage[] =>
   Option.getOrElse(decodePages(custom?.["pages"]), () => []);
+
+const decodeReview = Schema.decodeUnknownOption(Schema.Array(ShownReviewAnnotation));
+
+/** The Annotations of a Review a user message's metadata keeps; none for a message that is not one. */
+export const shownReview = (custom: MessageCustom | undefined): readonly ShownReviewAnnotation[] =>
+  Option.getOrElse(decodeReview(custom?.["review"]), () => []);
 
 /** A turn followed by a user message cannot change, so its message is made once and handed out again. */
 const finishedTurn = new WeakMap<
@@ -219,17 +226,20 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
       createdAt: dateOf(message.timestamp),
     };
 
-    // The Skills the Session expanded into it show under the typed text, each as the block the model got, and the pages
-    // attached to it as chips.
+    // The Skills the Session expanded into it show under the typed text, each as the block the model got, the pages
+    // attached to it as chips, and a Review's Annotations as chips under its summary, each opening on the code it quoted.
     const skills: ShownSkill[] = (message.skills ?? []).map(({ name, text }) => ({ name, text }));
     const pages = message.pages ?? [];
+    const review = message.review ?? [];
 
-    if (skills.length > 0 || pages.length > 0) {
+    if (skills.length > 0 || pages.length > 0 || review.length > 0) {
       const custom: MessageCustom = {};
 
       if (skills.length > 0) custom["skills"] = skills;
 
       if (pages.length > 0) custom["pages"] = pages.map((page) => ({ ...page }));
+
+      if (review.length > 0) custom["review"] = review.map((annotation) => ({ ...annotation }));
 
       made = { ...made, metadata: { custom } };
     }

@@ -11,8 +11,17 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import { diffDrafts } from "../review/drafts.ts";
+import { editorAtom, type EditorState } from "../review/editor.ts";
 import { appRuntime } from "../runtime.ts";
-import { changesAtom, sessionClientAtom } from "../session/atoms.ts";
+import { annotationsAtom, changesAtom, sessionClientAtom } from "../session/atoms.ts";
+import {
+  type Annotated,
+  type AnnotatedItem,
+  annotatedItems,
+  paneAnchor,
+  paneDrafts,
+} from "./annotated-items.ts";
 import { itemsOf, type Items } from "./items.ts";
 import { fileLoader, type Loads, type WantedFile } from "./loader.ts";
 import { filesNear, type PlacedFile, type View } from "./loading.ts";
@@ -64,6 +73,10 @@ export interface ViewAtoms {
   readonly geometry: Atom.Writable<Geometry | null, Geometry | null>;
   readonly loads: Atom.Atom<Loads>;
   readonly items: Atom.Atom<readonly CodeViewDiffItem<undefined>[]>;
+  /** The scroll's editor of drafts (`AnnotationEditor`): one for all its files. */
+  readonly editor: Atom.Writable<EditorState>;
+  /** The items with the drafts on each file, and the editor of a new one where it is open. */
+  readonly annotated: Atom.Atom<readonly AnnotatedItem[]>;
   /** Mounted while the scroll is: hands the files wanted to the loader as they change. */
   readonly driving: Atom.Atom<AsyncResult.AsyncResult<void>>;
 }
@@ -157,7 +170,41 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
     return get.result(held).pipe(Effect.flatMap(({ loader }) => loader.want(now)));
   });
 
-  return { pool, geometry, loads, items, driving };
+  const editor = editorAtom();
+
+  const drafting = paneDrafts(changes);
+
+  const annotatedById = Atom.make((get): Annotated => {
+    const drafts = get(annotationsAtom(changes.sessionId));
+    const repos = get(changesAtom(changes))?.repos ?? [];
+    const open = get(editor);
+    const byId = new Map(get(files).map((file) => [file.id, file]));
+
+    return annotatedItems(
+      get(items),
+      (id) => {
+        const file = byId.get(id);
+
+        if (file === undefined || !drafting) return [];
+
+        return diffDrafts(drafts, paneAnchor(file, repos), open, id).lineAnnotations;
+      },
+      Option.getOrElse(get.self<Annotated>(), (): Annotated => new Map()),
+    );
+  });
+
+  const annotated = Atom.make((get) => {
+    const next = [...get(annotatedById).values()].map((made) => made.item);
+    const before = Option.getOrUndefined(get.self<readonly AnnotatedItem[]>());
+
+    return before !== undefined &&
+      before.length === next.length &&
+      before.every((item, index) => item === next[index])
+      ? before
+      : next;
+  });
+
+  return { pool, geometry, loads, items, editor, annotated, driving };
 };
 
 /** The atoms of the Diff pane's scroll mounted here; its provider takes the Pane's atoms. */

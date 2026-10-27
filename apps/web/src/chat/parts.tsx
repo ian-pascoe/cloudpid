@@ -252,7 +252,11 @@ const NestedCalls = ({
                       </summary>
                       {open && (
                         <div className="mt-1.5 mb-1 ml-5.5">
-                          <CallDiffBody diff={diff} path={path} />
+                          <CallDiffBody
+                            diff={diff}
+                            path={path}
+                            callRef={{ callId: parentId, nested: String(call.id), tool: call.name }}
+                          />
                         </div>
                       )}
                     </>
@@ -398,7 +402,14 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
         if (diff === undefined) return call;
 
         // Mounted only while the card is open: the diff is drawn when the owner looks at it.
-        return open ? <CallDiffBody diff={diff} path={path} call={call} /> : null;
+        return open ? (
+          <CallDiffBody
+            diff={diff}
+            path={path}
+            call={call}
+            callRef={{ callId: toolCallId, tool: toolName }}
+          />
+        ) : null;
       }}
     </Disclosure>
   );

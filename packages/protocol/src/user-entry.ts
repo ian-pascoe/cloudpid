@@ -6,6 +6,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AttachedPage } from "./attached-pages.ts";
+import { ReviewData } from "./review.ts";
 
 /** The kind of an owner's message the Session expanded. */
 export const USER_ENTRY_KIND = "cloudpid.user";
@@ -17,13 +18,15 @@ export type ExpandedSkill = typeof ExpandedSkill.Type;
 
 /**
  * The data of a `cloudpid.user` entry: the text the owner typed (`display`, empty when they typed none), the Skills
- * expanded into the model's message, and the pages attached to it (`pages`, what the Session read of them; the model
- * got them as a block of page content, which the transcript shows as chips instead).
+ * expanded into the model's message, the pages attached to it (`pages`, what the Session read of them; the model
+ * got them as a block of page content, which the transcript shows as chips instead), and for a Review, the Annotations
+ * it sent (`review`), whose Markdown ends the model message's first text, after the summary.
  */
 export const UserEntryData = Schema.Struct({
   display: Schema.String,
   skills: Schema.Array(ExpandedSkill),
   pages: AttachedPage.pipe(Schema.Array, Schema.optionalKey),
+  review: Schema.optionalKey(ReviewData),
 });
 
 export type UserEntryData = typeof UserEntryData.Type;

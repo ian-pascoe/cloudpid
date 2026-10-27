@@ -3,6 +3,7 @@
 
 import {
   sessionSocketPath,
+  type AnnotationDraft,
   type BrowserHandoffRequest,
   type SecretKeep,
   type TodoTask,
@@ -16,6 +17,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { replying } from "../calls.ts";
 import { appRuntime } from "../runtime.ts";
 import type { ConversationKey } from "./conversation-key.ts";
 import { make } from "./client.ts";
@@ -85,6 +87,12 @@ export const secretLifetimeMinutesAtom = slice((state) => state.secretLifetimeMi
 
 /** The Agent changes waiting for the owner's Approval. */
 export const approvalRequestsAtom = slice((state) => state.approvalRequests);
+
+/** The Session's draft Annotations, oldest first. */
+export const annotationsAtom = slice((state) => state.annotations);
+
+/** The active Session branch's conversation, which the root view shows; null until the Session says. */
+export const activeBranchAtom = slice((state) => state.activeBranch);
 
 const NO_HANDOFFS: readonly BrowserHandoffRequest[] = [];
 
@@ -352,6 +360,30 @@ export const answerApprovalAtom = Atom.family((sessionId: string) =>
       get
         .result(sessionClientAtom(sessionId))
         .pipe(Effect.flatMap((client) => client.answerApproval(request, approve, reason))),
+    { concurrent: true },
+  ),
+);
+
+/** Save a draft Annotation of Session `sessionId`, new or edited; each call hears how its own save ended. */
+export const saveAnnotationAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    replying((annotation: AnnotationDraft, get: Atom.FnContext) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.saveAnnotation(annotation))),
+    ),
+    { concurrent: true },
+  ),
+);
+
+/** Delete a draft Annotation of Session `sessionId`, by its ID. */
+export const deleteAnnotationAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    replying((annotationId: string, get: Atom.FnContext) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.deleteAnnotation(annotationId))),
+    ),
     { concurrent: true },
   ),
 );

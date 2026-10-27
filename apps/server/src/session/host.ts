@@ -45,10 +45,14 @@ import {
   type AttachedPage,
   clampPage,
   pageBlock,
+  type ReviewData,
+  reviewMessage,
   UPLOADS_ROOT,
   USER_ENTRY_KIND,
+  type UserEntryData,
   userEntryData,
 } from "@cloudpid/protocol";
+import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, Usage } from "@earendil-works/pi-ai";
 import { limitEventImages, SNAPSHOT_IMAGES } from "@cloudpid/extensions/browser";
@@ -301,6 +305,11 @@ export type Prompt = {
   readonly attachPages?: Effect.Effect<ReadonlyArray<AttachedPage>, SessionError>;
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
+  /**
+   * A Review's Markdown and what its entry keeps (`reviews.ts`): the input is its summary, and the model gets the
+   * Markdown after it.
+   */
+  readonly review?: { readonly markdown: string; readonly data: ReviewData };
 };
 
 /** One of the Session's Slash commands, as the owner typed it. */
@@ -478,6 +487,13 @@ export type SessionHostService = {
    * conversation without an environment, or whose environment cannot list files, has none; a listing that fails fails.
    */
   readonly files: (search: FileSearch) => Effect.Effect<FileMatches, SessionError>;
+  /**
+   * The directory the active branch, or the conversation `conversationId` names, works in: where the paths its tools
+   * are given resolve. Undefined for a Session without an environment.
+   */
+  readonly directory: (
+    conversationId?: ConversationId,
+  ) => Effect.Effect<string | undefined, SessionError>;
   /**
    * A page of the History of the active branch, or of the conversation `conversationId` names, before entry
    * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
@@ -1282,7 +1298,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         );
 
   /**
-   * What the owner typed, when `input` has pages attached: its first text part, unless that is the Attachments' paths
+   * What the owner typed, when `input` has pages attached or is a Review's summary: its first text part, unless that is the Attachments' paths
    * (they are a part of their own and come after the typed text, which is left out when empty).
    */
   const typedBeside = (input: UserInput): string => {
@@ -1314,16 +1330,55 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     return {
       ...draft,
       content: [...parts.slice(0, at), block, ...parts.slice(at)],
-      entry: {
-        kind: USER_ENTRY_KIND,
-        data: {
-          display: data?.display ?? typedBeside(input),
-          skills: [...(data?.skills ?? [])],
-          pages: Arr.map(pages, (page) => clampPage(page)),
-        },
-      },
+      // A Review's Annotations stay beside the pages.
+      entry: ownerEntry({
+        display: data?.display ?? typedBeside(input),
+        skills: data?.skills ?? [],
+        pages: Arr.map(pages, (page) => clampPage(page)),
+        review: data?.review,
+      }),
     };
   };
+
+  /** A Review's data as the entry stores it. */
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a Review's data is strings, numbers, and arrays and objects of them, as its Schema says: JSON, only typed read-only.
+  const reviewJson = (data: ReviewData): JsonValue => data as unknown as JsonValue;
+
+  /** What a `cloudpid.user` entry stores (`UserEntryData`), as JSON. */
+  type OwnerEntryData = {
+    display: string;
+    skills: Array<UserEntryData["skills"][number]>;
+    pages?: Array<AttachedPage>;
+    review?: JsonValue;
+  };
+
+  /**
+   * The `cloudpid.user` entry of an owner's message: what they typed, the Skills expanded into it, and the pages it
+   * attached and the Review it sends, when it does.
+   */
+  const ownerEntry = (kept: {
+    readonly display: string;
+    readonly skills: UserEntryData["skills"];
+    readonly pages?: ReadonlyArray<AttachedPage> | undefined;
+    readonly review?: ReviewData | undefined;
+  }) => {
+    const data: OwnerEntryData = { display: kept.display, skills: [...kept.skills] };
+
+    if (kept.pages !== undefined) data.pages = [...kept.pages];
+
+    if (kept.review !== undefined) data.review = reviewJson(kept.review);
+
+    return { kind: USER_ENTRY_KIND, data };
+  };
+
+  /**
+   * `input` with its typed text replaced by `content`; a text block is made for it, first, when the owner typed none (the
+   * Attachments' paths, a part of their own, are kept).
+   */
+  const withReviewText = (input: UserInput, content: string): UserInput =>
+    Predicate.isString(input) || typedBeside(input) !== ""
+      ? withText(input, content)
+      : [{ type: "text" as const, text: content }, ...input];
 
   /** `input` with its typed text replaced by `content`. */
   const withText = (input: UserInput, content: string): UserInput => {
@@ -1343,9 +1398,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * goes as typed.
    */
   const expandedDraft = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> => {
-    const { conversationId, input, attachPages: _attachPages, ...rest } = prompt;
+    const { conversationId, input, review, attachPages: _attachPages, ...rest } = prompt;
     const typed = typedText(input);
-    const plain: InputSubmissionDraft = { type: "input", content: input, ...rest };
+
+    // A Review is the owner's message too: the summary as typed (or expanded), then its Markdown; its entry keeps both.
+    const reviewed = (content: string, skills: UserEntryData["skills"]): InputSubmissionDraft =>
+      review === undefined
+        ? { type: "input", content: input, ...rest }
+        : {
+            type: "input",
+            content: withReviewText(input, reviewMessage(content, review.markdown)),
+            ...rest,
+            entry: ownerEntry({ display: typedBeside(input), skills, review: review.data }),
+          };
+
+    const plain = reviewed(typedBeside(input), []);
 
     if (typed === undefined || !mayExpand(typed)) return Effect.succeed(plain);
 
@@ -1396,18 +1463,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     // A conversation that is neither the root nor a subagent fails here, as the submit would.
     return addressed(conversationId).pipe(
       Effect.flatMap(expansion),
-      Effect.map((expanded): InputSubmissionDraft =>
-        expanded === undefined
-          ? plain
-          : {
-              ...plain,
-              content: withText(input, expanded.content),
-              entry: {
-                kind: USER_ENTRY_KIND,
-                data: { display: expanded.data.display, skills: [...expanded.data.skills] },
-              },
-            },
-      ),
+      Effect.map((expanded): InputSubmissionDraft => {
+        if (expanded === undefined) return plain;
+
+        if (review !== undefined) return reviewed(expanded.content, expanded.data.skills);
+
+        return {
+          ...plain,
+          content: withText(input, expanded.content),
+          entry: ownerEntry(expanded.data),
+        };
+      }),
     );
   };
 
@@ -2186,6 +2252,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     todos,
     catalog: (conversationId) => addressed(conversationId).pipe(Effect.flatMap(catalogFor)),
     command: runCommand,
+    directory: (conversationId) =>
+      addressed(conversationId).pipe(
+        Effect.flatMap((conversation) => environment(conversation, { lookup: true })),
+        Effect.map((env) => env?.cwd),
+      ),
     files: ({ query, conversationId }) =>
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) => filesFor(conversation, query)),

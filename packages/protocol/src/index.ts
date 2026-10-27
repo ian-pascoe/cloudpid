@@ -1,4 +1,6 @@
 // The client ↔ server contract (`docs/spec.md` → Client and protocol), shared by the server and the web app.
+export * from "./annotations.ts";
+
 export * from "./attached-pages.ts";
 
 export * from "./attachments.ts";
@@ -16,6 +18,8 @@ export * from "./ranking.ts";
 export * from "./registry.ts";
 
 export * from "./repo.ts";
+
+export * from "./review.ts";
 
 export * from "./session.ts";
 

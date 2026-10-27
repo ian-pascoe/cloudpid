@@ -39,6 +39,8 @@ import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/ex
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
 import type {
+  Annotation,
+  AnnotationDraft,
   Catalog,
   CommandOutcome,
   ConversationId,
@@ -109,7 +111,19 @@ import type { NavigateRequest } from "./branches.ts";
 import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
-import { SessionSockets, sessionSocketsLayer, type SessionSocketsService } from "./sockets.ts";
+import {
+  annotationsMessage,
+  send,
+  SessionSockets,
+  sessionSocketsLayer,
+  type SessionSocketsService,
+} from "./sockets.ts";
+import {
+  AnnotationStore,
+  annotationStoreLayer,
+  type AnnotationStoreService,
+} from "./annotations.ts";
+import { SessionReviews, sessionReviewsLayer, type SessionReviewsService } from "./reviews.ts";
 import {
   type ChangesSource,
   SessionChanges,
@@ -144,6 +158,8 @@ export type ChangesFixture = {
   readonly delayMs?: number;
   readonly fails?: boolean;
   readonly started?: boolean;
+  /** Each file's working text, by `repo/path`; one not named reads as its own name. */
+  readonly files?: Readonly<Record<string, string>>;
 };
 
 /** A tool to call, so a Run has a tool call in its transcript: `echo` answers `echo: <text>`. */
@@ -503,8 +519,16 @@ export class TestSession extends DurableObject {
   #host!: SessionHostService;
   #sockets!: SessionSocketsService;
   #changes!: SessionChangesService;
+  #annotations!: AnnotationStoreService;
+  #reviews!: SessionReviewsService;
   #runtime!: ManagedRuntime.ManagedRuntime<
-    SessionHost | SessionSockets | SessionChanges | Harness | Secrets,
+    | SessionHost
+    | SessionSockets
+    | SessionChanges
+    | Harness
+    | Secrets
+    | AnnotationStore
+    | SessionReviews,
     unknown
   >;
   /** Resolves when this instance's model request starts and hangs. */
@@ -538,6 +562,7 @@ export class TestSession extends DurableObject {
     void ctx.blockConcurrencyWhile(async () => {
       this.#runtime = ManagedRuntime.make(
         sessionSocketsLayer(ctx).pipe(
+          Layer.provideMerge(sessionReviewsLayer(ctx.storage.kv)),
           Layer.provideMerge(
             sessionHostLayer({
               storage: ctx.storage,
@@ -663,6 +688,19 @@ export class TestSession extends DurableObject {
             ),
           ),
           Layer.provideMerge(
+            annotationStoreLayer({
+              storage: ctx.storage.kv,
+              announce: (drafts) =>
+                Effect.forEach(
+                  ctx.getWebSockets(),
+                  (socket) => send(socket, annotationsMessage(drafts)),
+                  {
+                    discard: true,
+                  },
+                ),
+            }),
+          ),
+          Layer.provideMerge(
             sessionApprovalsLayer({
               storage: ctx.storage.kv,
               sockets: ctx,
@@ -701,7 +739,24 @@ export class TestSession extends DurableObject {
       this.#host = Context.get(context, SessionHost);
       this.#sockets = Context.get(context, SessionSockets);
       this.#changes = Context.get(context, SessionChanges);
+      this.#annotations = Context.get(context, AnnotationStore);
+      this.#reviews = Context.get(context, SessionReviews);
     });
+  }
+
+  /** The draft Annotations as the Session keeps them. */
+  annotations(): Promise<ReadonlyArray<Annotation>> {
+    return Effect.runPromise(this.#annotations.list);
+  }
+
+  /** Save `draft` as a client's `annotation_save` does, without telling the clients more than it would. */
+  saveAnnotation(draft: AnnotationDraft): Promise<void> {
+    return this.#runtime.runPromise(this.#annotations.save(draft));
+  }
+
+  /** A subagent was deleted: drop the drafts addressed to it, as the Session DO does after `deleteSubagent`. */
+  pruneAnnotations(): Promise<void> {
+    return Effect.runPromise(this.#reviews.prune);
   }
 
   /**
@@ -735,7 +790,10 @@ export class TestSession extends DurableObject {
       file: async (query) => {
         if (query.path === "missing") throw new Error("No such file in the Workspace's repos");
 
-        return { old: null, new: { kind: "text", text: `${query.repo}/${query.path}\n` } };
+        const key = `${query.repo}/${query.path}`;
+        const text = kv.get<ChangesFixture>(CHANGES_FIXTURE_KEY)?.files?.[key] ?? `${key}\n`;
+
+        return { old: null, new: { kind: "text", text } };
       },
     };
   }

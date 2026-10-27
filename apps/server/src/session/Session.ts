@@ -74,8 +74,10 @@ import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
-import { SessionSockets, sessionSocketsLayer } from "./sockets.ts";
+import { annotationsMessage, send, SessionSockets, sessionSocketsLayer } from "./sockets.ts";
+import { AnnotationStore, annotationStoreLayer } from "./annotations.ts";
 import { changesRefreshingTools, SessionChanges, sessionChangesLayer } from "./changes.ts";
+import { annotationsPruningTools, SessionReviews, sessionReviewsLayer } from "./reviews.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
 import {
@@ -395,6 +397,17 @@ export const SessionLive = Session.make(
           notify: notifyOwner,
         });
 
+        // The owner's draft Annotations: kept here, and sent to every client whenever they change.
+        const sessionAnnotations = annotationStoreLayer({
+          storage: kv,
+          announce: (drafts) =>
+            Effect.forEach(
+              state.raw.getWebSockets(),
+              (socket) => send(socket, annotationsMessage(drafts)),
+              { discard: true },
+            ),
+        });
+
         // One sandbox object per Session, named by the Session's ID, in the sandbox Worker's own isolate.
         const sandbox = remoteSandbox(
           // SAFETY: the Server Worker binds the sandbox DO namespace as `CODEMODE_SANDBOX` (`worker.ts`), a raw namespace.
@@ -543,6 +556,8 @@ export const SessionLive = Session.make(
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
           sessionSocketsLayer(state.raw).pipe(
+            // Reviews, which the sockets send, place through the host and check against the Changes.
+            Layer.provideMerge(sessionReviewsLayer(kv)),
             Layer.provideMerge(
               sessionHostLayer({
                 storage: state.raw.storage,
@@ -574,16 +589,21 @@ export const SessionLive = Session.make(
                 extensions: sessionExtensions.pipe(
                   // After every other extension, so each of their tools is named and its call is a span, and the
                   // Changes are listed again after each writing call.
+                  // A deleted subagent's drafts are deleted with it.
                   Effect.flatMap((installed) =>
-                    Effect.map(Effect.service(SessionChanges), (changes) => {
-                      const tools = Arr.flatMap(installed, (extension) => extension.tools ?? []);
+                    Effect.map(
+                      Effect.all([Effect.service(SessionChanges), Effect.service(AnnotationStore)]),
+                      ([changes, annotations]) => {
+                        const tools = Arr.flatMap(installed, (extension) => extension.tools ?? []);
 
-                      return [
-                        ...installed,
-                        tracingTools(telemetry.context, tools),
-                        changesRefreshingTools(tools, changes),
-                      ];
-                    }),
+                        return [
+                          ...installed,
+                          tracingTools(telemetry.context, tools),
+                          changesRefreshingTools(tools, changes),
+                          annotationsPruningTools(tools, annotations),
+                        ];
+                      },
+                    ),
                   ),
                   Effect.provideService(WebConfig, web),
                   Effect.provideService(WorkspaceFiles, workspace.files),
@@ -635,6 +655,7 @@ export const SessionLive = Session.make(
             ),
             Layer.provideMerge(sessionSecrets),
             Layer.provideMerge(sessionChanges),
+            Layer.provideMerge(sessionAnnotations),
             Layer.provideMerge(sessionApprovals),
             Layer.provideMerge(sessionBrowserHandoffs),
             Layer.provideMerge(sessionBrowser),
@@ -653,6 +674,7 @@ export const SessionLive = Session.make(
         const host = Context.get(services, SessionHost);
         const sockets = Context.get(services, SessionSockets);
         const held = Context.get(services, Secrets);
+        const reviews = Context.get(services, SessionReviews);
 
         return {
           // A failed alarm is retried by the runtime. Expired Secrets are deleted first.
@@ -700,7 +722,11 @@ export const SessionLive = Session.make(
           deleteSubagent: ({ agent, workspace }) =>
             invoked(
               "session.subagent.delete",
-              host.deleteSubagent(agent, workspace).pipe(Effect.map((deletion) => deletion.kept)),
+              host.deleteSubagent(agent, workspace).pipe(
+                // The drafts addressed to it go with it.
+                Effect.tap(() => reviews.prune),
+                Effect.map((deletion) => deletion.kept),
+              ),
             ),
           destroy: () =>
             invoked(
