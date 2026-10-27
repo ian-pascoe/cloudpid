@@ -128,6 +128,7 @@ import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
 import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file-search.ts";
+import { cropParts, fitCrops, type ReviewCrop } from "./crops.ts";
 import { inputProblem, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
@@ -315,9 +316,13 @@ export type Prompt = {
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
   /**
    * A Review's Markdown and what its entry keeps (`reviews.ts`): the input is its summary, and the model gets the
-   * Markdown after it.
+   * Markdown after it, and the page Annotations' `crops` the message has room for after its other parts (`crops.ts`).
    */
-  readonly review?: { readonly markdown: string; readonly data: ReviewData };
+  readonly review?: {
+    readonly markdown: string;
+    readonly data: ReviewData;
+    readonly crops?: ReadonlyArray<ReviewCrop>;
+  };
 };
 
 /** One of the Session's Slash commands, as the owner typed it. */
@@ -1517,7 +1522,46 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         ),
       ),
+      Effect.map((draft) => withCrops(draft, prompt.review?.crops ?? [])),
     );
+
+  /**
+   * `draft` (a Review's, with its pages) with the crops of its page Annotations it has room for (`fitCrops`) as its last
+   * parts, each after the line that names its Annotation, and its entry's `review` naming them, for the transcript to
+   * show them on the Review's chips rather than in the message.
+   */
+  const withCrops = (
+    draft: InputSubmissionDraft,
+    crops: ReadonlyArray<ReviewCrop>,
+  ): InputSubmissionDraft => {
+    const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+
+    if (crops.length === 0 || data?.review === undefined) return draft;
+
+    const parts = Predicate.isString(draft.content)
+      ? [{ type: "text" as const, text: draft.content }]
+      : [...draft.content];
+
+    const images = Arr.reduce(parts, 0, (sum, part) =>
+      part.type === "image" ? sum + part.data.length : sum,
+    );
+
+    const fitted = fitCrops(crops, {
+      bytes: storedBytes({ content: draft.content, entry: draft.entry }),
+      images,
+    });
+
+    if (fitted.length === 0) return draft;
+
+    return {
+      ...draft,
+      content: [...parts, ...Arr.flatMap(fitted, cropParts)],
+      entry: ownerEntry({
+        ...data,
+        review: { ...data.review, crops: Arr.map(fitted, ({ number }) => number) },
+      }),
+    };
+  };
 
   /**
    * The pages `prompt` attaches, read now. Not read for a `requestId` the conversation has already admitted: that

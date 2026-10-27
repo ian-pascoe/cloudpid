@@ -33,8 +33,11 @@ export const MAX_PULL_TITLE = 512;
 /** The longest path an Annotation names. */
 export const MAX_ANNOTATION_PATH = 4_096;
 
-/** The longest CSS selector a page Annotation finds its element by, in UTF-16 code units. */
-export const MAX_ANNOTATION_SELECTOR = 1_024;
+/**
+ * The longest CSS selector a page Annotation finds its element by, in UTF-16 code units (and in UTF-8 bytes as the Review
+ * writes it, escaped): with the URL and the quote at their limits, 100 page drafts still fit one Review.
+ */
+export const MAX_ANNOTATION_SELECTOR = 256;
 
 /** The longest tag name a page Annotation keeps of its element. */
 export const MAX_ANNOTATION_TAG = 64;
@@ -351,7 +354,7 @@ export const cutQuote = (lines: readonly string[], more = 0, clipped = false): Q
  * `"` takes six bytes), so a page's quote takes no more of a Review than a diff's at the limits.
  */
 export const cutPageQuote = (lines: readonly string[], more = 0, clipped = false): Quote =>
-  cutMeasured(lines, more, clipped, (text) => bytesOf(escapePageText(text)));
+  cutMeasured(lines, more, clipped, escapedBytes);
 
 const cutMeasured = (
   lines: readonly string[],
@@ -450,12 +453,22 @@ export const sameSource = (a: AnnotationSource, b: AnnotationSource): boolean =>
   }
 };
 
-/** A page's text on one line, without control characters, cut to `max` code points. */
-const pageLine = (text: string, max: number): string => oneLine(boundedText(text, max));
+/** The UTF-8 bytes of `text` as the Review writes it, escaped. */
+const escapedBytes: Measure = (text) => bytesOf(escapePageText(text));
+
+/**
+ * A page's text on one line, without control characters, cut to `max` code points and to `max` UTF-8 bytes as the
+ * Review writes it, escaped.
+ */
+const pageLine = (text: string, max: number): string => {
+  const line = oneLine(boundedText(text, max));
+
+  return escapedBytes(line) <= max ? line : clipLine(line, max, escapedBytes);
+};
 
 /**
  * `source` with what the page supplied (its URL, the element's selector and tag) on one line, without control or
- * bidirectional characters, and cut to its bounds; the URL without its fragment.
+ * bidirectional characters, and cut to its bounds, escaped as the Review writes them; the URL without its fragment.
  */
 export const clampPageSource = (source: PageSource): PageSource => {
   const { element, ...rest } = source;

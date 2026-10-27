@@ -2,17 +2,29 @@
 // the composer's own `submit` (with `annotations`, the drafts' IDs). The Session takes the drafts, refuses the send when
 // one is gone, checks those on the Changes a last time, renders the Markdown the model gets after the summary, and places
 // the message; the drafts are deleted once it is taken, and come back when Stop withdraws it before it was placed. It
-// also checks the drafts on the Changes after each listing, and drops the drafts addressed to a deleted subagent.
+// also checks the drafts on the Changes after each listing, and drops the drafts addressed to a deleted subagent. A
+// page's drafts are never checked (the Browser Pane finds their elements), and what the page supplied of them is
+// redacted of held Secrets when they are saved and again when they are sent, as an Attached page is.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- plain storage reads under Effect.sync, and pi-durable's Promise calls.
 import type {
   Annotation,
   AnnotationDraft,
   ChangeFile,
   Comparison,
+  DiffAnnotation,
+  DiffAnnotationDraft,
+  PageAnnotationDraft,
   RepoChanges,
 } from "@cloudpid/protocol";
-import { renderReview, resolvePath, WORKSPACE_ROOT } from "@cloudpid/protocol";
+import {
+  isDiffAnnotation,
+  isPageAnnotation,
+  renderReview,
+  resolvePath,
+  WORKSPACE_ROOT,
+} from "@cloudpid/protocol";
 import { Harness } from "@cloudpid/effect-durable";
+import { Secrets } from "@cloudpid/extensions/secrets";
 import { SubagentsDoc } from "@cloudpid/extensions/subagents";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -79,7 +91,7 @@ type Located =
   | {
       readonly kind: "file";
       readonly read: Effect.Effect<ChangeFile, SessionError>;
-      readonly after: (before: Annotation, result: QuoteCheck) => Annotation;
+      readonly after: (before: DiffAnnotation, result: QuoteCheck) => DiffAnnotation;
     };
 
 /** A Review as `submit` sends it: the summary, and the IDs of the drafts it sends. */
@@ -118,13 +130,28 @@ const addressedToLive =
   (draft: Annotation): boolean =>
     draft.conversationId === undefined || conversations[String(draft.conversationId)] !== undefined;
 
+/**
+ * `draft` with what its page supplied (the URL, the element's selector and tag, its visible text) redacted by `redact`;
+ * its crop is pixels, which cannot be, and the owner's text is the owner's.
+ */
+export const redactedPage = <A extends PageAnnotationDraft>(
+  draft: A,
+  redact: <B>(value: B) => B,
+): A => ({ ...draft, source: redact(draft.source), quote: redact(draft.quote) });
+
 /** The Session's Reviews over its storage; build it once per instance. */
 export const sessionReviewsLayer = (
   storage: AnnotationStorage,
 ): Layer.Layer<
   SessionReviews,
   never,
-  SessionHost | SessionChanges | SessionComparisons | SessionRuns | AnnotationStore | Harness
+  | SessionHost
+  | SessionChanges
+  | SessionComparisons
+  | SessionRuns
+  | AnnotationStore
+  | Harness
+  | Secrets
 > =>
   Layer.effect(
     SessionReviews,
@@ -135,6 +162,7 @@ export const sessionReviewsLayer = (
       const runs = yield* SessionRuns;
       const store = yield* AnnotationStore;
       const harness = yield* Harness;
+      const secrets = yield* Secrets;
       const scope = yield* Effect.scope;
       const run = Effect.runForkWith(yield* Effect.context<never>());
       // One check at a time, the last one before a send included, so two never write over each other.
@@ -153,11 +181,11 @@ export const sessionReviewsLayer = (
        * are. Each draft it changes is answered, before and after.
        */
       const checkFiles = (
-        drafts: ReadonlyArray<Annotation>,
-        groupOf: (draft: Annotation) => string | undefined,
-        locate: (first: Annotation) => Located,
+        drafts: ReadonlyArray<DiffAnnotation>,
+        groupOf: (draft: DiffAnnotation) => string | undefined,
+        locate: (first: DiffAnnotation) => Located,
       ) => {
-        const files = new Map<string, Annotation[]>();
+        const files = new Map<string, DiffAnnotation[]>();
 
         for (const draft of drafts) {
           const key = groupOf(draft);
@@ -207,7 +235,10 @@ export const sessionReviewsLayer = (
       };
 
       /** What a check finds of `drafts` (those on the Changes) against `repos`: each one it changes, before and after. */
-      const findings = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) =>
+      const findings = (
+        drafts: ReadonlyArray<DiffAnnotation>,
+        repos: ReadonlyArray<RepoChanges>,
+      ) =>
         checkFiles(
           drafts,
           (draft) =>
@@ -236,7 +267,10 @@ export const sessionReviewsLayer = (
        * against another pair of commits, each read once in the new pair's file. They move to the pair when their quote holds,
        * and are marked when it does not; a file the Comparison no longer lists marks them gone.
        */
-      const againstComparison = (comparison: Comparison, onRepo: ReadonlyArray<Annotation>) => {
+      const againstComparison = (
+        comparison: Comparison,
+        onRepo: ReadonlyArray<DiffAnnotation>,
+      ) => {
         // A list marked `behind` is the last one made, for a head the repo has left: it says nothing of the new one. Nor
         // does one of a pull request that is closed or merged: it is the last result kept, marked.
         if (
@@ -290,10 +324,10 @@ export const sessionReviewsLayer = (
        * (made again if the Container runs, else the last one, which changes nothing); never starting the Container.
        */
       const branchFindings = (
-        drafts: ReadonlyArray<Annotation>,
+        drafts: ReadonlyArray<DiffAnnotation>,
         repos: ReadonlyArray<RepoChanges>,
       ) => {
-        const byRepo = new Map<string, Annotation[]>();
+        const byRepo = new Map<string, DiffAnnotation[]>();
 
         for (const draft of drafts) {
           if (draft.source.kind !== "branch") continue;
@@ -353,7 +387,7 @@ export const sessionReviewsLayer = (
        * its end takes the end copy's commit, which freezes it: an ended Run's sides never change, so it is not checked again.
        * A repo listed from the Container's git while it is stopped says nothing.
        */
-      const runFindings = (drafts: ReadonlyArray<Annotation>) => {
+      const runFindings = (drafts: ReadonlyArray<DiffAnnotation>) => {
         const open = drafts.filter(
           (draft) => draft.source.kind === "run" && draft.source.end === null,
         );
@@ -421,9 +455,17 @@ export const sessionReviewsLayer = (
         );
       };
 
-      /** Check `drafts` against `repos` and put what was found in place, under the one permit; answer what was found. */
-      const checkAndKeep = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) =>
-        Effect.all([
+      /**
+       * Check `drafts` (those on a diff) against `repos` and put what was found in place, under the one permit; answer
+       * what was found.
+       */
+      const checkAndKeep = (
+        all: ReadonlyArray<Annotation>,
+        repos: ReadonlyArray<RepoChanges>,
+      ) => {
+        const drafts = all.filter(isDiffAnnotation);
+
+        return Effect.all([
           findings(drafts, repos),
           branchFindings(drafts, repos),
           runFindings(drafts),
@@ -432,6 +474,7 @@ export const sessionReviewsLayer = (
           Effect.tap((found) => store.checked(found)),
           checking,
         );
+      };
 
       /**
        * A Comparison was made for a client: check the drafts on its repo's branch against it, or on its pull request (the
@@ -442,7 +485,7 @@ export const sessionReviewsLayer = (
           Effect.flatMap((drafts) =>
             againstComparison(
               comparison,
-              drafts.filter(({ source }) =>
+              drafts.filter(isDiffAnnotation).filter(({ source }) =>
                 comparison.pull === undefined
                   ? source.kind === "branch" && source.repo === comparison.repo
                   : source.kind === "pull" &&
@@ -574,13 +617,20 @@ export const sessionReviewsLayer = (
           }
 
           // The last check, against the files as they are now (and This branch's Comparison, as the Workspace has it).
-          const onChanges = drafts.some((draft) => draft.source.kind !== "call");
+          const onChanges = drafts.some(
+            (draft) => draft.source.kind !== "call" && draft.source.kind !== "page",
+          );
           const listed = onChanges ? yield* changes.fresh : undefined;
           const found = yield* checkAndKeep(drafts, listed?.repos ?? []);
 
-          const final = drafts.map(
-            (draft) => found.find(({ before }) => before.id === draft.id)?.after ?? draft,
-          );
+          // What a page supplied is redacted again of the Secrets held now, before the Review is rendered.
+          yield* secrets.refresh;
+
+          const final = drafts.map((draft): Annotation => {
+            if (isPageAnnotation(draft)) return redactedPage(draft, secrets.redact);
+
+            return found.find(({ before }) => before.id === draft.id)?.after ?? draft;
+          });
 
           // A send that fails after the message is placed leaves the drafts: sent again with its `requestId`, as the
           // composer does, the host finds the first submission rather than placing a second.
@@ -624,6 +674,13 @@ export const sessionReviewsLayer = (
 
       const save = (draft: AnnotationDraft) =>
         Effect.gen(function* () {
+          // What the page supplied is redacted of held Secrets before it is stored or sent to any client.
+          if (isPageAnnotation(draft)) {
+            yield* secrets.refresh;
+
+            return yield* store.save(redactedPage(draft, secrets.redact));
+          }
+
           const { source } = draft;
 
           const relative =
@@ -636,7 +693,7 @@ export const sessionReviewsLayer = (
           // A conversation not yet given a Workspace works at its root, as a Session does at first.
           const cwd = (yield* host.directory(source.conversationId)) ?? WORKSPACE_ROOT;
 
-          const resolved: Types.Mutable<AnnotationDraft> = {
+          const resolved: Types.Mutable<DiffAnnotationDraft> = {
             ...draft,
             path: resolvePath(cwd, draft.path),
           };

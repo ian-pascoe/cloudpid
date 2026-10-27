@@ -69,7 +69,7 @@ export const ReviewData = Schema.Struct({
    * The numbers of the Annotations whose crops the message carries, in order: each is a text part that names it (`cropLabel`)
    * and the image, together the last parts of the message.
    */
-  crops: Schema.optionalKey(Schema.Array(Schema.Int)),
+  crops: Schema.Array(Schema.Int).pipe(Schema.optionalKey),
 });
 
 export type ReviewData = typeof ReviewData.Type;

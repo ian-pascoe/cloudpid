@@ -1,14 +1,19 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain text functions.
 import { describe, expect, it } from "vitest";
 import {
+  clampPageSource,
   cutPageQuote,
   cutQuote,
   type DiffAnnotation,
+  MAX_ANNOTATION_SELECTOR,
+  MAX_ANNOTATION_TAG,
   MAX_QUOTE_BYTES,
   MAX_QUOTE_LINES,
   type PageAnnotation,
+  type PageSource,
   resolvePath,
 } from "./annotations.ts";
+import { MAX_PAGE_URL } from "./live-view.ts";
 import type { ConversationId } from "./conversation-id.ts";
 import { languageOf, PAGE_NOTICE, renderReview, reviewMessage, shownReview } from "./review.ts";
 
@@ -142,6 +147,40 @@ describe("cutPageQuote", () => {
     expect(clipped).toBe(true);
     expect(quote[0]?.length).toBe(Math.floor((MAX_QUOTE_BYTES - 1) / 6));
     expect(cutPageQuote(["Sign in"])).toEqual({ quote: ["Sign in"], more: 0 });
+  });
+});
+
+describe("clampPageSource", () => {
+  const source: PageSource = {
+    kind: "page",
+    url: "https://app.test/a?b=1#c",
+    ownerTabId: "tab-1",
+    element: { selector: "#a > b", tag: "button" },
+    box: { x: 0, y: 0, width: 10, height: 10 },
+    scroll: { x: 0, y: 0 },
+    viewport: { width: 100, height: 100 },
+  };
+
+  it("drops the URL's fragment and puts what the page supplied on one line", () => {
+    expect(
+      clampPageSource({ ...source, element: { selector: "#a\n>\u202E b", tag: "butt\u0000on" } }),
+    ).toEqual({
+      ...source,
+      url: "https://app.test/a?b=1",
+      element: { selector: "#a > b", tag: "button" },
+    });
+  });
+
+  it("cuts the selector, URL and tag to their limits as the Review writes them, escaped", () => {
+    const clamped = clampPageSource({
+      ...source,
+      url: `https://app.test/${"&".repeat(MAX_PAGE_URL)}`,
+      element: { selector: '"'.repeat(MAX_ANNOTATION_SELECTOR), tag: "<".repeat(100) },
+    });
+
+    expect(clamped.element?.selector).toBe('"'.repeat(Math.floor(MAX_ANNOTATION_SELECTOR / 6)));
+    expect(clamped.element?.tag).toBe("<".repeat(Math.floor(MAX_ANNOTATION_TAG / 4)));
+    expect(clamped.url.replaceAll("&", "&amp;").length).toBeLessThanOrEqual(MAX_PAGE_URL);
   });
 });
 
