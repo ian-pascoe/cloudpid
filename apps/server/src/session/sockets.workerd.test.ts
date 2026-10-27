@@ -1114,6 +1114,97 @@ describe("a Changes watch", () => {
       changeLists(await client.until((messages) => changeLists(messages).length === 1, before)),
     ).toEqual([{ type: "changes", repos: [repoChanges("a.ts")], startingContainer: false }]);
   });
+
+  it("watches a conversation's Changes beside the Session's, sharing the listing of their one Workspace and naming the conversation as asked", async () => {
+    const stub = fresh();
+
+    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] } });
+
+    const client = await connect(stub);
+    const root = await client.root();
+    const sent = { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false };
+
+    client.send({ type: "watch_changes", id: "session" });
+    client.send({ type: "watch_changes", id: "conversation", conversationId: root });
+    await client.answer("session");
+    expect(await client.answer("conversation")).toEqual({
+      type: "result",
+      id: "conversation",
+      result: null,
+    });
+
+    const lists = changeLists(
+      await client.until(
+        (messages) =>
+          Arr.some(changeLists(messages), (list) => list.conversationId === root) &&
+          Arr.some(changeLists(messages), (list) => list.conversationId === undefined),
+      ),
+    );
+
+    expect(lists).toEqual(expect.arrayContaining([sent, { ...sent, conversationId: root }]));
+    // The root works in the Session's Workspace: its watch shares the Session's listing, which never runs more than
+    // once at a time (a second watch's ask is folded into one more after it).
+    expect((await changesCalls(stub)).length).toBeLessThanOrEqual(2);
+    expect(await recordedWatches(stub)).toEqual([
+      { watches: [], changes: true, conversationChanges: [root] },
+    ]);
+
+    // A refresh and a file of the conversation's Changes.
+    client.send({ type: "refresh_changes", id: "refresh", conversationId: root });
+    expect(await client.answer("refresh")).toEqual({ type: "result", id: "refresh", result: null });
+    client.send({
+      type: "change_file",
+      id: "file",
+      conversationId: root,
+      repo: "app",
+      path: "a.ts",
+    });
+    expect(await client.answer("file")).toEqual({
+      type: "result",
+      id: "file",
+      result: { old: null, new: { kind: "text", text: "app/a.ts\n" } },
+    });
+
+    // Both watches outlive hibernation.
+    await evictDurableObject(stub);
+
+    const before = client.received.length;
+
+    client.send({ type: "unwatch", id: "wake", conversationId: root });
+    await client.answer("wake");
+    expect(
+      changeLists(await client.until((messages) => changeLists(messages).length >= 2, before)),
+    ).toEqual(expect.arrayContaining([sent, { ...sent, conversationId: root }]));
+
+    client.send({ type: "unwatch_changes", id: "unwatch", conversationId: root });
+    await client.answer("unwatch");
+    expect(await recordedWatches(stub)).toEqual([
+      { watches: [], changes: true, conversationChanges: [] },
+    ]);
+  });
+
+  it("refuses the Changes of a conversation that is not the root or a subagent's", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+    // SAFETY: a number the Session never gave out, to see it refused.
+    const stranger = ((await client.root()) + 40) as ConversationId;
+
+    for (const message of [
+      { type: "watch_changes", id: "watch", conversationId: stranger },
+      { type: "refresh_changes", id: "refresh", conversationId: stranger },
+      { type: "change_file", id: "file", conversationId: stranger, repo: "app", path: "a.ts" },
+    ] as const) {
+      client.send(message);
+      expect(await client.answer(message.id)).toEqual({
+        type: "error",
+        id: message.id,
+        message: `Conversation ${stranger} is not the root or a subagent of this Session`,
+      });
+    }
+
+    // Nothing is watched.
+    expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
+  });
 });
 
 /** The Todo Lists among `messages`, of conversation `conversationId`, in order. */

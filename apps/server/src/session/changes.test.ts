@@ -1,10 +1,21 @@
-// The Session's Changes: one listing for every watcher, and the tool wrap that lists them again after an agent's
-// writes in the Session's own Workspace. The socket side is covered in workerd (`sockets.workerd.test.ts`).
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
+// The Session's Changes: one listing for every watcher of a Workspace, one broadcast per Workspace, and the tool wrap
+// that lists them again after an agent's writes in its Workspace. The socket side is covered in workerd
+// (`sockets.workerd.test.ts`).
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off strictEffectProvide:off
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import type { WorkspaceChanges } from "@cloudpid/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { ChangesBroadcast, type ChangesUpdate, changesRefreshingTools } from "./changes.ts";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Stream from "effect/Stream";
+import {
+  ChangesBroadcast,
+  type ChangesSource,
+  type ChangesUpdate,
+  changesRefreshingTools,
+  SessionChanges,
+  sessionChangesLayer,
+} from "./changes.ts";
 
 const listed = (path: string): WorkspaceChanges => ({
   repos: [
@@ -94,11 +105,87 @@ const api = (conversationId: number, workspace: boolean) =>
     }),
   }) as unknown as ToolExecutionApi;
 
+describe("the Changes of each Workspace", () => {
+  /** A source that lists `name`'s files, counting its listings and the files asked of it. */
+  const source = (name: string, counts: Map<string, number>, asked: string[]): ChangesSource => ({
+    list: async () => {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+
+      return listed(`${name}.ts`);
+    },
+    file: async (query) => {
+      asked.push(`${name}:${query.path}`);
+
+      return { old: null, new: null };
+    },
+  });
+
+  const OTHER_WORKSPACE = { id: "v", branch: "c", object: "ws:v", directory: "/workspace" };
+
+  it("lists a Subagent Workspace apart from the Session's, once for all its watchers", async () => {
+    const counts = new Map<string, number>();
+    const asked: string[] = [];
+
+    const program = Effect.gen(function* () {
+      const changes = yield* SessionChanges;
+
+      /** The first `n` updates a watcher of `workspace` gets, as paths. */
+      const take = (workspace: typeof SUBAGENT_WORKSPACE | undefined, n: number) =>
+        changes.updates(workspace).pipe(
+          Stream.take(n),
+          Stream.map((update) =>
+            update.kind === "changes" ? update.message.repos[0]?.files[0]?.path : update.message,
+          ),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+      const session = yield* take(undefined, 1);
+      const first = yield* take(SUBAGENT_WORKSPACE, 1);
+      const second = yield* take({ ...SUBAGENT_WORKSPACE }, 1);
+      const other = yield* take(OTHER_WORKSPACE, 1);
+
+      const seen = yield* Effect.all([
+        Fiber.join(session),
+        Fiber.join(first),
+        Fiber.join(second),
+        Fiber.join(other),
+      ]);
+
+      yield* changes.file(SUBAGENT_WORKSPACE, { repo: "app", path: "a.ts" });
+      yield* changes.file(undefined, { repo: "app", path: "b.ts" });
+
+      return seen;
+    });
+
+    const seen = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(
+          sessionChangesLayer({
+            session: source("session", counts, asked),
+            subagent: (workspace) => source(workspace.object, counts, asked),
+          }),
+        ),
+      ),
+    );
+
+    expect(seen).toEqual([["session.ts"], ["ws:w.ts"], ["ws:w.ts"], ["ws:v.ts"]]);
+    // The two watchers of one Workspace started a listing each, the second folded into one more after the first.
+    expect(counts.get("ws:w")).toBeLessThanOrEqual(2);
+    expect(counts.get("session")).toBe(1);
+    expect(asked).toEqual(["ws:w:a.ts", "session:b.ts"]);
+  });
+});
+
 describe("the writing tools' wrap", () => {
-  const wrapped = (written: () => void, watched = true) => {
+  const wrapped = (
+    written: (workspace: typeof SUBAGENT_WORKSPACE | undefined) => void,
+    watched = true,
+  ) => {
     const extension = changesRefreshingTools([tool("write"), tool("read"), tool("bash")], {
       watched: () => watched,
       written,
+      writtenSomewhere: () => {},
     });
 
     return new Map(
@@ -112,7 +199,7 @@ describe("the writing tools' wrap", () => {
     expect([...wrapped(() => {}).keys()]).toEqual(["write", "bash"]);
   });
 
-  it("lists the Changes again after a call in the Session's Workspace, and not in a Subagent Workspace", async () => {
+  it("lists again the Changes of the Workspace the calling conversation works in", async () => {
     const written = vi.fn();
     const write = wrapped(written).get("write");
 
@@ -127,10 +214,10 @@ describe("the writing tools' wrap", () => {
     await run.execute({}, api(7, false), context);
     await vi.waitFor(() => expect(written).toHaveBeenCalledTimes(2));
 
-    // A subagent's in a Subagent Workspace of its own.
+    // A subagent's in a Subagent Workspace of its own: that Workspace's.
     await run.execute({}, api(7, true), context);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(written).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(written).toHaveBeenCalledTimes(3));
+    expect(written.mock.calls).toEqual([[undefined], [undefined], [SUBAGENT_WORKSPACE]]);
   });
 
   it("reads nothing while no client watches the Changes", async () => {

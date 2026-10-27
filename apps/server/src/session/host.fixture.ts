@@ -650,7 +650,17 @@ export class TestSession extends DurableObject {
           ),
           Layer.provideMerge(sessionOwnerTabDriversLayer(ctx)),
           Layer.provideMerge(
-            sessionChangesLayer(this.#changesSource(), { debounceMs: CHANGES_TEST_DEBOUNCE_MS }),
+            sessionChangesLayer(
+              // The test Session has no subagents, so no Subagent Workspace is ever listed.
+              {
+                session: this.#changesSource(),
+                subagent: (workspace) => ({
+                  list: () => Promise.reject(new Error(`No Workspace ${workspace.id} here`)),
+                  file: () => Promise.reject(new Error(`No Workspace ${workspace.id} here`)),
+                }),
+              },
+              { debounceMs: CHANGES_TEST_DEBOUNCE_MS },
+            ),
           ),
           Layer.provideMerge(
             sessionApprovalsLayer({
@@ -742,7 +752,7 @@ export class TestSession extends DurableObject {
 
   /** An agent wrote to the Session's Workspace, as a writing tool's call reports. */
   wrote(): void {
-    this.#changes.written();
+    this.#changes.written(undefined);
   }
 
   /** A client's socket to the Session, as the Session DO answers the main Worker's upgrade. */

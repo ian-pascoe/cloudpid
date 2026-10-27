@@ -1,11 +1,16 @@
-// The Changes on the Session socket (docs/spec.md → Diffs and review → Changes): the Session's Workspace lists them
-// (`Workspace.changes`), and the Session sends each list to every client that watches them. One listing serves every
-// client: a refresh asked for while one runs is folded into one more after it, and an agent's writes are refreshed
-// once, a second after the last. Only the owner's Refresh may start a stopped Container; every other refresh shows a repo
-// that needs it as it was last listed, "may be out of date".
+// The Changes on the Session socket (docs/spec.md → Diffs and review → Changes): a Workspace lists them
+// (`Workspace.changes`), and the Session sends each list to every client that watches them. The Session's own
+// Workspace's are one broadcast, and each Subagent Workspace's another (ADR-0024): the conversations that work in one
+// Workspace share its listing. One listing serves every client: a refresh asked for while one runs is folded into one
+// more after it, and an agent's writes are refreshed once, a second after the last. Only the owner's Refresh may start
+// a stopped Container; every other refresh shows a repo that needs it as it was last listed, "may be out of date".
 // @effect-diagnostics asyncFunction:off globalTimers:off missingPipeableSignature:off preferEffectArray:off
 import type { ChangeFile, ServerMessage, WorkspaceChanges } from "@cloudpid/protocol";
-import { conversationWorkspace, SubagentsDoc } from "@cloudpid/extensions/subagents";
+import {
+  type AgentWorkspace,
+  conversationWorkspace,
+  SubagentsDoc,
+} from "@cloudpid/extensions/subagents";
 import {
   defineExtension,
   type Extension,
@@ -29,12 +34,33 @@ export const CHANGES_DEBOUNCE_MS = 1_000;
 /** The tools whose calls may change the Workspace's files, so the Changes are listed again after them. */
 export const WRITING_TOOLS: ReadonlySet<string> = new Set(["edit", "write", "bash", "codemode"]);
 
-/** Where the Changes come from: the Session's Workspace, in the directory the Session works in. */
+/** Where the Changes come from: a Workspace, in the directory its conversations work in. */
 export type ChangesSource = {
   /** The Changes, the Container started for a repo that needs it only with `startContainer`; null with no Workspace. */
   readonly list: (startContainer: boolean) => Promise<WorkspaceChanges | null>;
   readonly file: (query: ChangeFileRequest) => Promise<ChangeFile>;
 };
+
+/**
+ * Whose Changes: a Subagent Workspace's, or the Session's own Workspace's when undefined. A conversation's are those of
+ * the Workspace it works in (`SessionHost.workspaceOf`).
+ */
+export type ChangesWorkspace = AgentWorkspace | undefined;
+
+/** Where the Changes of each Workspace come from. */
+export type ChangesSources = {
+  /** The Session's own Workspace, in the directory the Session works in. */
+  readonly session: ChangesSource;
+  /** A Subagent Workspace, in its directory. */
+  readonly subagent: (workspace: AgentWorkspace) => ChangesSource;
+};
+
+/** The key of the Session's own Workspace among the broadcasts. */
+const SESSION_WORKSPACE = "";
+
+/** The key of `workspace`'s broadcast: one per Workspace and directory. */
+const keyOf = (workspace: ChangesWorkspace): string =>
+  workspace === undefined ? SESSION_WORKSPACE : `${workspace.object}\n${workspace.directory}`;
 
 /** What a watcher is sent: a list, or why a listing failed (the last list stands). */
 export type ChangesUpdate =
@@ -150,64 +176,102 @@ export class ChangesBroadcast {
 }
 
 export type SessionChangesService = {
-  /** The Changes for one watcher: the last list if there is one, then each listing; it starts one. */
-  readonly updates: Stream.Stream<ChangesUpdate>;
-  /** List the Changes again for every watcher (`manual`: the owner's Refresh, which may start the Container). */
-  readonly refresh: (manual: boolean) => Effect.Effect<void>;
-  /** Whether any client watches the Changes. Plain, for the tools' Promise code, as `written` is. */
+  /** `workspace`'s Changes for one watcher: the last list if there is one, then each listing; it starts one. */
+  readonly updates: (workspace: ChangesWorkspace) => Stream.Stream<ChangesUpdate>;
+  /** List `workspace`'s Changes again for its watchers (`manual`: the owner's Refresh, which may start the Container). */
+  readonly refresh: (workspace: ChangesWorkspace, manual: boolean) => Effect.Effect<void>;
+  /** Whether any client watches any Changes. Plain, for the tools' Promise code, as `written` is. */
   readonly watched: () => boolean;
-  /** An agent may have changed the files: list them again shortly. */
-  readonly written: () => void;
-  /** One changed file's two sides; it never starts the Container. */
-  readonly file: (query: ChangeFileRequest) => Effect.Effect<ChangeFile, SessionError>;
+  /** An agent may have changed `workspace`'s files: list them again shortly, if anyone watches them. */
+  readonly written: (workspace: ChangesWorkspace) => void;
+  /** An agent may have changed files, in a Workspace not known: list every watched Workspace's again shortly. */
+  readonly writtenSomewhere: () => void;
+  /** One changed file's two sides, in `workspace`; it never starts the Container. */
+  readonly file: (
+    workspace: ChangesWorkspace,
+    query: ChangeFileRequest,
+  ) => Effect.Effect<ChangeFile, SessionError>;
 };
 
-/** The Session's Changes, which every client that watches them shares. */
+/** The Session's Changes, each Workspace's shared by every client that watches them. */
 export class SessionChanges extends Context.Service<SessionChanges, SessionChangesService>()(
   "@cloudpid/server/session/changes/SessionChanges",
 ) {}
 
-/** The Session's Changes over `source`. */
+/** The Session's Changes over `sources`: one broadcast per Workspace, made when it is first asked for. */
 export const sessionChangesLayer = (
-  source: ChangesSource,
+  sources: ChangesSources,
   options: { readonly debounceMs?: number } = {},
 ): Layer.Layer<SessionChanges> =>
   Layer.effect(
     SessionChanges,
     Effect.gen(function* () {
       const run = Effect.runForkWith(yield* Effect.context<never>());
+      const broadcasts = new Map<string, ChangesBroadcast>();
 
-      const broadcast = new ChangesBroadcast(source, {
-        ...options,
-        warn: (message, cause) => {
-          run(Effect.logWarning(message, cause));
-        },
-      });
+      const broadcastOf = (workspace: ChangesWorkspace): ChangesBroadcast => {
+        const key = keyOf(workspace);
+        const known = broadcasts.get(key);
 
-      const updates = Stream.callback<ChangesUpdate>((queue) =>
-        Effect.acquireRelease(
-          Effect.sync(() => {
-            const stop = broadcast.subscribe((update) => {
-              Queue.offerUnsafe(queue, update);
-            });
+        if (known !== undefined) return known;
 
-            // A watcher that starts (a client that connects, or a socket woken from hibernation) sees the files now.
-            void broadcast.refresh(false);
+        const made = new ChangesBroadcast(
+          workspace === undefined ? sources.session : sources.subagent(workspace),
+          {
+            ...options,
+            warn: (message, cause) => {
+              run(Effect.logWarning(message, cause));
+            },
+          },
+        );
 
-            return stop;
-          }),
-          (stop) => Effect.sync(stop),
-        ),
-      );
+        broadcasts.set(key, made);
+
+        return made;
+      };
+
+      const updates = (workspace: ChangesWorkspace) =>
+        Stream.callback<ChangesUpdate>((queue) =>
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              const broadcast = broadcastOf(workspace);
+
+              const stop = broadcast.subscribe((update) => {
+                Queue.offerUnsafe(queue, update);
+              });
+
+              // A watcher that starts (a client that connects, or a socket woken from hibernation) sees the files now.
+              void broadcast.refresh(false);
+
+              return { broadcast, stop };
+            }),
+            ({ broadcast, stop }) =>
+              Effect.sync(() => {
+                stop();
+
+                // A Subagent Workspace nobody watches is listed afresh when it is watched again; the Session's own
+                // keeps its last list, as it always did.
+                const key = keyOf(workspace);
+
+                if (key !== SESSION_WORKSPACE && !broadcast.watched) {
+                  if (broadcasts.get(key) === broadcast) broadcasts.delete(key);
+                }
+              }),
+          ),
+        );
 
       return {
         updates,
-        refresh: (manual) => Effect.promise(() => broadcast.refresh(manual)),
-        watched: () => broadcast.watched,
-        written: () => broadcast.soon(),
-        file: (query) =>
+        refresh: (workspace, manual) =>
+          Effect.promise(() => broadcastOf(workspace).refresh(manual)),
+        watched: () => Arr.some([...broadcasts.values()], (broadcast) => broadcast.watched),
+        written: (workspace) => broadcasts.get(keyOf(workspace))?.soon(),
+        writtenSomewhere: () => {
+          for (const broadcast of broadcasts.values()) broadcast.soon();
+        },
+        file: (workspace, query) =>
           Effect.tryPromise({
-            try: () => broadcast.file(query),
+            try: () => broadcastOf(workspace).file(query),
             catch: (cause) =>
               SessionError.make({
                 operation: "changeFile",
@@ -219,14 +283,14 @@ export const sessionChangesLayer = (
   );
 
 /**
- * An extension that lists the Changes again after each call of `tools`' writing tools (`WRITING_TOOLS`) by a
- * conversation that works in the Session's own Workspace: a subagent's in a Subagent Workspace of its own changes files
- * the Session's Changes do not show. Nothing is read while no client watches them. Install it after the extensions that
- * bring the tools.
+ * An extension that lists the Changes again after each call of `tools`' writing tools (`WRITING_TOOLS`): those of the
+ * Workspace the calling conversation works in, its Subagent Workspace's (its own or its nearest ancestor's) if it has
+ * one, else the Session's own. Nothing is read while no client watches any Changes. Install it after the extensions
+ * that bring the tools.
  */
 export const changesRefreshingTools = (
   tools: ReadonlyArray<ToolRegistration>,
-  changes: Pick<SessionChangesService, "watched" | "written">,
+  changes: Pick<SessionChangesService, "watched" | "written" | "writtenSomewhere">,
 ): Extension =>
   defineExtension({
     name: "changes",
@@ -242,15 +306,14 @@ export const changesRefreshingTools = (
               if (changes.watched()) {
                 void api.snapshot(SubagentsDoc, context).then(
                   (state) => {
-                    if (
-                      state === undefined ||
-                      conversationWorkspace(state, api.conversationId) === undefined
-                    ) {
-                      changes.written();
-                    }
+                    changes.written(
+                      state === undefined
+                        ? undefined
+                        : conversationWorkspace(state, api.conversationId),
+                    );
                   },
-                  // Unknown: list them again, which costs one listing at most.
-                  () => changes.written(),
+                  // Unknown: list every watched Workspace's again, which costs one listing each at most.
+                  () => changes.writtenSomewhere(),
                 );
               }
             }
