@@ -21,6 +21,7 @@ import { keepSecret, openEnvironmentSecrets, type SecretWrite } from "./environm
 import type * as Schema from "effect/Schema";
 import { type AgentChangeAuthor, type AgentChanges, openAgentChanges } from "./agent-changes.ts";
 import { readSettings, type SettingsState, writeSettings } from "./settings.ts";
+import { type KeptSkills, openSkills } from "./skills.ts";
 import {
   changeSettings,
   revertSettingsChange,
@@ -51,6 +52,15 @@ import {
   type WorkspaceRecord,
   type WorkspaceSetup,
 } from "./store.ts";
+
+/**
+ * The Skills `revertAgentChange` takes, for a test whose changes are not a Skill's: the storage's (none kept) over an
+ * empty bundle.
+ */
+export const noSkills = (storage: DurableObjectStorage): KeptSkills => ({
+  skills: openSkills(storage),
+  bundle: { set: { hash: "none", files: {} }, names: new Set(), hashes: {}, bytes: new Map() },
+});
 
 export class TestRegistry extends DurableObject {
   readonly #store: RegistryStore;

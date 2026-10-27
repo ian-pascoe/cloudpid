@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { parseSkill } from "@cloudpid/extensions/skills";
 import { describe, expect, it } from "vitest";
-import { MAX_TOTAL_BYTES, problemsIn } from "../../../../scripts/skills-checks.ts";
+import { MAX_TOTAL_BYTES, problemsIn } from "@cloudpid/extensions/skill-checks";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 
 const skillsDirectory = decodeURIComponent(new URL("../../../../skills", import.meta.url).pathname);

@@ -4,7 +4,10 @@
 // after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),
 // and a change that reaches the Session's own Environment is handed to its Workspace at once
 // (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
-// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's.
+// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved
+// or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentRemoveSkill`); the Session's own Workspace is
+// handed its Environment's new Skill set at once (`updateSkills`), and no Build's upkeep runs: Skills are not part of
+// a Build.
 import type {
   AppliedChange,
   EnvironmentDetails,
@@ -26,6 +29,7 @@ import type { EnvironmentRecord } from "../registry/store.ts";
 import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
 import type { Builds } from "../registry/builds.ts";
 import type { Placement } from "./workspace.ts";
+import type { SkillSet } from "../workspace/bundled-skill-set.ts";
 
 /** What the Session's Environments read and change in the Registry. */
 export type EnvironmentsRegistry = Pick<
@@ -40,6 +44,10 @@ export type EnvironmentsRegistry = Pick<
   | "getEveryEnvironmentSettings"
   | "workspaceOverrides"
   | "agentMarkSecretBuild"
+  | "agentSaveSkill"
+  | "agentRemoveSkill"
+  | "listSkills"
+  | "workspaceSkillSet"
   | "getWorkspace"
 >;
 
@@ -53,6 +61,11 @@ export type SessionEnvironmentsOptions = {
   readonly handOver: (
     object: string,
     overrides: Schema.Json,
+  ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }>;
+  /** Hand the Workspace DO `object` its Environment's new Skill set (`Workspace.updateSkills`). */
+  readonly handSkills: (
+    object: string,
+    set: SkillSet,
   ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }>;
   /** The Builds' upkeep, run for an Environment after each change, as after the owner's save. */
   readonly builds: Pick<Builds, "of">;
@@ -115,6 +128,7 @@ export const sessionEnvironments = ({
   session,
   placement,
   handOver,
+  handSkills,
   builds,
   lifecycle,
 }: SessionEnvironmentsOptions): EnvironmentsService => {
@@ -168,6 +182,45 @@ export const sessionEnvironments = ({
       ),
     );
 
+  /**
+   * Hand the Session's own Workspace its Environment's Skill set after a change to it, if `environment` is the Session's:
+   * whether the Workspace took it. One that cannot be reached, or refuses it, gets it at its next readying.
+   */
+  const handSkillsIfOwn = (environment: string) =>
+    Effect.gen(function* () {
+      const own = yield* where;
+
+      if (own?.environment !== environment) return false;
+
+      const set = yield* registry.workspaceSkillSet({ environment });
+
+      if (set === null) return false;
+
+      const written = yield* Effect.tryPromise(() => handSkills(own.object, set));
+
+      if (written.ok) return true;
+
+      yield* Effect.logWarning(
+        `The Session's Workspace refused its Environment's Skill set: ${written.message}`,
+      );
+
+      return false;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          "Handing the Skill set to the Session's Workspace failed; it takes it at its next readying",
+          cause,
+        ).pipe(Effect.as(false)),
+      ),
+    );
+
+  /** The refusal of a change by a Session the Registry does not list. */
+  const unlisted = Effect.suspend(() =>
+    EnvironmentsError.make({
+      message: "This Session is not one the Registry lists, so it changes no Environment.",
+    }),
+  );
+
   const buildsById = Effect.map(
     registry.listBuilds(),
     (builds) => new Map(Arr.map(builds, ({ environment, build }) => [environment, build] as const)),
@@ -197,6 +250,7 @@ export const sessionEnvironments = ({
         const byId = yield* buildsById;
         const secrets = yield* registry.listEnvironmentSecrets();
         const every = yield* registry.getEveryEnvironmentSettings();
+        const skills = yield* registry.listSkills({ environment: id });
 
         return {
           id,
@@ -207,6 +261,7 @@ export const sessionEnvironments = ({
           problem: state.problem,
           secrets: keptFor(id, secrets),
           everyVariables: every.settings.variables,
+          skills: skills ?? [],
         } satisfies EnvironmentDetails;
       }),
     every: Effect.gen(function* () {
@@ -221,13 +276,70 @@ export const sessionEnvironments = ({
         ),
       };
     }),
+    saveSkill: ({ environment, folder, files, author }) =>
+      Effect.gen(function* () {
+        if (session === undefined) return yield* unlisted;
+
+        const saved = yield* registry.agentSaveSkill({
+          environment,
+          folder,
+          files,
+          author: { session, ...author },
+        });
+
+        switch (saved.status) {
+          case "rejected":
+          case "missing":
+            return saved;
+          case "unchanged":
+            // Nothing changed, but the Session's Workspace may not have taken the set when it was saved.
+            yield* handSkillsIfOwn(environment);
+
+            return {
+              status: "unchanged",
+              environment: changedEnvironment(saved.environment),
+              name: folder,
+            };
+          case "saved":
+            // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves it now.
+            return {
+              status: "saved",
+              environment: changedEnvironment(saved.environment),
+              change: saved.change,
+              name: saved.skill.name,
+              shadows: saved.shadows,
+              handed: yield* handSkillsIfOwn(environment),
+            };
+        }
+      }),
+    removeSkill: ({ environment, name, author }) =>
+      Effect.gen(function* () {
+        if (session === undefined) return yield* unlisted;
+
+        const removed = yield* registry.agentRemoveSkill({
+          environment,
+          name,
+          author: { session, ...author },
+        });
+
+        switch (removed.status) {
+          case "missing":
+            return removed;
+          case "absent":
+            return { status: "absent", environment: changedEnvironment(removed.environment) };
+          case "removed":
+            return {
+              status: "removed",
+              environment: changedEnvironment(removed.environment),
+              change: removed.change,
+              bundled: removed.bundled,
+              handed: yield* handSkillsIfOwn(environment),
+            };
+        }
+      }),
     markSecret: ({ environment, name, build, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) {
-          return yield* EnvironmentsError.make({
-            message: "This Session is not one the Registry lists, so it changes no Environment.",
-          });
-        }
+        if (session === undefined) return yield* unlisted;
 
         const marked = yield* registry.agentMarkSecretBuild({
           environment,
@@ -245,11 +357,7 @@ export const sessionEnvironments = ({
       }),
     change: ({ environment, change, expected, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) {
-          return yield* EnvironmentsError.make({
-            message: "This Session is not one the Registry lists, so it changes no Environment.",
-          });
-        }
+        if (session === undefined) return yield* unlisted;
 
         const own = yield* where;
 

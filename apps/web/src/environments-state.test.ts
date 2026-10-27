@@ -40,6 +40,8 @@ import {
   environmentSecretsErrorAtom,
   saveSecretAtom,
   setSecretBuildAtom,
+  skillChangeFilesAtom,
+  skillChangeKey,
   secretDialogAtom,
   secretDraftAtom,
   secretsInAtom,
@@ -1251,6 +1253,32 @@ describe("the Agent changes", () => {
     reverts: null,
     revertedBy,
   });
+
+  it.effect("ask a Skill change's files once per change, keyed by Environment and change", () =>
+    Effect.gen(function* () {
+      const asked: Array<{ environment: string; change: number }> = [];
+
+      const registry = registryWith({
+        skillChangeFiles: (input) =>
+          Effect.sync(() => {
+            asked.push(input);
+
+            return { before: null, after: [{ path: "SKILL.md", text: `change ${input.change}` }] };
+          }),
+      });
+
+      const atom = skillChangeFilesAtom(skillChangeKey("work", 3));
+
+      // Equal keys are the same atom; another change of the same Environment is another.
+      expect(skillChangeFilesAtom(skillChangeKey("work", 3))).toBe(atom);
+      expect(skillChangeFilesAtom(skillChangeKey("work", 4))).not.toBe(atom);
+      expect(AsyncResult.getOrThrow(yield* settled(registry, atom))).toEqual({
+        before: null,
+        after: [{ path: "SKILL.md", text: "change 3" }],
+      });
+      expect(asked).toEqual([{ environment: "work", change: 3 }]);
+    }),
+  );
 
   it.effect("are listed, and a revert loads them and the settings again", () =>
     Effect.gen(function* () {

@@ -329,8 +329,11 @@ export const SessionLive = Session.make(
           // What the Workspace is made of is the Registry's; a Workspace it no longer lists is left as it is.
           // @effect-diagnostics-next-line asyncFunction:off
           prepare: async (id) => {
+            // The Registry hands the Environment's Skill set only when it is not the one the Workspace holds.
+            const skillSetHash = await workspaces.getByName(workspaceObjectName(id)).skillSetHash();
+
             const setup = await runtime.runPromise(
-              registries.getByName(REGISTRY_NAME).getWorkspaceSetup({ id }),
+              registries.getByName(REGISTRY_NAME).getWorkspaceSetup({ id, skillSetHash }),
             );
 
             if (setup !== null) await prepare(workspaceObjectName(id), setup);
@@ -355,6 +358,7 @@ export const SessionLive = Session.make(
           placement,
           handOver: (object, overrides) =>
             workspaces.getByName(object).updateContainerSettings(overrides),
+          handSkills: (object, set) => workspaces.getByName(object).updateSkills(set),
           builds,
           lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
         });

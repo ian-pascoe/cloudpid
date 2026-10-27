@@ -27,6 +27,8 @@ export * from "./review.ts";
 
 export * from "./session.ts";
 
+export * from "./skills.ts";
+
 export * from "./transcript.ts";
 
 export * from "./user-entry.ts";

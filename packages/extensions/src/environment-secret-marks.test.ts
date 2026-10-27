@@ -22,6 +22,7 @@ import {
 } from "./environment.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { fakeSecretMarks, type KeptMark } from "./environment-secret-marks.fixture.ts";
+import { unusedSkills } from "./environment-skills.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { secretEnvName } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
@@ -46,6 +47,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
   const environments: EnvironmentsService = {
     ...unusedLifecycle,
     ...marks.service,
+    ...unusedSkills,
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),

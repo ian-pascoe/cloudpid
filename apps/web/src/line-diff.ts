@@ -1,8 +1,9 @@
 // A line diff for the long values of an Agent change (`docs/spec.md` → Agent changes): a script or a `mise.toml` is
 // shown as what was added and removed, with a few lines of the text around each change, instead of twice in full.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, called from React.
-import type { AgentChange } from "@cloudpid/protocol";
+import type { AgentChange, SkillChangeFiles } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 
 /** One line of a diff: kept (`same`), taken out (`removed`) or put in (`added`). */
@@ -126,6 +127,42 @@ export const foldDiff = (lines: ReadonlyArray<DiffLine>, context = 3): ReadonlyA
   if (hidden > 0) rows.push({ kind: "skipped", count: hidden });
 
   return rows;
+};
+
+/** How an Agent change of a Skill changed one of its files, with the diff of its text. */
+export type SkillFileDiff = {
+  readonly path: string;
+  readonly status: "added" | "removed" | "changed";
+  readonly rows: ReadonlyArray<DiffRow>;
+};
+
+/**
+ * The files an Agent change of a Skill added, removed or changed, by path, each with the diff of its text (an added
+ * file all `+`, a removed one all `-`); the files it left as they were are left out.
+ */
+export const skillFileDiffs = ({
+  before,
+  after,
+}: SkillChangeFiles): ReadonlyArray<SkillFileDiff> => {
+  const left = new Map(Arr.map(before ?? [], (file) => [file.path, file.text] as const));
+  const right = new Map(Arr.map(after ?? [], (file) => [file.path, file.text] as const));
+
+  const paths = Arr.sort(Arr.dedupe([...left.keys(), ...right.keys()]), Order.String);
+
+  return Arr.flatMap(paths, (path): ReadonlyArray<SkillFileDiff> => {
+    const was = left.get(path);
+    const is = right.get(path);
+
+    if (was === is) return [];
+
+    return [
+      {
+        path,
+        status: was === undefined ? "added" : is === undefined ? "removed" : "changed",
+        rows: foldDiff(diffLines(was ?? "", is ?? "")),
+      },
+    ];
+  });
 };
 
 /** The fields whose values are long text, which an Agent change shows as a diff. */

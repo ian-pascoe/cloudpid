@@ -21,7 +21,7 @@ import {
   revertAgentChange,
 } from "./agent-changes.ts";
 import { everyVariablesOf, readEveryEnvironment } from "./every-environment.ts";
-import type { TestRegistry } from "./store.fixture.ts";
+import { noSkills, type TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
 
 const author: AgentChangeAuthor = {
@@ -66,7 +66,14 @@ const inRegistry = <A>(
       changeEvery: (change, at = 1_000) =>
         changeEveryEnvironment(state.storage, store, changes, { change, author }, at),
       revert: (id, at = 2_000, environment = DEFAULT_ENVIRONMENT) =>
-        revertAgentChange(state.storage, store, changes, { environment, id }, at),
+        revertAgentChange(
+          state.storage,
+          store,
+          changes,
+          { environment, id },
+          at,
+          noSkills(state.storage),
+        ),
     });
   });
 

@@ -19,6 +19,7 @@ import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import { SessionStatus } from "../session/status.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
+import { dropUnreferencedSkillFiles } from "./skills.ts";
 
 // The Registry's tables over the Registry DO's SQLite storage (`docs/spec.md` → Durable Objects). Synchronous, as
 // SQLite in a Durable Object is, and given the time by its caller so tests control it.
@@ -744,6 +745,23 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE sessions ADD COLUMN agents TEXT");
   },
+  // 22: an Environment's own Skills (ADR-0026), by scope (the Environment's id) and name, each with its description and
+  // its files as their content hashes (JSON, path to hash), and the files' texts, kept once per hash for the Skills and
+  // the Agent changes that refer to them (`registry/skills.ts`). None before.
+  (sql) => {
+    sql.exec(`CREATE TABLE skill_files (
+      hash TEXT PRIMARY KEY,
+      content TEXT NOT NULL
+    ) STRICT`);
+    sql.exec(`CREATE TABLE skills (
+      scope TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      files TEXT NOT NULL,
+      saved_at INTEGER NOT NULL,
+      PRIMARY KEY (scope, name)
+    ) STRICT`);
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -1089,9 +1107,12 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       }
 
       sql.exec("DELETE FROM environments WHERE id = ?", id);
-      // Its Secrets go with it; those kept for every Environment stay. So do its Agent changes.
+      // Its Secrets go with it; those kept for every Environment stay. So do its Agent changes and its Skills, and the
+      // texts of their files that nothing else refers to.
       sql.exec("DELETE FROM environment_secrets WHERE scope = ?", id);
       sql.exec("DELETE FROM agent_changes WHERE scope = ?", id);
+      sql.exec("DELETE FROM skills WHERE scope = ?", id);
+      dropUnreferencedSkillFiles(sql);
 
       return "deleted";
     },

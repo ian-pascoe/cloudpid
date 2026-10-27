@@ -1,35 +1,11 @@
 // The Skill set a Workspace holds (ADR-0026): the files its read-only mount at `/workspace/.agents/skills` serves and its
 // Skill discovery reads, with their content hash. It is kept in the Workspace DO's own storage, and is the bundle
-// (`BUNDLED_SKILLS`) until one is handed over (`Workspace.updateSkills`).
+// (`BUNDLED_SKILL_SET`, `bundled-skill-set.ts`) until one is handed over (`Workspace.updateSkills`).
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { type EagerMount, type MountWriteAPI, WorkerBundle } from "@cloudflare/computer";
-import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
-
-/**
- * A set of Skills as the mount serves it: each file's text by its path under the mount (`<skill>/SKILL.md`, …), and a
- * hash of the contents, which says whether two sets differ without comparing their files.
- */
-export const SkillSet = Schema.Struct({
-  hash: Schema.NonEmptyString,
-  files: Schema.Record(Schema.String, Schema.String),
-});
-
-export type SkillSet = typeof SkillSet.Type;
-
-/** The Skills bundled with this Worker (`skills/`), with the hash computer recorded for the mount before sets existed. */
-export const BUNDLED_SKILL_SET: SkillSet = {
-  // SAFETY: the generator always writes a version (`bundled-skills.test.ts` recomputes it).
-  hash: BUNDLED_SKILLS.version!,
-  // Every file of the bundle is a `?raw` import, a string.
-  files: Object.fromEntries(
-    Object.entries(BUNDLED_SKILLS.files).flatMap(([path, content]) =>
-      Predicate.isString(content) ? [[path, content] as const] : [],
-    ),
-  ),
-};
+import { BUNDLED_SKILL_SET, SkillSet } from "./bundled-skill-set.ts";
 
 /** What a hand-over of a Skill set answers: whether the Workspace holds it now, or why not. */
 export type SkillSetAnswer =

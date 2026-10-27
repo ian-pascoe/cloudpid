@@ -25,6 +25,7 @@ export type RegistryKey =
   | "workspaces"
   | `environment-settings:${string}`
   | `agent-changes:${string}`
+  | `environment-skills:${string}`
   | "every-environment"
   | "environment-secrets"
   | "builds"

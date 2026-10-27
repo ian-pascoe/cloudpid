@@ -13,10 +13,27 @@ import type {
   EnvironmentBuildState,
   EnvironmentRepo,
   EnvironmentSecretRecord,
+  EnvironmentSkill,
   PushState,
   PushSubscription,
   SessionOrigin,
+  SkillChangeFiles,
 } from "@cloudpid/protocol";
+import type { SkillSet } from "../workspace/bundled-skill-set.ts";
+import {
+  hashBundle,
+  hashFiles,
+  mergeSkills,
+  openSkills,
+  removeSkill,
+  removeSkillAs,
+  saveSkillAs,
+  skillChangeFiles,
+  type SkillFiles,
+  type SkillRemoval,
+  type SkillSave,
+  skillSetOf,
+} from "./skills.ts";
 import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { SecretsConfig } from "../session/secrets.ts";
 import {
@@ -122,10 +139,12 @@ export type WorkspaceChoice =
  * good Build (null for none yet) and kept Secrets, opened (docs/spec.md → Secrets): the Workspace keeps them sealed,
  * to search a snapshot for and to take out of output. When the Registry cannot open them, `secrets` is absent and
  * `secretsUnavailable` says so (`SECRETS_UNAVAILABLE`), and the Workspace refuses the snapshots that would need them.
+ * `skills` is the Environment's Skill set (its own Skills over the bundle), absent when the Workspace holds it already.
  */
 export type WorkspaceSetupWithSettings = WorkspaceSetup & {
   readonly settings: Schema.Json;
   readonly build: EnvironmentBuild | null;
+  readonly skills?: SkillSet | undefined;
 } & SecretsHandover;
 
 /** `SpareUpkeep`, each spare made with the Container settings it is prepared with. */
@@ -414,6 +433,42 @@ export type RegistryMethods = {
     readonly environment: string;
     readonly change: number;
   }) => Effect.Effect<boolean>;
+  /**
+   * An Agent change (`docs/spec.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
+   * its path in the folder) for `environment`, in place of one of its name, if it passes a save's checks, and record it
+   * with its files before and after. The same files as kept record nothing. The caller hands the Session's own Workspace
+   * its new Skill set after.
+   */
+  readonly agentSaveSkill: (input: {
+    readonly environment: string;
+    readonly folder: string;
+    readonly files: SkillFiles;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SkillSave>;
+  /** An Agent change: remove Skill `name` kept for `environment`, recorded with its files before. */
+  readonly agentRemoveSkill: (input: {
+    readonly environment: string;
+    readonly name: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<SkillRemoval>;
+  /** The Skills kept for `environment`, by name; null when it is not registered. */
+  readonly listSkills: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<ReadonlyArray<EnvironmentSkill> | null>;
+  /** The owner removes Skill `name` kept for `environment` (not an Agent change). */
+  readonly removeSkill: (input: {
+    readonly environment: string;
+    readonly name: string;
+  }) => Effect.Effect<"removed" | "absent" | "missing">;
+  /** The files before and after Agent change `change` of a Skill of `environment`, with their texts; null for none. */
+  readonly skillChangeFiles: (input: {
+    readonly environment: string;
+    readonly change: number;
+  }) => Effect.Effect<SkillChangeFiles | null>;
+  /** The Skill set `environment`'s Workspaces serve: its own Skills over the bundle. Null when it is not registered. */
+  readonly workspaceSkillSet: (input: {
+    readonly environment: string;
+  }) => Effect.Effect<SkillSet | null>;
   /** The Workspace registered under `id`, or null. */
   readonly getWorkspace: (input: { readonly id: string }) => Effect.Effect<WorkspaceRecord | null>;
   /**
@@ -422,6 +477,11 @@ export type RegistryMethods = {
    */
   readonly getWorkspaceSetup: (input: {
     readonly id: string;
+    /**
+     * The hash of the Skill set the Workspace holds: the set-up carries its Environment's Skill set only when it differs.
+     * Absent, it always does.
+     */
+    readonly skillSetHash?: string | undefined;
   }) => Effect.Effect<WorkspaceSetupWithSettings | null>;
   /** Every Workspace, newest first. */
   readonly listWorkspaces: () => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
@@ -579,7 +639,32 @@ export const RegistryLive = Registry.make(
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
         const changes = openAgentChanges(state.raw.storage);
+        const skills = openSkills(state.raw.storage);
         const notify = pushNotifier({ store, vapid: push.vapid });
+
+        // The bundle, the lowest layer of every Skill set until it is removed, hashed once. Loaded on first use: the
+        // deploy loads this module in Node, which cannot load the bundle's `?raw` imports.
+        const bundle = yield* Effect.cached(
+          Effect.promise(() => import("../workspace/bundled-skill-set.ts")).pipe(
+            Effect.flatMap(({ BUNDLED_SKILL_SET }) =>
+              Effect.promise(() => hashBundle(BUNDLED_SKILL_SET)),
+            ),
+          ),
+        );
+
+        /** `environment`'s Skill set before its texts are read: its own Skills over the bundle. */
+        const mergedSkills = (environment: string) =>
+          Effect.flatMap(bundle, (hashed) =>
+            Effect.promise(() => mergeSkills([skills.list(environment)], hashed)),
+          );
+
+        /** `environment`'s Skill set with its texts, unless its hash is `held`'s. */
+        const skillSetUnless = (environment: string, held: string | undefined) =>
+          Effect.gen(function* () {
+            const merged = yield* mergedSkills(environment);
+
+            return merged.hash === held ? undefined : skillSetOf(merged, yield* bundle, skills);
+          });
 
         // The kept Secrets' key, derived once, on first use: a malformed master key fails the calls that need it, not
         // the object. An Environment no Secret reaches never needs it.
@@ -619,19 +704,23 @@ export const RegistryLive = Registry.make(
          */
         const withSettings = (
           setup: WorkspaceSetup & { readonly build?: EnvironmentBuild | null },
+          /** The hash of the Skill set the Workspace holds: its Environment's is handed only when it differs. */
+          heldSkills: string | undefined,
         ): Effect.Effect<WorkspaceSetupWithSettings> =>
           Effect.map(
-            Effect.zip(
+            Effect.all([
               secretsHandover(store, vault, setup.environment),
               workspaceOverrides(setup.environment),
-            ),
-            ([handover, overrides]) => ({
+              skillSetUnless(setup.environment, heldSkills),
+            ]),
+            ([handover, overrides, skillSet]) => ({
               ...setup,
               settings: overrides ?? {},
               build:
                 setup.build === undefined
                   ? (store.getBuild(setup.environment)?.build ?? null)
                   : setup.build,
+              skills: skillSet,
               ...handover,
             }),
           );
@@ -934,26 +1023,79 @@ export const RegistryLive = Registry.make(
                 : changes.list(environment),
             ),
           revertAgentChange: ({ environment, change }) =>
-            Clock.currentTimeMillis.pipe(
-              Effect.map((now) =>
-                revertAgentChange(
-                  state.raw.storage,
-                  store,
-                  changes,
-                  { environment, id: change },
-                  now,
-                ),
-              ),
-            ),
+            Effect.gen(function* () {
+              const hashedBundle = yield* bundle;
+              const now = yield* Clock.currentTimeMillis;
+
+              return revertAgentChange(
+                state.raw.storage,
+                store,
+                changes,
+                { environment, id: change },
+                now,
+                { skills, bundle: hashedBundle },
+              );
+            }),
           dismissAgentChange: ({ environment, change }) =>
             Effect.sync(() => changes.dismiss(environment, change)),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
-          getWorkspaceSetup: ({ id }) =>
+          getWorkspaceSetup: ({ id, skillSetHash }) =>
             Effect.suspend(() => {
               const setup = store.getWorkspaceSetup(id);
 
-              return setup === null ? Effect.succeed(null) : withSettings(setup);
+              return setup === null ? Effect.succeed(null) : withSettings(setup, skillSetHash);
             }),
+          agentSaveSkill: ({ environment, folder, files, author }) =>
+            Effect.gen(function* () {
+              const hashed = yield* Effect.promise(() => hashFiles(files));
+              const hashedBundle = yield* bundle;
+              const now = yield* Clock.currentTimeMillis;
+
+              return saveSkillAs(
+                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                { environment, folder, files, hashed, author },
+              );
+            }),
+          agentRemoveSkill: ({ environment, name, author }) =>
+            Effect.gen(function* () {
+              const hashedBundle = yield* bundle;
+              const now = yield* Clock.currentTimeMillis;
+
+              return removeSkillAs(
+                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                { environment, name, author },
+              );
+            }),
+          listSkills: ({ environment }) =>
+            Effect.sync(() =>
+              store.getEnvironment(environment) === null
+                ? null
+                : Arr.map(skills.list(environment), ({ name, description, savedAt }) => ({
+                    name,
+                    description,
+                    savedAt,
+                  })),
+            ),
+          removeSkill: ({ environment, name }) =>
+            Effect.sync(() => {
+              if (store.getEnvironment(environment) === null) return "missing" as const;
+
+              return removeSkill(state.raw.storage, skills, { environment, name })
+                ? ("removed" as const)
+                : ("absent" as const);
+            }),
+          skillChangeFiles: ({ environment, change }) =>
+            Effect.sync(() => {
+              const found = changes.get(environment, change);
+
+              return found === null ? null : skillChangeFiles(skills, found);
+            }),
+          workspaceSkillSet: ({ environment }) =>
+            Effect.suspend(() =>
+              store.getEnvironment(environment) === null
+                ? Effect.succeed(null)
+                : Effect.map(skillSetUnless(environment, undefined), (set) => set ?? null),
+            ),
           listWorkspaces: () => Effect.sync(() => store.listWorkspaces()),
           createSubagentWorkspace: (input) =>
             Effect.gen(function* () {
@@ -972,8 +1114,13 @@ export const RegistryLive = Registry.make(
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
               const { stale, made } = store.upkeepSpares(environments, shortId, now);
+              const { set } = yield* bundle;
 
-              return { stale, made: yield* Effect.forEach(made, withSettings) } satisfies SpareWork;
+              // A spare is new, so it holds the bundle: it is handed its Environment's Skill set when that differs.
+              return {
+                stale,
+                made: yield* Effect.forEach(made, (setup) => withSettings(setup, set.hash)),
+              } satisfies SpareWork;
             }),
           buildWork: ({ environments }) =>
             Effect.gen(function* () {

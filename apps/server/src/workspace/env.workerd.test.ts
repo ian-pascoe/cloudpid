@@ -22,7 +22,7 @@ import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
 import { ContainerResizes } from "./resize.ts";
 import { workspaceObjectsRemote } from "./lifecycle.ts";
-import { BUNDLED_SKILL_SET } from "./skill-set.ts";
+import { BUNDLED_SKILL_SET } from "./bundled-skill-set.ts";
 import { skillFile } from "./skills.fixtures.ts";
 import { mountedSkills, PRIOR_SKILLS } from "./skills.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";

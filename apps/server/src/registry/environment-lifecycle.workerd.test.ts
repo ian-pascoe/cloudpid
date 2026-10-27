@@ -14,7 +14,7 @@ import {
   removeRepoAs,
   renameEnvironmentAs,
 } from "./environment-lifecycle.ts";
-import type { TestRegistry } from "./store.fixture.ts";
+import { noSkills, type TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
 
 const author: AgentChangeAuthor = {
@@ -63,7 +63,14 @@ const inRegistry = <A>(
       rebuild: (environment) =>
         recordRebuildAs(state.storage, store, changes, { environment, author }, at),
       revert: (environment, id) =>
-        revertAgentChange(state.storage, store, changes, { environment, id }, 2_000),
+        revertAgentChange(
+          state.storage,
+          store,
+          changes,
+          { environment, id },
+          2_000,
+          noSkills(state.storage),
+        ),
     });
   });
 

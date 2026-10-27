@@ -10,6 +10,7 @@ import {
   parseRepoSource,
   type EnvironmentRecord,
   type EnvironmentSecretRecord,
+  fieldSkill,
   type SessionRecord,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
@@ -48,7 +49,8 @@ import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { NativeSelect } from "./components/ui/native-select.tsx";
 import { cn } from "./lib/utils.ts";
-import { changeDiff } from "./line-diff.ts";
+import { relativeTime } from "./format.ts";
+import { changeDiff, skillFileDiffs } from "./line-diff.ts";
 import { navigate, sessionPath } from "./router.ts";
 import { SubagentWorkspaceLoss } from "./session-menu.tsx";
 import { SessionLink, sessionTitle } from "./sidebar.tsx";
@@ -68,6 +70,11 @@ import {
   environmentBuildAtom,
   environmentSecretsAtom,
   environmentSecretsErrorAtom,
+  environmentSkillsAtom,
+  removeSkillAtom,
+  skillChangeFilesAtom,
+  skillChangeKey,
+  skillDialogAtom,
   saveSecretAtom,
   setSecretBuildAtom,
   secretDialogAtom,
@@ -1258,6 +1265,152 @@ const BuildStatus = ({ id }: { id: string }) => {
   );
 };
 
+/** Confirm removing Skill `name` from Environment `id`, after saying what follows. */
+const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
+  const [removed, remove] = useAtom(removeSkillAtom(id));
+  const setDialog = useAtomSet(skillDialogAtom(id));
+  const busy = removed.waiting;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+
+    if (busy) return;
+
+    remove(name);
+  };
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <p className="text-sm">
+        Its workspaces stop serving it at their next readying, and the bundle's skill of the same
+        name is served again. Sessions already running keep it in their skills list until their next
+        context window.
+      </p>
+      <p className="text-sm">
+        This cannot be undone: your removal is not an agent change, so it has no revert, and a later
+        revert of the agent's save of this skill is refused. To get it back, ask the agent to save
+        it again.
+      </p>
+      <DialogProblem problem={settledFailureOf(removed)} />
+      <DialogActions>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setDialog(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={busy}>
+          {busy ? "Removing…" : "Remove skill"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+};
+
+/**
+ * The Skills Environment `id` keeps (ADR-0026): each one's name, description and when it was saved, with a removal
+ * behind a confirmation. The agent saves them; every Workspace of the Environment serves them read-only.
+ */
+const SkillsSection = ({ id }: { id: string }) => {
+  const loaded = useAtomValue(environmentSkillsAtom(id));
+  const [removing, setRemoving] = useAtom(skillDialogAtom(id));
+  const removed = useAtomValue(removeSkillAtom(id));
+  const forgetRemove = useAtomSet(removeSkillAtom(id));
+  const skills = loaded.pipe(AsyncResult.value, Option.getOrNull);
+  const loadError = failureOf(loaded);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">Skills</h3>
+      {skills === null ? (
+        <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
+      ) : skills.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          None of its own: its workspaces serve the bundle's skills. The agent saves one with
+          environment_skill_save.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {skills.map((skill) => (
+            <li key={skill.name} className="flex items-start justify-between gap-2">
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate font-mono text-sm">{skill.name}</span>
+                <span className="line-clamp-2 text-xs break-words text-muted-foreground">
+                  {skill.description}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {/* A Skill's time is read against the wall clock as the card renders. */}
+                  {/* @effect-diagnostics-next-line globalDate:off */}
+                  Saved {relativeTime(skill.savedAt, Date.now())}
+                </span>
+              </span>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-8 shrink-0"
+                aria-label={`Remove ${skill.name}`}
+                title={`Remove ${skill.name}`}
+                onClick={() => {
+                  forgetRemove(Atom.Reset);
+                  setRemoving(skill.name);
+                }}
+              >
+                <Trash2 />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Dialog
+        open={removing !== null}
+        onClose={() => {
+          setRemoving(null);
+        }}
+        dismissible={!removed.waiting}
+        title={`Remove the ${removing ?? ""} skill?`}
+      >
+        {removing !== null && <RemoveSkillDialog id={id} name={removing} />}
+      </Dialog>
+    </div>
+  );
+};
+
+/**
+ * The files an Agent change of a Skill added, removed or changed, each as the lines that changed. The texts are asked
+ * for when the row shows, since the change records only their hashes.
+ */
+const SkillChangeDiff = ({ environment, change }: { environment: string; change: number }) => {
+  const loaded = useAtomValue(skillChangeFilesAtom(skillChangeKey(environment, change)));
+  const loadError = failureOf(loaded);
+  const files = loaded.pipe(AsyncResult.value, Option.map(skillFileDiffs), Option.getOrNull);
+
+  if (files === null) {
+    return <p className="text-xs text-muted-foreground">{loadError ?? "Loading the files…"}</p>;
+  }
+
+  if (files.length === 0) {
+    return <p className="text-xs text-muted-foreground">No file changed.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {files.map((file) => (
+        <div key={file.path} className="flex min-w-0 flex-col gap-0.5">
+          <span className="font-mono text-xs break-all text-muted-foreground">
+            {file.path}
+            {file.status === "changed" ? "" : ` (${file.status})`}
+          </span>
+          <ChangeDiff rows={file.rows} />
+        </div>
+      ))}
+    </div>
+  );
+};
+
 /** A value before or after an Agent change, in full: a variable's can be long, so it scrolls. */
 const ChangeValue = ({ label, value }: { label: string; value: AgentChange["before"] }) => (
   <div className="flex min-w-0 flex-col gap-0.5">
@@ -1293,8 +1446,9 @@ export const AgentChangeRow = ({
   dismissing: boolean;
   onDismiss: () => void;
 }) => {
-  // A script or the Toolchains is long: it shows as the lines that changed.
+  // A script or the Toolchains is long: it shows as the lines that changed. So does each file of a Skill.
   const diff = changeDiff(change.field, change.before, change.after);
+  const skill = fieldSkill(change.field) !== null;
 
   return (
     <li className="flex flex-col gap-1.5 rounded-md border p-2">
@@ -1344,7 +1498,9 @@ export const AgentChangeRow = ({
         </div>
       </div>
       {change.reason !== "" && <p className="text-sm break-words">{change.reason}</p>}
-      {diff === undefined ? (
+      {skill ? (
+        <SkillChangeDiff environment={change.scope} change={change.id} />
+      ) : diff === undefined ? (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <ChangeValue label="Before" value={change.before} />
           <ChangeValue label="After" value={change.after} />
@@ -1879,6 +2035,7 @@ const EnvironmentCard = ({
       <DialogProblem problem={reposError} />
       <VariablesSummary id={id} />
       <SecretsSection sectionKey={id} title="Secrets" empty="None kept for this environment." />
+      <SkillsSection id={id} />
       <BuildStatus id={id} />
       <AgentChangesSection id={id} sessions={sessions} />
       <div className="flex flex-col gap-2">

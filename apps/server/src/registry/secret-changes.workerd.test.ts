@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { keepSecretAs, openEnvironmentSecrets, type SecretKept } from "./environment-secrets.ts";
 import { deleteSecretAs, markSecretBuildAs } from "./secret-changes.ts";
-import type { TestRegistry } from "./store.fixture.ts";
+import { noSkills, type TestRegistry } from "./store.fixture.ts";
 import { EVERY_ENVIRONMENT_SCOPE, openRegistryStore } from "./store.ts";
 
 const MASTER = "test-master-key-0123456789abcdef0123456789";
@@ -92,7 +92,14 @@ const inRegistry = <A>(
             at,
           ),
         revert: (environment, id, at = 3_000) =>
-          revertAgentChange(state.storage, store, changes, { environment, id }, at),
+          revertAgentChange(
+            state.storage,
+            store,
+            changes,
+            { environment, id },
+            at,
+            noSkills(state.storage),
+          ),
         dump: () =>
           JSON.stringify([
             state.storage.sql.exec("SELECT * FROM agent_changes").toArray(),

@@ -3,7 +3,8 @@
 // variables for every Environment, with the id `*`), and one tool for each of the other Container settings
 // (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,
 // `environment_start_script_set`, `environment_toolchains_set` and `environment_ignore_set`), and
-// `environment_secret_build` for the Build mark of a kept Secret. Each change is an Agent change: the Registry applies
+// `environment_secret_build` for the Build mark of a kept Secret, and `environment_skill_save` and
+// `environment_skill_remove` for its own Skills (`environment-skills.ts`). Each change is an Agent change: the Registry applies
 // it as the owner's save is applied and records it, the Session hands a change to its own Environment to its Workspace
 // at once, and the Run's end notifies the owner of the changes it made (`AgentChangeLog`). They are the root
 // conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when a
@@ -27,6 +28,8 @@ import {
   type AgentChange,
   type BuildView,
   type EnvironmentRepo,
+  type EnvironmentSkill,
+  SKILLS_ROOT,
   variableField,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
@@ -46,6 +49,7 @@ import {
   type SecretMarks,
   secretMarkTools,
 } from "./environment-secret-marks.ts";
+import { type EnvironmentSkills, skillTools } from "./environment-skills.ts";
 import { holdsGitHubToken } from "./github-tokens.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
@@ -57,6 +61,8 @@ export {
   type SecretMarked,
   type SecretMarks,
 } from "./environment-secret-marks.ts";
+
+export type { EnvironmentSkills, SkillRemoved, SkillSaved } from "./environment-skills.ts";
 
 export const extensionName = "environment";
 
@@ -79,7 +85,10 @@ export type KeptSecretListing = {
   readonly build: boolean;
 };
 
-/** An Environment as `environment_get` shows it: its listing, every Container setting, and its kept Secrets' names. */
+/**
+ * An Environment as `environment_get` shows it: its listing, every Container setting, its kept Secrets' names and its
+ * own Skills.
+ */
 export type EnvironmentDetails = EnvironmentListing & {
   readonly settings: ContainerSettings;
   /** Why only some of the saved settings apply, when a later release no longer accepts one. */
@@ -87,6 +96,8 @@ export type EnvironmentDetails = EnvironmentListing & {
   readonly secrets: ReadonlyArray<KeptSecretListing>;
   /** The variables kept for every Environment, which the Environment's own of the same name override. */
   readonly everyVariables: Readonly<Record<string, string>>;
+  /** The Skills it keeps, as `environment_get` lists them. */
+  readonly skills: ReadonlyArray<EnvironmentSkill>;
 };
 
 /**
@@ -181,7 +192,8 @@ export type EnvironmentsService = {
     readonly author: ChangeAuthor;
   }) => Effect.Effect<AppliedChange, EnvironmentsError>;
 } & EnvironmentLifecycle &
-  SecretMarks;
+  SecretMarks &
+  EnvironmentSkills;
 
 export class Environments extends Context.Service<Environments, EnvironmentsService>()(
   "@cloudpid/extensions/environment/Environments",
@@ -320,6 +332,17 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
+      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over the bundle's of the same name; environment_skill_save and environment_skill_remove change them): ${
+        details.skills.length === 0
+          ? "none"
+          : Arr.join(
+              Arr.map(
+                details.skills,
+                (skill) => `\n  ${skill.name} (saved ${iso(skill.savedAt)}): ${skill.description}`,
+              ),
+              "",
+            )
+      }`,
       `Build: ${describeBuild(details.build)}`,
       ...(details.problem === undefined
         ? []
@@ -441,7 +464,8 @@ const plainValue = (value: Schema.Json | null): string =>
 const pathsLine = (value: Schema.Json | null): string =>
   Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
-const Id = Schema.String.annotate({
+/** A tool's `id`: one Environment, the Session's own by default. */
+export const Id = Schema.String.annotate({
   description:
     "The Environment's id, as environment_list shows it (default: this Session's Environment)",
 });
@@ -466,7 +490,8 @@ export const refuseEveryEnvironment = (id: string | undefined) =>
       })
     : Effect.void;
 
-const Reason = Schema.String.check(
+/** A changing tool's required `reason`, 1 to `MAX_CHANGE_REASON` characters; a tool may annotate its own example. */
+export const Reason = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(MAX_CHANGE_REASON),
 ).annotate({
@@ -788,7 +813,7 @@ export const EnvironmentTools: Effect.Effect<
 
   const get = yield* defineEffectTool({
     name: "environment_get",
-    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains), the variables kept for every Environment that its own do not override, the names of the Secrets kept for it and for every Environment (never their values), and how its Build stands, with the end of the last failed Build's reason. With id "${EVERY_ENVIRONMENT_ID}", show what is kept for every Environment instead: its variables and the names of its Secrets.`,
+    description: `Show an Environment (this Session's unless id names another): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains), the variables kept for every Environment that its own do not override, the names of the Secrets kept for it and for every Environment (never their values), its own Skills (name, description, when saved), and how its Build stands, with the end of the last failed Build's reason. With id "${EVERY_ENVIRONMENT_ID}", show what is kept for every Environment instead: its variables and the names of its Secrets.`,
     parameters: Schema.Struct({
       id: Schema.optionalKey(idOrEvery("the variables and Secrets kept for every Environment")),
     }),
@@ -1106,6 +1131,7 @@ export const EnvironmentTools: Effect.Effect<
 
   const lifecycle = yield* lifecycleTools({ environments, log, refuseSecrets, target, notFound });
   const secretMarks = yield* secretMarkTools({ environments, log, refuseSecrets, target });
+  const skills = yield* skillTools({ environments, log, refuseSecrets, target, notFound });
 
   return defineExtension({
     name: extensionName,
@@ -1122,6 +1148,7 @@ export const EnvironmentTools: Effect.Effect<
       ignore,
       ...lifecycle,
       ...secretMarks,
+      ...skills,
     ],
   });
 });

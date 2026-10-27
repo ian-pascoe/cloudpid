@@ -407,6 +407,7 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
         changing([
           `agent-changes:${id}`,
           `environment-settings:${id}`,
+          `environment-skills:${id}`,
           "every-environment",
           "environment-secrets",
           "builds",
@@ -415,6 +416,60 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
       ),
     { concurrent: true },
   ),
+);
+
+/**
+ * The Skills Environment `id` keeps (ADR-0026), by name, asked again every few seconds while the page is visible: a
+ * Session's agent saves and removes them, which the page hears of no other way.
+ */
+export const environmentSkillsAtom = Atom.family((id: string) =>
+  RegistryClient.query(
+    "listEnvironmentSkills",
+    { environment: id },
+    { reactivityKeys: [`environment-skills:${id}`] },
+  ).pipe(Atom.makeRefreshOnSignal(visibleTickAtom)),
+);
+
+/** The Skill of Environment `id` whose Remove dialog is open, by name: null when none is. */
+export const skillDialogAtom = Atom.family((_id: string) => Atom.make<string | null>(null));
+
+/**
+ * Remove Skill `name` from Environment `id`: its Workspaces stop serving it at their next readying. Once it is removed,
+ * its dialog closes.
+ */
+export const removeSkillAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    (name: string, get) =>
+      RegistryClient.use((registry) =>
+        registry("removeEnvironmentSkill", { environment: id, name }),
+      ).pipe(
+        changing([`environment-skills:${id}`]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(skillDialogAtom(id), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** One Agent change of an Environment, as `skillChangeFilesAtom` is keyed. */
+export interface SkillChangeKey {
+  readonly environment: string;
+  readonly change: number;
+}
+
+/** The key of Agent change `change` of Environment `environment`, so equal keys are equal values, as a family compares them. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain constructor of a key, called from React.
+export const skillChangeKey = (environment: string, change: number): SkillChangeKey => ({
+  environment,
+  change,
+});
+
+/** The files of a Skill before and after an Agent change, to show as diffs. A change does not change: asked once. */
+export const skillChangeFilesAtom = Atom.family(({ environment, change }: SkillChangeKey) =>
+  RegistryClient.query("skillChangeFiles", { environment, change }),
 );
 
 /**

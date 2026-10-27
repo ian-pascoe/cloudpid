@@ -7,7 +7,7 @@
 //   node scripts/sync-skills.mjs --source <dir>  # a source directory (repeatable; first match wins)
 //
 // A skill is copied whole (symbolic links followed, so the copy holds contents, not links) minus the paths in
-// `EXCLUDED_PATHS`. Only text is bundled (`skills-checks.ts`: no binaries, no large files, nothing that looks like a
+// `EXCLUDED_PATHS`. Only text is bundled (`packages/extensions/src/skill-checks.ts`, a saved Skill's checks: no binaries, no large files, nothing that looks like a
 // credential), and every skill must name the upstream it comes from, whose licence text is kept in `skills/LICENSES/`.
 // A skill whose provenance and licence cannot be established is not bundled.
 // docs/spec.md → Filesystem and tools, AGENTS.md → Skills.
@@ -25,7 +25,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_TOTAL_BYTES, problemsIn } from "./skills-checks.ts";
+import { MAX_TOTAL_BYTES, problemsIn } from "../packages/extensions/src/skill-checks.ts";
 
 /** Where the bundled skills come from, and the licence text kept in `skills/LICENSES/` (vendored by hand). */
 export const SOURCES = {

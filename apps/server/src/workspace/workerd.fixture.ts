@@ -17,7 +17,7 @@ import type { Answers } from "./github-pulls.fixtures.ts";
 import type { ContainerPreviewActivity } from "./container-preview.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
-import type { SkillSet } from "./skill-set.ts";
+import type { SkillSet } from "./bundled-skill-set.ts";
 
 /** The start of the hash of a Skill set the test Worker cannot write into the files (`writeSkillSet`). */
 export const UNWRITABLE_SKILL_SET = "sha256:unwritable";
