@@ -24,4 +24,4 @@ A Subagent Workspace lasts as long as its subagent. `subagent_cancel` keeps it (
 - A child runs at the Environment's size and may `container_resize` itself up to `maxInstance`; its restart or resize stops only its own Container.
 - The unpushed-work check runs `git` on the child's Container, starting it if it is stopped, at each report and each delete.
 - A Subagent Workspace takes no new Session: `createSession` refuses one, and the Environments page offers no _New session here_ on it.
-- Files, Changes and Terminal panes show the Session's Workspace only, and the owner cannot start a subagent in a new Workspace from the UI.
+- Files, Changes and Terminal panes show the Session's Workspace only, and the owner cannot start a subagent in a new Workspace from the UI. (Changes: superseded by ADR-0024, whose Subagent page shows a Subagent's Workspace's Changes.)

@@ -18,6 +18,9 @@ import {
   ENVIRONMENTS_PATH,
   DRAFT_PATH,
   withPaneParams,
+  agentIdOf,
+  pageOf,
+  subagentPath,
 } from "./router.ts";
 
 describe("Session paths", () => {
@@ -32,6 +35,45 @@ describe("Session paths", () => {
     expect(sessionIdOf("/sessions")).toBeUndefined();
     expect(sessionIdOf("/sessions/abc/socket")).toBeUndefined();
     expect(sessionIdOf("/sessions/abc/")).toBe("abc");
+  });
+});
+
+describe("Subagent page paths", () => {
+  it("round-trip a Session ID and an agent's canonical ID, encoded", () => {
+    const path = subagentPath("s 1", "agent-1.reviewer");
+
+    expect(path).toBe("/sessions/s%201/agents/agent-1.reviewer");
+    expect(agentIdOf(path)).toBe("agent-1.reviewer");
+    expect(agentIdOf(subagentPath("a", "agent-2/odd name"))).toBe("agent-2/odd name");
+  });
+
+  it("show their Session, as the page is of one of its subagents", () => {
+    expect(sessionIdOf(subagentPath("abc", "agent-1"))).toBe("abc");
+    expect(sessionIdOf("/sessions/abc/agents/agent-1/")).toBe("abc");
+    expect(agentIdOf("/sessions/abc/agents/agent-1/")).toBe("agent-1");
+  });
+
+  it("name no subagent on any other path", () => {
+    expect(agentIdOf(sessionPath("abc"))).toBeUndefined();
+    expect(agentIdOf("/sessions/abc/agents")).toBeUndefined();
+    expect(agentIdOf("/sessions/abc/agents/")).toBeUndefined();
+    expect(agentIdOf("/sessions/abc/agents/a/b")).toBeUndefined();
+    expect(sessionIdOf("/sessions/abc/agents/a/b")).toBeUndefined();
+    expect(agentIdOf(SETTINGS_PATH)).toBeUndefined();
+  });
+
+  it("are a page of their own kind", () => {
+    expect(pageOf(subagentPath("abc", "agent-1"))).toEqual({
+      kind: "subagent",
+      sessionId: "abc",
+      agentId: "agent-1",
+    });
+    expect(pageOf(sessionPath("abc"))).toEqual({ kind: "session", sessionId: "abc" });
+  });
+
+  it("keep a path that cannot be decoded from showing anything", () => {
+    expect(pageOf("/sessions/abc/agents/%E0%A4%A")).toEqual({ kind: "empty" });
+    expect(pageOf("/sessions/%E0%A4%A")).toEqual({ kind: "empty" });
   });
 });
 

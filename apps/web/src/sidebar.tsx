@@ -23,10 +23,13 @@ import {
 } from "react";
 import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
+import { InAppLink } from "./in-app-link.tsx";
 import { cn } from "./lib/utils.ts";
 import { DRAFT_PATH, ENVIRONMENTS_PATH, navigate, SETTINGS_PATH, sessionPath } from "./router.ts";
 import { listProblemAtom, noticeAtom } from "./app-state.ts";
 import { groupCollapsedAtom, groupKey, type ListSection } from "./collapsed-groups.ts";
+import { subagentRows, subagentsExpandedAtom } from "./list-subagents.ts";
+import { SubagentList, SubagentsToggle } from "./sidebar-subagents.tsx";
 import { useSessionActions } from "./session-actions.ts";
 import { type SessionActions, SessionMenu } from "./session-menu.tsx";
 import { sessionListAtom, sessionsErrorAtom } from "./sessions.ts";
@@ -54,24 +57,22 @@ const SessionPlaceNote = ({ session }: { session: SessionRecord }) => {
 export const SessionLink = ({
   session,
   active,
+  contains = false,
   className,
 }: {
   session: SessionRecord;
   active: boolean;
+  /** The page shown is one of its Subagent pages: a lighter tint than the page's own. */
+  contains?: boolean;
   className?: string;
 }) => (
-  <a
+  <InAppLink
     href={sessionPath(session.id)}
     aria-current={active ? "page" : undefined}
-    onClick={(event) => {
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-      event.preventDefault();
-      navigate(sessionPath(session.id));
-    }}
     className={cn(
       "flex flex-col gap-0.5 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent",
       active && "bg-accent text-accent-foreground",
+      !active && contains && "bg-accent/50",
       className,
     )}
   >
@@ -89,34 +90,80 @@ export const SessionLink = ({
         </span>
       )}
     </span>
-  </a>
+  </InAppLink>
 );
+
+/** The page shown, as the list marks it: a Session's page, or one of its Subagent pages. */
+export interface ShownPage {
+  readonly sessionId: string;
+  readonly agentId?: string | undefined;
+}
 
 /**
  * A Session in the list, with its "⋯" menu at the right. On a screen with a pointer the button shows on hover or keyboard
- * focus (and while its menu is open); on a touch screen it always shows.
+ * focus (and while its menu is open); on a touch screen it always shows. A Session with subagents has a button that
+ * shows them under it, as a tree by parent (ADR-0024), each opening its Subagent page.
  */
 const SessionItem = ({
   session,
-  active,
+  shown,
   environmentName,
   actions,
 }: {
   session: SessionRecord;
-  active: boolean;
+  shown: ShownPage | undefined;
   environmentName: string;
   actions: SessionActions;
-}) => (
-  <li className="group relative">
-    <SessionLink session={session} active={active} className="pr-10" />
-    <SessionMenu
-      session={session}
-      environmentName={environmentName}
-      actions={actions}
-      className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 group-has-[:popover-open]:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-    />
-  </li>
-);
+}) => {
+  const [expanded, setExpanded] = useAtom(subagentsExpandedAtom(session.id));
+  const listId = useId();
+  const rows = subagentRows(session.agents);
+  const here = shown?.sessionId === session.id;
+  const active = here && shown.agentId === undefined;
+  const hasAgents = rows.length > 0;
+
+  return (
+    <li>
+      <div className="group relative">
+        <SessionLink
+          session={session}
+          active={active}
+          contains={here && !active}
+          className={hasAgents ? "pr-12" : "pr-10"}
+        />
+        <SessionMenu
+          session={session}
+          environmentName={environmentName}
+          actions={actions}
+          className={cn(
+            "absolute right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 group-has-[:popover-open]:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100",
+            // Above the subagents' button, which sits under it.
+            hasAgents ? "top-1 size-7" : "top-1.5",
+          )}
+        />
+        {hasAgents && (
+          <SubagentsToggle
+            session={session}
+            expanded={expanded}
+            locked={here && !active}
+            controls={listId}
+            onToggle={() => {
+              setExpanded(!expanded);
+            }}
+          />
+        )}
+      </div>
+      {hasAgents && expanded && (
+        <SubagentList
+          id={listId}
+          session={session}
+          rows={rows}
+          currentAgent={here ? shown.agentId : undefined}
+        />
+      )}
+    </li>
+  );
+};
 
 /**
  * An Environment's Sessions under a header that collapses them, kept per device. The header counts them and, collapsed,
@@ -125,12 +172,12 @@ const SessionItem = ({
 const SessionGroup = ({
   group,
   section,
-  activeId,
+  shown,
   actions,
 }: {
   group: EnvironmentGroup;
   section: ListSection;
-  activeId: string | undefined;
+  shown: ShownPage | undefined;
   actions: SessionActions;
 }) => {
   const [collapsed, setCollapsed] = useAtom(
@@ -177,7 +224,7 @@ const SessionGroup = ({
             <SessionItem
               key={session.id}
               session={session}
-              active={session.id === activeId}
+              shown={shown}
               environmentName={group.name}
               actions={actions}
             />
@@ -192,12 +239,12 @@ const SessionGroup = ({
 const SessionGroups = ({
   groups,
   section,
-  activeId,
+  shown,
   actions,
 }: {
   groups: readonly EnvironmentGroup[];
   section: ListSection;
-  activeId: string | undefined;
+  shown: ShownPage | undefined;
   actions: SessionActions;
 }) => (
   <div className="flex flex-col gap-3">
@@ -206,7 +253,7 @@ const SessionGroups = ({
         key={group.environment}
         group={group}
         section={section}
-        activeId={activeId}
+        shown={shown}
         actions={actions}
       />
     ))}
@@ -241,17 +288,11 @@ const PageLink = ({
   label: string;
   iconOnly?: boolean;
 }) => (
-  <a
+  <InAppLink
     href={href}
     aria-current={active ? "page" : undefined}
     aria-label={iconOnly ? label : undefined}
     title={iconOnly ? label : undefined}
-    onClick={(event) => {
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-
-      event.preventDefault();
-      navigate(href);
-    }}
     className={cn(
       "flex items-center rounded-md text-sm transition-colors hover:bg-accent [&_svg]:size-4",
       iconOnly ? "size-9 justify-center" : "gap-2 px-3 py-2",
@@ -260,7 +301,7 @@ const PageLink = ({
   >
     {icon}
     {!iconOnly && label}
-  </a>
+  </InAppLink>
 );
 
 /**
@@ -396,12 +437,13 @@ const SidebarRail = ({
  * it collapses to a rail of icons (kept too); on a phone it is the whole screen, in turns with the page.
  */
 export const Sidebar = ({
-  activeId,
+  shown,
   settingsActive,
   environmentsActive,
   className,
 }: {
-  activeId: string | undefined;
+  /** The Session page or Subagent page shown, if one is. */
+  shown: ShownPage | undefined;
   settingsActive: boolean;
   environmentsActive: boolean;
   className?: string;
@@ -527,14 +569,16 @@ export const Sidebar = ({
                 <SessionGroups
                   groups={groupByEnvironment(active, names)}
                   section="active"
-                  activeId={activeId}
+                  shown={shown}
                   actions={actions}
                 />
               )}
               {archived.length > 0 && (
                 <details
                   className="group/archived"
-                  open={archived.some((session) => session.id === activeId) ? true : undefined}
+                  open={
+                    archived.some((session) => session.id === shown?.sessionId) ? true : undefined
+                  }
                 >
                   <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground select-none hover:bg-accent hover:text-foreground [&::-webkit-details-marker]:hidden">
                     <ChevronRight
@@ -547,7 +591,7 @@ export const Sidebar = ({
                     <SessionGroups
                       groups={groupByEnvironment(archived, names)}
                       section="archived"
-                      activeId={activeId}
+                      shown={shown}
                       actions={actions}
                     />
                   </div>

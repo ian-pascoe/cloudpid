@@ -1,13 +1,14 @@
 // The New pane: the tab the Pane area's button opens when no Pane is open, and the tab bar's + opens beside the others.
 // It offers the Pane types the owner can open; picking one puts that Pane in this tab (or shows it where it is open
 // already). A Live View is not offered: it opens by itself when the agent hands over its browser. The Browser Pane is the
-// owner's own way into that browser, at any time.
+// owner's own way into that browser, at any time. A Subagent page offers no Session tree Pane: the tree is the root
+// conversation's.
 
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import { Bot, FileDiff, Globe, Network, type LucideIcon } from "lucide-react";
 import { use } from "react";
-import { useShownSessionId } from "./chat/conversation.ts";
+import { useShownChanges, useShownSubagent } from "./chat/conversation.ts";
 import { TreeBarScope } from "./chat/tree-actions.ts";
 import { useSubagentsWorking } from "./chat/subagents-pane.tsx";
 import { totalsText } from "./diff-pane/changes.ts";
@@ -31,32 +32,43 @@ export const NewPane = () => {
   // An archived Session cannot move in its tree, so it offers none, as it has no `/tree`; nor does it start a browser.
   const archived = use(TreeBarScope)?.archived === true;
   const working = useSubagentsWorking();
-  const changes = useAtomValue(changesTotalsAtom(useShownSessionId()));
+  const subagent = useShownSubagent();
+  const changes = useAtomValue(changesTotalsAtom(useShownChanges()));
 
   const choices: readonly Choice[] = [
     {
       key: DIFF_PANE,
       name: "Diff",
-      description: "The Changes in the Workspace: every changed file, in one scroll.",
+      description:
+        subagent === undefined
+          ? "The Changes in the Workspace: every changed file, in one scroll."
+          : `The Changes in the Workspace ${subagent.agentId} works in: every changed file, in one scroll.`,
       icon: FileDiff,
       status: changes.files > 0 ? totalsText(changes) : undefined,
     },
     {
       key: SUBAGENTS_PANE,
       name: "Subagents",
-      description: "The subagents, each opening in a pane of its own, and background work.",
+      description:
+        subagent === undefined
+          ? "The subagents, each opening in a pane of its own, and background work."
+          : `The subagents below ${subagent.agentId}, each opening in a pane of its own, and background work.`,
       icon: Bot,
       status: working > 0 ? `${working} working` : undefined,
     },
     ...(archived
       ? []
       : [
-          {
-            key: TREE_PANE,
-            name: "Session tree",
-            description: "Every branch of the conversation; go back to any message.",
-            icon: Network,
-          },
+          ...(subagent === undefined
+            ? [
+                {
+                  key: TREE_PANE,
+                  name: "Session tree",
+                  description: "Every branch of the conversation; go back to any message.",
+                  icon: Network,
+                },
+              ]
+            : []),
           {
             key: BROWSER_PANE,
             name: "Browser",

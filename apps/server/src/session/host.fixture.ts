@@ -47,6 +47,7 @@ import type {
   FileMatches,
   HistoryPage,
   Navigated,
+  SessionAgent,
   SessionTree,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
@@ -598,6 +599,11 @@ export class TestSession extends DurableObject {
                         try: () => this.#report(status),
                         catch: (cause) => ReportError.make({ message: String(cause) }),
                       }),
+                    reportAgents: (agents) =>
+                      Effect.tryPromise({
+                        try: () => this.#reportAgents(agents),
+                        catch: (cause) => ReportError.make({ message: String(cause) }),
+                      }),
                     notify: (event) =>
                       Effect.tryPromise({
                         try: () => this.#notify(event),
@@ -669,7 +675,17 @@ export class TestSession extends DurableObject {
           ),
           Layer.provideMerge(sessionOwnerTabDriversLayer(ctx)),
           Layer.provideMerge(
-            sessionChangesLayer(this.#changesSource(), { debounceMs: CHANGES_TEST_DEBOUNCE_MS }),
+            sessionChangesLayer(
+              // The test Session has no subagents, so no Subagent Workspace is ever listed.
+              {
+                session: this.#changesSource(),
+                subagent: (workspace) => ({
+                  list: () => Promise.reject(new Error(`No Workspace ${workspace.id} here`)),
+                  file: () => Promise.reject(new Error(`No Workspace ${workspace.id} here`)),
+                }),
+              },
+              { debounceMs: CHANGES_TEST_DEBOUNCE_MS },
+            ),
           ),
           Layer.provideMerge(
             annotationStoreLayer({
@@ -794,7 +810,7 @@ export class TestSession extends DurableObject {
 
   /** An agent wrote to the Session's Workspace, as a writing tool's call reports. */
   wrote(): void {
-    this.#changes.written();
+    this.#changes.written(undefined);
   }
 
   /** A client's socket to the Session, as the Session DO answers the main Worker's upgrade. */
@@ -1501,6 +1517,35 @@ export class TestSession extends DurableObject {
       Date.now(),
     );
     kv.put("reported", [...(kv.get<SessionStatus[]>("reported") ?? []), status]);
+  }
+
+  /** As `#report`, for the subagents: it fails and hangs with the status reports. */
+  async #reportAgents(agents: ReadonlyArray<SessionAgent>): Promise<void> {
+    const { kv } = this.ctx.storage;
+    const mode = kv.get<string>("reportMode");
+
+    if (mode === "failing") throw new Error("Registry is down");
+
+    if (mode === "hanging") await new Promise(() => undefined);
+
+    const registry = kv.get<string>("registry");
+
+    if (registry !== undefined) {
+      await this.env.REGISTRIES.getByName(registry).setSessionAgents(
+        this.ctx.id.name ?? "",
+        agents,
+      );
+    }
+
+    kv.put("reportedAgents", [
+      ...(kv.get<ReadonlyArray<SessionAgent>[]>("reportedAgents") ?? []),
+      agents,
+    ]);
+  }
+
+  /** The subagents this Session reported to the Registry, oldest first. */
+  reportedAgents(): ReadonlyArray<ReadonlyArray<SessionAgent>> {
+    return this.ctx.storage.kv.get<ReadonlyArray<SessionAgent>[]>("reportedAgents") ?? [];
   }
 
   /** The next scripted response; the script position is stored before the response is used. */

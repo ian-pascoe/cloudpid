@@ -6,6 +6,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { callDurable, Harness } from "@cloudpid/effect-durable";
 import {
+  type AgentWorkspace,
   defaultSubagentSettings,
   Subagents,
   SubagentsDoc,
@@ -20,7 +21,13 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ConversationId, UserInput } from "@earendil-works/pi-durable";
-import type { Catalog, CommandOutcome, FileMatches, TaskGraphSummary } from "@cloudpid/protocol";
+import type {
+  Catalog,
+  CommandOutcome,
+  FileMatches,
+  SessionAgent,
+  TaskGraphSummary,
+} from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -45,10 +52,20 @@ import {
 } from "./host.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { sessionSettingsLayer } from "./settings.ts";
-import { SessionRegistry } from "./status.ts";
+import { ReportError, SessionRegistry } from "./status.ts";
 
 /** Set once the child may answer; until then its requests hang until they are interrupted. */
 const RELEASED = "released";
+
+/** The subagents the Session reported to the Registry, oldest first, and whether those reports fail. */
+const AGENT_REPORTS = "agent-reports";
+const AGENT_REPORTS_FAIL = "agent-reports-fail";
+
+/** What `followWorkspaces` saw so far (null: the Session's Workspace), and why its stream ended, if it did. */
+type FollowedWorkspaces = { seen: (AgentWorkspace | null)[]; ended?: string };
+
+/** The shortest time between two reports of the subagents, short so a test sees the throttled ones. */
+export const AGENTS_REPORT_TEST_MS = 100;
 
 const text = (content: Message["content"]): string =>
   Predicate.isString(content)
@@ -107,11 +124,22 @@ export class TestSubagentSession extends DurableObject {
           extensions: Effect.map(subagents, (extension) => [extension]),
           env: fakeWorkspaceEnv(ctx.storage.kv),
           expandTimeout: "1 second",
+          agentsReportMs: AGENTS_REPORT_TEST_MS,
         }).pipe(
           Layer.provide(
             Layer.mergeAll(
               Layer.succeed(SessionRegistry, {
                 report: () => Effect.void,
+                // Recorded in storage, so a test reads them across instances; `failAgentReports` makes them fail.
+                reportAgents: (agents) =>
+                  ctx.storage.kv.get<boolean>(AGENT_REPORTS_FAIL) === true
+                    ? Effect.fail(ReportError.make({ message: "The Registry is down" }))
+                    : Effect.sync(() => {
+                        ctx.storage.kv.put(AGENT_REPORTS, [
+                          ...(ctx.storage.kv.get<SessionAgent[][]>(AGENT_REPORTS) ?? []),
+                          agents,
+                        ]);
+                      }),
                 notify: () => Effect.void,
                 titleWanted: Effect.succeed(false),
                 setTitle: () => Effect.void,
@@ -204,6 +232,89 @@ export class TestSubagentSession extends DurableObject {
       if (signal?.aborted === true) abort();
       else signal?.addEventListener("abort", abort, { once: true });
     });
+  }
+
+  /** The subagents the Session reported to the Registry, oldest first. */
+  agentReports(): ReadonlyArray<ReadonlyArray<SessionAgent>> {
+    return this.ctx.storage.kv.get<SessionAgent[][]>(AGENT_REPORTS) ?? [];
+  }
+
+  /** Make the reports of the subagents fail, or work again. */
+  failAgentReports(failing: boolean): void {
+    this.ctx.storage.kv.put(AGENT_REPORTS_FAIL, failing);
+  }
+
+  /** Stop everything, as archiving the Session does. */
+  stopEverything(): Promise<void> {
+    return this.#runtime.runPromise(Effect.flatMap(SessionHost, (host) => host.stopEverything));
+  }
+
+  /** The Subagent Workspace of conversation `id`'s Changes (null: the Session's), or why it has none. */
+  workspaceOf(
+    id: ConversationId,
+  ): Promise<{ readonly workspace: AgentWorkspace | null } | { readonly failure: string }> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(SessionHost, (host) => host.workspaceOf(id)).pipe(
+        Effect.map((workspace) => ({ workspace: workspace ?? null })),
+        Effect.catch((error) => Effect.succeed({ failure: error.message })),
+      ),
+    );
+  }
+
+  /** Give subagent `agent` a Subagent Workspace in the Subagents document, as a spawn in a new Workspace does. */
+  giveWorkspace(agent: string, workspace: AgentWorkspace): Promise<void> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(Harness, ({ harness }) =>
+        callDurable("commit", (context) =>
+          harness.commit(async (tx) => {
+            const record = (await tx.doc(SubagentsDoc)).agents[agent];
+
+            if (record !== undefined) record.workspace = { ...workspace };
+          }, context),
+        ),
+      ),
+    );
+  }
+
+  #followed: FollowedWorkspaces = { seen: [] };
+
+  /** Follow conversation `id`'s Workspace (`SessionHost.workspaces`) in the background, in this instance. */
+  followWorkspaces(id: ConversationId): void {
+    const followed: FollowedWorkspaces = { seen: [] };
+
+    this.#followed = followed;
+    void this.#runtime.runPromise(
+      Stream.unwrap(Effect.map(SessionHost, (host) => host.workspaces(id))).pipe(
+        Stream.runForEach((workspace) => Effect.sync(() => followed.seen.push(workspace ?? null))),
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            followed.ended = error.message;
+          }),
+        ),
+      ),
+    );
+  }
+
+  followedWorkspaces(): FollowedWorkspaces {
+    return { ...this.#followed, seen: [...this.#followed.seen] };
+  }
+
+  /** Take subagent `agent` out of the Subagents document, as deleting it does. */
+  forgetAgent(agent: string): Promise<void> {
+    return this.#runtime.runPromise(
+      Effect.flatMap(Harness, ({ harness }) =>
+        callDurable("commit", (context) =>
+          harness.commit(async (tx) => {
+            const state = await tx.doc(SubagentsDoc);
+            const conversationId = state.agents[agent]?.conversationId;
+
+            delete state.agents[agent];
+
+            if (conversationId !== undefined) delete state.conversations[String(conversationId)];
+          }, context),
+        ),
+      ),
+    );
   }
 
   /** Let the child's hanging request answer now. */

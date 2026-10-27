@@ -1,18 +1,21 @@
 // A `subagent` tool call as a card: which agent it started (role, model, and the branch of its Subagent Workspace when
-// it has one) and whether it is working, opening into the agent's live thread.
+// it has one) and whether it is working, opening into the agent's live thread, with a link to its Subagent page.
 
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 import type { GraphAgent } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Predicate from "effect/Predicate";
-import { Bot, ChevronRight, GitBranch, Loader, Square } from "lucide-react";
+import { Bot, ChevronRight, ExternalLink, GitBranch, Loader, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
+import { cn } from "../lib/utils.ts";
+import { InAppLink } from "../in-app-link.tsx";
+import { subagentPath } from "../router.ts";
 import { agentOfConversation } from "../session/agents.ts";
 import { abortAtom, taskGraphAtom } from "../session/atoms.ts";
 import { subagentCardOpenAtom } from "../session-layout-state.ts";
 import { ChildThread } from "./child-thread.tsx";
-import { useShownSessionId } from "./conversation.ts";
+import { useShownLayoutKey, useShownSessionId } from "./conversation.ts";
 import type { StartedSubagent } from "./subagent.ts";
 
 /** How an agent is doing, as the card and the panel say it. */
@@ -45,11 +48,12 @@ export const shortModel = (model: string): string => model.slice(model.indexOf("
 
 /**
  * What an agent is, as a row of the Subagents Pane and a Subagent Pane's header show it: its ID, role, model, and the
- * branch of its Subagent Workspace.
+ * branch of its Subagent Workspace. A Subagent page's header names the agent in its breadcrumb, so it leaves the ID out
+ * (`named`).
  */
-export const AgentSummary = ({ agent }: { agent: GraphAgent }) => (
+export const AgentSummary = ({ agent, named = false }: { agent: GraphAgent; named?: boolean }) => (
   <>
-    <span className="font-mono text-[0.8125rem]">{agent.id}</span>
+    {!named && <span className="font-mono text-[0.8125rem]">{agent.id}</span>}
     {agent.role !== null && (
       <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{agent.role}</span>
     )}
@@ -61,6 +65,38 @@ export const AgentSummary = ({ agent }: { agent: GraphAgent }) => (
     </span>
   </>
 );
+
+/**
+ * A link to the Subagent page of agent `agentId` (its canonical ID) in the Session shown: its conversation as a page of
+ * its own, with its Changes and its own Panes. A modified click opens it as the browser does (a new tab).
+ */
+export const OpenPageLink = ({
+  agentId,
+  className,
+}: {
+  agentId: string;
+  className?: string | undefined;
+}) => {
+  const href = subagentPath(useShownSessionId(), agentId);
+
+  return (
+    <InAppLink
+      href={href}
+      aria-label={`Open the page of ${agentId}`}
+      title={`Open the page of ${agentId}`}
+      onClick={(event) => {
+        // Inside a card's summary, a click must not also toggle the card.
+        event.stopPropagation();
+      }}
+      className={cn(
+        "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground [&_svg]:size-3.5",
+        className,
+      )}
+    >
+      <ExternalLink aria-hidden />
+    </InAppLink>
+  );
+};
 
 /** Stops an agent's conversation, never the agents below it, while it works; nothing while it does not. */
 export const AgentStopButton = ({ agent }: { agent: GraphAgent | undefined }) => {
@@ -99,7 +135,10 @@ type CardProps = {
  */
 export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
   const sessionId = useShownSessionId();
-  const [open, setOpen] = useAtom(subagentCardOpenAtom(sessionId, subagent.conversationId));
+
+  const [open, setOpen] = useAtom(
+    subagentCardOpenAtom(useShownLayoutKey(), subagent.conversationId),
+  );
 
   const agent = useAtomValue(taskGraphAtom(sessionId), (graph) =>
     agentOfConversation(graph, subagent.conversationId),
@@ -132,6 +171,7 @@ export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
         <span className="ml-auto shrink-0">
           <AgentStatus agent={agent} />
         </span>
+        <OpenPageLink agentId={subagent.agentId} className="-my-1 -mr-1.5" />
       </summary>
       {open && (
         <div className="border-t px-3 py-2">

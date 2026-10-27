@@ -44,6 +44,10 @@ _Avoid_: Copy, duplicate
 A child agent whose conversation is owned by its parent within the same Session. It works in its parent's Workspace unless it has a Subagent Workspace.
 _Avoid_: Child session, worker, sub-session
 
+**Subagent page**:
+The page of one Subagent within its Session, opened from under its Session in the Session list: its conversation as the page's chat and what it works on (its Workspace's Changes, its own Panes), apart from the rest of the Session. It is not a Session: Usage, the Spend limit and the Session's actions stay the Session's.
+_Avoid_: Subagent session, child Session, Subagent Pane (that is a Pane beside another conversation)
+
 **Run**:
 The turns an agent takes from one input to its final answer.
 _Avoid_: Job, execution
@@ -213,7 +217,7 @@ A small panel over the top right of a Session's chat with what the owner follows
 _Avoid_: Activity card, Activity overlay, Session preview (a preview is a pull request's preview stage), popover, todo panel
 
 **Session layout**:
-What the owner opened, collapsed and picked on a Session's page (its Panes, the Session details, open subagents and disclosures, the Session tree's filter), kept per Session on the device so the Session shows again as it was left.
+What the owner opened, collapsed and picked on a Session's page (its Panes, the Session details, open subagents and disclosures, the Session tree's filter), kept per Session, and per Subagent page, on the device so the Session shows again as it was left.
 _Avoid_: View state, UI state
 
 **Offered tool**:

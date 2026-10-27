@@ -20,6 +20,7 @@ import {
   type AnnotatedItem,
   annotatedItems,
   paneAnchor,
+  paneDrafts,
 } from "./annotated-items.ts";
 import { itemsOf, type Items } from "./items.ts";
 import { fileLoader, type Loads, type WantedFile } from "./loader.ts";
@@ -82,11 +83,11 @@ export interface ViewAtoms {
 
 /** The atoms of the scroll of `pane`. */
 export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
-  const { sessionId, files, folded } = pane;
+  const { changes, files, folded } = pane;
 
   const held = appRuntime.atom((get) =>
     Effect.gen(function* () {
-      const client = yield* get.result(sessionClientAtom(sessionId));
+      const client = yield* get.result(sessionClientAtom(changes.sessionId));
 
       const lineUp = yield* Effect.acquireRelease(
         Effect.sync(() => lineUpWorker.acquire()),
@@ -100,7 +101,8 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
       );
 
       const loader = yield* fileLoader({
-        changeFile: client.changeFile,
+        // From the Workspace whose Changes the Pane shows.
+        changeFile: (query) => client.changeFile(query, changes.conversationId),
         lineUp: lineUp.lineUp,
       });
 
@@ -149,7 +151,7 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
 
     if (at === null) return [];
 
-    const listing = get(changesAtom(sessionId))?.listing ?? 0;
+    const listing = get(changesAtom(changes))?.listing ?? 0;
     const shut = get(folded);
     const byId = new Map(get(files).map((file) => [file.id, file]));
 
@@ -170,9 +172,11 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
 
   const editor = editorAtom();
 
+  const drafting = paneDrafts(changes);
+
   const annotatedById = Atom.make((get): Annotated => {
-    const drafts = get(annotationsAtom(sessionId));
-    const repos = get(changesAtom(sessionId))?.repos ?? [];
+    const drafts = get(annotationsAtom(changes.sessionId));
+    const repos = get(changesAtom(changes))?.repos ?? [];
     const open = get(editor);
     const byId = new Map(get(files).map((file) => [file.id, file]));
 
@@ -181,7 +185,7 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
       (id) => {
         const file = byId.get(id);
 
-        if (file === undefined) return [];
+        if (file === undefined || !drafting) return [];
 
         return diffDrafts(drafts, paneAnchor(file, repos), open, id).lineAnnotations;
       },

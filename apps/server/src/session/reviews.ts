@@ -149,7 +149,7 @@ export const sessionReviewsLayer = (
                     oldPath: listed.entry.oldPath,
                   };
 
-            return changes.file(query).pipe(
+            return changes.file(undefined, query).pipe(
               Effect.map((file) =>
                 onFile.flatMap((before) => {
                   const lines = sideLines(before, file);

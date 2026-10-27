@@ -6,13 +6,20 @@ import {
   type AnnotationDraft,
   type BrowserHandoffRequest,
   type SecretKeep,
+  type TodoTask,
   type WhenBusy,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { replying } from "../calls.ts";
 import { appRuntime } from "../runtime.ts";
+import type { ConversationKey } from "./conversation-key.ts";
 import { make } from "./client.ts";
 import {
   INITIAL_SESSION_STATE,
@@ -144,24 +151,43 @@ export const usageAtom = Atom.family((sessionId: string) =>
   }),
 );
 
-/** Watches the Changes of the Session's Workspace while mounted (a new socket asks again). */
-const watchingChangesAtom = Atom.family((sessionId: string) =>
+/**
+ * Watches the Changes `key` names while mounted: the Session's for as long as its client lives (a new socket asks
+ * again), a subagent conversation's until nothing mounts this any more.
+ */
+const watchingChangesAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
   appRuntime.atom((get) =>
-    get.result(sessionClientAtom(sessionId)).pipe(Effect.flatMap((client) => client.watchChanges)),
+    get
+      .result(sessionClientAtom(sessionId))
+      .pipe(
+        Effect.flatMap((client) =>
+          conversationId === undefined
+            ? client.watchChanges
+            : client.watchConversationChanges(conversationId),
+        ),
+      ),
   ),
 );
 
-const changesFieldAtom = slice((state) => state.changes);
+const changesFieldAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
+  Atom.map(sessionStateAtom(sessionId), (state) =>
+    conversationId === undefined
+      ? state.changes
+      : (state.conversationChanges[String(conversationId)] ?? null),
+  ),
+);
 
 /**
- * The Changes of the Session's Workspace, null until the Session lists them; asks the Session to send them while read.
- * The Session's page reads them for as long as it is open, for the Session details.
+ * The Changes of the conversation `key` names (`conversation-key.ts`): the Session's Workspace's for the root's, or a
+ * subagent conversation's Workspace's; null until the Session lists them. Asks the Session to send them while read.
+ * The Session's page reads its own for as long as it is open, for the Session details, and a Subagent page the
+ * subagent's.
  */
-export const changesAtom = Atom.family((sessionId: string) =>
+export const changesAtom = Atom.family((key: ConversationKey) =>
   Atom.make((get) => {
-    get.mount(watchingChangesAtom(sessionId));
+    get.mount(watchingChangesAtom(key));
 
-    return get(changesFieldAtom(sessionId));
+    return get(changesFieldAtom(key));
   }),
 );
 
@@ -203,6 +229,33 @@ export const threadAtom = Atom.family((key: ThreadKey) =>
   }),
 );
 
+/**
+ * Whether a conversation of a Session is running: the root's (`conversationId` undefined) as the Session's view says,
+ * a subagent's as its watched conversation does, which this watches while read.
+ */
+export const conversationRunningAtom = Atom.family(
+  ({ sessionId, conversationId }: ConversationKey) =>
+    Atom.make((get): boolean =>
+      conversationId === undefined
+        ? get(sessionViewAtom(sessionId)).running
+        : get(threadAtom({ sessionId, conversationId }))?.view.running === true,
+    ),
+);
+
+const NO_TODOS: readonly TodoTask[] = [];
+
+/**
+ * The Todo List of a conversation of a Session: the root's (`conversationId` undefined), or a subagent's from the
+ * watch of its conversation, which this keeps while read.
+ */
+export const conversationTodosAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
+  Atom.make((get): readonly TodoTask[] =>
+    conversationId === undefined
+      ? get(todosAtom(sessionId))
+      : (get(threadAtom({ sessionId, conversationId }))?.todos ?? NO_TODOS),
+  ),
+);
+
 /** What to submit, and to which conversation: the root's when `conversationId` is absent. */
 export interface Submission {
   readonly message: string | OutgoingMessage;
@@ -239,6 +292,49 @@ export const abortAtom = Atom.family((sessionId: string) =>
       get
         .result(sessionClientAtom(sessionId))
         .pipe(Effect.flatMap((client) => client.abort(target))),
+    { concurrent: true },
+  ),
+);
+
+/** How long a Stop from the Session list waits for the Session's socket and task graph before it gives up. */
+const STOP_WAIT = Duration.seconds(15);
+
+/**
+ * Stop subagent `agentId` of Session `sessionId` (its canonical ID, as the Session list knows it from the Registry), its
+ * conversation only: the agents below it keep working. The list has no conversation ID, so this reads the Session's
+ * client, which opens its socket if no page has it open, watches the task graph until it lists the agent, and aborts
+ * its conversation if it is still working. The socket stays open for as long as this atom is mounted (the list's Stop
+ * button, shown only while the agent works), then closes when nothing else reads it.
+ */
+export const stopAgentAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    (agentId: string, get) =>
+      Effect.gen(function* () {
+        // Held, not only read: the socket must outlive the wait for the task graph.
+        get.mount(sessionClientAtom(sessionId));
+
+        const client = yield* get.result(sessionClientAtom(sessionId));
+
+        yield* client.watchTaskGraph;
+
+        const listed = yield* SubscriptionRef.changes(client.state).pipe(
+          Stream.filter((state) => state.status === "live" && state.taskGraph !== null),
+          Stream.map((state) =>
+            Option.getOrUndefined(
+              Arr.findFirst(state.taskGraph?.agents ?? [], (agent) => agent.id === agentId),
+            ),
+          ),
+          Stream.runHead,
+          Effect.timeoutOption(STOP_WAIT),
+          Effect.map(Option.flatten),
+        );
+
+        const agent = Option.getOrUndefined(listed);
+
+        if (agent?.status === "working") {
+          yield* client.abort({ conversationId: agent.conversationId });
+        }
+      }),
     { concurrent: true },
   ),
 );

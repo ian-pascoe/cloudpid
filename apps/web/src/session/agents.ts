@@ -4,6 +4,9 @@
 
 import type { GraphAgent, TaskGraphSummary } from "@cloudpid/protocol";
 
+/** The root agent's ID: the `parent` of the Session's top subagents, and the agent a Session page shows. */
+export const ROOT_AGENT = "root";
+
 /** The agent that runs conversation `conversationId`, if the summary lists it. */
 export const agentOfConversation = (
   graph: TaskGraphSummary | null,
@@ -39,7 +42,7 @@ const isBelowAgent = (graph: TaskGraphSummary, agentId: string, parentOf: string
   }
 };
 
-/** The agents working below `agentId` (`root` for all), at any depth. */
+/** The agents working below `agentId` (`ROOT_AGENT` for all), at any depth. */
 export const workingBelow = (graph: TaskGraphSummary | null, agentId: string): GraphAgent[] =>
   graph === null
     ? []
@@ -70,12 +73,64 @@ export const canStopAllBelow = (
   );
 };
 
-/** How deep `agent` is: 0 for a child of the root. */
-export const depthOf = (graph: TaskGraphSummary, agent: GraphAgent): number => {
+/**
+ * The agents below `agentId` (`ROOT_AGENT` for all), at any depth, in the graph's order (parents before their
+ * children): a Subagent page's Subagents Pane lists its subtree.
+ */
+export const agentsBelow = (graph: TaskGraphSummary | null, agentId: string): GraphAgent[] =>
+  graph === null
+    ? []
+    : agentId === ROOT_AGENT
+      ? [...graph.agents]
+      : graph.agents.filter((agent) => isBelowAgent(graph, agentId, agent.parent));
+
+/** The agents `agentId` started itself, in the graph's order: a Subagent page's Session details list them. */
+export const childrenOf = (graph: TaskGraphSummary | null, agentId: string): GraphAgent[] =>
+  graph === null ? [] : graph.agents.filter((agent) => agent.parent === agentId);
+
+/**
+ * The part of the task graph a Subagent page shows: the agents below `agentId`, and the background work of it and of
+ * them.
+ */
+export const subtreeGraph = (
+  graph: TaskGraphSummary | null,
+  agentId: string,
+): TaskGraphSummary | null => {
+  if (graph === null || agentId === ROOT_AGENT) return graph;
+
+  const agents = agentsBelow(graph, agentId);
+  const ids = new Set([agentId, ...agents.map((agent) => agent.id)]);
+
+  return { agents, background: graph.background.filter((task) => ids.has(task.agent)) };
+};
+
+/**
+ * The branch of the Workspace conversation `conversationId` works in: its Subagent Workspace's (its own, or its nearest
+ * ancestor's), or undefined for the Session's Workspace, which the root conversation (`undefined`) works in, and so does
+ * a conversation the graph does not list.
+ */
+const workspaceBranchOf = (
+  graph: TaskGraphSummary | null,
+  conversationId: number | undefined,
+): string | undefined =>
+  conversationId === undefined ? undefined : agentOfConversation(graph, conversationId)?.branch;
+
+/**
+ * Whether conversations `one` and `other` (undefined: the root's) work in the same Workspace, so the Changes one's page
+ * shows hold what the other wrote: the task graph names each Subagent Workspace by its branch.
+ */
+export const sameWorkspace = (
+  graph: TaskGraphSummary | null,
+  one: number | undefined,
+  other: number | undefined,
+): boolean => workspaceBranchOf(graph, one) === workspaceBranchOf(graph, other);
+
+/** How deep `agent` is below `from` (the root by default): 0 for a child of it. */
+export const depthOf = (graph: TaskGraphSummary, agent: GraphAgent, from = ROOT_AGENT): number => {
   const parents = new Map(graph.agents.map((each) => [each.id, each.parent]));
   let depth = 0;
 
-  for (let parent = agent.parent; parent !== "root"; depth += 1) {
+  for (let parent = agent.parent; parent !== from && parent !== ROOT_AGENT; depth += 1) {
     const next = parents.get(parent);
 
     if (next === undefined) break;

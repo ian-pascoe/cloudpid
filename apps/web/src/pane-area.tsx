@@ -20,7 +20,7 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react";
-import { useShownSessionId } from "./chat/conversation.ts";
+import { useShownLayoutKey, useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
 import { SubagentPane } from "./chat/subagent-pane.tsx";
 import { SubagentsPane, useSubagentsWorking } from "./chat/subagents-pane.tsx";
@@ -215,7 +215,7 @@ export const PaneAreaToggle = () => {
  * again as it was when the owner comes back to the Session.
  */
 export const PaneArea = () => {
-  useAtomMount(rememberPanesAtom(useShownSessionId()));
+  useAtomMount(rememberPanesAtom(useShownLayoutKey()));
 
   const [{ open, shown, hidden }, act] = useAtom(panesAtom);
   const lookups = usePaneLookups();

@@ -2,17 +2,17 @@
 // review): `+n −m` on the line, and, opened, the diff in place of the arguments, with "Open in Diff pane".
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import * as Arr from "effect/Array";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { findChange } from "../diff-pane/changes.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
 import { openDiffPaneAtom } from "../diff-pane/target.ts";
+import { sameWorkspace } from "../session/agents.ts";
 import { changesAtom, taskGraphAtom } from "../session/atoms.ts";
 import { lazyChunk } from "../lazy-chunk.ts";
 import { LazyView } from "../lazy-view.tsx";
 import { useWidth } from "../use-width.ts";
-import { useShownSessionId, useThreadConversation } from "./conversation.ts";
+import { useShownChanges, useShownSessionId, useThreadConversation } from "./conversation.ts";
 import { type CallDiff, callDiffCounts, capPatch, diffStyleFor } from "../call-diff.ts";
 import { type CallRef, useCallAnchor } from "../review/call-anchor.ts";
 import type { DiffAnchor } from "../review/drafts.ts";
@@ -92,28 +92,24 @@ const DiffBox = ({
 
 /**
  * "Open in Diff pane": the Changes at the file the call wrote, while it has Changes in the current list; otherwise it says
- * it has none, until a list has it again. A subagent in a Subagent Workspace wrote to that Workspace, whose Changes the
- * Diff pane does not show: it has none.
+ * it has none, until a list has it again. The page's Diff pane shows one Workspace's Changes (the Session's, or on a
+ * Subagent page the subagent's): a call made in another Workspace (a subagent's in a Subagent Workspace of its own) has
+ * none there, and shows nothing.
  */
 const OpenInDiffPane = ({ path }: { path: string }) => {
-  const sessionId = useShownSessionId();
-  const open = useAtomSet(openDiffPaneAtom(sessionId));
+  const key = useShownChanges();
+  const open = useAtomSet(openDiffPaneAtom(key));
 
   // The file's Changes in the current list; `null` before the first list.
-  const file = useAtomValue(changesAtom(sessionId), (changes) =>
+  const file = useAtomValue(changesAtom(key), (changes) =>
     changes === null ? null : findChange(changes.repos, path),
   );
 
   const conversationId = useThreadConversation();
 
   const elsewhere = useAtomValue(
-    taskGraphAtom(sessionId),
-    (graph) =>
-      conversationId !== undefined &&
-      Arr.some(
-        graph?.agents ?? [],
-        (agent) => agent.conversationId === conversationId && agent.branch !== undefined,
-      ),
+    taskGraphAtom(key.sessionId),
+    (graph) => !sameWorkspace(graph, conversationId, key.conversationId),
   );
 
   if (elsewhere) return null;

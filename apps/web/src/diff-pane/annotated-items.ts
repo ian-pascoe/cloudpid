@@ -7,6 +7,7 @@
 import type { RepoChanges } from "@cloudpid/protocol";
 import type { CodeViewDiffItem, DiffLineAnnotation } from "@pierre/diffs";
 import type { AnnotationSlot, DiffAnchor } from "../review/drafts.ts";
+import type { ConversationKey } from "../session/conversation-key.ts";
 import type { PaneFile } from "./pane-files.ts";
 
 export type AnnotatedItem = CodeViewDiffItem<AnnotationSlot>;
@@ -20,6 +21,13 @@ interface Made {
 
 /** The items as last annotated, by file ID. */
 export type Annotated = ReadonlyMap<string, Made>;
+
+/**
+ * Whether a Diff pane on the Changes `changes` names takes drafts: only the Session's own. A Subagent page's shows its
+ * subagent's Workspace, which the outdated check and a Review's paths do not cover, so it shows its diffs without them.
+ */
+export const paneDrafts = (changes: ConversationKey): boolean =>
+  changes.conversationId === undefined;
 
 /**
  * What drafts on `file` anchor to: its repo's Changes at the HEAD listed, and its path in the repo (a rename's new one,

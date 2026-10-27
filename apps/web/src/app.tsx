@@ -5,15 +5,17 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import { pageProblemAtom } from "./app-state.ts";
 import { revealShownAtom } from "./collapsed-groups.ts";
+import { forgetDismissedAtom } from "./list-subagents.ts";
 import { SessionChat } from "./chat/session-chat.tsx";
+import { SubagentPage } from "./chat/subagent-page.tsx";
 import { cn } from "./lib/utils.ts";
 import { pushSyncAtom } from "./push-state.ts";
-import { navigate, pageAtom, sessionPath } from "./router.ts";
+import { navigate, pageAtom, sessionPath, type Page } from "./router.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { SessionMenu } from "./session-menu.tsx";
 import { currentSessionAtom, newSessionPlace, sessionListAtom } from "./sessions.ts";
 import { SettingsPage } from "./settings-page.tsx";
-import { Sidebar, sessionTitle } from "./sidebar.tsx";
+import { Sidebar, sessionTitle, type ShownPage } from "./sidebar.tsx";
 import { DraftComposer } from "./draft-composer.tsx";
 import { EnvironmentsPage } from "./environments-page.tsx";
 import { environmentNamesAtom } from "./environments-state.ts";
@@ -95,11 +97,44 @@ const SessionPage = ({ sessionId }: { sessionId: string }) => {
   );
 };
 
+/**
+ * The Subagent page of agent `agentId` in Session `sessionId`: the Session page scoped to that subagent, with what the
+ * list knows of the Session (its title for the breadcrumb, whether it is archived).
+ */
+const SubagentPageOf = ({ sessionId, agentId }: { sessionId: string; agentId: string }) => {
+  const session = useAtomValue(currentSessionAtom);
+  const actions = useSessionActions(pageProblemAtom);
+
+  return (
+    <SubagentPage
+      sessionId={sessionId}
+      agentId={agentId}
+      title={session === undefined ? undefined : sessionTitle(session)}
+      archived={
+        session?.archivedAt === null || session === undefined
+          ? undefined
+          : { unarchive: () => actions.unarchive(session.id) }
+      }
+    />
+  );
+};
+
+/** The Session page or Subagent page `page` is, as the list marks it; undefined for any other page. */
+const shownOf = (page: Page): ShownPage | undefined => {
+  if (page.kind === "session") return { sessionId: page.sessionId };
+
+  if (page.kind === "subagent") return { sessionId: page.sessionId, agentId: page.agentId };
+
+  return undefined;
+};
+
 export const App = () => {
   // At startup, a device that already gets notifications is re-told to the Registry.
   useAtomMount(pushSyncAtom);
   // The shown Session's group in the list expands as it is shown, even while the list is hidden (a phone).
   useAtomMount(revealShownAtom);
+  // A Session's subagents, collapsed in the list on its page, reveal again the next time it is shown.
+  useAtomMount(forgetDismissedAtom);
 
   const page = useAtomValue(pageAtom);
   // On a narrow screen the list is shown alone; any other page takes its place.
@@ -114,7 +149,7 @@ export const App = () => {
     <div className="relative flex h-dvh overflow-clip">
       {/* On a narrow screen the list and the chat take turns. */}
       <Sidebar
-        activeId={page.kind === "session" ? page.sessionId : undefined}
+        shown={shownOf(page)}
         settingsActive={page.kind === "settings"}
         environmentsActive={page.kind === "environments"}
         className={cn(listOnly ? "flex" : "hidden md:flex")}
@@ -128,6 +163,13 @@ export const App = () => {
             // On a wide screen the start page is the draft; a narrow one shows the list alone (`listOnly`).
             empty: () => <DraftComposer />,
             session: ({ sessionId }) => <SessionPage key={sessionId} sessionId={sessionId} />,
+            subagent: ({ sessionId, agentId }) => (
+              <SubagentPageOf
+                key={`${sessionId}/${agentId}`}
+                sessionId={sessionId}
+                agentId={agentId}
+              />
+            ),
           }),
         )}
       </main>

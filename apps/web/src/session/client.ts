@@ -57,6 +57,7 @@ import type * as Types from "effect/Types";
 import {
   INITIAL_SESSION_STATE,
   type AbortTarget,
+  type ChangesState,
   type ConfigureChange,
   type OutgoingMessage,
   type QueuedEntry,
@@ -177,17 +178,30 @@ export interface SessionClient {
   /** Stream the Changes of the Session's Workspace into `changes`: once is enough, and a new socket asks again. */
   readonly watchChanges: Effect.Effect<void>;
   /**
-   * List the Changes again, for every client that watches them; with `manual` (the owner's Refresh), a stopped Container
-   * may be started for a repo that needs it. Done once the listing ended: its list, or why it failed, reaches `changes`.
-   * Fails as `catalog` does.
+   * Stream the Changes of subagent conversation `conversationId`'s Workspace (ADR-0024) into
+   * `conversationChanges[conversationId]` until the scope closes. However many ask for the same conversation, it is
+   * watched once, and unwatched (its entry dropped) when the last scope closes. Each new socket watches it again.
    */
-  readonly refreshChanges: (manual: boolean) => Effect.Effect<void, SessionCommandError>;
+  readonly watchConversationChanges: (
+    conversationId: number,
+  ) => Effect.Effect<void, never, Scope.Scope>;
   /**
-   * One changed file's two sides (`path` in `repo`, `oldPath` for a rename). It never starts the Container: a file that
-   * needs it while it is stopped fails with why. Fails as `catalog` does too.
+   * List the Changes again, the Session's or subagent conversation `conversationId`'s, for every client that watches
+   * them; with `manual` (the owner's Refresh), a stopped Container may be started for a repo that needs it. Done once
+   * the listing ended: its list, or why it failed, reaches `changes` (or `conversationChanges`). Fails as `catalog` does.
+   */
+  readonly refreshChanges: (
+    manual: boolean,
+    conversationId?: number,
+  ) => Effect.Effect<void, SessionCommandError>;
+  /**
+   * One changed file's two sides (`path` in `repo`, `oldPath` for a rename), in the Session's Workspace or in subagent
+   * conversation `conversationId`'s. It never starts the Container: a file that needs it while it is stopped fails with
+   * why. Fails as `catalog` does too.
    */
   readonly changeFile: (
-    query: Omit<Extract<ClientMessage, { type: "change_file" }>, "type" | "id">,
+    query: Omit<Extract<ClientMessage, { type: "change_file" }>, "type" | "id" | "conversationId">,
+    conversationId?: number,
   ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
    * Save draft Annotation `annotation`, new or edited (`docs/spec.md` → Diffs and review → Annotations and Reviews): done
@@ -430,6 +444,13 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   let graphWanted = false;
   let usageWanted = false;
   let changesWanted = false;
+  /**
+   * The subagent conversations whose Workspace's Changes are watched (`watchConversationChanges`), less those whose
+   * watch ended for good: each new socket watches these again.
+   */
+  const changesWatches = new Set<number>();
+  /** The `watch_changes` commands of those not answered yet, by command ID, so a refusal ends that watch alone. */
+  const changesCommands = new Map<string, number>();
   let root: ConversationId | null = null;
   let watchId: string | null = null;
   let watched = false;
@@ -586,6 +607,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "taskGraph"
         | "usage"
         | "changes"
+        | "conversationChanges"
         | "todos"
         | "activeBranch"
         | "treeVersion"
@@ -807,6 +829,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         if (changesWanted) send({ type: "watch_changes", id: nextCommandId() });
 
+        for (const conversationId of changesWatches) sendChangesWatch(conversationId);
+
         return;
       }
 
@@ -834,18 +858,24 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       }
 
-      case "changes":
-        update({
-          changes: {
-            repos: message.repos,
-            startingContainer: message.startingContainer,
-            // The Container starting is the last list again, said so: not a new one.
-            listing: (current.changes?.listing ?? 0) + (message.startingContainer ? 0 : 1),
-            failure: null,
-          },
+      case "changes": {
+        const { conversationId } = message;
+
+        // A list of Changes no Subagent page watches here any more (unwatched while it was on its way) is dropped.
+        if (conversationId !== undefined && !changesWatches.has(conversationId)) return;
+
+        const before = changesOf(conversationId);
+
+        setChanges(conversationId, {
+          repos: message.repos,
+          startingContainer: message.startingContainer,
+          // The Container starting is the last list again, said so: not a new one.
+          listing: (before?.listing ?? 0) + (message.startingContainer ? 0 : 1),
+          failure: null,
         });
 
         return;
+      }
 
       case "todos": {
         if (message.conversationId === root) {
@@ -952,6 +982,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           return;
         }
 
+        if (changesCommands.delete(message.id)) return;
+
         const watching = threadWatchOf(message.id);
 
         if (watching !== undefined) {
@@ -982,7 +1014,14 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         const failed = message.id === undefined ? undefined : threadWatchOf(message.id);
 
-        if (message.id === watchId) {
+        const changesRefused =
+          message.id === undefined ? undefined : changesCommands.get(message.id);
+
+        if (message.id !== undefined && changesRefused !== undefined) {
+          // The Session has no such conversation (a subagent deleted): that watch ends, and the Session goes on.
+          changesCommands.delete(message.id);
+          changesEnded(changesRefused);
+        } else if (message.id === watchId) {
           // The watch was refused: start over on a new socket, after the backoff, rather than asking again at once.
           lost(from, message.message);
         } else if (failed !== undefined) {
@@ -998,14 +1037,27 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           if (submit?.conversationId === undefined) update({ failure: message.message });
           else update({}, submit.conversationId, { failure: message.message });
         } else if (message.changes === true) {
+          // `conversationId` names the Changes watch then (a Subagent page's), not a conversation's watch.
+          const { conversationId } = message;
+
+          if (conversationId !== undefined && !changesWatches.has(conversationId)) return;
+
+          if (message.ended === true) {
+            // The watch ended for good (its subagent deleted): not watched again, and the Session goes on.
+            if (conversationId !== undefined) changesEnded(conversationId);
+
+            return;
+          }
+
           // A listing failed; the list before it stands, and the watch goes on.
-          update({
-            changes: {
-              repos: current.changes?.repos ?? [],
-              startingContainer: false,
-              listing: current.changes?.listing ?? 0,
-              failure: message.message,
-            },
+
+          const before = changesOf(conversationId);
+
+          setChanges(conversationId, {
+            repos: before?.repos ?? [],
+            startingContainer: false,
+            listing: before?.listing ?? 0,
+            failure: message.message,
           });
         } else if (message.conversationId !== undefined) {
           // The watch ended and is dropped: the root's starts over, after the backoff, to resume it.
@@ -1034,6 +1086,72 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       if (message !== undefined) handle(from, message);
     }
+  };
+
+  /** The Changes as this client last had them: the Session's, or subagent conversation `conversationId`'s. */
+  const changesOf = (conversationId: number | undefined): ChangesState | null =>
+    conversationId === undefined
+      ? current.changes
+      : (current.conversationChanges[String(conversationId)] ?? null);
+
+  /** Keep `changes` as the Session's Changes, or as subagent conversation `conversationId`'s. */
+  const setChanges = (conversationId: number | undefined, changes: ChangesState): void => {
+    if (conversationId === undefined) {
+      update({ changes });
+
+      return;
+    }
+
+    update({
+      conversationChanges: { ...current.conversationChanges, [String(conversationId)]: changes },
+    });
+  };
+
+  /** Ask the Session for subagent conversation `conversationId`'s Changes on this socket. */
+  const sendChangesWatch = (conversationId: number): void => {
+    const id = nextCommandId();
+
+    changesCommands.set(id, conversationId);
+    send({ type: "watch_changes", id, conversationId: conversation(conversationId) });
+  };
+
+  const addChangesWatch = (conversationId: number): void => {
+    changesWatches.add(conversationId);
+
+    if (root !== null) sendChangesWatch(conversationId);
+  };
+
+  /**
+   * The Session ended subagent conversation `conversationId`'s Changes watch, or refused it: its conversation is no
+   * agent's any more. It is not watched again, and its Changes say so until whatever watches them lets go.
+   */
+  const changesEnded = (conversationId: number): void => {
+    if (!changesWatches.delete(conversationId)) return;
+
+    const before = changesOf(conversationId);
+
+    setChanges(conversationId, {
+      repos: before?.repos ?? [],
+      startingContainer: false,
+      listing: before?.listing ?? 0,
+      failure: null,
+      ended: true,
+    });
+  };
+
+  const releaseChangesWatch = (conversationId: number): void => {
+    // One that ended is no longer watched, and only its Changes are left to drop.
+    if (changesWatches.delete(conversationId)) {
+      send({
+        type: "unwatch_changes",
+        id: nextCommandId(),
+        conversationId: conversation(conversationId),
+      });
+    }
+
+    const { [String(conversationId)]: _dropped, ...others } = current.conversationChanges;
+
+    update({ conversationChanges: others });
   };
 
   const addThread = (conversationId: number): void => {
@@ -1265,6 +1383,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     }
   });
 
+  const changesMap = yield* RcMap.make({
+    lookup: (conversationId: number) =>
+      Effect.acquireRelease(
+        step(() => {
+          addChangesWatch(conversationId);
+        }),
+        () =>
+          step(() => {
+            releaseChangesWatch(conversationId);
+          }),
+      ),
+  });
+
   const threadMap = yield* RcMap.make({
     lookup: (conversationId: number) =>
       Effect.acquireRelease(
@@ -1326,14 +1457,31 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       if (root !== null) send({ type: "watch_changes", id: nextCommandId() });
     }),
-    refreshChanges: (manual) =>
+    watchConversationChanges: (conversationId) => RcMap.get(changesMap, conversationId),
+    refreshChanges: (manual, conversationId) =>
       request(
-        (id) =>
-          manual ? { type: "refresh_changes", id, manual } : { type: "refresh_changes", id },
+        (id) => {
+          const message: Types.Mutable<Extract<ClientMessage, { type: "refresh_changes" }>> = {
+            type: "refresh_changes",
+            id,
+          };
+
+          if (manual) message.manual = true;
+
+          if (conversationId !== undefined) message.conversationId = conversation(conversationId);
+
+          return message;
+        },
         () => Option.some(undefined),
       ),
-    changeFile: (query) =>
-      request((id) => ({ type: "change_file", id, ...query }), decodeChangeFile),
+    changeFile: (query, conversationId) =>
+      request(
+        (id) =>
+          conversationId === undefined
+            ? { type: "change_file", id, ...query }
+            : { type: "change_file", id, conversationId: conversation(conversationId), ...query },
+        decodeChangeFile,
+      ),
     saveAnnotation: (annotation) =>
       request(
         (id) => ({ type: "annotation_save", id, annotation }),

@@ -31,7 +31,7 @@ import { AnnotationSlotView, DRAFTING_OPTIONS, useOpenEditor } from "../review/a
 import type { AnnotationSlot } from "../review/drafts.ts";
 import { AnnotationEditor } from "../review/editor.ts";
 import { annotationsAtom, changesAtom } from "../session/atoms.ts";
-import { paneAnchor } from "./annotated-items.ts";
+import { paneAnchor, paneDrafts } from "./annotated-items.ts";
 import { useWidth } from "../use-width.ts";
 import { FOLD_REASON_LABEL } from "./folding.ts";
 import type { FileContents } from "./loader.ts";
@@ -182,8 +182,11 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
   const loads = useAtomValue(view.loads);
   const items = useAtomValue(view.annotated);
   const report = useAtomSet(view.geometry);
-  const drafts = useAtomValue(annotationsAtom(pane.sessionId));
-  const repos = useAtomValue(changesAtom(pane.sessionId))?.repos;
+  const { sessionId } = pane.changes;
+  // A Subagent page's Pane draws no gutter +.
+  const drafting = paneDrafts(pane.changes);
+  const drafts = useAtomValue(annotationsAtom(sessionId));
+  const repos = useAtomValue(changesAtom(pane.changes))?.repos;
   const open = useOpenEditor();
   const { ref: frame, width } = useWidth();
   const viewer = useRef<CodeViewHandle<AnnotationSlot, undefined>>(null);
@@ -237,14 +240,18 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
       stickyHeaders: true,
       ...DIFF_LIMITS,
       ...DRAFTING_OPTIONS,
+      enableGutterUtility: drafting,
+      enableLineSelection: drafting,
       onGutterUtilityClick: (
         range: SelectedLineRange,
         context: { readonly item: CodeViewItem<AnnotationSlot> },
       ) => {
-        if (context.item.type === "diff") open(context.item.id, context.item.fileDiff, range);
+        if (drafting && context.item.type === "diff") {
+          open(context.item.id, context.item.fileDiff, range);
+        }
       },
     }),
-    [layout, width, wrap, open],
+    [layout, width, wrap, open, drafting],
   );
 
   // A file's drafts, and the editor of a new one, under their lines.
@@ -253,20 +260,20 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
       const file = byId.get(item.id);
 
       // The Pane's items are diffs: their annotations name a side.
-      if (file === undefined || !("side" in annotation)) return null;
+      if (file === undefined || !drafting || !("side" in annotation)) return null;
 
       const anchor = paneAnchor(file, repos ?? []);
 
       return (
         <AnnotationSlotView
-          sessionId={pane.sessionId}
+          sessionId={sessionId}
           anchor={anchor}
           drafts={drafts}
           annotation={annotation}
         />
       );
     },
-    [byId, repos, drafts, pane.sessionId],
+    [byId, repos, drafts, sessionId, drafting],
   );
 
   const renderHeader = useCallback(

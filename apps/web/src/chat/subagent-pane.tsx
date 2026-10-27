@@ -1,5 +1,5 @@
 // A Subagent Pane: one subagent's conversation, filling the Pane, under a header with what the agent is (its ID, role,
-// model, the branch of its Subagent Workspace) and how it is doing, with its own Stop. The Subagents Pane's rows and the
+// model, the branch of its Subagent Workspace) and how it is doing, with its own Stop and a link to its Subagent page. The Subagents Pane's rows and the
 // Session details open one per subagent (`subagent:<conversationId>`); the conversation is watched while it is open.
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -17,7 +17,7 @@ import { taskGraphAtom } from "../session/atoms.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { useShownSessionId } from "./conversation.ts";
 import { Messages } from "./messages.tsx";
-import { AgentStatus, AgentStopButton, AgentSummary } from "./subagent-card.tsx";
+import { AgentStatus, AgentStopButton, AgentSummary, OpenPageLink } from "./subagent-card.tsx";
 
 const Header = ({ conversationId }: { conversationId: number }) => {
   const actOnPanes = useAtomSet(panesAtom);
@@ -37,6 +37,7 @@ const Header = ({ conversationId }: { conversationId: number }) => {
       </div>
       <AgentStatus agent={agent} />
       <AgentStopButton agent={agent} />
+      {agent !== undefined && <OpenPageLink agentId={agent.id} />}
       <Button
         type="button"
         variant="ghost"

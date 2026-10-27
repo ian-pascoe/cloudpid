@@ -15,7 +15,7 @@ import { duration } from "../format.ts";
 import { cn } from "../lib/utils.ts";
 import type { TranscriptDisclosure } from "../session-layout.ts";
 import { disclosureOpenAtom } from "../session-layout-state.ts";
-import { useShownSessionId, useThreadConversation } from "./conversation.ts";
+import { useShownLayoutKey, useThreadConversation } from "./conversation.ts";
 import { ChangeDiff } from "../change-diff.tsx";
 import { changeTitleText, fieldValueText } from "../environments.ts";
 import { changeDiff } from "../line-diff.ts";
@@ -63,7 +63,7 @@ export const KeptDetails = ({
   const conversationId = useThreadConversation();
 
   const [kept, setKept] = useAtom(
-    disclosureOpenAtom(useShownSessionId(), { ...disclosure, conversationId }),
+    disclosureOpenAtom(useShownLayoutKey(), { ...disclosure, conversationId }),
   );
 
   const open = held || kept;

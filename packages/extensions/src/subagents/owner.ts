@@ -41,7 +41,13 @@ export const isAgentConversation = async (
   context: Context,
 ): Promise<boolean> =>
   conversationId === ROOT_CONVERSATION_ID ||
-  agentOf(await readState(harness, context), conversationId) !== undefined;
+  isAgentConversationIn(await readState(harness, context), conversationId);
+
+/** `isAgentConversation` as `state`, the Subagents document read already, has it. */
+export const isAgentConversationIn = (
+  state: SubagentsState,
+  conversationId: ConversationId,
+): boolean => agentOf(state, conversationId) !== undefined;
 
 const byDepthDescending = Order.mapInput(
   Order.flip(Order.Number),

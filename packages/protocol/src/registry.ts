@@ -81,6 +81,25 @@ export const SessionOrigin = Schema.Struct({ session: Schema.String, kind: ForkK
 
 export type SessionOrigin = typeof SessionOrigin.Type;
 
+/**
+ * One of a Session's subagents as the Session list shows it (ADR-0024): a summary of its task graph's agent, which the
+ * Session DO keeps in the Registry.
+ */
+export const SessionAgent = Schema.Struct({
+  /** Its canonical ID, such as `agent-1` or `agent-1.reviewer`; never reused in its Session. */
+  id: Schema.String,
+  /** The agent that started it: `root` or another subagent's ID. */
+  parent: Schema.String,
+  /** The model role it was started with, if any. */
+  role: Schema.NullOr(Schema.String),
+  /** `working` while its conversation has live work, otherwise `idle`. */
+  status: Schema.Literals(["working", "idle"]),
+  /** The branch of the Subagent Workspace it works in; absent for one that works in the Session's Workspace. */
+  branch: Schema.optionalKey(Schema.String),
+});
+
+export type SessionAgent = typeof SessionAgent.Type;
+
 /** A Session as the Registry lists it. Times are epoch milliseconds. */
 export const SessionRecord = Schema.Struct({
   /** The Session DO's name: a UUIDv7. Its socket is at `sessionSocketPath(id)`. */
@@ -104,6 +123,11 @@ export const SessionRecord = Schema.Struct({
   archivedAt: Schema.NullOr(Schema.Finite),
   /** The Session it is a Fork or Clone of; absent for a Session started afresh. */
   origin: Schema.optionalKey(SessionOrigin),
+  /**
+   * Its subagents, parents before their children, as the Session last reported them (ADR-0024); absent for a Session
+   * that has not reported any since the field was added, which shows none.
+   */
+  agents: SessionAgent.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type SessionRecord = typeof SessionRecord.Type;
