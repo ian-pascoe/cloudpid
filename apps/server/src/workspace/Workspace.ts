@@ -82,6 +82,11 @@ import {
   type StoredLaunchRecord,
 } from "./launch.ts";
 import { PerLaunchContainerBackend } from "./per-launch-backend.ts";
+import {
+  CONTAINER_PREVIEW_KEEP_ALIVE_MS,
+  ContainerPreview,
+  type ContainerPreviewActivity,
+} from "./container-preview.ts";
 import { ContainerResizes } from "./resize.ts";
 import { WORKSPACE_DELETED_REASON } from "./lifecycle.ts";
 import {
@@ -238,6 +243,8 @@ export class Workspace extends ContainerHost {
   readonly #comparison: WorkspaceComparisonModule;
   /** The Run copies of the Workspace's repos and the Run diff (`runStart`, `runEnd`, `runDiff`, `runFile`). */
   readonly #runs: WorkspaceRunsModule;
+  /** The Container previews: the Session's browser's requests for the Container's ports (`containerPreview`). */
+  readonly #containerPreview: ContainerPreview;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
 
@@ -616,6 +623,38 @@ export class Workspace extends ContainerHost {
       },
       warn: (message) => console.warn(message),
     });
+
+    // The Container previews (ADR-0023): never a start of the Container, and each request and open socket a use of it.
+    this.#containerPreview = new ContainerPreview({
+      running: () => this.containerRunning(),
+      port: (port) => this.containerPort(port),
+      activity: () => this.containerPreviewActivity(),
+      used: () => this.#spare.noteUse(),
+      // 256 random bits, as hex.
+      newId: () =>
+        Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join(""),
+      keepAliveMs: () => this.containerPreviewKeepAliveMs(),
+      warn: (message) => console.warn(message),
+    });
+  }
+
+  /** The Container's port `port`, for a Container preview. A test Worker replaces it. */
+  protected containerPort(port: number): Fetcher {
+    if (this.ctx.container === undefined) throw new Error("This Workspace has no Container");
+
+    return this.ctx.container.getTcpPort(port);
+  }
+
+  /** How often a carried socket's stream is written to, to find a page gone or not reading. A test Worker shortens it. */
+  protected containerPreviewKeepAliveMs(): number {
+    return CONTAINER_PREVIEW_KEEP_ALIVE_MS;
+  }
+
+  /** The uses a Container preview makes of the Container: the idle stop's. A test Worker counts them. */
+  protected containerPreviewActivity(): ContainerPreviewActivity {
+    return this.#idle;
   }
 
   /** Whether the Container runs now. A test Worker replaces it. */
@@ -1028,6 +1067,17 @@ export class Workspace extends ContainerHost {
       ],
       (message) => console.warn(message),
     );
+  }
+
+  /**
+   * Answer `request`, a page's in the Session's browser, from the Container's `port`: a Container preview (ADR-0023),
+   * which the Workspaces Worker's `WorkspaceContainerPreviews` entrypoint hands here. It never starts the Container (a
+   * stopped one answers 503, a port with nothing listening 502) and serves the eight Container preview ports only; each
+   * request it serves is a use of the Workspace and the Container, and a page's open carried socket holds off the idle
+   * stop as a running command does.
+   */
+  containerPreview(request: Request, port: number): Promise<Response> {
+    return this.#containerPreview.serve(request, port);
   }
 
   /** The Container's egress: computerd dials back here, and `WorkspaceProxy` forwards its WebSocket upgrade. */

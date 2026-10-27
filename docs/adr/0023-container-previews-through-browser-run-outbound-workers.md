@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A Container's dev server opens in the Session's browser through Browser Run's outbound Workers

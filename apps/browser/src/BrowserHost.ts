@@ -6,6 +6,9 @@
 // `Browser` keeps its record in this object's storage through an explicit store, so no `Lifecycle` is installed: it would
 // take over the object's `fetch`, `alarm`, and WebSocket handlers, and the browser needs none of them. Browser Run
 // closes an idle browser itself after `keepAliveMs`; the Session closes it sooner, when it is idle (`close`).
+//
+// Each browser is acquired with Browser Run's `outboundByHost` routing the Container previews' hosts to the Session's
+// Workspace, which the calls that can acquire one name last (`ContainerPreviewRoutes`, ADR-0023).
 import {
   BROWSER_KEEP_ALIVE_MS,
   type BrowserHostRpc,
@@ -18,6 +21,7 @@ import {
   type OwnerTabLinks,
   type OwnerTabListing,
   type OwnerTabPageRead,
+  type ContainerPreviewWorkspace,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -32,6 +36,7 @@ import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
 import { confinedToOwnerTabs, OwnerTabCalls } from "./owner-tab-agent.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
+import { type ContainerPreviewProps, ContainerPreviewRoutes } from "./container-preview.ts";
 import {
   adoptTab,
   conversationScope,
@@ -51,6 +56,11 @@ const RECORD_BEFORE_CLOSE_MS = 2_000;
 export type BrowserHostEnv = {
   readonly BROWSER: BrowserBinding;
   readonly LOADER: WorkerLoader;
+};
+
+/** The loopback bindings of the browser Worker's entry (`worker.ts`) the host hands Browser Run. */
+type BrowserExports = {
+  readonly ContainerPreviews: (options: { readonly props: ContainerPreviewProps }) => Fetcher;
 };
 
 /**
@@ -81,12 +91,22 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   readonly #handoffs: HandoffHost;
   readonly #ownerTabs: OwnerTabs;
   readonly #ownerTabCalls: OwnerTabCalls;
+  /** The Container previews' routes every browser is acquired with, to the Workspace the latest call named. */
+  readonly #containerPreviews: ContainerPreviewRoutes;
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
     this.#store = new DurableBrowserSessionStore(ctx.storage);
+    this.#containerPreviews = new ContainerPreviewRoutes((workspace) =>
+      // SAFETY: the browser Worker's entry (`worker.ts`) exports `ContainerPreviews`; `ctx.exports` is untyped here.
+      (ctx.exports as BrowserExports).ContainerPreviews({ props: { workspace } }),
+    );
+    // Every browser acquired, wherever from (a run, an Owner tab, one replacing a browser that was lost), goes through
+    // this provider, so each carries the routes (ADR-0023).
     this.#browser = new Browser({
-      provider: browserRun(env.BROWSER, { keepAliveMs: BROWSER_KEEP_ALIVE_MS }),
+      provider: browserRun(this.#containerPreviews.binding(env.BROWSER), {
+        keepAliveMs: BROWSER_KEEP_ALIVE_MS,
+      }),
       store: this.#store,
     });
     // One tool for every scope: it builds a scope's connector when first asked, and runs each scope's calls in turn.
@@ -163,7 +183,14 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * Run `code` in conversation `conversationId`'s tab or, given `ownerTabId`, in that Owner tab (`OwnerTabCalls`). The
    * result is the tool result `browserTool` makes: its output as text, a screenshot as an image part, and its details.
    */
-  run(code: string, conversationId: number, ownerTabId?: string): Promise<BrowserRun> {
+  run(
+    code: string,
+    conversationId: number,
+    ownerTabId?: string,
+    workspace?: ContainerPreviewWorkspace,
+  ): Promise<BrowserRun> {
+    this.#containerPreviews.given(workspace);
+
     if (ownerTabId === undefined) {
       return this.#runIn(code, conversationId, conversationScope(conversationId));
     }
@@ -198,7 +225,9 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * (the Pane opening), start the browser when none runs and open an Owner tab when the owner has none, saying so. They
    * go only to the Session DO, which answers the one client that asked; none is kept.
    */
-  ownerTabView(open: boolean): Promise<OwnerTabLinks> {
+  ownerTabView(open: boolean, workspace?: ContainerPreviewWorkspace): Promise<OwnerTabLinks> {
+    this.#containerPreviews.given(workspace);
+
     return this.#ownerTabs.view(open);
   }
 
@@ -211,7 +240,9 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   }
 
   /** Open a blank Owner tab and show it, starting the browser when none runs. */
-  openOwnerTab(): Promise<OwnerTabListing> {
+  openOwnerTab(workspace?: ContainerPreviewWorkspace): Promise<OwnerTabListing> {
+    this.#containerPreviews.given(workspace);
+
     return this.#ownerTabs.open();
   }
 

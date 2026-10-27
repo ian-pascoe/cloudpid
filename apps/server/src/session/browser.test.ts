@@ -5,7 +5,96 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { remoteBrowserHost } from "./browser.ts";
 
+/** A Session with no Workspace: the host is told none. */
+const noWorkspace = () => Promise.resolve(undefined);
+
 describe("the Session's browser host", () => {
+  it("names the Session's Workspace last to the calls that can acquire a browser, none to the others, and none when it cannot be told, without failing the call", async () => {
+    const calls: unknown[][] = [];
+
+    const note =
+      <A>(answer: A) =>
+      (...args: unknown[]) => {
+        calls.push(args);
+
+        return Promise.resolve(answer);
+      };
+
+    const listing = { tabs: [] };
+
+    let placement: () => Promise<string | undefined> = () => Promise.resolve("ws:abc");
+
+    const host = remoteBrowserHost(
+      {
+        getByName: () => ({
+          describe: note("described"),
+          run: note({ output: [] }),
+          close: note(true),
+          startHandoff: note({ startedAt: 1 }),
+          liveView: note({ tab: { targetId: "t", link: "wss://l" }, windows: [] }),
+          ownerTabView: note({
+            ownerTabId: "a",
+            tab: { targetId: "t", link: "wss://l" },
+            windows: [],
+            opened: false,
+            replaced: false,
+          }),
+          ownerTabs: note(listing),
+          openOwnerTab: note(listing),
+          showOwnerTab: note(listing),
+          closeOwnerTab: note(listing),
+          readOwnerTabPages: note([]),
+          waitHandoff: note({ state: "waiting" as const }),
+          endHandoff: note({}),
+        }),
+      },
+      "session-1",
+      () => placement(),
+    );
+
+    const input = { requestId: "1", conversationId: 1, instructions: "x", timeoutMs: 1 };
+
+    await Effect.runPromise(
+      Effect.all([
+        host.describe,
+        host.run({ code: "async () => 1", conversationId: 1 }),
+        host.close,
+        host.startHandoff(input),
+        host.liveView("1"),
+        host.ownerTabView(true),
+        host.ownerTabs,
+        host.openOwnerTab,
+        host.showOwnerTab("a"),
+        host.closeOwnerTab("a"),
+        host.readOwnerTabPages(["a"]),
+        host.waitHandoff("1", 1),
+        host.endHandoff("1"),
+      ]),
+    );
+    // Each call's arguments as a host from before Container previews takes them, the Workspace only ever after them.
+    expect(calls).toEqual([
+      [],
+      ["async () => 1", 1, undefined, "ws:abc"],
+      [],
+      [input],
+      ["1"],
+      [true, "ws:abc"],
+      [],
+      ["ws:abc"],
+      ["a"],
+      ["a"],
+      [["a"]],
+      ["1", 1],
+      ["1"],
+    ]);
+
+    // The Registry could not be asked where the Session works: the call goes on, naming none.
+    placement = () => Promise.reject(new Error("Registry overloaded"));
+    calls.length = 0;
+    expect(await Effect.runPromise(host.openOwnerTab)).toEqual(listing);
+    expect(calls).toEqual([[undefined]]);
+  });
+
   it("runs code in the object named for the Session, in the conversation's tab or an Owner tab", async () => {
     const calls: unknown[] = [];
 
@@ -32,6 +121,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await Effect.runPromise(host.run({ code: "async () => 1", conversationId: 3 }))).toEqual(
@@ -66,6 +156,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await host.close.pipe(Effect.flip, Effect.runPromise)).toEqual(
@@ -114,6 +205,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     const input = { requestId: "7", conversationId: 3, instructions: "Log in", timeoutMs: 1_000 };
@@ -158,6 +250,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     const error = await Effect.runPromise(
@@ -205,6 +298,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await Effect.runPromise(host.ownerTabView(true))).toEqual(links);
@@ -262,6 +356,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await Effect.runPromise(host.ownerTabs)).toEqual(listing);

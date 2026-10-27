@@ -111,13 +111,15 @@ const sandboxBinding = Effect.gen(function* () {
 
 /**
  * The browser host DO namespace, bound for the Session DOs, which keep their browser in an object of it (ADR-0007). It
- * lives in the `Browsers` Worker, which deploys first as its script name is the Output. Only the deploy declares it: the
- * bundle reads the binding from `env`.
+ * lives in the `Browsers` Worker, which deploys first as its script name is the Output, after the `Workspaces` Worker,
+ * whose Container previews entrypoint it binds (ADR-0023). Only the deploy declares it: the bundle reads the binding
+ * from `env`.
  */
 const browserBinding = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
 
-  const browsers = yield* Browsers;
+  const workspaces = yield* Workspaces;
+  const browsers = yield* Browsers({ workspaces });
 
   return {
     [BROWSER_HOST_BINDING]: Cloudflare.DurableObject("BrowserHost", {

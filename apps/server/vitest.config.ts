@@ -13,10 +13,11 @@ const hookTimeout = testTimeout;
 /**
  * Tests of the Workspace DO alone, in a test Worker that hosts it and the Worker Shell's loader: the environment
  * conformance cases, the Changes, the Comparisons and the Run copies (over repos real git made, `changes.setup.ts` and
- * `comparison.setup.ts`).
+ * `comparison.setup.ts`), and the Container previews.
  */
 const workspaceOnly = [
   "src/workspace/env.workerd.test.ts",
+  "src/workspace/container-preview.workerd.test.ts",
   "src/workspace/changes*.workerd.test.ts",
   "src/workspace/comparison*.workerd.test.ts",
   "src/workspace/runs*.workerd.test.ts",

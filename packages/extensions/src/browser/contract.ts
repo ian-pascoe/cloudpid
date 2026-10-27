@@ -3,6 +3,7 @@
 // `@cloudpid/protocol` only types and its import-free `live-view` module.
 import type { LiveViewLinks, OwnerTabLinks, OwnerTabListing } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
+import * as Predicate from "effect/Predicate";
 
 /**
  * How long Browser Run keeps an idle browser (`keep_alive`): it closes the browser itself once no CDP command has come
@@ -21,6 +22,39 @@ export const HANDOFF_TIMEOUT_MS = 30 * 60_000;
 
 /** The longest instructions Browser Run takes. */
 export const MAX_HANDOFF_INSTRUCTIONS = 4096;
+
+/**
+ * The Container ports a Container preview reaches (ADR-0023), each at its own made-up host, `http://<port>.cloudpid.internal/`
+ * (`containerPreviewHost`): Browser Run routes at most eight hostnames per browser to an outbound Worker, on port 80 and
+ * plain `http` only, so the port is in the hostname. Common dev servers' ports: 4173 is `vite preview`, 4321 Astro, 5173
+ * Vite and 8787 `wrangler dev`. 8080 is computerd's and is never on the list. All eight reach the Session's Workspace.
+ */
+export const CONTAINER_PREVIEW_PORTS: ReadonlyArray<number> = [
+  3000, 3001, 4173, 4321, 5173, 5174, 8000, 8787,
+];
+
+/** The made-up domain the Container previews' hosts are under: `.internal` is reserved for private use and never resolves. */
+export const CONTAINER_PREVIEW_DOMAIN = "cloudpid.internal";
+
+/** The host the Container preview of `port` is at, in the Session's browser. */
+export const containerPreviewHost = (port: number): string => `${port}.${CONTAINER_PREVIEW_DOMAIN}`;
+
+/**
+ * The Session's Workspace as a call to the browser host that can acquire a browser names it, last, so the host can route
+ * the Container previews of that browser there: its Workspace DO's name (`ws:<id>`). Left out when the Session has none
+ * (or it could not be told), and by a Session from before Container previews. The host keeps the latest it was given,
+ * in memory only.
+ */
+export type ContainerPreviewWorkspace = string;
+
+const CONTAINER_PREVIEW_WORKSPACE = /^ws:[\w-]+$/;
+
+/**
+ * Whether `value` names a Workspace DO a Container preview may go to: `ws:<id>`, nothing else. A value of another shape
+ * (an argument of a call from a Session whose arguments are laid out otherwise, a Build's object) is never one.
+ */
+export const isContainerPreviewWorkspace = (value: unknown): value is ContainerPreviewWorkspace =>
+  Predicate.isString(value) && CONTAINER_PREVIEW_WORKSPACE.test(value);
 
 /** How a host call asks to start a Browser Handoff in a conversation's tab. */
 export type HandoffStartInput = {
@@ -134,7 +168,12 @@ export type BrowserRun = {
   readonly isError?: boolean;
 };
 
-/** The browser host Durable Object's RPC methods, as the Session calls them. */
+/**
+ * The browser host Durable Object's RPC methods, as the Session calls them. The ones that can acquire a browser (`run`,
+ * `ownerTabView`, `openOwnerTab`) take the Session's Workspace last, optional (`ContainerPreviewWorkspace`): a browser
+ * the call acquires routes its Container previews there. A method only ever gains a trailing optional argument, so a
+ * Session and a host deployed apart still agree on the rest.
+ */
 export type BrowserHostRpc = {
   /** The `browser` tool's description. */
   describe(): Promise<string>;
@@ -143,7 +182,12 @@ export type BrowserHostRpc = {
    * the conversation's tab and the Owner tab's size as they are. An Owner tab that is not open when the call's turn
    * comes, or that closes during the call, makes the result an error that says so.
    */
-  run(code: string, conversationId: number, ownerTabId?: string): Promise<BrowserRun>;
+  run(
+    code: string,
+    conversationId: number,
+    ownerTabId?: string,
+    workspace?: ContainerPreviewWorkspace,
+  ): Promise<BrowserRun>;
   /** Close the browser; false when there was none. */
   close(): Promise<boolean>;
   /**
@@ -163,14 +207,14 @@ export type BrowserHostRpc = {
    * shown when the owner has none, and the answer says whether it opened one and whether the one shown before is gone.
    * Fails with `OWNER_TAB_GONE` when the tab or its browser is gone and `open` is false.
    */
-  ownerTabView(open: boolean): Promise<OwnerTabLinks>;
+  ownerTabView(open: boolean, workspace?: ContainerPreviewWorkspace): Promise<OwnerTabLinks>;
   /**
    * The Owner tabs by title and the one shown (`owner_tab_list`'s answer), as the browser has them now; a page an Owner
    * tab opened with a link joins the list. Starts nothing: with no browser running the list is empty.
    */
   ownerTabs(): Promise<OwnerTabListing>;
   /** Open a blank Owner tab and show it, starting the browser when none runs; answers the list after it. */
-  openOwnerTab(): Promise<OwnerTabListing>;
+  openOwnerTab(workspace?: ContainerPreviewWorkspace): Promise<OwnerTabListing>;
   /** Show Owner tab `id`; answers the list after it. Fails with `OWNER_TAB_GONE` when there is no such tab. */
   showOwnerTab(id: string): Promise<OwnerTabListing>;
   /** Close Owner tab `id` and the windows it opened; answers the list after it. A tab already gone is not an error. */
