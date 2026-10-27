@@ -54,7 +54,7 @@ export const boundedText = (text: string, max: number): string => {
 };
 
 /** `text` on one line. */
-const oneLine = (text: string): string => text.replace(/\s+/gu, " ").trim();
+export const oneLine = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
 /** `page` with every field cut to its bound, the title and URL on one line, and an empty selection left out. */
 export const clampPage = (page: AttachedPage): AttachedPage => {
@@ -74,12 +74,22 @@ export const clampPage = (page: AttachedPage): AttachedPage => {
 };
 
 /** `text` as XML text and attribute values: the characters that could close or open a tag or a quote become entities. */
-const escaped = (text: string): string =>
+export const escapePageText = (text: string): string =>
   text
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+
+/** Text `escapePageText` escaped, as it was. */
+export const unescapePageText = (text: string): string =>
+  text
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
+
+const escaped = escapePageText;
 
 /** What starts and ends the block of attached pages in the owner's message. */
 export const PAGE_BLOCK_OPEN = "<attached_pages>";
