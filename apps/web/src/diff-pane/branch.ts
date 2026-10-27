@@ -8,27 +8,36 @@ import {
   type Comparison,
   type ComparisonError,
   type ComparisonSources,
+  type LastRun,
   MAX_PULL_TITLE,
   type PullRequest,
   type PullSource,
   type RepoChanges,
+  type RunSource,
   shortSha,
 } from "@cloudpid/protocol";
+import { runLabel } from "./last-run.ts";
 
 /**
- * What the Pane shows: the Changes of every repo (or of one `repo`), or one repo's This branch. A Pane opened from the
- * Session details or the New pane starts on the Changes of every repo.
+ * What the Pane shows: the Changes of every repo (or of one `repo`), one repo's This branch, or the Last run. A Pane
+ * opened from the Session details or the New pane starts on the Changes of every repo.
  */
 export type PaneSource =
   | { readonly kind: "changes"; readonly repo?: string }
   | { readonly kind: "branch"; readonly repo: string }
-  | { readonly kind: "pull"; readonly repo: string; readonly number: number };
+  | { readonly kind: "pull"; readonly repo: string; readonly number: number }
+  | { readonly kind: "run" };
 
 export const CHANGES_SOURCE: PaneSource = { kind: "changes" };
+
+/** The Last run: what the Session's latest writing Run changed, in every repo it copied. */
+export const RUN_SOURCE: PaneSource = { kind: "run" };
 
 /** The value of the picker's option for `source`. */
 export const sourceValue = (source: PaneSource): string => {
   if (source.kind === "pull") return `pull:${source.repo}#${source.number}`;
+
+  if (source.kind === "run") return "run";
 
   return source.kind === "changes"
     ? source.repo === undefined
@@ -39,6 +48,8 @@ export const sourceValue = (source: PaneSource): string => {
 
 /** The source a picker value names: anything it does not know is the Changes of every repo. */
 export const sourceOfValue = (value: string): PaneSource => {
+  if (value === "run") return RUN_SOURCE;
+
   const colon = value.indexOf(":");
   const kind = value.slice(0, colon);
   const repo = value.slice(colon + 1);
@@ -197,8 +208,11 @@ export interface SourceGroup {
 export const sourceOptions = (
   sources: ComparisonSources | null,
   filter: PullFilter = NO_FILTER,
+  lastRun: LastRun | null = null,
 ): readonly SourceGroup[] => {
   const repos = sources?.repos ?? [];
+  // The Last run is one source for every repo it copied, listed once a Run has written, after the Changes.
+  const last: SourceOption[] = lastRun === null ? [] : [{ value: "run", label: runLabel(lastRun) }];
 
   const own = (
     repo: string,
@@ -223,6 +237,7 @@ export const sourceOptions = (
         label: null,
         options: [
           { value: "changes", label: "Changes" },
+          ...last,
           ...repos.flatMap(({ repo, head, pulls }) => own(repo, head, pulls)),
         ],
       },
@@ -230,7 +245,7 @@ export const sourceOptions = (
   }
 
   return [
-    { label: null, options: [{ value: "changes", label: "Changes (every repo)" }] },
+    { label: null, options: [{ value: "changes", label: "Changes (every repo)" }, ...last] },
     ...repos.map(({ repo, head, pulls }) => ({ label: repo, options: own(repo, head, pulls) })),
   ];
 };
@@ -268,6 +283,22 @@ export const pullSourceOf = (comparison: Comparison): PullSource | undefined =>
         mergeBase: comparison.mergeBase,
         head: comparison.head,
       };
+
+/** The source a draft on `repo`'s files of the Last run is written against; none when the repo has no start copy. */
+export const runSourceOf = (run: LastRun, repo: string): RunSource | undefined => {
+  const copied = run.repos.find((each) => each.repo === repo);
+
+  return copied?.start == null
+    ? undefined
+    : {
+        kind: "run",
+        conversationId: run.conversationId,
+        run: run.run,
+        repo,
+        start: copied.start,
+        end: copied.end,
+      };
+};
 
 /** "1 commit", "3 commits". */
 export const commitsLabel = (commits: number): string =>

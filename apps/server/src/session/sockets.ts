@@ -9,6 +9,7 @@ import {
   type CommandOutcome,
   type CompareResult,
   type ComparisonSources,
+  type RunDiff,
   ConversationId,
   decodeClientMessage,
   type FileMatches,
@@ -58,6 +59,7 @@ import type * as Types from "effect/Types";
 import { AnnotationStore } from "./annotations.ts";
 import { type ChangesMessage, type ChangesUpdate, SessionChanges } from "./changes.ts";
 import { SessionComparisons } from "./comparisons.ts";
+import { SessionRuns } from "./runs.ts";
 import { SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
@@ -335,6 +337,7 @@ export const sessionSocketsLayer = (
   | SessionHost
   | SessionChanges
   | SessionComparisons
+  | SessionRuns
   | Secrets
   | BrowserHandoffs
   | BrowserPane
@@ -350,6 +353,7 @@ export const sessionSocketsLayer = (
       const host = yield* SessionHost;
       const changes = yield* SessionChanges;
       const comparisons = yield* SessionComparisons;
+      const runs = yield* SessionRuns;
       const annotations = yield* AnnotationStore;
       const viewed = yield* ViewedStore;
       const reviews = yield* SessionReviews;
@@ -582,6 +586,7 @@ export const sessionSocketsLayer = (
         | CommandOutcome
         | CompareResult
         | ComparisonSources
+        | RunDiff
         | FileMatches
         | HistoryPage
         | SessionTree
@@ -768,6 +773,14 @@ export const sessionSocketsLayer = (
             return comparisons.file(query);
           }
 
+          case "run_diff":
+            return runs.diff;
+          case "run_file": {
+            const { type: _type, id: _id, ...query } = message;
+
+            return runs.file(query);
+          }
+
           case "secret_answer":
             return secrets
               .answer(message.request, message.values, message.keep)
@@ -910,6 +923,9 @@ export const sessionSocketsLayer = (
 
         // The Viewed boxes, an empty list too, for the same reason.
         yield* send(server, viewedMessage(yield* viewed.list));
+
+        // Where the Last run stands, null too, so a client that reconnects drops one that was replaced meanwhile.
+        yield* send(server, { type: "last_run", lastRun: yield* runs.lastRun });
 
         return client;
       });

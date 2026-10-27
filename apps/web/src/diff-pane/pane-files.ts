@@ -6,10 +6,13 @@
 import type {
   BranchSource,
   ChangeEntry,
+  LastRun,
   PullSource,
   RepoChanges,
+  RunSource,
   ViewedFile,
 } from "@cloudpid/protocol";
+import { runSourceOf } from "./branch.ts";
 import { changedFiles, entrySignature, groupedByRepo } from "./changes.ts";
 import type { FileNames } from "./file-diff.ts";
 import { foldReason, type FoldReason } from "./folding.ts";
@@ -33,6 +36,8 @@ export interface PaneFile {
    * contents are read.
    */
   readonly branch: BranchSource | PullSource | undefined;
+  /** The Last run's copy of its repo, when the Pane shows the Last run: where its drafts anchor and its contents are read. */
+  readonly run: RunSource | undefined;
 }
 
 /**
@@ -71,15 +76,17 @@ export const viewedFileIds = (
 export const hasContents = (file: PaneFile): boolean =>
   file.entry.binary !== true && file.entry.tooLarge !== true;
 
-/** The files of `repos` as the Pane shows them; of a Comparison's repo, `branch` says which. */
+/** The files of `repos` as the Pane shows them; of a Comparison's repo, `branch` says which; of the Last run, `run` does. */
 export const paneFilesOf = (
   repos: readonly RepoChanges[],
   branch?: BranchSource | PullSource,
+  run?: LastRun,
 ): readonly PaneFile[] => {
   const grouped = groupedByRepo(repos);
 
   return changedFiles(repos).map(({ id, repo, entry }) => {
     const shown = (path: string) => (grouped ? `${repo}/${path}` : path);
+    const own = run === undefined ? undefined : runSourceOf(run, repo);
 
     return {
       id,
@@ -92,10 +99,13 @@ export const paneFilesOf = (
       },
       reason: foldReason(entry),
       signature:
-        branch === undefined
-          ? entrySignature(entry)
-          : `${entrySignature(entry)}@${branch.mergeBase}..${branch.head}`,
+        branch !== undefined
+          ? `${entrySignature(entry)}@${branch.mergeBase}..${branch.head}`
+          : own !== undefined
+            ? `${entrySignature(entry)}@run:${own.run}:${own.end ?? "live"}`
+            : entrySignature(entry),
       branch,
+      run: own,
     };
   });
 };

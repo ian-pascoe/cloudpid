@@ -85,6 +85,7 @@ import { AnnotationStore, annotationStoreLayer } from "./annotations.ts";
 import { viewedStoreLayer } from "./viewed.ts";
 import { changesRefreshingTools, SessionChanges, sessionChangesLayer } from "./changes.ts";
 import { sessionComparisonsLayer } from "./comparisons.ts";
+import { runsOpeningTools, SessionRuns, sessionRunsLayer } from "./runs.ts";
 import { annotationsPruningTools, SessionReviews, sessionReviewsLayer } from "./reviews.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
@@ -566,6 +567,60 @@ export const SessionLive = Session.make(
           },
         });
 
+        // The Last run: the Workspace copies its repos' files before the Run's first writing call and at its end. Scoped
+        // by this Session's ID, since a Workspace may be shared. The Container is never started for a copy.
+        const sessionRuns = sessionRunsLayer(
+          {
+            // @effect-diagnostics-next-line asyncFunction:off
+            start: async (request) => {
+              const { workspace: id, object, directory } = await placement();
+
+              if (id === null) return null;
+
+              return workspaces
+                .getByName(object)
+                .runStart({ ...request, scope: state.raw.id.toString(), directory });
+            },
+            // @effect-diagnostics-next-line asyncFunction:off
+            end: async (request) => {
+              const { workspace: id, object } = await placement();
+
+              if (id === null) return null;
+
+              return workspaces
+                .getByName(object)
+                .runEnd({ ...request, scope: state.raw.id.toString() });
+            },
+            // @effect-diagnostics-next-line asyncFunction:off
+            diff: async () => {
+              const { workspace: id, object } = await placement();
+
+              if (id === null) return null;
+
+              return workspaces.getByName(object).runDiff(state.raw.id.toString());
+            },
+            // @effect-diagnostics-next-line asyncFunction:off
+            file: async (query) => {
+              const { workspace: id, object } = await placement();
+
+              if (id === null) throw new Error("This Session has no Workspace");
+
+              return workspaces
+                .getByName(object)
+                .runFile({ ...query, scope: state.raw.id.toString() });
+            },
+          },
+          kv,
+          {
+            announce: (lastRun) =>
+              Effect.forEach(
+                state.raw.getWebSockets(),
+                (socket) => send(socket, { type: "last_run", lastRun }),
+                { discard: true },
+              ),
+          },
+        );
+
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed (with no Live View link).
         const sessionBrowserHandoffs = sessionBrowserHandoffsLayer({
           host: browser,
@@ -640,13 +695,18 @@ export const SessionLive = Session.make(
                   // A deleted subagent's drafts are deleted with it.
                   Effect.flatMap((installed) =>
                     Effect.map(
-                      Effect.all([Effect.service(SessionChanges), Effect.service(AnnotationStore)]),
-                      ([changes, annotations]) => {
+                      Effect.all([
+                        Effect.service(SessionChanges),
+                        Effect.service(AnnotationStore),
+                        Effect.service(SessionRuns),
+                      ]),
+                      ([changes, annotations, runs]) => {
                         const tools = Arr.flatMap(installed, (extension) => extension.tools ?? []);
 
                         return [
                           ...installed,
                           tracingTools(telemetry.context, tools),
+                          runsOpeningTools(tools, runs),
                           changesRefreshingTools(tools, changes),
                           annotationsPruningTools(tools, annotations),
                         ];
@@ -687,6 +747,9 @@ export const SessionLive = Session.make(
                   Effect.all([Effect.service(Secrets), Effect.service(BrowserSession)]),
                   ([held, browser]) => wakeAt(held, browser),
                 ),
+                // The Last run ends when the Session goes idle.
+                onSettled: (newest) =>
+                  Effect.flatMap(Effect.service(SessionRuns), (runs) => runs.settled(newest)),
                 // A Secret request, Browser Handoff or Approval request whose call is gone stops being shown, and an
                 // idle browser is closed.
                 onIdle: Effect.flatMap(
@@ -704,6 +767,7 @@ export const SessionLive = Session.make(
             Layer.provideMerge(sessionSecrets),
             Layer.provideMerge(sessionChanges),
             Layer.provideMerge(sessionComparisons),
+            Layer.provideMerge(sessionRuns),
             Layer.provideMerge(sessionAnnotations),
             Layer.provideMerge(sessionViewed),
             Layer.provideMerge(sessionApprovals),

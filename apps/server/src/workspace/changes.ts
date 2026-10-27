@@ -19,6 +19,8 @@ import {
   isRepoName,
   MAX_CHANGE_SIDE_BYTES,
   MAX_CHANGED_FILES,
+  MAX_RUN_HASHED_BYTES,
+  OBJECT_ID,
   type RepoChanges,
   type RepoHead,
   WORKSPACE_ROOT,
@@ -26,6 +28,7 @@ import {
 } from "@cloudpid/protocol";
 import {
   changesScript,
+  type ContainerChange,
   type ContainerRepoChanges,
   headBlobScript,
   parseChanges,
@@ -102,7 +105,7 @@ export type ChangesFiles = {
 type ReadFileOptions = "utf8" | { readonly encoding?: "utf8" | null };
 
 /** isomorphic-git's cache of what it parsed (the index, packs), shared by the calls of one listing. */
-type GitCache = NonNullable<Parameters<typeof git.statusMatrix>[0]["cache"]>;
+export type GitCache = NonNullable<Parameters<typeof git.statusMatrix>[0]["cache"]>;
 
 /** Whether an absolute path is Container-only. */
 export type ContainerOnly = (path: string) => boolean;
@@ -132,6 +135,8 @@ export type ChangesOptions = {
   readonly warn: (message: string) => void;
   /** Defaults to `MAX_TRACKED_FILES`. */
   readonly maxTrackedFiles?: number | undefined;
+  /** How long a listing by the Container's git may take. Defaults to `CONTAINER_LISTING_TIMEOUT_MS`. */
+  readonly listingTimeoutMs?: number | undefined;
 };
 
 export type ChangesRequest = {
@@ -181,18 +186,38 @@ const pause = () =>
     setTimeout(resolve, 0);
   });
 
+/** How long the Workspace DO waits for a listing by the Container's git before it gives up: it holds the DO's queue. */
+export const CONTAINER_LISTING_TIMEOUT_MS = 60_000;
+
+/** `work`, or a rejection if it has not settled after `ms`. A real timer: workerd's clock stands still in code. */
+export const withDeadline = <A>(work: Promise<A>, ms: number): Promise<A> =>
+  new Promise<A>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`No answer in ${ms} ms`));
+    }, ms);
+
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        clearTimeout(timer);
+        reject(cause);
+      },
+    );
+  });
+
 /**
- * `files` with each call's failure a rejection, and a pause every `YIELD_EVERY` calls. computer's provider throws some
- * synchronously (a path it cannot resolve), and isomorphic-git takes a file system whose `readFile()` throws for a
- * callback one, whose calls never end.
+ * A function that runs the work it is given, and waits a turn of the event loop every `YIELD_EVERY` calls. The pause every
+ * call waits for while it lasts: isomorphic-git reads a directory's files at once, so a pause of one read alone would
+ * leave the others running and the Workspace DO as busy as before.
  */
-export const settled = (files: ChangesFiles): ChangesFiles => {
+export const pacer = () => {
   let calls = 0;
-  // The pause every call waits for while it lasts: isomorphic-git reads a directory's files at once, so a pause of one
-  // read alone would leave the others running and the Workspace DO as busy as before.
   let paused: Promise<void> | undefined;
 
-  const paced = async <A>(read: () => Promise<A>): Promise<A> => {
+  return async <A>(work: () => Promise<A>): Promise<A> => {
     if (++calls % YIELD_EVERY === 0 && paused === undefined) {
       paused = pause().then(() => {
         paused = undefined;
@@ -201,8 +226,24 @@ export const settled = (files: ChangesFiles): ChangesFiles => {
 
     if (paused !== undefined) await paused;
 
-    return read();
+    return work();
   };
+};
+
+/**
+ * Whether a `statusMatrix` row is a change from HEAD (or from the commit it was asked against): the file was in it and is
+ * not as it was, or it was not in it and is in the working tree.
+ */
+export const changedFromHead = (inHead: number, inWorkdir: number): boolean =>
+  (inHead === 1 && inWorkdir !== 1) || (inHead === 0 && inWorkdir === 2);
+
+/**
+ * `files` with each call's failure a rejection, and a pause every `YIELD_EVERY` calls. computer's provider throws some
+ * synchronously (a path it cannot resolve), and isomorphic-git takes a file system whose `readFile()` throws for a
+ * callback one, whose calls never end.
+ */
+export const settled = (files: ChangesFiles): ChangesFiles => {
+  const paced = pacer();
 
   const wrapped: Types.Mutable<ChangesFiles> = {
     readFile: (path, options) => paced(() => files.readFile(path, options)),
@@ -251,7 +292,7 @@ export const gitFs = (files: ChangesFiles): Fs => readOnly(settled(files));
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const toBytes = (data: string | Uint8Array): Uint8Array =>
+export const toBytes = (data: string | Uint8Array): Uint8Array =>
   data instanceof Uint8Array ? data : encoder.encode(data);
 
 export const toText = (data: string | Uint8Array): string =>
@@ -262,7 +303,7 @@ export const namesOf = (entries: ReadonlyArray<string | { readonly name: string 
   Arr.map(entries, (entry) => (Predicate.isString(entry) ? entry : entry.name));
 
 /** git's blob id of `bytes`. */
-const blobId = async (bytes: Uint8Array): Promise<string> => {
+export const blobId = async (bytes: Uint8Array): Promise<string> => {
   const header = encoder.encode(`blob ${bytes.length}\0`);
   const object = new Uint8Array(header.length + bytes.length);
 
@@ -275,7 +316,8 @@ const blobId = async (bytes: Uint8Array): Promise<string> => {
 };
 
 /** git's rule: a NUL in the first 8,000 bytes. */
-const isBinary = (bytes: Uint8Array): boolean => bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+export const isBinary = (bytes: Uint8Array): boolean =>
+  bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0);
 
 /** The number of lines `bytes` holds, a last one without its newline included. */
 const lineCount = (bytes: Uint8Array): number => {
@@ -319,7 +361,28 @@ type Counted = {
 };
 
 /** The Workspace DO's own listing of a repo: its first entries by path, and how many changed files it did not read. */
-type OwnListing = { readonly files: ChangeEntry[]; readonly more: number };
+export type OwnListing = { readonly files: ChangeEntry[]; readonly more: number };
+
+/**
+ * A file a Run copy did not store as a blob (binary, or over 1 MiB): only its size and, when it could be read to be
+ * hashed, its blob id are recorded. `binary` says why it has no contents to show; a file over 1 MiB is too large.
+ */
+export type UnstoredFile = {
+  readonly path: string;
+  readonly size: number;
+  /** The blob id of its bytes; null when it was too big to read for hashing. */
+  readonly id: string | null;
+  readonly binary: boolean;
+};
+
+/**
+ * What a listing against a commit other than HEAD (a Run's start copy) needs: the commit, and the files that copy did not
+ * store, which a file system walk against its tree cannot compare.
+ */
+export type Against = {
+  readonly commit: string;
+  readonly unstored: ReadonlyMap<string, UnstoredFile>;
+};
 
 type RepoPlan = {
   readonly repo: string;
@@ -328,6 +391,9 @@ type RepoPlan = {
   /** The Workspace DO's own listing, or null when the Container's git must list the repo. */
   readonly listed: OwnListing | null;
 };
+
+/** How a working file compares with what a Run copy recorded of it. */
+type UnstoredState = "same" | "different" | "absent";
 
 /** What is left of a listing's lining-up work (`LISTING_COUNT_WORK`). */
 type CountBudget = { left: number };
@@ -350,6 +416,106 @@ export class WorkspaceChangesModule {
   /** The repos `directory` covers: its own repo, or every repo directly below the Workspace's root. */
   #repos(directory: string): Promise<string[]> {
     return coveredRepos(this.#files(), directory);
+  }
+
+  /**
+   * Whether `repo` is the Container's git's to list (rules git applies, a big pack, many files, or isomorphic-git failing
+   * on it) and so cannot be listed or copied here. A repo that is not a repo of the Workspace says so.
+   */
+  async needsContainer(repo: string): Promise<boolean> {
+    if (!isRepoName(repo)) throw new Error("No such repo in the Workspace");
+
+    const files = this.#files();
+    const dir = `${WORKSPACE_ROOT}/${repo}`;
+
+    await files.stat(`${dir}/.git`).catch(() => {
+      throw new Error(`${repo} is not a repo of the Workspace`);
+    });
+
+    const attributes = readAttributes(
+      await files.readFile(`${dir}/.gitattributes`, "utf8").then(toText, () => undefined),
+    );
+
+    return this.#needsContainer(files, dir, attributes);
+  }
+
+  /**
+   * The working tree of `repo` against commit `against.commit`, listed here as the Changes are against HEAD (the Run
+   * diff while its Run is live, and once more when it ends). Null when the repo needs the Container's git, or this
+   * listing failed in isomorphic-git: the caller asks the Container (`againstOnContainer`) or keeps its last list.
+   */
+  async against(repo: string, against: Against): Promise<OwnListing | null> {
+    if (await this.needsContainer(repo)) return null;
+
+    const files = this.#files();
+    const dir = `${WORKSPACE_ROOT}/${repo}`;
+    const containerOnly = await this.#options.containerOnly();
+
+    const attributes = readAttributes(
+      await files.readFile(`${dir}/.gitattributes`, "utf8").then(toText, () => undefined),
+    );
+
+    try {
+      return await this.#listOwn(
+        readOnly(files),
+        dir,
+        { commit: against.commit, branch: null },
+        attributes,
+        containerOnly,
+        { left: LISTING_COUNT_WORK },
+        against,
+      );
+    } catch (cause) {
+      this.#options.warn(`changes: isomorphic-git failed in ${repo}: ${errorText(cause)}`);
+
+      return null;
+    }
+  }
+
+  /**
+   * The Container's git's listing of `repo` against commit `commit`, run by the Container only if it runs (a stopped
+   * Container is never started for it): the entries and how many were left out, or why there are none. A file the Run
+   * copy did not store (`unstored`) that the working tree still has as the copy recorded it is not a change, whatever
+   * git says of it against the copy's tree (HEAD's version of it).
+   */
+  async againstOnContainer(
+    repo: string,
+    commit: string,
+    unstored: ReadonlyMap<string, UnstoredFile>,
+  ): Promise<OwnListing | { readonly error: string } | null> {
+    if (!this.#options.running()) return null;
+
+    const listed = (await this.#onContainer([repo], commit)).get(repo);
+
+    if (listed === undefined) return { error: "The Container could not list the files" };
+
+    if ("error" in listed) return { error: listed.error };
+
+    const files = this.#files();
+    const dir = `${WORKSPACE_ROOT}/${repo}`;
+
+    const attributes = readAttributes(
+      await files.readFile(`${dir}/.gitattributes`, "utf8").then(toText, () => undefined),
+    );
+
+    const containerOnly = await this.#options.containerOnly();
+    const entries = await this.#containerEntries(dir, attributes, listed, containerOnly);
+    const same = new Set<string>();
+
+    for (const file of unstored.values()) {
+      if (containerOnly(`${dir}/${file.path}`)) continue;
+
+      if ((await unstoredState(readOnly(files), `${dir}/${file.path}`, file)) === "same") {
+        same.add(file.path);
+      }
+    }
+
+    if (same.size === 0) return entries;
+
+    return {
+      files: entries.files.filter((entry) => !same.has(entry.path)),
+      more: entries.more,
+    };
   }
 
   /** The Changes of the repos `request` covers, in order of name, at most `maxFiles` across them. */
@@ -437,15 +603,23 @@ export class WorkspaceChangesModule {
     attributes: RootAttributes,
     containerOnly: ContainerOnly,
     budget: CountBudget,
+    against?: Against,
   ): Promise<OwnListing> {
     const cache: GitCache = {};
-    const matrix = await git.statusMatrix({ fs, dir, cache, refresh: false });
 
-    const changed = matrix
+    const matrix = await git.statusMatrix({
+      fs,
+      dir,
+      cache,
+      refresh: false,
+      ref: against === undefined ? "HEAD" : against.commit,
+    });
+
+    const listed = matrix
       .filter(([path, inHead, inWorkdir]) => {
         if (containerOnly(`${dir}/${path}`)) return false;
 
-        return (inHead === 1 && inWorkdir !== 1) || (inHead === 0 && inWorkdir === 2);
+        return changedFromHead(inHead, inWorkdir);
       })
       .map(([path, inHead, inWorkdir]) => ({
         path,
@@ -455,8 +629,14 @@ export class WorkspaceChangesModule {
             : inWorkdir === 0
               ? ("deleted" as const)
               : ("modified" as const),
-      }))
-      .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+      }));
+
+    const changed =
+      against === undefined
+        ? listed
+        : await this.#withUnstored(fs, dir, listed, against.unstored, containerOnly);
+
+    changed.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
     const rows: Row[] = [];
     const renames = new RenameCount();
@@ -465,8 +645,15 @@ export class WorkspaceChangesModule {
     for (const { path, status } of changed) {
       if (rows.length - renames.pairs >= MAX_CHANGED_FILES) break;
 
+      const recorded = against?.unstored.get(path);
+
+      // A file the copy did not store has no blob to read: its old side is what the copy recorded of it.
       const old =
-        status === "added" ? undefined : await this.#headSide(fs, dir, head.commit, path, cache);
+        status === "added"
+          ? undefined
+          : recorded === undefined
+            ? await this.#headSide(fs, dir, head.commit, path, cache)
+            : unstoredSide(recorded);
 
       const now = status === "deleted" ? undefined : await this.#workingSide(fs, dir, path);
 
@@ -487,6 +674,36 @@ export class WorkspaceChangesModule {
       // A rename among the files not read counts as two: pairing them would mean reading them.
       more: changed.length - rows.length,
     };
+  }
+
+  /**
+   * `listed` (what the walk against a Run copy's tree found) corrected for the files the copy did not store: a file the
+   * working tree still has as the copy recorded it is not changed, one it has otherwise or has lost is, whatever the
+   * tree's own entry for it says (HEAD's, or none).
+   */
+  async #withUnstored(
+    fs: Fs,
+    dir: string,
+    listed: Array<{ path: string; status: "added" | "modified" | "deleted" }>,
+    unstored: ReadonlyMap<string, UnstoredFile>,
+    containerOnly: ContainerOnly,
+  ) {
+    const byPath = new Map(listed.map((each) => [each.path, each]));
+
+    for (const file of unstored.values()) {
+      if (containerOnly(`${dir}/${file.path}`)) continue;
+
+      const state = await unstoredState(fs, `${dir}/${file.path}`, file);
+
+      if (state === "same") byPath.delete(file.path);
+      else
+        byPath.set(file.path, {
+          path: file.path,
+          status: state === "absent" ? "deleted" : "modified",
+        });
+    }
+
+    return [...byPath.values()];
   }
 
   async #headSide(fs: Fs, dir: string, commit: string | null, path: string, cache: GitCache) {
@@ -592,12 +809,21 @@ export class WorkspaceChangesModule {
     return counted;
   }
 
-  /** The Container's git's listing of `repos`, by repo; empty when it could not run (each repo then has an error). */
-  async #onContainer(repos: ReadonlyArray<string>): Promise<Map<string, ContainerRepoChanges>> {
+  /**
+   * The Container's git's listing of `repos`, by repo; empty when it could not run (each repo then has an error). With
+   * `base` (a commit), against it rather than HEAD.
+   */
+  async #onContainer(
+    repos: ReadonlyArray<string>,
+    base?: string,
+  ): Promise<Map<string, ContainerRepoChanges>> {
     const listed = new Map<string, ContainerRepoChanges>();
 
     try {
-      const ran = await this.#options.run(changesScript(repos));
+      const ran = await withDeadline(
+        this.#options.run(changesScript(repos, WORKSPACE_ROOT, base)),
+        this.#options.listingTimeoutMs ?? CONTAINER_LISTING_TIMEOUT_MS,
+      );
 
       for (const repo of parseChanges(ran.stdout)) listed.set(repo.repo, repo);
 
@@ -653,7 +879,30 @@ export class WorkspaceChangesModule {
 
     if ("error" in container) return { ...stale, error: container.error };
 
-    const dir = `${WORKSPACE_ROOT}/${repo}`;
+    const fresh = await this.#containerEntries(
+      `${WORKSPACE_ROOT}/${repo}`,
+      plan.attributes,
+      container,
+      containerOnly,
+    );
+
+    await this.#options.kept.save(repo, fresh).catch((cause: unknown) => {
+      this.#options.warn(`changes: keeping ${repo}'s list failed: ${errorText(cause)}`);
+    });
+
+    return { repo, head, ...fresh, stale: false };
+  }
+
+  /**
+   * The entries of the Container's git's listing `container` of the repo at `dir`: the Container-only paths left out, at
+   * most `MAX_CHANGED_FILES`, each with its flags and whether a side is too large.
+   */
+  async #containerEntries(
+    dir: string,
+    attributes: RootAttributes,
+    container: { readonly files: ReadonlyArray<ContainerChange> },
+    containerOnly: ContainerOnly,
+  ): Promise<OwnListing> {
     const files = this.#files();
 
     const entries = container.files.filter(
@@ -688,18 +937,63 @@ export class WorkspaceChangesModule {
             binary: file.binary,
             tooLarge,
           }),
-          plan.attributes,
+          attributes,
         ),
       );
     }
 
-    const fresh = { files: listed, more: entries.length - listed.length };
+    return { files: listed, more: entries.length - listed.length };
+  }
 
-    await this.#options.kept.save(repo, fresh).catch((cause: unknown) => {
-      this.#options.warn(`changes: keeping ${repo}'s list failed: ${errorText(cause)}`);
+  /**
+   * One changed file's two sides against commit `against.commit` (a Run's start copy) instead of HEAD: the copy's side
+   * (what it recorded, for a file it did not store), and the working tree's. It never starts the Container.
+   */
+  async fileAgainst(request: ChangeFileRequest, against: Against): Promise<ChangeFile> {
+    const { repo, path } = request;
+    const oldPath = request.oldPath ?? path;
+
+    if (!isRepoName(repo) || !isRepoPath(path) || !isRepoPath(oldPath)) {
+      throw new Error("No such file in the Workspace's repos");
+    }
+
+    const files = this.#files();
+    const fs = readOnly(files);
+    const dir = `${WORKSPACE_ROOT}/${repo}`;
+
+    await files.stat(`${dir}/.git`).catch(() => {
+      throw new Error(`${repo} is not a repo of the Workspace`);
     });
 
-    return { repo, head, ...fresh, stale: false };
+    const recorded = against.unstored.get(oldPath);
+
+    return {
+      old:
+        recorded === undefined
+          ? await this.#headFile(files, fs, dir, oldPath, against.commit)
+          : unstoredFile(recorded),
+      new: await this.#workingFile(fs, dir, path),
+    };
+  }
+
+  /**
+   * `path` of `repo` as commit `commit` has it (a Run's start or end copy), read as HEAD's side is: here, or by the
+   * Container's git for a repo whose pack is over the guard or an object this DO lacks, while it runs. Null when the
+   * commit has no such file. It never starts the Container.
+   */
+  async sideAt(repo: string, path: string, commit: string): Promise<ChangeSide | null> {
+    if (!isRepoName(repo) || !isRepoPath(path) || !OBJECT_ID.test(commit)) {
+      throw new Error("No such file in the Workspace's repos");
+    }
+
+    const files = this.#files();
+    const dir = `${WORKSPACE_ROOT}/${repo}`;
+
+    await files.stat(`${dir}/.git`).catch(() => {
+      throw new Error(`${repo} is not a repo of the Workspace`);
+    });
+
+    return this.#headFile(files, readOnly(files), dir, path, commit);
   }
 
   /** One changed file's two sides. It never starts the Container. */
@@ -730,14 +1024,16 @@ export class WorkspaceChangesModule {
     fs: Fs,
     dir: string,
     path: string,
+    commit?: string,
   ): Promise<ChangeSide | null> {
-    const head = await readHead(fs, dir);
+    // HEAD's commit, or `commit` when the side is a Run copy's.
+    const at = commit ?? (await readHead(fs, dir)).commit;
 
-    if (head.commit === null) return null;
+    if (at === null) return null;
 
     if ((await packfileBytes(files, `${dir}/.git`).catch(() => 0)) <= MAX_PACK_BYTES) {
       try {
-        const { blob } = await git.readBlob({ fs, dir, oid: head.commit, filepath: path });
+        const { blob } = await git.readBlob({ fs, dir, oid: at, filepath: path });
 
         return sideOf(blob, blob.length);
       } catch (cause) {
@@ -754,7 +1050,11 @@ export class WorkspaceChangesModule {
     }
 
     const repo = dir.slice(WORKSPACE_ROOT.length + 1);
-    const ran = await this.#options.run(headBlobScript(repo, path, MAX_CHANGE_SIDE_BYTES));
+
+    const ran = await this.#options.run(
+      headBlobScript(repo, path, MAX_CHANGE_SIDE_BYTES, WORKSPACE_ROOT, commit),
+    );
+
     const read = parseHeadBlob(ran.stdout);
 
     if (read === null) return null;
@@ -778,6 +1078,41 @@ export class WorkspaceChangesModule {
     }
   }
 }
+
+/** A file a Run copy did not store, as a side of the listing: what the copy recorded of it. */
+const unstoredSide = (file: UnstoredFile): ReadSide => {
+  const facts: SideFacts = { bytes: file.size, binary: file.binary, lines: 0 };
+
+  return { facts: file.id === null ? facts : { ...facts, id: file.id } };
+};
+
+/** A file a Run copy did not store, as a side a client is sent: too large, or binary. */
+export const unstoredFile = (file: UnstoredFile): ChangeSide =>
+  file.size > MAX_CHANGE_SIDE_BYTES ? { kind: "too_large", bytes: file.size } : { kind: "binary" };
+
+/**
+ * Whether the working file at `full` is as a Run copy recorded `file`: the same size and, when the copy could hash it, the
+ * same blob id (a file too big to hash is compared by size alone).
+ */
+const unstoredState = async (fs: Fs, full: string, file: UnstoredFile): Promise<UnstoredState> => {
+  let stat: Awaited<ReturnType<Fs["promises"]["lstat"]>>;
+
+  try {
+    stat = await fs.promises.lstat(full);
+  } catch (cause) {
+    if (isNotFound(cause)) return "absent";
+
+    throw cause;
+  }
+
+  if (stat.isSymbolicLink() || stat.size !== file.size) return "different";
+
+  if (file.id === null || stat.size > MAX_RUN_HASHED_BYTES) return "same";
+
+  return (await blobId(toBytes(await fs.promises.readFile(full)))) === file.id
+    ? "same"
+    : "different";
+};
 
 /**
  * The working side at `full`: a symbolic link's target, or the file's bytes, or only its size when it is over

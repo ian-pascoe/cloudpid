@@ -42,6 +42,8 @@ import type {
   CompareResult,
   ComparisonSources,
   ContainerUsage,
+  LastRun,
+  RunDiff,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
 import { currentInstanceName, type InstanceType, type StoredInstanceType } from "@cloudpid/config";
@@ -64,6 +66,12 @@ import {
   type ComparisonFileRequest,
   WorkspaceComparisonModule,
 } from "./comparison.ts";
+import {
+  type RunEndRequest,
+  type RunFileRequest,
+  type RunStartRequest,
+  WorkspaceRunsModule,
+} from "./runs.ts";
 import { IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
@@ -228,6 +236,8 @@ export class Workspace extends ContainerHost {
   readonly #changes: WorkspaceChangesModule;
   /** This branch of the Workspace's repos (`comparisonSources`, `compare`, `comparisonFile`). */
   readonly #comparison: WorkspaceComparisonModule;
+  /** The Run copies of the Workspace's repos and the Run diff (`runStart`, `runEnd`, `runDiff`, `runFile`). */
+  readonly #runs: WorkspaceRunsModule;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
 
@@ -580,6 +590,30 @@ export class Workspace extends ContainerHost {
       token: () => env.CLOUDPID_GITHUB_TOKEN,
       now: () => this.clock(),
       redact,
+      warn: (message) => console.warn(message),
+    });
+
+    // The Run diff: copies of the repos' trees saved as git objects here (or by the Container's git for a repo that needs
+    // it, only while it runs), and the Run listed against the start copy with the Changes' own machinery (ADR-0022).
+    this.#runs = new WorkspaceRunsModule({
+      files: () => this.#workspace.provider(),
+      changes: this.#changes,
+      containerOnly: async () => {
+        const ignore = await launch.ignore();
+        const patterns = ignore === undefined ? undefined : withHarnessKept(ignore);
+
+        return (path) => isContainerOnly(path, patterns);
+      },
+      running: () => this.containerRunning(),
+      run: (script) => this.runContainerScript(script),
+      store: {
+        get: async (key) => ctx.storage.kv.get(key),
+        put: async (key, value) => ctx.storage.kv.put(key, value),
+        delete: async (key) => {
+          ctx.storage.kv.delete(key);
+        },
+        keys: async (prefix) => Array.from(ctx.storage.kv.list({ prefix }), ([key]) => key),
+      },
       warn: (message) => console.warn(message),
     });
   }
@@ -1130,6 +1164,42 @@ export class Workspace extends ContainerHost {
     await this.#ready();
 
     return this.#comparison.file(request);
+  }
+
+  /**
+   * A Run starts writing (docs/spec.md → Diffs and review → Run diff): each repo `request.directory` covers is copied
+   * before the Run's first writing call, which waits for it; the Session's last Run is replaced. Starts no Container: a
+   * repo that needs it while it is stopped is "not captured".
+   */
+  async runStart(request: RunStartRequest): Promise<LastRun> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#runs.start(request);
+  }
+
+  /** The Run ended: copy each captured repo again and keep the Run's diff. Null for a Run that is not the latest. */
+  async runEnd(request: RunEndRequest): Promise<LastRun | null> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#runs.end(request);
+  }
+
+  /** The Run diff of the Session's latest writing Run, or null. It never starts the Container. */
+  async runDiff(scope: string): Promise<RunDiff | null> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#runs.diff(scope);
+  }
+
+  /** One file of the Session's latest writing Run: its two sides. It never starts the Container. */
+  async runFile(request: RunFileRequest): Promise<ChangeFile> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#runs.file(request);
   }
 
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */

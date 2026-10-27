@@ -180,6 +180,9 @@ const changesFieldAtom = Atom.family(({ sessionId, conversationId }: Conversatio
   ),
 );
 
+/** The Session's Last run (the Run diff's source): null when no Run has written. */
+export const lastRunAtom = slice((state) => state.lastRun);
+
 /**
  * The Changes of the conversation `key` names (`conversation-key.ts`): the Session's Workspace's for the root's, or a
  * subagent conversation's Workspace's; null until the Session lists them. Asks the Session to send them while read.

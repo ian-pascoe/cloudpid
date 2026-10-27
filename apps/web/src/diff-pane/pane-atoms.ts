@@ -10,8 +10,10 @@ import type {
   BranchSource,
   Comparison,
   ComparisonError,
+  LastRun,
   PullSource,
   RepoChanges,
+  RunDiff,
 } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -20,7 +22,7 @@ import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { messageOf } from "../registry.ts";
 import { appRuntime } from "../runtime.ts";
-import { changesAtom, sessionClientAtom, viewedAtom } from "../session/atoms.ts";
+import { changesAtom, lastRunAtom, sessionClientAtom, viewedAtom } from "../session/atoms.ts";
 import type { ConversationKey } from "../session/conversation-key.ts";
 import type { SessionCommandError } from "../session/client.ts";
 import {
@@ -29,6 +31,7 @@ import {
   comparisonRepos,
   type PaneSource,
   pullSourceOf,
+  RUN_SOURCE,
 } from "./branch.ts";
 import { changesTotals, type ChangesTotals } from "./changes.ts";
 import { foldedFiles, paneFilesOf, type PaneFile, viewedFileIds } from "./pane-files.ts";
@@ -40,7 +43,7 @@ import {
   type PaneUiAction,
 } from "./pane-ui.ts";
 import { browserPage, refreshOnReturn } from "./page-return.ts";
-import { diffTargetAtom } from "./target.ts";
+import { type DiffTarget, diffTargetAtom } from "./target.ts";
 
 /**
  * Where the Comparison of the repo This branch shows (or of its pull request `pull`) stands: asked for, being made, the
@@ -72,9 +75,22 @@ export const isComparisonOf = (
   pull: number | undefined,
 ): boolean => comparison.repo === repo && comparison.pull?.number === pull;
 
-/** What the Pane draws its files from: the Changes' repos, or the one repo of a Comparison. */
+/**
+ * Where the Run diff the Pane shows when it shows the Last run stands: asked for, made (`diff` null: no Run has written
+ * files), or not asked for at all (a failure of the request itself). `listing` counts the lists made, so a live Run's files
+ * load again with each.
+ */
+export type RunView =
+  | { readonly kind: "idle" }
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly diff: RunDiff | null; readonly listing: number }
+  | { readonly kind: "failed"; readonly message: string };
+
+/** What the Pane draws its files from: the Changes' repos, the one repo of a Comparison, or the Last run's repos. */
 export interface PaneList {
   readonly repos: readonly RepoChanges[];
+  /** The Last run, when the Pane shows it and has its Run diff. */
+  readonly run: LastRun | undefined;
   /** The Comparison, when the Pane shows This branch and has it. */
   readonly comparison: Comparison | undefined;
   /** The source drafts on the Comparison's files are written against. */
@@ -95,6 +111,9 @@ export interface CompareAsk {
 }
 
 const NO_REPOS: readonly RepoChanges[] = [];
+
+/** The Last run of a page that has none: a Subagent page's. */
+const NO_LAST_RUN = Atom.make<LastRun | null>(null);
 
 /** The atoms of one Diff pane. */
 export interface PaneAtoms {
@@ -131,6 +150,14 @@ export interface PaneAtoms {
   >;
   /** The Comparison of the repo This branch shows. */
   readonly branchView: Atom.Atom<BranchView>;
+  /** The Session's Last run, as the Session last said; null when no Run has written. */
+  readonly lastRun: Atom.Atom<LastRun | null>;
+  /** The Run diff the Last run shows. */
+  readonly runView: Atom.Atom<RunView>;
+  /** Ask the Session for the Run diff again (never starting the Container). */
+  readonly loadRun: Atom.Writable<AsyncResult.AsyncResult<void, SessionCommandError>, void>;
+  /** Mounted while the Pane is: asks for the Run diff as the Pane shows it, and again as the Run moves. */
+  readonly followingRun: Atom.Atom<AsyncResult.AsyncResult<void>>;
   /** Make the Comparison of a repo; the owner's pick or Refresh may start the Container for it. */
   readonly compare: Atom.Writable<AsyncResult.AsyncResult<void, SessionCommandError>, CompareAsk>;
   /** Mounted while the Pane is: compares again when the shown repo's HEAD moved (never starting the Container). */
@@ -149,6 +176,11 @@ export interface PaneAtoms {
 export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
   const { sessionId, conversationId } = changes;
   const target = diffTargetAtom(changes);
+
+  // The Last run is the Session's: a Subagent page's Pane shows another Workspace's Changes, and has none.
+  const askedSource = (asked: DiffTarget): PaneSource =>
+    asked.source === "run" && conversationId === undefined ? RUN_SOURCE : CHANGES_SOURCE;
+
   const own = Atom.make<PaneUi>(INITIAL_PANE_UI);
   const chosen = Atom.make<PaneSource>(CHANGES_SOURCE);
 
@@ -166,13 +198,19 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
 
       if (asked !== null) {
         ctx.set(target, null);
-        ctx.set(chosen, CHANGES_SOURCE);
+        ctx.set(chosen, askedSource(asked));
       }
     },
   );
 
   const source = Atom.writable(
-    (get): PaneSource => (get(target) === null ? get(chosen) : CHANGES_SOURCE),
+    (get): PaneSource => {
+      const asked = get(target);
+
+      if (asked === null) return get(chosen);
+
+      return askedSource(asked);
+    },
     (ctx, next: PaneSource) => {
       ctx.set(chosen, next);
     },
@@ -353,8 +391,80 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
     }),
   );
 
+  const lastRun = conversationId === undefined ? lastRunAtom(sessionId) : NO_LAST_RUN;
+  const runView = Atom.make<RunView>({ kind: "idle" });
+
+  const loadRun = appRuntime.fn((_: void, get) =>
+    Effect.gen(function* () {
+      const client = yield* get.result(sessionClientAtom(sessionId));
+      const before = get(runView);
+
+      // What was shown stays while the next is made.
+      if (before.kind !== "ready") get.set(runView, { kind: "loading" });
+
+      const diff = yield* client.runDiff;
+      const now = get(runView);
+
+      get.set(runView, {
+        kind: "ready",
+        diff,
+        listing: (now.kind === "ready" ? now.listing : 0) + 1,
+      });
+    }).pipe(
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) =>
+          Effect.sync(() => {
+            get.set(runView, { kind: "failed", message: messageOf(cause) });
+          }),
+      ),
+    ),
+  );
+
+  // The Changes' lists, counted only while the Run is live: an ended Run's diff never changes.
+  const liveListing = Atom.make((get): number =>
+    get(lastRun)?.endedAt === null ? (get(changesAtom(changes))?.listing ?? 0) : 0,
+  );
+
+  const followingRun = appRuntime.atom((get) => {
+    const shown = get(source);
+
+    if (shown.kind !== "run") return Effect.void;
+
+    // Asked again as the Run starts, copies or ends, and as a live Run's files change. The ask is mounted here, so its
+    // writes land whatever else reads it.
+    get(lastRun);
+    get(liveListing);
+    get.mount(loadRun);
+    get.set(loadRun, undefined);
+
+    return Effect.void;
+  });
+
   const list = Atom.make((get): PaneList => {
     const shown = get(source);
+
+    if (shown.kind === "run") {
+      const view = get(runView);
+      const run = get(lastRun);
+
+      if (
+        view.kind !== "ready" ||
+        view.diff === null ||
+        run === null ||
+        view.diff.run !== run.run
+      ) {
+        return { repos: [], run: undefined, comparison: undefined, branch: undefined, listing: 0 };
+      }
+
+      return {
+        repos: view.diff.repos,
+        run,
+        comparison: undefined,
+        branch: undefined,
+        listing: view.diff.live ? view.listing : 0,
+      };
+    }
 
     if (shown.kind === "changes") {
       const listed = get(changesAtom(changes));
@@ -365,6 +475,7 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
           only === undefined
             ? (listed?.repos ?? NO_REPOS)
             : (listed?.repos ?? NO_REPOS).filter(({ repo }) => repo === only),
+        run: undefined,
         comparison: undefined,
         branch: undefined,
         listing: listed?.listing ?? 0,
@@ -377,11 +488,12 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
       view.kind !== "ready" ||
       !isComparisonOf(view.comparison, shown.repo, shown.kind === "pull" ? shown.number : undefined)
     ) {
-      return { repos: [], comparison: undefined, branch: undefined, listing: 0 };
+      return { repos: [], run: undefined, comparison: undefined, branch: undefined, listing: 0 };
     }
 
     return {
       repos: comparisonRepos(view.comparison),
+      run: undefined,
       comparison: view.comparison,
       branch: pullSourceOf(view.comparison) ?? branchSourceOf(view.comparison),
       listing: 0,
@@ -389,9 +501,9 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
   });
 
   const files = Atom.make((get) => {
-    const { repos, branch } = get(list);
+    const { repos, branch, run } = get(list);
 
-    return paneFilesOf(repos, branch);
+    return paneFilesOf(repos, branch, run);
   });
 
   const totals = Atom.make((get) => changesTotals(get(list).repos));
@@ -431,6 +543,10 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
     viewed,
     setViewed,
     branchView,
+    lastRun,
+    runView,
+    loadRun,
+    followingRun,
     compare,
     following,
     list,

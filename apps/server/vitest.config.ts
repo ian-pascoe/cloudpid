@@ -6,13 +6,14 @@ const workerd = "src/**/*.workerd.test.ts";
 
 /**
  * Tests of the Workspace DO alone, in a test Worker that hosts it and the Worker Shell's loader: the environment
- * conformance cases, the Changes and the Comparisons (over repos real git made, `changes.setup.ts` and
+ * conformance cases, the Changes, the Comparisons and the Run copies (over repos real git made, `changes.setup.ts` and
  * `comparison.setup.ts`).
  */
 const workspaceOnly = [
   "src/workspace/env.workerd.test.ts",
   "src/workspace/changes*.workerd.test.ts",
   "src/workspace/comparison*.workerd.test.ts",
+  "src/workspace/runs*.workerd.test.ts",
 ];
 
 /** Every other Workspace test (Sessions and tools on a Workspace) runs in a test Worker that also hosts a Session host. */

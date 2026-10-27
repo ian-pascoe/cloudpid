@@ -24,6 +24,7 @@ import { changesAtom } from "../session/atoms.ts";
 import type { ChangesState } from "../session/state.ts";
 import { useWidth } from "../use-width.ts";
 import { filesLabel, groupedByRepo } from "./changes.ts";
+import { clockText, runStateText, uncapturedRepos } from "./last-run.ts";
 import { DiffPaneScope, type PaneAtoms } from "./pane-atoms.ts";
 import type { PaneFile } from "./pane-files.ts";
 import { ChangedFileRow, DiffTally } from "./parts.tsx";
@@ -119,9 +120,10 @@ const SourcePicker = ({ pane }: { pane: PaneAtoms }) => {
   const opened = useAtomSet(pane.pickerOpened);
   const [filter, setFilter] = useAtom(pane.pullFilter);
   const select = useRef<HTMLSelectElement>(null);
+  const lastRun = useAtomValue(pane.lastRun);
   const known = AsyncResult.getOrElse(sources, () => null);
   const value = sourceValue(source);
-  const groups = sourceOptions(known, { text: filter, keep: value });
+  const groups = sourceOptions(known, { text: filter, keep: value }, lastRun);
 
   // The owner's own pick: a stopped Container may be started for it.
   const pick = (next: PaneSource) => {
@@ -144,7 +146,7 @@ const SourcePicker = ({ pane }: { pane: PaneAtoms }) => {
           options: [
             {
               value,
-              label: source.kind === "pull" ? `#${source.number}` : "This branch",
+              label: sourceName(source),
             },
           ],
         },
@@ -287,22 +289,65 @@ const BranchSummary = ({ pane }: { pane: PaneAtoms }) => {
   );
 };
 
+/**
+ * What the Last run is: whether it is still working or when it ended, and the repos that have no Run diff, with why. A
+ * Run diff of a repo the Container's git lists is the last list while the Container is stopped, marked as such.
+ */
+const RunSummary = ({ pane }: { pane: PaneAtoms }) => {
+  const run = useAtomValue(pane.lastRun);
+
+  if (run === null) return null;
+
+  const missing = uncapturedRepos(run);
+
+  return (
+    <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+      <span className="font-medium text-foreground">Last run</span>
+      <span>{runStateText(run, clockText)}</span>
+      {missing.map(({ repo, why }) => (
+        <span key={repo} role="status" className="flex items-center gap-1">
+          <CircleAlert aria-hidden className="size-3.5" />
+          Not captured in {repo}: {why}
+        </span>
+      ))}
+    </div>
+  );
+};
+
 /** The Pane's header: the source, Refresh, "may be out of date", the totals with "collapse all", the layout, Wrap. */
 const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState | null }) => {
   const totals = useAtomValue(pane.totals);
   const source = useAtomValue(pane.source);
   const view = useAtomValue(pane.branchView);
+  const runView = useAtomValue(pane.runView);
   const [refreshed, refresh] = useAtom(pane.refresh);
   const [compared, compare] = useAtom(pane.compare);
+  const [loadedRun, loadRun] = useAtom(pane.loadRun);
   const files = useAtomValue(pane.files);
   const act = useAtomSet(pane.ui);
-  const onComparison = source.kind !== "changes";
+  // This branch or a pull request: the sources a `compare` makes.
+  const onComparison = source.kind === "branch" || source.kind === "pull";
+  const onRun = source.kind === "run";
   const viewed = useAtomValue(pane.viewed);
   const { comparison } = useAtomValue(pane.list);
   const viewable = files.filter((file) => file.entry.blob !== undefined).length;
-  const refreshing = onComparison ? compared.waiting : refreshed.waiting;
-  const starting = onComparison ? view.kind === "starting" : changes?.startingContainer === true;
-  const stale = !onComparison && totals.stale;
+
+  const refreshing = onRun
+    ? loadedRun.waiting
+    : onComparison
+      ? compared.waiting
+      : refreshed.waiting;
+
+  const starting = onRun
+    ? false
+    : onComparison
+      ? view.kind === "starting"
+      : changes?.startingContainer === true;
+
+  // A Run diff's repo listed by the Container's git, with the Container stopped, shows its last list.
+  const stale = onRun
+    ? runView.kind === "ready" && runView.diff?.repos.some((repo) => repo.stale) === true
+    : !onComparison && totals.stale;
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b px-3 py-2">
@@ -316,12 +361,15 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
           if (source.kind === "branch") compare({ repo: source.repo, manual: true, fetch: true });
           else if (source.kind === "pull") {
             compare({ repo: source.repo, pull: source.number, manual: true, fetch: true });
-          } else refresh();
+          } else if (source.kind === "run") loadRun();
+          else refresh();
         }}
         title={
-          onComparison
-            ? "Fetch the base branch and compare again, starting the Container if it is stopped"
-            : "List the Changes again, starting the Container if a repo needs it"
+          onRun
+            ? "List the Last run again; the Container is not started"
+            : onComparison
+              ? "Fetch the base branch and compare again, starting the Container if it is stopped"
+              : "List the Changes again, starting the Container if a repo needs it"
         }
         className="touch-target h-8 gap-1.5 px-2 text-xs text-muted-foreground"
       >
@@ -334,7 +382,11 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
       {stale && !starting && (
         <span
           className="flex items-center gap-1 text-xs text-muted-foreground"
-          title="These repos need the Container, which is stopped: this is their last list. Refresh to start it."
+          title={
+            onRun
+              ? "These repos need the Container, which is stopped: this is their last list."
+              : "These repos need the Container, which is stopped: this is their last list. Refresh to start it."
+          }
         >
           <CircleAlert aria-hidden className="size-3.5" />
           May be out of date
@@ -365,6 +417,7 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
         )}
       </span>
       <BranchSummary pane={pane} />
+      {onRun && <RunSummary pane={pane} />}
       <div className="flex w-full items-center justify-end gap-2">
         <LayoutPicker />
         <WrapToggle />
@@ -454,6 +507,40 @@ const Empty = ({ changes }: { changes: ChangesState | null }) => {
   );
 };
 
+/** What the Pane says in place of the Last run's files: being listed, none yet, or nothing changed in it. */
+const RunEmpty = ({ pane }: { pane: PaneAtoms }) => {
+  const view = useAtomValue(pane.runView);
+  const run = useAtomValue(pane.lastRun);
+
+  if (view.kind === "failed") {
+    return (
+      <div role="alert" className="px-4 py-6 text-sm text-destructive">
+        <p>The Last run could not be listed: {view.message}</p>
+      </div>
+    );
+  }
+
+  if (run === null) {
+    return (
+      <p className="px-4 py-6 text-sm text-muted-foreground">
+        No Run has written files in this Session yet.
+      </p>
+    );
+  }
+
+  if (view.kind !== "ready") {
+    return <p className="px-4 py-6 text-sm text-muted-foreground">Listing the Last run…</p>;
+  }
+
+  return (
+    <p className="px-4 py-6 text-sm text-muted-foreground">
+      {run.repos.every((each) => each.notCaptured !== undefined)
+        ? "The Last run has no copy of any repo to compare."
+        : "The Last run changed no files."}
+    </p>
+  );
+};
+
 /** The Retry an error state offers where it helps: the owner's own ask, so a stopped Container may start for it. */
 const RetryButton = ({
   pane,
@@ -536,6 +623,35 @@ const BranchEmpty = ({ pane }: { pane: PaneAtoms }) => {
   }
 };
 
+/** The shown source's name for the picker, when the list has not got it. */
+const sourceName = (source: PaneSource): string => {
+  if (source.kind === "pull") return `#${source.number}`;
+
+  return source.kind === "run" ? "Last run" : "This branch";
+};
+
+/** What shows under the header: the Changes' failures, or a failed Viewed tick on a pull request; the Last run has none. */
+const paneFailures = (
+  source: PaneSource,
+  changes: ChangesState | null,
+  repos: readonly RepoChanges[],
+  ticked: string | null,
+): readonly string[] => {
+  if (source.kind === "run") return [];
+
+  if (source.kind !== "changes") {
+    return ticked === null ? [] : [`Could not tick the Viewed box: ${ticked}`];
+  }
+
+  return [
+    ...(changes?.ended === true && changes.listing > 0 ? [ENDED] : []),
+    ...(changes?.failure === null || changes?.failure === undefined ? [] : [changes.failure]),
+    ...repos.flatMap((repo) =>
+      repo.error === undefined ? [] : [`Could not list ${repo.repo}: ${repo.error}`],
+    ),
+  ];
+};
+
 /** The Pane, inside its atoms' scope. */
 const PaneBody = () => {
   const pane = useAtomValue(DiffPaneScope.use());
@@ -549,24 +665,14 @@ const PaneBody = () => {
   useAtomMount(pane.opened);
   useAtomMount(pane.following);
   useAtomMount(pane.returned);
+  useAtomMount(pane.followingRun);
 
   const wide = (width ?? 0) >= RAIL_MIN_WIDTH;
 
   const tickResult = useAtomValue(pane.setViewed);
   const ticked = failureOf(tickResult);
 
-  const failures =
-    source.kind !== "changes"
-      ? ticked === null
-        ? []
-        : [`Could not tick the Viewed box: ${ticked}`]
-      : [
-          ...(changes?.ended === true && changes.listing > 0 ? [ENDED] : []),
-          ...(changes?.failure === null || changes?.failure === undefined ? [] : [changes.failure]),
-          ...repos.flatMap((repo) =>
-            repo.error === undefined ? [] : [`Could not list ${repo.repo}: ${repo.error}`],
-          ),
-        ];
+  const failures = paneFailures(source, changes, repos, ticked);
 
   const list = <FileList pane={pane} repos={repos} />;
 
@@ -581,7 +687,9 @@ const PaneBody = () => {
         </div>
       )}
       {files.length === 0 ? (
-        source.kind !== "changes" ? (
+        source.kind === "run" ? (
+          <RunEmpty pane={pane} />
+        ) : source.kind !== "changes" ? (
           <BranchEmpty pane={pane} />
         ) : (
           <Empty changes={changes} />

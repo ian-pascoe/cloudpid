@@ -104,6 +104,7 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
         // From the Workspace whose Changes the Pane shows.
         changeFile: (query) => client.changeFile(query, changes.conversationId),
         comparisonFile: client.comparisonFile,
+        runFile: client.runFile,
         lineUp: lineUp.lineUp,
       });
 

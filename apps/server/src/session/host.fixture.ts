@@ -42,14 +42,17 @@ import type {
   Annotation,
   AnnotationDraft,
   Catalog,
+  ChangeFile,
   CommandOutcome,
   CompareResult,
   Comparison,
   ConversationId,
   FileMatches,
   HistoryPage,
+  LastRun,
   Navigated,
   PullList,
+  RunDiff,
   SessionAgent,
   SessionTree,
   ViewedFile,
@@ -142,6 +145,7 @@ import {
   SessionComparisons,
   sessionComparisonsLayer,
 } from "./comparisons.ts";
+import { type RunsSource, runsOpeningTools, SessionRuns, sessionRunsLayer } from "./runs.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
 
@@ -176,6 +180,21 @@ export type ChangesFixture = {
 
 const COMPARISON_FIXTURE_KEY = "test:comparison";
 const COMPARE_CALLS_KEY = "test:compare-calls";
+const RUN_FIXTURE_KEY = "test:run";
+const RUN_CALLS_KEY = "test:run-calls";
+const RUN_HANG_KEY = "test:run-hang-start";
+const RUN_END_DELAY_KEY = "test:run-end-delay";
+
+/** A call the fake Workspace was made: the request of a start or of an end. */
+type RecordedRunCall =
+  | { readonly start: Parameters<RunsSource["start"]>[0] }
+  | { readonly end: Parameters<RunsSource["end"]>[0] };
+
+/** What the Session's Workspace answers for the Last run: its Run diff, and each file's sides by `repo/path`. */
+export type RunFixture = {
+  readonly diff: RunDiff | null;
+  readonly files?: Readonly<Record<string, ChangeFile>>;
+};
 
 /** The Comparisons a test Session's Workspace makes (`setComparison`). */
 export type ComparisonFixture = {
@@ -196,6 +215,14 @@ const Echo = defineEffectTool({
   description: "Echo text back",
   parameters: Schema.Struct({ text: Schema.String }),
   execute: ({ text }) => Effect.succeed({ output: [{ type: "text", text: `echo: ${text}` }] }),
+});
+
+/** A tool that writes (`WRITING_TOOLS`), for the Sessions named `runs-…`: it changes nothing, but a Run opens at its call. */
+const Write = defineEffectTool({
+  name: "write",
+  description: "Write a file",
+  parameters: Schema.Struct({ path: Schema.String }),
+  execute: ({ path }) => Effect.succeed({ output: [{ type: "text", text: `wrote ${path}` }] }),
 });
 
 /** The credential in every Live View link the test browser host mints, to look for where it must not be. */
@@ -460,8 +487,10 @@ export class TestSession extends DurableObject {
     | AgentChangeLog
     | SettingsReload
     | Approvals
+    | SessionRuns
   > {
     const { kv } = this.ctx.storage;
+    const writing = this.ctx.id.name?.startsWith("runs-") === true;
     const searching = this.#searching();
     const changing = this.ctx.id.name?.startsWith("environment-") === true;
     const configuring = this.ctx.id.name?.startsWith("settings-") === true;
@@ -508,14 +537,29 @@ export class TestSession extends DurableObject {
           ]
         : [];
 
+      const writer = writing ? [defineExtension({ name: "writer", tools: [yield* Write] })] : [];
+
       const extensions = [
         echo,
+        ...writer,
         ...environment,
         ...settings,
         yield* secretsExtension([tool]),
         browser,
         yield* Todo,
       ];
+
+      if (writing) {
+        const runs = yield* SessionRuns;
+
+        return [
+          ...extensions,
+          runsOpeningTools(
+            Arr.flatMap(extensions, (extension) => extension.tools ?? []),
+            runs,
+          ),
+        ];
+      }
 
       if (!searching) return extensions;
 
@@ -603,6 +647,8 @@ export class TestSession extends DurableObject {
               ),
               reset: (reason) => ctx.abort(reason),
               extensions: this.hostExtensions(),
+              onSettled: (newest) =>
+                Effect.flatMap(Effect.service(SessionRuns), (runs) => runs.settled(newest)),
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
@@ -719,6 +765,20 @@ export class TestSession extends DurableObject {
             ),
           ),
           Layer.provideMerge(sessionComparisonsLayer(this.#comparisonsSource())),
+          Layer.provideMerge(
+            sessionRunsLayer(this.#runsSource(), ctx.storage.kv, {
+              announce: (lastRun) =>
+                Effect.forEach(
+                  ctx.getWebSockets(),
+                  (socket) => send(socket, { type: "last_run", lastRun }),
+                  { discard: true },
+                ),
+              newId: () => `run${String(this.ctx.storage.kv.get<number>("test:run-id") ?? 0)}`,
+              // A copy that never answers is given up on quickly.
+              writeDeadlineMs: 200,
+              endDeadlineMs: 200,
+            }),
+          ),
           Layer.provideMerge(
             annotationStoreLayer({
               storage: ctx.storage.kv,
@@ -888,6 +948,99 @@ export class TestSession extends DurableObject {
         return { old: null, new: { kind: "text", text } };
       },
     };
+  }
+
+  #runsSource(): RunsSource {
+    const kv = this.ctx.storage.kv;
+
+    const note = (call: RecordedRunCall) => {
+      kv.put(RUN_CALLS_KEY, [...(kv.get<RecordedRunCall[]>(RUN_CALLS_KEY) ?? []), call]);
+    };
+
+    const lastRun = (
+      request: {
+        readonly run: string;
+        readonly conversationId: number;
+        readonly firstCall: string;
+      },
+      ended: number | null,
+    ): LastRun => ({
+      run: request.run,
+      // SAFETY: a number is what the Session passes for a conversation ID.
+      conversationId: request.conversationId as LastRun["conversationId"],
+      startedAt: 1,
+      endedAt: ended === null ? null : 2,
+      firstCall: request.firstCall,
+      until: ended,
+      repos: [{ repo: "app", start: "a".repeat(40), end: ended === null ? null : "b".repeat(40) }],
+    });
+
+    return {
+      start: async (request) => {
+        note({ start: request });
+
+        // A Workspace that never answers: the write must go on without the copy.
+        if (kv.get<boolean>(RUN_HANG_KEY) === true) await new Promise<never>(() => undefined);
+
+        kv.put("test:run-open", request);
+        kv.delete("test:run-ended");
+        kv.put("test:run-id", (kv.get<number>("test:run-id") ?? 0) + 1);
+
+        return lastRun(request, null);
+      },
+      end: async (request) => {
+        note({ end: request });
+
+        // A Workspace slow to end the Run: the Session stops waiting, and is told when the answer comes.
+        const delay = kv.get<number>(RUN_END_DELAY_KEY) ?? 0;
+
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+
+        kv.put("test:run-ended", true);
+
+        const opened = kv.get<{ conversationId: number; firstCall: string }>("test:run-open");
+
+        return opened === undefined
+          ? null
+          : lastRun({ ...opened, run: request.run }, request.until);
+      },
+      diff: async () => {
+        const fixture = kv.get<RunFixture>(RUN_FIXTURE_KEY)?.diff;
+
+        // Live until the Session ended the Run it opened.
+        return fixture === undefined || fixture === null
+          ? null
+          : { ...fixture, live: kv.get<boolean>("test:run-ended") !== true };
+      },
+      file: async (query) => {
+        const key = `${query.repo}/${query.path}`;
+        const file = kv.get<RunFixture>(RUN_FIXTURE_KEY)?.files?.[key];
+
+        if (file === undefined) throw new Error("No such file");
+
+        return file;
+      },
+    };
+  }
+
+  /** From now on the fake Workspace never answers a Run's start (`false`: it does again). */
+  hangRunStart(hang: boolean): void {
+    this.ctx.storage.kv.put(RUN_HANG_KEY, hang);
+  }
+
+  /** From now on the fake Workspace takes `ms` to end a Run. */
+  delayRunEnd(ms: number): void {
+    this.ctx.storage.kv.put(RUN_END_DELAY_KEY, ms);
+  }
+
+  /** What the Session's Workspace answers for the Last run from now on. */
+  setRun(fixture: RunFixture): void {
+    this.ctx.storage.kv.put(RUN_FIXTURE_KEY, fixture);
+  }
+
+  /** Each start and end of a Run the Workspace was asked for so far. */
+  runCalls(): ReadonlyArray<RecordedRunCall> {
+    return this.ctx.storage.kv.get<RecordedRunCall[]>(RUN_CALLS_KEY) ?? [];
   }
 
   /** What the Session's Workspace compares from now on. */

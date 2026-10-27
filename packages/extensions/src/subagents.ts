@@ -29,6 +29,7 @@ export {
 export {
   type AgentRecord,
   type AgentWorkspace,
+  conversationOf,
   conversationWorkspace,
   EMPTY_STATE as EMPTY_SUBAGENTS_STATE,
   isSessionBranch,

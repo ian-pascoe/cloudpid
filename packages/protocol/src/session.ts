@@ -13,6 +13,7 @@ import { ComparisonSourceKind, MAX_VIEWED, ViewedFile } from "./comparison.ts";
 import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
+import { LastRunMessage } from "./last-run.ts";
 
 /**
  * The text the client sends to keep the socket alive, and the server's answer. The object answers it without waking,
@@ -323,6 +324,29 @@ export const ComparisonFileRequest = Schema.Struct({
 });
 
 /**
+ * Ask for the Run diff of the Session's Last run (`docs/spec.md` → Diffs and review → Run diff). Answered with a
+ * `RunDiff`, or `null` while no Run has written. A live Run's list is made again at each ask; an ended Run's is the one
+ * kept at its end. It never starts the Container.
+ */
+export const RunDiffRequest = Schema.Struct({
+  type: Schema.Literal("run_diff"),
+  id: CommandId,
+});
+
+/**
+ * Ask for one file of the Last run: `path` in `repo`, and `oldPath` for a rename. Answered with a `ChangeFile` (`old` as
+ * the start copy had it, `new` as the end copy has it, or the working tree while the Run is live). It never starts the
+ * Container: a side that needs it while it is stopped fails with why.
+ */
+export const RunFileRequest = Schema.Struct({
+  type: Schema.Literal("run_file"),
+  id: CommandId,
+  repo: Schema.String,
+  path: Schema.String,
+  oldPath: Schema.optionalKey(Schema.String),
+});
+
+/**
  * Ask what the composer completes in the root conversation, or in the subagent conversation `conversationId` names: the
  * Session's Slash commands, and the Prompt templates and Skills of the conversation's directory. Answered with a
  * `Catalog`.
@@ -564,6 +588,8 @@ export const ClientMessage = Schema.Union([
   ComparisonSourcesRequest,
   CompareRequest,
   ComparisonFileRequest,
+  RunDiffRequest,
+  RunFileRequest,
 ]);
 
 export type ClientMessage = typeof ClientMessage.Type;
@@ -1266,6 +1292,7 @@ export const ServerMessage = Schema.Union([
   UsageMessage,
   ChangesMessage,
   TodosMessage,
+  LastRunMessage,
 ]);
 
 export type ServerMessage = typeof ServerMessage.Type;

@@ -28,7 +28,7 @@ const wanted = (files: readonly PaneFile[], listing = 1, inView = false): Wanted
 const fakeSession = () => {
   const asks: {
     readonly path: string;
-    /** The merge-base and head a Comparison's file was asked at; null for a Changes file. */
+    /** The merge-base and head a Comparison's file was asked at, `run` for the Last run's; null for a Changes file. */
     readonly pair: string | null;
     readonly answer: Deferred.Deferred<ChangeFile>;
   }[] = [];
@@ -61,12 +61,15 @@ const fakeSession = () => {
       new: { kind: "text", text: newText },
     });
 
-  return { asks, interrupted, changeFile, comparisonFile, answer };
+  const runFile = (query: ChangeFileQuery) => ask(query, "run");
+
+  return { asks, interrupted, changeFile, comparisonFile, runFile, answer };
 };
 
 const services = (session: ReturnType<typeof fakeSession>) => ({
   changeFile: session.changeFile,
   comparisonFile: session.comparisonFile,
+  runFile: session.runFile,
   lineUp: (request: Parameters<typeof lineUp>[0]) => Effect.sync(() => lineUp(request)),
 });
 
