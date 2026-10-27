@@ -59,7 +59,9 @@ import {
   sendDraftAtom,
 } from "./draft-state.ts";
 import {
+  type BaseChoice,
   baseChoices,
+  baseWarning,
   draftBaseProblem,
   draftBranchProblem,
   draftSendable,
@@ -81,8 +83,7 @@ import {
 import { relativeTime } from "./format.ts";
 import { isTouchScreen } from "./lib/device.ts";
 import { cn } from "./lib/utils.ts";
-import { failureOf } from "./registry.ts";
-import { settledFailureOf } from "./registry.ts";
+import { failureOf, settledFailureOf } from "./registry.ts";
 import { ENVIRONMENTS_PATH, navigate } from "./router.ts";
 
 /** Whether files are being dragged over the draft. */
@@ -308,26 +309,46 @@ const BaseField = ({ field, environment }: { field: BranchInput; environment: st
   const result = useAtomValue(draftBranchesAtom(environment));
   // What is typed since the form opened, which filters the list; a branch picked or kept from before filters nothing.
   const [query, setQuery] = useState("");
-  const [highlighted, setHighlighted] = useState(-1);
+  const [highlight, setHighlighted] = useState(-1);
+  // Moved with the arrows, so the row is scrolled to; a row under the pointer is not.
+  const byKey = useRef(false);
   const lists = AsyncResult.isSuccess(result) ? result.value : null;
   const { choices, unlisted } = baseChoices(lists ?? [], query);
   const picked = field.value.trim();
+  const warning = lists === null ? null : baseWarning(lists, field.value);
 
-  // The default branch first, while nothing is typed: the field left empty.
-  const rows = [
-    ...(query.trim() === "" ? [{ name: "", note: "each repo's own" }] : []),
+  const defaults = (lists ?? []).flatMap((list) =>
+    list.status === "ok" && list.defaultBranch !== null ? [list.defaultBranch] : [],
+  );
+
+  // The default branch first, while nothing is typed: the field left empty. One Repo's is named.
+  const rows: readonly BaseChoice[] = [
+    ...(query.trim() === "" && lists !== null
+      ? [
+          {
+            name: "",
+            note: defaults.length === 1 ? defaults[0] : "each repo's own",
+            missingFrom: [],
+          },
+        ]
+      : []),
     ...choices,
   ];
 
+  // A list that changed under the highlight (asked again) leaves nothing highlighted beyond its end.
+  const highlighted = highlight < rows.length ? highlight : -1;
+
   useEffect(() => {
+    if (!byKey.current) return;
+
+    byKey.current = false;
     document.getElementById(baseRowId(listId, highlighted))?.scrollIntoView({ block: "nearest" });
   }, [listId, highlighted]);
 
-  const pick = (name: string, from: HTMLElement) => {
+  const pick = (name: string) => {
     field.onChange(name);
     setQuery("");
     setHighlighted(-1);
-    hidePopover(from.closest<HTMLElement>("[popover]"));
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -335,11 +356,16 @@ const BaseField = ({ field, environment }: { field: BranchInput; environment: st
 
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      byKey.current = true;
 
       const step = event.key === "ArrowDown" ? 1 : -1;
 
       setHighlighted(
-        (at) => (at + step + rows.length + (at < 0 && step < 0 ? 1 : 0)) % rows.length,
+        highlighted < 0
+          ? step > 0
+            ? 0
+            : rows.length - 1
+          : (highlighted + step + rows.length) % rows.length,
       );
 
       return;
@@ -347,11 +373,8 @@ const BaseField = ({ field, environment }: { field: BranchInput; environment: st
 
     const row = rows[highlighted];
 
-    // Return on a highlighted row picks it, and the form closes as it does for Return in any field.
-    if (event.key === "Enter" && row !== undefined) {
-      event.preventDefault();
-      pick(row.name, event.currentTarget);
-    }
+    // Return on a highlighted row picks it; the form then closes, as it does for Return in any field.
+    if (event.key === "Enter" && row !== undefined) pick(row.name);
   };
 
   const failure = failureOf(result);
@@ -417,7 +440,8 @@ const BaseField = ({ field, environment }: { field: BranchInput; environment: st
               if (at !== highlighted) setHighlighted(at);
             }}
             onClick={(event) => {
-              pick(row.name, event.currentTarget);
+              pick(row.name);
+              hidePopover(event.currentTarget.closest<HTMLElement>("[popover]"));
             }}
             className="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-xs select-none aria-selected:bg-accent aria-selected:text-accent-foreground pointer-coarse:min-h-11"
           >
@@ -428,17 +452,31 @@ const BaseField = ({ field, environment }: { field: BranchInput; environment: st
             <span className={cn("min-w-0 truncate", row.name !== "" && "font-mono")}>
               {row.name === "" ? "Default branch" : row.name}
             </span>
-            {row.note !== undefined && (
-              <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-muted-foreground">
-                {row.note}
+            {row.name === picked && <span className="sr-only">(chosen)</span>}
+            {row.missingFrom.length > 0 ? (
+              // A Repo without the branch cannot clone from it: the row says which, as a warning.
+              <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-destructive">
+                not in {row.missingFrom.join(", ")}
               </span>
+            ) : (
+              row.note !== undefined && (
+                <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-muted-foreground">
+                  {row.note}
+                </span>
+              )
             )}
           </div>
         ))}
       </div>
       <div id={`${id}-note`} className="flex flex-col gap-0.5 text-xs">
-        <p className={field.problem === null ? "text-muted-foreground" : "text-destructive"}>
-          {field.problem ?? "Each repo's default branch when left empty."}
+        <p
+          className={
+            field.problem === null && warning === null
+              ? "text-muted-foreground"
+              : "text-destructive"
+          }
+        >
+          {field.problem ?? warning ?? "Each repo's default branch when left empty."}
         </p>
         <p role="status" className={status === null ? "sr-only" : "text-muted-foreground"}>
           {status}

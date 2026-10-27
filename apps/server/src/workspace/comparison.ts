@@ -54,7 +54,7 @@ import {
 import { MAX_PACK_BYTES, packfileBytes } from "./git.ts";
 import { type GithubPull, GithubPulls, type GitHubRepo, githubRepoOf } from "./github-pulls.ts";
 
-export { type GitHubRepo, githubRepoOf };
+export type { GitHubRepo };
 
 /** How many Comparisons of a repo are kept, by (merge-base, head); the oldest are dropped. */
 export const KEPT_COMPARISONS = 5;

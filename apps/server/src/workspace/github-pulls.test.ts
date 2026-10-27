@@ -2,6 +2,7 @@
 // request, the 60 s it is kept, the refusals (401, 403, and a repo the token cannot see), the rate limits, and how long a
 // failure is remembered; and a repo's branches, for the draft's Start from menu.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalFetch:off
+import { MAX_REPO_BRANCHES } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   type Json,
@@ -460,6 +461,48 @@ describe("the branches of a repo", () => {
 
     expect(await pulls.branches(REPO)).toMatchObject({ status: "ok" });
     expect(calls).toHaveLength(3);
+  });
+
+  it("keeps the pages read before a later one failed", async () => {
+    const { pulls, calls } = client(
+      paged([GRAPHQL_BRANCHES_PAGE_1, { errors: [{ message: "Something went wrong" }] }]),
+    );
+
+    const listed = await pulls.branches(REPO);
+
+    expect(calls).toHaveLength(2);
+    expect(
+      listed.status === "ok" ? listed.value.branches.map((branch) => branch.name) : [],
+    ).toEqual(["main", "cloudpid/subagent-pages-web", "cloudpid/subagent-pages-server"]);
+  });
+
+  it("lists the 100 most recent, keeping the default branch among them however old it is", async () => {
+    const nodes = Array.from({ length: 120 }, (_, index) => ({
+      name: `feat/b${String(index).padStart(3, "0")}`,
+      // One minute apart, the later the higher the number.
+      target: {
+        committedDate: `2026-01-01T0${Math.floor(index / 60)}:${String(index % 60).padStart(2, "0")}:00Z`,
+      },
+    }));
+
+    const answer = {
+      data: {
+        repository: {
+          defaultBranchRef: { name: "feat/b000" },
+          refs: { pageInfo: { hasNextPage: false, endCursor: null }, nodes },
+        },
+      },
+    };
+
+    const { pulls } = client({ [GRAPHQL]: () => json(answer) });
+    const listed = await pulls.branches(REPO);
+    const names = listed.status === "ok" ? listed.value.branches.map((branch) => branch.name) : [];
+
+    expect(names).toHaveLength(MAX_REPO_BRANCHES);
+    expect(names[0]).toBe("feat/b119");
+    // The oldest of the 100 most recent gives way to the default branch.
+    expect(names.at(-2)).toBe("feat/b021");
+    expect(names.at(-1)).toBe("feat/b000");
   });
 
   it("leaves out a branch a Workspace may not start from, and puts one with no date last", async () => {

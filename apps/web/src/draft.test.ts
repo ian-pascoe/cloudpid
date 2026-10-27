@@ -4,6 +4,7 @@ import type { RepoBranches } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   baseChoices,
+  baseWarning,
   draftBaseProblem,
   draftBranchProblem,
   draftPlace,
@@ -103,33 +104,50 @@ describe("the Start from menu", () => {
   it("lists one Repo's branches, most recent first, and marks its default branch", () => {
     expect(baseChoices([app], "")).toEqual({
       choices: [
-        { name: "feat/login", note: undefined },
-        { name: "main", note: "default" },
-        { name: "old", note: undefined },
+        { name: "feat/login", note: undefined, missingFrom: [] },
+        { name: "main", note: "default", missingFrom: [] },
+        { name: "old", note: undefined, missingFrom: [] },
       ],
       unlisted: [],
     });
   });
 
-  it("lists each branch of several Repos once, by its latest commit, saying which Repos have it", () => {
+  it("lists each branch of several Repos once, those all have first, naming the Repos without one", () => {
     expect(baseChoices([app, api], "").choices).toEqual([
-      { name: "main", note: "default in app" },
-      { name: "feat/login", note: "in app" },
-      { name: "trunk", note: "in api · default in api" },
-      { name: "old", note: "in app" },
+      { name: "main", note: "default in app", missingFrom: [] },
+      { name: "feat/login", note: undefined, missingFrom: ["api"] },
+      { name: "trunk", note: "default in api", missingFrom: ["app"] },
+      { name: "old", note: undefined, missingFrom: ["api"] },
     ]);
   });
 
   it("calls a branch every Repo starts from the default", () => {
     const lib: RepoBranches = { ...api, repo: "lib", defaultBranch: "main" };
 
-    expect(baseChoices([app, lib], "main").choices).toEqual([{ name: "main", note: "default" }]);
+    expect(baseChoices([app, lib], "main").choices).toEqual([
+      { name: "main", note: "default", missingFrom: [] },
+    ]);
   });
 
   it("keeps the branches whose name holds what is typed, in any case", () => {
     expect(baseChoices([app, api], " LOG ").choices).toEqual([
-      { name: "feat/login", note: "in app" },
+      { name: "feat/login", note: undefined, missingFrom: ["api"] },
     ]);
+  });
+
+  it("warns of a base some listed Repos have no branch of, since their clones would fail", () => {
+    const lib: RepoBranches = { ...api, repo: "lib" };
+
+    expect(baseWarning([app, api], "feat/login ")).toBe(
+      "api has no branch feat/login: its clone cannot start from it.",
+    );
+    expect(baseWarning([app, api, lib], "feat/login")).toBe(
+      "api, lib have no branch feat/login: their clones cannot start from it.",
+    );
+    // Every Repo has it, the field is empty, or no list has it (pushed a moment ago): nothing to say.
+    expect(baseWarning([app, api], "main")).toBeNull();
+    expect(baseWarning([app, api], "")).toBeNull();
+    expect(baseWarning([app, api], "feat/new")).toBeNull();
   });
 
   it("says which Repos it could not list, and lists the others as if alone", () => {
@@ -140,9 +158,9 @@ describe("the Start from menu", () => {
       ),
     ).toEqual({
       choices: [
-        { name: "feat/login", note: undefined },
-        { name: "main", note: "default" },
-        { name: "old", note: undefined },
+        { name: "feat/login", note: undefined, missingFrom: [] },
+        { name: "main", note: "default", missingFrom: [] },
+        { name: "old", note: undefined, missingFrom: [] },
       ],
       unlisted: [{ repo: "lib", message: "Not on GitHub" }],
     });

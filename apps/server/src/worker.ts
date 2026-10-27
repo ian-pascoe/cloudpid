@@ -11,7 +11,6 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
@@ -206,7 +205,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // The draft's Start from menu, asked of GitHub; each repo's list is kept for 60 s per isolate.
     const github = yield* GitHubTokenConfig;
 
-    const branches = draftBranches(githubBranches(Redacted.value(github.token)));
+    const branches = draftBranches(githubBranches(github.token));
 
     return {
       fetch: Effect.gen(function* () {

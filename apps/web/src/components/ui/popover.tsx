@@ -10,8 +10,9 @@ const GAP = 4;
 export type Align = "start" | "center" | "end";
 
 /**
- * Place `panel` under `trigger`, lined up with it by `align`, or above it when there is no room below. The panel is a
- * popover in the top layer, so it is positioned against the viewport.
+ * Place `panel` under `trigger`, lined up with it by `align`, or above it when there is no room below. With room on
+ * neither side, it is moved up until its bottom is on screen, over the button if need be. The panel is a popover in the
+ * top layer, so it is positioned against the viewport.
  */
 export const placePopover = (panel: HTMLElement, trigger: HTMLElement, align: Align) => {
   const anchor = trigger.getBoundingClientRect();
@@ -20,9 +21,11 @@ export const placePopover = (panel: HTMLElement, trigger: HTMLElement, align: Al
   const below = anchor.bottom + GAP;
 
   const top =
-    below + height > window.innerHeight - GAP && anchor.top - GAP - height >= GAP
-      ? anchor.top - GAP - height
-      : below;
+    below + height <= window.innerHeight - GAP
+      ? below
+      : anchor.top - GAP - height >= GAP
+        ? anchor.top - GAP - height
+        : Math.max(GAP, window.innerHeight - GAP - height);
 
   const wanted = {
     start: anchor.left,

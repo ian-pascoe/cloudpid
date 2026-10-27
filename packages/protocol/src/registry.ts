@@ -257,8 +257,8 @@ export const RepoBranchesErrorKind = Schema.Literals(["no_github", "refused", "f
 export type RepoBranchesErrorKind = typeof RepoBranchesErrorKind.Type;
 
 /**
- * One Repo's branches on its remote (`draftBranches`): its default branch and up to `MAX_REPO_BRANCHES` others, most
- * recently committed to first, or why they are not listed.
+ * One Repo's branches on its remote (`draftBranches`): its default branch, and up to `MAX_REPO_BRANCHES` branches, most
+ * recently committed to first, the default always among them; or why they are not listed.
  */
 export const RepoBranches = Schema.Union([
   Schema.Struct({

@@ -137,7 +137,8 @@ export const ModelProxyConfigLive = Layer.effect(
 
 /**
  * The GitHub token the Workspaces' commands get: a deploy-time secret, bound to the Worker by `Config.Redacted`, which
- * the Session reads only to refuse it in a plain value (`docs/spec.md` → Agent changes).
+ * the Session reads only to refuse it in a plain value (`docs/spec.md` → Agent changes). The main Worker also asks GitHub
+ * for the draft's branches with it (`draftBranches`).
  */
 export class GitHubTokenConfig extends Context.Service<
   GitHubTokenConfig,

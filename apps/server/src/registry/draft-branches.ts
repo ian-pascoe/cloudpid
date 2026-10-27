@@ -4,6 +4,7 @@
 // @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off
 import type { EnvironmentRepo, RepoBranches } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import { GithubPulls, githubRepoOf } from "../workspace/github-pulls.ts";
 
 /** What a Repo whose remote is not on GitHub says in the menu. */
@@ -15,10 +16,10 @@ export type DraftBranches = (
 ) => Effect.Effect<ReadonlyArray<RepoBranches>>;
 
 /** The GitHub client the main Worker asks with `token`, built once per isolate so its 60 s lists are shared. */
-export const githubBranches = (token: string): Pick<GithubPulls, "branches"> =>
+export const githubBranches = (token: Redacted.Redacted<string>): Pick<GithubPulls, "branches"> =>
   new GithubPulls({
     fetch: (url, init) => fetch(url, init),
-    token: () => token,
+    token: () => Redacted.value(token),
     now: () => Date.now(),
     warn: () => undefined,
   });

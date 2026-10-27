@@ -10,12 +10,8 @@ import { dirname, join } from "node:path";
 import { WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChangesFiles } from "./changes.ts";
-import {
-  githubRepoOf,
-  isSafeBase,
-  KEPT_COMPARISONS,
-  WorkspaceComparisonModule,
-} from "./comparison.ts";
+import { isSafeBase, KEPT_COMPARISONS, WorkspaceComparisonModule } from "./comparison.ts";
+import { githubRepoOf } from "./github-pulls.ts";
 
 const env = {
   PATH: process.env.PATH ?? "",

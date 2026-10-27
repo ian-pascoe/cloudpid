@@ -540,6 +540,16 @@ export class GithubPulls {
     let defaultBranch: string | null = null;
     let after: string | null = null;
 
+    // The most recent, with the default branch kept in place of the last when it is older than all of them.
+    const listed = (): GithubResult<GithubBranches> => {
+      const recent = found.sort(byRecency).slice(0, MAX_REPO_BRANCHES);
+      const kept = found.find((branch) => branch.name === defaultBranch);
+
+      if (kept !== undefined && !recent.includes(kept)) recent.splice(-1, 1, kept);
+
+      return { status: "ok", value: { defaultBranch, branches: recent } };
+    };
+
     for (let page = 0; page < BRANCH_PAGES; page += 1) {
       const answer = await this.#send(
         `graphql:branches:${key}:${after ?? ""}`,
@@ -553,22 +563,27 @@ export class GithubPulls {
         },
       );
 
-      if (answer.status === "error") return answer;
+      // A later page that fails leaves the pages read before it.
+      if (answer.status === "error") return page === 0 ? answer : listed();
 
       const decoded = decodeBranchesAnswer(answer.value);
 
       if (Option.isNone(decoded)) {
-        return {
-          status: "error",
-          kind: "failed",
-          message: "GitHub's answer was not a list of branches",
-        };
+        return page === 0
+          ? {
+              status: "error",
+              kind: "failed",
+              message: "GitHub's answer was not a list of branches",
+            }
+          : listed();
       }
 
       const repository = decoded.value.data?.repository;
 
       if (repository === undefined || repository === null) {
-        return this.#noRepository(decoded.value.errors, "a list of branches");
+        return page === 0
+          ? this.#noRepository(decoded.value.errors, "a list of branches")
+          : listed();
       }
 
       defaultBranch = repository.defaultBranchRef?.name ?? null;
@@ -587,16 +602,14 @@ export class GithubPulls {
       after = pageInfo.endCursor;
     }
 
-    return {
-      status: "ok",
-      value: { defaultBranch, branches: found.sort(byRecency).slice(0, MAX_REPO_BRANCHES) },
-    };
+    return listed();
   }
 
   /**
    * The branches of `repo`, most recently committed to first, with its default branch: from GitHub when the last list is
-   * over 60 s old (or there is none), else the kept one. A repo with more than GitHub's few pages has the most recent of
-   * those pages (ordered by name).
+   * over 60 s old (or there is none), else the kept one. At most `MAX_REPO_BRANCHES`, the default branch always among
+   * them; a repo with more than GitHub's few pages has the most recent of those pages (ordered by name), and one whose
+   * later page failed has those read before it.
    */
   async branches(repo: GitHubRepo): Promise<GithubResult<GithubBranches>> {
     const key = fullName(repo).toLowerCase();
