@@ -643,7 +643,8 @@ describe("the skills section over a conversation's Context Windows", () => {
       },
     ]);
 
-    expect(sections[0]).not.toContain("<name>lint</name>");
+    // The first context froze "nothing to list", and kept it until the Handoff.
+    expect(sections[0]).toBe("");
     expect(sections.at(-1)).toContain("<name>lint</name>");
   });
 

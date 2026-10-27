@@ -18,12 +18,13 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "c
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
 import { ContainerResizes } from "./resize.ts";
 import { workspaceObjectsRemote } from "./lifecycle.ts";
-import { bundledSkills, PRIOR_SKILLS } from "./skills.ts";
+import { BUNDLED_SKILL_SET } from "./skill-set.ts";
+import { skillFile } from "./skills.fixtures.ts";
+import { mountedSkills, PRIOR_SKILLS } from "./skills.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -437,10 +438,6 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
   });
 });
 
-/** A skill's `SKILL.md`. */
-const skillFile = (name: string) =>
-  `---\nname: ${name}\ndescription: The ${name} skill.\n---\n\n# ${name}\n`;
-
 /** An environment on `workspace` whose calls to the Workspace DO are listed, with the Workspace's skills in `/workspace/<repo>`. */
 const countingEnv = (workspace: DurableObjectStub<TestWorkspace>, cwd: string) => {
   const calls: string[] = [];
@@ -555,6 +552,40 @@ describe("skill discovery on the Workspace DO", () => {
     expect(found).toEqual(walked);
   });
 
+  it("answers the Skill set handed over in one RPC call, as a walk of the mount finds it, after an eviction too", async () => {
+    const workspace = env.WORKSPACES.getByName("skills-handed-over");
+    const { calls, env: executionEnv } = countingEnv(workspace, "/workspace/repo");
+
+    expect((await executionEnv.discoverSkills(context)).map((skill) => skill.name)).toContain(
+      "tdd",
+    );
+
+    await workspace.updateSkills({
+      hash: "sha256:handed",
+      files: {
+        "alpha/SKILL.md": skillFile("alpha"),
+        "alpha/notes.md": "# notes\n",
+        "beta/SKILL.md": skillFile("beta"),
+      },
+    });
+
+    for (const evict of [false, true]) {
+      if (evict) await evictDurableObject(workspace);
+
+      calls.length = 0;
+
+      const found = await executionEnv.discoverSkills(context);
+
+      expect(calls).toEqual(["skills"]);
+      expect(found.map((skill) => skill.filePath)).toEqual([
+        "/workspace/.agents/skills/alpha/SKILL.md",
+        "/workspace/.agents/skills/beta/SKILL.md",
+      ]);
+      expect(found).toEqual(await Effect.runPromise(discoverSkills(executionEnv)));
+      expect(await workspace.skillSetHash()).toBe("sha256:handed");
+    }
+  });
+
   it("asks the Workspace for the skills of the environment's own directory", async () => {
     const workspace = env.WORKSPACES.getByName("skills-cwd");
     const { env: executionEnv } = countingEnv(workspace, "/workspace/other");
@@ -613,29 +644,33 @@ describe("skill discovery on the Workspace DO", () => {
     expect(found).toEqual(await Effect.runPromise(discoverPrompts(executionEnv)));
   });
 
-  it("reads the bundled skills from the bundle once per version", () => {
-    const first = bundledSkills(BUNDLED_SKILLS);
+  it("reads a Skill set's Skills from the set in memory once per hash", () => {
+    const first = mountedSkills(BUNDLED_SKILL_SET);
 
     expect(first.length).toBeGreaterThan(0);
-    expect(bundledSkills(BUNDLED_SKILLS)).toBe(first);
+    expect(mountedSkills(BUNDLED_SKILL_SET)).toBe(first);
 
-    // The same version at another mount has other paths.
-    expect(bundledSkills(BUNDLED_SKILLS, "/elsewhere")[0]?.filePath.startsWith("/elsewhere/")).toBe(
+    // The same hash at another mount has other paths.
+    expect(
+      mountedSkills(BUNDLED_SKILL_SET, "/elsewhere")[0]?.filePath.startsWith("/elsewhere/"),
+    ).toBe(true);
+    expect(mountedSkills(BUNDLED_SKILL_SET)[0]?.filePath.startsWith("/workspace/.agents/")).toBe(
       true,
     );
-    expect(bundledSkills(BUNDLED_SKILLS)[0]?.filePath.startsWith("/workspace/.agents/")).toBe(true);
 
-    // A bundle of another version is read again, and not mistaken for the cached one.
+    // A set of another hash is read again, and not mistaken for a cached one.
     const files = { "a/SKILL.md": skillFile("a"), "a/notes.md": "# notes\n" };
+    const one = mountedSkills({ hash: "v1", files }, "/m");
 
-    expect(bundledSkills({ version: "v1", files }, "/m").map((skill) => skill.filePath)).toEqual([
-      "/m/a/SKILL.md",
-    ]);
+    expect(one.map((skill) => skill.filePath)).toEqual(["/m/a/SKILL.md"]);
     expect(
-      bundledSkills({ version: "v2", files: { "b/SKILL.md": skillFile("b") } }, "/m").map(
+      mountedSkills({ hash: "v2", files: { "b/SKILL.md": skillFile("b") } }, "/m").map(
         (skill) => skill.name,
       ),
     ).toEqual(["b"]);
+    // Workspaces of an isolate can hold different sets: each keeps its own parse.
+    expect(mountedSkills({ hash: "v1", files }, "/m")).toBe(one);
+    expect(mountedSkills(BUNDLED_SKILL_SET)).toBe(first);
   });
 });
 

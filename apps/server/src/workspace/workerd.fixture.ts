@@ -1,7 +1,8 @@
 // The Workspace test Worker: the Workspace DO, counting the RPC stubs it hands out and how many of them its clients
 // have disposed. Tests reach it through the `WORKSPACES` binding, as Session DOs will.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off
 import {
+  type MountWriteAPI,
   type Workspace as ComputerWorkspace,
   WorkspaceRuntimeExecHandleStub,
   WorkspaceRuntimeStub,
@@ -16,6 +17,10 @@ import type { Answers } from "./github-pulls.fixtures.ts";
 import type { ContainerPreviewActivity } from "./container-preview.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
+import type { SkillSet } from "./skill-set.ts";
+
+/** The start of the hash of a Skill set the test Worker cannot write into the files (`writeSkillSet`). */
+export const UNWRITABLE_SKILL_SET = "sha256:unwritable";
 
 /** Live counts of the stubs a `TestWorkspace` handed out. */
 export type LiveStubs = {
@@ -399,6 +404,18 @@ export class TestWorkspace extends Workspace {
 
   protected override clock(): number {
     return this.#now ?? super.clock();
+  }
+
+  /** A Skill set whose hash starts with `UNWRITABLE_SKILL_SET` fails after its first file, as a failed copy would. */
+  protected override async writeSkillSet(set: SkillSet, api: MountWriteAPI): Promise<void> {
+    if (!set.hash.startsWith(UNWRITABLE_SKILL_SET)) return super.writeSkillSet(set, api);
+
+    const [path, content] = Object.entries(set.files)[0] ?? ["x", ""];
+
+    await api.mkdir(`${api.root}/${path.slice(0, path.lastIndexOf("/"))}`);
+    await api.writeFile(`${api.root}/${path}`, new Blob([content]).stream());
+
+    throw new Error("the Skill set's files could not be written");
   }
 
   /**

@@ -18,5 +18,6 @@ minimumReleaseAgeExclude:
   - '@pierre/highlights@0.3.0'
 
 patchedDependencies:
+  '@cloudflare/computer@0.6.0': patches/@cloudflare__computer@0.6.0.patch
   '@cloudflare/vitest-plugin@1.4.6': patches/@cloudflare__vitest-plugin@1.4.6.patch
   alchemy@2.0.0-beta.83: patches/alchemy@2.0.0-beta.83.patch
