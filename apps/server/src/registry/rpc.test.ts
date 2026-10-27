@@ -741,10 +741,11 @@ const fakeRegistries = () => {
     agentDeleteSecret: () => Effect.die("The endpoint makes no Agent change"),
     keepAskedSecrets: () => Effect.die("The endpoint keeps no Secret for an ask"),
     agentSaveSkill: () => Effect.die("The endpoint makes no Agent change"),
+    agentCheckSkill: () => Effect.die("The endpoint makes no Agent change"),
     agentRemoveSkill: () => Effect.die("The endpoint makes no Agent change"),
     listSkills: ({ environment }) =>
       Effect.sync(() =>
-        Arr.some(environments, (item) => item.id === environment)
+        environment === "*" || Arr.some(environments, (item) => item.id === environment)
           ? (skillsKept.get(environment) ?? [])
           : null,
       ),
@@ -752,7 +753,9 @@ const fakeRegistries = () => {
       Effect.sync(() => {
         calls.push(`removeSkill:${environment}:${name}`);
 
-        if (!Arr.some(environments, (item) => item.id === environment)) return "missing" as const;
+        if (environment !== "*" && !Arr.some(environments, (item) => item.id === environment)) {
+          return "missing" as const;
+        }
 
         const kept = skillsKept.get(environment) ?? [];
 
@@ -2816,6 +2819,37 @@ it("lists an Environment's Skills, removes one on the owner's word, and refuses 
     "removeSkill:default:release",
     "removeSkill:default:release",
   ]);
+});
+
+it("lists the Skills kept for every Environment, removes one on the owner's word with no Approval, and shows a change's files under the scope *", async () => {
+  const fake = fakeRegistries();
+
+  fake.skillsKept.set("*", [{ name: "release", description: "Cut a release.", savedAt: 1_000 }]);
+  fake.skillFiles.set("*:4", {
+    before: null,
+    after: [{ path: "SKILL.md", text: "---\nname: release\n---\n" }],
+  });
+
+  const listed = await call(fake, (registry) =>
+    registry.listEnvironmentSkills({ environment: "*" }),
+  );
+
+  const files = await call(fake, (registry) =>
+    registry.skillChangeFiles({ environment: "*", change: 4 }),
+  );
+
+  await call(fake, (registry) =>
+    registry.removeEnvironmentSkill({ environment: "*", name: "release" }),
+  );
+
+  const absent = await call(fake, (registry) =>
+    Effect.flip(registry.removeEnvironmentSkill({ environment: "*", name: "release" })),
+  );
+
+  expect(Arr.map(listed, (skill) => skill.name)).toEqual(["release"]);
+  expect(files.after).toEqual([{ path: "SKILL.md", text: "---\nname: release\n---\n" }]);
+  expect(fake.skillsKept.get("*")).toEqual([]);
+  expect(absent.message).toBe('The environment keeps no Skill named "release"');
 });
 
 it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {

@@ -303,7 +303,7 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Skills kept for every Environment (or its revert), or one no revert can undo (deleting an Environment or a kept Secret).
+The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Skills kept for every Environment, or one no revert can undo (deleting an Environment or a kept Secret).
 _Avoid_: Confirmation, permission, consent
 
 ## Credentials and the browser

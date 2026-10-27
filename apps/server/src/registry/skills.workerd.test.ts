@@ -1,14 +1,21 @@
-// An Environment's own Skills over real Durable Object SQLite (ADR-0026, docs/spec.md → The Environment's own Skills): saved
-// and removed by the agent as Agent changes with their files before and after, merged over the bundle into the Skill
-// set its Workspaces serve, each text kept once, and reverted unless saved again since.
+// An Environment's own Skills, and those kept for every Environment (scope `*`), over real Durable Object SQLite (ADR-0026,
+// docs/spec.md → The Environment's own Skills): saved and removed by the agent as Agent changes with their files before
+// and after, merged (the Environment's own, then those for every Environment, then the bundle) into the Skill set its
+// Workspaces serve, each text kept once, and reverted unless saved again since.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT, MAX_AGENT_CHANGES, skillField } from "@cloudpid/protocol";
+import {
+  DEFAULT_ENVIRONMENT,
+  EVERY_ENVIRONMENT_SCOPE,
+  MAX_AGENT_CHANGES,
+  skillField,
+} from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import {
+  checkSkillSave,
   hashBundle,
   hashFiles,
   mergeSkills,
@@ -18,6 +25,7 @@ import {
   saveSkillAs,
   skillChangeFiles,
   type SkillFiles,
+  skillLayers,
   skillSetOf,
 } from "./skills.ts";
 import type { TestRegistry } from "./store.fixture.ts";
@@ -54,9 +62,24 @@ const inRegistry = <A>(
       files: SkillFiles,
       at?: number,
       environment?: string,
+      expected?: { readonly savedAt: number | null },
     ) => Promise<ReturnType<typeof saveSkillAs>>;
-    readonly remove: (name: string, at?: number) => ReturnType<typeof removeSkillAs>;
-    readonly revert: (id: number, at?: number) => ReturnType<typeof revertAgentChange>;
+    readonly check: (
+      folder: string,
+      files: SkillFiles,
+      environment?: string,
+    ) => Promise<ReturnType<typeof checkSkillSave>>;
+    readonly remove: (
+      name: string,
+      at?: number,
+      environment?: string,
+      expected?: { readonly savedAt: number | null },
+    ) => ReturnType<typeof removeSkillAs>;
+    readonly revert: (
+      id: number,
+      at?: number,
+      environment?: string,
+    ) => ReturnType<typeof revertAgentChange>;
     readonly set: (
       environment?: string,
     ) => Promise<{ hash: string; files: Record<string, string> }>;
@@ -79,31 +102,33 @@ const inRegistry = <A>(
         storage: state.storage,
         changes,
         skills,
-        save: async (folder, files, at = 1_000, environment = DEFAULT_ENVIRONMENT) =>
+        save: async (folder, files, at = 1_000, environment = DEFAULT_ENVIRONMENT, expected) =>
           saveSkillAs(
             { storage: state.storage, store, skills, changes, bundle, now: at },
-            { environment, folder, files, hashed: await hashFiles(files), author },
+            { environment, folder, files, hashed: await hashFiles(files), author, expected },
           ),
-        remove: (name, at = 2_000) =>
+        check: async (folder, files, environment = DEFAULT_ENVIRONMENT) =>
+          checkSkillSave(
+            { store, skills, bundle },
+            { environment, folder, files, hashed: await hashFiles(files) },
+          ),
+        remove: (name, at = 2_000, environment = DEFAULT_ENVIRONMENT, expected) =>
           removeSkillAs(
             { storage: state.storage, store, skills, changes, bundle, now: at },
             {
-              environment: DEFAULT_ENVIRONMENT,
+              environment,
               name,
               author: { ...author, tool: "environment_skill_remove" },
+              expected,
             },
           ),
-        revert: (id, at = 3_000) =>
-          revertAgentChange(
-            state.storage,
-            store,
-            changes,
-            { environment: DEFAULT_ENVIRONMENT, id },
-            at,
-            { skills, bundle },
-          ),
+        revert: (id, at = 3_000, environment = DEFAULT_ENVIRONMENT) =>
+          revertAgentChange(state.storage, store, changes, { environment, id }, at, {
+            skills,
+            bundle,
+          }),
         set: async (environment = DEFAULT_ENVIRONMENT) => {
-          const merged = await mergeSkills([skills.list(environment)], bundle);
+          const merged = await mergeSkills(skillLayers(skills, environment), bundle);
 
           return skillSetOf(merged, bundle, skills);
         },
@@ -495,5 +520,443 @@ describe("the texts of a Skill's files", () => {
     });
 
     expect(counts).toEqual([true, 1, 0, []]);
+  });
+});
+
+const EVERY = EVERY_ENVIRONMENT_SCOPE;
+
+/** About 1 MB a Skill: 8 files of 126 KB. */
+const big = (name: string): SkillFiles => ({
+  "SKILL.md": skillMd(name),
+  ...Object.fromEntries(
+    Array.from({ length: 8 }, (_, at) => [
+      `references/${at}.md`,
+      `${name} ${at}.\n`.repeat(14_000),
+    ]),
+  ),
+});
+
+describe("Skills kept for every Environment", () => {
+  it("are kept under the scope *, recorded under it with their files, and reach every Environment's set", async () => {
+    const [saved, listed, changed, defaults, others] = await inRegistry(
+      async ({ store, save, skills, changes, set }) => {
+        store.createEnvironment("0000abcd", "Other", 1_000);
+
+        return [
+          await save("release", release, 1_000, EVERY),
+          skills.list(EVERY),
+          changes.list(EVERY),
+          await set(),
+          await set("0000abcd"),
+        ];
+      },
+    );
+
+    expect(saved).toMatchObject({
+      status: "saved",
+      environment: { id: "*", name: "every Environment" },
+      skill: { name: "release" },
+      overrides: false,
+      overriddenIn: [],
+    });
+    expect(listed).toEqual([expect.objectContaining({ name: "release", savedAt: 1_000 })]);
+    expect(changed).toEqual([
+      expect.objectContaining({
+        scope: "*",
+        field: skillField("release"),
+        actor: "agent",
+        before: null,
+      }),
+    ]);
+
+    const expected = {
+      "release/SKILL.md": release["SKILL.md"],
+      "release/references/steps.md": release["references/steps.md"],
+      ...BUNDLE.files,
+    };
+
+    expect(defaults.files).toEqual(expected);
+    expect(others.files).toEqual(expected);
+  });
+
+  it("keep no row of an Environment's own and stay when an Environment is deleted", async () => {
+    const [own, every] = await inRegistry(async ({ store, save, skills }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+      await save("release", release, 1_000, EVERY);
+      store.deleteEnvironment("0000abcd");
+
+      return [skills.list("0000abcd"), skills.list(EVERY)];
+    });
+
+    expect(own).toEqual([]);
+    expect(every).toHaveLength(1);
+  });
+
+  it("hide the bundle's Skill of the same name, and an Environment's own Skill of the name hides them there only", async () => {
+    const everyPr = { "SKILL.md": skillMd("pr", "Our pr for every Environment.") };
+    const ownPr = { "SKILL.md": skillMd("pr", "Default's own pr.") };
+
+    const [everywhere, withOwn, other] = await inRegistry(async ({ store, save, set }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+      await save("pr", everyPr, 1_000, EVERY);
+
+      const before = await set();
+
+      await save("pr", ownPr, 2_000);
+
+      return [before, await set(), await set("0000abcd")];
+    });
+
+    expect(everywhere.files["pr/SKILL.md"]).toBe(everyPr["SKILL.md"]);
+    expect(withOwn.files["pr/SKILL.md"]).toBe(ownPr["SKILL.md"]);
+    expect(other.files["pr/SKILL.md"]).toBe(everyPr["SKILL.md"]);
+    // The bundle's other Skill is served all the same, and no Skill's files are mixed.
+    expect(withOwn.files["tdd/SKILL.md"]).toBe(BUNDLE.files["tdd/SKILL.md"]);
+    expect(Object.keys(withOwn.files).sort()).toEqual(["pr/SKILL.md", "tdd/SKILL.md"]);
+  });
+
+  it("are replaced whole by an Environment's own Skill of the name, never file by file", async () => {
+    const own = { "SKILL.md": skillMd("release", "Default's own.") };
+
+    const set = await inRegistry(async ({ save, set }) => {
+      await save("release", release, 1_000, EVERY);
+      await save("release", own, 2_000);
+
+      return set();
+    });
+
+    expect(Object.keys(set.files).filter((path) => path.startsWith("release/"))).toEqual([
+      "release/SKILL.md",
+    ]);
+    expect(set.files["release/SKILL.md"]).toBe(own["SKILL.md"]);
+  });
+
+  it("change the set's hash, and an Environment's own copy of the name does not change it for a Skill kept for every Environment", async () => {
+    const [bundleHash, everyHash, shadowedHash] = await inRegistry(async ({ save, set }) => {
+      const first = await set();
+
+      await save("release", { "SKILL.md": skillMd("release", "Own.") }, 500);
+
+      const shadowed = await set();
+
+      await save("release", release, 1_000, EVERY);
+
+      return [first.hash, (await set("0000abcd")).hash, (await set()).hash === shadowed.hash];
+    });
+
+    expect(bundleHash).toBe(BUNDLE.hash);
+    expect(everyHash).not.toBe(BUNDLE.hash);
+    // The Environment's own `release` hides the one kept for every Environment: its set did not change.
+    expect(shadowedHash).toBe(true);
+  });
+
+  it("say which Environments' own Skills hide a save, and whether an Environment's own save hides the one for every Environment", async () => {
+    const [everyOne, ownOne] = await inRegistry(async ({ store, save }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+      await save("release", { "SKILL.md": skillMd("release", "Other's.") }, 500, "0000abcd");
+
+      const everySaved = await save("release", release, 1_000, EVERY);
+      const ownSaved = await save("release", { "SKILL.md": skillMd("release", "Mine.") });
+
+      return [everySaved, ownSaved];
+    });
+
+    expect(everyOne).toMatchObject({
+      status: "saved",
+      overriddenIn: [{ id: "0000abcd", name: "Other" }],
+    });
+    expect(ownOne).toMatchObject({ status: "saved", overrides: true, overriddenIn: [] });
+  });
+
+  it("are refused when a save would take an Environment's set past 100 Skills, naming the Environment", async () => {
+    const saved = await inRegistry(async ({ store, save }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+
+      // The bundle holds 2: 98 of Other's own make 100.
+      for (let index = 0; index < 98; index += 1) {
+        await save(`skill-${index}`, { "SKILL.md": skillMd(`skill-${index}`) }, 1_000, "0000abcd");
+      }
+
+      return [
+        // A Skill Other already has by the name hides it there: nothing more is served.
+        await save("skill-0", { "SKILL.md": skillMd("skill-0", "For all.") }, 2_000, EVERY),
+        await save("one-more", { "SKILL.md": skillMd("one-more") }, 2_000, EVERY),
+      ];
+    });
+
+    expect(saved[0]).toMatchObject({ status: "saved" });
+    expect(saved[1]).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining(
+        `Environment "Other" (0000abcd)'s Skill set would hold 101 Skills, more than the 100`,
+      ),
+    });
+  });
+
+  it("are refused when a save would take an Environment's set past 8 MB, naming the Environment", async () => {
+    const saved = await inRegistry(async ({ store, save, skills }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+
+      for (let index = 0; index < 8; index += 1) {
+        await save(`big-${index}`, big(`big-${index}`), 1_000, "0000abcd");
+      }
+
+      return [await save("big-8", big("big-8"), 2_000, EVERY), skills.list(EVERY)];
+    });
+
+    expect(saved[0]).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining(`Environment "Other" (0000abcd)'s Skill set would be`),
+    });
+    expect(saved[1]).toEqual([]);
+  });
+
+  it("count in an Environment's own set, which a save of its own Skill is refused past 100 and 8 MB for", async () => {
+    const saved = await inRegistry(async ({ save }) => {
+      // The bundle's 2 and 97 for every Environment make 99.
+      for (let index = 0; index < 97; index += 1) {
+        await save(`every-${index}`, { "SKILL.md": skillMd(`every-${index}`) }, 1_000, EVERY);
+      }
+
+      return [
+        await save("mine", { "SKILL.md": skillMd("mine") }),
+        await save("one-more", { "SKILL.md": skillMd("one-more") }),
+        // A Skill of the same name as one for every Environment replaces it in the Environment: no more Skills.
+        await save("every-0", { "SKILL.md": skillMd("every-0", "Mine.") }, 2_000),
+      ];
+    });
+
+    expect(saved[0]).toMatchObject({ status: "saved" });
+    expect(saved[1]).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("the Environment's Skill set would hold 101 Skills"),
+    });
+    expect(saved[2]).toMatchObject({ status: "saved" });
+  });
+
+  it("are checked without saving or recording: what the scope keeps of the name, and what a save would refuse", async () => {
+    const edited = { ...release, "SKILL.md": skillMd("release", "What release does.", "Newer.") };
+
+    const [fresh, same, newer, refused, changes, listed] = await inRegistry(
+      async ({ save, check, changes, skills }) => {
+        const first = await check("release", release, EVERY);
+
+        await save("release", release, 1_000, EVERY);
+
+        return [
+          first,
+          await check("release", { ...release }, EVERY),
+          await check("release", edited, EVERY),
+          await check("release", { "README.md": "Hi.\n" }, EVERY),
+          changes.list(EVERY).length,
+          skills.list(EVERY).length,
+        ];
+      },
+    );
+
+    expect(fresh).toMatchObject({
+      status: "ready",
+      environment: { id: "*" },
+      name: "release",
+      description: "What release does.",
+      current: null,
+    });
+    expect(same).toMatchObject({ status: "unchanged", current: { savedAt: 1_000 } });
+    expect(newer).toMatchObject({
+      status: "ready",
+      current: {
+        description: "What release does.",
+        savedAt: 1_000,
+        files: ["SKILL.md", "references/steps.md"],
+      },
+    });
+    expect(refused).toMatchObject({ status: "rejected" });
+    // Only the one save was recorded and kept.
+    expect(changes).toBe(1);
+    expect(listed).toBe(1);
+  });
+
+  it("are saved or removed against what the owner was shown, `expected`, or not at all", async () => {
+    const edited = { ...release, "SKILL.md": skillMd("release", "What release does.", "Newer.") };
+
+    const [stale, fresh, staleRemoval, freshRemoval, absent] = await inRegistry(
+      async ({ save, remove }) => {
+        await save("release", release, 1_000, EVERY);
+
+        // Saved again after the owner was asked (when it was last saved at 1000).
+        await save("release", { ...release, "NOTES.md": "More.\n" }, 2_000, EVERY);
+
+        const stale = await save("release", edited, 3_000, EVERY, { savedAt: 1_000 });
+        const fresh = await save("release", edited, 3_000, EVERY, { savedAt: 2_000 });
+        const staleRemoval = remove("release", 4_000, EVERY, { savedAt: 2_000 });
+        const freshRemoval = remove("release", 5_000, EVERY, { savedAt: 3_000 });
+        const absent = remove("release", 6_000, EVERY, { savedAt: 3_000 });
+
+        return [stale, fresh, staleRemoval, freshRemoval, absent];
+      },
+    );
+
+    expect(stale).toMatchObject({ status: "changed-since" });
+    expect(fresh).toMatchObject({ status: "saved" });
+    expect(staleRemoval).toMatchObject({ status: "changed-since" });
+    expect(freshRemoval).toMatchObject({ status: "removed" });
+    expect(absent).toMatchObject({ status: "absent" });
+  });
+
+  it("are removed as an Agent change under the scope *, saying which Environments keep their own and what is served instead", async () => {
+    const [everyRemoval, ownRemoval, set, changes] = await inRegistry(
+      async ({ store, save, remove, set, changes }) => {
+        store.createEnvironment("0000abcd", "Other", 1_000);
+        await save("release", release, 1_000, EVERY);
+        await save("release", { "SKILL.md": skillMd("release", "Other's.") }, 1_500, "0000abcd");
+
+        const everyRemoval = remove("release", 2_000, EVERY);
+
+        await save("pr", { "SKILL.md": skillMd("pr", "For all.") }, 2_500, EVERY);
+        await save("pr", { "SKILL.md": skillMd("pr", "Mine.") }, 2_600);
+
+        // Mine hides the one for every Environment, which is served again once it is gone.
+        const ownRemoval = remove("pr", 3_000);
+
+        return [everyRemoval, ownRemoval, await set(), changes.list(EVERY)];
+      },
+    );
+
+    expect(everyRemoval).toMatchObject({
+      status: "removed",
+      environment: { id: "*" },
+      bundled: false,
+      inherited: false,
+      overriddenIn: [{ id: "0000abcd", name: "Other" }],
+    });
+    expect(ownRemoval).toMatchObject({ status: "removed", bundled: true, inherited: true });
+    // The default Environment now serves the one for every Environment, not the bundle's.
+    expect(set.files["pr/SKILL.md"]).toContain("For all.");
+    expect(changes.map(({ field, after }) => [field, after === null])).toEqual([
+      [skillField("pr"), false],
+      [skillField("release"), true],
+      [skillField("release"), false],
+    ]);
+  });
+});
+
+describe("the Agent changes of Skills kept for every Environment", () => {
+  it("are reverted by the owner, as an owner's change under the scope *, with no Approval", async () => {
+    const edited = { "SKILL.md": skillMd("release", "Edited.") };
+
+    const [afterLatest, afterFirst, recorded] = await inRegistry(
+      async ({ save, revert, skills, changes }) => {
+        await save("release", release, 1_000, EVERY);
+        await save("release", edited, 2_000, EVERY);
+
+        const [latest, first] = changes.list(EVERY);
+
+        expect(revert(latest!.id, 3_000, EVERY)).toMatchObject({ status: "reverted" });
+
+        const restored = skills.get(EVERY, "release");
+
+        expect(revert(first!.id, 4_000, EVERY)).toMatchObject({ status: "reverted" });
+
+        return [restored, skills.get(EVERY, "release"), changes.list(EVERY)];
+      },
+    );
+
+    expect(afterLatest).toMatchObject({ description: "What release does." });
+    expect(afterFirst).toBeNull();
+    expect(recorded.filter((change) => change.actor === "owner")).toHaveLength(2);
+    expect(recorded.every((change) => change.scope === "*")).toBe(true);
+  });
+
+  it("revert a removal by bringing the Skill back for every Environment, and refuse a revert once it was saved again", async () => {
+    const [restored, refused] = await inRegistry(
+      async ({ save, remove, revert, changes, skills }) => {
+        await save("release", release, 1_000, EVERY);
+        remove("release", 2_000, EVERY);
+
+        const [removal] = changes.list(EVERY);
+        const back = revert(removal!.id, 3_000, EVERY);
+
+        // The first save gave the Skill files it no longer has.
+        await save("release", { "SKILL.md": skillMd("release", "Again.") }, 4_000, EVERY);
+
+        const [, , , first] = changes.list(EVERY);
+
+        return [[back, skills.get(EVERY, "release")], revert(first!.id, 5_000, EVERY)];
+      },
+    );
+
+    expect(restored).toMatchObject([
+      { status: "reverted" },
+      { name: "release", description: "Again." },
+    ]);
+    expect(refused).toMatchObject({
+      status: "refused",
+      message: expect.stringContaining("saved again since"),
+    });
+  });
+
+  it("refuse a revert that would bring a Skill back past a limit of an Environment's set, naming it", async () => {
+    const reverted = await inRegistry(async ({ store, save, remove, revert, changes }) => {
+      store.createEnvironment("0000abcd", "Other", 1_000);
+      await save("one-more", { "SKILL.md": skillMd("one-more") }, 1_000, EVERY);
+      remove("one-more", 2_000, EVERY);
+
+      // Other fills its set meanwhile: the bundle's 2 and 98 of its own.
+      for (let index = 0; index < 98; index += 1) {
+        await save(`skill-${index}`, { "SKILL.md": skillMd(`skill-${index}`) }, 3_000, "0000abcd");
+      }
+
+      const [removal] = changes.list(EVERY);
+
+      return revert(removal!.id, 4_000, EVERY);
+    });
+
+    expect(reverted).toMatchObject({
+      status: "refused",
+      message: expect.stringContaining(`Environment "Other" (0000abcd)'s Skill set would hold 101`),
+    });
+  });
+
+  it("keep their files while a change refers to them, and drop them with the pruned change", async () => {
+    const [kept, dropped] = await inRegistry(async ({ save, remove, storage }) => {
+      await save("gone", { "SKILL.md": skillMd("gone"), "OLD.md": "Only here.\n" }, 1_000, EVERY);
+      remove("gone", 1_500, EVERY);
+
+      const has = (text: string) =>
+        storage.sql.exec("SELECT 1 FROM skill_files WHERE content = ?", text).toArray().length > 0;
+
+      const before = has("Only here.\n");
+
+      for (let index = 0; index < MAX_AGENT_CHANGES; index += 1) {
+        await save(
+          "churn",
+          { "SKILL.md": skillMd("churn", `Version ${index}.`) },
+          3_000 + index,
+          EVERY,
+        );
+      }
+
+      return [before, has("Only here.\n")];
+    });
+
+    expect(kept).toBe(true);
+    expect(dropped).toBe(false);
+  });
+
+  it("go with the owner's removal of a Skill kept for every Environment, which records no change", async () => {
+    const [removed, left, changes] = await inRegistry(
+      async ({ save, skills, storage, changes }) => {
+        await save("release", release, 1_000, EVERY);
+        // As the page's Remove does: the owner's save, with no Agent change of its own.
+        const gone = removeSkill(storage, skills, { environment: EVERY, name: "release" });
+
+        return [gone, skills.list(EVERY), changes.list(EVERY).length];
+      },
+    );
+
+    expect(removed).toBe(true);
+    expect(left).toEqual([]);
+    // The save's change is the only one.
+    expect(changes).toBe(1);
   });
 });

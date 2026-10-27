@@ -34,6 +34,8 @@ import {
   type RunChange,
   type SettingChange,
 } from "./environment.ts";
+import { Approvals } from "./approvals.ts";
+import { unusedApprovals } from "./approvals.fixture.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
@@ -60,6 +62,7 @@ const DEFAULT: EnvironmentDetails = {
   ],
   everyVariables: EVERY,
   skills: [],
+  everySkills: [],
 };
 
 const OTHER: EnvironmentDetails = {
@@ -76,6 +79,7 @@ const OTHER: EnvironmentDetails = {
   secrets: [],
   everyVariables: EVERY,
   skills: [],
+  everySkills: [],
 };
 
 const EVERY_ENVIRONMENT = { id: "*", name: "every Environment" };
@@ -123,6 +127,7 @@ const fakeEnvironments = (current: string | null = "default") => {
     every: Effect.sync(() => ({
       variables: { ...every },
       secrets: [{ name: "NPM_TOKEN", scope: "every" as const, build: false }],
+      skills: [],
     })),
     change: ({ environment, change, author }) =>
       Effect.sync((): AppliedChange => {
@@ -278,6 +283,7 @@ const toolsOver = async (
       }),
       Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] }),
       Effect.provideService(Secrets, heldSecrets(held)),
+      Effect.provideService(Approvals, unusedApprovals),
     ),
   );
 
@@ -751,7 +757,7 @@ describe("the variables kept for every Environment", () => {
       ["environment_rebuild", { proposed: { variables: { A: "1" } } }],
     ] as const) {
       expect(await failure(run(tool(name), { id: "*", reason: "r", ...args })), name).toContain(
-        'The id "*" names the variables and Secrets kept for every Environment',
+        'The id "*" names the variables, Secrets and Skills kept for every Environment',
       );
     }
 

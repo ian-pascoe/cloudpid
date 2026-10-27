@@ -18,6 +18,7 @@ const unused = () => Effect.die("the test Environments make no lifecycle change"
 /** Lifecycle operations that die when called, for Environments that make no such change. */
 export const unusedLifecycle: EnvironmentLifecycle & SecretMarks & EnvironmentSkills = {
   saveSkill: unused,
+  checkSkill: unused,
   removeSkill: unused,
   create: unused,
   rename: unused,
@@ -57,10 +58,11 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
               secrets: [],
               everyVariables: {},
               skills: [],
+              everySkills: [],
             }
           : null,
       ),
-    every: Effect.succeed({ variables: {}, secrets: [] }),
+    every: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
     change: ({ environment, change, author }) =>
       Effect.sync(() => {
         if (environment !== DEFAULT.id) return { status: "missing" as const };

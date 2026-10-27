@@ -40,6 +40,8 @@ import {
   environmentSecretsErrorAtom,
   saveSecretAtom,
   setSecretBuildAtom,
+  environmentSkillsAtom,
+  removeSkillAtom,
   skillChangeFilesAtom,
   skillChangeKey,
   secretDialogAtom,
@@ -1278,6 +1280,81 @@ describe("the Agent changes", () => {
       });
       expect(asked).toEqual([{ environment: "work", change: 3 }]);
     }),
+  );
+
+  it.effect(
+    "of the Skills kept for every Environment load by the scope *, and a removal or revert loads them again",
+    () =>
+      Effect.gen(function* () {
+        let kept = [
+          { name: "release", description: "Cut a release.", savedAt: 1 },
+          { name: "review", description: "Review code.", savedAt: 2 },
+        ];
+
+        const asked: string[] = [];
+        const removed: Array<{ environment: string; name: string }> = [];
+
+        const registry = registryWith({
+          listEnvironmentSkills: ({ environment }) =>
+            Effect.sync(() => {
+              asked.push(environment);
+
+              return environment === "*" ? kept : [];
+            }),
+          removeEnvironmentSkill: (input) =>
+            Effect.sync(() => {
+              removed.push(input);
+              kept = kept.filter((skill) => skill.name !== input.name);
+            }),
+          revertAgentChange: () =>
+            Effect.sync(() => {
+              kept = [{ name: "release", description: "Cut a release.", savedAt: 1 }];
+
+              return {
+                ...change(2),
+                scope: "*",
+                field: "skills.review",
+                actor: "owner" as const,
+                reverts: 1,
+              };
+            }),
+          listBuilds: () => Effect.succeed([]),
+        });
+
+        registry.mount(environmentSkillsAtom(EVERY_ENVIRONMENT));
+        expect(
+          AsyncResult.getOrThrow(
+            yield* settled(registry, environmentSkillsAtom(EVERY_ENVIRONMENT)),
+          ),
+        ).toHaveLength(2);
+
+        registry.mount(removeSkillAtom(EVERY_ENVIRONMENT));
+        registry.set(removeSkillAtom(EVERY_ENVIRONMENT), "review");
+        yield* settled(registry, removeSkillAtom(EVERY_ENVIRONMENT));
+        yield* settled(registry, environmentSkillsAtom(EVERY_ENVIRONMENT));
+
+        expect(removed).toEqual([{ environment: "*", name: "review" }]);
+        expect(
+          AsyncResult.getOrThrow(registry.get(environmentSkillsAtom(EVERY_ENVIRONMENT))).map(
+            (skill) => skill.name,
+          ),
+        ).toEqual(["release"]);
+
+        // A revert of a change of the scope * asks for the Skills of the scope again.
+        kept = [];
+        registry.mount(revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        registry.set(revertAgentChangeAtom(EVERY_ENVIRONMENT), 1);
+        yield* settled(registry, revertAgentChangeAtom(EVERY_ENVIRONMENT));
+        yield* settled(registry, environmentSkillsAtom(EVERY_ENVIRONMENT));
+
+        expect(asked.every((environment) => environment === "*")).toBe(true);
+        expect(
+          AsyncResult.getOrThrow(registry.get(environmentSkillsAtom(EVERY_ENVIRONMENT))).map(
+            (skill) => skill.name,
+          ),
+        ).toEqual(["release"]);
+        registry.dispose();
+      }),
   );
 
   it.effect("are listed, and a revert loads them and the settings again", () =>

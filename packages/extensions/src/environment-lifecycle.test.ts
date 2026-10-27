@@ -20,6 +20,8 @@ import {
   EnvironmentTools,
   type RunChange,
 } from "./environment.ts";
+import { Approvals } from "./approvals.ts";
+import { unusedApprovals } from "./approvals.fixture.ts";
 import { fakeLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
@@ -50,7 +52,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
     current: Effect.succeed("default"),
     list: Effect.succeed([]),
     get: () => Effect.succeed(null),
-    every: Effect.succeed({ variables: {}, secrets: [] }),
+    every: Effect.succeed({ variables: {}, secrets: [], skills: [] }),
     change: () => Effect.die("not used here"),
   };
 
@@ -65,6 +67,7 @@ const setUp = async (held: Readonly<Record<string, string>> = {}) => {
       }),
       Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] }),
       Effect.provideService(Secrets, secrets),
+      Effect.provideService(Approvals, unusedApprovals),
     ),
   );
 

@@ -31,10 +31,13 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import {
-  type ApprovalAnswer,
-  type ApprovalCall,
+  APPROVAL,
   Approvals,
+  type ApprovalCall,
+  approvedAlready,
   askedBefore,
+  changedSince,
+  declined,
   withApproval,
 } from "./approvals.ts";
 import {
@@ -196,31 +199,6 @@ const within = (now: EnvironmentFootprint, approved: EnvironmentFootprint): bool
 const footprintWords = (footprint: EnvironmentFootprint): string =>
   `${count(footprint.workspaces, "Workspace")} with ${count(footprint.sessions, "Session")} (archived ones too), its spare Workspace and Build, ${count(footprint.secrets, "kept Secret")} and its Agent changes`;
 
-/** What the result of a declined request says. */
-const declined = (answer: Extract<ApprovalAnswer, { approved: false }>, what: string) => ({
-  output: [
-    {
-      type: "text" as const,
-      text: `The user declined: ${what}. Nothing changed.${
-        answer.reason === undefined ? "" : ` Their reason: ${answer.reason}`
-      } Do not ask again for the same change unless the user wants it.`,
-    },
-  ],
-  // The reason is null when the owner gave none.
-  details: { approval: { approved: false, reason: answer.reason ?? null } },
-});
-
-/** What a change the owner approved says when the target changed between the request and the answer. */
-const changedSince = (what: string, now: string) =>
-  `The user approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
-
-/**
- * What a change the owner approved says when the target has the value already: this call made it before the Session
- * restarted (recorded then), or the user made it meanwhile.
- */
-const approvedAlready = (what: string) =>
-  `The user approved, and ${what} already, as approved: nothing more needed changing.`;
-
 const Reason = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(MAX_CHANGE_REASON),
@@ -228,9 +206,6 @@ const Reason = Schema.String.check(
   description:
     "Why you make the change, shown to the user on the Approval card and kept with the change, such as 'the test suite needs 12 GiB of memory'",
 });
-
-const APPROVAL =
-  "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the user changes the same setting meanwhile, the approval does not apply and you are told to ask again.";
 
 /**
  * The tools that wait for the owner's Approval: over the Session's `Environments`, `EnvironmentRemoval` and

@@ -49,9 +49,10 @@ const ApprovalCard = ({
       </p>
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
         <dt className="text-muted-foreground">Now</dt>
-        <dd className="break-words">{request.before}</dd>
+        <dd className="break-words whitespace-pre-wrap">{request.before}</dd>
         <dt className="text-muted-foreground">After</dt>
-        <dd className="break-words">{request.after}</dd>
+        {/* A Skill's files are shown as written, and may be long: they scroll. */}
+        <dd className="max-h-72 overflow-auto break-words whitespace-pre-wrap">{request.after}</dd>
         <dt className="text-muted-foreground">Why</dt>
         <dd className="break-words">{request.reason}</dd>
       </dl>

@@ -1,9 +1,11 @@
-// An Environment's own Skills (ADR-0026, `docs/spec.md` → The Environment's own Skills): kept in the Registry DO's SQLite,
-// each file's text once per content hash (`skill_files`), shared by the Skills kept now (`skills`, by scope and name) and
-// the Agent changes that saved or removed one (their files before and after, by hash). Text that neither refers to any
-// more is dropped when the history is pruned. The Registry merges an Environment's own Skills over the bundle (the
-// lowest layer until it is removed) into the Skill set its Workspaces serve, and hands it to a Workspace whose set's
-// hash differs. Synchronous over SQLite, as the store is, but for the hashes, which are made before a transaction.
+// The Skills kept for an Environment, and for every Environment (ADR-0026, `docs/spec.md` → The Environment's own Skills):
+// kept in the Registry DO's SQLite, each file's text once per content hash (`skill_files`), shared by the Skills kept
+// now (`skills`, by scope, an Environment's id or `*` for every Environment, and name) and the Agent changes that saved
+// or removed one (their files before and after, by hash, under the same scope). Text that neither refers to any more is
+// dropped when the history is pruned. The Registry merges an Environment's own Skills over those kept for every
+// Environment, over the bundle (the lowest layer until it is removed), into the Skill set its Workspaces serve, and
+// hands it to a Workspace whose set's hash differs. Synchronous over SQLite, as the store is, but for the hashes, which
+// are made before a transaction.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
 import {
   MAX_FILE_BYTES,
@@ -15,6 +17,7 @@ import {
 import { MAX_SKILLS, readFrontmatter } from "@cloudpid/extensions/skills-discovery";
 import {
   type AgentChange,
+  EVERY_ENVIRONMENT_SCOPE,
   fieldSkill,
   SkillChangeValue,
   type SkillFile,
@@ -28,6 +31,7 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { SkillSet } from "../workspace/bundled-skill-set.ts";
 import type { AgentChangeAuthor, AgentChangeRevert, AgentChanges } from "./agent-changes.ts";
+import { EVERY_ENVIRONMENT_NAME } from "./secret-changes.ts";
 import type { EnvironmentRecord, RegistryStorage } from "./store.ts";
 
 /** A Skill's files: each one's path in the Skill's folder (`SKILL.md`, `references/x.md`), with its text. */
@@ -361,8 +365,21 @@ export type MergedSkills = {
 };
 
 /**
- * The Skill set of `layers` (the scopes' Skills, nearest first: an Environment's own) over the bundle, the lowest layer:
- * a Skill of a nearer layer hides the others of its name. With no Skill in any layer it is the bundle, under the
+ * The layers of `environment`'s Skill set, nearest first: its own Skills, then those kept for every Environment (an
+ * Environment's own of a name hides the one kept for every Environment). The Skills kept for every Environment are the
+ * only layer of their own scope.
+ */
+export const skillLayers = (
+  skills: Skills,
+  environment: string,
+): ReadonlyArray<ReadonlyArray<StoredSkill>> =>
+  environment === EVERY_ENVIRONMENT_SCOPE
+    ? [skills.list(EVERY_ENVIRONMENT_SCOPE)]
+    : [skills.list(environment), skills.list(EVERY_ENVIRONMENT_SCOPE)];
+
+/**
+ * The Skill set of `layers` (the scopes' Skills, nearest first: an Environment's own, then those kept for every
+ * Environment) over the bundle, the lowest layer: a Skill of a nearer layer hides the others of its name. With no Skill in any layer it is the bundle, under the
  * bundle's own hash, so a Workspace that holds the bundle is handed nothing; otherwise its hash is that of every file's
  * path and content hash, in order.
  */
@@ -447,27 +464,40 @@ export const skillSetOf = (
  */
 export const MAX_SKILL_SET_BYTES = 8 * 1024 * 1024;
 
+/** A Skill as a set counts it: its name and files. */
+type Counted = Pick<StoredSkill, "name" | "files">;
+
+/** `kept` with `skill` in place of the one of its name. */
+const withSkill = (kept: ReadonlyArray<Counted>, skill: Counted): ReadonlyArray<Counted> => [
+  ...Arr.filter(kept, ({ name }) => name !== skill.name),
+  skill,
+];
+
 /**
- * Why `environment`'s Skill set is refused once it keeps `skill` (with `contents`, the texts not kept yet), or undefined
- * when it is not: more than `MAX_SKILLS` Skills, or more than `MAX_SKILL_SET_BYTES`, the bundle's counted.
+ * Why a set of `layers` (nearest first, a Skill of a nearer layer hiding the others of its name) over the bundle is too
+ * large, saying whose it is (`who`), or undefined when it is not: more than `MAX_SKILLS` Skills, or more than
+ * `MAX_SKILL_SET_BYTES`, the bundle's counted. `contents` holds the texts of the files not kept yet.
  */
-const setProblem = (
+const sizeProblem = (
   skills: Skills,
   bundle: HashedBundle,
-  environment: string,
-  skill: Pick<StoredSkill, "name" | "files">,
-  contents: ReadonlyMap<string, string> = new Map(),
+  who: string,
+  layers: ReadonlyArray<ReadonlyArray<Counted>>,
+  contents: ReadonlyMap<string, string>,
 ): string | undefined => {
-  const own = [...Arr.filter(skills.list(environment), (kept) => kept.name !== skill.name), skill];
+  const served = new Map<string, Counted>();
 
-  const names = new Set(Arr.map(own, (kept) => kept.name));
-  const count = new Set([...names, ...bundle.names]).size;
-
-  if (count > MAX_SKILLS) {
-    return `the Environment's Skill set would hold ${count} Skills, more than the ${MAX_SKILLS} a set may: remove one first`;
+  for (const layer of layers) {
+    for (const skill of layer) if (!served.has(skill.name)) served.set(skill.name, skill);
   }
 
-  const hashes = Arr.flatMap(own, (kept) => Record.values(kept.files));
+  const count = new Set([...served.keys(), ...bundle.names]).size;
+
+  if (count > MAX_SKILLS) {
+    return `${who} would hold ${count} Skills, more than the ${MAX_SKILLS} a set may: remove one first`;
+  }
+
+  const hashes = Arr.flatMap([...served.values()], (kept) => Record.values(kept.files));
   const sizes = skills.sizes(hashes);
 
   const ownBytes = Arr.reduce(hashes, 0, (total, hash) => {
@@ -477,14 +507,63 @@ const setProblem = (
   });
 
   const bundleBytes = Arr.reduce([...bundle.bytes], 0, (total, [name, bytes]) =>
-    names.has(name) ? total : total + bytes,
+    served.has(name) ? total : total + bytes,
   );
 
   const bytes = ownBytes + bundleBytes;
 
   return bytes > MAX_SKILL_SET_BYTES
-    ? `the Environment's Skill set would be ${bytes} bytes, more than the ${MAX_SKILL_SET_BYTES} a set may: remove a Skill first`
+    ? `${who} would be ${bytes} bytes, more than the ${MAX_SKILL_SET_BYTES} a set may: remove a Skill first`
     : undefined;
+};
+
+/** The part of the Registry a check of the Skill sets reads. */
+type SetContext = {
+  readonly store: Pick<SkillStore, "listEnvironments">;
+  readonly skills: Skills;
+  readonly bundle: HashedBundle;
+};
+
+/**
+ * Why the Skill sets are refused once `skill` is kept in `scope` (an Environment's id, or `*`) in place of one of its
+ * name, or undefined when they are not: more than `MAX_SKILLS` Skills, or more than `MAX_SKILL_SET_BYTES`, every layer
+ * and the bundle counted (`contents`: the texts of the files not kept yet). A Skill kept for an Environment checks that
+ * Environment's set; one kept for every Environment checks every Environment's, and the message names the first that
+ * would pass, as ADR-0023 does for variables. Taking a Skill out is never refused.
+ */
+const setProblem = (
+  { store, skills, bundle }: SetContext,
+  scope: string,
+  skill: Counted,
+  contents: ReadonlyMap<string, string> = new Map(),
+): string | undefined => {
+  const every = skills.list(EVERY_ENVIRONMENT_SCOPE);
+
+  if (scope !== EVERY_ENVIRONMENT_SCOPE) {
+    return sizeProblem(
+      skills,
+      bundle,
+      "the Environment's Skill set",
+      [withSkill(skills.list(scope), skill), every],
+      contents,
+    );
+  }
+
+  const kept = withSkill(every, skill);
+
+  for (const { id, name } of store.listEnvironments()) {
+    const problem = sizeProblem(
+      skills,
+      bundle,
+      `Environment ${JSON.stringify(name)} (${id})'s Skill set`,
+      [skills.list(id), kept],
+      contents,
+    );
+
+    if (problem !== undefined) return problem;
+  }
+
+  return undefined;
 };
 
 /** A Skill's files as an Agent change records them. */
@@ -498,18 +577,30 @@ export const changeFiles = (value: AgentChange["before"]): HashedFiles | null =>
     ? null
     : Option.getOrNull(Option.map(decodeChangeValue(value), ({ files }) => files));
 
+/** An Environment, or every Environment (id `*`), as a Skill's change names it. */
+export type SkillScope = { readonly id: string; readonly name: string };
+
 /** How the agent's save of a Skill went. */
 export type SkillSave =
   | {
       readonly status: "saved";
-      readonly environment: EnvironmentRecord;
+      readonly environment: SkillScope;
       readonly change: AgentChange;
       readonly skill: StoredSkill;
       /** Whether the bundle's Skill of the name is hidden by it. */
       readonly shadows: boolean;
+      /** Whether it is an Environment's own Skill that hides the one of the name kept for every Environment. */
+      readonly overrides: boolean;
+      /**
+       * For a Skill kept for every Environment: the Environments whose own Skill of the name hides it, so it does not
+       * reach them. None for an Environment's own.
+       */
+      readonly overriddenIn: ReadonlyArray<SkillScope>;
     }
-  /** The Environment holds the Skill with these files already: nothing was saved or recorded. */
-  | { readonly status: "unchanged"; readonly environment: EnvironmentRecord }
+  /** The scope holds the Skill with these files already: nothing was saved or recorded. */
+  | { readonly status: "unchanged"; readonly environment: SkillScope }
+  /** The Skill of the name was saved again since the owner was asked (`expected`): nothing was saved or recorded. */
+  | { readonly status: "changed-since"; readonly environment: SkillScope }
   /** The Skill is not one a save keeps, each problem a line: nothing was saved. */
   | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
@@ -518,17 +609,44 @@ export type SkillSave =
 export type SkillRemoval =
   | {
       readonly status: "removed";
-      readonly environment: EnvironmentRecord;
+      readonly environment: SkillScope;
       readonly change: AgentChange;
       /** Whether the bundle's Skill of the name is served in its place. */
       readonly bundled: boolean;
+      /** Whether the Skill of the name kept for every Environment is served in its place, for an Environment's own. */
+      readonly inherited: boolean;
+      /** For a Skill kept for every Environment: the Environments whose own Skill of the name stays served there. */
+      readonly overriddenIn: ReadonlyArray<SkillScope>;
     }
-  /** The Environment keeps no Skill of the name: nothing was recorded. */
-  | { readonly status: "absent"; readonly environment: EnvironmentRecord }
+  /** The scope keeps no Skill of the name: nothing was recorded. */
+  | { readonly status: "absent"; readonly environment: SkillScope }
+  /** The Skill of the name was saved again since the owner was asked (`expected`): nothing was removed or recorded. */
+  | { readonly status: "changed-since"; readonly environment: SkillScope }
+  | { readonly status: "missing" };
+
+/** A Skill the agent would save, checked as a save checks it, with what the scope keeps of the name. */
+export type SkillCheck =
+  | {
+      /** `ready`: a save would keep it. `unchanged`: the scope keeps the Skill with these files already. */
+      readonly status: "ready" | "unchanged";
+      readonly environment: SkillScope;
+      readonly name: string;
+      readonly description: string;
+      /** The Skill of the name the scope keeps now, with its files' paths. Null for a new Skill. */
+      readonly current: {
+        readonly description: string;
+        readonly savedAt: number;
+        readonly files: ReadonlyArray<string>;
+      } | null;
+    }
+  | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
 
 /** The part of the store a Skill's change uses. */
-export type SkillStore = { readonly getEnvironment: (id: string) => EnvironmentRecord | null };
+export type SkillStore = {
+  readonly getEnvironment: (id: string) => EnvironmentRecord | null;
+  readonly listEnvironments: () => ReadonlyArray<EnvironmentRecord>;
+};
 
 /** The Skills kept, and the bundle a Skill set must fit with: what reverting a Skill's change needs besides the changes. */
 export type KeptSkills = { readonly skills: Skills; readonly bundle: HashedBundle };
@@ -546,11 +664,117 @@ export type SkillChangeContext = {
   readonly now: number;
 };
 
+/** `scope` (an Environment's id, or `*`) as a change names it, or null for an Environment that is not registered. */
+const scopeOf = (store: SkillStore, scope: string): SkillScope | null => {
+  if (scope === EVERY_ENVIRONMENT_SCOPE) {
+    return { id: EVERY_ENVIRONMENT_SCOPE, name: EVERY_ENVIRONMENT_NAME };
+  }
+
+  const record = store.getEnvironment(scope);
+
+  return record === null ? null : { id: record.id, name: record.name };
+};
+
+/** A save of a Skill that was checked: what the scope keeps of the name (`before`) and what the save would keep. */
+type SavePlan =
+  | {
+      readonly status: "ready" | "unchanged";
+      readonly environment: SkillScope;
+      readonly name: string;
+      readonly description: string;
+      readonly before: StoredSkill | null;
+    }
+  | { readonly status: "rejected"; readonly message: string }
+  | { readonly status: "missing" };
+
 /**
- * The agent saves the Skill in folder `folder` with `files` (hashed beforehand, `hashFiles`) for `environment`, in
- * place of one of its name: checked as `checkSkill` checks it, and refused when the Environment's Skill set would hold
- * more than `MAX_SKILLS` Skills. Recorded as an Agent change by `author`, with the files before (none for a new Skill)
- * and after; the same files as kept records nothing.
+ * Check the save of the Skill in folder `folder` with `files` (hashed beforehand, `hashFiles`) for `environment` (an
+ * Environment's id, or `*`): as `checkSkill` checks it, refused when a Skill set would hold more than `MAX_SKILLS`
+ * Skills or `MAX_SKILL_SET_BYTES` (those of every Environment, for one kept for every Environment). The same files as
+ * kept are `unchanged`, and not refused for the size.
+ */
+const planSave = (
+  { store, skills, bundle }: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
+  {
+    environment,
+    folder,
+    files,
+    hashed,
+  }: {
+    readonly environment: string;
+    readonly folder: string;
+    readonly files: SkillFiles;
+    readonly hashed: Hashed;
+  },
+): SavePlan => {
+  const scope = scopeOf(store, environment);
+
+  if (scope === null) return { status: "missing" };
+
+  const checked = checkSkill(folder, files);
+
+  if (!checked.ok) return { status: "rejected", message: checked.message };
+
+  const { name, description } = checked.skill;
+  const before = skills.get(environment, name);
+
+  if (before !== null && sameFiles(before.files, hashed.files)) {
+    return { status: "unchanged", environment: scope, name, description, before };
+  }
+
+  const problem = setProblem(
+    { store, skills, bundle },
+    environment,
+    { name, files: hashed.files },
+    hashed.contents,
+  );
+
+  return problem === undefined
+    ? { status: "ready", environment: scope, name, description, before }
+    : { status: "rejected", message: problem };
+};
+
+/**
+ * What a save of the Skill in folder `folder` with `files` for `environment` would do, checked as the save checks it,
+ * with nothing saved or recorded: the agent's Approval card shows it before the owner is asked.
+ */
+export const checkSkillSave = (
+  context: Pick<SkillChangeContext, "store" | "skills" | "bundle">,
+  input: {
+    readonly environment: string;
+    readonly folder: string;
+    readonly files: SkillFiles;
+    readonly hashed: Hashed;
+  },
+): SkillCheck => {
+  const plan = planSave(context, input);
+
+  if (plan.status === "rejected" || plan.status === "missing") return plan;
+
+  const { status, environment, name, description, before } = plan;
+
+  return {
+    status,
+    environment,
+    name,
+    description,
+    current:
+      before === null
+        ? null
+        : {
+            description: before.description,
+            savedAt: before.savedAt,
+            files: Arr.sort(Record.keys(before.files), Order.String),
+          },
+  };
+};
+
+/**
+ * The agent saves the Skill in folder `folder` with `files` (hashed beforehand, `hashFiles`) for `environment` (an
+ * Environment's id, or `*` for every Environment), in place of one of its name: checked as `checkSkillSave` checks it.
+ * Recorded as an Agent change by `author` under the same scope, with the files before (none for a new Skill) and after;
+ * the same files as kept records nothing. With `expected`, only while the Skill of the name was last saved then (`null`:
+ * none kept), which the owner's Approval was asked against.
  */
 export const saveSkillAs = (
   { storage, store, skills, changes, bundle, now }: SkillChangeContext,
@@ -560,39 +784,28 @@ export const saveSkillAs = (
     files,
     hashed,
     author,
+    expected,
   }: {
     readonly environment: string;
     readonly folder: string;
     readonly files: SkillFiles;
     readonly hashed: Hashed;
     readonly author: AgentChangeAuthor;
+    readonly expected?: { readonly savedAt: number | null } | undefined;
   },
 ): SkillSave =>
   storage.transactionSync((): SkillSave => {
-    const record = store.getEnvironment(environment);
+    const plan = planSave({ store, skills, bundle }, { environment, folder, files, hashed });
 
-    if (record === null) return { status: "missing" };
+    if (plan.status === "rejected" || plan.status === "missing") return plan;
 
-    const checked = checkSkill(folder, files);
+    const { name, description, before } = plan;
 
-    if (!checked.ok) return { status: "rejected", message: checked.message };
+    if (plan.status === "unchanged") return { status: "unchanged", environment: plan.environment };
 
-    const { name, description } = checked.skill;
-    const before = skills.get(environment, name);
-
-    if (before !== null && sameFiles(before.files, hashed.files)) {
-      return { status: "unchanged", environment: record };
+    if (expected !== undefined && (before?.savedAt ?? null) !== expected.savedAt) {
+      return { status: "changed-since", environment: plan.environment };
     }
-
-    const problem = setProblem(
-      skills,
-      bundle,
-      environment,
-      { name, files: hashed.files },
-      hashed.contents,
-    );
-
-    if (problem !== undefined) return { status: "rejected", message: problem };
 
     skills.put(environment, { name, description, files: hashed.files }, hashed.contents, now);
 
@@ -611,32 +824,56 @@ export const saveSkillAs = (
       approved: author.approved,
     });
 
+    const everywhere = environment === EVERY_ENVIRONMENT_SCOPE;
+
     return {
       status: "saved",
-      environment: record,
+      environment: plan.environment,
       change,
       skill: { name, description, files: hashed.files, savedAt: now },
       shadows: bundle.names.has(name),
+      overrides: !everywhere && skills.get(EVERY_ENVIRONMENT_SCOPE, name) !== null,
+      overriddenIn: everywhere ? overriding(store, skills, name) : [],
     };
   });
 
-/** The agent removes Skill `name` kept for `environment`, recorded as an Agent change by `author` with its files before. */
+/** The Environments whose own Skill of `name` hides the one kept for every Environment. */
+const overriding = (store: SkillStore, skills: Skills, name: string): ReadonlyArray<SkillScope> =>
+  Arr.flatMap(store.listEnvironments(), ({ id, name: environmentName }) =>
+    skills.get(id, name) === null ? [] : [{ id, name: environmentName }],
+  );
+
+/**
+ * The agent removes Skill `name` kept for `environment` (an Environment's id, or `*`), recorded as an Agent change by
+ * `author` with its files before. With `expected`, only while it was last saved then, which the owner's Approval was
+ * asked against.
+ */
 export const removeSkillAs = (
   { storage, store, skills, changes, bundle, now }: SkillChangeContext,
   {
     environment,
     name,
     author,
-  }: { readonly environment: string; readonly name: string; readonly author: AgentChangeAuthor },
+    expected,
+  }: {
+    readonly environment: string;
+    readonly name: string;
+    readonly author: AgentChangeAuthor;
+    readonly expected?: { readonly savedAt: number | null } | undefined;
+  },
 ): SkillRemoval =>
   storage.transactionSync((): SkillRemoval => {
-    const record = store.getEnvironment(environment);
+    const scope = scopeOf(store, environment);
 
-    if (record === null) return { status: "missing" };
+    if (scope === null) return { status: "missing" };
 
     const before = skills.get(environment, name);
 
-    if (before === null) return { status: "absent", environment: record };
+    if (before === null) return { status: "absent", environment: scope };
+
+    if (expected !== undefined && before.savedAt !== expected.savedAt) {
+      return { status: "changed-since", environment: scope };
+    }
 
     skills.remove(environment, name);
 
@@ -655,12 +892,22 @@ export const removeSkillAs = (
       approved: author.approved,
     });
 
-    return { status: "removed", environment: record, change, bundled: bundle.names.has(name) };
+    const everywhere = environment === EVERY_ENVIRONMENT_SCOPE;
+
+    return {
+      status: "removed",
+      environment: scope,
+      change,
+      bundled: bundle.names.has(name),
+      inherited: !everywhere && skills.get(EVERY_ENVIRONMENT_SCOPE, name) !== null,
+      overriddenIn: everywhere ? overriding(store, skills, name) : [],
+    };
   });
 
 /**
- * The owner removes Skill `name` kept for `environment` from the Environments page, as an owner's save: not an Agent
- * change. Says whether it was kept; the texts no Skill or change refers to any more are dropped.
+ * The owner removes Skill `name` kept for `environment` (an Environment's id, or `*`) from the Environments page, as an
+ * owner's save: not an Agent change, and no Approval. Says whether it was kept; the texts no Skill or change refers to
+ * any more are dropped.
  */
 export const removeSkill = (
   storage: RegistryStorage,
@@ -717,17 +964,20 @@ const descriptionOf = (text: string | undefined): string => {
 };
 
 /**
- * The owner's revert of `change`, a save or removal of Skill `name` in `environment`: the files before written back (a
- * save of a new Skill is removed, a removal brings the Skill back), recorded as the owner's change. Refused when the
- * Skill no longer has the files the change gave it.
+ * The owner's revert of `change`, a save or removal of Skill `name` in `environment` (an Environment's id, or `*` for
+ * every Environment): the files before written back (a save of a new Skill is removed, a removal brings the Skill
+ * back), recorded as the owner's change, under the same scope. It is the owner's own save, so it waits for no Approval.
+ * Refused when the Skill no longer has the files the change gave it, or bringing it back would take a Skill set (every
+ * Environment's, for the scope `*`) past its limits.
  */
 export const revertSkillChange = (
   {
+    store,
     skills,
     changes,
     bundle,
     now,
-  }: Pick<SkillChangeContext, "skills" | "changes" | "bundle" | "now">,
+  }: Pick<SkillChangeContext, "store" | "skills" | "changes" | "bundle" | "now">,
   environment: string,
   change: AgentChange,
 ): AgentChangeRevert => {
@@ -755,7 +1005,7 @@ export const revertSkillChange = (
   if (before === null) {
     skills.remove(environment, name);
   } else {
-    const problem = setProblem(skills, bundle, environment, { name, files: before });
+    const problem = setProblem({ store, skills, bundle }, environment, { name, files: before });
 
     if (problem !== undefined) return { status: "refused", message: `Not reverted: ${problem}` };
 
