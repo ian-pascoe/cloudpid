@@ -993,7 +993,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         }
 
         const failed = message.id === undefined ? undefined : threadWatchOf(message.id);
-        const changesRefused = message.id === undefined ? undefined : changesCommands.get(message.id);
+        const changesRefused =
+          message.id === undefined ? undefined : changesCommands.get(message.id);
 
         if (message.id !== undefined && changesRefused !== undefined) {
           // The Session has no such conversation (a subagent deleted): that watch ends, and the Session goes on.

@@ -37,7 +37,7 @@ const BUTTON_ID = "session-details-button";
 
 /**
  * What the page shown has to follow: the root's Todo List and every subagent on the Session page; on a Subagent page,
- * the subagent's Todo List (its thread's, which the page watches) and the subagents it started (its Subagents Pane
+ * the subagent's Todo List (from the page's watch of its conversation) and the subagents it started (its Subagents Pane
  * lists the whole subtree).
  */
 const useDetails = () => {

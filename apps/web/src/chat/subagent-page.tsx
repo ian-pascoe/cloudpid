@@ -1,5 +1,5 @@
 // A Subagent page (GLOSSARY.md → Subagent page; ADR-0024): the Session page scoped to one subagent. Its chat is the
-// subagent's conversation (its thread, with its composer); its Session details hold its Todo List, the subagents it
+// subagent's conversation, with its composer; its Session details hold its Todo List, the subagents it
 // started and the Changes of its conversation's Workspace; its Pane area is its own (its Diff pane on those Changes, its
 // subtree in the Subagents Pane, no Session tree Pane; the Session's shared browser and Live Views as on the Session
 // page), kept in a Session layout of its own. It stays a part of its Session: Usage, the Spend limit and the Session's

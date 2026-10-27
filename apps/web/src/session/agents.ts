@@ -126,11 +126,7 @@ export const sameWorkspace = (
 ): boolean => workspaceBranchOf(graph, one) === workspaceBranchOf(graph, other);
 
 /** How deep `agent` is below `from` (the root by default): 0 for a child of it. */
-export const depthOf = (
-  graph: TaskGraphSummary,
-  agent: GraphAgent,
-  from = ROOT_AGENT,
-): number => {
+export const depthOf = (graph: TaskGraphSummary, agent: GraphAgent, from = ROOT_AGENT): number => {
   const parents = new Map(graph.agents.map((each) => [each.id, each.parent]));
   let depth = 0;
 

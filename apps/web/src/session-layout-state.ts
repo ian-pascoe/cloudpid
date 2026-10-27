@@ -94,11 +94,14 @@ const openFamily = <List extends OpenList>(list: List) =>
 const subagentCards = openFamily("openCards");
 const disclosures = openFamily("openDisclosures");
 
-/** Whether a subagent's card is open into its thread in the transcript of the page whose layout key is `key`. */
+/** Whether a subagent's card is open into its conversation in the transcript of the page with layout key `key`. */
 export const subagentCardOpenAtom = (key: string, conversationId: number) =>
   subagentCards(key)(conversationId);
 
-/** Whether a disclosure of the transcript of the page whose layout key is `key` (or a subagent's thread in it) is open. */
+/**
+ * Whether a disclosure of the transcript of the page whose layout key is `key` (or of a subagent's conversation in it)
+ * is open.
+ */
 export const disclosureOpenAtom = (key: string, disclosure: TranscriptDisclosure) =>
   disclosures(key)(disclosureKey(disclosure));
 

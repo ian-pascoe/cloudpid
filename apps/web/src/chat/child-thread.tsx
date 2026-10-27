@@ -32,14 +32,16 @@ import { TodoList } from "./todo-list.tsx";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
-/** How a subagent's thread shows: in a card's box, filling a Subagent Pane, or as a Subagent page's chat. */
+/** How a subagent's conversation shows: in a card's box, filling a Subagent Pane, or as a Subagent page's chat. */
 export type ChildThreadLayout = "card" | "pane" | "page";
 
-/** What a Subagent page puts in its chat besides the thread: the Session's requests, and whether it is read-only. */
+/**
+ * What a Subagent page puts in its chat besides the conversation: the Session's requests, and whether it is read-only.
+ */
 export interface ChildThreadPage {
   /** Over the composer: the Browser Handoffs, Secret requests and Approval requests waiting for the owner. */
   readonly requests?: ReactNode;
-  /** In place of the composer, for an archived Session: the thread is read-only. */
+  /** In place of the composer, for an archived Session: the conversation is read-only. */
   readonly archived?: ReactNode;
 }
 
@@ -178,7 +180,7 @@ export const ChildThread = ({
   conversationId: number;
   messages: ReactNode;
   fill?: boolean;
-  /** Set on a Subagent page, where the thread is the page's chat. */
+  /** Set on a Subagent page, where the conversation is the page's chat. */
   page?: ChildThreadPage | undefined;
 }) => {
   const sessionId = useShownSessionId();

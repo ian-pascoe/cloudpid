@@ -171,8 +171,9 @@ const changesFieldAtom = Atom.family(({ sessionId, conversationId }: Conversatio
 
 /**
  * The Changes of the conversation `key` names (`conversation-key.ts`): the Session's Workspace's for the root's, or a
- * subagent conversation's Workspace's; null until the Session lists them. Asks the Session to send them while read. The Session's page reads its own for as long
- * as it is open, for the Session details, and a Subagent page the subagent's.
+ * subagent conversation's Workspace's; null until the Session lists them. Asks the Session to send them while read.
+ * The Session's page reads its own for as long as it is open, for the Session details, and a Subagent page the
+ * subagent's.
  */
 export const changesAtom = Atom.family((key: ConversationKey) =>
   Atom.make((get) => {
@@ -222,21 +223,22 @@ export const threadAtom = Atom.family((key: ThreadKey) =>
 
 /**
  * Whether a conversation of a Session is running: the root's (`conversationId` undefined) as the Session's view says,
- * a subagent's as its thread does, which this watches while read.
+ * a subagent's as its watched conversation does, which this watches while read.
  */
-export const conversationRunningAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
-  Atom.make((get): boolean =>
-    conversationId === undefined
-      ? get(sessionViewAtom(sessionId)).running
-      : get(threadAtom({ sessionId, conversationId }))?.view.running === true,
-  ),
+export const conversationRunningAtom = Atom.family(
+  ({ sessionId, conversationId }: ConversationKey) =>
+    Atom.make((get): boolean =>
+      conversationId === undefined
+        ? get(sessionViewAtom(sessionId)).running
+        : get(threadAtom({ sessionId, conversationId }))?.view.running === true,
+    ),
 );
 
 const NO_TODOS: readonly TodoTask[] = [];
 
 /**
- * The Todo List of a conversation of a Session: the root's (`conversationId` undefined), or a subagent's from its
- * thread, which this watches while read.
+ * The Todo List of a conversation of a Session: the root's (`conversationId` undefined), or a subagent's from the
+ * watch of its conversation, which this keeps while read.
  */
 export const conversationTodosAtom = Atom.family(({ sessionId, conversationId }: ConversationKey) =>
   Atom.make((get): readonly TodoTask[] =>
