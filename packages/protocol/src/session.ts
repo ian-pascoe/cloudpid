@@ -190,19 +190,23 @@ export const UnwatchUsage = Schema.Struct({
 });
 
 /**
- * Stream the Changes of the Session's Workspace on this socket (`changes`): the last list follows at once when the
- * Session has one, and the Session lists them again, once for every client. The watch outlives hibernation like a
- * conversation's. Answered with `null`.
+ * Stream the Changes of the Session's Workspace on this socket (`changes`), or, when `conversationId` names a subagent's
+ * conversation, of that conversation's Workspace (its Subagent Workspace, else its nearest ancestor's, else the
+ * Session's; ADR-0024): the last list follows at once when the Session has one, and the Session lists them again, once
+ * for every client. A socket may watch several, one per `conversationId` (none for the Session's). The watch outlives
+ * hibernation like a conversation's. Answered with `null`.
  */
 export const WatchChanges = Schema.Struct({
   type: Schema.Literal("watch_changes"),
   id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
 });
 
-/** Stop streaming the Changes on this socket. Answered with `null`. */
+/** Stop streaming the Changes `conversationId` names (none: the Session's) on this socket. Answered with `null`. */
 export const UnwatchChanges = Schema.Struct({
   type: Schema.Literal("unwatch_changes"),
   id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
 });
 
 /**
@@ -215,15 +219,19 @@ export const RefreshChanges = Schema.Struct({
   type: Schema.Literal("refresh_changes"),
   id: CommandId,
   manual: Schema.optionalKey(Schema.Boolean),
+  /** The Changes to list again, as `watch_changes` names them; none: the Session's. */
+  conversationId: Schema.optionalKey(ConversationId),
 });
 
 /**
- * Ask for one changed file's two sides: `path` in `repo`, and `oldPath` for a rename. Answered with a `ChangeFile`. It
- * never starts the Container: a repo whose contents need it, while it is stopped, fails with why.
+ * Ask for one changed file's two sides: `path` in `repo`, and `oldPath` for a rename, in the Workspace whose Changes
+ * `conversationId` names, as `watch_changes` does (none: the Session's). Answered with a `ChangeFile`. It never starts
+ * the Container: a repo whose contents need it, while it is stopped, fails with why.
  */
 export const ChangeFileRequest = Schema.Struct({
   type: Schema.Literal("change_file"),
   id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
   repo: Schema.String,
   path: Schema.String,
   oldPath: Schema.optionalKey(Schema.String),
@@ -825,6 +833,8 @@ export const UsageMessage = Schema.Struct({
  */
 export const ChangesMessage = Schema.Struct({
   type: Schema.Literal("changes"),
+  /** The watch it answers, as `watch_changes` named it; absent for the Session's own Changes. */
+  conversationId: Schema.optionalKey(ConversationId),
   ...WorkspaceChanges.fields,
   startingContainer: Schema.Boolean,
 });
@@ -1111,8 +1121,9 @@ export const Result = Schema.Struct({
 /**
  * Something failed. With `id`, the command with that `id` failed, or could not be read. With `conversationId`, the
  * watch of that conversation ended and is dropped: watch it again to resume. With `changes`, a listing of the Changes
- * failed, and the last `changes` message stands (the watch goes on). With none, a message without a readable `id` could
- * not be read.
+ * failed, and the last `changes` message stands (the watch goes on); `conversationId` then names the Changes watch, as
+ * `watch_changes` did (absent: the Session's), and no conversation watch ends. With none, a message without a readable
+ * `id` could not be read.
  */
 export const ErrorMessage = Schema.Struct({
   type: Schema.Literal("error"),
