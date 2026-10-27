@@ -1,7 +1,8 @@
 // @effect-diagnostics preferEffectArray:off -- the Pane's files, over native arrays, sets and maps.
 
-// The Diff pane (`docs/spec.md` → Diffs and review → Diff pane): one per Session, opened from the New pane, the Session
-// details and a Call diff card. A header with the source picker (Changes only, for now), Refresh,
+// The Diff pane (`docs/spec.md` → Diffs and review → Diff pane): one per Session page, on the Session's Changes, and one
+// per Subagent page, on the Changes of the subagent's conversation's Workspace (ADR-0024); opened from the New pane, the
+// Session details and a Call diff card. A header with the source picker (Changes only, for now), Refresh,
 // "may be out of date", the totals with "collapse all", Auto / Split / Stacked and Wrap; then every file of the source
 // in one scroll (`changes-view.tsx`, a lazy chunk), with the file list as a rail beside it on a wide Pane and folding
 // above it on a narrow one. Opening it asks the Session to list the Changes again. Its state is in atoms
@@ -10,7 +11,7 @@
 import type { RepoChanges } from "@cloudpid/protocol";
 import { useAtom, useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ChevronRight, CircleAlert, RefreshCw, WrapText } from "lucide-react";
-import { useShownSessionId } from "../chat/conversation.ts";
+import { useShownChanges } from "../chat/conversation.ts";
 import { Button } from "../components/ui/button.tsx";
 import { lazyChunk } from "../lazy-chunk.ts";
 import { LazyView } from "../lazy-view.tsx";
@@ -93,7 +94,7 @@ const WrapToggle = () => {
 
 /** The Pane's header: the source, Refresh, "may be out of date", the totals with "collapse all", the layout, Wrap. */
 const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState | null }) => {
-  const totals = useAtomValue(changesTotalsAtom(pane.sessionId));
+  const totals = useAtomValue(changesTotalsAtom(pane.changes));
   const [refreshed, refresh] = useAtom(pane.refresh);
   const files = useAtomValue(pane.files);
   const act = useAtomSet(pane.ui);
@@ -214,10 +215,17 @@ const FileList = ({ pane, repos }: { pane: PaneAtoms; repos: readonly RepoChange
   );
 };
 
+/** Why a subagent's Changes are listed no more. */
+const ENDED = "The subagent is gone: its Changes are no longer listed.";
+
 /** What the Pane says when it has no files to show: still listing, none, or that they could not be listed. */
 const Empty = ({ changes }: { changes: ChangesState | null }) => {
   const listed = changes !== null && changes.listing > 0;
   const unlisted = changes?.repos.some((repo) => repo.error !== undefined) === true;
+
+  if (!listed && changes?.ended === true) {
+    return <p className="px-4 py-6 text-sm text-muted-foreground">{ENDED}</p>;
+  }
 
   if (!listed && changes?.failure !== null && changes?.failure !== undefined) {
     return (
@@ -240,9 +248,9 @@ const Empty = ({ changes }: { changes: ChangesState | null }) => {
 /** The Pane, inside its atoms' scope. */
 const PaneBody = () => {
   const pane = useAtomValue(DiffPaneScope.use());
-  const changes = useAtomValue(changesAtom(pane.sessionId));
+  const changes = useAtomValue(changesAtom(pane.changes));
   const files = useAtomValue(pane.files);
-  const totals = useAtomValue(changesTotalsAtom(pane.sessionId));
+  const totals = useAtomValue(changesTotalsAtom(pane.changes));
   const { ref, width } = useWidth();
 
   useAtomMount(pane.opened);
@@ -251,6 +259,7 @@ const PaneBody = () => {
   const wide = (width ?? 0) >= RAIL_MIN_WIDTH;
 
   const failures = [
+    ...(changes?.ended === true && changes.listing > 0 ? [ENDED] : []),
     ...(changes?.failure === null || changes?.failure === undefined ? [] : [changes.failure]),
     ...repos.flatMap((repo) =>
       repo.error === undefined ? [] : [`Could not list ${repo.repo}: ${repo.error}`],
@@ -311,9 +320,17 @@ const PaneBody = () => {
   );
 };
 
-/** The Diff pane of the Session shown, on its Changes. */
-export const DiffPane = () => (
-  <DiffPaneScope.Provider value={useShownSessionId()}>
-    <PaneBody />
-  </DiffPaneScope.Provider>
-);
+/** The Diff pane of the page shown, on its Changes: the Session's, or the subagent's on a Subagent page. */
+export const DiffPane = () => {
+  const changes = useShownChanges();
+
+  return (
+    // A page's Pane is on one set of Changes for as long as it is mounted; another set is another Pane's.
+    <DiffPaneScope.Provider
+      key={`${changes.sessionId}/${changes.conversationId ?? "session"}`}
+      value={changes}
+    >
+      <PaneBody />
+    </DiffPaneScope.Provider>
+  );
+};

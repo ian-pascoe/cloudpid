@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 import { useChangesWatch } from "../diff-pane/changes-summary.tsx";
 import { drainFirstMessageAtom } from "../draft-state.ts";
 import { PaneArea, PaneAreaToggle } from "../pane-area.tsx";
-import { canStopAllBelow } from "../session/agents.ts";
+import { canStopAllBelow, ROOT_AGENT } from "../session/agents.ts";
 import {
   abortAtom,
   sessionClientAtom,
@@ -33,7 +33,8 @@ import type { Rename } from "./title-state.ts";
 
 const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
-const CONNECTION_NOTICE: Partial<Record<ConnectionStatus, ReactNode>> = {
+/** What the page says over the chat while the Session's socket is not live, and why. */
+export const CONNECTION_NOTICE: Partial<Record<ConnectionStatus, ReactNode>> = {
   connecting: "Connecting…",
   reconnecting: "Connection lost. Reconnecting…",
   "signed-out": (
@@ -98,7 +99,7 @@ const LiveSession = ({
 
   useAtomMount(usageAtom(sessionId));
   // The Changes, for the Session details and the Diff pane: asked again as the owner comes back to the page.
-  useChangesWatch(sessionId);
+  useChangesWatch(root);
   // Deleted (here or elsewhere): its socket closed saying so, and the page leaves it.
   useAtomMount(leaveWhenDeletedAtom(sessionId));
   // A first message written in the draft is sent now that the Session's client is built.
@@ -106,7 +107,7 @@ const LiveSession = ({
 
   const submit = useAtomSet(submitAtom(sessionId));
   const abort = useAtomSet(abortAtom(sessionId));
-  const stoppable = canStopAllBelow(taskGraph, "root", view.running);
+  const stoppable = canStopAllBelow(taskGraph, ROOT_AGENT, view.running);
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,

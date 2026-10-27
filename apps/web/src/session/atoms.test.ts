@@ -10,11 +10,14 @@ import * as Socket from "effect/socket/Socket";
 import { afterEach, beforeEach, vi } from "vitest";
 import { fakeRegistryLayer } from "../registry.testing.ts";
 import { appRuntime } from "../runtime.ts";
+import { conversationKey } from "./conversation-key.ts";
 import {
+  changesAtom,
   sessionPickedAtom,
   sessionStateAtom,
   sessionStatusAtom,
   sessionViewAtom,
+  stopAgentAtom,
   submitAtom,
   taskGraphAtom,
   threadAtom,
@@ -209,6 +212,143 @@ describe("a Session's atoms", () => {
       expect(
         sent().filter((command) => command.type === "unwatch" && command.conversationId === 2),
       ).toHaveLength(1);
+    }),
+  );
+
+  it.effect("stop a subagent by its ID from the Session list, opening the socket for it", () =>
+    Effect.gen(function* () {
+      const { registry, sockets, latest } = setup();
+
+      const unmount = registry.mount(stopAgentAtom("s1"));
+
+      yield* settle;
+      // Nothing is opened until the owner stops one.
+      expect(sockets).toHaveLength(0);
+
+      registry.set(stopAgentAtom("s1"), "agent-1.reviewer");
+      yield* settle;
+      yield* live(latest());
+
+      const sent = () => latest().commands();
+
+      expect(sent().filter((command) => command.type === "watch_task_graph")).toHaveLength(1);
+      expect(sent().some((command) => command.type === "abort")).toBe(false);
+
+      yield* latest().say({
+        type: "task_graph",
+        agents: [
+          {
+            id: "agent-1",
+            parent: "root",
+            conversationId: 2,
+            role: null,
+            model: "anthropic/claude-haiku-5",
+            status: "working",
+          },
+          {
+            id: "agent-1.reviewer",
+            parent: "agent-1",
+            conversationId: 3,
+            role: "reviewer",
+            model: "anthropic/claude-haiku-5",
+            status: "working",
+          },
+        ],
+        background: [],
+      });
+
+      // Its conversation alone: the agents below it are not stopped.
+      expect(sent().filter((command) => command.type === "abort")).toEqual([
+        { type: "abort", id: expect.any(String), conversationId: 3 },
+      ]);
+
+      unmount();
+      yield* settle;
+
+      expect(latest().closed).toBe(true);
+    }),
+  );
+
+  it.effect("stop nothing from the Session list when the subagent is idle by then", () =>
+    Effect.gen(function* () {
+      const { registry, latest } = setup();
+
+      registry.mount(stopAgentAtom("s1"));
+      registry.set(stopAgentAtom("s1"), "agent-1");
+      yield* settle;
+      yield* live(latest());
+      yield* latest().say({
+        type: "task_graph",
+        agents: [
+          {
+            id: "agent-1",
+            parent: "root",
+            conversationId: 2,
+            role: null,
+            model: "anthropic/claude-haiku-5",
+            status: "idle",
+          },
+        ],
+        background: [],
+      });
+
+      expect(
+        latest()
+          .commands()
+          .some((command) => command.type === "abort"),
+      ).toBe(false);
+    }),
+  );
+
+  it.effect("keep a Subagent page's Changes apart from the Session's, watched while read", () =>
+    Effect.gen(function* () {
+      const { registry, latest } = setup();
+
+      registry.mount(sessionStatusAtom("s1"));
+      registry.mount(changesAtom(conversationKey("s1", undefined)));
+
+      // Keyed by value, as the page and its Diff pane each make the key.
+      expect(changesAtom(conversationKey("s1", 3))).toBe(changesAtom(conversationKey("s1", 3)));
+
+      const subagent = registry.mount(changesAtom(conversationKey("s1", 3)));
+
+      yield* settle;
+      yield* live(latest());
+
+      const sent = (type: string) =>
+        latest()
+          .commands()
+          .filter((command) => command.type === type);
+
+      expect(sent("watch_changes")).toEqual([
+        { type: "watch_changes", id: expect.any(String) },
+        { type: "watch_changes", id: expect.any(String), conversationId: 3 },
+      ]);
+
+      const repo = {
+        repo: "web",
+        head: { commit: "abc", branch: "cloudpid/agent-1" },
+        files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+        more: 0,
+        stale: false,
+      };
+
+      yield* latest().say({
+        type: "changes",
+        conversationId: 3,
+        repos: [repo],
+        startingContainer: false,
+      });
+
+      expect(registry.get(changesAtom(conversationKey("s1", 3)))?.repos).toHaveLength(1);
+      expect(registry.get(changesAtom(conversationKey("s1", undefined)))).toBeNull();
+
+      subagent();
+      yield* settle;
+
+      expect(sent("unwatch_changes")).toEqual([
+        { type: "unwatch_changes", id: expect.any(String), conversationId: 3 },
+      ]);
     }),
   );
 

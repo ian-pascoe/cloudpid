@@ -100,6 +100,18 @@ export const PANE_TYPES = [
 /** The ID of a type in `PANE_TYPES`. */
 export type PaneTypeId = (typeof PANE_TYPES)[number]["id"];
 
+/**
+ * The Pane types a Subagent page opens: those of the Session page but the Session tree Pane, which is the root
+ * conversation's tree (GLOSSARY.md → Subagent page). A link or a stored layout that names it opens without it.
+ */
+export const SUBAGENT_PAGE_PANE_TYPES: readonly PaneType[] = PANE_TYPES.filter(
+  (type) => type.id !== "tree",
+);
+
+/** The Pane types of a Session page, or of a Subagent page with `subagentPage`. */
+export const paneTypesOf = (subagentPage: boolean): readonly PaneType[] =>
+  subagentPage ? SUBAGENT_PAGE_PANE_TYPES : PANE_TYPES;
+
 /** The key of the New pane, which offers the Pane types to open and becomes the one picked. */
 export const NEW_PANE = "new";
 

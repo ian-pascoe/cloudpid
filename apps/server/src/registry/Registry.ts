@@ -94,6 +94,7 @@ import {
   type LegacyObject,
   openRegistryStore,
   type RepoChange,
+  type SessionAgent,
   type SessionRecord,
   type SessionRefusal,
   type SubagentWorkspaceRefusal,
@@ -216,6 +217,14 @@ export type RegistryMethods = {
   readonly setSessionStatus: (input: {
     readonly id: string;
     readonly status: SessionStatus;
+  }) => Effect.Effect<void>;
+  /**
+   * The Session DO reports its subagents (ADR-0024), parents first, when they change and when it starts; an archived
+   * Session's report is kept too. A Session that is not registered is ignored.
+   */
+  readonly setSessionAgents: (input: {
+    readonly id: string;
+    readonly agents: ReadonlyArray<SessionAgent>;
   }) => Effect.Effect<void>;
   /** The owner names a Session: the title is theirs from then on. The Session's record, or null when it is not registered. */
   readonly renameSession: (input: {
@@ -669,6 +678,8 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => store.setSessionStatus(id, status, now)),
             ),
+          setSessionAgents: ({ id, agents }) =>
+            Effect.sync(() => store.setSessionAgents(id, agents)),
           renameSession: ({ id, title }) => Effect.sync(() => store.renameSession(id, title)),
           setGeneratedTitle: ({ id, title }) =>
             Effect.sync(() => store.setGeneratedTitle(id, title)),

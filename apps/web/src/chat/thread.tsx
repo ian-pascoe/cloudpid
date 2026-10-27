@@ -77,7 +77,7 @@ const Banner = ({ archived }: { archived: Archived }) => {
 };
 
 /** In place of the composer while the Session is archived: say so, and offer to unarchive it. */
-const ArchivedBanner = ({ archived }: { archived: Archived }) => (
+export const ArchivedBanner = ({ archived }: { archived: Archived }) => (
   <Unarchiving.Provider>
     <Banner archived={archived} />
   </Unarchiving.Provider>

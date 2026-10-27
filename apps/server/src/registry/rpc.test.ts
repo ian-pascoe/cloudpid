@@ -550,6 +550,7 @@ const fakeRegistries = () => {
         return renamed;
       }),
     setSessionStatus: () => Effect.void,
+    setSessionAgents: () => Effect.void,
     setGeneratedTitle: () => Effect.succeed(false),
     createEnvironment: ({ name }) =>
       Effect.sync((): EnvironmentNaming => {

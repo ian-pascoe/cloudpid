@@ -7,6 +7,7 @@ import {
   ForkKind,
   MAX_ENVIRONMENT_SECRETS,
   type SessionOrigin,
+  SessionAgent,
   type PushSubscription,
   SPARE_BRANCH,
   TitleSource,
@@ -22,7 +23,7 @@ import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.
 // The Registry's tables over the Registry DO's SQLite storage (`docs/spec.md` → Durable Objects). Synchronous, as
 // SQLite in a Durable Object is, and given the time by its caller so tests control it.
 
-export type { SessionStatus };
+export type { SessionAgent, SessionStatus };
 
 /** A Session as the Registry lists it. Times are epoch milliseconds. */
 export type SessionRecord = {
@@ -44,6 +45,8 @@ export type SessionRecord = {
   readonly archivedAt: number | null;
   /** The Session it is a Fork or Clone of; absent for one started afresh. */
   readonly origin?: SessionOrigin;
+  /** Its subagents as it last reported them, parents first; absent until it first reports (ADR-0024). */
+  readonly agents?: ReadonlyArray<SessionAgent>;
 };
 
 /** An Environment as the Registry lists it (ADR-0016). */
@@ -209,6 +212,11 @@ export type RegistryStore = {
   readonly listSessions: () => SessionRecord[];
   /** Record that a Session's Run started or ended. A Session that is not registered is ignored. */
   readonly setSessionStatus: (id: string, status: SessionStatus, now: number) => void;
+  /**
+   * Keep the summary of its subagents a Session reported (ADR-0024), replacing the last; an archived Session's too, so
+   * the report after its stop lands. It leaves `updatedAt` alone. A Session that is not registered is ignored.
+   */
+  readonly setSessionAgents: (id: string, agents: ReadonlyArray<SessionAgent>) => void;
   /** Give a Session the owner's title, replacing any other; null when the Session is not registered. */
   readonly renameSession: (id: string, title: string) => SessionRecord | null;
   /**
@@ -335,6 +343,8 @@ type SessionRow = {
   /** The Session it is a Fork or Clone of, and which; both null for one started afresh. */
   origin: string | null;
   origin_kind: string | null;
+  /** JSON: `SessionAgent[]`, as the Session last reported them; null until it first does. */
+  agents: string | null;
 };
 
 type EnvironmentRow = {
@@ -435,7 +445,12 @@ const toBuild = (row: Pick<EnvironmentRow, "build" | "build_status">): BuildReco
 
 const isForkKind = Schema.is(ForkKind);
 
+const decodeAgents = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(SessionAgent)));
+
 const toSession = (row: SessionRow): SessionRecord => {
+  // A summary that does not read (none was ever reported, or a shape this version does not know) shows none.
+  const agents = row.agents === null ? undefined : Option.getOrUndefined(decodeAgents(row.agents));
+
   const record: SessionRecord = {
     id: row.id,
     title: row.title,
@@ -448,9 +463,12 @@ const toSession = (row: SessionRow): SessionRecord => {
     archivedAt: row.archived_at,
   };
 
-  return row.origin === null || row.origin === undefined || !isForkKind(row.origin_kind)
-    ? record
-    : { ...record, origin: { session: row.origin, kind: row.origin_kind } };
+  const withOrigin =
+    row.origin === null || row.origin === undefined || !isForkKind(row.origin_kind)
+      ? record
+      : { ...record, origin: { session: row.origin, kind: row.origin_kind } };
+
+  return agents === undefined ? withOrigin : { ...withOrigin, agents };
 };
 
 const toEnvironment = (row: EnvironmentRow): EnvironmentRecord => ({
@@ -721,6 +739,11 @@ export const MIGRATIONS: ReadonlyArray<(sql: SqlStorage) => void> = [
   (sql) => {
     sql.exec("ALTER TABLE agent_changes ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0");
   },
+  // 21: the summary of a Session's subagents it reports (ADR-0024), JSON `SessionAgent[]`. Null for every Session
+  // stored before, until it next starts and reports.
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN agents TEXT");
+  },
 ];
 
 /** Bring the tables up to the latest version, or to the end of `migrations`. */
@@ -986,6 +1009,10 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         id,
         status,
       );
+    },
+
+    setSessionAgents: (id, agents) => {
+      sql.exec("UPDATE sessions SET agents = ? WHERE id = ?", JSON.stringify(agents), id);
     },
 
     renameSession: (id, title) => {

@@ -3,7 +3,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { REQUEST_COST } from "./priced.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
@@ -354,4 +354,171 @@ it("holds a subagent to the Session's spend limit, and the root's next request t
 
   expect(errors).not.toHaveLength(0);
   expect(Arr.every(errors, (message) => message.includes("out of budget"))).toBe(true);
+});
+
+/** The subagents the Session last reported to the Registry. */
+const lastReport = async (stub: DurableObjectStub<TestSubagentSession>) =>
+  (await runInDurableObject(stub, (instance: TestSubagentSession) => instance.agentReports())).at(
+    -1,
+  );
+
+it("reports its subagents to the Registry: at start, as they work, and idle once stopped", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  // A Session that starts reports what it has, none here, so a Session from before the summary fills in.
+  await runInDurableObject(stub, (instance: TestSubagentSession) => instance.idle());
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.agentReports()),
+  ).toEqual([[]]);
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.submit("Delegate deep"),
+  );
+  await eventually(stub, (instance) => {
+    const last = instance.agentReports().at(-1) ?? [];
+
+    return Promise.resolve(
+      last.length === 2 && Arr.every(last, (agent) => agent.status === "working"),
+    );
+  });
+  // Parents before their children, without the conversation or the model the task graph sends.
+  expect(await lastReport(stub)).toEqual([
+    { id: "agent-1", parent: "root", role: null, status: "working" },
+    { id: expect.stringMatching(/^agent-1\./), parent: "agent-1", role: null, status: "working" },
+  ]);
+
+  // The stop that archiving makes writes the idle summary before it answers.
+  await runInDurableObject(stub, (instance: TestSubagentSession) => instance.stopEverything());
+  expect(await lastReport(stub)).toEqual([
+    { id: "agent-1", parent: "root", role: null, status: "idle" },
+    { id: expect.stringMatching(/^agent-1\./), parent: "agent-1", role: null, status: "idle" },
+  ]);
+
+  // A new instance reports again, though nothing changed: it cannot know what the Registry holds.
+  const before = (
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.agentReports())
+  ).length;
+
+  await evictDurableObject(stub);
+  await runInDurableObject(stub, (instance: TestSubagentSession) => instance.idle());
+  await eventually(stub, (instance) =>
+    Promise.resolve(instance.agentReports().length === before + 1),
+  );
+  expect(await lastReport(stub)).toMatchObject([{ status: "idle" }, { status: "idle" }]);
+});
+
+it("keeps the heartbeat while the subagents could not be reported, and reports them at the next alarm", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.failAgentReports(true),
+  );
+  await delegateQuietly(stub);
+  await runInDurableObject(stub, (instance: TestSubagentSession) => instance.stopEverything());
+  await eventually(stub, (instance) => instance.idle());
+  // Only the start's, made before the reports failed.
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.agentReports()),
+  ).toEqual([[]]);
+
+  // Idle, but the alarm stays to report them again.
+  expect(
+    await runInDurableObject(stub, (_instance: TestSubagentSession, state) =>
+      state.storage.getAlarm(),
+    ),
+  ).not.toBeNull();
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.failAgentReports(false),
+  );
+  expect(await runDurableObjectAlarm(stub)).toBe(true);
+  expect(await lastReport(stub)).toEqual([
+    { id: "agent-1", parent: "root", role: null, status: "idle" },
+  ]);
+  // Reported, the idle Session lets its alarm go.
+  expect(
+    await runInDurableObject(stub, (_instance: TestSubagentSession, state) =>
+      state.storage.getAlarm(),
+    ),
+  ).toBeNull();
+});
+
+it("reports a subagent's Subagent Workspace branch, and resolves a conversation to the Workspace its Changes are in", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+  const child = await delegateQuietly(stub);
+
+  const workspace = {
+    id: "0000c0de",
+    branch: "cloudpid/child",
+    object: "ws:0000c0de",
+    directory: "/workspace/app",
+  };
+
+  // SAFETY: 1 is the root conversation's ID in every Session.
+  const root = 1 as typeof child;
+
+  // The root, and a child in the Session's Workspace: the Session's Changes.
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.workspaceOf(root)),
+  ).toEqual({ workspace: null });
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.workspaceOf(child)),
+  ).toEqual({ workspace: null });
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.giveWorkspace("agent-1", workspace),
+  );
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) => instance.workspaceOf(child)),
+  ).toEqual({ workspace });
+  // The Subagents document's change alone is reported.
+  await eventually(stub, (instance) =>
+    Promise.resolve(instance.agentReports().at(-1)?.[0]?.branch === "cloudpid/child"),
+  );
+
+  // SAFETY: a number the Session never gave out, to see it refused.
+  const stranger = (child + 40) as typeof child;
+
+  expect(
+    await runInDurableObject(stub, (instance: TestSubagentSession) =>
+      instance.workspaceOf(stranger),
+    ),
+  ).toEqual({ failure: expect.stringMatching(/not the root or a subagent/) });
+});
+
+it("follows a conversation's Workspace as its agent is given one, and ends once the agent is gone", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+  const child = await delegateQuietly(stub);
+
+  const workspace = {
+    id: "0000c0de",
+    branch: "cloudpid/child",
+    object: "ws:0000c0de",
+    directory: "/workspace/app",
+  };
+
+  const followed = () =>
+    runInDurableObject(stub, (instance: TestSubagentSession) => instance.followedWorkspaces());
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) => {
+    instance.followWorkspaces(child);
+  });
+  await vi.waitFor(async () => expect((await followed()).seen).toEqual([null]));
+
+  // Given a Subagent Workspace later: the Changes move to it, once.
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.giveWorkspace("agent-1", workspace),
+  );
+  await vi.waitFor(async () => expect((await followed()).seen).toEqual([null, workspace]));
+
+  // Deleted: the stream ends, saying why.
+  await runInDurableObject(stub, (instance: TestSubagentSession) =>
+    instance.forgetAgent("agent-1"),
+  );
+  await vi.waitFor(async () =>
+    expect(await followed()).toEqual({
+      seen: [null, workspace],
+      ended: `Conversation ${child} is not the root or a subagent of this Session`,
+    }),
+  );
 });

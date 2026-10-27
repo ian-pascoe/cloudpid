@@ -51,7 +51,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { SessionChanges } from "./changes.ts";
+import { type ChangesMessage, type ChangesUpdate, SessionChanges } from "./changes.ts";
 import { SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 
@@ -68,14 +68,15 @@ export type SocketState = {
 type ErrorMessage = Extract<ServerMessage, { type: "error" }>;
 
 /**
- * What a socket keeps across hibernation: the conversations it watches, and whether it watches the task graph, the
- * Session's usage and the Changes.
+ * What a socket keeps across hibernation: the conversations it watches, whether it watches the task graph, the
+ * Session's usage and the Session's Changes, and the conversations whose Changes it watches (ADR-0024).
  */
 const Attachment = Schema.Struct({
   watches: Schema.Array(ConversationId),
   taskGraph: Schema.optionalKey(Schema.Boolean),
   usage: Schema.optionalKey(Schema.Boolean),
   changes: Schema.optionalKey(Schema.Boolean),
+  conversationChanges: ConversationId.pipe(Schema.Array, Schema.optionalKey),
 });
 
 type Attachment = typeof Attachment.Type;
@@ -198,6 +199,34 @@ const agentChange = (message: Extract<ClientMessage, { type: "configure" }>): Ag
   return change;
 };
 
+/**
+ * What `update` is sent as to a watch of the Changes `conversationId` names, which the message names as the client
+ * did: a list, or the `error` marked `changes` of a listing that failed.
+ */
+const changesUpdate = (
+  update: ChangesUpdate,
+  conversationId: ConversationId | undefined,
+): ChangesMessage | ErrorMessage => {
+  const message: ChangesMessage | ErrorMessage =
+    update.kind === "changes"
+      ? update.message
+      : { type: "error", changes: true, message: update.message };
+
+  return conversationId === undefined ? message : { ...message, conversationId };
+};
+
+/**
+ * The `error` that ends the Changes watch `conversationId` names: its conversation is no agent's any more (a subagent
+ * deleted), so the client drops it rather than watching it again.
+ */
+const changesEnded = (conversationId: ConversationId, message: string): ErrorMessage => ({
+  type: "error",
+  changes: true,
+  ended: true,
+  conversationId,
+  message: `Changes watch of conversation ${conversationId} ended: ${message}`,
+});
+
 const readAttachment = (socket: WebSocket): Attachment =>
   Option.getOrElse(decodeAttachment(socket.deserializeAttachment()), () => ({ watches: [] }));
 
@@ -231,12 +260,26 @@ const setUsageWatched = (socket: WebSocket, watched: boolean) =>
     } satisfies Attachment);
   });
 
-/** Record that `socket` watches the Changes, or no longer does. */
-const setChangesWatched = (socket: WebSocket, watched: boolean) =>
+/** Record that `socket` watches the Changes `conversationId` names (none: the Session's), or no longer does. */
+const setChangesWatched = (
+  socket: WebSocket,
+  conversationId: ConversationId | undefined,
+  watched: boolean,
+) =>
   Effect.sync(() => {
+    const attachment = readAttachment(socket);
+
+    if (conversationId === undefined) {
+      socket.serializeAttachment({ ...attachment, changes: watched } satisfies Attachment);
+
+      return;
+    }
+
+    const others = Arr.filter(attachment.conversationChanges ?? [], (id) => id !== conversationId);
+
     socket.serializeAttachment({
-      ...readAttachment(socket),
-      changes: watched,
+      ...attachment,
+      conversationChanges: watched ? Arr.append(others, conversationId) : others,
     } satisfies Attachment);
   });
 
@@ -246,10 +289,19 @@ const TASK_GRAPH = "task_graph";
 /** The key of a socket's usage watch among its watches. */
 const USAGE = "usage";
 
-/** The key of a socket's Changes watch among its watches. */
+/** The key of a socket's watch of the Session's Changes among its watches. */
 const CHANGES = "changes";
 
-type WatchKey = ConversationId | typeof TASK_GRAPH | typeof USAGE | typeof CHANGES;
+type WatchKey =
+  | ConversationId
+  | typeof TASK_GRAPH
+  | typeof USAGE
+  | typeof CHANGES
+  | `${typeof CHANGES}:${number}`;
+
+/** The key of a socket's watch of the Changes `conversationId` names (none: the Session's) among its watches. */
+const changesKey = (conversationId: ConversationId | undefined): WatchKey =>
+  conversationId === undefined ? CHANGES : `${CHANGES}:${conversationId}`;
 
 /**
  * The Session's sockets over the object's `state`. Building it restarts the watches of sockets that outlived the last
@@ -434,34 +486,55 @@ export const sessionSocketsLayer = (
         });
 
       /**
-       * Send the Changes to `socket`, replacing a watch it already has: the last list at once if there is one, then each
-       * listing, which every watching client shares. A listing that fails tells the client, and the watch goes on.
+       * The Workspace whose Changes `conversationId` names: the Session's own when it is undefined, else the one that
+       * conversation works in (ADR-0024). A conversation that is neither a Session branch nor a subagent's fails.
        */
-      const watchChanges = (socket: WebSocket) =>
+      const changesWorkspace = (conversationId: ConversationId | undefined) =>
+        conversationId === undefined ? Effect.undefined : host.workspaceOf(conversationId);
+
+      /**
+       * Send `socket` the Changes `conversationId` names (none: the Session's), replacing that watch if it has it: the
+       * last list at once if there is one, then each listing, which every client watching the same Workspace shares.
+       * Each message names the conversation as the client did. A listing that fails tells the client, and the watch goes
+       * on. A conversation's watch follows it to another Workspace, and ends, telling the client, once the conversation
+       * is no agent's; one that is none already fails before anything is watched.
+       */
+      const watchChanges = (socket: WebSocket, conversationId: ConversationId | undefined) =>
         Effect.gen(function* () {
+          yield* changesWorkspace(conversationId);
+
           const fibers = yield* watchesOf(socket);
 
-          yield* setChangesWatched(socket, true);
-          yield* changes.updates.pipe(
-            Stream.runForEach((update) =>
-              send(
-                socket,
-                update.kind === "changes"
-                  ? update.message
-                  : { type: "error", changes: true, message: update.message },
+          const updates: Stream.Stream<ChangesUpdate, SessionError> =
+            conversationId === undefined
+              ? changes.updates(undefined)
+              : host
+                  .workspaces(conversationId)
+                  .pipe(Stream.switchMap((workspace) => changes.updates(workspace)));
+
+          yield* setChangesWatched(socket, conversationId, true);
+          yield* updates.pipe(
+            Stream.runForEach((update) => send(socket, changesUpdate(update, conversationId))),
+            Effect.catch((error) =>
+              setChangesWatched(socket, conversationId, false).pipe(
+                Effect.andThen(
+                  conversationId === undefined
+                    ? Effect.void
+                    : send(socket, changesEnded(conversationId, error.message)),
+                ),
               ),
             ),
-            FiberMap.run(fibers, CHANGES),
+            FiberMap.run(fibers, changesKey(conversationId)),
           );
         });
 
-      const unwatchChanges = (socket: WebSocket) =>
+      const unwatchChanges = (socket: WebSocket, conversationId: ConversationId | undefined) =>
         Effect.suspend(() => {
           const fibers = watching.get(socket);
 
-          return (fibers === undefined ? Effect.void : FiberMap.remove(fibers, CHANGES)).pipe(
-            Effect.andThen(setChangesWatched(socket, false)),
-          );
+          return (
+            fibers === undefined ? Effect.void : FiberMap.remove(fibers, changesKey(conversationId))
+          ).pipe(Effect.andThen(setChangesWatched(socket, conversationId, false)));
         });
 
       const unwatch = (socket: WebSocket, conversationId: ConversationId) =>
@@ -601,15 +674,20 @@ export const sessionSocketsLayer = (
           case "unwatch_usage":
             return unwatchUsage(socket).pipe(Effect.as(null));
           case "watch_changes":
-            return watchChanges(socket).pipe(Effect.as(null));
+            return watchChanges(socket, message.conversationId).pipe(Effect.as(null));
           case "unwatch_changes":
-            return unwatchChanges(socket).pipe(Effect.as(null));
+            return unwatchChanges(socket, message.conversationId).pipe(Effect.as(null));
           case "refresh_changes":
-            return changes.refresh(message.manual === true).pipe(Effect.as(null));
+            return changesWorkspace(message.conversationId).pipe(
+              Effect.flatMap((workspace) => changes.refresh(workspace, message.manual === true)),
+              Effect.as(null),
+            );
           case "change_file": {
-            const { type: _type, id: _id, ...query } = message;
+            const { type: _type, id: _id, conversationId, ...query } = message;
 
-            return changes.file(query);
+            return changesWorkspace(conversationId).pipe(
+              Effect.flatMap((workspace) => changes.file(workspace, query)),
+            );
           }
 
           case "secret_answer":
@@ -750,7 +828,24 @@ export const sessionSocketsLayer = (
 
         if (readAttachment(socket).usage === true) yield* watchUsage(socket);
 
-        if (readAttachment(socket).changes === true) yield* watchChanges(socket);
+        const { changes: sessionChanges, conversationChanges = [] } = readAttachment(socket);
+
+        for (const conversationId of sessionChanges === true
+          ? [undefined, ...conversationChanges]
+          : conversationChanges) {
+          yield* watchChanges(socket, conversationId).pipe(
+            // Its conversation is gone (a subagent deleted meanwhile): the watch is dropped, and the client told.
+            Effect.catch((error) =>
+              setChangesWatched(socket, conversationId, false).pipe(
+                Effect.andThen(
+                  conversationId === undefined
+                    ? Effect.void
+                    : send(socket, changesEnded(conversationId, error.message)),
+                ),
+              ),
+            ),
+          );
+        }
 
         for (const conversationId of readAttachment(socket).watches) {
           yield* watch(socket, conversationId).pipe(

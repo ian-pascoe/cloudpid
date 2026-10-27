@@ -260,6 +260,10 @@ export const SessionLive = Session.make(
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
               : registries.getByName(REGISTRY_NAME).setSessionStatus({ id: name, status }),
+          reportAgents: (agents) =>
+            name === undefined
+              ? ReportError.make({ message: "The Session's name is unknown" })
+              : registries.getByName(REGISTRY_NAME).setSessionAgents({ id: name, agents }),
           notify: (event) =>
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
@@ -472,25 +476,33 @@ export const SessionLive = Session.make(
           }),
         });
 
-        // The Changes of the Session's Workspace, in the directory the Session works in. Read without readying the
-        // Workspace, so a listing clones nothing, and only the owner's Refresh may start its Container.
+        // The Changes of the Session's Workspace, in the directory the Session works in, and of each Subagent Workspace,
+        // in its own (ADR-0024). Read without readying the Workspace, so a listing clones nothing, and only the owner's
+        // Refresh may start its Container.
         const sessionChanges = sessionChangesLayer({
-          // @effect-diagnostics-next-line asyncFunction:off
-          list: async (startContainer) => {
-            const { workspace: id, object, directory } = await placement();
+          session: {
+            // @effect-diagnostics-next-line asyncFunction:off
+            list: async (startContainer) => {
+              const { workspace: id, object, directory } = await placement();
 
-            if (id === null) return null;
+              if (id === null) return null;
 
-            return workspaces.getByName(object).changes({ directory, startContainer });
+              return workspaces.getByName(object).changes({ directory, startContainer });
+            },
+            // @effect-diagnostics-next-line asyncFunction:off
+            file: async (query) => {
+              const { workspace: id, object } = await placement();
+
+              if (id === null) throw new Error("This Session has no Workspace");
+
+              return workspaces.getByName(object).changeFile(query);
+            },
           },
-          // @effect-diagnostics-next-line asyncFunction:off
-          file: async (query) => {
-            const { workspace: id, object } = await placement();
-
-            if (id === null) throw new Error("This Session has no Workspace");
-
-            return workspaces.getByName(object).changeFile(query);
-          },
+          subagent: ({ object, directory }) => ({
+            list: (startContainer) =>
+              workspaces.getByName(object).changes({ directory, startContainer }),
+            file: (query) => workspaces.getByName(object).changeFile(query),
+          }),
         });
 
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed (with no Live View link).
