@@ -4,6 +4,7 @@ import * as Clipboard from "@effect/platform-browser/Clipboard";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as Socket from "effect/socket/Socket";
@@ -12,6 +13,7 @@ import { fakeRegistryLayer } from "../registry.testing.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import { SessionProbe } from "../session/client.ts";
+import { conversationKey } from "../session/conversation-key.ts";
 import { FakeSocket, settle, type Value } from "../session/client.testing.ts";
 import { paneAtomsOf } from "./pane-atoms.ts";
 
@@ -64,7 +66,7 @@ const setup = () => {
   });
 
   const latest = () => sockets[sockets.length - 1]!;
-  const pane = paneAtomsOf("s1");
+  const pane = paneAtomsOf(conversationKey("s1", undefined));
 
   const live = Effect.gen(function* () {
     // What the Pane's components read while it is open.
@@ -305,6 +307,26 @@ describe("a Diff pane's This branch", () => {
 
       expect(compares()).toHaveLength(3);
       expect(compares()[2]).toMatchObject({ startContainer: false, fetch: false });
+    }),
+  );
+
+  it.effect("offers no repo for This branch on a Subagent page, and asks the Session nothing", () =>
+    Effect.gen(function* () {
+      const { registry, latest, live } = setup();
+      const pane = paneAtomsOf(conversationKey("s1", 3));
+
+      yield* live;
+      registry.mount(pane.sources);
+      yield* settle;
+
+      const answer = registry.get(pane.sources);
+
+      expect(AsyncResult.isSuccess(answer) ? answer.value : undefined).toEqual({ repos: [] });
+      expect(
+        latest()
+          .commands()
+          .filter((command) => command.type === "comparison_sources"),
+      ).toEqual([]);
     }),
   );
 

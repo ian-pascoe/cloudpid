@@ -214,8 +214,7 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
     if (shown.kind !== "branch") return null;
 
     return (
-      get(changesAtom(changes))?.repos.find(({ repo }) => repo === shown.repo)?.head.commit ??
-      null
+      get(changesAtom(changes))?.repos.find(({ repo }) => repo === shown.repo)?.head.commit ?? null
     );
   });
 

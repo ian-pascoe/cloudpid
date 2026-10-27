@@ -150,7 +150,7 @@ const SourcePicker = ({ pane }: { pane: PaneAtoms }) => {
 /** What a Comparison is of: its branch against its base at the merge-base, with its commits, and whether HEAD moved. */
 const BranchSummary = ({ pane }: { pane: PaneAtoms }) => {
   const { comparison } = useAtomValue(pane.list);
-  const changes = useAtomValue(changesAtom(pane.sessionId));
+  const changes = useAtomValue(changesAtom(pane.changes));
   const compare = useAtomSet(pane.compare);
   const setSource = useAtomSet(pane.source);
 
