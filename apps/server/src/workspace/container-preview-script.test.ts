@@ -1,15 +1,15 @@
-// The script a Container preview puts in its HTML pages (`preview-shim.ts`), run against a page's globals with its
-// `fetch` answered by the Workspace DO's side (`ContainerPreview`) over a fake dev server: a page's WebSocket to its own
-// host behaves as a WebSocket, carried over HTTP.
+// The script a Container preview puts in its HTML pages (`container-preview-script.ts`), run against a page's globals with
+// its `fetch` answered by the Workspace DO's side (`ContainerPreview`) over a fake dev server: a page's WebSocket to its
+// own host behaves as a WebSocket, carried over HTTP.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it, vi } from "vitest";
-import { ContainerPreview } from "./preview.ts";
-import { PREVIEW_SHIM } from "./preview-shim.ts";
+import { ContainerPreview } from "./container-preview.ts";
+import { CONTAINER_PREVIEW_SCRIPT } from "./container-preview-script.ts";
 
 const PAGE = new URL("http://5173.cloudpid.internal/");
 
-/** A WebSocket the fake dev server opened: what it received, and how the preview closed it. */
+/** A WebSocket the fake dev server opened: what it received, and how the Container preview closed it. */
 class DevSocket extends EventTarget {
   readonly received: Array<string | Uint8Array> = [];
   closed: { code: number; reason: string } | undefined;
@@ -69,7 +69,7 @@ const pageWithScript = (running = true) => {
   const sockets: DevSocket[] = [];
   const upgrades: Array<{ url: string; protocols: string | null }> = [];
 
-  const preview = new ContainerPreview({
+  const containerPreview = new ContainerPreview({
     running: () => running,
     port: () => ({
       fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -83,7 +83,7 @@ const pageWithScript = (running = true) => {
           protocols: request.headers.get("sec-websocket-protocol"),
         });
 
-        // SAFETY: the preview reads `webSocket` and `headers` of an upgrade's answer; Node's `Response` has no socket.
+        // SAFETY: the Container preview reads `webSocket` and `headers` of an upgrade's answer; Node's `Response` has none.
         return {
           status: 101,
           webSocket: socket,
@@ -101,14 +101,15 @@ const pageWithScript = (running = true) => {
       begin: () => Promise.resolve(),
       end: () => Promise.resolve(),
     }),
+    used: () => undefined,
     newId: () => `socket-${sockets.length}`,
     keepAliveMs: () => 60_000,
     warn: () => undefined,
   });
 
-  /** The page's `fetch`: to the preview, whose stream an abort cancels, as the browser's does. */
+  /** The page's `fetch`: to the Container preview, whose stream an abort cancels, as the browser's does. */
   const fetch = async (input: string, init?: RequestInit) => {
-    const response = await preview.serve(new Request(new URL(input, PAGE), init), 5173);
+    const response = await containerPreview.serve(new Request(new URL(input, PAGE), init), 5173);
 
     if (response.body === null || init?.signal === undefined || init.signal === null) {
       return response;
@@ -135,7 +136,7 @@ const pageWithScript = (running = true) => {
 
   // The script runs as the page's first: with the page's globals.
   // oxlint-disable-next-line typescript/no-implied-eval -- the script is a string the Workspace DO puts in a page; this runs it as the page would.
-  new Function("window", "location", PREVIEW_SHIM)(window, PAGE);
+  new Function("window", "location", CONTAINER_PREVIEW_SCRIPT)(window, PAGE);
 
   // SAFETY: the script put its WebSocket in `window`, constructed as the browser's is.
   const WebSocket = window.WebSocket as new (

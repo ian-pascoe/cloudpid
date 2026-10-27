@@ -1,25 +1,37 @@
 // A Container preview (ADR-0023, `docs/spec.md` → Browser → Container preview): a request a page of the Session's
 // browser made to `http://<port>.cloudpid.internal/`, which Browser Run sent to the browser Worker's `ContainerPreviews`
-// entrypoint, which hands it here. It is answered from the Container's port (`getTcpPort`, as computer's `fetchPort`
-// does), on the Container's interface, so a dev server must listen on `0.0.0.0`. A preview never starts the Container:
-// a stopped one answers 503, a port with nothing listening 502. computerd's port is refused.
+// entrypoint, which hands it here through the Workspaces Worker's `WorkspaceContainerPreviews`. It is answered from the
+// Container's port (`getTcpPort`, as computer's `fetchPort` does), on the Container's interface, so a dev server must
+// listen on `0.0.0.0`. A Container preview never starts the Container: a stopped one answers 503, a port with nothing
+// listening 502. Only the eight Container preview ports are served; computerd's is not one of them.
 //
-// Each request is a use of the Container (`IdleStop.touch`). A page's WebSockets, which Browser Run does not route, come
-// over HTTP through the script put in every HTML page (`preview-shim.ts`): this module holds the real socket to the
-// Container, which counts as a running command (`begin`/`end`) while it is open, and closes it when the page's stream
-// goes away (a keep-alive write fails, or the stream is cancelled).
+// Each request is a use of the Container (`IdleStop.touch`). A page's WebSockets, which Browser Run does not route, are
+// carried over HTTP by the script put in every HTML page (`container-preview-script.ts`): this module holds each carried
+// socket's real socket to the Container, which counts as a running command (`begin`/`end`) while it is open, and closes
+// it when the page's stream goes away (cancelled, a write fails) or stops being read.
 // @effect-diagnostics asyncFunction:off globalTimers:off preferEffectArray:off preferSchemaOverJson:off
+import {
+  CONTAINER_PREVIEW_PORTS,
+  containerPreviewHost,
+} from "@cloudpid/extensions/browser/contract";
 import * as Predicate from "effect/Predicate";
-import { PREVIEW_HEADER, PREVIEW_SHIM, PREVIEW_SOCKET_PATH } from "./preview-shim.ts";
+import {
+  CONTAINER_PREVIEW_HEADER,
+  CONTAINER_PREVIEW_SCRIPT,
+  CONTAINER_PREVIEW_SOCKET_PATH,
+} from "./container-preview-script.ts";
 
-/** computerd's port on the Container (`@cloudflare/computer`'s `DEFAULT_CONTAINER_PORT`): it has no Container preview. */
-export const COMPUTERD_PORT = 8080;
+/**
+ * How often a carried socket's stream is written to when nothing else is. A write that fails is the page gone, and one
+ * that has not been read by the next is a page that stopped reading.
+ */
+export const CONTAINER_PREVIEW_KEEP_ALIVE_MS = 15_000;
 
-/** How often an open socket's stream is written to when nothing else is: a write that fails is the page gone. */
-export const PREVIEW_KEEP_ALIVE_MS = 15_000;
+/** How much of a carried socket's stream may wait unread before the page is taken to have stopped reading. */
+export const CONTAINER_PREVIEW_MAX_UNREAD_BYTES = 1024 * 1024;
 
-/** The use of the Container a preview makes, as the idle stop counts it (`IdleStop`). */
-export type PreviewActivity = {
+/** The use of the Container a Container preview makes, as the idle stop counts it (`IdleStop`). */
+export type ContainerPreviewActivity = {
   readonly touch: () => Promise<void>;
   readonly begin: () => Promise<void>;
   readonly end: () => Promise<void>;
@@ -30,8 +42,10 @@ export type ContainerPreviewDeps = {
   readonly running: () => boolean;
   /** The Container's port `port`, as `ctx.container.getTcpPort` gives it. */
   readonly port: (port: number) => Fetcher;
-  readonly activity: () => PreviewActivity;
-  /** A new socket's ID: unguessable, as only the page that opened the socket may write to it. */
+  readonly activity: () => ContainerPreviewActivity;
+  /** A request the Container preview serves is a use of the Workspace (a spare's is no longer a spare). */
+  readonly used: () => void;
+  /** A new carried socket's ID: unguessable, as only the page that opened the socket may write to it. */
   readonly newId: () => string;
   readonly keepAliveMs: () => number;
   readonly warn: (message: string) => void;
@@ -41,10 +55,39 @@ export type ContainerPreviewDeps = {
  * Headers not passed on: the ones a request picks up on its way here, which are not the page's, and `Host`, which is the
  * dev server's own (`localhost:<port>`), as a dev server refuses a host it does not know (Vite's `allowedHosts`).
  */
-const DROPPED_HEADERS = ["host", "x-forwarded-proto", "x-real-ip", "x-forwarded-for"];
+const DROPPED_HEADERS = [
+  "host",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+  "x-forwarded-for",
+];
 
 /** The `Host` a dev server on `port` knows: its own, as on a laptop. */
 const devServerHost = (port: number) => `localhost:${port}`;
+
+/** The names a dev server calls itself by in a URL it makes from `Host`. */
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "0.0.0.0"];
+
+/**
+ * A `Location` the dev server answered with, as the page follows it: an absolute URL to the dev server itself (made from
+ * the `Host` it was sent) is the Container preview's own address instead; anything else is left as it is.
+ */
+const containerPreviewLocation = (location: string, port: number): string => {
+  if (!URL.canParse(location)) return location;
+
+  const url = new URL(location);
+
+  if (
+    url.protocol !== "http:" ||
+    !LOOPBACK_HOSTS.includes(url.hostname) ||
+    url.port !== String(port)
+  ) {
+    return location;
+  }
+
+  return `http://${containerPreviewHost(port)}${url.pathname}${url.search}${url.hash}`;
+};
 
 const escapeHtml = (text: string) =>
   text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -60,8 +103,8 @@ const page = (status: number, title: string, text: string) =>
   );
 
 /** Put the script at the start of an HTML page: in its `<head>`, else before anything but its doctype. */
-export const withPreviewShim = (html: string): string => {
-  const script = `<script>${PREVIEW_SHIM}</script>`;
+export const withContainerPreviewScript = (html: string): string => {
+  const script = `<script>${CONTAINER_PREVIEW_SCRIPT}</script>`;
   const head = /<head(\s[^>]*)?>/i.exec(html);
 
   if (head !== null) {
@@ -93,16 +136,16 @@ const toBase64 = (bytes: Uint8Array) => {
   return btoa(binary);
 };
 
-/** One tunnelled socket: the Container's side, and how to end it. */
-type Tunnel = {
+/** One carried socket: its real socket to the Container, and how to end it. */
+type CarriedSocket = {
   readonly socket: WebSocket;
   readonly end: (code: number, reason: string) => void;
 };
 
 export class ContainerPreview {
   readonly #deps: ContainerPreviewDeps;
-  /** The open tunnelled sockets, by ID. In memory: a restarted object has none, and their pages reconnect. */
-  readonly #tunnels = new Map<string, Tunnel>();
+  /** The open carried sockets, by ID. In memory: a restarted object has none, and their pages reconnect. */
+  readonly #carried = new Map<string, CarriedSocket>();
 
   constructor(deps: ContainerPreviewDeps) {
     this.#deps = deps;
@@ -110,15 +153,11 @@ export class ContainerPreview {
 
   /** Answer `request`, made to the Container preview of `port`. */
   async serve(request: Request, port: number): Promise<Response> {
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      return page(400, "No such port", `${port} is not a port.`);
-    }
-
-    if (port === COMPUTERD_PORT) {
+    if (!CONTAINER_PREVIEW_PORTS.includes(port)) {
       return page(
-        403,
-        "Port 8080 has no Container preview",
-        "Port 8080 is the Workspace's own, for running its commands. Start the dev server on another port.",
+        404,
+        `Port ${port} has no Container preview`,
+        `A Container preview is on one of the ports ${CONTAINER_PREVIEW_PORTS.join(", ")}. Start the dev server on one of them.`,
       );
     }
 
@@ -130,11 +169,14 @@ export class ContainerPreview {
       );
     }
 
+    this.#deps.used();
     await this.#use(this.#deps.activity().touch());
 
     const url = new URL(request.url);
 
-    if (url.pathname.startsWith(PREVIEW_SOCKET_PATH)) return this.#tunnel(request, url, port);
+    if (url.pathname.startsWith(CONTAINER_PREVIEW_SOCKET_PATH)) {
+      return this.#socketEndpoint(request, url, port);
+    }
 
     return this.#forward(request, url, port);
   }
@@ -144,9 +186,16 @@ export class ContainerPreview {
     await noted.catch((cause: unknown) => this.#deps.warn(`idle stop: ${String(cause)}`));
   }
 
-  /** `request` as the dev server gets it: the page's own headers, `Origin` among them, to `localhost`. */
+  /**
+   * `request` as the dev server gets it: the page's own headers, `Origin` among them, to `localhost`, saying where the
+   * page is (`X-Forwarded-Host`, `X-Forwarded-Proto`).
+   */
   async #forward(request: Request, url: URL, port: number): Promise<Response> {
-    const headers = new Headers({ host: devServerHost(port) });
+    const headers = new Headers({
+      host: devServerHost(port),
+      "x-forwarded-host": containerPreviewHost(port),
+      "x-forwarded-proto": "http",
+    });
 
     for (const [name, value] of request.headers) {
       if (!name.startsWith("cf-") && !DROPPED_HEADERS.includes(name)) headers.append(name, value);
@@ -167,6 +216,11 @@ export class ContainerPreview {
       return this.#unreachable(port, cause);
     }
 
+    const out = new Headers(response.headers);
+    const location = response.headers.get("location");
+
+    if (location !== null) out.set("location", containerPreviewLocation(location, port));
+
     const type = response.headers.get("content-type") ?? "";
 
     if (
@@ -175,15 +229,17 @@ export class ContainerPreview {
       response.status === 204 ||
       response.status === 304
     ) {
-      return response;
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: out,
+      });
     }
-
-    const out = new Headers(response.headers);
 
     // The page is longer and no longer the dev server's bytes.
     for (const name of ["content-length", "content-encoding", "etag"]) out.delete(name);
 
-    return new Response(withPreviewShim(await response.text()), {
+    return new Response(withContainerPreviewScript(await response.text()), {
       status: response.status,
       statusText: response.statusText,
       headers: out,
@@ -200,34 +256,37 @@ export class ContainerPreview {
     );
   }
 
-  /** The script's endpoints: `open` a socket to the Container as a stream of its messages, `send` to it, `close` it. */
-  async #tunnel(request: Request, url: URL, port: number): Promise<Response> {
+  /** The script's endpoints: `open` a carried socket as a stream of its messages, `send` to it, `close` it. */
+  async #socketEndpoint(request: Request, url: URL, port: number): Promise<Response> {
     const origin = request.headers.get("origin");
 
     // A page of another origin cannot send the header without a preflight, which nothing here answers.
-    if (request.headers.get(PREVIEW_HEADER) !== "1" || (origin !== null && origin !== url.origin)) {
+    if (
+      request.headers.get(CONTAINER_PREVIEW_HEADER) !== "1" ||
+      (origin !== null && origin !== url.origin)
+    ) {
       return new Response("Forbidden", { status: 403 });
     }
 
-    const op = url.pathname.slice(PREVIEW_SOCKET_PATH.length);
+    const op = url.pathname.slice(CONTAINER_PREVIEW_SOCKET_PATH.length);
 
     if (op === "open" && request.method === "GET") return this.#open(request, url, port);
 
     if (request.method !== "POST") return new Response("Not found", { status: 404 });
 
-    const tunnel = this.#tunnels.get(url.searchParams.get("id") ?? "");
+    const carried = this.#carried.get(url.searchParams.get("id") ?? "");
 
-    if (tunnel === undefined) return new Response("No such socket", { status: 404 });
+    if (carried === undefined) return new Response("No such socket", { status: 404 });
 
     if (op === "send") {
       try {
-        tunnel.socket.send(
+        carried.socket.send(
           url.searchParams.get("binary") === "1"
             ? await request.arrayBuffer()
             : await request.text(),
         );
       } catch (cause) {
-        tunnel.end(1011, String(cause));
+        carried.end(1011, String(cause));
       }
 
       return new Response(null, { status: 204 });
@@ -238,7 +297,7 @@ export class ContainerPreview {
         .json<{ code?: unknown; reason?: unknown }>()
         .catch(() => ({}));
 
-      tunnel.end(
+      carried.end(
         Predicate.isNumber(asked.code) ? asked.code : 1000,
         Predicate.isString(asked.reason) ? asked.reason.slice(0, 123) : "",
       );
@@ -283,31 +342,39 @@ export class ContainerPreview {
       });
     }
 
-    socket.accept();
-
     const id = this.#deps.newId();
     const activity = this.#deps.activity();
+    // Begun before anything can end the socket, so its end always comes after it.
+    const begun = this.#use(activity.begin());
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
 
     let ended = false;
+    // What is written to the stream and not yet read: a page that stops reading holds it all.
+    let unread = 0;
+    // Whether the last keep-alive comment was read by the time the next is due.
+    let keptAlive = true;
 
-    const write = (text: string) =>
-      writer.write(encoder.encode(text)).catch(() => end(1001, "The page went away"));
-
-    const end = (code: number, reason: string) => {
+    const end = (code: number, reason: string, stalled = false) => {
       if (ended) return;
 
       ended = true;
       clearInterval(keepAlive);
-      this.#tunnels.delete(id);
-      void this.#use(activity.end());
+      this.#carried.delete(id);
+      void begun.then(() => this.#use(activity.end()));
 
       try {
         socket.close(sendableCode(code), reason);
       } catch {
         // Closed already.
+      }
+
+      // A page that stopped reading would never read the close: the stream fails, which its script takes as a close.
+      if (stalled) {
+        writer.abort(new Error(reason)).catch(() => undefined);
+
+        return;
       }
 
       writer
@@ -316,12 +383,34 @@ export class ContainerPreview {
         .catch(() => undefined);
     };
 
-    // A comment now and then: a write that fails is the page gone, whose socket is then closed.
-    const keepAlive = setInterval(() => void write(": keep-alive\n\n"), this.#deps.keepAliveMs());
+    const stalled = () => end(1001, "The page stopped reading", true);
 
-    this.#tunnels.set(id, { socket, end });
-    await this.#use(activity.begin());
+    const write = (text: string): Promise<void> => {
+      const bytes = encoder.encode(text);
 
+      unread += bytes.byteLength;
+
+      if (unread > CONTAINER_PREVIEW_MAX_UNREAD_BYTES) {
+        stalled();
+
+        return Promise.resolve();
+      }
+
+      return writer.write(bytes).then(
+        () => void (unread -= bytes.byteLength),
+        () => end(1001, "The page went away"),
+      );
+    };
+
+    // A comment now and then: a write that fails is the page gone, and one not read by the next a page that stopped.
+    const keepAlive = setInterval(() => {
+      if (!keptAlive) return stalled();
+
+      keptAlive = false;
+      void write(": keep-alive\n\n").then(() => void (keptAlive = true));
+    }, this.#deps.keepAliveMs());
+
+    // Listening before the socket is accepted: the dev server's first message (Vite's `connected`) comes at once.
     socket.addEventListener("message", (event) => {
       void this.#use(activity.touch());
 
@@ -335,9 +424,12 @@ export class ContainerPreview {
     socket.addEventListener("error", () => end(1006, ""));
     writer.closed.catch(() => end(1001, "The page went away"));
 
+    this.#carried.set(id, { socket, end });
     void write(
       `event: open\ndata: ${JSON.stringify({ id, protocol: upstream.headers.get("sec-websocket-protocol") ?? "" })}\n\n`,
     );
+    socket.accept();
+    await begun;
 
     return new Response(readable, {
       headers: {

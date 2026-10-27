@@ -13,7 +13,7 @@ import { RpcTarget } from "cloudflare:workers";
 import * as git from "isomorphic-git";
 import { type ChangesFiles, gitFs, WorkspaceChangesModule } from "./changes.ts";
 import type { Answers } from "./github-pulls.fixtures.ts";
-import type { PreviewActivity } from "./preview.ts";
+import type { ContainerPreviewActivity } from "./container-preview.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
 
@@ -37,8 +37,8 @@ export type DevServerSocket = {
   closed: { readonly code: number; readonly reason: string } | null;
 };
 
-/** How many times Container previews touched the Container, and began and ended a socket's hold on it. */
-export type PreviewUses = { touch: number; begin: number; end: number };
+/** How many times Container previews touched the Container, and began and ended a carried socket's hold on it. */
+export type ContainerPreviewUses = { touch: number; begin: number; end: number };
 
 /** What the fake dev server was asked, by any port, and the WebSockets it opened. */
 export type DevServerState = {
@@ -47,6 +47,7 @@ export type DevServerState = {
     readonly method: string;
     readonly url: string;
     readonly host: string | null;
+    readonly forwardedHost: string | null;
     readonly origin: string | null;
     readonly cookie: string | null;
     readonly upgrade: string | null;
@@ -401,24 +402,40 @@ export class TestWorkspace extends Workspace {
   }
 
   /**
-   * A dev server on the fake Container, as the Container preview tests have it (`preview.workerd.test.ts`): it listens on
-   * `ports` (another port is refused as a Container refuses it), answers `/` with an HTML page and anything else with a
-   * script that says `<head>`, and opens a WebSocket for an upgrade, answering each message with `echo:` and it. What it
-   * was asked, and each socket's messages and close, are recorded (`devServerState`). Without it, the Container's ports
-   * are the real Container's, which this test Worker does not have.
+   * A dev server on the fake Container, as the Container preview tests have it (`container-preview.workerd.test.ts`): it
+   * listens on `ports` (another port is refused as a Container refuses it), answers `/` with an HTML page, `/login` with
+   * a redirect to its own absolute URL (made from `Host`, as some dev servers do) and anything else with a script that
+   * says `<head>`, and opens a WebSocket for an upgrade, sending `{"type":"connected"}` at once as Vite's does and
+   * answering each message with `echo:` and it. What it was asked, and each socket's messages and close, are recorded
+   * (`devServerState`). Without it, the Container's ports are the real Container's, which this test Worker does not have.
+   * A carried socket's stream is written to every `keepAliveMs` (50 by default: a page gone is found within a test).
    */
-  #devServer: { ports: readonly number[]; state: DevServerState; sockets: WebSocket[] } | undefined;
+  #devServer:
+    | {
+        ports: readonly number[];
+        keepAliveMs: number;
+        state: DevServerState;
+        sockets: WebSocket[];
+      }
+    | undefined;
 
   /** The uses Container previews made of the Container, as the idle stop is told of them. */
-  #previewUses: PreviewUses = { touch: 0, begin: 0, end: 0 };
+  #containerPreviewUses: ContainerPreviewUses = { touch: 0, begin: 0, end: 0 };
 
-  fakeDevServer(options: { readonly ports: readonly number[] }): void {
-    this.#devServer = { ports: options.ports, state: { requests: [], sockets: [] }, sockets: [] };
+  fakeDevServer(options: {
+    readonly ports: readonly number[];
+    readonly keepAliveMs?: number;
+  }): void {
+    this.#devServer = {
+      ports: options.ports,
+      keepAliveMs: options.keepAliveMs ?? 50,
+      state: { requests: [], sockets: [] },
+      sockets: [],
+    };
   }
 
-  /** How often an open socket's stream is written to: short, so a page gone is found within a test. */
-  protected override previewKeepAliveMs(): number {
-    return this.#devServer === undefined ? super.previewKeepAliveMs() : 50;
+  protected override containerPreviewKeepAliveMs(): number {
+    return this.#devServer?.keepAliveMs ?? super.containerPreviewKeepAliveMs();
   }
 
   devServerState(): DevServerState {
@@ -435,8 +452,13 @@ export class TestWorkspace extends Workspace {
     this.#devServer?.sockets[index]?.close(1012, "restarting");
   }
 
-  previewUses(): PreviewUses {
-    return { ...this.#previewUses };
+  containerPreviewUses(): ContainerPreviewUses {
+    return { ...this.#containerPreviewUses };
+  }
+
+  /** Whether the Workspace was used as a Session's (a spare's preparation aside). */
+  spareUsed(): boolean {
+    return this.ctx.storage.kv.get<boolean>("cloudpid:spare-used") === true;
   }
 
   protected override containerPort(port: number): Fetcher {
@@ -453,6 +475,7 @@ export class TestWorkspace extends Workspace {
         method: request.method,
         url: request.url,
         host: request.headers.get("host"),
+        forwardedHost: request.headers.get("x-forwarded-host"),
         origin: request.headers.get("origin"),
         cookie: request.headers.get("cookie"),
         upgrade: request.headers.get("upgrade"),
@@ -478,6 +501,7 @@ export class TestWorkspace extends Workspace {
         });
         server.state.sockets.push(record);
         server.sockets.push(socket);
+        socket.send('{"type":"connected"}');
 
         const protocol = request.headers.get("sec-websocket-protocol")?.split(",")[0]?.trim();
 
@@ -495,6 +519,13 @@ export class TestWorkspace extends Workspace {
         );
       }
 
+      if (url.pathname === "/login") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `http://${request.headers.get("host") ?? ""}/login/` },
+        });
+      }
+
       return new Response('export const tag = "<head>";', {
         headers: { "content-type": "text/javascript" },
       });
@@ -508,9 +539,9 @@ export class TestWorkspace extends Workspace {
     };
   }
 
-  protected override previewActivity(): PreviewActivity {
-    const idle = super.previewActivity();
-    const uses = this.#previewUses;
+  protected override containerPreviewActivity(): ContainerPreviewActivity {
+    const idle = super.containerPreviewActivity();
+    const uses = this.#containerPreviewUses;
 
     return {
       touch: () => {
@@ -551,6 +582,9 @@ export class TestWorkspace extends Workspace {
 }
 
 export { WorkspaceServiceProxy };
+
+/** The Workspaces Worker's Container previews entrypoint, over this test Worker's Workspace DOs. */
+export { WorkspaceContainerPreviews } from "./worker.ts";
 
 export default {
   fetch: () => new Response("cloudpid Workspace test worker"),

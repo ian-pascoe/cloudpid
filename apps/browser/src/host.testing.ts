@@ -1,6 +1,6 @@
 // The real `BrowserHost` over a Durable Object's own state, with a fake Browser Run as its binding, for the tests that
 // drive it whole: the agent in an Owner tab (`./owner-tab-agent.test.ts`) and the Container previews' routes
-// (`./preview.test.ts`). The model's code runs in a Worker Loader isolate and drives the fake over CDP, which records
+// (`./container-preview.test.ts`). The model's code runs in a Worker Loader isolate and drives the fake over CDP, which records
 // what it is sent and in which page.
 // workerd's WebSocketPair, Durable Object state and RPC are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off preferSchemaOverJson:off missingPipeableSignature:off
@@ -8,8 +8,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type {
   BrowserRun,
+  ContainerPreviewWorkspace,
   HandoffStartInput,
-  PreviewWorkspace,
 } from "@cloudpid/extensions/browser/contract";
 import type { BrowserBinding } from "agents/browser";
 import { BrowserHost } from "./BrowserHost.ts";
@@ -111,7 +111,7 @@ export const fakeBrowserRun = () => {
 
   const binding: BrowserBinding = {
     acquire: (options) => {
-      // SAFETY: the host's binding passes `outboundByHost` beside what `agents/browser` types (`preview.ts`).
+      // SAFETY: the host's binding passes `outboundByHost` beside what `agents/browser` types (`container-preview.ts`).
       acquired.push({ ...(options as Acquired) });
       state.created += 1;
       state.lost = false;
@@ -177,21 +177,24 @@ export const WHERE =
 export const textOf = (run: BrowserRun) =>
   run.output.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 
-/** The Session's Workspace, as the Session names it on every call. */
+/** The Session's Workspace, as the Session names it to the calls that can acquire a browser. */
 export const WORKSPACE = "ws:abc";
 
-/** The host as a Session calls it: every call names the Session's Workspace, `workspace`. */
-export const asSession = (host: BrowserHost, workspace: PreviewWorkspace = WORKSPACE) => ({
+/**
+ * The host as a Session calls it: the calls that can acquire a browser name the Session's Workspace, `workspace`, last
+ * (none when it is undefined, as a Session without one, or from before Container previews, calls them).
+ */
+export const asSession = (host: BrowserHost, workspace: ContainerPreviewWorkspace | undefined) => ({
   run: (code: string, conversationId: number, ownerTabId?: string) =>
-    host.run(workspace, code, conversationId, ownerTabId),
-  close: () => host.close(workspace),
-  startHandoff: (input: HandoffStartInput) => host.startHandoff(workspace, input),
-  ownerTabView: (open: boolean) => host.ownerTabView(workspace, open),
-  ownerTabs: () => host.ownerTabs(workspace),
+    host.run(code, conversationId, ownerTabId, workspace),
+  close: () => host.close(),
+  startHandoff: (input: HandoffStartInput) => host.startHandoff(input),
+  ownerTabView: (open: boolean) => host.ownerTabView(open, workspace),
+  ownerTabs: () => host.ownerTabs(),
   openOwnerTab: () => host.openOwnerTab(workspace),
-  showOwnerTab: (id: string) => host.showOwnerTab(workspace, id),
-  closeOwnerTab: (id: string) => host.closeOwnerTab(workspace, id),
-  readOwnerTabPages: (ids: ReadonlyArray<string>) => host.readOwnerTabPages(workspace, ids),
+  showOwnerTab: (id: string) => host.showOwnerTab(id),
+  closeOwnerTab: (id: string) => host.closeOwnerTab(id),
+  readOwnerTabPages: (ids: ReadonlyArray<string>) => host.readOwnerTabPages(ids),
 });
 
 export type SessionHost = ReturnType<typeof asSession>;
@@ -212,6 +215,6 @@ export const withHost = (test: (host: BrowserHost, run: FakeBrowserRun) => Promi
   });
 };
 
-/** `withHost`, with the host as a Session calls it, naming `WORKSPACE`. */
+/** `withHost`, with the host as a Session calls it, naming `WORKSPACE` to the calls that can acquire a browser. */
 export const withSessionHost = (test: (host: SessionHost, run: FakeBrowserRun) => Promise<void>) =>
-  withHost((host, run) => test(asSession(host), run));
+  withHost((host, run) => test(asSession(host, WORKSPACE), run));

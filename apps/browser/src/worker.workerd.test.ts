@@ -4,7 +4,7 @@ import { SELF } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { BrowserHostRpc } from "@cloudpid/extensions/browser/contract";
-import type { ContainerPreviewProps } from "./preview.ts";
+import type { ContainerPreviewProps } from "./container-preview.ts";
 
 declare global {
   namespace Cloudflare {
@@ -16,11 +16,11 @@ declare global {
   }
 }
 
-/** The Session's Workspace, as each call names it. */
+/** The Session's Workspace, as the calls that can acquire a browser name it. */
 const WORKSPACE = "ws:abc";
 
 /** The `ContainerPreviews` entrypoint the entry exports, made for `workspace` as the browser host makes it. */
-const previewsFor = (workspace: string): Fetcher =>
+const containerPreviewsFor = (workspace: string): Fetcher =>
   // SAFETY: the entry (`worker.ts`) exports `ContainerPreviews`; `exports` is untyped without the main module's types.
   (
     exports as {
@@ -30,13 +30,18 @@ const previewsFor = (workspace: string): Fetcher =>
 
 describe("the browser Worker", () => {
   it("describes the browser tool", async () => {
-    const description = await env.BROWSER_HOST.getByName("session").describe(WORKSPACE);
+    const description = await env.BROWSER_HOST.getByName("session").describe();
 
     expect(description).toMatch(/Chrome DevTools Protocol/);
   });
 
   it("runs the model's code in a Worker Loader isolate, through the CodemodeRuntime facet it exports", async () => {
-    const run = await env.BROWSER_HOST.getByName("session").run(WORKSPACE, "async () => 6 * 7", 1);
+    const run = await env.BROWSER_HOST.getByName("session").run(
+      "async () => 6 * 7",
+      1,
+      undefined,
+      WORKSPACE,
+    );
 
     expect(run.isError).not.toBe(true);
     expect(run.details).toMatchObject({ status: "completed" });
@@ -44,13 +49,13 @@ describe("the browser Worker", () => {
   });
 
   it("closes nothing when no browser was started", async () => {
-    expect(await env.BROWSER_HOST.getByName("idle").close(WORKSPACE)).toBe(false);
+    expect(await env.BROWSER_HOST.getByName("idle").close()).toBe(false);
   });
 
   it("hands over no tab for a conversation that has none, without starting a browser for it", async () => {
     // Starting a browser would reach the binding, which fails with a 503 here: this answer is from the stored records.
     const failure = await env.BROWSER_HOST.getByName("no-tab")
-      .startHandoff(WORKSPACE, {
+      .startHandoff({
         requestId: "1",
         conversationId: 1,
         instructions: "Log in",
@@ -66,7 +71,7 @@ describe("the browser Worker", () => {
 
   it("mints no Live View link for a handoff it does not have, and says so over RPC", async () => {
     const failure = await env.BROWSER_HOST.getByName("no-handoff")
-      .liveView(WORKSPACE, "1")
+      .liveView("1")
       .then(
         () => undefined,
         (error: Error) => error,
@@ -78,7 +83,7 @@ describe("the browser Worker", () => {
   it("says the Owner tab is gone over RPC, starting no browser, when the Browser Pane asks again and the owner has none", async () => {
     // Starting a browser would reach the binding, which fails with a 503 here: this answer is from the stored records.
     const failure = await env.BROWSER_HOST.getByName("no-owner-tab")
-      .ownerTabView(WORKSPACE, false)
+      .ownerTabView(false, WORKSPACE)
       .then(
         () => undefined,
         (error: Error) => error,
@@ -91,10 +96,10 @@ describe("the browser Worker", () => {
     // As above: none of these may reach the binding, which fails with a 503 here.
     const host = env.BROWSER_HOST.getByName("no-owner-tabs");
 
-    expect(await host.ownerTabs(WORKSPACE)).toEqual({ tabs: [] });
-    expect(await host.closeOwnerTab(WORKSPACE, "nope")).toEqual({ tabs: [] });
+    expect(await host.ownerTabs()).toEqual({ tabs: [] });
+    expect(await host.closeOwnerTab("nope")).toEqual({ tabs: [] });
 
-    const failure = await host.showOwnerTab(WORKSPACE, "nope").then(
+    const failure = await host.showOwnerTab("nope").then(
       () => undefined,
       (error: Error) => error,
     );
@@ -110,8 +115,8 @@ describe("the browser Worker", () => {
 });
 
 describe("the Container previews' entrypoint", () => {
-  it("hands a request to the Workspace DO its props name, with the port its host is for, as the browser sent it", async () => {
-    const response = await previewsFor(WORKSPACE).fetch(
+  it("hands a request to the Workspaces Worker for the Workspace its props name, with the port its host is for, as the browser sent it", async () => {
+    const response = await containerPreviewsFor(WORKSPACE).fetch(
       "http://5173.cloudpid.internal/src/main.js?t=1",
       {
         method: "POST",
@@ -120,7 +125,7 @@ describe("the Container previews' entrypoint", () => {
       },
     );
 
-    // The stand-in Workspace DO (`vitest.config.ts`) answers with what it was asked.
+    // The stand-in Workspaces Worker (`vitest.config.ts`) answers with what it was asked.
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       workspace: WORKSPACE,
@@ -133,7 +138,7 @@ describe("the Container previews' entrypoint", () => {
   });
 
   it("answers 404 for a host that is not one of the eight, computerd's port among them, waking no Workspace", async () => {
-    const previews = previewsFor(WORKSPACE);
+    const containerPreviews = containerPreviewsFor(WORKSPACE);
 
     for (const url of [
       "http://8080.cloudpid.internal/health",
@@ -141,18 +146,21 @@ describe("the Container previews' entrypoint", () => {
       "http://5173.cloudpid.internal:8080/",
       "http://example.com/",
     ]) {
-      const response = await previews.fetch(url);
+      const response = await containerPreviews.fetch(url);
 
       expect(response.status, url).toBe(404);
       expect(await response.text(), url).not.toContain(WORKSPACE);
     }
   });
 
-  it("answers 502 when the Workspace DO cannot be reached", async () => {
-    // The stand-in Workspace DO throws for this one.
-    const response = await previewsFor("ws:unreachable").fetch("http://3000.cloudpid.internal/");
+  it("answers 502, in plain text, when the Workspace cannot be reached", async () => {
+    // The stand-in Workspaces Worker throws for this one.
+    const response = await containerPreviewsFor("ws:unreachable").fetch(
+      "http://3000.cloudpid.internal/",
+    );
 
     expect(response.status).toBe(502);
+    expect(response.headers.get("content-type")).toContain("text/plain");
     expect(await response.text()).toContain("could not be reached");
   });
 });

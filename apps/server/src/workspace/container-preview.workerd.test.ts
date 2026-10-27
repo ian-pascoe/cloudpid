@@ -1,9 +1,11 @@
 // The Workspace DO's Container preview (ADR-0023): a request the Session's browser made to
-// `http://<port>.cloudpid.internal/`, handed to `preview(request, port)` as the browser Worker's entrypoint hands it, and
-// answered from a fake dev server on the fake Container (`TestWorkspace.fakeDevServer`).
+// `http://<port>.cloudpid.internal/`, handed to `containerPreview(request, port)` as the Workspaces Worker's
+// `WorkspaceContainerPreviews` entrypoint hands it, and answered from a fake dev server on the fake Container
+// (`TestWorkspace.fakeDevServer`).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
+import type { WorkspaceContainerPreviews } from "./worker.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 declare global {
@@ -16,24 +18,32 @@ declare global {
 
 let objects = 0;
 
-/** A Workspace DO of its own, its Container running (or not) with a dev server on 5173. */
-const workspace = async (running = true) => {
+/** A Workspace DO of its own, named as a Workspace's (`ws:<id>`), its Container running (or not) with a dev server on 5173. */
+const namedWorkspace = async (running = true) => {
   objects += 1;
 
-  const stub = env.WORKSPACES.getByName(`preview-${objects}`);
+  const name = `ws:container-preview-${objects}`;
+  const stub = env.WORKSPACES.getByName(name);
 
   await stub.fakeContainer({ running });
   await stub.fakeDevServer({ ports: [5173] });
 
-  return stub;
+  return { name, stub };
 };
+
+const workspace = async (running = true) => (await namedWorkspace(running)).stub;
+
+type Workspace = Awaited<ReturnType<typeof workspace>>;
 
 const PAGE = "http://5173.cloudpid.internal";
 
-/** The headers the page's script sends on every request to its sockets' endpoints. */
+/** The headers the page's script sends on every request to its carried sockets' endpoints. */
 const SCRIPT = { "x-cloudpid-preview": "1" };
 
-/** A server-sent event of a socket's stream: `open`, `message` or `close`, with what each carries. */
+/** What Vite's server sends on a new socket at once, as the fake dev server does. */
+const CONNECTED = { type: "message", data: { text: '{"type":"connected"}' } };
+
+/** A server-sent event of a carried socket's stream: `open`, `message` or `close`, with what each carries. */
 type SocketEvent = {
   readonly type: string;
   readonly data: {
@@ -45,7 +55,7 @@ type SocketEvent = {
   };
 };
 
-/** The server-sent events of a socket's stream, one at a time. */
+/** The server-sent events of a carried socket's stream, one at a time. */
 const eventsOf = (response: Response) => {
   if (response.body === null) throw new Error("No stream");
 
@@ -78,13 +88,25 @@ const eventsOf = (response: Response) => {
         buffer += value;
       }
     },
+    /** Read until the stream ends; how it ended: `done`, or the error it failed with. */
+    drain: async (): Promise<string> => {
+      try {
+        for (;;) {
+          const { done } = await reader.read();
+
+          if (done) return "done";
+        }
+      } catch (error) {
+        return String(error);
+      }
+    },
     cancel: () => reader.cancel(),
   };
 };
 
-/** Open a socket to the dev server's `/hmr` through the script's endpoint, and read its `open` event. */
-const openSocket = async (stub: Awaited<ReturnType<typeof workspace>>) => {
-  const response = await stub.preview(
+/** Open a carried socket to the dev server's `/hmr` through the script's endpoint, and read its `open` event. */
+const openSocket = async (stub: Workspace) => {
+  const response = await stub.containerPreview(
     new Request(`${PAGE}/__cloudpid/ws/open?path=%2Fhmr%3Ftoken%3Dt&protocols=vite-hmr`, {
       headers: SCRIPT,
     }),
@@ -103,10 +125,10 @@ const openSocket = async (stub: Awaited<ReturnType<typeof workspace>>) => {
 };
 
 describe("a Container preview", () => {
-  it("answers from the Container's port, passing the page's Origin and cookies through but not its Host (Vite's allowedHosts), and counts as a use of the Container", async () => {
+  it("answers from the Container's port, passing the page's Origin and cookies through but not its Host (Vite's allowedHosts), and counts as a use", async () => {
     const stub = await workspace();
 
-    const response = await stub.preview(
+    const response = await stub.containerPreview(
       new Request(`${PAGE}/src/main.js?t=1`, {
         headers: { host: "5173.cloudpid.internal", origin: PAGE, cookie: "app=1" },
       }),
@@ -121,19 +143,30 @@ describe("a Container preview", () => {
         method: "GET",
         url: "http://localhost:5173/src/main.js?t=1",
         host: "localhost:5173",
+        forwardedHost: "5173.cloudpid.internal",
         origin: PAGE,
         cookie: "app=1",
         upgrade: null,
         protocols: null,
       },
     ]);
-    expect(await stub.previewUses()).toEqual({ touch: 1, begin: 0, end: 0 });
+    expect(await stub.containerPreviewUses()).toEqual({ touch: 1, begin: 0, end: 0 });
+    expect(await stub.spareUsed()).toBe(true);
+  });
+
+  it("sends a redirect the dev server made to its own address back to the Container preview's", async () => {
+    const stub = await workspace();
+
+    const response = await stub.containerPreview(new Request(`${PAGE}/login`), 5173);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("http://5173.cloudpid.internal/login/");
   });
 
   it("puts the script at the start of an HTML page only, before the page's own scripts", async () => {
     const stub = await workspace();
 
-    const html = await stub.preview(new Request(`${PAGE}/`), 5173);
+    const html = await stub.containerPreview(new Request(`${PAGE}/`), 5173);
     const text = await html.text();
 
     expect(html.headers.get("content-type")).toContain("text/html");
@@ -145,20 +178,20 @@ describe("a Container preview", () => {
     expect(text.match(/<script>/g)).toHaveLength(1);
 
     // A script that merely says `<head>` is left as the dev server sent it.
-    expect(await (await stub.preview(new Request(`${PAGE}/main.js`), 5173)).text()).toBe(
+    expect(await (await stub.containerPreview(new Request(`${PAGE}/main.js`), 5173)).text()).toBe(
       'export const tag = "<head>";',
     );
   });
 
-  it("never starts a stopped Container: it answers 503, asking nothing of the Container", async () => {
+  it("never starts a stopped Container: it answers 503, asking nothing of the Container and counting no use", async () => {
     const stub = await workspace(false);
 
-    const page = await stub.preview(new Request(`${PAGE}/`), 5173);
+    const page = await stub.containerPreview(new Request(`${PAGE}/`), 5173);
 
     expect(page.status).toBe(503);
     expect(await page.text()).toContain("does not start it");
 
-    const socket = await stub.preview(
+    const socket = await stub.containerPreview(
       new Request(`${PAGE}/__cloudpid/ws/open?path=%2F`, { headers: SCRIPT }),
       5173,
     );
@@ -167,32 +200,69 @@ describe("a Container preview", () => {
     expect(await stub.devServerState()).toEqual({ requests: [], sockets: [] });
     expect((await stub.fakeContainerState()).running).toBe(false);
     expect((await stub.liveStubs()).container).toBe(0);
-    expect(await stub.previewUses()).toEqual({ touch: 0, begin: 0, end: 0 });
+    expect(await stub.containerPreviewUses()).toEqual({ touch: 0, begin: 0, end: 0 });
+    expect(await stub.spareUsed()).toBe(false);
   });
 
   it("answers 502 for a port with nothing listening, saying to listen on 0.0.0.0", async () => {
     const stub = await workspace();
 
-    const response = await stub.preview(new Request("http://3000.cloudpid.internal/"), 3000);
+    const response = await stub.containerPreview(
+      new Request("http://3000.cloudpid.internal/"),
+      3000,
+    );
 
     expect(response.status).toBe(502);
     expect(await response.text()).toContain("listening on 0.0.0.0");
   });
 
-  it("refuses computerd's port, asking nothing of the Container", async () => {
+  it("serves the eight Container preview ports only, computerd's not among them, asking nothing of the Container", async () => {
     const stub = await workspace();
-    await stub.fakeDevServer({ ports: [8080] });
 
-    const response = await stub.preview(new Request("http://8080.cloudpid.internal/health"), 8080);
+    await stub.fakeDevServer({ ports: [8080, 9999] });
 
-    expect(response.status).toBe(403);
+    for (const port of [8080, 9999, 0, 80]) {
+      const response = await stub.containerPreview(
+        new Request(`http://${port}.cloudpid.internal/`),
+        port,
+      );
+
+      expect(response.status, String(port)).toBe(404);
+      expect(await response.text(), String(port)).toContain("has no Container preview");
+    }
+
     expect((await stub.devServerState()).requests).toEqual([]);
-    expect(await stub.previewUses()).toEqual({ touch: 0, begin: 0, end: 0 });
+    expect(await stub.containerPreviewUses()).toEqual({ touch: 0, begin: 0, end: 0 });
+    expect(await stub.spareUsed()).toBe(false);
   });
 });
 
-describe("a WebSocket of a Container preview, carried over HTTP", () => {
-  it("opens the socket to the Container from the page's origin, and carries its messages both ways", async () => {
+describe("the Workspaces Worker's Container previews entrypoint", () => {
+  // SAFETY: the test Worker's entry (`workerd.fixture.ts`) exports `WorkspaceContainerPreviews`, an RPC entrypoint.
+  const entrypoint = (
+    exports as { readonly WorkspaceContainerPreviews: WorkspaceContainerPreviews }
+  ).WorkspaceContainerPreviews;
+
+  it("hands a request to the Workspace DO it names", async () => {
+    const { name } = await namedWorkspace();
+
+    const response = await entrypoint.containerPreview(name, new Request(`${PAGE}/main.js`), 5173);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('export const tag = "<head>";');
+  });
+
+  it("reaches no object but a Workspace's: not a Build's, nor one named otherwise", async () => {
+    for (const name of ["build:environment", "test-build:environment", "ws:../x", "session"]) {
+      const response = await entrypoint.containerPreview(name, new Request(`${PAGE}/`), 5173);
+
+      expect(response.status, name).toBe(404);
+    }
+  });
+});
+
+describe("a WebSocket of a Container preview, a carried socket", () => {
+  it("opens the socket to the Container from the page's origin, missing none of its first messages, and carries its messages both ways", async () => {
     const stub = await workspace();
     const { events, id, protocol } = await openSocket(stub);
 
@@ -205,8 +275,10 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
       upgrade: "websocket",
       protocols: "vite-hmr",
     });
+    // Sent the moment the socket opened, before the Workspace DO answered the page.
+    expect(await events.next()).toEqual(CONNECTED);
 
-    const sent = await stub.preview(
+    const sent = await stub.containerPreview(
       new Request(`${PAGE}/__cloudpid/ws/send?id=${id}`, {
         method: "POST",
         headers: { ...SCRIPT, origin: PAGE },
@@ -232,15 +304,16 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
     const stub = await workspace();
     const { events } = await openSocket(stub);
 
-    expect(await stub.previewUses()).toMatchObject({ begin: 1, end: 0 });
+    expect(await stub.containerPreviewUses()).toMatchObject({ begin: 1, end: 0 });
 
     // The dev server restarts: the page is told, and the socket no longer holds off the idle stop.
     await stub.devServerClose(0);
+    expect(await events.next()).toEqual(CONNECTED);
     expect(await events.next()).toEqual({
       type: "close",
       data: { code: 1012, reason: "restarting" },
     });
-    expect(await stub.previewUses()).toMatchObject({ begin: 1, end: 1 });
+    expect(await stub.containerPreviewUses()).toMatchObject({ begin: 1, end: 1 });
   });
 
   it("closes the Container's socket when its stream goes away", async () => {
@@ -253,14 +326,33 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
     await vi.waitFor(async () =>
       expect((await stub.devServerState()).sockets[0]?.closed).not.toBeNull(),
     );
-    expect(await stub.previewUses()).toMatchObject({ begin: 1, end: 1 });
+    expect(await stub.containerPreviewUses()).toMatchObject({ begin: 1, end: 1 });
+  });
+
+  it("closes the Container's socket, and fails its stream, when the page stops reading it without letting go", async () => {
+    const stub = await workspace();
+    const { events } = await openSocket(stub);
+
+    // The page reads nothing more while the dev server keeps sending.
+    for (let at = 0; at < 8; at++) await stub.devServerSend(0, "x".repeat(128 * 1024));
+
+    await vi.waitFor(
+      async () =>
+        expect((await stub.devServerState()).sockets[0]?.closed).toEqual({
+          code: 1000,
+          reason: "The page stopped reading",
+        }),
+      { timeout: 5_000 },
+    );
+    expect(await stub.containerPreviewUses()).toMatchObject({ begin: 1, end: 1 });
+    expect(await events.drain()).not.toBe("done");
   });
 
   it("closes the socket the page closes, with its code", async () => {
     const stub = await workspace();
     const { events, id } = await openSocket(stub);
 
-    const closed = await stub.preview(
+    const closed = await stub.containerPreview(
       new Request(`${PAGE}/__cloudpid/ws/close?id=${id}`, {
         method: "POST",
         headers: SCRIPT,
@@ -270,6 +362,7 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
     );
 
     expect(closed.status).toBe(204);
+    expect(await events.next()).toEqual(CONNECTED);
     expect(await events.next()).toEqual({ type: "close", data: { code: 4000, reason: "done" } });
     await vi.waitFor(async () =>
       expect((await stub.devServerState()).sockets[0]?.closed).toEqual({
@@ -284,7 +377,7 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
     const { events, id } = await openSocket(stub);
 
     const send = (headers: Record<string, string>, socket = id) =>
-      stub.preview(
+      stub.containerPreview(
         new Request(`${PAGE}/__cloudpid/ws/send?id=${socket}`, {
           method: "POST",
           headers,
@@ -299,14 +392,15 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
     expect((await send({ ...SCRIPT, origin: "null" })).status).toBe(403);
     expect(
       (
-        await stub.preview(
+        await stub.containerPreview(
           new Request(`${PAGE}/__cloudpid/ws/send?id=${id}`, { method: "OPTIONS" }),
           5173,
         )
       ).status,
     ).toBe(403);
     expect(
-      (await stub.preview(new Request(`${PAGE}/__cloudpid/ws/open?path=%2F`), 5173)).status,
+      (await stub.containerPreview(new Request(`${PAGE}/__cloudpid/ws/open?path=%2F`), 5173))
+        .status,
     ).toBe(403);
     expect((await send(SCRIPT, "0123")).status).toBe(404);
 
@@ -317,7 +411,7 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
   it("answers 502 when nothing listens on the port, as Vite's restart ping expects", async () => {
     const stub = await workspace();
 
-    const response = await stub.preview(
+    const response = await stub.containerPreview(
       new Request("http://5174.cloudpid.internal/__cloudpid/ws/open?path=%2F&protocols=vite-ping", {
         headers: SCRIPT,
       }),
@@ -325,6 +419,6 @@ describe("a WebSocket of a Container preview, carried over HTTP", () => {
     );
 
     expect(response.status).toBe(502);
-    expect(await stub.previewUses()).toMatchObject({ begin: 0 });
+    expect(await stub.containerPreviewUses()).toMatchObject({ begin: 0 });
   });
 });

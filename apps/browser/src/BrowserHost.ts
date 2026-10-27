@@ -7,8 +7,8 @@
 // take over the object's `fetch`, `alarm`, and WebSocket handlers, and the browser needs none of them. Browser Run
 // closes an idle browser itself after `keepAliveMs`; the Session closes it sooner, when it is idle (`close`).
 //
-// Every call names the Session's Workspace, and each browser is acquired with Browser Run's `outboundByHost` routing
-// the Container previews' hosts to it (`ContainerPreviewRoutes`, ADR-0023).
+// Each browser is acquired with Browser Run's `outboundByHost` routing the Container previews' hosts to the Session's
+// Workspace, which the calls that can acquire one name last (`ContainerPreviewRoutes`, ADR-0023).
 import {
   BROWSER_KEEP_ALIVE_MS,
   type BrowserHostRpc,
@@ -21,7 +21,7 @@ import {
   type OwnerTabLinks,
   type OwnerTabListing,
   type OwnerTabPageRead,
-  type PreviewWorkspace,
+  type ContainerPreviewWorkspace,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -36,7 +36,7 @@ import { openCdpSocket } from "./cdp-socket.ts";
 import { HandoffHost } from "./handoff.ts";
 import { confinedToOwnerTabs, OwnerTabCalls } from "./owner-tab-agent.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
-import { type ContainerPreviewProps, ContainerPreviewRoutes } from "./preview.ts";
+import { type ContainerPreviewProps, ContainerPreviewRoutes } from "./container-preview.ts";
 import {
   adoptTab,
   conversationScope,
@@ -92,19 +92,19 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   readonly #ownerTabs: OwnerTabs;
   readonly #ownerTabCalls: OwnerTabCalls;
   /** The Container previews' routes every browser is acquired with, to the Workspace the latest call named. */
-  readonly #previews: ContainerPreviewRoutes;
+  readonly #containerPreviews: ContainerPreviewRoutes;
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
     this.#store = new DurableBrowserSessionStore(ctx.storage);
-    this.#previews = new ContainerPreviewRoutes((workspace) =>
+    this.#containerPreviews = new ContainerPreviewRoutes((workspace) =>
       // SAFETY: the browser Worker's entry (`worker.ts`) exports `ContainerPreviews`; `ctx.exports` is untyped here.
       (ctx.exports as BrowserExports).ContainerPreviews({ props: { workspace } }),
     );
     // Every browser acquired, wherever from (a run, an Owner tab, one replacing a browser that was lost), goes through
     // this provider, so each carries the routes (ADR-0023).
     this.#browser = new Browser({
-      provider: browserRun(this.#previews.binding(env.BROWSER), {
+      provider: browserRun(this.#containerPreviews.binding(env.BROWSER), {
         keepAliveMs: BROWSER_KEEP_ALIVE_MS,
       }),
       store: this.#store,
@@ -175,9 +175,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   }
 
   /** The tool's description: how the model drives the browser. */
-  describe(workspace: PreviewWorkspace): Promise<string> {
-    this.#previews.given(workspace);
-
+  describe(): Promise<string> {
     return Promise.resolve(this.#tool.description);
   }
 
@@ -186,12 +184,12 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * result is the tool result `browserTool` makes: its output as text, a screenshot as an image part, and its details.
    */
   run(
-    workspace: PreviewWorkspace,
     code: string,
     conversationId: number,
     ownerTabId?: string,
+    workspace?: ContainerPreviewWorkspace,
   ): Promise<BrowserRun> {
-    this.#previews.given(workspace);
+    this.#containerPreviews.given(workspace);
 
     if (ownerTabId === undefined) {
       return this.#runIn(code, conversationId, conversationScope(conversationId));
@@ -210,9 +208,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   }
 
   /** Hand conversation `input.conversationId`'s tab to the owner (`Cloudflare.handoff`), noting its viewport. */
-  startHandoff(workspace: PreviewWorkspace, input: HandoffStartInput): Promise<HandoffStarted> {
-    this.#previews.given(workspace);
-
+  startHandoff(input: HandoffStartInput): Promise<HandoffStarted> {
     return this.#handoffs.start(input);
   }
 
@@ -220,9 +216,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * Mint 60-second Live View links to handoff `requestId`'s tab and the windows it opened. They are for the owner alone
    * and go only to the Session DO, which answers the one client that asked; none is kept.
    */
-  liveView(workspace: PreviewWorkspace, requestId: string): Promise<LiveViewLinks> {
-    this.#previews.given(workspace);
-
+  liveView(requestId: string): Promise<LiveViewLinks> {
     return this.#handoffs.liveView(requestId);
   }
 
@@ -231,8 +225,8 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * (the Pane opening), start the browser when none runs and open an Owner tab when the owner has none, saying so. They
    * go only to the Session DO, which answers the one client that asked; none is kept.
    */
-  ownerTabView(workspace: PreviewWorkspace, open: boolean): Promise<OwnerTabLinks> {
-    this.#previews.given(workspace);
+  ownerTabView(open: boolean, workspace?: ContainerPreviewWorkspace): Promise<OwnerTabLinks> {
+    this.#containerPreviews.given(workspace);
 
     return this.#ownerTabs.view(open);
   }
@@ -241,30 +235,24 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * The Owner tabs by title and the one shown, as the browser has them now. A link a page opened in a new tab joins the
    * list; a pop-up stays a window of its tab. Starts nothing: with no browser running the list is empty.
    */
-  ownerTabs(workspace: PreviewWorkspace): Promise<OwnerTabListing> {
-    this.#previews.given(workspace);
-
+  ownerTabs(): Promise<OwnerTabListing> {
     return this.#ownerTabs.tabs();
   }
 
   /** Open a blank Owner tab and show it, starting the browser when none runs. */
-  openOwnerTab(workspace: PreviewWorkspace): Promise<OwnerTabListing> {
-    this.#previews.given(workspace);
+  openOwnerTab(workspace?: ContainerPreviewWorkspace): Promise<OwnerTabListing> {
+    this.#containerPreviews.given(workspace);
 
     return this.#ownerTabs.open();
   }
 
   /** Show Owner tab `id`, on every device (the one shown is this object's). */
-  showOwnerTab(workspace: PreviewWorkspace, id: string): Promise<OwnerTabListing> {
-    this.#previews.given(workspace);
-
+  showOwnerTab(id: string): Promise<OwnerTabListing> {
     return this.#ownerTabs.show(id);
   }
 
   /** Close Owner tab `id` and the windows it opened; the conversations' tabs are never touched. */
-  closeOwnerTab(workspace: PreviewWorkspace, id: string): Promise<OwnerTabListing> {
-    this.#previews.given(workspace);
-
+  closeOwnerTab(id: string): Promise<OwnerTabListing> {
     return this.#ownerTabs.close(id);
   }
 
@@ -272,23 +260,12 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * Read the Owner tabs `ids` for a message they are attached to: URL, title and selected text, all of it the page's to
    * say. Fails with `OWNER_TAB_GONE` when one is not still there.
    */
-  readOwnerTabPages(
-    workspace: PreviewWorkspace,
-    ids: ReadonlyArray<string>,
-  ): Promise<OwnerTabPageRead[]> {
-    this.#previews.given(workspace);
-
+  readOwnerTabPages(ids: ReadonlyArray<string>): Promise<OwnerTabPageRead[]> {
     return this.#ownerTabs.read(ids);
   }
 
   /** Wait up to `maxMs` for the handoff `requestId` to end, and say where it stands. */
-  waitHandoff(
-    workspace: PreviewWorkspace,
-    requestId: string,
-    maxMs: number,
-  ): Promise<HandoffStatus> {
-    this.#previews.given(workspace);
-
+  waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus> {
     return this.#handoffs.wait(requestId, maxMs);
   }
 
@@ -296,9 +273,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * Finish handoff `requestId`, ending it in Browser Run if the owner has not, give the agent its viewport back, and
    * forget it; says the origins of the windows the tab left open.
    */
-  endHandoff(workspace: PreviewWorkspace, requestId: string): Promise<HandoffEnded> {
-    this.#previews.given(workspace);
-
+  endHandoff(requestId: string): Promise<HandoffEnded> {
     return this.#handoffs.end(requestId);
   }
 
@@ -307,9 +282,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * addresses are noted first (for as long as `RECORD_BEFORE_CLOSE_MS`, so a slow browser does not hold the close up), so
    * that the browser that replaces this one reopens them where the owner left them.
    */
-  async close(workspace: PreviewWorkspace): Promise<boolean> {
-    this.#previews.given(workspace);
-
+  async close(): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     try {

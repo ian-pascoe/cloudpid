@@ -1,9 +1,11 @@
 // The Workspaces Worker's entry: it hosts the Workspace DO, `WorkspaceServiceProxy`, through which the Worker Shell's
 // Dynamic Worker reaches the DO (as `ctx.exports.WorkspaceServiceProxy`), `WorkspaceProxy`, which carries the
 // Container's egress back to the DO (`ctx.exports.WorkspaceProxy`), and `ContainerExitReports`, which logs what the
-// Container's supervisor reports when computerd stops on its own (`ctx.exports.ContainerExitReports`). It is a plain
-// (async) Worker because alchemy's Effect Workers export only their Effect-defined classes.
+// Container's supervisor reports when computerd stops on its own (`ctx.exports.ContainerExitReports`), and
+// `WorkspaceContainerPreviews`, which the browser Worker binds to reach a Workspace's Container preview and nothing else
+// of the DO. It is a plain (async) Worker because alchemy's Effect Workers export only their Effect-defined classes.
 // @effect-diagnostics globalConsole:off asyncFunction:off
+import { isContainerPreviewWorkspace } from "@cloudpid/extensions/browser/contract";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { WORKSPACE_BINDING } from "./binding.ts";
 import { type ExitReportProps, exitReport } from "./exit-report.ts";
@@ -40,6 +42,21 @@ export class ContainerExitReports extends WorkerEntrypoint<
       },
       log: (report) => console.warn(report),
     });
+  }
+}
+
+/**
+ * A Workspace's Container preview (ADR-0023), as the browser Worker reaches it through a service binding: this one call,
+ * not the Workspace DO's other methods, and only for a Workspace's object (`ws:<id>`), never a Build's.
+ */
+export class WorkspaceContainerPreviews extends WorkerEntrypoint<{
+  readonly [WORKSPACE_BINDING]: DurableObjectNamespace<Workspace>;
+}> {
+  /** Answer `request`, a page's in the Session's browser, from Workspace DO `workspace`'s Container `port`. */
+  async containerPreview(workspace: string, request: Request, port: number): Promise<Response> {
+    if (!isContainerPreviewWorkspace(workspace)) return new Response("Not found", { status: 404 });
+
+    return this.env[WORKSPACE_BINDING].getByName(workspace).containerPreview(request, port);
   }
 }
 

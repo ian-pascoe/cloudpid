@@ -437,7 +437,7 @@ export const SessionLive = Session.make(
         );
 
         // One browser host object per Session, in the browser Worker, which keeps the Session's one Browser Run browser.
-        // Each call names the Session's Workspace, which the browser's Container previews reach (ADR-0023).
+        // The calls that can acquire a browser name the Session's Workspace, which its Container previews reach (ADR-0023).
         const browser = remoteBrowserHost(
           // SAFETY: the Server Worker binds the browser host DO namespace as `BROWSER_HOST` (`worker.ts`), a raw namespace.
           worker[BROWSER_HOST_BINDING] as BrowserHostNamespace,
@@ -446,7 +446,7 @@ export const SessionLive = Session.make(
           async () => {
             const { workspace: id, object } = await placement();
 
-            return id === null ? null : object;
+            return id === null ? undefined : object;
           },
         );
 

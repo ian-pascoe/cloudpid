@@ -8,7 +8,7 @@ export { CodemodeRuntime } from "@cloudflare/codemode";
 
 export { BrowserHost } from "./BrowserHost.ts";
 
-export { ContainerPreviews } from "./preview.ts";
+export { ContainerPreviews } from "./container-preview.ts";
 
 /** The browser host is reached over RPC only. */
 export default {

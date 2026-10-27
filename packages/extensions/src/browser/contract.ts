@@ -3,6 +3,7 @@
 // `@cloudpid/protocol` only types and its import-free `live-view` module.
 import type { LiveViewLinks, OwnerTabLinks, OwnerTabListing } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
+import * as Predicate from "effect/Predicate";
 
 /**
  * How long Browser Run keeps an idle browser (`keep_alive`): it closes the browser itself once no CDP command has come
@@ -39,11 +40,21 @@ export const CONTAINER_PREVIEW_DOMAIN = "cloudpid.internal";
 export const containerPreviewHost = (port: number): string => `${port}.${CONTAINER_PREVIEW_DOMAIN}`;
 
 /**
- * The Session's Workspace as every call to the browser host names it, so the host can route the Container previews of a
- * browser it acquires there: its Workspace DO's name (`ws:<id>`), or null when the Session has none (or it could not be
- * told). The host keeps the latest it was given, in memory only.
+ * The Session's Workspace as a call to the browser host that can acquire a browser names it, last, so the host can route
+ * the Container previews of that browser there: its Workspace DO's name (`ws:<id>`). Left out when the Session has none
+ * (or it could not be told), and by a Session from before Container previews. The host keeps the latest it was given,
+ * in memory only.
  */
-export type PreviewWorkspace = string | null;
+export type ContainerPreviewWorkspace = string;
+
+const CONTAINER_PREVIEW_WORKSPACE = /^ws:[\w-]+$/;
+
+/**
+ * Whether `value` names a Workspace DO a Container preview may go to: `ws:<id>`, nothing else. A value of another shape
+ * (an argument of a call from a Session whose arguments are laid out otherwise, a Build's object) is never one.
+ */
+export const isContainerPreviewWorkspace = (value: unknown): value is ContainerPreviewWorkspace =>
+  Predicate.isString(value) && CONTAINER_PREVIEW_WORKSPACE.test(value);
 
 /** How a host call asks to start a Browser Handoff in a conversation's tab. */
 export type HandoffStartInput = {
@@ -158,71 +169,66 @@ export type BrowserRun = {
 };
 
 /**
- * The browser host Durable Object's RPC methods, as the Session calls them. Each takes the Session's Workspace first
- * (`PreviewWorkspace`): a browser the call acquires routes its Container previews there.
+ * The browser host Durable Object's RPC methods, as the Session calls them. The ones that can acquire a browser (`run`,
+ * `ownerTabView`, `openOwnerTab`) take the Session's Workspace last, optional (`ContainerPreviewWorkspace`): a browser
+ * the call acquires routes its Container previews there. A method only ever gains a trailing optional argument, so a
+ * Session and a host deployed apart still agree on the rest.
  */
 export type BrowserHostRpc = {
   /** The `browser` tool's description. */
-  describe(workspace: PreviewWorkspace): Promise<string>;
+  describe(): Promise<string>;
   /**
    * Run `code` in conversation `conversationId`'s tab or, given `ownerTabId`, in that Owner tab (its own scope), leaving
    * the conversation's tab and the Owner tab's size as they are. An Owner tab that is not open when the call's turn
    * comes, or that closes during the call, makes the result an error that says so.
    */
   run(
-    workspace: PreviewWorkspace,
     code: string,
     conversationId: number,
     ownerTabId?: string,
+    workspace?: ContainerPreviewWorkspace,
   ): Promise<BrowserRun>;
   /** Close the browser; false when there was none. */
-  close(workspace: PreviewWorkspace): Promise<boolean>;
+  close(): Promise<boolean>;
   /**
    * Hand the tab of conversation `input.conversationId` to the owner: note its viewport and send `Cloudflare.handoff`.
    * Idempotent by `requestId`: a handoff already started under it answers as it did. Fails when the conversation has no
    * tab.
    */
-  startHandoff(workspace: PreviewWorkspace, input: HandoffStartInput): Promise<HandoffStarted>;
+  startHandoff(input: HandoffStartInput): Promise<HandoffStarted>;
   /**
    * Mint fresh Live View links (60 s) to handoff `requestId`'s tab and the windows it opened, for the owner's client
    * that asked. Fails with `LIVE_VIEW_HANDOFF_OVER` once the handoff has ended.
    */
-  liveView(workspace: PreviewWorkspace, requestId: string): Promise<LiveViewLinks>;
+  liveView(requestId: string): Promise<LiveViewLinks>;
   /**
    * Mint fresh Live View links (60 s) to the Owner tab the Browser Pane shows and the windows it opened, for the owner's
    * client that asked. With `open` (the Pane opening), the browser is started when none runs and an Owner tab opened and
    * shown when the owner has none, and the answer says whether it opened one and whether the one shown before is gone.
    * Fails with `OWNER_TAB_GONE` when the tab or its browser is gone and `open` is false.
    */
-  ownerTabView(workspace: PreviewWorkspace, open: boolean): Promise<OwnerTabLinks>;
+  ownerTabView(open: boolean, workspace?: ContainerPreviewWorkspace): Promise<OwnerTabLinks>;
   /**
    * The Owner tabs by title and the one shown (`owner_tab_list`'s answer), as the browser has them now; a page an Owner
    * tab opened with a link joins the list. Starts nothing: with no browser running the list is empty.
    */
-  ownerTabs(workspace: PreviewWorkspace): Promise<OwnerTabListing>;
+  ownerTabs(): Promise<OwnerTabListing>;
   /** Open a blank Owner tab and show it, starting the browser when none runs; answers the list after it. */
-  openOwnerTab(workspace: PreviewWorkspace): Promise<OwnerTabListing>;
+  openOwnerTab(workspace?: ContainerPreviewWorkspace): Promise<OwnerTabListing>;
   /** Show Owner tab `id`; answers the list after it. Fails with `OWNER_TAB_GONE` when there is no such tab. */
-  showOwnerTab(workspace: PreviewWorkspace, id: string): Promise<OwnerTabListing>;
+  showOwnerTab(id: string): Promise<OwnerTabListing>;
   /** Close Owner tab `id` and the windows it opened; answers the list after it. A tab already gone is not an error. */
-  closeOwnerTab(workspace: PreviewWorkspace, id: string): Promise<OwnerTabListing>;
+  closeOwnerTab(id: string): Promise<OwnerTabListing>;
   /**
    * Read the Owner tabs `ids` for a message they are attached to: URL, title and selected text, in the order asked.
    * Fails with `OWNER_TAB_GONE` when one is not still there, reading none.
    */
-  readOwnerTabPages(
-    workspace: PreviewWorkspace,
-    ids: ReadonlyArray<string>,
-  ): Promise<OwnerTabPageRead[]>;
+  readOwnerTabPages(ids: ReadonlyArray<string>): Promise<OwnerTabPageRead[]>;
   /** Wait up to `maxMs` for handoff `requestId` to complete, and say where it stands. */
-  waitHandoff(
-    workspace: PreviewWorkspace,
-    requestId: string,
-    maxMs: number,
-  ): Promise<HandoffStatus>;
+  waitHandoff(requestId: string, maxMs: number): Promise<HandoffStatus>;
   /**
    * Finish handoff `requestId`: if the owner has not, end it in Browser Run; give the agent its viewport back; then
    * forget it. Says the origins of the tab's windows that are still open.
    */
-  endHandoff(workspace: PreviewWorkspace, requestId: string): Promise<HandoffEnded>;
+  endHandoff(requestId: string): Promise<HandoffEnded>;
 };

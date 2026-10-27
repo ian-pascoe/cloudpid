@@ -2,18 +2,19 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 /**
- * A stand-in for the Workspaces Worker's Workspace DO, which the Container previews' entrypoint hands requests to: its
- * `preview` answers with what it was asked, and the object named `ws:unreachable` throws.
+ * A stand-in for the Workspaces Worker's Container previews entrypoint (`WorkspaceContainerPreviews`), which the browser
+ * Worker's `ContainerPreviews` hands requests to: its `containerPreview` answers with what it was asked, and throws for
+ * the Workspace `ws:unreachable`.
  */
 const WORKSPACES_STAND_IN = `
-import { DurableObject } from "cloudflare:workers";
+import { WorkerEntrypoint } from "cloudflare:workers";
 
-export class Workspace extends DurableObject {
-  async preview(request, port) {
-    if (this.ctx.id.name === "ws:unreachable") throw new Error("overloaded");
+export class WorkspaceContainerPreviews extends WorkerEntrypoint {
+  async containerPreview(workspace, request, port) {
+    if (workspace === "ws:unreachable") throw new Error("overloaded");
 
     return Response.json({
-      workspace: this.ctx.id.name,
+      workspace,
       port,
       method: request.method,
       url: request.url,
@@ -38,18 +39,19 @@ export default defineConfig({
           BROWSER_HOST: { className: "BrowserHost", useSQLite: true },
           // Facet classes are exposed through `ctx.exports` only when the config knows them.
           CODEMODE_RUNTIME: { className: "CodemodeRuntime", useSQLite: true },
-          WORKSPACES: { className: "Workspace", scriptName: "workspaces" },
         },
         workerLoaders: { LOADER: {} },
-        // Browser Run is not simulated: the binding answers every request that reaches it with a failure.
-        serviceBindings: { BROWSER: () => new Response("no browser in tests", { status: 503 }) },
+        serviceBindings: {
+          // Browser Run is not simulated: the binding answers every request that reaches it with a failure.
+          BROWSER: () => new Response("no browser in tests", { status: 503 }),
+          CONTAINER_PREVIEWS: { name: "workspaces", entrypoint: "WorkspaceContainerPreviews" },
+        },
         workers: [
           {
             name: "workspaces",
             modules: true,
             script: WORKSPACES_STAND_IN,
             compatibilityDate: "2026-08-31",
-            durableObjects: { WORKSPACES: { className: "Workspace", useSQLite: true } },
           },
         ],
       },

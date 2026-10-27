@@ -17,7 +17,7 @@ const hookTimeout = testTimeout;
  */
 const workspaceOnly = [
   "src/workspace/env.workerd.test.ts",
-  "src/workspace/preview.workerd.test.ts",
+  "src/workspace/container-preview.workerd.test.ts",
   "src/workspace/changes*.workerd.test.ts",
   "src/workspace/comparison*.workerd.test.ts",
   "src/workspace/runs*.workerd.test.ts",

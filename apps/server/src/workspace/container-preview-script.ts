@@ -1,33 +1,34 @@
 // The script the Workspace DO puts at the start of every HTML page of a Container preview (ADR-0023, the spike's
 // `WS_HTTP_SHIM`, #244): Browser Run's outbound Workers route only HTTP, so a WebSocket to the page's own host (Vite's
-// HMR, its restart ping) is carried over plain HTTP instead. `GET /__cloudpid/ws/open` is a stream of server-sent events
-// (`open` with the socket's ID, each message, `close`), read with `fetch` so it can carry a header; `send` and `close`
-// are POSTs, sent in order. The Workspace DO holds the real socket to the Container (`preview.ts`).
+// HMR, its restart ping) is a carried socket, carried over plain HTTP instead. `GET /__cloudpid/ws/open` is a stream of
+// server-sent events (`open` with the socket's ID, each message, `close`), read with `fetch` so it can carry a header;
+// `send` and `close` are POSTs, sent in order. The Workspace DO holds the real socket to the Container
+// (`container-preview.ts`).
 //
 // Every request carries `x-cloudpid-preview`, a header a page of another origin cannot send without a CORS preflight,
 // which the Workspace DO never grants, and a socket's ID is the Workspace DO's, unguessable, told only in its stream.
 // The script also hides `SharedWorker`: Vite pings for a restarted server from one when it can, where this does not
 // reach. A WebSocket to another host is the browser's own.
 
-/** Where the tunnelled sockets' endpoints are, on every Container preview's host. */
-export const PREVIEW_SOCKET_PATH = "/__cloudpid/ws/";
+/** Where the carried sockets' endpoints are, on every Container preview's host. */
+export const CONTAINER_PREVIEW_SOCKET_PATH = "/__cloudpid/ws/";
 
 /** The header every request of the script carries, and the endpoints refuse a request without. */
-export const PREVIEW_HEADER = "x-cloudpid-preview";
+export const CONTAINER_PREVIEW_HEADER = "x-cloudpid-preview";
 
 /** The script, as it goes in a `<script>` element: no `</script>` in it. */
-export const PREVIEW_SHIM = `(() => {
-  if (window.__cloudpidPreview) return;
-  window.__cloudpidPreview = true;
+export const CONTAINER_PREVIEW_SCRIPT = `(() => {
+  if (window.__cloudpidContainerPreview) return;
+  window.__cloudpidContainerPreview = true;
   try {
     Object.defineProperty(window, "SharedWorker", { value: undefined, configurable: true, writable: true });
   } catch {}
   const NativeWebSocket = window.WebSocket;
   const nativeFetch = window.fetch.bind(window);
-  const BASE = "${PREVIEW_SOCKET_PATH}";
-  const HEADERS = { "${PREVIEW_HEADER}": "1" };
+  const BASE = "${CONTAINER_PREVIEW_SOCKET_PATH}";
+  const HEADERS = { "${CONTAINER_PREVIEW_HEADER}": "1" };
   const fromBase64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
-  class PreviewSocket extends EventTarget {
+  class CarriedSocket extends EventTarget {
     constructor(url, protocols) {
       super();
       this.url = url;
@@ -131,12 +132,12 @@ export const PREVIEW_SHIM = `(() => {
       this.dispatchEvent(new CloseEvent("close", { code, reason, wasClean: code === 1000 }));
     }
   }
-  Object.assign(PreviewSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
-  Object.assign(PreviewSocket.prototype, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+  Object.assign(CarriedSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+  Object.assign(CarriedSocket.prototype, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
   const WebSocket = function WebSocket(url, protocols) {
     const parsed = new URL(url, location.href);
     if (parsed.host === location.host && ["ws:", "wss:", "http:", "https:"].includes(parsed.protocol)) {
-      return new PreviewSocket(parsed.href.replace(/^http/, "ws"), protocols);
+      return new CarriedSocket(parsed.href.replace(/^http/, "ws"), protocols);
     }
     return protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
   };
