@@ -18,3 +18,26 @@ export const effectSection = <E, R>(
 
     return section(key, (input, context) => invoke(render(input), context).then(settle), options);
   });
+
+/**
+ * A section `key` read once per context, then shown as it was: `read` renders the text, which is the whole section
+ * (nothing wraps it: `PromptInput.shown` holds the text as the request carried it). While `shown` holds a text for the
+ * key the same text is returned and `read` is not run, so the section never reaches the provider as a patch to the
+ * system prompt, the head of its cache prefix. A Handoff starts a context with nothing shown, and the next request
+ * reads again. `read` giving `undefined` omits the section and so freezes nothing; a failure is thrown, as
+ * `effectSection`'s is, which keeps nothing frozen either. An empty string is a text: it freezes "nothing to show".
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- as `effectSection`.
+export const frozenSection = <E, R>(
+  key: string,
+  read: (input: PromptInput) => Effect.Effect<string | undefined, E, R>,
+): Effect.Effect<PromptSection, never, R> =>
+  effectSection(
+    key,
+    (input) => {
+      const shown = input.shown[key];
+
+      return shown === undefined ? read(input) : Effect.succeed(shown);
+    },
+    { tag: false },
+  );

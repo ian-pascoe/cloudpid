@@ -6,8 +6,10 @@
 // nearest first, so a repo's own skills come before the Workspace's, whose `.agents/skills` holds the bundled skills
 // (`skills/`, mounted read-only). Discovery (`skills-discovery.ts`) reads only files, so it never starts the Container:
 // an environment that discovers skills itself (`SkillSource`: the Workspace's, which does it next to the files) is asked
-// once, and any other is walked through its file operations.
-import { effectSection } from "@cloudpid/effect-durable";
+// once, and any other is walked through its file operations. The section is read once per Context Window and then
+// shown as it was, as `project_context` is (`frozenSection`): a Skill can change during a Session, and a changed
+// section would rewrite the system prompt, the head of the provider's cache prefix.
+import { frozenSection } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, type PromptInput } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -103,35 +105,26 @@ const skillsOf = (
     ? attempt("Cannot discover skills", () => env.discoverSkills(BACKGROUND_CONTEXT))
     : discoverSkills(env);
 
-/** The section's key; also the tag that wraps its text. */
 const SECTION_KEY = "skills";
 
 /**
- * The section: the Skills found when the context first shows it, then shown as they were (`PromptInput.shown`, as the
+ * The section: the Skills found when the context first shows it, then shown as they were (`frozenSection`, as the
  * `project_context` section is). A Skill can change during a Session (a Skill saved or installed), and pi-durable sends
  * a changed section as a patch, which a provider without mid-conversation system messages folds into the system prompt,
  * the head of the cache prefix. A Handoff starts a context without it, so the next request lists the Skills again.
- * When the first read finds none, the section is the empty string, not absent: a section that is absent cannot be told
- * from one never read, so a Skill saved later would be added to the prompt as a patch. An empty section adds nothing
- * to the prompt's text (pi-ai leaves empty parts out of it).
+ * A first read that finds none is kept as an empty section, not an absent one (absent cannot be told from never read,
+ * so a Skill saved later would be added as a patch); it adds nothing to the prompt's text, as pi-ai leaves empty parts
+ * out. A read that fails, or a request without an environment, keeps nothing: the next request tries again.
  * Skill expansion at submit does not read this list: it asks the Workspace for its Skills when a message is admitted.
  */
-const Section = effectSection(
-  SECTION_KEY,
-  (input) => {
-    const shown = input.shown[SECTION_KEY];
+const Section = frozenSection(SECTION_KEY, (input) =>
+  input.env === undefined
+    ? Effect.undefined
+    : Effect.map(skillsOf(input.env), (skills) => {
+        const text = formatSkills(skills, readToolOf(input));
 
-    if (shown !== undefined) return Effect.succeed(shown);
-
-    return input.env === undefined
-      ? Effect.undefined
-      : Effect.map(skillsOf(input.env), (skills) => {
-          const text = formatSkills(skills, readToolOf(input));
-
-          return text === undefined ? "" : `<${SECTION_KEY}>\n${text}\n</${SECTION_KEY}>`;
-        });
-  },
-  { tag: false },
+        return text === undefined ? "" : `<${SECTION_KEY}>\n${text}\n</${SECTION_KEY}>`;
+      }),
 );
 
 /** The `skills` extension: the `skills` section, and no tools (the agent reads skills with its `read` tool). */
