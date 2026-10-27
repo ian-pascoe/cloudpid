@@ -52,7 +52,7 @@ import {
   withFlags,
 } from "./changes.ts";
 import { MAX_PACK_BYTES, packfileBytes } from "./git.ts";
-import { type GithubPull, GithubPulls, type GitHubRepo } from "./github-pulls.ts";
+import { type GithubPull, GithubPulls, type GitHubRepo, githubRepoOf } from "./github-pulls.ts";
 
 export type { GitHubRepo };
 
@@ -152,18 +152,6 @@ export type ComparisonFileRequest = {
   readonly head: string;
   readonly path: string;
   readonly oldPath?: string;
-};
-
-const GITHUB_URL =
-  /^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?|git@)github\.com[:/]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/i;
-
-/** The GitHub repo a remote URL names, or undefined for another host. */
-export const githubRepoOf = (url: string): GitHubRepo | undefined => {
-  const match = GITHUB_URL.exec(url.trim());
-
-  return match?.[1] === undefined || match[2] === undefined
-    ? undefined
-    : { owner: match[1], name: match[2] };
 };
 
 /**

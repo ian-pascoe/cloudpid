@@ -47,6 +47,7 @@ import type { WorkspaceLookups } from "../session/lookups.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
+import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
 import { EVERY_ENVIRONMENT_DOCUMENT, workspaceOverridesOf } from "./every-environment.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
@@ -458,6 +459,31 @@ const fakeRegistries = () => {
         return { paths: [`${query}.ts`] };
       }),
   };
+
+  /** The GitHub repos the draft's Start from menu asked for, as `owner/name`. */
+  const branchesAsked: string[] = [];
+
+  /** The draft's Start from menu over a GitHub that lists `main` and `feat/x` of every repo but `o/hidden`. */
+  const branches = draftBranches({
+    branches: (repo) => {
+      branchesAsked.push(`${repo.owner}/${repo.name}`);
+
+      return Promise.resolve(
+        repo.name === "hidden"
+          ? { status: "error", kind: "refused", message: "GitHub refused the token" }
+          : {
+              status: "ok",
+              value: {
+                defaultBranch: "main",
+                branches: [
+                  { name: "feat/x", committedAt: 2_000 },
+                  { name: "main", committedAt: 1_000 },
+                ],
+              },
+            },
+      );
+    },
+  });
 
   const registry = {
     createSession: ({ title, workspace, origin }) =>
@@ -1174,6 +1200,8 @@ const fakeRegistries = () => {
     },
     lookups,
     lookupsAsked,
+    branches,
+    branchesAsked,
     registries,
     /** The Registry's methods, as the Session DO calls them. */
     registry,
@@ -1216,6 +1244,7 @@ const worker =
       spares: fake.spareUpkeep,
       builds: fake.buildUpkeep,
       lookups: fake.lookups,
+      branches: fake.branches,
       background: fake.background,
     }).pipe(
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
@@ -2232,6 +2261,56 @@ it("refuses a draft lookup in an unknown Environment or Workspace, or one of ano
     `Workspace "${session.workspace}" is in environment "${DEFAULT_ENVIRONMENT}"`,
   );
   expect(fake.lookupsAsked).toEqual([]);
+});
+
+it("lists the draft's branches of each of the Environment's Repos, in its order, with why one is not listed", async () => {
+  const fake = fakeRegistries();
+  const environment = await makeEnvironment(fake, "Cloudpid");
+
+  await call(fake, (registry) => registry.addRepo({ environment, source: "ian-pascoe/cloudpid" }));
+  await call(fake, (registry) => registry.addRepo({ environment, source: "o/hidden" }));
+
+  await call(fake, (registry) =>
+    registry.addRepo({ environment, source: "https://gitlab.com/o/elsewhere.git" }),
+  );
+
+  fake.calls.length = 0;
+
+  const listed = await call(fake, (registry) => registry.draftBranches({ environment }));
+
+  expect(listed).toEqual([
+    {
+      repo: "cloudpid",
+      status: "ok",
+      defaultBranch: "main",
+      branches: [
+        { name: "feat/x", committedAt: 2_000 },
+        { name: "main", committedAt: 1_000 },
+      ],
+    },
+    { repo: "hidden", status: "error", kind: "refused", message: "GitHub refused the token" },
+    { repo: "elsewhere", status: "error", kind: "no_github", message: NO_GITHUB_MESSAGE },
+  ]);
+  // GitHub is asked for its own repos only, and no Workspace is woken.
+  expect(fake.branchesAsked).toEqual(["ian-pascoe/cloudpid", "o/hidden"]);
+  expect(lifecycle(fake)).toEqual([]);
+  expect(fake.lookupsAsked).toEqual([]);
+});
+
+it("lists no branches for an Environment with no Repos, and refuses an unknown one", async () => {
+  const fake = fakeRegistries();
+
+  const none = await call(fake, (registry) =>
+    registry.draftBranches({ environment: DEFAULT_ENVIRONMENT }),
+  );
+
+  const unknown = await call(fake, (registry) =>
+    Effect.flip(registry.draftBranches({ environment: "0000beef" })),
+  );
+
+  expect(none).toEqual([]);
+  expect(unknown.message).toBe('Environment "0000beef" does not exist');
+  expect(fake.branchesAsked).toEqual([]);
 });
 
 it("fails a Container restart the Workspace could not do with its message", async () => {

@@ -5,6 +5,12 @@ import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest
 const workerd = "src/**/*.workerd.test.ts";
 
 /**
+ * A file's first Durable Object call starts its objects cold, and a `beforeAll` that makes it (`files.workerd.test.ts`'s
+ * writes) took over Vitest's 10 s default on CI's runners, though not stuck: hooks get the tests' timeout.
+ */
+const hookTimeout = testTimeout;
+
+/**
  * Tests of the Workspace DO alone, in a test Worker that hosts it and the Worker Shell's loader: the environment
  * conformance cases, the Changes, the Comparisons and the Run copies (over repos real git made, `changes.setup.ts` and
  * `comparison.setup.ts`).
@@ -45,6 +51,7 @@ export default defineConfig({
         test: {
           name: "workerd",
           testTimeout,
+          hookTimeout,
           include: [workerd],
           exclude: [...configDefaults.exclude, "src/workspace/**"],
         },
@@ -69,6 +76,7 @@ export default defineConfig({
           name: "workerd-workspace",
           include: workspaceOnly,
           testTimeout,
+          hookTimeout,
           // Real git makes the repos the Changes and Comparison tests read, in Node (`inject("changesRepos")`,
           // `inject("comparisonRepos")`).
           globalSetup: ["./src/workspace/changes.setup.ts", "./src/workspace/comparison.setup.ts"],
@@ -98,6 +106,7 @@ export default defineConfig({
         test: {
           name: "workerd-session",
           testTimeout,
+          hookTimeout,
           include: [onWorkspace],
           exclude: [...configDefaults.exclude, ...workspaceOnly],
         },

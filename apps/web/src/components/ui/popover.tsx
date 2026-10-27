@@ -10,8 +10,9 @@ const GAP = 4;
 export type Align = "start" | "center" | "end";
 
 /**
- * Place `panel` under `trigger`, lined up with it by `align`, or above it when there is no room below. The panel is a
- * popover in the top layer, so it is positioned against the viewport.
+ * Place `panel` under `trigger`, lined up with it by `align`, or above it when there is no room below. With room on
+ * neither side, it is moved up until its bottom is on screen, over the button if need be. The panel is a popover in the
+ * top layer, so it is positioned against the viewport.
  */
 export const placePopover = (panel: HTMLElement, trigger: HTMLElement, align: Align) => {
   const anchor = trigger.getBoundingClientRect();
@@ -20,9 +21,11 @@ export const placePopover = (panel: HTMLElement, trigger: HTMLElement, align: Al
   const below = anchor.bottom + GAP;
 
   const top =
-    below + height > window.innerHeight - GAP && anchor.top - GAP - height >= GAP
-      ? anchor.top - GAP - height
-      : below;
+    below + height <= window.innerHeight - GAP
+      ? below
+      : anchor.top - GAP - height >= GAP
+        ? anchor.top - GAP - height
+        : Math.max(GAP, window.innerHeight - GAP - height);
 
   const wanted = {
     start: anchor.left,
@@ -117,6 +120,7 @@ export const Popover = ({
   children,
   className,
   panelClassName,
+  onToggle,
 }: {
   /** What the panel is, to assistive technology, such as "Branch". */
   label: string;
@@ -129,10 +133,32 @@ export const Popover = ({
   children: ReactNode;
   className?: string | undefined;
   panelClassName?: string | undefined;
+  /** Told when the panel opens (`true`) and closes, so what it shows can be asked for only while it is open. */
+  onToggle?: ((open: boolean) => void) | undefined;
 }) => {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  // The latest `onToggle`, read when the panel toggles, so the listener is added once.
+  const onToggleRef = useRef(onToggle);
+
+  onToggleRef.current = onToggle;
+
+  useEffect(() => {
+    const element = panel.current;
+
+    if (element === null) return;
+
+    const toggled = (event: Event) => {
+      onToggleRef.current?.(event instanceof ToggleEvent && event.newState === "open");
+    };
+
+    element.addEventListener("toggle", toggled);
+
+    return () => {
+      element.removeEventListener("toggle", toggled);
+    };
+  }, []);
 
   useAnchoredPopover(trigger, panel, align, (element) => {
     element.querySelector<HTMLElement>(FOCUSABLE)?.focus();

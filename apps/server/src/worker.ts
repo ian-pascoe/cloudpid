@@ -17,6 +17,7 @@ import { connectSession } from "./connect.ts";
 import { deployment } from "./deployment.ts";
 import { hello } from "./hello.ts";
 import { buildUpkeep } from "./registry/builds.ts";
+import { draftBranches, githubBranches } from "./registry/draft-branches.ts";
 import { Registry, RegistryLive } from "./registry/Registry.ts";
 import {
   legacyCleanup,
@@ -33,6 +34,7 @@ import { IMAGES_BINDING } from "./session/images.ts";
 import { workspaceLookups } from "./session/lookups.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import {
+  GitHubTokenConfig,
   GitHubTokenConfigLive,
   destroySessionObject,
   ModelProxyConfigLive,
@@ -200,6 +202,11 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // SAFETY: the same binding, the raw namespace whose stubs `ComputerExecutionEnv` needs.
     const lookups = workspaceLookups(worker[WORKSPACE_BINDING] as WorkspaceNamespace, listings);
 
+    // The draft's Start from menu, asked of GitHub; each repo's list is kept for 60 s per isolate.
+    const github = yield* GitHubTokenConfig;
+
+    const branches = draftBranches(githubBranches(github.token));
+
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -224,6 +231,7 @@ export default class Server extends Cloudflare.Worker<Server>()(
             spares,
             builds,
             lookups,
+            branches,
             background: (effect) => execution.waitUntil(effect),
           });
 
@@ -235,14 +243,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(
       SessionLive.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            ModelProxyConfigLive,
-            GitHubTokenConfigLive,
-            SecretsConfigLive,
-            WebConfigLive,
-          ),
-        ),
+        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
+        // The Session DOs refuse the token in a variable; the Worker asks GitHub for the draft's branches with it.
+        Layer.provideMerge(GitHubTokenConfigLive),
         Layer.provideMerge(
           RegistryLive.pipe(Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive))),
         ),

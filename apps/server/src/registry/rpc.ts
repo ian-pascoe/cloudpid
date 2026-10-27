@@ -39,6 +39,7 @@ import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
 import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
+import type { DraftBranches } from "./draft-branches.ts";
 import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
 import { removals } from "./removal.ts";
 import { REGISTRY_NAME, type Registry } from "./Registry.ts";
@@ -101,6 +102,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly builds: Builds;
   /** The draft composer's catalog and `@` menu, looked up in a Workspace's object. */
   readonly lookups: WorkspaceLookups;
+  /** The draft's Start from menu: the branches of an Environment's Repos, asked of GitHub. */
+  readonly branches: DraftBranches;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
@@ -283,7 +286,16 @@ const shownValue = (value: Schema.Json | null): string =>
 // @effect-diagnostics-next-line missingPipeableSignature:off
 export const serveRegistryRpc = <R = never>(
   registries: Cloudflare.DurableObject<Registry>,
-  { workspaces, sessions, legacy, spares, builds, lookups, background }: RegistryRpcObjects<R>,
+  {
+    workspaces,
+    sessions,
+    legacy,
+    spares,
+    builds,
+    lookups,
+    branches,
+    background,
+  }: RegistryRpcObjects<R>,
 ) =>
   Effect.gen(function* () {
     const registry = registries.getByName(REGISTRY_NAME);
@@ -861,6 +873,8 @@ export const serveRegistryRpc = <R = never>(
             place === null ? Effect.succeed({ paths: [] }) : lookups.files(place, query),
           ),
         ),
+      draftBranches: ({ environment }) =>
+        knownEnvironment(environment).pipe(Effect.flatMap((known) => branches(known.repos))),
       removeWorkspace: ({ id }) =>
         knownWorkspace(id).pipe(
           Effect.flatMap((workspace) =>

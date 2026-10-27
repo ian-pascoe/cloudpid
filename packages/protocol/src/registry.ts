@@ -238,6 +238,45 @@ export const EnvironmentRecord = Schema.Struct({
 
 export type EnvironmentRecord = typeof EnvironmentRecord.Type;
 
+/** The most branches of one Repo the draft's Start from menu lists: the most recently committed to. */
+export const MAX_REPO_BRANCHES = 100;
+
+/** One branch of a Repo on its remote, for the draft's Start from menu. */
+export const RemoteBranch = Schema.Struct({
+  /** The branch's name, one a new Workspace may start from (`BranchName`). */
+  name: Schema.String,
+  /** When its head commit was made, in ms; null when GitHub did not say. */
+  committedAt: Schema.NullOr(Schema.Finite),
+});
+
+export type RemoteBranch = typeof RemoteBranch.Type;
+
+/** Why a Repo's branches are not listed: it is not on GitHub, GitHub refused the token, or anything else. */
+export const RepoBranchesErrorKind = Schema.Literals(["no_github", "refused", "failed"]);
+
+export type RepoBranchesErrorKind = typeof RepoBranchesErrorKind.Type;
+
+/**
+ * One Repo's branches on its remote (`draftBranches`): its default branch, and up to `MAX_REPO_BRANCHES` branches, most
+ * recently committed to first, the default always among them; or why they are not listed.
+ */
+export const RepoBranches = Schema.Union([
+  Schema.Struct({
+    repo: Schema.String,
+    status: Schema.Literal("ok"),
+    defaultBranch: Schema.NullOr(Schema.String),
+    branches: Schema.Array(RemoteBranch),
+  }),
+  Schema.Struct({
+    repo: Schema.String,
+    status: Schema.Literal("error"),
+    kind: RepoBranchesErrorKind,
+    message: Schema.String,
+  }),
+]);
+
+export type RepoBranches = typeof RepoBranches.Type;
+
 /**
  * Where an Environment's Build stands (`docs/spec.md` → Builds): none made yet, one being made (with when the last good
  * one is from, which Workspaces start from meanwhile), the last good one (when it finished), or the last attempt failed
@@ -690,6 +729,17 @@ export class RegistryRpcs extends RpcGroup.make(
       query: Schema.String.check(Schema.isMaxLength(MAX_FILE_QUERY_LENGTH)),
     },
     success: FileMatches,
+    error: EnvironmentError,
+  }),
+  /**
+   * The draft's Start from menu (`docs/spec.md` → Session list → New session): the branches of each of the
+   * Environment's Repos on GitHub, asked with `CLOUDPID_GITHUB_TOKEN` and kept for 60 s, in the Environment's order. A
+   * Repo that is not on GitHub, or that GitHub would not list, has its reason instead. No Workspace or Container is
+   * woken. Fails with an `EnvironmentError` when the Environment is not listed.
+   */
+  Rpc.make("draftBranches", {
+    payload: { environment: EnvironmentId },
+    success: Schema.Array(RepoBranches),
     error: EnvironmentError,
   }),
   /**
