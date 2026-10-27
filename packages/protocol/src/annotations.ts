@@ -5,6 +5,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over an Annotation's fields.
 import * as Schema from "effect/Schema";
 import { ConversationId } from "./conversation-id.ts";
+import { WORKSPACE_ROOT } from "./repo.ts";
 
 /** The most drafts a Session keeps. */
 export const MAX_ANNOTATIONS = 100;
@@ -169,9 +170,6 @@ export const cutQuote = (lines: readonly string[], more = 0, clipped = false): Q
 
   return isClipped ? { quote: kept, more: left, clipped: true } : { quote: kept, more: left };
 };
-
-/** The Workspace's root, where every repo is a directory. */
-const WORKSPACE_ROOT = "/workspace";
 
 /** The absolute path of an Annotation's file: a Call diff's as recorded, a changed file's in its repo's clone. */
 export const annotationPath = (

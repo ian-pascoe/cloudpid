@@ -5,7 +5,7 @@
 // also checks the drafts on the Changes after each listing, and drops the drafts addressed to a deleted subagent.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- plain storage reads under Effect.sync, and pi-durable's Promise calls.
 import type { Annotation, AnnotationDraft, RepoChanges } from "@cloudpid/protocol";
-import { renderReview, resolvePath } from "@cloudpid/protocol";
+import { renderReview, resolvePath, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { Harness } from "@cloudpid/effect-durable";
 import { SubagentsDoc } from "@cloudpid/extensions/subagents";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -293,10 +293,8 @@ export const sessionReviewsLayer = (
 
           if (!relative) return yield* store.save(draft);
 
-          const cwd = yield* host.directory(source.conversationId);
-
-          if (cwd === undefined) return yield* store.save(draft);
-
+          // A conversation not yet given a Workspace works at its root, as a Session does at first.
+          const cwd = (yield* host.directory(source.conversationId)) ?? WORKSPACE_ROOT;
           const resolved: Types.Mutable<AnnotationDraft> = { ...draft, path: resolvePath(cwd, draft.path) };
 
           if (draft.oldPath !== undefined) resolved.oldPath = resolvePath(cwd, draft.oldPath);

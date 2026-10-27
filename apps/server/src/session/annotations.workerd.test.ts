@@ -170,6 +170,23 @@ describe("draft Annotations", () => {
     expect(await third.nth(1)).toEqual([expect.objectContaining({ id: "on-call" })]);
   });
 
+  it("on a Call diff take an absolute path, a relative one resolved in the conversation's directory", async () => {
+    const stub = fresh();
+    const client = await connect(stub);
+
+    await client.nth(1);
+    client.send({
+      type: "annotation_save",
+      id: "relative",
+      annotation: onCall({ path: "./src/../src/b.ts" }),
+    });
+    expect(await client.answer("relative")).toEqual({ type: "result", id: "relative", result: null });
+
+    const [saved] = await client.nth(2);
+
+    expect(saved?.path).toMatch(/^\/workspace(\/[^/]+)?\/src\/b\.ts$/u);
+  });
+
   it("are refused past the limit, and their quotes cut to it", async () => {
     const stub = fresh();
     const client = await connect(stub);
