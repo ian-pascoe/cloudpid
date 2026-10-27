@@ -13,11 +13,13 @@ import * as Predicate from "effect/Predicate";
 import { KeptDetails, MarkdownText, ReasoningPart, ToolCallCard } from "./parts.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf } from "./subagent.ts";
+import { ReviewChips } from "../review/review-chips.tsx";
 import {
   answerOf,
   entriesOf,
   type ShownSkill,
   shownPages,
+  shownReview,
   shownSkills,
 } from "../session/thread-messages.ts";
 import type { AttachedPage } from "@cloudpid/protocol";
@@ -99,6 +101,7 @@ const UserMessage = () => {
   const id = useAuiState((state) => state.message.id);
   const skills = shownSkills(custom);
   const pages = shownPages(custom);
+  const review = shownReview(custom);
 
   return (
     <MessagePrimitive.Root className="group/message flex flex-col items-end gap-1">
@@ -114,6 +117,7 @@ const UserMessage = () => {
         {Arr.map(skills, (skill) => (
           <SkillDisclosure key={skill.name} skill={skill} messageId={id} />
         ))}
+        {review.length > 0 && <ReviewChips annotations={review} />}
       </div>
       <OwnerMessageBar messageId={id} />
     </MessagePrimitive.Root>

@@ -640,7 +640,7 @@ export const sessionSocketsLayer = (
               })
               .pipe(Effect.as(null));
           case "annotation_save":
-            return annotations.save(message.annotation).pipe(Effect.as(null));
+            return reviews.save(message.annotation).pipe(Effect.as(null));
           case "annotation_delete":
             return annotations.delete(message.annotationId).pipe(Effect.as(null));
         }

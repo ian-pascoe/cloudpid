@@ -28,6 +28,7 @@ import {
   withEarlier,
   SESSION_DELETED_CLOSE_CODE,
   ServerMessageJson,
+  type AnnotationDraft,
   type ClientMessage,
   type BranchSummaryRequest,
   type TreePoint,
@@ -189,6 +190,14 @@ export interface SessionClient {
     query: Omit<Extract<ClientMessage, { type: "change_file" }>, "type" | "id">,
   ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
+   * Save draft Annotation `annotation`, new or edited (`docs/spec.md` → Diffs and review → Annotations and Reviews): done
+   * once the Session has it, and every client then has the new list in `annotations`. Fails as `catalog` does, and with
+   * the Session's refusal past 100 drafts.
+   */
+  readonly saveAnnotation: (annotation: AnnotationDraft) => Effect.Effect<void, SessionCommandError>;
+  /** Delete draft Annotation `annotationId`; one that is gone is not an error. Fails as `catalog` does. */
+  readonly deleteAnnotation: (annotationId: string) => Effect.Effect<void, SessionCommandError>;
+  /**
    * Pick the model and thinking level of the root conversation's next request. A field left out stays as it is, and
    * `null` makes the Session follow the default in the settings again. The Session's `agent_changed` event brings
    * the new pick into the view; a refusal shows as `failure`. Nothing is sent while the socket is down.
@@ -322,6 +331,8 @@ interface PendingSubmit {
   readonly whenBusy: WhenBusy;
   /** The subagent's conversation it is for; the root's when absent. */
   readonly conversationId: number | undefined;
+  /** A Review's drafts, by ID. */
+  readonly annotations: readonly string[] | undefined;
   /** Whether it went out on the current socket. */
   sent: boolean;
   /** Where whoever submitted it hears how it ended; they show a refusal themselves. */
@@ -566,6 +577,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "secretRequests"
         | "secretLifetimeMinutes"
         | "approvalRequests"
+        | "annotations"
         | "browserHandoffRequests"
         | "ownerTabs"
         | "ownerTabDrivers"
@@ -695,6 +707,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       }
 
       if (submit.pages !== undefined && submit.pages.length > 0) message.pages = [...submit.pages];
+
+      if (submit.annotations !== undefined) message.annotations = submit.annotations;
 
       submit.sent = true;
       send(message);
@@ -877,6 +891,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "approval_requests":
         update({ approvalRequests: message.requests });
+
+        return;
+      case "annotations":
+        update({ annotations: message.annotations });
 
         return;
       case "events": {
@@ -1111,8 +1129,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     // @effect-diagnostics-next-line cryptoRandomUUID:off
     requestId: string = crypto.randomUUID(),
   ): void => {
-    const { input, display, pages } = Predicate.isString(message)
-      ? { input: message, display: message, pages: undefined }
+    const { input, display, pages, annotations } = Predicate.isString(message)
+      ? { input: message, display: message, pages: undefined, annotations: undefined }
       : message;
 
     pending.push({
@@ -1123,6 +1141,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       text: display,
       whenBusy,
       conversationId: isRoot(conversationId) ? undefined : conversationId,
+      annotations: annotations === undefined || annotations.length === 0 ? undefined : annotations,
       sent: false,
       outcome,
     });
@@ -1313,6 +1332,18 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ),
     changeFile: (query) =>
       request((id) => ({ type: "change_file", id, ...query }), decodeChangeFile),
+    saveAnnotation: (annotation) =>
+      request(
+        (id) => ({ type: "annotation_save", id, annotation }),
+        () => Option.some(undefined),
+        true,
+      ),
+    deleteAnnotation: (annotationId) =>
+      request(
+        (id) => ({ type: "annotation_delete", id, annotationId }),
+        () => Option.some(undefined),
+        true,
+      ),
     configure: (change) =>
       step(() => {
         send({ type: "configure", id: nextCommandId(), ...change });

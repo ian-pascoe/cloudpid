@@ -59,6 +59,9 @@ import { type ConversationKey, conversationKey, useShownSessionId } from "./conv
 import { fileDragAtom, useFileDropZone } from "./file-drop.ts";
 import { fileResults, fileSearchAtom } from "./file-search.ts";
 import { UNKNOWN_QUEUED_TEXT } from "./queue-adapter.ts";
+import { draftsTo } from "../review/drafts.ts";
+import { DraftChips } from "../review/review-chips.tsx";
+import { annotationsAtom, deleteAnnotationAtom } from "../session/atoms.ts";
 import { useCompletion } from "./use-completion.ts";
 
 const Lane = ({
@@ -159,13 +162,20 @@ const ComposerBox = ({
   const addPage = useAtomSet(addPageAtom(key));
   const removePage = useAtomSet(removePageAtom(key));
   const sendAttached = useCall(sendAttachedAtom(key));
+  const allDrafts = useAtomValue(annotationsAtom(key.sessionId));
+  const deleteDraft = useCall(deleteAnnotationAtom(key.sessionId));
 
   useFileDropZone(dropZone, key);
 
   const dragging = useAtomValue(fileDragAtom(key));
   const attached = attachments.items.length > 0 || attachments.pages.length > 0;
-  // Attachments and attached pages alone make a message.
-  const hasMessage = canSend || attached;
+  // The drafts addressed to this conversation: while there are some, what is sent here is a Review of them.
+  const drafts = draftsTo(allDrafts, conversationId);
+  const reviewing = drafts.length > 0;
+  // The composer sends a message with Attachments or a Review itself: assistant-ui sends text alone.
+  const ownSend = attached || reviewing;
+  // Attachments and attached pages alone make a message, and so do drafts (a Review needs no summary).
+  const hasMessage = canSend || ownSend;
   // Why Send waits, shown under the box while no other note is.
   const waiting = attached ? waitingFor(attachments) : null;
   const noteId = useId();
@@ -305,8 +315,9 @@ const ComposerBox = ({
   };
 
   /**
-   * Send what is typed with the Attachments, once they are all uploaded and fitted; else say what it waits for. Should
-   * the Session refuse the message, its text and Attachments come back to the composer, with why under it.
+   * Send what is typed with the Attachments, once they are all uploaded and fitted, and as a Review of the drafts when
+   * there are some; else say what it waits for. Should the Session refuse the message, its text and Attachments come back
+   * to the composer, with why under it.
    */
   const sendWithAttachments = (whenBusy: WhenBusy) => {
     if (sentAttachments(attachments) === undefined) {
@@ -321,7 +332,11 @@ const ComposerBox = ({
     const typed = text;
 
     // The Attachments leave the composer with the text, as the send takes them.
-    void sendAttached({ typed, whenBusy }).then((exit) => {
+    const message = reviewing
+      ? { typed, whenBusy, annotations: drafts.map((draft) => draft.id) }
+      : { typed, whenBusy };
+
+    void sendAttached(message).then((exit) => {
       if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
 
       // What was typed since goes after it, so nothing is lost.
@@ -337,7 +352,7 @@ const ComposerBox = ({
   const queue = () => {
     if (!hasMessage || handled()) return;
 
-    if (attached) sendWithAttachments("followUp");
+    if (ownSend) sendWithAttachments("followUp");
     else aui.composer.send({ steer: false });
   };
 
@@ -348,8 +363,8 @@ const ComposerBox = ({
       return;
     }
 
-    // assistant-ui sends text only: a message with Attachments is the composer's to send.
-    if (attached) {
+    // assistant-ui sends text only: a message with Attachments, or a Review, is the composer's to send.
+    if (ownSend) {
       event.preventDefault();
       sendWithAttachments(running ? "steer" : "followUp");
     }
@@ -365,8 +380,8 @@ const ComposerBox = ({
       return;
     }
 
-    // assistant-ui's own steer shortcut would send the text without the Attachments.
-    if (attached && event.key === "Enter" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
+    // assistant-ui's own steer shortcut would send the text without the Attachments or the drafts.
+    if (ownSend && event.key === "Enter" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
 
       if (!busy && !handled()) sendWithAttachments("steer");
@@ -379,11 +394,13 @@ const ComposerBox = ({
 
   const hints = "/ commands · $ skills · @ files";
 
-  const placeholder = running
-    ? "Steer the run, or queue a follow-up…"
-    : wide
-      ? `Message ${who} · ${hints}`
-      : `Message ${who}…`;
+  const placeholder = reviewing
+    ? "Sum up your Review (optional)…"
+    : running
+      ? "Steer the run, or queue a follow-up…"
+      : wide
+        ? `Message ${who} · ${hints}`
+        : `Message ${who}…`;
 
   return (
     <ComposerPrimitive.Root
@@ -406,6 +423,12 @@ const ComposerBox = ({
           />
         )}
         <div className={composerBox(dragging)}>
+          <DraftChips
+            drafts={drafts}
+            onRemove={(id) => {
+              void deleteDraft(id);
+            }}
+          />
           <PageChips state={attachments} onRemove={removePage} />
           <AttachmentTiles
             // A page's screen shows on its chip.
@@ -506,7 +529,9 @@ const ComposerBox = ({
                       ? waiting
                       : running
                         ? "Steer: joins the run after its tool calls (Enter)"
-                        : "Send (Enter)"
+                        : reviewing
+                          ? "Send the Review (Enter)"
+                          : "Send (Enter)"
                   }
                   className={sendButton}
                 >

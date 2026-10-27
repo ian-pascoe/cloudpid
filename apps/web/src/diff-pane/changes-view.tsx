@@ -10,21 +10,32 @@
 //
 // This module is the Pane's lazy chunk: the library, its highlighter and the workers load with it.
 //
-// The seam for Annotations (a later slice): `options` is where the gutter selection (`enableGutterUtility`,
-// `enableLineSelection`) is switched on, and each item takes `annotations`, drawn by a `renderAnnotation` beside
-// `renderCustomHeader`.
+// The owner drafts Annotations on the files from the gutter (`review/annotations-ui.tsx`): each item takes its file's
+// drafts as `annotations` (`annotated-items.ts`), drawn by `renderAnnotation`, with one editor for the whole scroll.
 
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
+import type { SelectedLineRange } from "@pierre/diffs";
 import {
   CodeView,
   WorkerPoolContext,
+  type CodeViewAnnotationArgs,
   type CodeViewHandle,
+  type CodeViewItem,
   type CodeViewReactOptions,
 } from "@pierre/diffs/react";
 import { ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { DIFF_THEME } from "../diff-theme.ts";
 import { cn } from "../lib/utils.ts";
+import {
+  AnnotationSlotView,
+  DRAFTING_OPTIONS,
+  useOpenEditor,
+} from "../review/annotations-ui.tsx";
+import type { AnnotationSlot } from "../review/drafts.ts";
+import { AnnotationEditor } from "../review/editor.ts";
+import { annotationsAtom, changesAtom } from "../session/atoms.ts";
+import { paneAnchor } from "./annotated-items.ts";
 import { useWidth } from "../use-width.ts";
 import { FOLD_REASON_LABEL } from "./folding.ts";
 import type { FileContents } from "./loader.ts";
@@ -132,7 +143,7 @@ const HeaderNote = ({
   }
 };
 
-type Viewer = NonNullable<ReturnType<CodeViewHandle<undefined, undefined>["getInstance"]>>;
+type Viewer = NonNullable<ReturnType<CodeViewHandle<AnnotationSlot, undefined>["getInstance"]>>;
 
 /** Where the files of `instance` sit, and the part of its scroll that shows, from `scrollTop` when the scroll says it. */
 const geometryOf = (
@@ -173,10 +184,13 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
   const wrap = useAtomValue(diffWrapAtom);
   const pool = useAtomValue(view.pool);
   const loads = useAtomValue(view.loads);
-  const items = useAtomValue(view.items);
+  const items = useAtomValue(view.annotated);
   const report = useAtomSet(view.geometry);
+  const drafts = useAtomValue(annotationsAtom(pane.sessionId));
+  const repos = useAtomValue(changesAtom(pane.sessionId))?.repos;
+  const open = useOpenEditor();
   const { ref: frame, width } = useWidth();
-  const viewer = useRef<CodeViewHandle<undefined, undefined>>(null);
+  const viewer = useRef<CodeViewHandle<AnnotationSlot, undefined>>(null);
 
   useAtomMount(view.driving);
 
@@ -219,15 +233,44 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
   );
 
   const options = useMemo(
-    (): CodeViewReactOptions<undefined, undefined> => ({
+    (): CodeViewReactOptions<AnnotationSlot, undefined> => ({
       theme: DIFF_THEME,
       diffStyle: diffStyleOf(layout, width ?? 0),
       overflow: wrap ? "wrap" : "scroll",
       lineDiffType: "word",
       stickyHeaders: true,
       ...DIFF_LIMITS,
+      ...DRAFTING_OPTIONS,
+      onGutterUtilityClick: (
+        range: SelectedLineRange,
+        context: { readonly item: CodeViewItem<AnnotationSlot> },
+      ) => {
+        if (context.item.type === "diff") open(context.item.id, context.item.fileDiff, range);
+      },
     }),
-    [layout, width, wrap],
+    [layout, width, wrap, open],
+  );
+
+  // A file's drafts, and the editor of a new one, under their lines.
+  const renderAnnotation = useCallback(
+    (...[annotation, , item]: CodeViewAnnotationArgs<AnnotationSlot>) => {
+      const file = byId.get(item.id);
+
+      // The Pane's items are diffs: their annotations name a side.
+      if (file === undefined || !("side" in annotation)) return null;
+
+      const anchor = paneAnchor(file, repos ?? []);
+
+      return (
+        <AnnotationSlotView
+          sessionId={pane.sessionId}
+          anchor={anchor}
+          drafts={drafts}
+          annotation={annotation}
+        />
+      );
+    },
+    [byId, repos, drafts, pane.sessionId],
   );
 
   const renderHeader = useCallback(
@@ -266,6 +309,7 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
             options={options}
             className="min-h-0 flex-1 overflow-auto overscroll-y-contain"
             renderCustomHeader={renderHeader}
+            renderAnnotation={renderAnnotation}
             renderCodeViewHeader={renderTop}
             onScroll={scrolled}
           />
@@ -275,9 +319,18 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
   );
 };
 
+/** The scroll's editor of drafts, which its items read too. */
+const Drafting = ({ children }: { children: ReactNode }) => {
+  const view = useAtomValue(ViewScope.use());
+
+  return <AnnotationEditor.Context value={view.editor}>{children}</AnnotationEditor.Context>;
+};
+
 const ChangesView = (props: ChangesViewProps) => (
   <ViewScope.Provider value={props.pane}>
-    <Scroll {...props} />
+    <Drafting>
+      <Scroll {...props} />
+    </Drafting>
   </ViewScope.Provider>
 );
 

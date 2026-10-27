@@ -3,6 +3,7 @@
 
 import {
   EMPTY_VIEW,
+  type Annotation,
   type ApprovalRequest,
   type BrowserHandoffRequest,
   type OwnerTabDriver,
@@ -99,12 +100,17 @@ export interface AbortTarget {
   readonly subagents?: boolean;
 }
 
-/** A message with more than text (an Attachment's image): what is submitted, and what its lane shows. */
+/**
+ * A message with more than text (an Attachment's image, a Review's drafts): what is submitted, and what its lane shows.
+ * With `annotations`, the IDs of the drafts it sends, it is a Review.
+ */
 export interface OutgoingMessage {
   readonly input: UserInput;
   readonly display: string;
   /** The Owner tabs attached to it (`Submit.pages`); the Session reads them as the message is sent. */
   readonly pages?: readonly PageRef[];
+  /** The draft Annotations it sends as a Review (`Submit.annotations`); its input is the summary. */
+  readonly annotations?: readonly string[];
 }
 
 export interface SessionState {
@@ -122,6 +128,8 @@ export interface SessionState {
   readonly secretLifetimeMinutes: number;
   /** Agent changes waiting for the owner's Approval, each shown as a card with Approve and Decline, oldest first. */
   readonly approvalRequests: readonly ApprovalRequest[];
+  /** The Session's draft Annotations, oldest first, as of the last `annotations` message; every client has the same. */
+  readonly annotations: readonly Annotation[];
   /**
    * Browser Handoffs waiting for the owner; a Live View Pane mints its own links for one (`liveView`). Null until this
    * socket has listed them: a Pane closes for a handoff missing from a list it was sent, not from one not sent yet.
@@ -166,6 +174,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   secretRequests: [],
   secretLifetimeMinutes: 15,
   approvalRequests: [],
+  annotations: [],
   browserHandoffRequests: null,
   ownerTabs: null,
   ownerTabDrivers: [],

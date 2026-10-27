@@ -466,6 +466,11 @@ export type SessionHostService = {
    */
   readonly files: (search: FileSearch) => Effect.Effect<FileMatches, SessionError>;
   /**
+   * The directory the active branch, or the conversation `conversationId` names, works in: where the paths its tools
+   * are given resolve. Undefined for a Session without an environment.
+   */
+  readonly directory: (conversationId?: ConversationId) => Effect.Effect<string | undefined, SessionError>;
+  /**
    * A page of the History of the active branch, or of the conversation `conversationId` names, before entry
    * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
    */
@@ -2048,6 +2053,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     todos,
     catalog: (conversationId) => addressed(conversationId).pipe(Effect.flatMap(catalogFor)),
     command: runCommand,
+    directory: (conversationId) =>
+      addressed(conversationId).pipe(
+        Effect.flatMap((conversation) => environment(conversation, { lookup: true })),
+        Effect.map((env) => env?.cwd),
+      ),
     files: ({ query, conversationId }) =>
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) => filesFor(conversation, query)),

@@ -181,6 +181,23 @@ export const annotationPath = (
     ? `${WORKSPACE_ROOT}/${annotation.source.repo}/${annotation.path}`
     : annotation.path;
 
+/**
+ * `path` resolved against directory `cwd`, as a tool resolves the path the model gives it: an absolute path as it is,
+ * with `.` and `..` segments folded.
+ */
+export const resolvePath = (cwd: string, path: string): string => {
+  const segments: string[] = [];
+
+  for (const segment of `${path.startsWith("/") ? "" : cwd}/${path}`.split("/")) {
+    if (segment === "" || segment === ".") continue;
+
+    if (segment === "..") segments.pop();
+    else segments.push(segment);
+  }
+
+  return `/${segments.join("/")}`;
+};
+
 /** The file's name: the last segment of its path. */
 export const fileName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 

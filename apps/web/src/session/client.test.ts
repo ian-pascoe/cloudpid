@@ -522,6 +522,84 @@ describe("a Session connection", () => {
     );
   });
 
+  describe("draft Annotations", () => {
+    const draft = {
+      id: "d1",
+      source: { kind: "changes" as const, repo: "app", head: null },
+      path: "src/a.ts",
+      side: "new" as const,
+      start: 2,
+      end: 3,
+      quote: ["b", "c"],
+      more: 0,
+      text: "Why?",
+    };
+
+    it.effect("shows the drafts the Session sends, and keeps them through a reconnect", () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+        const saved = { ...draft, createdAt: 1, updatedAt: 1 };
+
+        expect(state().annotations).toEqual([]);
+
+        yield* watching(latest());
+        yield* latest().say({ type: "annotations", annotations: [saved] });
+        expect(state().annotations).toEqual([saved]);
+
+        // Shown until the next socket says how they are.
+        yield* latest().drop();
+        expect(state().annotations).toEqual([saved]);
+      }),
+    );
+
+    it.effect("saves and deletes a draft, done once the Session answers", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const save = yield* Effect.forkChild(client.saveAnnotation(draft));
+
+        yield* settle;
+
+        const sent = latest().commands().at(-1);
+
+        expect(sent).toEqual({ type: "annotation_save", id: expect.any(String), annotation: draft });
+        yield* latest().say({ type: "result", id: sent?.id, result: null });
+        expect(Exit.isSuccess(yield* Fiber.await(save))).toBe(true);
+
+        const remove = yield* Effect.forkChild(client.deleteAnnotation("d1"));
+
+        yield* settle;
+
+        const deleted = latest().commands().at(-1);
+
+        expect(deleted).toEqual({ type: "annotation_delete", id: expect.any(String), annotationId: "d1" });
+        yield* latest().say({ type: "error", id: deleted?.id, message: "Not live" });
+        expect(Exit.isFailure(yield* Fiber.await(remove))).toBe(true);
+      }),
+    );
+
+    it.effect("sends a Review's drafts with its summary, and shows it as a Review in the lane", () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        yield* watching(latest());
+        yield* client.submit(
+          { input: "", display: "Review: 1 Annotation", annotations: ["d1"] },
+          "followUp",
+        );
+
+        expect(state().sending.map((entry) => entry.text)).toEqual(["Review: 1 Annotation"]);
+        expect(latest().commands().at(-1)).toMatchObject({
+          type: "submit",
+          input: "",
+          annotations: ["d1"],
+        });
+      }),
+    );
+  });
+
   describe("Browser Handoffs", () => {
     const request = {
       id: "12",

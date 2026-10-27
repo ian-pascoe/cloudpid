@@ -5,6 +5,7 @@ import {
   cutQuote,
   MAX_QUOTE_BYTES,
   MAX_QUOTE_LINES,
+  resolvePath,
 } from "./annotations.ts";
 import type { ConversationId } from "./conversation-id.ts";
 import { languageOf, renderReview, reviewMessage, shownReview } from "./review.ts";
@@ -70,6 +71,15 @@ describe("cutQuote", () => {
     expect(cut.quote[0]).toBe("é".repeat(4_095));
     expect(new TextEncoder().encode(cut.quote[0]).length).toBeLessThan(MAX_QUOTE_BYTES);
     expect(cutQuote(cut.quote, cut.more, cut.clipped)).toEqual(cut);
+  });
+});
+
+describe("resolvePath", () => {
+  it("resolves a relative path against the directory, folding . and .., and keeps an absolute one", () => {
+    expect(resolvePath("/workspace/app", "src/a.ts")).toBe("/workspace/app/src/a.ts");
+    expect(resolvePath("/workspace/app", "./src/../lib/b.ts")).toBe("/workspace/app/lib/b.ts");
+    expect(resolvePath("/workspace/app", "/etc/hosts")).toBe("/etc/hosts");
+    expect(resolvePath("/workspace", "../../x")).toBe("/x");
   });
 });
 

@@ -31,6 +31,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as Types from "effect/Types";
 import { messageOf } from "../registry.ts";
 import { replying } from "../calls.ts";
+import { reviewLaneText } from "../review/drafts.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
 import {
@@ -609,20 +610,24 @@ export class SendError extends Schema.TaggedError<SendError, { readonly brand: u
   { message: Schema.String },
 ) {}
 
-/** A message with Attachments: what was typed, and how it goes while a Run is in progress. */
+/**
+ * A message the composer sends itself: what was typed, how it goes while a Run is in progress, and, for a Review, the
+ * drafts it sends, by ID (the typed text is then its summary).
+ */
 export interface AttachedMessage {
   readonly typed: string;
   readonly whenBusy: WhenBusy;
+  readonly annotations?: readonly string[];
 }
 
 /**
- * Send what was typed with the conversation's Attachments, once every one is uploaded and every picture fitted. They
- * leave the composer while the Session answers, and come back when it refuses the message, failing with why: the
- * composer then puts the text back too.
+ * Send what was typed with the conversation's Attachments, once every one is uploaded and every picture fitted, and with
+ * the drafts of a Review. The Attachments leave the composer while the Session answers, and come back when it refuses
+ * the message, failing with why: the composer then puts the text back too. The drafts stay until the Session takes them.
  */
 export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
   appRuntime.fn(
-    replying(({ typed, whenBusy }: AttachedMessage, get: Atom.FnContext) =>
+    replying(({ typed, whenBusy, annotations = [] }: AttachedMessage, get: Atom.FnContext) =>
       Effect.gen(function* () {
         const attachments = yield* get.result(attachmentsProgramAtom(key));
         const client = yield* get.result(sessionClientAtom(key.sessionId));
@@ -637,9 +642,17 @@ export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
 
         const held = yield* attachments.hold;
 
+        const message = outgoingMessage(typed, sent, sentPages(ready));
+
         yield* client
           .submitAndAwait(
-            outgoingMessage(typed, sent, sentPages(ready)),
+            annotations.length === 0
+              ? message
+              : {
+                  ...message,
+                  display: reviewLaneText(message.display, annotations.length),
+                  annotations,
+                },
             whenBusy,
             key.conversationId,
           )

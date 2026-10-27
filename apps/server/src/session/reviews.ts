@@ -4,8 +4,8 @@
 // the message; the drafts are deleted once it is taken, and come back when Stop withdraws it before it was placed. It
 // also checks the drafts on the Changes after each listing, and drops the drafts addressed to a deleted subagent.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- plain storage reads under Effect.sync, and pi-durable's Promise calls.
-import type { Annotation, RepoChanges } from "@cloudpid/protocol";
-import { renderReview } from "@cloudpid/protocol";
+import type { Annotation, AnnotationDraft, RepoChanges } from "@cloudpid/protocol";
+import { renderReview, resolvePath } from "@cloudpid/protocol";
 import { Harness } from "@cloudpid/effect-durable";
 import { SubagentsDoc } from "@cloudpid/extensions/subagents";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
+import type * as Types from "effect/Types";
 import { AnnotationStore, type AnnotationStoreService } from "./annotations.ts";
 import { SessionChanges } from "./changes.ts";
 import { attempt, SessionError } from "./errors.ts";
@@ -59,6 +60,11 @@ export type ReviewPrompt = Omit<Prompt, "review"> & { readonly annotations: Read
 export type SessionReviewsService = {
   /** Send drafts `annotations` with the summary `input` as one Review, and answer its submission ID. */
   readonly submit: (prompt: ReviewPrompt) => Effect.Effect<number, SessionError>;
+  /**
+   * Save `draft` (`AnnotationStore.save`), a Call diff's path made absolute first: the model may have given its call a
+   * path relative to the directory its conversation works in.
+   */
+  readonly save: (draft: AnnotationDraft) => Effect.Effect<void, SessionError>;
   /** Delete the drafts addressed to a subagent that no longer exists. */
   readonly prune: Effect.Effect<void>;
 };
@@ -276,7 +282,29 @@ export const sessionReviewsLayer = (
       // Reviews an eviction left pending: settled once they settle.
       yield* Effect.forEach(pending(), followUp, { discard: true });
 
-      return { submit, prune } satisfies SessionReviewsService;
+      const save = (draft: AnnotationDraft) =>
+        Effect.gen(function* () {
+          const { source } = draft;
+
+          const relative =
+            source.kind === "call" &&
+            (!draft.path.startsWith("/") ||
+              (draft.oldPath !== undefined && !draft.oldPath.startsWith("/")));
+
+          if (!relative) return yield* store.save(draft);
+
+          const cwd = yield* host.directory(source.conversationId);
+
+          if (cwd === undefined) return yield* store.save(draft);
+
+          const resolved: Types.Mutable<AnnotationDraft> = { ...draft, path: resolvePath(cwd, draft.path) };
+
+          if (draft.oldPath !== undefined) resolved.oldPath = resolvePath(cwd, draft.oldPath);
+
+          return yield* store.save(resolved);
+        });
+
+      return { submit, save, prune } satisfies SessionReviewsService;
     }),
   );
 

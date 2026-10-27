@@ -44,12 +44,15 @@ export const ReviewData = Schema.Struct({
 export type ReviewData = typeof ReviewData.Type;
 
 /** A sent Annotation as the Review card shows it: its anchor and range, with its quote and the owner's text. */
-export type ShownReviewAnnotation = Omit<ReviewAnnotation, "quote" | "text"> & {
+export const ShownReviewAnnotation = Schema.Struct({
+  ...ReviewAnnotation.fields,
   /** The absolute path. */
-  readonly file: string;
-  readonly quote: readonly string[];
-  readonly text: string;
-};
+  file: Schema.String,
+  quote: Schema.Array(Schema.String),
+  text: Schema.String,
+});
+
+export type ShownReviewAnnotation = typeof ShownReviewAnnotation.Type;
 
 /** The fence language of the files the agent reads most, by extension. */
 const LANGUAGES = new Map<string, string>(Record.toEntries({
