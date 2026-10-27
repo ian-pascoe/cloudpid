@@ -4,7 +4,7 @@
 // change; the owner's, from the Environments page, as the owner's save, records none. The fetch is the only part that
 // asks GitHub, and runs before any transaction: each Skill is kept in a transaction of its own, so one the checks refuse
 // leaves the others installed.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
 import type { AgentChange, ListedSkill, SkillSource } from "@cloudpid/protocol";
 import { fetchSkills, type RepoReader } from "../github/skill-fetch.ts";
 import { parseSkillSource } from "../github/skill-source.ts";

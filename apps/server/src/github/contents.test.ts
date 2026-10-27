@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { githubContents, SKILL_FETCH_PERMISSIONS } from "./contents.ts";

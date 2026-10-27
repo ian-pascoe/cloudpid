@@ -1,4 +1,4 @@
-// What a Skill source is, as written (ADR-0026, `docs/spec.md` → _Installing from GitHub_): a GitHub repo, with a Skill
+// What an install is asked to read, as written (not yet a Skill source, which also holds the commit) (ADR-0026, `docs/spec.md` → _Installing from GitHub_): a GitHub repo, with a Skill
 // named, or a folder of a ref. Only GitHub is installed from; any other source goes through the agent and `npx skills`.
 // @effect-diagnostics preferEffectArray:off
 

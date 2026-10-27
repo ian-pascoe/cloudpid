@@ -1334,8 +1334,8 @@ const InstallAnswer = ({
   installing: boolean;
 }) => {
   const [ticked, setTicked] = useState<ReadonlyArray<string>>([]);
+  // The same setter installs the ticked Skills and, reset, closes the list.
   const install = useAtomSet(installSkillsAtom(id));
-  const forget = useAtomSet(installSkillsAtom(id));
 
   if (answer.status === "installed") {
     return (
@@ -1406,7 +1406,7 @@ const InstallAnswer = ({
           variant="ghost"
           disabled={installing}
           onClick={() => {
-            forget(Atom.Reset);
+            install(Atom.Reset);
           }}
         >
           Cancel

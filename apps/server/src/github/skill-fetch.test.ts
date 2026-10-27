@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { fetchSkills, GithubReadError, type RepoReader } from "./skill-fetch.ts";
@@ -282,6 +282,34 @@ describe("fetchSkills", () => {
       skipped: [
         { path: "skills/bad", message: expect.stringContaining("no name or no description") },
       ],
+    });
+  });
+
+  it("reports a SKILL.md that cannot be read only when every Skill was asked for or the named one is it", async () => {
+    const files = {
+      "skills/good/SKILL.md": skillMd("good"),
+      "skills/other/SKILL.md": skillMd("other"),
+      "skills/bad/SKILL.md": "no frontmatter at all",
+    } satisfies Repo;
+
+    const { reader } = readerOf(files);
+
+    // A Skill named is installed alone: the unreadable one is not its business.
+    expect(await fetchSkills(reader, { source: source("o/r@good") })).toMatchObject({
+      status: "fetched",
+      skills: [{ name: "good" }],
+      skipped: [],
+    });
+
+    const named = await fetchSkills(reader, { source: source("o/r@bad") });
+
+    expect(named).toMatchObject({ status: "failed", kind: "no_match" });
+    expect(named.status === "failed" ? named.message : "").toContain("Not readable as Skills");
+
+    // The list of a repo's Skills holds those that can be installed.
+    expect(await fetchSkills(reader, { source: source("o/r") })).toMatchObject({
+      status: "listed",
+      available: [{ name: "good" }, { name: "other" }],
     });
   });
 

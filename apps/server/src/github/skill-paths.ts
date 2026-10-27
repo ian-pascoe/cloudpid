@@ -183,13 +183,13 @@ export const skillFolderOf = (skillMdPath: string): string => {
   return skillMdPath.slice(0, -9);
 };
 
-/** Files a Skill's snapshot leaves out, by name. */
+/** Files of a Skill's folder that are not installed, by name. */
 const EXCLUDED_FILES: ReadonlySet<string> = new Set(["metadata.json"]);
 
-/** Directories a Skill's snapshot leaves out, wherever they are in it. */
+/** Directories of a Skill's folder that are not installed, wherever they are in it. */
 const EXCLUDED_DIRS: ReadonlySet<string> = new Set([".git", "__pycache__", "__pypackages__"]);
 
-/** Whether the file at `path` (relative to a Skill's folder) is part of an installed Skill: the CLI's snapshot rules. */
+/** Whether the file at `path` (relative to a Skill's folder) is part of an installed Skill: the CLI's rules for what a Skill holds. */
 export const isInstallablePath = (path: string): boolean => {
   const parts = path.split("/");
   const fileName = parts.at(-1);

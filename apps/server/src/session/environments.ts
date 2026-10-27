@@ -4,9 +4,9 @@
 // after that save, the Builds' upkeep runs for the Environment (each one, for a variable kept for every Environment),
 // and a change that reaches the Session's own Environment is handed to its Workspace at once
 // (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
-// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved
-// or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentRemoveSkill`, `agentInstallSkills`); the Session's own Workspace is
-// handed its Environment's new Skill set at once (`updateSkills`), and no Build's upkeep runs: Skills are not part of
+// Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved,
+// installed or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentInstallSkills`, `agentRemoveSkill`);
+// the Session's own Workspace is handed its Environment's new Skill set at once (`updateSkills`), and no Build's upkeep runs: Skills are not part of
 // a Build.
 import type {
   AppliedChange,

@@ -2,7 +2,7 @@
 // tokens, read-only (contents), for the installation on the repo's owner, else the app owner's, which reads any public
 // repo. The Registry DO is in the main Worker, which holds the app's key (ADR-0025); a Session DO or a Container never
 // gets a token, it asks the Registry to install.
-// @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off
+// @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
 import * as Redacted from "effect/Redacted";
 import { GitHubApp } from "../github/app.ts";
 import type { GitHubAppSecrets } from "../github/config.ts";

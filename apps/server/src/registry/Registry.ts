@@ -676,6 +676,26 @@ export const RegistryLive = Registry.make(
           ),
         );
 
+        /** Install `source`'s Skills into `environment`: as Agent changes by `author`, or as the owner's save with none. */
+        const installFromGithub = (input: {
+          readonly environment: string;
+          readonly source: string;
+          readonly skills: ReadonlyArray<string> | undefined;
+          readonly author: AgentChangeAuthor | null;
+        }) =>
+          Effect.gen(function* () {
+            const hashedBundle = yield* bundle;
+            const now = yield* Clock.currentTimeMillis;
+
+            return yield* Effect.promise(() =>
+              installSkills(
+                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
+                skillReader,
+                input,
+              ),
+            );
+          });
+
         /** `environment`'s Skill set before its texts are read: its own Skills over the bundle. */
         const mergedSkills = (environment: string) =>
           Effect.flatMap(bundle, (hashed) =>
@@ -1091,31 +1111,9 @@ export const RegistryLive = Registry.make(
               );
             }),
           agentInstallSkills: ({ environment, source, skills: names, author }) =>
-            Effect.gen(function* () {
-              const hashedBundle = yield* bundle;
-              const now = yield* Clock.currentTimeMillis;
-
-              return yield* Effect.promise(() =>
-                installSkills(
-                  { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
-                  skillReader,
-                  { environment, source, skills: names, author },
-                ),
-              );
-            }),
+            installFromGithub({ environment, source, skills: names, author }),
           installSkills: ({ environment, source, skills: names }) =>
-            Effect.gen(function* () {
-              const hashedBundle = yield* bundle;
-              const now = yield* Clock.currentTimeMillis;
-
-              return yield* Effect.promise(() =>
-                installSkills(
-                  { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
-                  skillReader,
-                  { environment, source, skills: names, author: null },
-                ),
-              );
-            }),
+            installFromGithub({ environment, source, skills: names, author: null }),
           listSkills: ({ environment }) =>
             Effect.sync(() =>
               store.getEnvironment(environment) === null

@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
 // The `SKILL.md` path rules, held to the `skills` CLI's own cases: the `findSkillMdPaths` tests of vercel-labs/skills'
 // `tests/nested-container-discovery.test.ts` (MIT, Copyright (c) 2026 Vercel, Inc.; the licence is in `skill-paths.ts`),
 // then cases for the rest of the function as `skills@1.7.4` runs it.

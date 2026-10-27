@@ -3,7 +3,7 @@
 // Skills' files at that commit. It reads GitHub through a `RepoReader` (`contents.ts` is the one that asks GitHub with the
 // GitHub App's tokens), so the rules are tested without a network. Nothing is saved here: the Registry checks what comes
 // out as a save does (`checkSkill`) and keeps it with its Skill source.
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off missingPipeableSignature:off
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off missingPipeableSignature:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
 import { MAX_FILE_BYTES, MAX_SKILL_BYTES, problemsIn } from "@cloudpid/extensions/skill-checks";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -162,6 +162,12 @@ const failed = (kind: FetchFailureKind, message: string): SkillFetch => ({
   message,
 });
 
+/** What a message adds of the `SKILL.md` files that were not readable as Skills, or nothing. */
+const unreadableNote = (unreadable: ReadonlyArray<SkippedSkill>): string =>
+  unreadable.length === 0
+    ? ""
+    : ` Not readable as Skills: ${unreadable.map((skip) => `${skip.path || "SKILL.md"} (${skip.message})`).join("; ")}.`;
+
 /** The names a repo's Skills have, for a message. */
 const namesOf = (candidates: ReadonlyArray<ListedSkill>): string =>
   candidates.map((candidate) => candidate.name).join(", ");
@@ -237,7 +243,8 @@ export const fetchSkills = async (
     };
 
     const entryOf = new Map(tree.entries.map((entry) => [entry.path, entry] as const));
-    const skipped: SkippedSkill[] = [];
+    // `SKILL.md` files that cannot be read as a Skill: reported only when every Skill was asked for, or when none else is left.
+    const unreadable: SkippedSkill[] = [];
 
     const read = await mapLimited(toRead, async (skillMdPath): Promise<Candidate | undefined> => {
       const entry = entryOf.get(skillMdPath);
@@ -246,7 +253,7 @@ export const fetchSkills = async (
       if (entry === undefined) return undefined;
 
       if (entry.size !== undefined && entry.size > MAX_FILE_BYTES) {
-        skipped.push({
+        unreadable.push({
           name: basename(folder) || source.name,
           path: folder,
           message: `SKILL.md: ${entry.size} bytes, more than the ${MAX_FILE_BYTES} a Skill's file may be`,
@@ -264,7 +271,7 @@ export const fetchSkills = async (
         : "";
 
       if (name === "" || description === "") {
-        skipped.push({
+        unreadable.push({
           name: basename(folder) || source.name,
           path: folder,
           message: "SKILL.md's frontmatter sets no name or no description, so it is not a Skill",
@@ -282,6 +289,9 @@ export const fetchSkills = async (
 
     const candidates = read.filter((candidate): candidate is Candidate => candidate !== undefined);
 
+    // Only the Skills asked for are reported as skipped: `*` asks for every one, so it answers for those unreadable too.
+    const skipped: SkippedSkill[] = [];
+
     const listing = (list: ReadonlyArray<Candidate>): ReadonlyArray<ListedSkill> =>
       list.map(({ name, description, path }) => ({ name, description, path }));
 
@@ -291,6 +301,7 @@ export const fetchSkills = async (
     let chosen: ReadonlyArray<Candidate>;
 
     if (all) {
+      skipped.push(...unreadable);
       chosen = visible;
     } else if (names.length > 0) {
       const found: Candidate[] = [];
@@ -315,7 +326,7 @@ export const fetchSkills = async (
           "no_match",
           `${where} has no Skill named ${missing.map((name) => JSON.stringify(name)).join(", ")}.${
             visible.length === 0 ? "" : ` It holds: ${namesOf(visible)}.`
-          }`,
+          }${unreadableNote(unreadable)}`,
         );
       }
 
@@ -326,9 +337,9 @@ export const fetchSkills = async (
       return failed(
         "no_skills",
         `${where} holds no Skill that can be installed${
-          skipped.length === 0
+          unreadable.length === 0
             ? ""
-            : `: ${skipped.map((skip) => `${skip.path || "SKILL.md"} (${skip.message})`).join("; ")}`
+            : `: ${unreadable.map((skip) => `${skip.path || "SKILL.md"} (${skip.message})`).join("; ")}`
         }.`,
       );
     } else {

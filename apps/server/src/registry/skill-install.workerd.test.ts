@@ -2,7 +2,7 @@
 // from GitHub): fetched through a fake `RepoReader`, kept with their Skill source, recorded as Agent changes when the agent
 // installs and as nothing when the owner does, and put back with their source by a revert.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
 import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT, type SkillSource } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";

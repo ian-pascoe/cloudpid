@@ -3,7 +3,7 @@
 // owner's, which reads any public repo; a token GitHub refuses with a 401 is invalidated and the request made once more
 // with a new one. Failures are told plainly (`GithubReadError`): no such repo or a private one the app cannot see, the
 // rate limit, a refused token, a tree too large to list.
-// @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off preferEffectArray:off -- GitHub is read with `fetch`, a Promise API, and the reads and the checks run over native arrays.
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { GitHubTokens } from "./app.ts";
