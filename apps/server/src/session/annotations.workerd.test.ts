@@ -430,6 +430,7 @@ describe("a Review", () => {
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),
     );
+
     const sent = entries.find((entry) => entry.kind === "cloudpid.user");
 
     expect(sent?.text).toMatch(/^Two things\.\n\n/u);
@@ -482,6 +483,7 @@ describe("a Review", () => {
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),
     );
+
     const sent = entries.find((entry) => entry.kind === "cloudpid.user");
 
     expect(sent?.text).toMatch(/^## Review: 1 Annotation\n/u);

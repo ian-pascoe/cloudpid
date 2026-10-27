@@ -113,6 +113,7 @@ export const checked = (
   head: string | null,
 ): Annotation => {
   const { status: _status, ...rest } = annotation;
+
   const source =
     annotation.source.kind === "changes" ? { ...annotation.source, head } : annotation.source;
 

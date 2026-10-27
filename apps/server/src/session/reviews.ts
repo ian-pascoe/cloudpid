@@ -103,6 +103,7 @@ export const sessionReviewsLayer = (
       const sending = Semaphore.withPermit(Semaphore.makeUnsafe(1));
 
       const pending = (): number[] => storage.get<number[]>(PENDING_KEY) ?? [];
+
       const requests = (): Record<string, number> =>
         storage.get<Record<string, number>>(REQUESTS_KEY) ?? {};
 
@@ -346,6 +347,7 @@ export const sessionReviewsLayer = (
 
           // A conversation not yet given a Workspace works at its root, as a Session does at first.
           const cwd = (yield* host.directory(source.conversationId)) ?? WORKSPACE_ROOT;
+
           const resolved: Types.Mutable<AnnotationDraft> = {
             ...draft,
             path: resolvePath(cwd, draft.path),
