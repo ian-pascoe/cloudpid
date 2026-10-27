@@ -149,7 +149,7 @@ const module = (
         ? Response.json(options.pulls ?? [])
         : new Response("no", { status: options.status });
     },
-    token: () => "ghp_secret",
+    github: { token: async () => "ghp_secret", invalidate: () => undefined },
     redact: (text) => text.replaceAll("ghp_secret", "***"),
     warn: (message) => warnings.push(message),
   });

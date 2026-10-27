@@ -40,6 +40,8 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
+import { githubAppKeyForms } from "../github/app.ts";
+import { GitHubAppConfig } from "../github/config.ts";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { buildUpkeep } from "../registry/builds.ts";
 import { spareUpkeep } from "../registry/rpc.ts";
@@ -136,22 +138,6 @@ export const ModelProxyConfigLive = Layer.effect(
 );
 
 /**
- * The GitHub token the Workspaces' commands get: a deploy-time secret, bound to the Worker by `Config.Redacted`, which
- * the Session reads only to refuse it in a plain value (`docs/spec.md` → Agent changes). The main Worker also asks GitHub
- * for the draft's branches with it (`draftBranches`).
- */
-export class GitHubTokenConfig extends Context.Service<
-  GitHubTokenConfig,
-  { readonly token: Redacted.Redacted<string> }
->()("@cloudpid/server/session/Session/GitHubTokenConfig") {}
-
-/** Reads `CLOUDPID_GITHUB_TOKEN`: from the deploying environment, then from the Worker's secrets. */
-export const GitHubTokenConfigLive = Layer.effect(
-  GitHubTokenConfig,
-  Config.all({ token: Config.Redacted("CLOUDPID_GITHUB_TOKEN") }),
-);
-
-/**
  * What the Session DO answers: its alarm, and its clients' sockets (`docs/spec.md` → Client and protocol). `fetch`
  * accepts a socket upgrade the main Worker forwards; the socket's events then reach the object directly.
  */
@@ -229,7 +215,7 @@ export const SessionLive = Session.make(
   Effect.gen(function* () {
     return {
       proxy: yield* ModelProxyConfig,
-      github: yield* GitHubTokenConfig,
+      github: yield* GitHubAppConfig,
       secrets: yield* SecretsConfig,
       web: yield* WebConfig,
       registries: yield* Registry,
@@ -735,7 +721,7 @@ export const SessionLive = Session.make(
                     }),
                   ),
                   Effect.provideService(DeployCredentials, {
-                    values: [Redacted.value(github.token)],
+                    values: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
                   }),
                   Effect.provideService(Images, images),
                   // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.

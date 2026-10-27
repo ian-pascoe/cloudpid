@@ -1,10 +1,13 @@
 // The draft's Start from menu (`docs/spec.md` → Session list → New session): the branches of each of an Environment's
-// Repos, asked of GitHub by the main Worker with `CLOUDPID_GITHUB_TOKEN` through the client the Diff pane's picker uses
-// (`GithubPulls`), which keeps each repo's list for 60 s per isolate. No Workspace or Container is woken.
+// Repos, asked of GitHub by the main Worker with a read-only token of the GitHub App (ADR-0025) through the client the
+// Diff pane's picker uses (`GithubPulls`), which keeps each repo's list for 60 s per isolate. No Workspace or Container
+// is woken.
 // @effect-diagnostics asyncFunction:off globalFetch:off globalDate:off
 import type { EnvironmentRepo, RepoBranches } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
+import { GitHubApp } from "../github/app.ts";
+import type { GitHubAppSecrets } from "../github/config.ts";
 import { GithubPulls, githubRepoOf } from "../workspace/github-pulls.ts";
 
 /** What a Repo whose remote is not on GitHub says in the menu. */
@@ -15,11 +18,23 @@ export type DraftBranches = (
   repos: ReadonlyArray<EnvironmentRepo>,
 ) => Effect.Effect<ReadonlyArray<RepoBranches>>;
 
-/** The GitHub client the main Worker asks with `token`, built once per isolate so its 60 s lists are shared. */
-export const githubBranches = (token: Redacted.Redacted<string>): Pick<GithubPulls, "branches"> =>
+/** What the draft's menu reads of GitHub, and no more: its tokens ask for these alone. */
+export const DRAFT_BRANCHES_PERMISSIONS = { contents: "read", pull_requests: "read" } as const;
+
+/**
+ * The GitHub client the main Worker asks as the GitHub App `secrets`, built once per isolate so its 60 s lists and its
+ * token are shared.
+ */
+export const githubBranches = (secrets: GitHubAppSecrets): Pick<GithubPulls, "branches"> =>
   new GithubPulls({
     fetch: (url, init) => fetch(url, init),
-    token: () => Redacted.value(token),
+    github: new GitHubApp({
+      appId: Redacted.value(secrets.appId),
+      privateKey: Redacted.value(secrets.privateKey),
+      fetch: (url, init) => fetch(url, init),
+      now: () => Date.now(),
+      permissions: DRAFT_BRANCHES_PERMISSIONS,
+    }),
     now: () => Date.now(),
     warn: () => undefined,
   });

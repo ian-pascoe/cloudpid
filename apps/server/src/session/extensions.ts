@@ -57,7 +57,7 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * Owner tabs; and `browser_handoff`, which gives the owner the
  * browser in a Live View for a step the agent cannot do (`BrowserHandoffs`, with the `OwnerNotifications` it pushes through);
  * the `environment_*` tools, which read and change the Registry's Environments (`Environments`), refuse values that hold
- * a Secret (`Secrets`) or the GitHub token (`DeployCredentials`), and keep each change for the Run's Notification
+ * a Secret (`Secrets`) or the GitHub App's key (`DeployCredentials`), and keep each change for the Run's Notification
  * (`AgentChangeLog`), the root conversation's only (`docs/spec.md` → Agent changes); the `settings_*` tools, which read
  * and change the Registry's Settings (`SettingsAccess`) under the same rules, and have the Session read them again
  * after a change (`SettingsReload`); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,

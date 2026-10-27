@@ -41,7 +41,8 @@ import {
   AgentChangeLog,
   type ChangeAuthor,
   type ChangedEnvironment,
-  DeployCredentials,
+  credentialCheck,
+  type DeployCredentials,
   describeApplied,
   refuseEveryEnvironment,
   Environments,
@@ -50,7 +51,6 @@ import {
 } from "./environment.ts";
 import { EVERY_ENVIRONMENT_ID, EVERY_ENVIRONMENT_NAME } from "./environment-secret-marks.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
-import { Redactions } from "./secrets/redaction.ts";
 import { Secrets } from "./secrets/store.ts";
 import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
@@ -257,9 +257,7 @@ export const ApprovalTools: Effect.Effect<
   const log = yield* AgentChangeLog;
   const secrets = yield* Secrets;
 
-  const credentials = new Redactions();
-
-  for (const value of (yield* DeployCredentials).values) credentials.hold("GITHUB_TOKEN", value);
+  const holdsCredential = yield* credentialCheck;
 
   /**
    * Fails, asking nothing, when the reason holds a Secret the Session holds, a deploy-time credential, or a Secret
@@ -275,11 +273,11 @@ export const ApprovalTools: Effect.Effect<
           }),
         )
       : Effect.flatMap(secrets.refresh, () =>
-          secrets.redact(reason) === reason && credentials.redact(reason) === reason
+          secrets.redact(reason) === reason && !holdsCredential(reason)
             ? Effect.void
             : EnvironmentsError.make({
                 message:
-                  "Nothing was asked or saved: the reason holds the value of a Secret this Session holds, or of the GitHub token. Say why without it.",
+                  "Nothing was asked or saved: the reason holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Say why without it.",
               }),
         );
 

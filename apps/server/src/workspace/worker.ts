@@ -29,8 +29,8 @@ export class ContainerExitReports extends WorkerEntrypoint<
 
     return exitReport(request, {
       workspace,
-      secret: this.env.CLOUDPID_GITHUB_TOKEN,
-      // The DO the report names holds its Environment's Secrets, sealed: it takes them out of the lines.
+      // The DO the report names holds the GitHub tokens it minted and its Environment's Secrets, sealed: it takes them
+      // out of the lines.
       redact: async (output) => {
         const namespace = this.env[WORKSPACE_BINDING];
 

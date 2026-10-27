@@ -7,7 +7,7 @@
 // it as the owner's save is applied and records it, the Session hands a change to its own Environment to its Workspace
 // at once, and the Run's end notifies the owner of the changes it made (`AgentChangeLog`). They are the root
 // conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when a
-// text it keeps holds a Secret the Session holds or the GitHub token, or a Secret Reference's placeholder, which these
+// text it keeps holds a Secret the Session holds or a GitHub credential, or a Secret Reference's placeholder, which these
 // tools do not resolve and no command would (`holdsSecret`).
 // @effect-diagnostics missingPipeableSignature:off
 import {
@@ -46,6 +46,7 @@ import {
   type SecretMarks,
   secretMarkTools,
 } from "./environment-secret-marks.ts";
+import { holdsGitHubToken } from "./github-tokens.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -202,11 +203,29 @@ export class AgentChangeLog extends Context.Service<
   { readonly record: (change: RunChange) => Effect.Effect<void> }
 >()("@cloudpid/extensions/environment/AgentChangeLog") {}
 
-/** The deploy-time credentials no plain value may hold: the GitHub token commands get. */
+/**
+ * The deploy-time credentials no plain value may hold: the GitHub App's private key. The GitHub tokens minted from it
+ * are never seen here; any text shaped like one is refused instead (`holdsGitHubToken`).
+ */
 export class DeployCredentials extends Context.Service<
   DeployCredentials,
   { readonly values: ReadonlyArray<string> }
 >()("@cloudpid/extensions/environment/DeployCredentials") {}
+
+/**
+ * Whether a text holds a deploy-time credential, as written or in an encoding redaction knows, or anything shaped like
+ * a GitHub token: what no plain value the agent saves may hold.
+ */
+export const credentialCheck: Effect.Effect<(text: string) => boolean, never, DeployCredentials> =
+  Effect.gen(function* () {
+    const credentials = new Redactions();
+
+    for (const value of (yield* DeployCredentials).values) {
+      credentials.hold("GITHUB_APP_PRIVATE_KEY", value);
+    }
+
+    return (text: string) => credentials.redact(text) !== text || holdsGitHubToken(text);
+  });
 
 /** The longest reason a change may give. */
 export const MAX_CHANGE_REASON = 500;
@@ -461,7 +480,7 @@ const VariableName = Schema.String.check(Schema.isMinLength(1)).annotate({
 });
 
 const PLAIN_VALUES =
-  "Variables are plain: every command, and you, can read them, and they are not taken out of output. Never put a credential in one: a value holding a Secret this Session holds, or the GitHub token, is refused, and so is a Secret Reference, which is not resolved here.";
+  "Variables are plain: every command, and you, can read them, and they are not taken out of output. Never put a credential in one: a value holding a Secret this Session holds, or a GitHub token, is refused, and so is a Secret Reference, which is not resolved here.";
 
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
 // SAFETY: the two types describe the same values; the details are never mutated.
@@ -486,9 +505,7 @@ export const EnvironmentTools: Effect.Effect<
   const log = yield* AgentChangeLog;
   const secrets = yield* Secrets;
 
-  const credentials = new Redactions();
-
-  for (const value of (yield* DeployCredentials).values) credentials.hold("GITHUB_TOKEN", value);
+  const holdsCredential = yield* credentialCheck;
 
   /**
    * Whether `value` holds a Secret's value or a credential, as written or in an encoding redaction knows: checked once
@@ -501,7 +518,7 @@ export const EnvironmentTools: Effect.Effect<
       ? Effect.fail(EnvironmentsError.make({ message: PLACEHOLDER_REFUSAL }))
       : Effect.map(
           secrets.refresh,
-          () => secrets.redact(value) !== value || credentials.redact(value) !== value,
+          () => secrets.redact(value) !== value || holdsCredential(value),
         );
 
   /** The Environment `id` names, this Session's by default, with whether it is this Session's. */
@@ -576,7 +593,7 @@ export const EnvironmentTools: Effect.Effect<
       if (yield* holdsSecret(reason)) {
         return yield* EnvironmentsError.make({
           message:
-            "Nothing was saved: the reason holds the value of a Secret this Session holds, or of the GitHub token. Say why without it.",
+            "Nothing was saved: the reason holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Say why without it.",
         });
       }
 
@@ -682,7 +699,7 @@ export const EnvironmentTools: Effect.Effect<
       field: variableField(name),
       value,
       texts: value === null ? [] : [value],
-      refusal: `Nothing was saved: the value holds the value of a Secret this Session holds, or of the GitHub token. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.${everywhere ? ` If the value is not secret (an email, a URL) and is kept as a Secret only so every Environment has it, ask the user to delete that Secret first (environment_secret_delete asks for their Approval, or they delete it on the Environments page): then this call saves it as a variable for every Environment.` : ""}`,
+      refusal: `Nothing was saved: the value holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.${everywhere ? ` If the value is not secret (an email, a URL) and is kept as a Secret only so every Environment has it, ask the user to delete that Secret first (environment_secret_delete asks for their Approval, or they delete it on the Environments page): then this call saves it as a variable for every Environment.` : ""}`,
       reason,
       conversation,
       prepare: () => Effect.void,
@@ -697,7 +714,7 @@ export const EnvironmentTools: Effect.Effect<
 
   /** The refusal of a script, Toolchains or path that holds a Secret's value: they are stored as written. */
   const storedAsWritten = (what: string) =>
-    `Nothing was saved: the ${what} holds the value of a Secret this Session holds, or of the GitHub token. It is stored as written, and every command and the agent can read it. Use the Secret's name instead: ask the user to keep the value as a Secret for the Environment on the Environments page, and a command or script then gets it as $PI_SECRET_<NAME> (a Setup Script too, when the user marks the Secret for the Build).`;
+    `Nothing was saved: the ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. It is stored as written, and every command and the agent can read it. Use the Secret's name instead: ask the user to keep the value as a Secret for the Environment on the Environments page, and a command or script then gets it as $PI_SECRET_<NAME> (a Setup Script too, when the user marks the Secret for the Build).`;
 
   /** Apply a change of a text setting (a script or the Toolchains) as `tool`. */
   const changeText = (
@@ -929,7 +946,7 @@ export const EnvironmentTools: Effect.Effect<
         `Set an Environment's own Setup Script (this Session's unless id names another): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It prepares what the Environment's Workspaces need whatever their Repos (system packages, a Docker image), in /workspace.`,
         "It runs once per content on each Container (when the content changes, or on a Container started from the image; one restored from a snapshot has run it already), before the Repos' own Setup Scripts, and in the Environment's Build. A Setup Script is part of what a Build is made with, so a changed one makes a new Build. It gets the Environment's variables and the Secrets marked for the Build, runs for 15 minutes at most, and a failure stops no command. Nothing validates the bash before it runs.",
         "A step that belongs to one Repo (installing its dependencies) is usually better in that Repo's own .cloudpid/setup.sh, which is committed with the code; use this one for what is the Environment's.",
-        "The text is stored as written: a Secret this Session holds, or the GitHub token, in it is refused.",
+        "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
         RECORDED,
       ],
       "\n\n",
@@ -965,7 +982,7 @@ export const EnvironmentTools: Effect.Effect<
         `Set an Environment's own Start Script (this Session's unless id names another): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It brings up what a snapshot cannot hold, such as a database or docker compose up, in /workspace.`,
         "It runs at every Container start (a restored Container too), after the Setup Scripts and before the Repos' own Start Scripts, for 5 minutes at most; a failure stops no command. A service it starts must detach, or the script never ends: setsid nohup cmd >/tmp/cmd.log 2>&1 &. It may run again on a Container that already runs, so it should leave a service that is up alone. A Start Script is not part of the Build.",
         "A step that belongs to one Repo is usually better in that Repo's own .cloudpid/start.sh, which is committed with the code; use this one for what is the Environment's.",
-        "The text is stored as written: a Secret this Session holds, or the GitHub token, in it is refused.",
+        "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
         RECORDED,
       ],
       "\n\n",
@@ -1000,7 +1017,7 @@ export const EnvironmentTools: Effect.Effect<
       [
         `Set an Environment's Toolchains (this Session's unless id names another): the text of a mise.toml, at most ${MAX_TOOLCHAINS_BYTES / 1024} KiB of UTF-8 with no NUL; empty means the image's base Toolchains. mise reads it, not the save: a bad one fails the install at the next Container start.`,
         "The bootstrap writes it as /workspace/mise.toml where a Workspace has none or still has the copy it wrote last, and installs from it; a Workspace whose own mise.toml was changed keeps that one. Toolchains are part of what a Build is made with, so a changed text makes a new Build.",
-        "The text is stored as written: a Secret this Session holds, or the GitHub token, in it is refused.",
+        "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
         RECORDED,
       ],
       "\n\n",
@@ -1037,7 +1054,7 @@ export const EnvironmentTools: Effect.Effect<
         `Set an Environment's extra Container-only paths (this Session's unless id names another): the full list, replacing the one there is, of at most ${MAX_IGNORE_PATTERNS} patterns. A path matching one lives on the Container's disk only: it is not synced to the Workspace, so it is fast and kept out of its storage, and it is gone when the Workspace's Container is restarted fresh. The built-in list already covers node_modules, .venv, caches and build tools' output directories.`,
         'A pattern starts with "/" (from /workspace: "/data" is /workspace/data) or "**/" (at any depth), may start with "!" to keep a path synced again, and has only "*" and "**" (a whole segment) as wildcards. The last pattern that matches a path wins. A bad pattern is refused as the user\'s save refuses it.',
         "A changed list means the next Container of each Workspace starts without the Workspace's snapshot (a snapshot is tied to the list its Container launched with): from the Environment's Build once there is one for the new list, else from the image, so dependency directories, build output and caches are made again and the Setup Scripts run again, which takes minutes.",
-        "The patterns are stored as written: a Secret this Session holds, or the GitHub token, in one is refused.",
+        "The patterns are stored as written: a Secret this Session holds, or a GitHub token, in one is refused.",
         RECORDED,
       ],
       "\n\n",
@@ -1081,7 +1098,7 @@ export const EnvironmentTools: Effect.Effect<
       for (const { what, text } of texts) {
         if (text !== "" && (yield* holdsSecret(text))) {
           return yield* EnvironmentsError.make({
-            message: `${outcome}: ${what} holds the value of a Secret this Session holds, or of the GitHub token. Say it without the value; a credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page.`,
+            message: `${outcome}: ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Say it without the value; a credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page.`,
           });
         }
       }

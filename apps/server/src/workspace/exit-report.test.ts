@@ -19,19 +19,17 @@ import {
 
 const url = (path: string) => `http://${EXIT_REPORT_HOST}${path}`;
 
+/** A GitHub App's token, as the Workspace DO mints them. */
+const TOKEN = `ghs_${"0123456789".repeat(3)}abcdef`;
+
 const post = (body: string, path = EXIT_REPORT_PATH) =>
   new Request(url(path), { method: "POST", body });
 
-const handle = async (
-  request: Request,
-  secret?: string,
-  redact: ExitReportRedaction = async (output) => output,
-) => {
+const handle = async (request: Request, redact: ExitReportRedaction = async (output) => output) => {
   const logged: ExitReport[] = [];
 
   const response = await exitReport(request, {
     workspace: "do-1",
-    secret,
     redact,
     log: (report) => logged.push(report),
   });
@@ -58,10 +56,9 @@ describe("a report", () => {
     ]);
   });
 
-  it("has the GitHub token taken out of it", async () => {
+  it("has anything shaped like a GitHub token taken out of it, before the Workspace DO sees it", async () => {
     const { logged } = await handle(
-      post("status=1\nuptime=3\n\nGET https://x-access-token:ghp_secret@github.com\n"),
-      "ghp_secret",
+      post(`status=1\nuptime=3\n\nGET https://x-access-token:${TOKEN}@github.com\n`),
     );
 
     expect(logged[0]?.output).toBe("GET https://x-access-token:***@github.com");
@@ -71,8 +68,7 @@ describe("a report", () => {
     const seen: string[] = [];
 
     const { logged } = await handle(
-      post("status=1\nuptime=3\n\ntoken ghp_secret key sk-live-0123\n"),
-      "ghp_secret",
+      post(`status=1\nuptime=3\n\ntoken ${TOKEN} key sk-live-0123\n`),
       async (output) => {
         seen.push(output);
 
@@ -93,7 +89,7 @@ describe("a report", () => {
         throw new Error("the Durable Object is unreachable");
       },
     ] satisfies ExitReportRedaction[]) {
-      const { response, logged } = await handle(post(body), undefined, redact);
+      const { response, logged } = await handle(post(body), redact);
 
       expect(response.status).toBe(204);
       expect(logged).toEqual([
@@ -111,7 +107,7 @@ describe("a report", () => {
   });
 
   it("keeps what it can read of a body that is not the supervisor's", () => {
-    expect(parseExitReport("status=nope\n", "do-1", undefined)).toEqual({
+    expect(parseExitReport("status=nope\n", "do-1")).toEqual({
       message: "workspace.container.output",
       workspace: "do-1",
       status: null,

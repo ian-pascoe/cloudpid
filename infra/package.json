@@ -7,6 +7,7 @@
     "dev": "alchemy dev",
     "deploy": "alchemy deploy",
     "ci:setup": "alchemy deploy --config github.ts --stage ci --profile admin",
+    "github-app:setup": "node github-app-setup.ts",
     "typecheck": "tsc",
     "lint": "oxlint",
     "test": "vitest run"

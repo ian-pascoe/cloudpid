@@ -20,6 +20,7 @@ import {
 } from "./github-pulls.fixtures.ts";
 import {
   ERRORS_CACHE_MS,
+  type GithubOptions,
   GithubPulls,
   NOT_FOUND_MESSAGE,
   PULLS_CACHE_MS,
@@ -43,7 +44,13 @@ type Call = {
 };
 
 /** A client over a GitHub that answers `routes` by path, and records each request. */
-const client = (routes: Record<string, () => Response>) => {
+const client = (
+  routes: Record<string, (call: Call) => Response>,
+  github: GithubOptions["github"] = {
+    token: async () => "ghp_secret",
+    invalidate: () => undefined,
+  },
+) => {
   const calls: Call[] = [];
   const clock = { now: 1_000_000 };
 
@@ -52,16 +59,18 @@ const client = (routes: Record<string, () => Response>) => {
       const { pathname, search } = new URL(url);
       const route = routes[`${pathname}${search}`] ?? routes[pathname];
 
-      calls.push({
+      const call = {
         method: init.method ?? "GET",
         url: `${pathname}${search}`,
         authorization: new Headers(init.headers).get("authorization"),
         body: await new Response(init.body).text(),
-      });
+      };
 
-      return route === undefined ? json(NOT_FOUND, 404) : route();
+      calls.push(call);
+
+      return route === undefined ? json(NOT_FOUND, 404) : route(call);
     },
-    token: () => "ghp_secret",
+    github,
     now: () => clock.now,
     warn: () => undefined,
   });
@@ -253,21 +262,75 @@ describe("the open pull requests of a repo", () => {
     });
   });
 
+  it("asks once more with a new token when GitHub refuses one with a 401, and says it refused the second", async () => {
+    const minted = ["ghs_old"];
+    const invalidated: string[] = [];
+
+    const github = {
+      token: async () => minted.at(-1) ?? "",
+      invalidate: (token: string) => {
+        invalidated.push(token);
+        minted.push(`ghs_new${minted.length}`);
+      },
+    };
+
+    const accepting = client(
+      {
+        [GRAPHQL]: (call) =>
+          call.authorization === "Bearer ghs_new1"
+            ? json(GRAPHQL_LIST)
+            : json(BAD_CREDENTIALS, 401),
+      },
+      github,
+    );
+
+    expect(await accepting.pulls.list(REPO, null)).toMatchObject({ status: "ok" });
+    expect(accepting.calls.map((call) => call.authorization)).toEqual([
+      "Bearer ghs_old",
+      "Bearer ghs_new1",
+    ]);
+    expect(invalidated).toEqual(["ghs_old"]);
+
+    const refusing = client({ [GRAPHQL]: () => json(BAD_CREDENTIALS, 401) }, github);
+
+    expect(await refusing.pulls.list(REPO, null)).toEqual({
+      status: "error",
+      kind: "refused",
+      message: REFUSED_MESSAGE,
+    });
+    expect(refusing.calls).toHaveLength(2);
+  });
+
+  it("says why it has no token when none could be minted, asking GitHub nothing", async () => {
+    const { pulls, calls } = client(OPEN_ROUTES, {
+      token: () => Promise.reject(new Error("The GitHub App is not installed")),
+      invalidate: () => undefined,
+    });
+
+    expect(await pulls.list(REPO, null)).toEqual({
+      status: "error",
+      kind: "failed",
+      message: "No GitHub token: The GitHub App is not installed",
+    });
+    expect(calls).toEqual([]);
+  });
+
   it("remembers a failure for a few seconds, so a refused token is not asked on every call", async () => {
     let answer = () => json(BAD_CREDENTIALS, 401);
 
     const { pulls, calls, clock } = client({ [GRAPHQL]: () => answer() });
 
+    // The first refusal is asked again with a new token; then it is remembered.
     expect(await pulls.list(REPO, null)).toMatchObject({ status: "error", kind: "refused" });
     clock.now += ERRORS_CACHE_MS - 1;
     expect(await pulls.list(REPO, null)).toMatchObject({ status: "error", kind: "refused" });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
 
     // After it GitHub is asked again, and a good answer is a list.
     answer = () => json(GRAPHQL_LIST);
     clock.now += 1;
     expect(await pulls.list(REPO, null)).toMatchObject({ status: "ok" });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
   });
 
   it("holds every request while the rate limit lasts, as long as GitHub asked", async () => {
@@ -311,7 +374,7 @@ describe("the open pull requests of a repo", () => {
 
     const down = new GithubPulls({
       fetch: () => Promise.reject(new Error("connection reset")),
-      token: () => undefined,
+      github: undefined,
       now: () => 0,
       warn: () => undefined,
     });

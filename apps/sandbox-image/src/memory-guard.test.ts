@@ -179,7 +179,7 @@ describe("the memory guard in the image", () => {
   });
 
   it("is what every command's environment points BASH_ENV at", () => {
-    expect(toolchainEnv({}).BASH_ENV).toBe(COMMAND_BASH_ENV);
+    expect(toolchainEnv().BASH_ENV).toBe(COMMAND_BASH_ENV);
   });
 });
 

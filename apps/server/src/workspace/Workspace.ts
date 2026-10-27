@@ -20,6 +20,7 @@ import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import jq from "@cloudflare/computer/shell/jq";
 import { EXIT_REPORT_HOST } from "@cloudpid/sandbox-image/supervisor";
 import { type KeptSecret, type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
+import { GitHubApp, type MintedToken } from "../github/app.ts";
 import { redactText } from "./redact.ts";
 import { TOOLCHAIN_IGNORE } from "@cloudpid/sandbox-image/toolchains";
 import {
@@ -133,10 +134,12 @@ export type WorkspaceEnv = {
   /** The Worker Loader the Worker Shell runs in. */
   readonly LOADER: WorkerLoader;
   /**
-   * The GitHub token commands on the Container get as `GH_TOKEN` and `GITHUB_TOKEN` (a deploy-time secret,
-   * `CLOUDPID_GITHUB_TOKEN`). Absent or empty, commands run without one.
+   * The GitHub App (deploy-time secrets, ADR-0025): its ID and private key, which this object mints the GitHub tokens
+   * from that commands on the Container get as `GH_TOKEN` and `GITHUB_TOKEN` and its GitHub calls are made with. Either
+   * absent or empty, commands and calls go without one.
    */
-  readonly CLOUDPID_GITHUB_TOKEN?: string;
+  readonly CLOUDPID_GITHUB_APP_ID?: string;
+  readonly CLOUDPID_GITHUB_APP_PRIVATE_KEY?: string;
   /**
    * The master key the Environment's kept Secrets are sealed under in this object's storage (a deploy-time secret,
    * `SECRETS_ENCRYPTION_KEY`, as the Session DOs and the Registry have). Absent, they are held in memory only, and a
@@ -193,6 +196,9 @@ const CHANGES_KEY = "cloudpid:changes";
 /** Where a Build's object keeps its Builds (`BuildRunner`); only a Build's object has it. */
 const BUILDS_KEY = "cloudpid:builds";
 
+/** Where the GitHub tokens this object minted are kept until they expire (`GitHubApp`), so an eviction forgets none. */
+const GITHUB_TOKENS_KEY = "cloudpid:github-tokens";
+
 /** How long the command that starts a spare's Container, so its bootstrap runs, may take, in seconds. */
 const SPARE_BOOTSTRAP_TIMEOUT_SECONDS = 20 * 60;
 
@@ -236,6 +242,8 @@ export class Workspace extends ContainerHost {
   readonly #spare: SparePreparation;
   /** The Environment's kept Secrets, as last handed over: sealed in storage, searched for before each snapshot. */
   readonly #environmentSecrets: WorkspaceSecrets;
+  /** The GitHub App the GitHub tokens are minted from; none where the deploy bound none. */
+  readonly #github: GitHubApp | undefined;
   readonly #sql: SqlStorage;
   /** The Changes of the Workspace's repos (`changes`, `changeFile`). */
   readonly #changes: WorkspaceChangesModule;
@@ -271,14 +279,35 @@ export class Workspace extends ContainerHost {
       owner: ctx.id.toString(),
     }));
 
-    /** `text` with the GitHub token and the kept Secrets this instance holds taken out. */
-    const redact = (text: string) =>
-      redactText(text, env.CLOUDPID_GITHUB_TOKEN, environmentSecrets.known());
+    // The GitHub tokens: minted for this object as it needs them, each handed out until less than 45 minutes are left,
+    // and kept in storage until it expires, since the Container (and a command holding one) can outlive this instance.
+    const github = (this.#github =
+      env.CLOUDPID_GITHUB_APP_ID === undefined ||
+      env.CLOUDPID_GITHUB_APP_ID === "" ||
+      env.CLOUDPID_GITHUB_APP_PRIVATE_KEY === undefined ||
+      env.CLOUDPID_GITHUB_APP_PRIVATE_KEY === ""
+        ? undefined
+        : new GitHubApp({
+            appId: env.CLOUDPID_GITHUB_APP_ID,
+            privateKey: env.CLOUDPID_GITHUB_APP_PRIVATE_KEY,
+            fetch: (url, init) => this.githubFetch(url, init),
+            now: () => this.clock(),
+            kept: {
+              load: () => ctx.storage.kv.get<ReadonlyArray<MintedToken>>(GITHUB_TOKENS_KEY),
+              save: (minted) => ctx.storage.kv.put(GITHUB_TOKENS_KEY, minted),
+            },
+          }));
+
+    /** The GitHub tokens this object minted that have not expired. */
+    const githubTokens = () => github?.live() ?? [];
+
+    /** `text` with the GitHub tokens and the kept Secrets this instance holds taken out. */
+    const redact = (text: string) => redactText(text, githubTokens(), environmentSecrets.known());
 
     const snapshots = (this.#snapshots = new ContainerSnapshots({
       // The local Container has no real mount, and no snapshots.
       enabled: env.CONTAINER_FUSE !== "false",
-      secret: env.CLOUDPID_GITHUB_TOKEN,
+      tokens: githubTokens,
       // The Environment's kept Secrets too: a Workspace that cannot show them takes no snapshot.
       secrets: () => environmentSecrets.read(),
       timeoutMs: SNAPSHOT_TIMEOUT_MS,
@@ -446,11 +475,11 @@ export class Workspace extends ContainerHost {
 
     // Before the first command of each Container start, the Toolchains are installed (the lockfile's), the Environment's
     // and the repos' Setup Scripts that are due run, then their Start Scripts; every command gets the Environment's
-    // variables, the GitHub token and mise's settings, and the token is taken out of its output. The Workspace sees this
+    // variables, a GitHub token and mise's settings, and the tokens are taken out of its output. The Workspace sees this
     // as the Container's backend.
     const toolchains = new ToolchainBackend({
       backend: this.#container,
-      githubToken: env.CLOUDPID_GITHUB_TOKEN,
+      github,
       // Taken out of output as the token is, each as its Secret Reference.
       secrets: {
         read: async () => {
@@ -594,7 +623,7 @@ export class Workspace extends ContainerHost {
         },
       },
       fetch: (url, init) => this.githubFetch(url, init),
-      token: () => env.CLOUDPID_GITHUB_TOKEN,
+      github,
       now: () => this.clock(),
       redact,
       warn: (message) => console.warn(message),
@@ -672,7 +701,10 @@ export class Workspace extends ContainerHost {
     return Date.now();
   }
 
-  /** GitHub's REST API (the base of a branch's pull request, and the pull requests). A test Worker replaces it. */
+  /**
+   * GitHub's API (the base of a branch's pull request, the pull requests, and the GitHub App's tokens). A test Worker
+   * replaces it.
+   */
   protected githubFetch(url: string, init: RequestInit): Promise<Response> {
     return fetch(url, init);
   }
@@ -858,7 +890,7 @@ export class Workspace extends ContainerHost {
   async redactExitReport(text: string): Promise<string | null> {
     const held = await this.#environmentSecrets.read();
 
-    return held.ok ? redactText(text, this.env.CLOUDPID_GITHUB_TOKEN, held.secrets) : null;
+    return held.ok ? redactText(text, this.#github?.live() ?? [], held.secrets) : null;
   }
 
   /**

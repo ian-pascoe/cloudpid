@@ -52,7 +52,13 @@ import {
   withFlags,
 } from "./changes.ts";
 import { MAX_PACK_BYTES, packfileBytes } from "./git.ts";
-import { type GithubPull, GithubPulls, type GitHubRepo, githubRepoOf } from "./github-pulls.ts";
+import {
+  type GithubOptions,
+  type GithubPull,
+  GithubPulls,
+  type GitHubRepo,
+  githubRepoOf,
+} from "./github-pulls.ts";
 
 export type { GitHubRepo };
 
@@ -127,8 +133,8 @@ export type ComparisonOptions = {
   };
   /** GitHub's REST API (the base of the branch's open pull request, and the pull requests). */
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
-  /** The GitHub token (`CLOUDPID_GITHUB_TOKEN`); absent, the API is asked without one. */
-  readonly token: () => string | undefined;
+  /** Where the GitHub token comes from (the GitHub App); absent, the API is asked without one. */
+  readonly github: GithubOptions["github"];
   /** The time in ms (the 60 s a pull request list is kept are counted by it); `Date.now` by default. */
   readonly now?: () => number;
   /** `text` with the GitHub token and the Environment's kept Secrets taken out. */
@@ -196,7 +202,7 @@ export class WorkspaceComparisonModule {
     this.#options = options;
     this.#github = new GithubPulls({
       fetch: options.fetch,
-      token: options.token,
+      github: options.github,
       now: options.now ?? (() => Date.now()),
       warn: options.warn,
     });

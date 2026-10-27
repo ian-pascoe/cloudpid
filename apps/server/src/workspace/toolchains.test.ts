@@ -154,7 +154,7 @@ const open = (
 
   const toolchains = new ToolchainBackend({
     backend: container.backend,
-    githubToken: "ghp_secret",
+    github: { token: async () => "ghp_secret", live: () => ["ghp_secret"] },
     git: { name: "Pi Agent", email: "pi@example.com" },
     warn: (message) => warnings.push(message),
     now: () => clock.now,
@@ -541,9 +541,59 @@ describe("a command's environment", () => {
     });
   });
 
+  it("has the token the GitHub App hands out at its start, and the output of each has every live token taken out", async () => {
+    const minted = ["ghs_first"];
+
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? {} : { stdout: [`${minted.join(" ")}\n`] },
+    );
+
+    const handle = await open(container, {
+      github: { token: async () => minted.at(-1) ?? "", live: () => minted },
+    }).toolchains.connect(host);
+
+    const first = await output(await handle.rpc.shell.exec({ source: "a" }));
+
+    minted.push("ghs_second");
+
+    const second = await output(await handle.rpc.shell.exec({ source: "b" }));
+
+    expect(commands(container.execs).map((input) => input.env?.GITHUB_TOKEN)).toEqual([
+      "ghs_first",
+      "ghs_second",
+    ]);
+    expect(commands(container.execs).map((input) => input.env?.GH_TOKEN)).toEqual([
+      "ghs_first",
+      "ghs_second",
+    ]);
+    expect(first.stdout).toBe("***\n");
+    expect(second.stdout).toBe("*** ***\n");
+  });
+
+  it("has no token when none could be minted, and its stderr says why first", async () => {
+    const container = fakeContainer();
+
+    const handle = await open(container, {
+      github: {
+        token: () => Promise.reject(new Error("The GitHub App is not installed")),
+        live: () => [],
+      },
+    }).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "git push" });
+
+    const command = commands(container.execs)[0];
+
+    expect(command?.env).not.toHaveProperty("GITHUB_TOKEN");
+    expect(command?.env).not.toHaveProperty("GH_TOKEN");
+    expect(unquoted(command?.source)).toBe(
+      "printf '%s\\n' 'cloudpid: this command has no GitHub token (The GitHub App is not installed), so git and gh reach GitHub without one. A later command asks for one again.' >&2\ngit push",
+    );
+  });
+
   it("has no token variable where the stack bound none", async () => {
     const container = fakeContainer();
-    const handle = await open(container, { githubToken: undefined }).toolchains.connect(host);
+    const handle = await open(container, { github: undefined }).toolchains.connect(host);
 
     await handle.rpc.shell.exec({ source: "true" });
 
@@ -672,7 +722,7 @@ describe("a command's output", () => {
       isBootstrap(input) ? {} : { stdout: ["ghp_secret"] },
     );
 
-    const handle = await open(container, { githubToken: undefined }).toolchains.connect(host);
+    const handle = await open(container, { github: undefined }).toolchains.connect(host);
     const seen = await output(await handle.rpc.shell.exec({ source: "x" }));
 
     expect(seen.stdout).toBe("ghp_secret");

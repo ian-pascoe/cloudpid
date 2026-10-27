@@ -170,43 +170,37 @@ export type ToolchainEnv = {
   GITHUB_TOKEN?: string;
 };
 
-/** What the Workspace DO knows that commands need. */
-export type ToolchainEnvOptions = {
-  /** The GitHub token for git and gh; none leaves a command's own alone. */
-  readonly githubToken?: string | undefined;
-};
-
 /**
  * The environment every command on the Container gets, under whatever the caller passes. computerd starts a command
  * with PATH (the image's, which has mise's shims first) and HOME but none of the image's other variables, so mise's
- * settings are here, and `BASH_ENV`, which gives each command the memory guard's notes (`memory-guard.ts`). The token is
- * only ever here, in a process's environment: `bootstrapScript` makes git read it from there, so no file holds it.
+ * settings are here, and `BASH_ENV`, which gives each command the memory guard's notes (`memory-guard.ts`). The GitHub
+ * token is not: it changes as the Workspace DO mints new ones, so each command gets its own (`githubTokenEnv`).
  */
-export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
-  const env: ToolchainEnv = {
-    // The Workspace's mise.toml is also mise's global config: a mise shim resolves its version from the working
-    // directory's config and the global one, so without this git and gh would fail ("No version is set for shim")
-    // anywhere but under /workspace: in a scratch clone in /tmp, or in the git calls pip and npm make from their own
-    // temp directories. The image has no other git to fall back on.
-    MISE_GLOBAL_CONFIG_FILE: ROOT_MISE_TOML,
-    // Every repo's mise.toml is the agent's own, in its own Workspace: trusted, and nothing to ask about. (A project's
-    // mise.toml cannot set these two, so they are the environment's.)
-    MISE_TRUSTED_CONFIG_PATHS: WORKSPACE_ROOT,
-    MISE_YES: "1",
-    // A prompt nobody answers would hang the command.
-    GIT_TERMINAL_PROMPT: "0",
-    TURBO_CACHE_DIR,
-    // The command's bash reads it first, and prints when the command ends what the memory guard stopped meanwhile.
-    BASH_ENV: COMMAND_BASH_ENV,
-  };
+export const toolchainEnv = (): ToolchainEnv => ({
+  // The Workspace's mise.toml is also mise's global config: a mise shim resolves its version from the working
+  // directory's config and the global one, so without this git and gh would fail ("No version is set for shim")
+  // anywhere but under /workspace: in a scratch clone in /tmp, or in the git calls pip and npm make from their own
+  // temp directories. The image has no other git to fall back on.
+  MISE_GLOBAL_CONFIG_FILE: ROOT_MISE_TOML,
+  // Every repo's mise.toml is the agent's own, in its own Workspace: trusted, and nothing to ask about. (A project's
+  // mise.toml cannot set these two, so they are the environment's.)
+  MISE_TRUSTED_CONFIG_PATHS: WORKSPACE_ROOT,
+  MISE_YES: "1",
+  // A prompt nobody answers would hang the command.
+  GIT_TERMINAL_PROMPT: "0",
+  TURBO_CACHE_DIR,
+  // The command's bash reads it first, and prints when the command ends what the memory guard stopped meanwhile.
+  BASH_ENV: COMMAND_BASH_ENV,
+});
 
-  if (options.githubToken !== undefined && options.githubToken !== "") {
-    env.GH_TOKEN = options.githubToken;
-    env.GITHUB_TOKEN = options.githubToken;
-  }
-
-  return env;
-};
+/**
+ * The GitHub token as gh and git's credential helper read it (`GH_TOKEN`, `GITHUB_TOKEN`); nothing without one. The token
+ * is only ever in a process's environment: `bootstrapScript` makes git read it from there, so no file holds it.
+ */
+export const githubTokenEnv = (
+  token: string | undefined,
+): Pick<ToolchainEnv, "GH_TOKEN" | "GITHUB_TOKEN"> =>
+  token === undefined || token === "" ? {} : { GH_TOKEN: token, GITHUB_TOKEN: token };
 
 /** git's answer to a credential request for github.com: the token of the environment it runs in. */
 const CREDENTIAL_HELPER = String.raw`!f() { if [ "$1" = get ] && [ -n "$GITHUB_TOKEN" ]; then echo username=x-access-token; echo "password=$GITHUB_TOKEN"; fi; }; f`;

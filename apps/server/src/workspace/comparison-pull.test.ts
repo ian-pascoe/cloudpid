@@ -179,7 +179,7 @@ const module = (space: Space, github: GitHub, hold?: Promise<void>) => {
         ? Response.json({ message: "Not Found" }, { status: 404 })
         : Response.json(single);
     },
-    token: () => "ghp_secret",
+    github: { token: async () => "ghp_secret", invalidate: () => undefined },
     now: () => clock.now,
     redact: (text) => text.replaceAll("ghp_secret", "***"),
     warn: () => undefined,

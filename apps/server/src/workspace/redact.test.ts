@@ -83,12 +83,12 @@ describe("redacting a secret from output", () => {
 });
 
 describe("redacting text", () => {
-  it("takes the token out as *** and each kept Secret as its reference", () => {
+  it("takes each GitHub token out as *** and each kept Secret as its reference", () => {
     const kept = { name: "API_KEY", value: "sk-live-key", scope: "every" as const, build: false };
 
-    expect(redactText("ghp_secret and sk-live-key", "ghp_secret", [kept])).toBe(
-      `*** and ${secretReference("API_KEY")}`,
+    expect(redactText("ghs_old, ghs_new and sk-live-key", ["ghs_old", "ghs_new"], [kept])).toBe(
+      `***, *** and ${secretReference("API_KEY")}`,
     );
-    expect(redactText("as it was", undefined, [])).toBe("as it was");
+    expect(redactText("as it was", [], [])).toBe("as it was");
   });
 });

@@ -122,13 +122,16 @@ const concat = (parts: readonly Uint8Array[]): Uint8Array => {
   return out;
 };
 
-/** `text` without the GitHub token (as `***`) and without each of `secrets` (as its Secret Reference). */
+/** `text` without each GitHub token of `tokens` (as `***`) and without each of `secrets` (as its Secret Reference). */
 export const redactText = (
   text: string,
-  token: string | undefined,
+  tokens: ReadonlyArray<string>,
   secrets: ReadonlyArray<KeptSecret>,
 ): string => {
-  const tokenless = token === undefined || token === "" ? text : text.replaceAll(token, "***");
+  const tokenless = tokens.reduce(
+    (redacted, token) => (token === "" ? redacted : redacted.replaceAll(token, "***")),
+    text,
+  );
 
   return secrets.reduce(
     (redacted, kept) =>
