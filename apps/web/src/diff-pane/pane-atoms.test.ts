@@ -495,33 +495,35 @@ describe("a Diff pane's This branch", () => {
     }),
   );
 
-  it.effect("offers no repo for This branch or a pull request on a Subagent page, and asks the Session nothing", () =>
-    Effect.gen(function* () {
-      const { registry, latest, live } = setup();
-      const pane = paneAtomsOf(conversationKey("s1", 3));
+  it.effect(
+    "offers no repo for This branch or a pull request on a Subagent page, and asks the Session nothing",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest, live } = setup();
+        const pane = paneAtomsOf(conversationKey("s1", 3));
 
-      yield* live;
-      registry.mount(pane.sources);
-      yield* settle;
+        yield* live;
+        registry.mount(pane.sources);
+        yield* settle;
 
-      const answer = registry.get(pane.sources);
+        const answer = registry.get(pane.sources);
 
-      expect(AsyncResult.isSuccess(answer) ? answer.value : undefined).toEqual({ repos: [] });
-      expect(
-        latest()
-          .commands()
-          .filter((command) => command.type === "comparison_sources"),
-      ).toEqual([]);
+        expect(AsyncResult.isSuccess(answer) ? answer.value : undefined).toEqual({ repos: [] });
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "comparison_sources"),
+        ).toEqual([]);
 
-      // Nor does opening the picker ask.
-      registry.set(pane.pickerOpened, undefined);
-      yield* settle;
-      expect(
-        latest()
-          .commands()
-          .filter((command) => command.type === "comparison_sources"),
-      ).toEqual([]);
-    }),
+        // Nor does opening the picker ask.
+        registry.set(pane.pickerOpened, undefined);
+        yield* settle;
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "comparison_sources"),
+        ).toEqual([]);
+      }),
   );
 
   it.effect("asks for the picker's pull requests with its repos, and again at each opening", () =>

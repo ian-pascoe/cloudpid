@@ -119,6 +119,31 @@ describe("the Viewed boxes", () => {
     expect(await Effect.runPromise(viewed.list)).toHaveLength(MAX_VIEWED - 1);
   });
 
+  it("refuses a box past the characters the paths may take, and never an untick", async () => {
+    const { viewed } = store();
+    const long = "p".repeat(4_000);
+
+    // Each box is about 4,000 characters, so 225 of them fill the limit, far below MAX_VIEWED.
+    let ticked = 0;
+    let refused: string | undefined;
+
+    while (refused === undefined && ticked < MAX_VIEWED) {
+      const failure = await Effect.runPromise(
+        viewed.set(key(`${long}${ticked}`, 1 + Math.floor(ticked / 100)), "blob").pipe(Effect.flip),
+      ).catch(() => undefined);
+
+      if (failure === undefined) ticked++;
+      else refused = failure.message;
+    }
+
+    expect(ticked).toBeLessThan(MAX_VIEWED);
+    expect(refused).toMatch(/characters of paths/);
+    expect(await Effect.runPromise(viewed.list)).toHaveLength(ticked);
+
+    await Effect.runPromise(viewed.set(key(`${long}0`, 1), null));
+    expect(await Effect.runPromise(viewed.list)).toHaveLength(ticked - 1);
+  });
+
   describe("on a refresh of the pull request", () => {
     it("untick the files whose head blob changed or that left the pull request, and keep the rest", async () => {
       const { viewed, announced } = store();
@@ -158,7 +183,7 @@ describe("the Viewed boxes", () => {
       expect(await Effect.runPromise(viewed.list)).toHaveLength(1);
     });
 
-    it("changes nothing for a list marked behind, a closed pull request, or the branch's Comparison", async () => {
+    it("changes nothing for a list marked behind, or the branch's Comparison", async () => {
       const { viewed } = store();
 
       await Effect.runPromise(viewed.set(key("a.ts"), "a1"));
@@ -166,13 +191,6 @@ describe("the Viewed boxes", () => {
       const changed = [{ path: "a.ts", blob: "a2" }];
 
       await Effect.runPromise(viewed.reset(pullComparison(changed, { behind: "c".repeat(40) })));
-      await Effect.runPromise(
-        viewed.reset(
-          pullComparison(changed, {
-            pull: { number: 7, title: "T", author: "dev", draft: false, state: "merged" },
-          }),
-        ),
-      );
 
       const { pull: _pull, ...ofBranch } = pullComparison(changed);
 
@@ -180,5 +198,33 @@ describe("the Viewed boxes", () => {
 
       expect(await Effect.runPromise(viewed.list)).toHaveLength(1);
     });
+
+    it.each((["merged", "closed"] as const).map((state) => [state]))(
+      "drops all of a pull request's boxes when it comes back %s, and no other pull request's",
+      async (state) => {
+        const { viewed, announced } = store();
+
+        await Effect.runPromise(viewed.set(key("a.ts"), "a1"));
+        await Effect.runPromise(viewed.set(key("b.ts"), "b1"));
+        await Effect.runPromise(viewed.set(key("a.ts", 8), "o1"));
+
+        const before = announced.length;
+
+        const done = pullComparison([{ path: "a.ts", blob: "a1" }], {
+          pull: { number: 7, title: "T", author: "dev", draft: false, state },
+        });
+
+        await Effect.runPromise(viewed.reset(done));
+
+        expect(
+          (await Effect.runPromise(viewed.list)).map((each) => `${each.pull} ${each.path}`),
+        ).toEqual(["8 a.ts"]);
+        expect(announced).toHaveLength(before + 1);
+
+        // Again: nothing is left to drop, and nothing is announced.
+        await Effect.runPromise(viewed.reset(done));
+        expect(announced).toHaveLength(before + 1);
+      },
+    );
   });
 });

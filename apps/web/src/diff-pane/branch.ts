@@ -67,14 +67,19 @@ export interface SourceOption {
   readonly disabled?: boolean;
 }
 
-/** "#7 Fix the thing · dev · draft · +12 −3": one pull request as the picker names it. */
+/** "#7 Fix the thing · dev · draft · 4 files · +12 −3 · abc1234": one pull request as the picker names it. */
 export const pullLabel = (pull: PullRequest): string => {
+  const files =
+    pull.changedFiles === null
+      ? ""
+      : ` · ${pull.changedFiles} file${pull.changedFiles === 1 ? "" : "s"}`;
+
   const counts =
     pull.additions === null || pull.deletions === null
       ? ""
       : ` · +${pull.additions} −${pull.deletions}`;
 
-  return `#${pull.number} ${pull.title} · ${pull.author}${pull.draft ? " · draft" : ""}${counts}${pull.thisBranch === true ? " · this branch" : ""}`;
+  return `#${pull.number} ${pull.title} · ${pull.author}${pull.draft ? " · draft" : ""}${files}${counts} · ${shortSha(pull.head)}${pull.thisBranch === true ? " · this branch" : ""}`;
 };
 
 /** What the picker's filter box asks: the text typed, and the value of the source on show (always listed). */
@@ -101,8 +106,8 @@ export const matchesPull = (pull: PullRequest, text: string): boolean => {
 
 /**
  * A repo's pull requests as picker options: the one of the checked-out branch first ("this branch"), then the list's own
- * order (most recently updated first); or one line saying why there are none. A repo whose remote is not GitHub's, or
- * whose pull requests were not asked for, lists nothing.
+ * order (most recently updated first); or one line saying why there are none ("Pull requests need a GitHub remote" for a
+ * remote that is not GitHub's). A repo whose pull requests were not asked for lists nothing.
  */
 export const pullOptions = (
   repo: string,
@@ -112,15 +117,14 @@ export const pullOptions = (
   if (pulls === undefined) return [];
 
   if (pulls.status === "error") {
-    return pulls.kind === "no_github"
-      ? []
-      : [
-          {
-            value: `pulls-error:${repo}`,
-            label: `Pull requests: ${pulls.message}`,
-            disabled: true,
-          },
-        ];
+    return [
+      {
+        value: `pulls-error:${repo}`,
+        // That message already says what it is about.
+        label: pulls.kind === "no_github" ? pulls.message : `Pull requests: ${pulls.message}`,
+        disabled: true,
+      },
+    ];
   }
 
   // The checked-out branch's pull request stays first whatever is typed, and so does the one on show.
@@ -153,6 +157,27 @@ export const pullOptions = (
 
   return options;
 };
+
+/** What a key in the filter box does. */
+export type FilterKeyAction = "pick-first" | "focus-list" | "clear" | "none";
+
+/**
+ * Enter picks the first pull request the text leaves, Down moves to the list, Escape clears the text (and does nothing
+ * when there is none, so it still reaches whatever closes the Pane).
+ */
+export const filterKeyAction = (key: string, text: string): FilterKeyAction => {
+  if (key === "Enter") return "pick-first";
+
+  if (key === "ArrowDown") return "focus-list";
+
+  return key === "Escape" && text !== "" ? "clear" : "none";
+};
+
+/** The first pull request the groups list that can be picked: the checked-out branch's before the others. */
+export const firstPull = (groups: readonly SourceGroup[]): SourceOption | undefined =>
+  groups
+    .flatMap(({ options }) => options)
+    .find((option) => option.value.startsWith("pull:") && option.disabled !== true);
 
 /** Whether any repo has a pull request to filter. */
 export const hasPulls = (sources: ComparisonSources | null): boolean =>

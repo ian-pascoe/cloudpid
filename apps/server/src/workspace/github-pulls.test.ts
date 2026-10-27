@@ -1,19 +1,28 @@
-// The GitHub REST client for pull requests, over recorded responses (`github-pulls.fixtures.ts`): the list with its counts,
-// the 60 s the list is kept, and the refusals (401, 403, and 404 for a private repo).
+// The GitHub client for pull requests, over recorded responses (`github-pulls.fixtures.ts`): the list in one GraphQL
+// request, the 60 s it is kept, the refusals (401, 403, and a repo the token cannot see), the rate limits, and how long a
+// failure is remembered.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalFetch:off
 import { describe, expect, it } from "vitest";
 import {
   type Json,
   BAD_CREDENTIALS,
   FORBIDDEN,
-  LIST_OPEN,
+  GRAPHQL_LIST,
+  GRAPHQL_NOT_FOUND,
+  GRAPHQL_RATE_LIMITED,
   NOT_FOUND,
   RATE_LIMITED,
   SINGLE_246_MERGED,
-  SINGLE_267,
   SINGLE_269,
 } from "./github-pulls.fixtures.ts";
-import { GithubPulls, PULLS_CACHE_MS, REFUSED_MESSAGE } from "./github-pulls.ts";
+import {
+  ERRORS_CACHE_MS,
+  GithubPulls,
+  NOT_FOUND_MESSAGE,
+  PULLS_CACHE_MS,
+  RATE_LIMITED_MESSAGE,
+  REFUSED_MESSAGE,
+} from "./github-pulls.ts";
 
 const REPO = { owner: "ian-pascoe", name: "cloudpid" };
 
@@ -23,7 +32,12 @@ const json = (body: Json, status = 200, headers: Record<string, string> = {}) =>
     headers: { "content-type": "application/json", ...headers },
   });
 
-type Call = { readonly url: string; readonly authorization: string | null };
+type Call = {
+  readonly method: string;
+  readonly url: string;
+  readonly authorization: string | null;
+  readonly body: string;
+};
 
 /** A client over a GitHub that answers `routes` by path, and records each request. */
 const client = (routes: Record<string, () => Response>) => {
@@ -31,16 +45,18 @@ const client = (routes: Record<string, () => Response>) => {
   const clock = { now: 1_000_000 };
 
   const pulls = new GithubPulls({
-    fetch: (url, init) => {
+    fetch: async (url, init) => {
       const { pathname, search } = new URL(url);
       const route = routes[`${pathname}${search}`] ?? routes[pathname];
 
       calls.push({
+        method: init.method ?? "GET",
         url: `${pathname}${search}`,
         authorization: new Headers(init.headers).get("authorization"),
+        body: await new Response(init.body).text(),
       });
 
-      return Promise.resolve(route === undefined ? json(NOT_FOUND, 404) : route());
+      return route === undefined ? json(NOT_FOUND, 404) : route();
     },
     token: () => "ghp_secret",
     now: () => clock.now,
@@ -50,17 +66,11 @@ const client = (routes: Record<string, () => Response>) => {
   return { pulls, calls, clock };
 };
 
-const LIST_URL =
-  "/repos/ian-pascoe/cloudpid/pulls?state=open&sort=updated&direction=desc&per_page=50";
-
-const OPEN_ROUTES = {
-  [LIST_URL]: () => json(LIST_OPEN),
-  "/repos/ian-pascoe/cloudpid/pulls/269": () => json(SINGLE_269),
-  "/repos/ian-pascoe/cloudpid/pulls/267": () => json(SINGLE_267),
-};
+const GRAPHQL = "/graphql";
+const OPEN_ROUTES = { [GRAPHQL]: () => json(GRAPHQL_LIST) };
 
 describe("the open pull requests of a repo", () => {
-  it("lists them most recently updated first, with the counts of each single pull request, and marks the branch's own", async () => {
+  it("lists them most recently updated first in one request, counts and heads included, and marks the branch's own", async () => {
     const { pulls, calls } = client(OPEN_ROUTES);
     const list = await pulls.list(REPO, "feat/diffs-231-this-branch");
 
@@ -98,26 +108,32 @@ describe("the open pull requests of a repo", () => {
       ],
     });
 
-    expect(calls.map((call) => call.url).toSorted()).toEqual(
-      [
-        LIST_URL,
-        "/repos/ian-pascoe/cloudpid/pulls/267",
-        "/repos/ian-pascoe/cloudpid/pulls/269",
-      ].toSorted(),
-    );
-    expect(calls.every((call) => call.authorization === "Bearer ghp_secret")).toBe(true);
+    // One request, however many pull requests: no request per pull request for its counts.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      url: GRAPHQL,
+      authorization: "Bearer ghp_secret",
+    });
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toMatchObject({
+      variables: { owner: "ian-pascoe", name: "cloudpid", first: 50 },
+    });
   });
 
   it("marks no pull request when the branch is detached or from a fork of the same name", async () => {
+    const node = GRAPHQL_LIST.data.repository.pullRequests.nodes[0];
+
     const { pulls } = client({
-      ...OPEN_ROUTES,
-      [LIST_URL]: () =>
-        json([
-          {
-            ...LIST_OPEN[0],
-            head: { ...LIST_OPEN[0].head, repo: { full_name: "someone/cloudpid" } },
+      [GRAPHQL]: () =>
+        json({
+          data: {
+            repository: {
+              pullRequests: {
+                nodes: [{ ...node, headRepository: { nameWithOwner: "someone/cloudpid" } }],
+              },
+            },
           },
-        ]),
+        }),
     });
 
     const detached = await pulls.list(REPO, null);
@@ -127,57 +143,58 @@ describe("the open pull requests of a repo", () => {
     expect(forked.status === "ok" && forked.pulls.some((pull) => pull.thisBranch)).toBe(false);
   });
 
+  it("lists a pull request whose author or fork is gone, and one with no counts yet", async () => {
+    const node = GRAPHQL_LIST.data.repository.pullRequests.nodes[0];
+
+    const { pulls } = client({
+      [GRAPHQL]: () =>
+        json({
+          data: {
+            repository: {
+              pullRequests: {
+                nodes: [
+                  null,
+                  {
+                    ...node,
+                    author: null,
+                    headRepository: null,
+                    additions: null,
+                    deletions: null,
+                    changedFiles: null,
+                  },
+                ],
+              },
+            },
+          },
+        }),
+    });
+
+    const list = await pulls.list(REPO, "feat/diffs-231-this-branch");
+
+    expect(list.status === "ok" && list.pulls).toMatchObject([
+      { number: 269, author: "ghost", additions: null, deletions: null, changedFiles: null },
+    ]);
+    expect(list.status === "ok" && list.pulls[0]?.thisBranch).toBeUndefined();
+  });
+
   it("keeps the list for 60 s: an opening inside it asks GitHub nothing, one after it asks again", async () => {
     const { pulls, calls, clock } = client(OPEN_ROUTES);
 
     await pulls.list(REPO, null);
 
-    const asked = calls.length;
-
     clock.now += PULLS_CACHE_MS - 1;
 
     const again = await pulls.list(REPO, null);
 
-    expect(calls).toHaveLength(asked);
+    expect(calls).toHaveLength(1);
     expect(again).toMatchObject({ status: "ok", fetchedAt: 1_000_000 });
 
     clock.now += 1;
 
     const later = await pulls.list(REPO, null);
 
-    // The list again; the counts of the heads it already read are kept.
-    expect(calls).toHaveLength(asked + 1);
+    expect(calls).toHaveLength(2);
     expect(later).toMatchObject({ status: "ok", fetchedAt: 1_000_000 + PULLS_CACHE_MS });
-  });
-
-  it("reads the counts again only for a pull request whose head is new", async () => {
-    const moved = { ...LIST_OPEN[0], head: { ...LIST_OPEN[0].head, sha: "f".repeat(40) } };
-    let list: Json = LIST_OPEN;
-    let single: Json = SINGLE_269;
-
-    const { pulls, calls, clock } = client({
-      ...OPEN_ROUTES,
-      [LIST_URL]: () => json(list),
-      "/repos/ian-pascoe/cloudpid/pulls/269": () => json(single),
-    });
-
-    await pulls.list(REPO, null);
-
-    list = [moved, LIST_OPEN[1]];
-    single = { ...SINGLE_269, head: moved.head, additions: 6000 };
-    clock.now += PULLS_CACHE_MS;
-    calls.length = 0;
-
-    const after = await pulls.list(REPO, null);
-
-    expect(calls.map((call) => call.url).toSorted()).toEqual(
-      [LIST_URL, "/repos/ian-pascoe/cloudpid/pulls/269"].toSorted(),
-    );
-    expect(after.status === "ok" && after.pulls[0]).toMatchObject({
-      number: 269,
-      head: "f".repeat(40),
-      additions: 6000,
-    });
   });
 
   it("asks GitHub once for two openings at the same time", async () => {
@@ -185,31 +202,25 @@ describe("the open pull requests of a repo", () => {
 
     await Promise.all([pulls.list(REPO, null), pulls.list(REPO, null)]);
 
-    expect(calls.filter((call) => call.url === LIST_URL)).toHaveLength(1);
+    expect(calls).toHaveLength(1);
   });
 
-  it("lists a pull request whose counts did not come, with none", async () => {
-    const { pulls } = client({
-      ...OPEN_ROUTES,
-      "/repos/ian-pascoe/cloudpid/pulls/267": () => json({ message: "Server Error" }, 500),
-    });
+  it("remembers the open numbers of the last list, however old", async () => {
+    const { pulls, clock } = client(OPEN_ROUTES);
 
-    const list = await pulls.list(REPO, null);
+    expect(pulls.lastOpen(REPO)).toBeUndefined();
 
-    expect(list.status === "ok" && list.pulls[1]).toMatchObject({
-      number: 267,
-      additions: null,
-      deletions: null,
-      changedFiles: null,
-    });
+    await pulls.list(REPO, null);
+    clock.now += 10 * PULLS_CACHE_MS;
+    expect(pulls.lastOpen(REPO)).toEqual(new Set([269, 267]));
   });
 
   it.each([
     ["a 401 (bad token)", () => json(BAD_CREDENTIALS, 401)],
     ["a 403", () => json(FORBIDDEN, 403)],
-    ["a 404 (a private repo the token cannot see)", () => json(NOT_FOUND, 404)],
+    ["a repo the token cannot see (GraphQL's NOT_FOUND)", () => json(GRAPHQL_NOT_FOUND)],
   ])("says GitHub refused the token on %s", async (_, answer) => {
-    const { pulls } = client({ [LIST_URL]: answer });
+    const { pulls } = client({ [GRAPHQL]: answer });
 
     expect(await pulls.list(REPO, null)).toEqual({
       status: "error",
@@ -218,36 +229,82 @@ describe("the open pull requests of a repo", () => {
     });
   });
 
-  it("does not take the rate limit for a refused token, and does not keep a failure", async () => {
-    let answer = () => json(RATE_LIMITED, 403, { "x-ratelimit-remaining": "0" });
-
-    const { pulls, calls } = client({ ...OPEN_ROUTES, [LIST_URL]: () => answer() });
+  it.each([
+    [
+      "a 403 with no requests left",
+      () => json(RATE_LIMITED, 403, { "x-ratelimit-remaining": "0" }),
+    ],
+    [
+      "a secondary limit: a 403 with a wait",
+      () => json(RATE_LIMITED, 403, { "retry-after": "30" }),
+    ],
+    ["a 429", () => json(RATE_LIMITED, 429)],
+    ["GraphQL's own limit", () => json(GRAPHQL_RATE_LIMITED)],
+  ])("does not take %s for a refused token", async (_, answer) => {
+    const { pulls } = client({ [GRAPHQL]: answer });
 
     expect(await pulls.list(REPO, null)).toEqual({
       status: "error",
       kind: "failed",
-      message: "GitHub's rate limit is used up",
+      message: RATE_LIMITED_MESSAGE,
+    });
+  });
+
+  it("remembers a failure for a few seconds, so a refused token is not asked on every call", async () => {
+    let answer = () => json(BAD_CREDENTIALS, 401);
+
+    const { pulls, calls, clock } = client({ [GRAPHQL]: () => answer() });
+
+    expect(await pulls.list(REPO, null)).toMatchObject({ status: "error", kind: "refused" });
+    clock.now += ERRORS_CACHE_MS - 1;
+    expect(await pulls.list(REPO, null)).toMatchObject({ status: "error", kind: "refused" });
+    expect(calls).toHaveLength(1);
+
+    // After it GitHub is asked again, and a good answer is a list.
+    answer = () => json(GRAPHQL_LIST);
+    clock.now += 1;
+    expect(await pulls.list(REPO, null)).toMatchObject({ status: "ok" });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("holds every request while the rate limit lasts, as long as GitHub asked", async () => {
+    const { pulls, calls, clock } = client({
+      [GRAPHQL]: () => json(RATE_LIMITED, 403, { "retry-after": "120" }),
+      "/repos/ian-pascoe/cloudpid/pulls/269": () => json(SINGLE_269),
     });
 
-    answer = () => json(LIST_OPEN);
+    await pulls.list(REPO, null);
 
-    expect(await pulls.list(REPO, null)).toMatchObject({ status: "ok" });
-    expect(calls.filter((call) => call.url === LIST_URL)).toHaveLength(2);
+    // Not the list and not another request, REST included, until the wait is over.
+    clock.now += 119_000;
+    expect(await pulls.get(REPO, 269)).toMatchObject({
+      status: "error",
+      message: RATE_LIMITED_MESSAGE,
+    });
+    expect(await pulls.list(REPO, null)).toMatchObject({ message: RATE_LIMITED_MESSAGE });
+    expect(calls).toHaveLength(1);
+
+    clock.now += 1_000;
+    expect(await pulls.get(REPO, 269)).toMatchObject({ status: "ok" });
+    expect(calls).toHaveLength(2);
   });
 
   it("fails with GitHub's status on an error, and when it cannot be reached or answers something else", async () => {
-    expect(await client({ [LIST_URL]: () => json({}, 502) }).pulls.list(REPO, null)).toEqual({
+    expect(await client({ [GRAPHQL]: () => json({}, 502) }).pulls.list(REPO, null)).toEqual({
       status: "error",
       kind: "failed",
       message: "GitHub answered 502",
     });
 
     expect(
-      await client({ [LIST_URL]: () => json({ not: "a list" }) }).pulls.list(REPO, null),
-    ).toMatchObject({
-      status: "error",
-      kind: "failed",
-    });
+      await client({ [GRAPHQL]: () => json({ not: "a list" }) }).pulls.list(REPO, null),
+    ).toMatchObject({ status: "error", kind: "failed" });
+
+    expect(
+      await client({
+        [GRAPHQL]: () => json({ errors: [{ message: "Something broke" }] }),
+      }).pulls.list(REPO, null),
+    ).toEqual({ status: "error", kind: "failed", message: "Something broke" });
 
     const down = new GithubPulls({
       fetch: () => Promise.reject(new Error("connection reset")),
@@ -289,13 +346,47 @@ describe("one pull request", () => {
     expect(await pulls.get(REPO, 246)).toMatchObject({ status: "ok", value: { state: "closed" } });
   });
 
-  it("is refused on a 404", async () => {
+  it("does not take every 404 for a refusal: there may be no such pull request", async () => {
     const { pulls } = client({});
+
+    expect(await pulls.get(REPO, 1)).toEqual({
+      status: "error",
+      kind: "failed",
+      message: NOT_FOUND_MESSAGE,
+    });
+  });
+
+  it.each([401, 403])("is refused on a %s", async (status) => {
+    const { pulls } = client({
+      "/repos/ian-pascoe/cloudpid/pulls/1": () =>
+        json(status === 401 ? BAD_CREDENTIALS : FORBIDDEN, status),
+    });
 
     expect(await pulls.get(REPO, 1)).toEqual({
       status: "error",
       kind: "refused",
       message: REFUSED_MESSAGE,
     });
+  });
+});
+
+describe("the base of a branch's pull request", () => {
+  const URL_OF =
+    "/repos/ian-pascoe/cloudpid/pulls?state=open&head=ian-pascoe%3Afeat%2Fx&per_page=1";
+
+  it("is the base of the open pull request from that branch of the repo, or none", async () => {
+    const { pulls } = client({ [URL_OF]: () => json([{ base: { ref: "feat/parent" } }]) });
+
+    expect(await pulls.baseOf(REPO, "feat/x")).toEqual({ status: "ok", value: "feat/parent" });
+
+    const none = client({ [URL_OF]: () => json([]) });
+
+    expect(await none.pulls.baseOf(REPO, "feat/x")).toEqual({ status: "ok", value: undefined });
+  });
+
+  it("fails as the other calls do", async () => {
+    const { pulls } = client({ [URL_OF]: () => json(FORBIDDEN, 403) });
+
+    expect(await pulls.baseOf(REPO, "feat/x")).toMatchObject({ status: "error", kind: "refused" });
   });
 });

@@ -1,6 +1,6 @@
 // Pull request Comparisons in the Workspace DO (docs/spec.md → Diffs and review → Comparisons), over a repo real git made and
 // the Container's command real git ran on it (`comparison.setup.ts`), written into a Workspace as computer's sync would, with
-// GitHub's REST API and the clock stubbed in the test Worker: the 60 s the list is kept, the "New commits" banner when the
+// GitHub's API and the clock stubbed in the test Worker: the 60 s the list is kept, the "New commits" banner when the
 // pull request's head moves, closed and merged, and the refs of pull requests no longer open. The Container is a fake that
 // is counted, and never started by a call that may not start it.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
@@ -8,7 +8,7 @@ import { type Comparison } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, inject, it } from "vitest";
 import type { RepoFiles } from "./changes.repos.ts";
-import type { JsonObject } from "./github-pulls.fixtures.ts";
+import { graphqlList, type JsonObject } from "./github-pulls.fixtures.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 const repos = inject("comparisonRepos");
@@ -51,7 +51,11 @@ const pullJson = (head: string, overrides: JsonObject = {}): JsonObject => ({
 });
 
 const PULL = "/repos/acme/app/pulls/7";
-const LIST = "/repos/acme/app/pulls?state=open&sort=updated&direction=desc&per_page=50";
+
+/** The picker's list is one GraphQL request. */
+const LIST = "/graphql";
+
+const listOf = (...pulls: JsonObject[]): JsonObject => graphqlList(pulls);
 
 const compare = (
   stub: DurableObjectStub<TestWorkspace>,
@@ -77,7 +81,10 @@ const compared = async () => {
   const stub = workspace();
 
   await place(stub, repos.first.files);
-  await stub.setGithub({ [PULL]: pullJson(repos.pull.head), [LIST]: [pullJson(repos.pull.head)] });
+  await stub.setGithub({
+    [PULL]: pullJson(repos.pull.head),
+    [LIST]: listOf(pullJson(repos.pull.head)),
+  });
   await stub.fakeContainer({ running: false, outputs: [repos.pull.stdout] });
 
   const list = await okOf(compare(stub, { startContainer: true }));
@@ -185,7 +192,19 @@ describe("a pull request in the Workspace DO", () => {
     expect((await none.fakeContainerState()).scripts).toEqual([]);
   });
 
-  it.each([401, 403, 404])(
+  it("does not take a 404 for a refusal, and starts nothing", async () => {
+    const stub = workspace();
+
+    await place(stub, repos.first.files);
+    await stub.setGithub({}, 404);
+    expect(await compare(stub, { startContainer: true })).toMatchObject({
+      status: "error",
+      error: { kind: "failed" },
+    });
+    expect((await stub.fakeContainerState()).running).toBe(false);
+  });
+
+  it.each([401, 403])(
     "says GitHub refused the token on a %s, and starts nothing",
     async (status) => {
       const stub = workspace();
@@ -213,7 +232,7 @@ describe("the picker's pull requests in the Workspace DO", () => {
 
     await place(stub, repos.first.files);
     await stub.setGithub({
-      [LIST]: [pullJson(repos.pull.head)],
+      [LIST]: listOf(pullJson(repos.pull.head)),
       [PULL]: pullJson(repos.pull.head),
     });
     await stub.setClock(1_000_000);
@@ -278,7 +297,7 @@ describe("the picker's pull requests in the Workspace DO", () => {
     const { stub } = await compared();
 
     await stub.setClock(2_000_000);
-    await stub.setGithub({ [LIST]: [] });
+    await stub.setGithub({ [LIST]: listOf() });
 
     // Stopped: the ref waits, and nothing is started.
     expect(await sourcesOf(stub)).toMatchObject({ status: "ok", pulls: [] });

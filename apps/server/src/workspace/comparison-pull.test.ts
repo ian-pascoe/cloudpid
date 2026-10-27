@@ -1,7 +1,7 @@
 // Pull request Comparisons in the Workspace module (docs/spec.md → Diffs and review → Comparisons): the Workspace DO's files
 // are a temp directory, the Container is bash running the real script on it with real git, and GitHub's API is a stub that
 // answers by path. Nothing here starts a Container the call may not start.
-// @effect-diagnostics asyncFunction:off globalDate:off nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off globalFetch:off
+// @effect-diagnostics asyncFunction:off globalDate:off nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off globalFetch:off newPromise:off globalTimers:off
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
@@ -10,9 +10,9 @@ import { dirname, join } from "node:path";
 import { type Comparison, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChangesFiles } from "./changes.ts";
-import type { JsonObject } from "./github-pulls.fixtures.ts";
+import { graphqlList, type JsonObject } from "./github-pulls.fixtures.ts";
 import { WorkspaceComparisonModule } from "./comparison.ts";
-import { PULLS_CACHE_MS } from "./github-pulls.ts";
+import { NOT_FOUND_MESSAGE, PULLS_CACHE_MS } from "./github-pulls.ts";
 
 const env = {
   PATH: process.env.PATH ?? "",
@@ -124,7 +124,7 @@ const pullJson = (number: number, overrides: JsonObject = {}): JsonObject => ({
 type GitHub = { pulls: Map<number, JsonObject>; status?: number };
 
 /** A module over `space` with a GitHub stub that answers by path, the Container's runs and a clock the test moves. */
-const module = (space: Space, github: GitHub) => {
+const module = (space: Space, github: GitHub, hold?: Promise<void>) => {
   const runs: string[] = [];
   const container = { running: false, runs };
   const store = new Map<string, unknown>();
@@ -135,6 +135,7 @@ const module = (space: Space, github: GitHub) => {
     files: () => space.files,
     running: () => container.running,
     run: async (script) => {
+      await hold;
       container.runs.push(script);
       container.running = true;
 
@@ -166,11 +167,11 @@ const module = (space: Space, github: GitHub) => {
 
       if (github.status !== undefined) return new Response("{}", { status: github.status });
 
-      if (pathname === "/repos/acme/app/pulls") {
-        const open = [...github.pulls.values()].filter((pull) => pull.state === "open");
+      const open = [...github.pulls.values()].filter((pull) => pull.state === "open");
 
-        return Response.json(open);
-      }
+      if (pathname === "/graphql") return Response.json(graphqlList(open));
+
+      if (pathname === "/repos/acme/app/pulls") return Response.json(open);
 
       const single = github.pulls.get(Number(pathname.split("/").at(-1)));
 
@@ -370,7 +371,19 @@ describe("comparing a pull request", () => {
     });
   });
 
-  it.each([401, 403, 404])("says GitHub refused the token on a %s", async (status) => {
+  it("does not take a 404 for a refusal: there may be no such pull request", async () => {
+    const space = workspace();
+    const github = open7(space);
+    const { comparison, container } = module(space, { ...github, status: 404 });
+
+    expect(await comparison.compare(ask({ startContainer: true }))).toMatchObject({
+      status: "error",
+      error: { kind: "failed", message: NOT_FOUND_MESSAGE },
+    });
+    expect(container.runs).toEqual([]);
+  });
+
+  it.each([401, 403])("says GitHub refused the token on a %s", async (status) => {
     const space = workspace();
     const github = open7(space);
     const { comparison, container } = module(space, { ...github, status });
@@ -412,7 +425,7 @@ describe("comparing a pull request", () => {
 });
 
 describe("the open pull requests of a repo", () => {
-  it("lists them with GitHub's REST API, never starts the Container, and keeps the list for 60 s", async () => {
+  it("lists them with one GraphQL request, never starts the Container, and keeps the list for 60 s", async () => {
     const space = workspace();
     const github = open7(space);
     const { comparison, container, requests, clock } = module(space, github);
@@ -431,6 +444,9 @@ describe("the open pull requests of a repo", () => {
         { number: 7, title: "Pull request 7", head: space.head7, additions: 3, changedFiles: 2 },
       ],
     });
+
+    // The counts are on the list: one request, none per pull request.
+    expect(requests).toEqual(["/graphql"]);
 
     const asked = requests.length;
 
@@ -472,6 +488,52 @@ describe("the open pull requests of a repo", () => {
       kind: "refused",
       message: "GitHub refused the token",
     });
+  });
+});
+
+/** Wait for `done`: the deletion of refs runs after the picker's list was answered. */
+const eventually = async (done: () => boolean) => {
+  for (let attempt = 0; attempt < 500 && !done(); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+
+describe("a pull request too big to keep whole", () => {
+  it("is cut to fit and kept, so a page return finds it and does not follow the head by itself", async () => {
+    const space = workspace();
+
+    // 1,200 files with long names: the list passes the 1.5 MB a kept list may be.
+    const long = "d".repeat(200);
+    const big: Record<string, string> = {};
+
+    for (let at = 0; at < 1_200; at++)
+      big[`${long}/${long}/${long}/f${at}-${long}.txt`] = `${at}\n`;
+
+    space.sh("git switch -q topic-7", space.seed);
+
+    const head = space.commit(space.seed, big, "big");
+
+    space.sh("git push -q origin HEAD:refs/pull/7/head", space.seed);
+
+    const github = open7(space);
+
+    github.pulls.set(
+      7,
+      pullJson(7, { head: { sha: head, ref: "topic-7", repo: { full_name: "acme/app" } } }),
+    );
+
+    const { comparison, container } = module(space, github);
+    const first = await okOf(comparison.compare(ask({ startContainer: true })));
+
+    expect(first.more).toBeGreaterThan(0);
+    expect(first.files.length + first.more).toBe(1_202);
+
+    // The owner comes back: the Container runs, the head is the same, and nothing is recomputed.
+    const runs = container.runs.length;
+
+    expect(container.running).toBe(true);
+    expect(await okOf(comparison.compare(ask()))).toEqual(first);
+    expect(container.runs).toHaveLength(runs);
   });
 });
 
@@ -517,6 +579,7 @@ describe("the refs of pull requests no longer open", () => {
     const before = container.runs.length;
 
     await comparison.sources(WORKSPACE_ROOT, true);
+    await eventually(() => refs(space) === "refs/cloudpid/pr/7");
 
     expect(refs(space)).toBe("refs/cloudpid/pr/7");
     expect(container.runs).toHaveLength(before + 1);
@@ -546,8 +609,29 @@ describe("the refs of pull requests no longer open", () => {
     container.running = true;
     clock.now += PULLS_CACHE_MS;
     await comparison.sources(WORKSPACE_ROOT, true);
+    await eventually(() => refs(space) === "refs/cloudpid/pr/7");
 
     expect(refs(space)).toBe("refs/cloudpid/pr/7");
+  });
+
+  it("is not waited for by the picker, even behind a Comparison that is starting the Container", async () => {
+    const space = workspace();
+    const github = open7(space);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const { comparison, container } = module(space, github, held);
+
+    // A Comparison holds the repo's queue (its Container is starting).
+    const comparing = comparison.compare(ask({ startContainer: true }));
+
+    // The picker answers at once, with the list.
+    const { repos } = await comparison.sources(WORKSPACE_ROOT, true);
+
+    expect(repos[0]?.pulls).toMatchObject({ status: "ok" });
+    expect(container.runs).toEqual([]);
+
+    release();
+    await okOf(comparing);
   });
 
   it("deletes them as part of the next pull request Comparison too", async () => {

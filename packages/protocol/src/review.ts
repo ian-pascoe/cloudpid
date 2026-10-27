@@ -164,8 +164,22 @@ export const inlineCode = (text: string): string => {
   return `${delimiter}${padded}${delimiter}`;
 };
 
-/** The heading of a source's group. */
-const groupHeading = (annotation: Annotation): string => {
+/**
+ * The draft a group is headed by: the newest of those not marked (a marked one keeps the pair it was written against, so
+ * after a refresh the others name the current head), else the newest.
+ */
+const headOf = (group: readonly Annotation[]): Annotation | undefined => {
+  const current = group.filter((annotation) => annotation.status === undefined);
+  const pool = current.length > 0 ? current : group;
+
+  return pool.reduce<Annotation | undefined>(
+    (best, each) => (best === undefined || each.updatedAt > best.updatedAt ? each : best),
+    undefined,
+  );
+};
+
+/** The heading of a source's group; a pull request's names its repo when `shared` says another repo has one of its number. */
+const groupHeading = (annotation: Annotation, shared: ReadonlySet<number>): string => {
   const { source } = annotation;
 
   switch (source.kind) {
@@ -174,7 +188,7 @@ const groupHeading = (annotation: Annotation): string => {
     case "branch":
       return `${source.branch === null ? `Detached at ${inlineCode(shortSha(source.head))}` : `Branch ${inlineCode(source.branch)}`} against ${inlineCode(source.base)} at ${inlineCode(shortSha(source.mergeBase))}`;
     case "pull":
-      return `Pull request #${source.number} '${source.title.replace(/\s+/g, " ").trim()}' at ${inlineCode(shortSha(source.head))}`;
+      return `Pull request #${source.number}${shared.has(source.number) ? ` in ${inlineCode(source.repo)}` : ""} '${source.title.replace(/\s+/g, " ").trim()}' at ${inlineCode(shortSha(source.head))}`;
     case "call":
       return `Your ${inlineCode(source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
   }
@@ -310,12 +324,26 @@ export const renderReview = (annotations: readonly Annotation[]): RenderedReview
     return [from, markdown.length];
   };
 
+  // Pull request numbers that two repos of the Review both have.
+  const repoOf = new Map<number, string>();
+  const shared = new Set<number>();
+
+  for (const { source } of annotations) {
+    if (source.kind !== "pull") continue;
+
+    const known = repoOf.get(source.number);
+
+    if (known !== undefined && known !== source.repo) shared.add(source.number);
+
+    repoOf.set(source.number, source.repo);
+  }
+
   for (const group of ordered(annotations)) {
-    const [head] = group;
+    const head = headOf(group);
 
     if (head === undefined) continue;
 
-    markdown += `\n\n### ${groupHeading(head)}`;
+    markdown += `\n\n### ${groupHeading(head, shared)}`;
 
     for (const annotation of group) {
       number += 1;

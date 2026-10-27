@@ -33,9 +33,7 @@ import {
   parseBlobs,
   parseComparison,
 } from "@cloudpid/sandbox-image/comparison";
-import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import * as Schema from "effect/Schema";
 import * as git from "isomorphic-git";
 import { readAttributes } from "./attributes.ts";
 import {
@@ -69,9 +67,6 @@ export const NO_GITHUB_MESSAGE = "Pull requests need a GitHub remote";
 
 /** The largest list kept (JSON bytes): a bigger one is made again when asked for, as the storage's values are limited. */
 const MAX_KEPT_BYTES = 1_500_000;
-
-/** How long GitHub's REST API is waited for. */
-const GITHUB_TIMEOUT_MS = 8_000;
 
 /** The most characters of git's output an error shows (its end). */
 const MAX_ERROR_CHARS = 2_000;
@@ -185,10 +180,6 @@ export const isSafeBase = (name: string): boolean =>
   !name.includes("//") &&
   name.length <= 256;
 
-const OpenPulls = Schema.Array(Schema.Struct({ base: Schema.Struct({ ref: Schema.String }) }));
-
-const decodePulls = Schema.decodeUnknownOption(OpenPulls);
-
 /** The error a result carries; its message has no secret and at most `MAX_ERROR_CHARS` characters, from the end. */
 const problem = (
   kind: ComparisonError["kind"],
@@ -210,6 +201,8 @@ export class WorkspaceComparisonModule {
   readonly #github: GithubPulls;
   /** The calls running per repo, so two for one repo run one after the other (and the second finds the first's list). */
   readonly #queues = new Map<string, Promise<unknown>>();
+  /** The repos whose closed pull requests' refs are being deleted: asked once at a time. */
+  readonly #dropping = new Set<string>();
 
   constructor(options: ComparisonOptions) {
     this.#options = options;
@@ -277,9 +270,23 @@ export class WorkspaceComparisonModule {
 
     const list = await this.#github.list(github, branch);
 
-    if (list.status === "ok") await this.#serial(repo, () => this.#dropClosed(repo, github));
+    // Not waited for: the picker's list is not held up by a Comparison that is starting the Container, and the deletion
+    // is best effort (it only ever runs while the Container does).
+    if (list.status === "ok") this.#dropInBackground(repo, github);
 
     return list;
+  }
+
+  #dropInBackground(repo: string, github: GitHubRepo): void {
+    if (this.#dropping.has(repo)) return;
+
+    this.#dropping.add(repo);
+
+    const done = () => {
+      this.#dropping.delete(repo);
+    };
+
+    void this.#serial(repo, () => this.#dropClosed(repo, github)).then(done, done);
   }
 
   /**
@@ -315,7 +322,9 @@ export class WorkspaceComparisonModule {
       const url = await this.#remoteUrl(fs, dir, branch);
 
       return url === undefined ? undefined : githubRepoOf(url);
-    } catch {
+    } catch (cause) {
+      this.#options.warn(`comparison: reading ${dir}'s remote failed: ${errorText(cause)}`);
+
       return undefined;
     }
   }
@@ -361,7 +370,8 @@ export class WorkspaceComparisonModule {
       .get<LastComparison>(`${COMPARISON_KEY}:${repo}`)
       .catch(() => undefined);
 
-    const kept = last === undefined ? undefined : await this.#kept(repo, last.mergeBase, last.head);
+    const kept =
+      last === undefined ? undefined : await this.#keptBranch(repo, last.mergeBase, last.head);
 
     // The HEAD is the one the last Comparison was made for: nothing to run, nothing to start.
     if (
@@ -529,10 +539,14 @@ export class WorkspaceComparisonModule {
 
     if (!parsed.ok) return problem(parsed.kind, parsed.message, redact, parsed.base);
 
-    const made = await this.#made(files, dir, repo, parsed.comparison, {
-      info,
-      headRef: pull.headRef,
-    });
+    // A list too big to be kept is cut to fit, so there is always one to answer "New commits" with: a pull request is
+    // never recomputed by itself because its list could not be kept.
+    const made = fitted(
+      await this.#made(files, dir, repo, parsed.comparison, {
+        info,
+        headRef: pull.headRef,
+      }),
+    );
 
     await this.#keepPull(repo, number, made, [
       ...fetched.filter((each) => !drop.includes(each)),
@@ -590,35 +604,13 @@ export class WorkspaceComparisonModule {
     return chosen?.url;
   }
 
+  /** The base of the open pull request of `branch` on GitHub (the one client every GitHub call goes through). */
   async #pullBase(repo: GitHubRepo, branch: string): Promise<string | undefined> {
-    const token = this.#options.token();
+    const answer = await this.#github.baseOf(repo, branch);
 
-    const query = new URLSearchParams({
-      state: "open",
-      head: `${repo.owner}:${branch}`,
-      per_page: "1",
-    });
+    if (answer.status === "error") throw new Error(answer.message);
 
-    const headers = new Headers({
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": "cloudpid",
-    });
-
-    if (token !== undefined && token !== "") headers.set("authorization", `Bearer ${token}`);
-
-    const response = await this.#options.fetch(
-      `https://api.github.com/repos/${repo.owner}/${repo.name}/pulls?${query.toString()}`,
-      { headers, signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS) },
-    );
-
-    if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
-
-    const pulls = decodePulls(await response.json());
-
-    if (Option.isNone(pulls)) throw new Error("GitHub's answer was not a list of pull requests");
-
-    const base = pulls.value[0]?.base.ref;
+    const base = answer.value;
 
     if (base === undefined) return undefined;
 
@@ -764,9 +756,6 @@ export class WorkspaceComparisonModule {
     try {
       await store.put(`${PULL_COMPARISON_KEY}-fetched:${repo}`, fetched);
 
-      // A list too big to store is made again when asked for, as This branch's is.
-      if (JSON.stringify(made).length > MAX_KEPT_BYTES) return;
-
       await store.put(key, made);
 
       const before = ((await store.get<string[]>(keys)) ?? []).filter((each) => each !== key);
@@ -788,13 +777,21 @@ export class WorkspaceComparisonModule {
     }
   }
 
-  /** A kept list by (merge-base, head): This branch's, else a pull request's. */
-  async #kept(repo: string, mergeBase: string, head: string): Promise<KeptComparison | undefined> {
-    const { store } = this.#options;
-
-    const branch = await store
+  /** This branch's kept list by (merge-base, head). */
+  async #keptBranch(
+    repo: string,
+    mergeBase: string,
+    head: string,
+  ): Promise<KeptComparison | undefined> {
+    return await this.#options.store
       .get<KeptComparison>(`${COMPARISON_KEY}:${repo}:${mergeBase}:${head}`)
       .catch(() => undefined);
+  }
+
+  /** A kept list by (merge-base, head), for reading a file of it: This branch's, else a pull request's. */
+  async #kept(repo: string, mergeBase: string, head: string): Promise<KeptComparison | undefined> {
+    const { store } = this.#options;
+    const branch = await this.#keptBranch(repo, mergeBase, head);
 
     return (
       branch ??
@@ -938,6 +935,29 @@ export class WorkspaceComparisonModule {
     return sides;
   }
 }
+
+/**
+ * `made`, with the files that do not fit the largest kept list cut off the end (half at a time) and counted in `more`: the
+ * Pane says "and n more not listed", as for a list past the file cap.
+ */
+const fitted = (made: KeptComparison): KeptComparison => {
+  let cut = made;
+  let count = made.comparison.files.length;
+
+  while (JSON.stringify(cut).length > MAX_KEPT_BYTES && count > 0) {
+    count = Math.floor(count / 2);
+    cut = {
+      comparison: {
+        ...made.comparison,
+        files: made.comparison.files.slice(0, count),
+        more: made.comparison.more + made.comparison.files.length - count,
+      },
+      blobs: made.blobs.slice(0, count),
+    };
+  }
+
+  return cut;
+};
 
 /** The pull request a Comparison names, as GitHub has it now. */
 const pullInfo = (pull: GithubPull): ComparedPull => ({

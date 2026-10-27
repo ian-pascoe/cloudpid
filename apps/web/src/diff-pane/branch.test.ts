@@ -7,6 +7,8 @@ import {
   comparisonRepos,
   commitsLabel,
   errorText,
+  filterKeyAction,
+  firstPull,
   pullLabel,
   pullSourceOf,
   sourceOfValue,
@@ -123,10 +125,15 @@ describe("the source picker's pull requests", () => {
     expect(sourceOfValue("pull:web")).toEqual({ kind: "changes" });
   });
 
-  it("names each by number, title, author, draft and counts, and pins this branch's first", () => {
-    expect(pullLabel(pull(7, { draft: true }))).toBe("#7 Pull 7 · dev · draft · +12 −3");
-    expect(pullLabel(pull(8, { additions: null, thisBranch: true }))).toBe(
-      "#8 Pull 8 · dev · this branch",
+  it("names each by number, title, author, draft, files, counts and head, and pins this branch's first", () => {
+    expect(pullLabel(pull(7, { draft: true }))).toBe(
+      "#7 Pull 7 · dev · draft · 4 files · +12 −3 · 1234567",
+    );
+    expect(pullLabel(pull(9, { changedFiles: 1 }))).toBe(
+      "#9 Pull 9 · dev · 1 file · +12 −3 · 1234567",
+    );
+    expect(pullLabel(pull(8, { additions: null, changedFiles: null, thisBranch: true }))).toBe(
+      "#8 Pull 8 · dev · 1234567 · this branch",
     );
 
     const head = { commit: HEAD, branch: "feat" };
@@ -223,9 +230,44 @@ describe("the source picker's pull requests", () => {
       label: "Pull requests: GitHub refused the token",
       disabled: true,
     });
-    // A remote that is not GitHub's, or pull requests not asked for yet, list nothing.
-    expect(groups.find(({ label }) => label === "lib")?.options).toHaveLength(2);
+    // A remote that is not GitHub's says so; pull requests not asked for yet list nothing.
+    expect(groups.find(({ label }) => label === "lib")?.options.at(-1)).toEqual({
+      value: "pulls-error:lib",
+      label: "Pull requests need a GitHub remote",
+      disabled: true,
+    });
     expect(groups.find(({ label }) => label === "old")?.options).toHaveLength(2);
+  });
+
+  it("has the filter box's keys: Enter picks the first pull request left, Down goes to the list, Escape clears the text", () => {
+    expect(filterKeyAction("Enter", "login")).toBe("pick-first");
+    expect(filterKeyAction("ArrowDown", "")).toBe("focus-list");
+    expect(filterKeyAction("Escape", "login")).toBe("clear");
+    // An empty box leaves Escape to whatever closes the Pane.
+    expect(filterKeyAction("Escape", "")).toBe("none");
+    expect(filterKeyAction("a", "login")).toBe("none");
+
+    const head = { commit: HEAD, branch: "feat" };
+
+    const sources = {
+      repos: [
+        {
+          repo: "app",
+          head,
+          pulls: {
+            status: "ok" as const,
+            fetchedAt: 1,
+            pulls: [pull(9, { title: "Fix the login" }), pull(5, { title: "Docs" })],
+          },
+        },
+      ],
+    };
+
+    // What Enter picks follows the text: the first of the pull requests it leaves.
+    expect(firstPull(sourceOptions(sources, { text: "", keep: "" }))?.value).toBe("pull:app#9");
+    expect(firstPull(sourceOptions(sources, { text: "docs", keep: "" }))?.value).toBe("pull:app#5");
+    // Nothing matches: the line saying so is not a pull request to pick.
+    expect(firstPull(sourceOptions(sources, { text: "zzz", keep: "" }))).toBeUndefined();
   });
 
   it("anchors drafts on the pull request, its title cut to the limit, and names the Comparison by it", () => {

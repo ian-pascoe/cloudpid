@@ -210,18 +210,25 @@ describe("Viewed boxes", () => {
       { repo: "app", pull: 7, path: "a.ts", blob: "blob-a" },
     ]);
 
-    // The pull request's last result marked behind, or merged, is not its head: it unticks nothing.
+    // The pull request's last result marked behind is not its head: it unticks nothing.
     await runInDurableObject(stub, async (instance: TestSession) => {
       await instance.comparedPull(pullComparison(HEAD_1, [["a.ts", "other"]], { behind: HEAD_2 }));
+    });
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.viewed()),
+    ).toHaveLength(1);
+
+    // One that comes back merged drops the pull request's boxes.
+    await runInDurableObject(stub, async (instance: TestSession) => {
       await instance.comparedPull(
-        pullComparison(HEAD_1, [["a.ts", "other"]], {
+        pullComparison(HEAD_1, [["a.ts", "blob-a"]], {
           pull: { number: 7, title: "T", author: "dev", draft: false, state: "merged" },
         }),
       );
     });
     expect(
       await runInDurableObject(stub, (instance: TestSession) => instance.viewed()),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
   it("are not copied into a Fork or Clone", async () => {

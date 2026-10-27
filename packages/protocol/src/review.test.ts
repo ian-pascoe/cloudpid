@@ -237,6 +237,37 @@ describe("renderReview", () => {
     ]);
   });
 
+  it("names the current head of a group, not its first draft's, and the repo when two repos share a number", () => {
+    const onPull = (
+      id: string,
+      repo: string,
+      head: string,
+      extra: Partial<Annotation>,
+    ): Annotation => ({
+      ...onBranch({ id }),
+      source: { kind: "pull", repo, number: 7, title: "T", mergeBase: "abc1234def", head },
+      ...extra,
+    });
+
+    // The first by path is marked, and keeps the old head; the others moved to the new one.
+    const { markdown } = renderReview([
+      onPull("old", "app", "1111111aaa", { path: "a.ts", status: "outdated", updatedAt: 9 }),
+      onPull("new", "app", "2222222bbb", { path: "b.ts", updatedAt: 5 }),
+      onPull("newer", "app", "3333333ccc", { path: "c.ts", updatedAt: 6 }),
+    ]);
+
+    expect(markdown).toContain("### Pull request #7 'T' at `3333333`");
+    expect(markdown).not.toContain("` in `");
+
+    const both = renderReview([
+      onPull("a", "app", "1111111aaa", {}),
+      onPull("b", "lib", "2222222bbb", {}),
+    ]).markdown;
+
+    expect(both).toContain("### Pull request #7 in `app` 'T' at `1111111`");
+    expect(both).toContain("### Pull request #7 in `lib` 'T' at `2222222`");
+  });
+
   it("says when the lines have changed since, or are no longer in the diff", () => {
     const { markdown } = renderReview([
       onChanges({ status: "outdated" }),

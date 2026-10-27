@@ -39,26 +39,33 @@ export interface PaneFile {
  * Whether the file of a pull request has its Viewed box ticked: a box counts only while the head blob it was ticked at
  * is the file's now, so a file that changed since is not viewed whatever the Session still holds.
  */
-export const isViewed = (file: PaneFile, viewed: readonly ViewedFile[]): boolean => {
+export const isViewed = (file: PaneFile, viewed: readonly ViewedFile[]): boolean =>
+  viewedIn(file, viewedIndex(viewed));
+
+/** The head blob each box was ticked at, by (repo, pull request, path): a lookup, not a scan of every box per file. */
+const viewedIndex = (viewed: readonly ViewedFile[]): ReadonlyMap<string, string> =>
+  new Map(viewed.map((box) => [boxKey(box.repo, box.pull, box.path), box.blob]));
+
+const boxKey = (repo: string, pull: number, path: string): string =>
+  JSON.stringify([repo, pull, path]);
+
+const viewedIn = (file: PaneFile, index: ReadonlyMap<string, string>): boolean => {
   const { branch, entry } = file;
 
   if (branch?.kind !== "pull" || entry.blob === undefined) return false;
 
-  return viewed.some(
-    (box) =>
-      box.repo === file.repo &&
-      box.pull === branch.number &&
-      box.path === entry.path &&
-      box.blob === entry.blob,
-  );
+  return index.get(boxKey(file.repo, branch.number, entry.path)) === entry.blob;
 };
 
 /** The IDs of the files of `files` whose Viewed box is ticked. */
 export const viewedFileIds = (
   files: readonly PaneFile[],
   viewed: readonly ViewedFile[],
-): ReadonlySet<string> =>
-  new Set(files.flatMap((file) => (isViewed(file, viewed) ? [file.id] : [])));
+): ReadonlySet<string> => {
+  const index = viewedIndex(viewed);
+
+  return new Set(files.flatMap((file) => (viewedIn(file, index) ? [file.id] : [])));
+};
 
 /** Whether a file has contents to show: binary and "Too large to show" files show their mark and counts only. */
 export const hasContents = (file: PaneFile): boolean =>

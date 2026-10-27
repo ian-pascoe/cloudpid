@@ -32,6 +32,8 @@ import {
   commitsLabel,
   comparisonHeading,
   errorText,
+  filterKeyAction,
+  firstPull,
   hasPulls,
   type PaneSource,
   sourceOfValue,
@@ -154,11 +156,13 @@ const SourcePicker = ({ pane }: { pane: PaneAtoms }) => {
         ref={select}
         aria-label="Source"
         value={value}
-        onFocus={() => {
-          opened();
-        }}
+        // Opening it (a click, or a key that drops the list down) lists again once; focus alone does not: a click would
+        // count twice.
         onMouseDown={() => {
           opened();
+        }}
+        onKeyDown={(event) => {
+          if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) opened();
         }}
         onChange={(event) => {
           pick(sourceOfValue(event.target.value));
@@ -191,20 +195,19 @@ const SourcePicker = ({ pane }: { pane: PaneAtoms }) => {
             setFilter(event.target.value);
           }}
           onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
+            const action = filterKeyAction(event.key, filter);
 
-              const first = groups
-                .flatMap(({ options }) => options)
-                .find((option) => option.value.startsWith("pull:") && option.disabled !== true);
+            if (action === "none") return;
 
-              // The first of the pull requests the text leaves, the checked-out branch's before the others.
+            event.preventDefault();
+
+            if (action === "pick-first") {
+              const first = firstPull(groups);
+
               if (first !== undefined) pick(sourceOfValue(first.value));
-            } else if (event.key === "ArrowDown") {
-              event.preventDefault();
+            } else if (action === "focus-list") {
               select.current?.focus();
-            } else if (event.key === "Escape" && filter !== "") {
-              event.preventDefault();
+            } else {
               setFilter("");
             }
           }}
@@ -293,13 +296,13 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
   const [compared, compare] = useAtom(pane.compare);
   const files = useAtomValue(pane.files);
   const act = useAtomSet(pane.ui);
-  const onBranch = source.kind !== "changes";
+  const onComparison = source.kind !== "changes";
   const viewed = useAtomValue(pane.viewed);
   const { comparison } = useAtomValue(pane.list);
-  const reviewable = files.filter((file) => file.entry.blob !== undefined).length;
-  const refreshing = onBranch ? compared.waiting : refreshed.waiting;
-  const starting = onBranch ? view.kind === "starting" : changes?.startingContainer === true;
-  const stale = !onBranch && totals.stale;
+  const viewable = files.filter((file) => file.entry.blob !== undefined).length;
+  const refreshing = onComparison ? compared.waiting : refreshed.waiting;
+  const starting = onComparison ? view.kind === "starting" : changes?.startingContainer === true;
+  const stale = !onComparison && totals.stale;
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b px-3 py-2">
@@ -316,7 +319,7 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
           } else refresh();
         }}
         title={
-          onBranch
+          onComparison
             ? "Fetch the base branch and compare again, starting the Container if it is stopped"
             : "List the Changes again, starting the Container if a repo needs it"
         }
@@ -344,9 +347,9 @@ const PaneHeader = ({ pane, changes }: { pane: PaneAtoms; changes: ChangesState 
             <DiffTally counts={totals} approximate={totals.approximate} />
           </>
         )}
-        {comparison?.pull !== undefined && reviewable > 0 && (
+        {comparison?.pull !== undefined && viewable > 0 && (
           <span className="text-muted-foreground">
-            {viewed.size} of {reviewable} viewed
+            {viewed.size} of {viewable} viewed
           </span>
         )}
         {files.length > 0 && (

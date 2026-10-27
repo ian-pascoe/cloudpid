@@ -14,6 +14,12 @@ import { SessionError } from "./errors.ts";
 /** The pull requests that have boxes, `repo\u0000number`, oldest first. */
 const INDEX_KEY = "cloudpid:viewed";
 
+/**
+ * The most text the boxes hold in all (the lengths of their repos, paths and blobs added): a pull request's boxes are one
+ * stored value, and the whole list is sent to every client, so the count alone (`MAX_VIEWED`) does not bound either.
+ */
+export const MAX_VIEWED_CHARS = 900_000;
+
 /** One pull request's boxes: its files' head blobs, by path. */
 const prKey = (repo: string, pull: number) => `cloudpid:viewed:${repo}:${pull}`;
 
@@ -27,13 +33,14 @@ export type ViewedStoreService = {
   readonly list: Effect.Effect<ReadonlyArray<ViewedFile>>;
   /**
    * Tick the box of `key` at head blob `blob`, or untick it (`blob` null). The last set wins. Refused past `MAX_VIEWED`
-   * boxes (unticking is never refused).
+   * boxes or `MAX_VIEWED_CHARS` characters of them (unticking is never refused).
    */
   readonly set: (key: ViewedKey, blob: string | null) => Effect.Effect<void, SessionError>;
   /**
    * A pull request's Comparison was made for a client: untick the boxes of its files whose head blob is no longer the one
-   * they recorded, and those of files it no longer lists. A Comparison that is marked `behind` or is not of an open pull
-   * request is not the pull request's head, and changes nothing.
+   * they recorded, and those of files it no longer lists. One that comes back closed or merged drops all the pull
+   * request's boxes (they would count toward the limit with nothing to untick them by). A Comparison marked `behind` is
+   * not the pull request's head, and changes nothing.
    */
   readonly reset: (comparison: Comparison) => Effect.Effect<void>;
 };
@@ -103,11 +110,23 @@ export const makeViewedStore = ({ storage, announce }: ViewedStoreOptions): View
         } else {
           if (blobs[path] === blob) return;
 
-          if (!(path in blobs) && read().length >= MAX_VIEWED) {
-            return yield* SessionError.make({
-              operation: "viewed",
-              message: `A Session keeps at most ${MAX_VIEWED} Viewed boxes: untick some first`,
-            });
+          if (!(path in blobs)) {
+            const all = read();
+
+            const chars = all.reduce(
+              (sum, box) => sum + box.repo.length + box.path.length + box.blob.length,
+              0,
+            );
+
+            if (
+              all.length >= MAX_VIEWED ||
+              chars + repo.length + path.length + blob.length > MAX_VIEWED_CHARS
+            ) {
+              return yield* SessionError.make({
+                operation: "viewed",
+                message: `A Session keeps at most ${MAX_VIEWED} Viewed boxes, and ${MAX_VIEWED_CHARS} characters of paths: untick some first`,
+              });
+            }
           }
 
           blobs[path] = blob;
@@ -122,18 +141,23 @@ export const makeViewedStore = ({ storage, announce }: ViewedStoreOptions): View
       Effect.suspend(() => {
         const { pull, repo } = comparison;
 
-        if (pull === undefined || pull.state !== "open" || comparison.behind !== undefined) {
-          return Effect.void;
-        }
+        if (pull === undefined || comparison.behind !== undefined) return Effect.void;
 
         const blobs = storage.get<Record<string, string>>(prKey(repo, pull.number));
 
         if (blobs === undefined) return Effect.void;
 
+        if (pull.state !== "open") {
+          write(repo, pull.number, {});
+
+          return told;
+        }
+
+        const listed = new Map(comparison.files.map((each) => [each.path, each]));
         const kept: Record<string, string> = {};
 
         for (const [path, blob] of Object.entries(blobs)) {
-          const file = comparison.files.find((each) => each.path === path);
+          const file = listed.get(path);
 
           // A file the list does not hold may be one past its cap: only a whole list says it left the pull request.
           const same =

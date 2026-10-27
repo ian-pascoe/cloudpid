@@ -244,7 +244,7 @@ describe("the Comparison module's choice of base", () => {
     const one = module(refused, { status: 403 });
 
     expect(await ok(one.comparison.compare(start))).toMatchObject({ base: "main" });
-    expect(one.warnings.join("\n")).toContain("GitHub answered 403");
+    expect(one.warnings.join("\n")).toContain("GitHub refused the token");
 
     const odd = workspace();
 
