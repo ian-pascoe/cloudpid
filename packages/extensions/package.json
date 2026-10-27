@@ -19,6 +19,8 @@
     "./skills": "./src/skills.ts",
     "./skills-discovery": "./src/skills-discovery.ts",
     "./skill-checks": "./src/skill-checks.ts",
+    "./skill-search": "./src/skill-search.ts",
+    "./skill-search-tool": "./src/skill-search-tool.ts",
     "./environment-skills": "./src/environment-skills.ts",
     "./agents-md": "./src/agents-md.ts",
     "./agents-md-discovery": "./src/agents-md-discovery.ts",

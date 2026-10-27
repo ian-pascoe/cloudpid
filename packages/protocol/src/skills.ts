@@ -1,10 +1,32 @@
 // An Environment's own Skills (ADR-0026, `docs/spec.md` → The Environment's own Skills): what the Environments page lists of
 // them, and how an Agent change records one. Shared by the server (which keeps and changes them) and the web app (which
 // lists them and shows a change's files as diffs).
+import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 
 /** Where every Workspace serves its Skill set, read-only: a Skill named `name` is at `<SKILLS_ROOT>/<name>`. */
 export const SKILLS_ROOT = "/workspace/.agents/skills";
+
+/**
+ * Where a Skill was installed from (ADR-0026, GLOSSARY.md → Skill source): a GitHub repo, the Skill's folder in it, the
+ * ref the installer named, and the commit that ref resolved to, which is what the Skill's files are.
+ */
+export const SkillSource = Schema.Struct({
+  /** `owner/name`. */
+  repo: Schema.String,
+  /** The Skill's folder in the repo; empty for a Skill at the repo's root. */
+  path: Schema.String,
+  /** The ref named (a branch, tag or commit); null when none was and the repo's default branch was used. */
+  ref: Schema.NullOr(Schema.String),
+  /** The commit it resolved to, in full. */
+  commit: Schema.String,
+});
+
+export type SkillSource = typeof SkillSource.Type;
+
+/** The page on GitHub that shows a Skill's folder at the commit it was installed at. */
+export const skillSourceUrl = ({ repo, path, commit }: SkillSource): string =>
+  `https://github.com/${repo}/tree/${commit}${path === "" ? "" : `/${Arr.join(Arr.map(path.split("/"), encodeURIComponent), "/")}`}`;
 
 /** A Skill kept for an Environment, as the Environments page lists it. Times are epoch milliseconds. */
 export const EnvironmentSkill = Schema.Struct({
@@ -13,6 +35,8 @@ export const EnvironmentSkill = Schema.Struct({
   description: Schema.String,
   /** When it was last saved. */
   savedAt: Schema.Finite,
+  /** Where it was installed from; absent for a Skill the agent wrote or saved from its Workspace. */
+  source: Schema.optionalKey(SkillSource),
 });
 
 export type EnvironmentSkill = typeof EnvironmentSkill.Type;
@@ -32,6 +56,8 @@ export const fieldSkill = (field: string): string | null =>
  */
 export const SkillChangeValue = Schema.Struct({
   files: Schema.Record(Schema.String, Schema.String),
+  /** Where the Skill was installed from, when it was (a revert puts it back with the files). */
+  source: Schema.optionalKey(SkillSource),
 });
 
 export type SkillChangeValue = typeof SkillChangeValue.Type;
@@ -48,3 +74,58 @@ export const SkillChangeFiles = Schema.Struct({
 });
 
 export type SkillChangeFiles = typeof SkillChangeFiles.Type;
+
+/** A Skill a repo holds, as the Environments page lists it for the owner to tick. */
+export const ListedSkill = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  /** Its folder in the repo; empty for the repo's root. */
+  path: Schema.String,
+});
+
+export type ListedSkill = typeof ListedSkill.Type;
+
+/** How the install of one Skill went. */
+export const SkillInstalled = Schema.Struct({
+  name: Schema.String,
+  /** Kept now; or already kept with these files and source, so nothing changed; or refused, with why in `message`. */
+  outcome: Schema.Literals(["installed", "unchanged", "rejected"]),
+  message: Schema.optionalKey(Schema.String),
+});
+
+export type SkillInstalled = typeof SkillInstalled.Type;
+
+/**
+ * What an install from a source answers (a failure is an `EnvironmentError`): the Skills it kept, each pinned to the
+ * commit; or, when the source holds several Skills and none was named, the list of them and nothing kept.
+ */
+export const SkillInstall = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("installed"),
+    repo: Schema.String,
+    ref: Schema.NullOr(Schema.String),
+    commit: Schema.String,
+    skills: Schema.Array(SkillInstalled),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("listed"),
+    repo: Schema.String,
+    ref: Schema.NullOr(Schema.String),
+    commit: Schema.String,
+    available: Schema.Array(ListedSkill),
+  }),
+]);
+
+export type SkillInstall = typeof SkillInstall.Type;
+
+/** A Skill skills.sh lists for a search: its ID (`owner/repo/skill`), the source to install it from, and its installs. */
+export const SkillSearchResult = Schema.Struct({
+  id: Schema.String,
+  /** `owner/repo`: what `source` takes. */
+  source: Schema.String,
+  skillId: Schema.String,
+  name: Schema.String,
+  installs: Schema.Finite,
+});
+
+export type SkillSearchResult = typeof SkillSearchResult.Type;

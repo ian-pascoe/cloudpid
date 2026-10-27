@@ -19,6 +19,7 @@ import {
   SkillChangeValue,
   type SkillFile,
   skillField,
+  SkillSource,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -47,22 +48,42 @@ export type StoredSkill = {
   readonly name: string;
   readonly description: string;
   readonly files: HashedFiles;
+  /** Where it was installed from (migration 23); null for one the agent wrote or saved from its Workspace. */
+  readonly source: SkillSource | null;
   readonly savedAt: number;
 };
 
-type SkillRow = { name: string; description: string; files: string; saved_at: number };
+type SkillRow = {
+  name: string;
+  description: string;
+  files: string;
+  source: string | null;
+  saved_at: number;
+};
 
 const decodeFiles = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
+
+const decodeSource = Schema.decodeUnknownOption(Schema.fromJsonString(SkillSource));
 
 const toSkill = (row: SkillRow): StoredSkill => ({
   name: row.name,
   description: row.description,
   // Only ever written from a record of strings.
   files: Option.getOrElse(decodeFiles(row.files), () => ({})),
+  source: row.source === null ? null : Option.getOrNull(decodeSource(row.source)),
   savedAt: row.saved_at,
 });
+
+/** Whether two Skill sources are the same: the same repo, path, ref and commit (both none counts). */
+export const sameSource = (left: SkillSource | null, right: SkillSource | null): boolean =>
+  left === null || right === null
+    ? left === right
+    : left.repo === right.repo &&
+      left.path === right.path &&
+      left.ref === right.ref &&
+      left.commit === right.commit;
 
 const hex = (buffer: ArrayBuffer): string =>
   Arr.join(
@@ -138,7 +159,7 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
     Arr.map(
       sql
         .exec<SkillRow>(
-          "SELECT name, description, files, saved_at FROM skills WHERE scope = ? ORDER BY name",
+          "SELECT name, description, files, source, saved_at FROM skills WHERE scope = ? ORDER BY name",
           scope,
         )
         .toArray(),
@@ -147,7 +168,7 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
   get: (scope, name) => {
     const [row] = sql
       .exec<SkillRow>(
-        "SELECT name, description, files, saved_at FROM skills WHERE scope = ? AND name = ?",
+        "SELECT name, description, files, source, saved_at FROM skills WHERE scope = ? AND name = ?",
         scope,
         name,
       )
@@ -166,13 +187,14 @@ export const openSkills = ({ sql }: Pick<RegistryStorage, "sql">): Skills => ({
     }
 
     sql.exec(
-      `INSERT INTO skills (scope, name, description, files, saved_at) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO skills (scope, name, description, files, source, saved_at) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (scope, name) DO UPDATE SET description = excluded.description, files = excluded.files,
-         saved_at = excluded.saved_at`,
+         source = excluded.source, saved_at = excluded.saved_at`,
       scope,
       skill.name,
       skill.description,
       JSON.stringify(skill.files),
+      skill.source === null ? null : JSON.stringify(skill.source),
       now,
     );
   },
@@ -487,8 +509,9 @@ const setProblem = (
     : undefined;
 };
 
-/** A Skill's files as an Agent change records them. */
-const changeValue = (files: HashedFiles): SkillChangeValue => ({ files: { ...files } });
+/** A Skill's files, and where it was installed from if it was, as an Agent change records them. */
+const changeValue = (files: HashedFiles, source: SkillSource | null = null): SkillChangeValue =>
+  source === null ? { files: { ...files } } : { files: { ...files }, source };
 
 const decodeChangeValue = Schema.decodeUnknownOption(SkillChangeValue);
 
@@ -497,6 +520,12 @@ export const changeFiles = (value: AgentChange["before"]): HashedFiles | null =>
   value === null
     ? null
     : Option.getOrNull(Option.map(decodeChangeValue(value), ({ files }) => files));
+
+/** The Skill source an Agent change of a Skill records, or null where it recorded none. */
+export const changeSource = (value: AgentChange["before"]): SkillSource | null =>
+  value === null
+    ? null
+    : Option.getOrNull(Option.map(decodeChangeValue(value), ({ source }) => source ?? null));
 
 /** How the agent's save of a Skill went. */
 export type SkillSave =
@@ -546,79 +575,156 @@ export type SkillChangeContext = {
   readonly now: number;
 };
 
+/** A Skill to keep: its folder, its files (hashed beforehand), and where it was installed from, if it was. */
+export type SkillToKeep = {
+  readonly environment: string;
+  readonly folder: string;
+  readonly files: SkillFiles;
+  readonly hashed: Hashed;
+  /**
+   * Where it was installed from. Absent for a save from a Workspace, which keeps the source the Skill had (until
+   * modified Skills are marked: docs/spec.md → Installing from GitHub).
+   */
+  readonly source?: SkillSource | undefined;
+};
+
+/** How keeping a Skill went, before it is recorded as a change. */
+type Kept =
+  | {
+      readonly status: "kept";
+      readonly environment: EnvironmentRecord;
+      readonly skill: StoredSkill;
+      readonly before: StoredSkill | null;
+    }
+  | { readonly status: "unchanged"; readonly environment: EnvironmentRecord }
+  | { readonly status: "rejected"; readonly message: string }
+  | { readonly status: "missing" };
+
+/**
+ * Check and keep `skill` for its Environment, in place of one of its name; run inside a transaction. Checked as
+ * `checkSkill` checks it, and refused when the Environment's Skill set would hold more than `MAX_SKILLS` Skills or
+ * `MAX_SKILL_SET_BYTES`. The same files (and the same source, when one is given) as kept already are not kept again.
+ */
+const keepSkill = (
+  { store, skills, bundle, now }: Pick<SkillChangeContext, "store" | "skills" | "bundle" | "now">,
+  { environment, folder, files, hashed, source }: SkillToKeep,
+): Kept => {
+  const record = store.getEnvironment(environment);
+
+  if (record === null) return { status: "missing" };
+
+  const checked = checkSkill(folder, files);
+
+  if (!checked.ok) return { status: "rejected", message: checked.message };
+
+  const { name, description } = checked.skill;
+  const before = skills.get(environment, name);
+
+  if (
+    before !== null &&
+    sameFiles(before.files, hashed.files) &&
+    (source === undefined || sameSource(before.source, source))
+  ) {
+    return { status: "unchanged", environment: record };
+  }
+
+  const problem = setProblem(
+    skills,
+    bundle,
+    environment,
+    { name, files: hashed.files },
+    hashed.contents,
+  );
+
+  if (problem !== undefined) return { status: "rejected", message: problem };
+
+  const kept = {
+    name,
+    description,
+    files: hashed.files,
+    source: source ?? before?.source ?? null,
+  };
+
+  skills.put(environment, kept, hashed.contents, now);
+
+  return { status: "kept", environment: record, skill: { ...kept, savedAt: now }, before };
+};
+
 /**
  * The agent saves the Skill in folder `folder` with `files` (hashed beforehand, `hashFiles`) for `environment`, in
- * place of one of its name: checked as `checkSkill` checks it, and refused when the Environment's Skill set would hold
- * more than `MAX_SKILLS` Skills. Recorded as an Agent change by `author`, with the files before (none for a new Skill)
- * and after; the same files as kept records nothing.
+ * place of one of its name (`keepSkill`; installed from GitHub when `source` is given). Recorded as an Agent change by
+ * `author`, with the files before (none for a new Skill) and after; the same files as kept record nothing.
  */
 export const saveSkillAs = (
-  { storage, store, skills, changes, bundle, now }: SkillChangeContext,
-  {
-    environment,
-    folder,
-    files,
-    hashed,
-    author,
-  }: {
-    readonly environment: string;
-    readonly folder: string;
-    readonly files: SkillFiles;
-    readonly hashed: Hashed;
-    readonly author: AgentChangeAuthor;
-  },
+  context: SkillChangeContext,
+  input: SkillToKeep & { readonly author: AgentChangeAuthor },
 ): SkillSave =>
-  storage.transactionSync((): SkillSave => {
-    const record = store.getEnvironment(environment);
+  context.storage.transactionSync((): SkillSave => {
+    const kept = keepSkill(context, input);
 
-    if (record === null) return { status: "missing" };
+    if (kept.status !== "kept") return kept;
 
-    const checked = checkSkill(folder, files);
+    const { author, environment } = input;
+    const { skill, before } = kept;
 
-    if (!checked.ok) return { status: "rejected", message: checked.message };
-
-    const { name, description } = checked.skill;
-    const before = skills.get(environment, name);
-
-    if (before !== null && sameFiles(before.files, hashed.files)) {
-      return { status: "unchanged", environment: record };
-    }
-
-    const problem = setProblem(
-      skills,
-      bundle,
-      environment,
-      { name, files: hashed.files },
-      hashed.contents,
-    );
-
-    if (problem !== undefined) return { status: "rejected", message: problem };
-
-    skills.put(environment, { name, description, files: hashed.files }, hashed.contents, now);
-
-    const change = changes.record({
+    const change = context.changes.record({
       scope: environment,
-      at: now,
+      at: context.now,
       actor: "agent",
       session: author.session,
       conversation: author.conversation,
       tool: author.tool,
       reason: author.reason,
-      field: skillField(name),
-      before: before === null ? null : changeValue(before.files),
-      after: changeValue(hashed.files),
+      field: skillField(skill.name),
+      before: before === null ? null : changeValue(before.files, before.source),
+      after: changeValue(skill.files, skill.source),
       reverts: null,
       approved: author.approved,
     });
 
     return {
       status: "saved",
-      environment: record,
+      environment: kept.environment,
       change,
-      skill: { name, description, files: hashed.files, savedAt: now },
-      shadows: bundle.names.has(name),
+      skill,
+      shadows: context.bundle.names.has(skill.name),
     };
   });
+
+/**
+ * The owner installs a Skill from the Environments page: kept as `keepSkill` keeps it, and, as the owner's removal,
+ * not an Agent change.
+ */
+export const keepSkillAsOwner = (
+  context: Omit<SkillChangeContext, "changes">,
+  input: SkillToKeep,
+): SkillKept =>
+  context.storage.transactionSync((): SkillKept => {
+    const kept = keepSkill(context, input);
+
+    return kept.status === "kept"
+      ? {
+          status: "saved",
+          environment: kept.environment,
+          skill: kept.skill,
+          shadows: context.bundle.names.has(kept.skill.name),
+        }
+      : kept;
+  });
+
+/** How the owner's install of a Skill went. */
+export type SkillKept =
+  | {
+      readonly status: "saved";
+      readonly environment: EnvironmentRecord;
+      readonly skill: StoredSkill;
+      readonly shadows: boolean;
+      /** The owner's install records no Agent change. */
+      readonly change?: undefined;
+    }
+  | { readonly status: "unchanged"; readonly environment: EnvironmentRecord }
+  | { readonly status: "rejected"; readonly message: string }
+  | { readonly status: "missing" };
 
 /** The agent removes Skill `name` kept for `environment`, recorded as an Agent change by `author` with its files before. */
 export const removeSkillAs = (
@@ -649,7 +755,7 @@ export const removeSkillAs = (
       tool: author.tool,
       reason: author.reason,
       field: skillField(name),
-      before: changeValue(before.files),
+      before: changeValue(before.files, before.source),
       after: null,
       reverts: null,
       approved: author.approved,
@@ -738,9 +844,14 @@ export const revertSkillChange = (
   const current = skills.get(environment, name);
   const after = changeFiles(change.after);
   const before = changeFiles(change.before);
+  const beforeSource = changeSource(change.before);
 
   const unchanged =
-    current === null ? after === null : after !== null && sameFiles(current.files, after);
+    current === null
+      ? after === null
+      : after !== null &&
+        sameFiles(current.files, after) &&
+        sameSource(current.source, changeSource(change.after));
 
   if (!unchanged) {
     return {
@@ -763,7 +874,12 @@ export const revertSkillChange = (
 
     skills.put(
       environment,
-      { name, description: descriptionOf(texts.get(before["SKILL.md"] ?? "")), files: before },
+      {
+        name,
+        description: descriptionOf(texts.get(before["SKILL.md"] ?? "")),
+        files: before,
+        source: beforeSource,
+      },
       texts,
       now,
     );
@@ -778,8 +894,8 @@ export const revertSkillChange = (
     tool: null,
     reason: `Reverted change ${change.id}${change.tool === null ? "" : ` (${change.tool})`}`,
     field: change.field,
-    before: current === null ? null : changeValue(current.files),
-    after: before === null ? null : changeValue(before),
+    before: current === null ? null : changeValue(current.files, current.source),
+    after: before === null ? null : changeValue(before, beforeSource),
     reverts: change.id,
   });
 

@@ -4,7 +4,7 @@
 // (`environment_container_resize`, `environment_idle_time_set`, `environment_setup_script_set`,
 // `environment_start_script_set`, `environment_toolchains_set` and `environment_ignore_set`), and
 // `environment_secret_build` for the Build mark of a kept Secret, and `environment_skill_save` and
-// `environment_skill_remove` for its own Skills (`environment-skills.ts`). Each change is an Agent change: the Registry applies
+// `environment_skill_install` and `environment_skill_remove` for its own Skills (`environment-skills.ts`). Each change is an Agent change: the Registry applies
 // it as the owner's save is applied and records it, the Session hands a change to its own Environment to its Workspace
 // at once, and the Run's end notifies the owner of the changes it made (`AgentChangeLog`). They are the root
 // conversation's only (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when a
@@ -332,13 +332,18 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over the bundle's of the same name; environment_skill_save and environment_skill_remove change them): ${
+      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over the bundle's of the same name; environment_skill_save, environment_skill_install and environment_skill_remove change them): ${
         details.skills.length === 0
           ? "none"
           : Arr.join(
               Arr.map(
                 details.skills,
-                (skill) => `\n  ${skill.name} (saved ${iso(skill.savedAt)}): ${skill.description}`,
+                (skill) =>
+                  `\n  ${skill.name} (saved ${iso(skill.savedAt)}${
+                    skill.source === undefined
+                      ? ""
+                      : `, installed from ${skill.source.repo}/${skill.source.path === "" ? "" : `${skill.source.path} `}commit ${skill.source.commit.slice(0, 7)}`
+                  }): ${skill.description}`,
               ),
               "",
             )

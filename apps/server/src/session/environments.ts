@@ -5,7 +5,7 @@
 // and a change that reaches the Session's own Environment is handed to its Workspace at once
 // (`updateContainerSettings`), with the variables kept for every Environment merged in, which applies it at its next
 // Container start. Other Environments' Workspaces get it at their next readying, as they get the owner's. A Skill saved
-// or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentRemoveSkill`); the Session's own Workspace is
+// or removed (ADR-0026) is the Registry's too (`agentSaveSkill`, `agentRemoveSkill`, `agentInstallSkills`); the Session's own Workspace is
 // handed its Environment's new Skill set at once (`updateSkills`), and no Build's upkeep runs: Skills are not part of
 // a Build.
 import type {
@@ -46,6 +46,7 @@ export type EnvironmentsRegistry = Pick<
   | "agentMarkSecretBuild"
   | "agentSaveSkill"
   | "agentRemoveSkill"
+  | "agentInstallSkills"
   | "listSkills"
   | "workspaceSkillSet"
   | "getWorkspace"
@@ -335,6 +336,40 @@ export const sessionEnvironments = ({
               bundled: removed.bundled,
               handed: yield* handSkillsIfOwn(environment),
             };
+        }
+      }),
+    installSkills: ({ environment, source, skills, author }) =>
+      Effect.gen(function* () {
+        if (session === undefined) return yield* unlisted;
+
+        // The Registry fetches as the GitHub App: no token comes here.
+        const installed = yield* registry.agentInstallSkills({
+          environment,
+          source,
+          skills,
+          author: { session, ...author },
+        });
+
+        switch (installed.status) {
+          case "missing":
+          case "refused":
+            return installed;
+          case "listed":
+            return { ...installed, environment: changedEnvironment(installed.environment) };
+          case "installed": {
+            const { results, repo, ref, commit } = installed;
+
+            return {
+              status: "installed",
+              environment: changedEnvironment(installed.environment),
+              repo,
+              ref,
+              commit,
+              results,
+              // Skills are not part of a Build: no upkeep runs. The Session's own Workspace serves them now.
+              handed: yield* handSkillsIfOwn(environment),
+            };
+          }
         }
       }),
     markSecret: ({ environment, name, build, author }) =>

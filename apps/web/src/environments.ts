@@ -27,6 +27,8 @@ import {
   secretValueProblem,
   type SessionRecord,
   SkillChangeValue,
+  type SkillInstall,
+  type SkillSource,
 } from "@cloudpid/protocol";
 import {
   DEFAULT_CONTAINER_SETTINGS,
@@ -331,6 +333,28 @@ const skillFilesOf = (value: AgentChange["before"]): readonly string[] | undefin
   Schema.is(SkillChangeValue)(value) ? Record.keys(value.files).toSorted() : undefined;
 
 /**
+ * Where a Skill came from as the page says it: its folder in the repo, and the commit it was pinned to (with the ref the
+ * owner or agent named, when one was): `mattpocock/skills/skills/grill-me at c0ffee0`.
+ */
+export const skillSourceText = ({ repo, path, ref, commit }: SkillSource): string =>
+  `${repo}${path === "" ? "" : `/${path}`} at ${ref === null ? "" : `${ref}, `}${commit.slice(0, 7)}`;
+
+/** What an install answered, a line for each Skill it kept, found already kept, or refused (and why). */
+export const installOutcomeLines = (
+  skills: Extract<SkillInstall, { readonly status: "installed" }>["skills"],
+): ReadonlyArray<string> =>
+  Arr.map(skills, ({ name, outcome, message }) => {
+    switch (outcome) {
+      case "installed":
+        return `${name}: installed`;
+      case "unchanged":
+        return `${name}: already installed from this commit, nothing changed`;
+      case "rejected":
+        return `${name}: refused${message === undefined ? "" : `: ${message}`}`;
+    }
+  });
+
+/**
  * A value an Agent change shows, in full: a Skill's as its files' paths, a variable's, a script's or the Toolchains' as written, a list of paths a line
  * each, another setting's as JSON, and none as not set (an empty text as empty, an empty list as none).
  */
@@ -341,7 +365,13 @@ export const changeValueText = (value: AgentChange["before"]): string => {
 
   const files = skillFilesOf(value);
 
-  if (files !== undefined) return files.length === 0 ? "no files" : files.join("\n");
+  if (files !== undefined) {
+    const shown = files.length === 0 ? "no files" : files.join("\n");
+
+    return Schema.is(SkillChangeValue)(value) && value.source !== undefined
+      ? `${shown}\nfrom ${skillSourceText(value.source)}`
+      : shown;
+  }
 
   if (Arr.isArray(value) && Arr.every(value, Predicate.isString)) {
     return value.length === 0 ? "none" : value.join("\n");

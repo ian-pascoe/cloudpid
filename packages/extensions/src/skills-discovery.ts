@@ -91,6 +91,8 @@ const FrontmatterFields = Schema.Struct({
   name: Schema.optionalKey(Schema.Unknown),
   description: Schema.optionalKey(Schema.Unknown),
   "disable-model-invocation": Schema.optionalKey(Schema.Unknown),
+  /** Agent Skills' free-form mapping; the install from GitHub reads `internal` of it, as the `skills` CLI does. */
+  metadata: Schema.optionalKey(Schema.Unknown),
 });
 
 export type FrontmatterFields = typeof FrontmatterFields.Type;

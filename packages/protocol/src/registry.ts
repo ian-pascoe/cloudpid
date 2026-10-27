@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
-import { EnvironmentSkill, SkillChangeFiles } from "./skills.ts";
+import { EnvironmentSkill, SkillChangeFiles, SkillInstall, SkillSearchResult } from "./skills.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -682,6 +682,32 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("removeEnvironmentSkill", {
     payload: { environment: EnvironmentId, name: Schema.String },
+    error: EnvironmentError,
+  }),
+  /**
+   * Install Skills for an Environment from a GitHub `source` (`owner/repo`, `owner/repo@skill`, or a GitHub URL: ADR-0026),
+   * fetched by the Registry as the GitHub App and pinned to the commit the ref resolved to; each is kept with its Skill
+   * source, in place of one of its name, if it passes a save's checks (not an Agent change, as an owner's save is not). `skills`
+   * names the Skills to take (`["*"]` for all of them); a repo that holds several and is given none installs nothing and
+   * answers the list for the page to tick. Fails with an `EnvironmentError` saying why (no such repo, a private one the
+   * GitHub App cannot see, the rate limit, a source that is not GitHub's).
+   */
+  Rpc.make("installEnvironmentSkills", {
+    payload: {
+      environment: EnvironmentId,
+      source: Schema.String,
+      skills: Schema.optionalKey(Schema.String.pipe(Schema.Array)),
+    },
+    success: SkillInstall,
+    error: EnvironmentError,
+  }),
+  /**
+   * Search skills.sh for Skills (its undocumented `/api/search`): their ID, source and install count. Records nothing.
+   * Fails with an `EnvironmentError` when skills.sh cannot be reached or answers otherwise; installing does not depend on it.
+   */
+  Rpc.make("searchSkills", {
+    payload: { query: Schema.String },
+    success: Schema.Array(SkillSearchResult),
     error: EnvironmentError,
   }),
   /**

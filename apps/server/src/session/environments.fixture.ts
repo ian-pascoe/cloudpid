@@ -19,6 +19,7 @@ const unused = () => Effect.die("the test Environments make no lifecycle change"
 export const unusedLifecycle: EnvironmentLifecycle & SecretMarks & EnvironmentSkills = {
   saveSkill: unused,
   removeSkill: unused,
+  installSkills: unused,
   create: unused,
   rename: unused,
   addRepo: unused,

@@ -47,6 +47,8 @@ const UNEXPECTED: Handlers = {
   deleteEnvironmentSecret: unexpected("deleteEnvironmentSecret"),
   listEnvironmentSkills: unexpected("listEnvironmentSkills"),
   removeEnvironmentSkill: unexpected("removeEnvironmentSkill"),
+  installEnvironmentSkills: unexpected("installEnvironmentSkills"),
+  searchSkills: unexpected("searchSkills"),
   skillChangeFiles: unexpected("skillChangeFiles"),
   listBuilds: unexpected("listBuilds"),
   rebuildEnvironment: unexpected("rebuildEnvironment"),
