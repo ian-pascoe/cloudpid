@@ -149,7 +149,7 @@ const module = (
         ? Response.json(options.pulls ?? [])
         : new Response("no", { status: options.status });
     },
-    token: () => "ghp_secret",
+    github: { token: async () => "ghp_secret", invalidate: () => undefined },
     redact: (text) => text.replaceAll("ghp_secret", "***"),
     warn: (message) => warnings.push(message),
   });
@@ -525,6 +525,30 @@ describe("the Comparison module's picker", () => {
     expect((await comparison.sources("/workspace/lib/src")).repos.map((repo) => repo.repo)).toEqual(
       ["lib"],
     );
+  });
+});
+
+describe("the GitHub account of a working directory", () => {
+  it("is the owner of the repos it covers when they have one, in lower case, and none otherwise", async () => {
+    const space = workspace();
+
+    onGitHub(space);
+    space.sh("git init -q -b main lib", space.root);
+
+    const { comparison } = module(space);
+
+    // `lib` has no remote: the root covers one owner.
+    expect(await comparison.githubAccountOf("/workspace")).toBe("acme");
+    expect(await comparison.githubAccountOf("/workspace/app/src")).toBe("acme");
+    expect(await comparison.githubAccountOf("/workspace/lib")).toBeUndefined();
+
+    space.sh(
+      "git remote add origin https://github.com/Spirit-Org/lib.git",
+      join(space.root, "lib"),
+    );
+
+    expect(await comparison.githubAccountOf("/workspace/lib")).toBe("spirit-org");
+    expect(await comparison.githubAccountOf("/workspace")).toBeUndefined();
   });
 });
 

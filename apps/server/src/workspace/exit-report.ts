@@ -10,6 +10,7 @@
 // the Workspace DO that holds them (`redact`); a report it cannot show free of them is logged without its lines.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off
 import type { IWorkspaceContainerAPI } from "@cloudflare/computer/backends/container";
+import { maskGitHubTokens } from "@cloudpid/extensions/github-tokens";
 import { EXIT_REPORT_BYTES, EXIT_REPORT_PATH } from "@cloudpid/sandbox-image/supervisor";
 
 /** The most of a report's body that is read, in bytes: the supervisor's lines and its two header lines. */
@@ -52,13 +53,12 @@ const header = (lines: readonly string[], name: string): number | null => {
   return value !== undefined && /^\d+$/.test(value) ? Number(value) : null;
 };
 
-/** Reads the supervisor's body (`status=…`, `uptime=…`, a blank line, the output) and takes the secret out of it. */
-export const parseExitReport = (
-  body: string,
-  workspace: string,
-  secret: string | undefined,
-): ExitReport => {
-  const clean = secret === undefined || secret === "" ? body : body.replaceAll(secret, "***");
+/**
+ * Reads the supervisor's body (`status=…`, `uptime=…`, a blank line, the output) and takes out of it anything shaped
+ * like a GitHub token: this Worker does not know the tokens its Workspace DOs minted.
+ */
+export const parseExitReport = (body: string, workspace: string): ExitReport => {
+  const clean = maskGitHubTokens(body);
   const split = clean.indexOf("\n\n");
   const head = (split < 0 ? clean : clean.slice(0, split)).split("\n");
 
@@ -123,8 +123,7 @@ export const exitReport = async (
   request: Request,
   options: {
     readonly workspace: string;
-    readonly secret: string | undefined;
-    /** Takes the Environment's kept Secrets out of the lines (`ExitReportRedaction`). */
+    /** Takes the GitHub tokens and the Environment's kept Secrets out of the lines (`ExitReportRedaction`). */
     readonly redact: ExitReportRedaction;
     readonly log: (report: ExitReport) => void;
   },
@@ -135,7 +134,7 @@ export const exitReport = async (
 
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
-  const parsed = parseExitReport(await readCapped(request), options.workspace, options.secret);
+  const parsed = parseExitReport(await readCapped(request), options.workspace);
 
   options.log(await redactExitReport(parsed, options.redact));
 

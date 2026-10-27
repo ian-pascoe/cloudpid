@@ -15,14 +15,21 @@
 // - Then, after the hook that snapshots the disk (so no service is writing to it meanwhile), the Start Scripts run: the
 //   Environment's, then each repo's `.cloudpid/start.sh`, at every Container start, each bounded by 5 minutes and
 //   reported like a Setup Script.
-// - Every command's environment carries the Environment's variables, under mise's settings and the GitHub token
-//   (`toolchainEnv`), under what the caller passes, and the token and the Environment's kept Secrets are taken out of
-//   what a command prints (a Secret as its reference). The variables, the Environment's scripts and its Toolchains
-//   (the root `mise.toml` the bootstrap writes) are read once per Container start, at its bootstrap.
+// - Every command's environment carries the Environment's variables, under mise's settings and the GitHub tokens
+//   (`toolchainEnv`), under what the caller passes, and the GitHub tokens and the Environment's kept Secrets are taken
+//   out of what a command prints (a Secret as its reference). The variables, the Environment's scripts and its
+//   Toolchains (the root `mise.toml` the bootstrap writes) are read once per Container start, at its bootstrap.
 //
-// The token is bound to the Workspaces Worker as a secret. It reaches the Container only in a process's environment:
-// no file holds it, and nothing here logs it.
-// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalTimers:off preferEffectArray:off
+// The GitHub tokens are minted from the GitHub App when a command starts (the bootstrap's at its start, for it and its
+// scripts), one for each account the app is installed on, so each command gets them with at least
+// `TOKEN_MIN_LIFETIME_MS` left (ADR-0025): git picks the one for the repo's owner, and `GH_TOKEN` is the one for the
+// account that owns the repos of the command's working directory (a repo's Setup or Start Script: its repo), else the
+// app's own account's. They reach the
+// Container only in a process's environment: no file holds one, and nothing here logs one. A command that cannot have
+// them runs without, its stderr saying why first.
+//
+// The app's private key never reaches this module, only the tokens.
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalTimers:off preferEffectArray:off preferEffectRecord:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import type { ContainerSettings } from "@cloudpid/config";
 import { type KeptSecret, secretReference } from "@cloudpid/extensions/secrets/core";
@@ -35,6 +42,7 @@ import {
   ENVIRONMENT_START_FILE,
   environmentSetupScript,
   environmentStartScriptRun,
+  githubTokenEnv,
   pendingSetupScripts,
   repoSetupScriptOf,
   scriptTimedOut,
@@ -48,6 +56,12 @@ import {
   toolchainEnv,
   WORKSPACE_ROOT,
 } from "@cloudpid/sandbox-image/toolchains";
+import {
+  type GitHubTokens,
+  type InstallationTokens,
+  notInstalledOn,
+  tokenFor,
+} from "../github/app.ts";
 import { buildSecretEnvironment } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
 import { type Redaction, Redactor } from "./redact.ts";
@@ -88,8 +102,13 @@ const KILLED_STATUS = 143;
 export type ToolchainOptions = {
   /** The Container's backend, which the Workspace would otherwise use as it is. */
   readonly backend: WorkspaceBackend;
-  /** The GitHub token for git and gh; without one commands run without it. */
-  readonly githubToken?: string | undefined;
+  /** Where the GitHub tokens for git and gh come from; without it commands run without one. */
+  readonly github?: Pick<GitHubTokens, "tokens" | "live"> | undefined;
+  /**
+   * The GitHub account that owns the repos a working directory covers, when they have one: whose token a command run
+   * there gets as `GH_TOKEN`. Without it, or without an answer, the app's own account's.
+   */
+  readonly repoAccount?: ((directory: string) => Promise<string | undefined>) | undefined;
   /**
    * The Workspace's Container settings as they are now, read at the start of each bootstrap: their variables reach the
    * bootstrap, the scripts and every command of that Container start, their Setup and Start Scripts run in it, and
@@ -135,10 +154,17 @@ export type ToolchainOptions = {
 
 export class ToolchainBackend implements WorkspaceBackend {
   readonly #options: ToolchainOptions;
-  /** What every command gets whatever the Environment: `toolchainEnv`'s. */
+  /** What every command gets whatever the Environment: `toolchainEnv`'s, without a GitHub token. */
   readonly #toolchainEnv: CommandEnv;
-  /** What the commands of the Container start bootstrapped last get: the Environment's variables under `#toolchainEnv`. */
+  /**
+   * What the commands of the Container start bootstrapped last get: the Environment's variables under `#toolchainEnv`,
+   * and then the GitHub tokens minted for the command.
+   */
   #env: CommandEnv;
+  /** What the bootstrap under way and its scripts get: `#env` and the tokens minted at its start, for `/workspace`. */
+  #bootstrapEnv: CommandEnv;
+  /** The GitHub tokens minted at the start of the bootstrap under way, which a repo's script gets for its repo. */
+  #bootstrapTokens: InstallationTokens | undefined;
   /** The Container run the bootstrap last finished in: a new connection to the same Container needs none. */
   #bootstrapped: string | undefined;
   /**
@@ -149,8 +175,9 @@ export class ToolchainBackend implements WorkspaceBackend {
 
   constructor(options: ToolchainOptions) {
     this.#options = options;
-    this.#toolchainEnv = toolchainEnv({ githubToken: options.githubToken });
+    this.#toolchainEnv = toolchainEnv();
     this.#env = this.#toolchainEnv;
+    this.#bootstrapEnv = this.#toolchainEnv;
   }
 
   get id() {
@@ -171,19 +198,76 @@ export class ToolchainBackend implements WorkspaceBackend {
     return { ...handle, rpc: this.#rpc(handle) };
   }
 
-  /** The token, if there is one, as the strings to take out of output. */
-  get #secret(): string | undefined {
-    const { githubToken } = this.#options;
-
-    return githubToken === undefined || githubToken === "" ? undefined : githubToken;
+  /** The GitHub tokens handed out that have not expired: what output must not hold. */
+  get #tokens(): ReadonlyArray<string> {
+    return this.#options.github?.live() ?? [];
   }
 
-  /** What to take out of output: the token (as `***`) and each kept Secret (as its reference). */
-  #redactions(secrets: ReadonlyArray<KeptSecret>): Redaction[] {
-    const token = this.#secret;
+  /**
+   * The GitHub tokens' variables for a command about to start in `directory`, and the note for its stderr when it has
+   * no `GH_TOKEN`, or no token for an account the app is installed on. Never throws.
+   */
+  async #githubEnv(directory: string): Promise<{
+    readonly env: CommandEnv;
+    readonly note?: string;
+    readonly tokens?: InstallationTokens;
+  }> {
+    const github = this.#options.github;
 
+    if (github === undefined) return { env: {} };
+
+    const [tokens, repoAccount] = await Promise.all([
+      github.tokens(),
+      this.#repoAccount(directory),
+    ]);
+
+    const chosen = tokenFor(tokens, repoAccount);
+
+    const problems =
+      chosen === undefined && tokens.problems.length === 0
+        ? [notInstalledOn(tokens.appAccount ?? "its own account")]
+        : tokens.problems;
+
+    const env = githubTokenEnv(chosen, tokens.byAccount);
+
+    if (problems.length === 0) return { env, tokens };
+
+    const why = this.#redact(problems.join("; "));
+    const accounts = Object.keys(tokens.byAccount).sort();
+
+    const note =
+      chosen !== undefined
+        ? someTokensNote(why)
+        : accounts.length === 0
+          ? noTokenNote(why)
+          : noGhTokenNote(why, accounts);
+
+    return { env, note, tokens };
+  }
+
+  /** The account that owns the repos of `directory`, if the Workspace can tell. Never throws. */
+  async #repoAccount(directory: string): Promise<string | undefined> {
+    return this.#options.repoAccount?.(directory).catch(() => undefined);
+  }
+
+  /**
+   * What a repo's Setup or Start Script, run in `directory`, gets: `env` with the bootstrap's GitHub tokens, its
+   * `GH_TOKEN` the one for the repo's owner.
+   */
+  async #repoScriptEnv(env: CommandEnv, directory: string): Promise<CommandEnv> {
+    const tokens = this.#bootstrapTokens;
+
+    if (tokens === undefined) return env;
+
+    const token = tokenFor(tokens, await this.#repoAccount(directory));
+
+    return { ...env, ...githubTokenEnv(token, tokens.byAccount) };
+  }
+
+  /** What to take out of output: the GitHub tokens (as `***`) and each kept Secret (as its reference). */
+  #redactions(secrets: ReadonlyArray<KeptSecret>): Redaction[] {
     return [
-      ...(token === undefined ? [] : [{ value: token, mask: "***" }]),
+      ...this.#tokens.map((token) => ({ value: token, mask: "***" })),
       ...secrets.map((kept) => ({ value: kept.value, mask: secretReference(kept.name) })),
     ];
   }
@@ -232,15 +316,22 @@ export class ToolchainBackend implements WorkspaceBackend {
           if (killed.delete(id)) return stoppedBeforeStart(id);
         }
 
-        const note = bootstrapNote ?? this.#scriptsNote(handle.runtimeId);
+        const github = await this.#githubEnv(input.cwd ?? WORKSPACE_ROOT);
 
-        const source =
-          note === undefined ? input.source : `printf '%s\\n' ${quote(note)} >&2\n${input.source}`;
+        const notes = [bootstrapNote ?? this.#scriptsNote(handle.runtimeId), github.note];
+
+        const source = `${notes
+          .flatMap((note) => (note === undefined ? [] : [`printf '%s\\n' ${quote(note)} >&2\n`]))
+          .join("")}${input.source}`;
 
         const redactions = this.#redactions(await this.#heldSecrets());
 
         return withRedactedOutput(
-          await shell.exec({ ...input, source, env: { ...this.#env, ...input.env } }),
+          await shell.exec({
+            ...input,
+            source,
+            env: { ...this.#env, ...github.env, ...input.env },
+          }),
           redactions,
         );
       },
@@ -295,7 +386,7 @@ export class ToolchainBackend implements WorkspaceBackend {
     }
   }
 
-  /** `text` without the token and the kept Secrets this instance knows. */
+  /** `text` without the GitHub tokens and the kept Secrets this instance knows. */
   #redact(text: string): string {
     return this.#redactions(this.#options.secrets?.known() ?? []).reduce(
       (redacted, { value, mask }) => (value === "" ? redacted : redacted.replaceAll(value, mask)),
@@ -306,7 +397,8 @@ export class ToolchainBackend implements WorkspaceBackend {
   /** The length of the longest secret taken out of output, for what may be cut through one. */
   get #longest(): number {
     return Math.max(
-      this.#secret?.length ?? 0,
+      0,
+      ...this.#tokens.map((token) => token.length),
       ...(this.#options.secrets?.known() ?? []).map((kept) => kept.value.length),
     );
   }
@@ -352,8 +444,13 @@ export class ToolchainBackend implements WorkspaceBackend {
 
     try {
       const environment = await this.#environment();
+      const github = await this.#githubEnv(WORKSPACE_ROOT);
+
+      if (github.note !== undefined) warn(`The bootstrap and its scripts: ${github.note}`);
 
       this.#env = { ...environment.variables, ...this.#toolchainEnv };
+      this.#bootstrapEnv = { ...this.#env, ...github.env };
+      this.#bootstrapTokens = github.tokens;
 
       return await this.#installAndSetUp(shell, environment);
     } finally {
@@ -405,7 +502,7 @@ export class ToolchainBackend implements WorkspaceBackend {
           ),
           cwd: WORKSPACE_ROOT,
           timeoutMs: BOOTSTRAP_TIMEOUT_MS,
-          env: { ...this.#env, ...identity },
+          env: { ...this.#bootstrapEnv, ...identity },
         },
         this.#kept,
       );
@@ -446,7 +543,7 @@ export class ToolchainBackend implements WorkspaceBackend {
         ),
         cwd: WORKSPACE_ROOT,
         timeoutMs: SETUP_LIST_TIMEOUT_MS,
-        env: this.#env,
+        env: this.#bootstrapEnv,
       });
 
       if (listed.code !== 0) throw new Error(`${exitReason(listed.code)}: ${listed.output}`);
@@ -475,8 +572,8 @@ export class ToolchainBackend implements WorkspaceBackend {
     // The Secrets marked for the Build, which a Workspace's Setup Scripts get as the Build's do; no other script does.
     const env =
       due.length === 0
-        ? this.#env
-        : { ...this.#env, ...buildSecretEnvironment(await this.#heldSecrets()) };
+        ? this.#bootstrapEnv
+        : { ...this.#bootstrapEnv, ...buildSecretEnvironment(await this.#heldSecrets()) };
 
     for (const line of due) {
       const ofEnvironment = line === ENVIRONMENT_SETUP_FILE;
@@ -488,7 +585,7 @@ export class ToolchainBackend implements WorkspaceBackend {
           source: setupScriptRun(script),
           cwd: script.directory,
           timeoutMs: SETUP_EXEC_TIMEOUT_MS,
-          env,
+          env: ofEnvironment ? env : await this.#repoScriptEnv(env, script.directory),
         },
         SETUP_TIMEOUT_SECONDS,
       );
@@ -564,7 +661,7 @@ export class ToolchainBackend implements WorkspaceBackend {
         source: inBash(startScriptDirectories(WORKSPACE_ROOT)),
         cwd: WORKSPACE_ROOT,
         timeoutMs: SETUP_LIST_TIMEOUT_MS,
-        env: this.#env,
+        env: this.#bootstrapEnv,
       });
 
       if (listed.code !== 0) throw new Error(`${exitReason(listed.code)}: ${listed.output}`);
@@ -589,6 +686,7 @@ export class ToolchainBackend implements WorkspaceBackend {
         shell,
         startScriptRun({ directory, file: START_SCRIPT }),
         directory,
+        await this.#repoScriptEnv(this.#bootstrapEnv, directory),
       );
 
       if (failure === undefined) continue;
@@ -611,11 +709,19 @@ export class ToolchainBackend implements WorkspaceBackend {
       : { note: notes.join("\n"), pointer: pointers.join("\n") };
   }
 
-  /** Run the Start Script run `source` in `directory`; why it failed, if it did. Never throws. */
-  #runStartScript(shell: Shell, source: string, directory: string): Promise<Failure | undefined> {
+  /**
+   * Run the Start Script run `source` in `directory`, with `env` or a command's environment; why it failed, if it did.
+   * Never throws.
+   */
+  #runStartScript(
+    shell: Shell,
+    source: string,
+    directory: string,
+    env?: CommandEnv,
+  ): Promise<Failure | undefined> {
     return this.#runScript(
       shell,
-      { source, cwd: directory, timeoutMs: START_EXEC_TIMEOUT_MS },
+      { source, cwd: directory, timeoutMs: START_EXEC_TIMEOUT_MS, env },
       START_TIMEOUT_SECONDS,
       // The one way a Start Script that works runs past its time: a service it started holds the exec's output.
       " (a service it starts must detach: `setsid nohup cmd >/tmp/cmd.log 2>&1 &`)",
@@ -641,7 +747,7 @@ export class ToolchainBackend implements WorkspaceBackend {
     try {
       const ran = await runToEnd(
         shell,
-        { ...input, source: inBash(input.source), env: input.env ?? this.#env },
+        { ...input, source: inBash(input.source), env: input.env ?? this.#bootstrapEnv },
         this.#kept,
       );
 
@@ -671,6 +777,23 @@ const NO_BOOTSTRAP_SETTINGS: BootstrapSettings = {
   startScript: "",
   toolchains: "",
 };
+
+/** What a command that has no GitHub token is told first, on its stderr. */
+const noTokenNote = (problem: string): string =>
+  `cloudpid: this command has no GitHub token (${problem}), so git and gh reach GitHub without one. A later command asks for one again.`;
+
+/**
+ * What a command that has no `GH_TOKEN` (none for the account of its repos nor the app's own) but has the tokens of
+ * `accounts` for git is told first.
+ */
+const noGhTokenNote = (problem: string, accounts: ReadonlyArray<string>): string =>
+  `cloudpid: this command has no GH_TOKEN (${problem}), so gh reaches GitHub without one; git has a token for the repos of ${accounts.join(", ")}. A later command asks for one again.`;
+
+/**
+ * What a command that has a GitHub token, but not one for every account the GitHub App is installed on, is told first.
+ */
+const someTokensNote = (problem: string): string =>
+  `cloudpid: this command has no GitHub token for some accounts (${problem}), so git reaches their repos without one. A later command asks for them again.`;
 
 /** Why a bootstrap or a script failed: in a few words, and what it printed (without the token). */
 type Failure = { readonly reason: string; readonly output: string };

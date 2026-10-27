@@ -52,7 +52,13 @@ import {
   withFlags,
 } from "./changes.ts";
 import { MAX_PACK_BYTES, packfileBytes } from "./git.ts";
-import { type GithubPull, GithubPulls, type GitHubRepo, githubRepoOf } from "./github-pulls.ts";
+import {
+  type GithubOptions,
+  type GithubPull,
+  GithubPulls,
+  type GitHubRepo,
+  githubRepoOf,
+} from "./github-pulls.ts";
 
 export type { GitHubRepo };
 
@@ -127,11 +133,11 @@ export type ComparisonOptions = {
   };
   /** GitHub's REST API (the base of the branch's open pull request, and the pull requests). */
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
-  /** The GitHub token (`CLOUDPID_GITHUB_TOKEN`); absent, the API is asked without one. */
-  readonly token: () => string | undefined;
+  /** Where the GitHub tokens come from (the GitHub App); absent, the API is asked without one. */
+  readonly github: GithubOptions["github"];
   /** The time in ms (the 60 s a pull request list is kept are counted by it); `Date.now` by default. */
   readonly now?: () => number;
-  /** `text` with the GitHub token and the Environment's kept Secrets taken out. */
+  /** `text` with the GitHub tokens and the Environment's kept Secrets taken out. */
   readonly redact: (text: string) => string;
   readonly warn: (message: string) => void;
 };
@@ -196,7 +202,7 @@ export class WorkspaceComparisonModule {
     this.#options = options;
     this.#github = new GithubPulls({
       fetch: options.fetch,
-      token: options.token,
+      github: options.github,
       now: options.now ?? (() => Date.now()),
       warn: options.warn,
     });
@@ -246,6 +252,30 @@ export class WorkspaceComparisonModule {
     );
 
     return { repos };
+  }
+
+  /**
+   * The GitHub account (lower case) that owns the repos `directory` covers (`coveredRepos`), by their remotes, when they
+   * all have the same one: whose GitHub token a command run there gets as `GH_TOKEN`. Never throws.
+   */
+  async githubAccountOf(directory: string): Promise<string | undefined> {
+    try {
+      const files = this.#files();
+      const fs = readOnly(files);
+      const covered = await coveredRepos(files, directory);
+
+      const repos = await Promise.all(
+        covered.map((repo) => this.#githubRepo(fs, `${WORKSPACE_ROOT}/${repo}`, null)),
+      );
+
+      const owners = new Set(
+        repos.flatMap((github) => (github === undefined ? [] : [github.owner.toLowerCase()])),
+      );
+
+      return owners.size === 1 ? [...owners][0] : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** A repo's open pull requests; the refs of the ones no longer open are deleted when the Container runs. */

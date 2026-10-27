@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 // The Container's Toolchain contract (docs/spec.md → Container and Toolchains, ADR-0004), kept next to the Dockerfile it
 // must agree with. The Workspace DO imports it: no Node built-ins here, since it runs in a Worker.
 import { COMMAND_BASH_ENV } from "./memory-guard.ts";
@@ -168,48 +168,66 @@ export type ToolchainEnv = {
   BASH_ENV: string;
   GH_TOKEN?: string;
   GITHUB_TOKEN?: string;
-};
-
-/** What the Workspace DO knows that commands need. */
-export type ToolchainEnvOptions = {
-  /** The GitHub token for git and gh; none leaves a command's own alone. */
-  readonly githubToken?: string | undefined;
+  CLOUDPID_GITHUB_TOKENS?: string;
 };
 
 /**
  * The environment every command on the Container gets, under whatever the caller passes. computerd starts a command
  * with PATH (the image's, which has mise's shims first) and HOME but none of the image's other variables, so mise's
- * settings are here, and `BASH_ENV`, which gives each command the memory guard's notes (`memory-guard.ts`). The token is
- * only ever here, in a process's environment: `bootstrapScript` makes git read it from there, so no file holds it.
+ * settings are here, and `BASH_ENV`, which gives each command the memory guard's notes (`memory-guard.ts`). The GitHub
+ * token is not: it changes as the Workspace DO mints new ones, so each command gets its own (`githubTokenEnv`).
  */
-export const toolchainEnv = (options: ToolchainEnvOptions): ToolchainEnv => {
-  const env: ToolchainEnv = {
-    // The Workspace's mise.toml is also mise's global config: a mise shim resolves its version from the working
-    // directory's config and the global one, so without this git and gh would fail ("No version is set for shim")
-    // anywhere but under /workspace: in a scratch clone in /tmp, or in the git calls pip and npm make from their own
-    // temp directories. The image has no other git to fall back on.
-    MISE_GLOBAL_CONFIG_FILE: ROOT_MISE_TOML,
-    // Every repo's mise.toml is the agent's own, in its own Workspace: trusted, and nothing to ask about. (A project's
-    // mise.toml cannot set these two, so they are the environment's.)
-    MISE_TRUSTED_CONFIG_PATHS: WORKSPACE_ROOT,
-    MISE_YES: "1",
-    // A prompt nobody answers would hang the command.
-    GIT_TERMINAL_PROMPT: "0",
-    TURBO_CACHE_DIR,
-    // The command's bash reads it first, and prints when the command ends what the memory guard stopped meanwhile.
-    BASH_ENV: COMMAND_BASH_ENV,
-  };
+export const toolchainEnv = (): ToolchainEnv => ({
+  // The Workspace's mise.toml is also mise's global config: a mise shim resolves its version from the working
+  // directory's config and the global one, so without this git and gh would fail ("No version is set for shim")
+  // anywhere but under /workspace: in a scratch clone in /tmp, or in the git calls pip and npm make from their own
+  // temp directories. The image has no other git to fall back on.
+  MISE_GLOBAL_CONFIG_FILE: ROOT_MISE_TOML,
+  // Every repo's mise.toml is the agent's own, in its own Workspace: trusted, and nothing to ask about. (A project's
+  // mise.toml cannot set these two, so they are the environment's.)
+  MISE_TRUSTED_CONFIG_PATHS: WORKSPACE_ROOT,
+  MISE_YES: "1",
+  // A prompt nobody answers would hang the command.
+  GIT_TERMINAL_PROMPT: "0",
+  TURBO_CACHE_DIR,
+  // The command's bash reads it first, and prints when the command ends what the memory guard stopped meanwhile.
+  BASH_ENV: COMMAND_BASH_ENV,
+});
 
-  if (options.githubToken !== undefined && options.githubToken !== "") {
-    env.GH_TOKEN = options.githubToken;
-    env.GITHUB_TOKEN = options.githubToken;
+/**
+ * The GitHub tokens as gh and git's credential helper read them: `token` (the one for the command's repo's account) as
+ * `GH_TOKEN` and `GITHUB_TOKEN`, and the token of each account the GitHub App is installed on (`byAccount`, by login
+ * in lower case) as `CLOUDPID_GITHUB_TOKENS` (`login=token` words), which git picks from by the repo's owner. Nothing
+ * for what there is none of. The tokens are only ever in a process's environment: `bootstrapScript` makes git read
+ * them from there, so no file holds one.
+ */
+export const githubTokenEnv = (
+  token: string | undefined,
+  byAccount: Readonly<Record<string, string>>,
+): Pick<ToolchainEnv, "GH_TOKEN" | "GITHUB_TOKEN" | "CLOUDPID_GITHUB_TOKENS"> => {
+  const pairs = Object.entries(byAccount)
+    .filter(([, value]) => value !== "")
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([account, value]) => `${account.toLowerCase()}=${value}`);
+
+  const env: Pick<ToolchainEnv, "GH_TOKEN" | "GITHUB_TOKEN" | "CLOUDPID_GITHUB_TOKENS"> = {};
+
+  if (token !== undefined && token !== "") {
+    env.GH_TOKEN = token;
+    env.GITHUB_TOKEN = token;
   }
+
+  if (pairs.length > 0) env.CLOUDPID_GITHUB_TOKENS = pairs.join(" ");
 
   return env;
 };
 
-/** git's answer to a credential request for github.com: the token of the environment it runs in. */
-const CREDENTIAL_HELPER = String.raw`!f() { if [ "$1" = get ] && [ -n "$GITHUB_TOKEN" ]; then echo username=x-access-token; echo "password=$GITHUB_TOKEN"; fi; }; f`;
+/**
+ * git's answer to a credential request for github.com: the token for the repo's owner (the first part of the path
+ * git gives, since `useHttpPath` is set) from `CLOUDPID_GITHUB_TOKENS`, else `GITHUB_TOKEN`, of the environment it
+ * runs in.
+ */
+const CREDENTIAL_HELPER = `!f() { [ "$1" = get ] || return 0; repo_path=; while IFS= read -r line && [ -n "$line" ]; do case "$line" in path=*) repo_path=\${line#path=} ;; esac; done; owner=$(printf '%s' "\${repo_path%%/*}" | tr '[:upper:]' '[:lower:]'); token=; for pair in $CLOUDPID_GITHUB_TOKENS; do if [ "\${pair%%=*}" = "$owner" ]; then token=\${pair#*=}; fi; done; [ -n "$token" ] || token=$GITHUB_TOKEN; if [ -n "$token" ]; then echo username=x-access-token; echo "password=$token"; fi; }; f`;
 
 /** `value` as one bash word, single-quoted, whatever it holds. */
 export const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -256,9 +274,9 @@ has_mise_config() {
  * 3. runs `mise install` (which installs from `mise.lock` and does nothing for what is present) in the Workspace and
  *    in each repo directory that has a mise config, and exits with the first failure's status after trying all,
  * 4. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
- *    Container's global config has one, and points git's credentials for github.com at `$GITHUB_TOKEN` at the time
- *    git asks. Those go to the Container's `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds
- *    the token,
+ *    Container's global config has one, and points git's credentials for github.com at the token for the repo's owner
+ *    (`$CLOUDPID_GITHUB_TOKENS`, else `$GITHUB_TOKEN`) at the time git asks. Those go to the Container's
+ *    `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds a token,
  * 5. writes the Container's global pnpm configuration (`PNPM_GLOBAL_CONFIG`), each key only when the file does not have it,
  * 6. ends its output with `BOOTSTRAP_CHANGED` when a step set `changed=1` (step 3 does when mise's installs differ
  *    from before it).
@@ -366,6 +384,7 @@ if command -v git >/dev/null 2>&1; then
   git config --global --get user.name >/dev/null || git config --global user.name "\${CLOUDPID_GIT_NAME:-cloudpid}"
   git config --global --get user.email >/dev/null || git config --global user.email "\${CLOUDPID_GIT_EMAIL:-cloudpid@users.noreply.github.com}"
   git config --global credential.https://github.com.helper ${shellQuote(CREDENTIAL_HELPER)}
+  git config --global credential.https://github.com.useHttpPath true
 fi
 
 # pnpm's global configuration (PNPM_GLOBAL_CONFIG), where pnpm reads it: a key the file has is the Container's own.

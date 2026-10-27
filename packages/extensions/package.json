@@ -25,6 +25,7 @@
     "./container": "./src/container.ts",
     "./environment": "./src/environment.ts",
     "./environment-lifecycle": "./src/environment-lifecycle.ts",
+    "./github-tokens": "./src/github-tokens.ts",
     "./settings": "./src/settings.ts",
     "./approvals": "./src/approvals.ts",
     "./approval-tools": "./src/approval-tools.ts",

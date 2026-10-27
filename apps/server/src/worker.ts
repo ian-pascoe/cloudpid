@@ -28,14 +28,13 @@ import {
 import { PushConfigLive } from "./push/config.ts";
 import { missingAsset } from "./missing-asset.ts";
 import { attachmentRoute, isAssetPath, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { GitHubAppConfig, GitHubAppConfigLive } from "./github/config.ts";
 import { serveAttachment } from "./serve-attachment.ts";
 import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
 import { workspaceLookups } from "./session/lookups.ts";
 import { SecretsConfigLive } from "./session/secrets.ts";
 import {
-  GitHubTokenConfig,
-  GitHubTokenConfigLive,
   destroySessionObject,
   ModelProxyConfigLive,
   Session,
@@ -204,10 +203,9 @@ export default class Server extends Cloudflare.Worker<Server>()(
     // SAFETY: the same binding, the raw namespace whose stubs `ComputerExecutionEnv` needs.
     const lookups = workspaceLookups(worker[WORKSPACE_BINDING] as WorkspaceNamespace, listings);
 
-    // The draft's Start from menu, asked of GitHub; each repo's list is kept for 60 s per isolate.
-    const github = yield* GitHubTokenConfig;
-
-    const branches = draftBranches(githubBranches(github.token));
+    // The draft's Start from menu, asked of GitHub with a read-only token of the GitHub App; each repo's list is kept for
+    // 60 s per isolate, and the token until less than 45 minutes are left of it.
+    const branches = draftBranches(githubBranches(yield* GitHubAppConfig));
 
     return {
       fetch: Effect.gen(function* () {
@@ -246,8 +244,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
     Effect.provide(
       SessionLive.pipe(
         Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
-        // The Session DOs refuse the token in a variable; the Worker asks GitHub for the draft's branches with it.
-        Layer.provideMerge(GitHubTokenConfigLive),
+        // The Session DOs refuse the app's key in a variable; the Worker asks GitHub for the draft's branches as the app.
+        Layer.provideMerge(GitHubAppConfigLive),
         Layer.provideMerge(
           RegistryLive.pipe(Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive))),
         ),

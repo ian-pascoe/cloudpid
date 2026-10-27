@@ -6,7 +6,7 @@
 // as the owner's save is applied and records it, the Session reads the Settings again at once, and the Run's end
 // notifies the owner of the changes it made (`AgentChangeLog`). They are the root conversation's only
 // (`PARENT_ONLY_TOOL_PREFIXES`), as `secret_ask` is. Values are plain: a change is refused when its reason or its text
-// holds a Secret the Session holds or the GitHub token.
+// holds a Secret the Session holds or a GitHub credential.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,
@@ -32,11 +32,11 @@ import * as Schema from "effect/Schema";
 import {
   AgentChangeLog,
   type ChangeAuthor,
-  DeployCredentials,
+  credentialCheck,
+  type DeployCredentials,
   MAX_CHANGE_REASON,
 } from "./environment.ts";
 import { matchesPattern } from "./patterns.ts";
-import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH, SUBAGENT_TOOLSET_OPTIONS } from "./subagents/options.ts";
@@ -264,7 +264,7 @@ const REFUSED_PLACEHOLDER =
   "Nothing was saved: the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference.";
 
 const REFUSED_SECRET =
-  "Nothing was saved: the text holds the value of a Secret this Session holds, or of the GitHub token. Settings are plain and the user reads them. Say it without the value.";
+  "Nothing was saved: the text holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Settings are plain and the user reads them. Say it without the value.";
 
 /**
  * The `settings` extension: its tools over the Session's `SettingsAccess`, refusing text that holds a Secret
@@ -281,16 +281,11 @@ export const SettingsTools: Effect.Effect<
   const log = yield* AgentChangeLog;
   const secrets = yield* Secrets;
 
-  const credentials = new Redactions();
-
-  for (const value of (yield* DeployCredentials).values) credentials.hold("GITHUB_TOKEN", value);
+  const holdsCredential = yield* credentialCheck;
 
   /** Whether `value` holds a Secret's value or a credential, once the Session's Secrets are fresh. */
   const holdsSecret = (value: string) =>
-    Effect.map(
-      secrets.refresh,
-      () => secrets.redact(value) !== value || credentials.redact(value) !== value,
-    );
+    Effect.map(secrets.refresh, () => secrets.redact(value) !== value || holdsCredential(value));
 
   /**
    * Apply `fields` as `tool`, and say how it went: refused when the reason or any of `texts` holds a Secret, then made

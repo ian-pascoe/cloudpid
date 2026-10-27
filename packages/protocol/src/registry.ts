@@ -733,9 +733,9 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * The draft's Start from menu (`docs/spec.md` → Session list → New session): the branches of each of the
-   * Environment's Repos on GitHub, asked with `CLOUDPID_GITHUB_TOKEN` and kept for 60 s, in the Environment's order. A
-   * Repo that is not on GitHub, or that GitHub would not list, has its reason instead. No Workspace or Container is
-   * woken. Fails with an `EnvironmentError` when the Environment is not listed.
+   * Environment's Repos on GitHub, asked with a read-only token of the GitHub App and kept for 60 s, in the
+   * Environment's order. A Repo that is not on GitHub, or that GitHub would not list, has its reason instead. No
+   * Workspace or Container is woken. Fails with an `EnvironmentError` when the Environment is not listed.
    */
   Rpc.make("draftBranches", {
     payload: { environment: EnvironmentId },

@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import { OWNER_EMAIL } from "../deployment.ts";
+import { readGitHubAppSecrets } from "../github/config.ts";
 import { WORKSPACE_CONTAINER, WORKSPACE_BINDING } from "./binding.ts";
 import type { Workspace } from "./Workspace.ts";
 
@@ -27,9 +28,10 @@ export const DEFAULT_GIT_NAME = "cloudpid";
  * The Worker that hosts the Workspace DO, one object per Workspace slug. It has no public URL: Session DOs reach it
  * through a Durable Object binding.
  *
- * - `CLOUDPID_GITHUB_TOKEN` is a deploy-time secret (`Config.Redacted`, bound as a Worker secret): the Container's
- *   commands get it as `GH_TOKEN` and `GITHUB_TOKEN` so the agent can clone, commit and push with real git and gh
- *   (docs/spec.md → Git).
+ * - `CLOUDPID_GITHUB_APP_ID` and `CLOUDPID_GITHUB_APP_PRIVATE_KEY` are deploy-time secrets (`Config.Redacted`, bound as
+ *   Worker secrets; a key that is not an RSA PEM fails the deploy): the Workspace DO mints GitHub tokens from them that
+ *   the Container's commands get as `GH_TOKEN` and `GITHUB_TOKEN`, so the agent can clone, commit and push with real
+ *   git and gh (docs/spec.md → Git, ADR-0025).
  * - `SECRETS_ENCRYPTION_KEY` is the deploy-time master key (`Config.Redacted`, bound as a Worker secret) the Workspace
  *   DO seals its copy of the Environment's kept Secrets under, as the Session DOs and the Registry seal theirs
  *   (docs/spec.md → Secrets).
@@ -42,6 +44,7 @@ export const DEFAULT_GIT_NAME = "cloudpid";
  */
 export const Workspaces = Effect.gen(function* () {
   const { dev } = yield* AlchemyContext;
+  const githubApp = yield* readGitHubAppSecrets;
 
   const analyticsToken = (yield* Config.option(Config.Redacted("CLOUDPID_ANALYTICS_TOKEN"))).pipe(
     Option.filter((token) => Redacted.value(token) !== ""),
@@ -65,7 +68,8 @@ export const Workspaces = Effect.gen(function* () {
         containers: [WorkspaceContainer],
       }),
       LOADER: Cloudflare.WorkerLoader(),
-      CLOUDPID_GITHUB_TOKEN: Config.Redacted("CLOUDPID_GITHUB_TOKEN"),
+      CLOUDPID_GITHUB_APP_ID: githubApp.appId,
+      CLOUDPID_GITHUB_APP_PRIVATE_KEY: githubApp.privateKey,
       SECRETS_ENCRYPTION_KEY: Config.Redacted("SECRETS_ENCRYPTION_KEY"),
       CLOUDPID_GIT_NAME: Config.String("CLOUDPID_GIT_NAME").pipe(
         Config.withDefault(DEFAULT_GIT_NAME),

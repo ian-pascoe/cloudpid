@@ -1,7 +1,7 @@
 // The Container's Toolchains on the Workspace DO's side (docs/spec.md → Container and Toolchains, ADR-0004): the
 // bootstrap that runs before the first command of each Container start, and the environment every command gets. The
 // Container is a fake backend whose shell records what it is asked and answers from a script.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferEffectArray:off preferEffectRecord:off
 import { secretEnvName, secretReference } from "@cloudpid/extensions/secrets/core";
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
@@ -145,6 +145,15 @@ const bootstraps = (execs: readonly ExecInput[]) => execs.filter((input) => isBo
 // SAFETY: the fake backend ignores the host computer would pass it.
 const host = {} as Parameters<WorkspaceBackend["connect"]>[0];
 
+/** The GitHub App as commands see it: installed on its own account and the others in `byAccount`, none failing. */
+const installed = (
+  byAccount: () => Record<string, string>,
+  live: () => string[] = () => Object.values(byAccount()),
+) => ({
+  tokens: async () => ({ byAccount: byAccount(), appAccount: "ian-pascoe", problems: [] }),
+  live,
+});
+
 const open = (
   container: ReturnType<typeof fakeContainer>,
   options: Partial<ConstructorParameters<typeof ToolchainBackend>[0]> = {},
@@ -154,7 +163,7 @@ const open = (
 
   const toolchains = new ToolchainBackend({
     backend: container.backend,
-    githubToken: "ghp_secret",
+    github: installed(() => ({ "ian-pascoe": "ghp_secret" })),
     git: { name: "Pi Agent", email: "pi@example.com" },
     warn: (message) => warnings.push(message),
     now: () => clock.now,
@@ -516,6 +525,7 @@ describe("a command's environment", () => {
     expect(commands(container.execs)[0]?.env).toEqual({
       GH_TOKEN: "ghp_secret",
       GITHUB_TOKEN: "ghp_secret",
+      CLOUDPID_GITHUB_TOKENS: "ian-pascoe=ghp_secret",
       MISE_GLOBAL_CONFIG_FILE: "/workspace/mise.toml",
       MISE_TRUSTED_CONFIG_PATHS: "/workspace",
       MISE_YES: "1",
@@ -541,9 +551,139 @@ describe("a command's environment", () => {
     });
   });
 
+  it("has the token the GitHub App hands out at its start, and the output of each has every live token taken out", async () => {
+    const minted = ["ghs_first"];
+
+    const container = fakeContainer((input) =>
+      isBootstrap(input) ? {} : { stdout: [`${minted.join(" ")}\n`] },
+    );
+
+    const handle = await open(container, {
+      github: installed(
+        () => ({ "ian-pascoe": minted.at(-1) ?? "" }),
+        () => minted,
+      ),
+    }).toolchains.connect(host);
+
+    const first = await output(await handle.rpc.shell.exec({ source: "a" }));
+
+    minted.push("ghs_second");
+
+    const second = await output(await handle.rpc.shell.exec({ source: "b" }));
+
+    expect(commands(container.execs).map((input) => input.env?.GITHUB_TOKEN)).toEqual([
+      "ghs_first",
+      "ghs_second",
+    ]);
+    expect(commands(container.execs).map((input) => input.env?.GH_TOKEN)).toEqual([
+      "ghs_first",
+      "ghs_second",
+    ]);
+    expect(first.stdout).toBe("***\n");
+    expect(second.stdout).toBe("*** ***\n");
+  });
+
+  it("has no token when none could be minted, and its stderr says why first", async () => {
+    const container = fakeContainer();
+
+    const handle = await open(container, {
+      github: {
+        tokens: async () => ({
+          byAccount: {},
+          appAccount: undefined,
+          problems: ["The GitHub App is not installed"],
+        }),
+        live: () => [],
+      },
+    }).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "git push" });
+
+    const command = commands(container.execs)[0];
+
+    expect(command?.env).not.toHaveProperty("GITHUB_TOKEN");
+    expect(command?.env).not.toHaveProperty("GH_TOKEN");
+    expect(unquoted(command?.source)).toBe(
+      "printf '%s\\n' 'cloudpid: this command has no GitHub token (The GitHub App is not installed), so git and gh reach GitHub without one. A later command asks for one again.' >&2\ngit push",
+    );
+  });
+
+  it("has as GH_TOKEN the token of the account that owns the repos of its working directory, else the app's own", async () => {
+    const container = fakeContainer();
+
+    const handle = await open(container, {
+      github: installed(() => ({ "ian-pascoe": "ghs_ian", spiritledsoftware: "ghs_org" })),
+      repoAccount: async (directory) =>
+        directory.startsWith("/workspace/site") ? "SpiritLedSoftware" : undefined,
+    }).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "gh pr list", cwd: "/workspace/site/src" });
+    await handle.rpc.shell.exec({ source: "gh pr list", cwd: "/workspace" });
+
+    expect(commands(container.execs).map((input) => input.env?.GH_TOKEN)).toEqual([
+      "ghs_org",
+      "ghs_ian",
+    ]);
+
+    for (const command of commands(container.execs)) {
+      expect(command.env?.CLOUDPID_GITHUB_TOKENS).toBe(
+        "ian-pascoe=ghs_ian spiritledsoftware=ghs_org",
+      );
+    }
+  });
+
+  it("says it has no GH_TOKEN, and which accounts git has tokens for, when only the app's own account has none", async () => {
+    const container = fakeContainer();
+
+    const handle = await open(container, {
+      github: {
+        tokens: async () => ({
+          byAccount: { spiritledsoftware: "ghs_org" },
+          appAccount: "ian-pascoe",
+          problems: ["ian-pascoe: GitHub could not be reached"],
+        }),
+        live: () => ["ghs_org"],
+      },
+    }).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "gh pr list" });
+
+    const command = commands(container.execs)[0];
+
+    expect(command?.env).not.toHaveProperty("GH_TOKEN");
+    expect(command?.env?.CLOUDPID_GITHUB_TOKENS).toBe("spiritledsoftware=ghs_org");
+    expect(unquoted(command?.source)).toBe(
+      "printf '%s\\n' 'cloudpid: this command has no GH_TOKEN (ian-pascoe: GitHub could not be reached), so gh reaches GitHub without one; git has a token for the repos of spiritledsoftware. A later command asks for one again.' >&2\ngh pr list",
+    );
+  });
+
+  it("says first which accounts it has no token for, when it has one for others", async () => {
+    const container = fakeContainer();
+
+    const handle = await open(container, {
+      github: {
+        tokens: async () => ({
+          byAccount: { "ian-pascoe": "ghs_ian" },
+          appAccount: "ian-pascoe",
+          problems: ["spiritledsoftware: GitHub could not be reached"],
+        }),
+        live: () => ["ghs_ian"],
+      },
+    }).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "git fetch" });
+
+    const command = commands(container.execs)[0];
+
+    expect(command?.env?.GH_TOKEN).toBe("ghs_ian");
+    expect(unquoted(command?.source)).toBe(
+      "printf '%s\\n' 'cloudpid: this command has no GitHub token for some accounts (spiritledsoftware: GitHub could not be reached), so git reaches their repos without one. A later command asks for them again.' >&2\ngit fetch",
+    );
+  });
+
   it("has no token variable where the stack bound none", async () => {
     const container = fakeContainer();
-    const handle = await open(container, { githubToken: undefined }).toolchains.connect(host);
+    const handle = await open(container, { github: undefined }).toolchains.connect(host);
 
     await handle.rpc.shell.exec({ source: "true" });
 
@@ -672,7 +812,7 @@ describe("a command's output", () => {
       isBootstrap(input) ? {} : { stdout: ["ghp_secret"] },
     );
 
-    const handle = await open(container, { githubToken: undefined }).toolchains.connect(host);
+    const handle = await open(container, { github: undefined }).toolchains.connect(host);
     const seen = await output(await handle.rpc.shell.exec({ source: "x" }));
 
     expect(seen.stdout).toBe("ghp_secret");
@@ -771,6 +911,28 @@ describe("the Setup Scripts", () => {
     expect(script?.env).toMatchObject({ GITHUB_TOKEN: "ghp_secret", MISE_YES: "1" });
     expect(script?.source).toContain("timeout --kill-after=10 900 ");
     expect(script?.timeoutMs).toBeGreaterThan(15 * 60_000);
+  });
+
+  it("have as GH_TOKEN the token of their repo's owner, with every account's for git", async () => {
+    const container = withScripts(["/workspace/a", "/workspace/site"]);
+
+    const handle = await open(container, {
+      github: installed(() => ({ "ian-pascoe": "ghs_ian", spiritledsoftware: "ghs_org" })),
+      repoAccount: async (directory) =>
+        directory === "/workspace/site" ? "spiritledsoftware" : undefined,
+    }).toolchains.connect(host);
+
+    await handle.rpc.shell.exec({ source: "true" });
+
+    const scripts = container.execs.filter(isSetupRun);
+
+    expect(scripts.map((input) => input.env?.GH_TOKEN)).toEqual(["ghs_ian", "ghs_org"]);
+
+    for (const script of scripts) {
+      expect(script.env?.CLOUDPID_GITHUB_TOKENS).toBe(
+        "ian-pascoe=ghs_ian spiritledsoftware=ghs_org",
+      );
+    }
   });
 
   it("get the Secrets marked for the Build in their environment, which no other script or command gets", async () => {
@@ -1270,6 +1432,25 @@ describe("the Start Scripts", () => {
     expect(container.execs.filter(isStartRun)[0]?.source).toContain(ENVIRONMENT_START_FILE);
     expect(container.execs.filter(isStartRun)[0]?.source).toContain(btoa("docker start db\n"));
     expect(container.execs.filter(isStartRun)[1]?.source).toContain(".cloudpid/start.sh");
+  });
+
+  it("have as GH_TOKEN the token of their repo's owner, the Environment's the app owner's", async () => {
+    const container = withStartScripts(["/workspace/a", "/workspace/site"]);
+
+    const { toolchains } = open(container, {
+      settings: async () => environment({ startScript: "docker start db\n" }),
+      github: installed(() => ({ "ian-pascoe": "ghs_ian", spiritledsoftware: "ghs_org" })),
+      repoAccount: async (directory) =>
+        directory === "/workspace/site" ? "spiritledsoftware" : undefined,
+    });
+
+    await (await toolchains.connect(host)).rpc.shell.exec({ source: "true" });
+
+    expect(container.execs.filter(isStartRun).map((input) => input.env?.GH_TOKEN)).toEqual([
+      "ghs_ian",
+      "ghs_ian",
+      "ghs_org",
+    ]);
   });
 
   it("are bounded by five minutes, and do not count as an install", async () => {

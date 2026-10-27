@@ -204,6 +204,14 @@ _Avoid_: Sandbox, VM, box, Machine
 What stops the largest process in a Container that is nearly out of memory, so the Container keeps answering; each command running then ends with a note naming what was stopped.
 _Avoid_: OOM killer (the kernel's, which acts too late to save the Container)
 
+**GitHub App**:
+cloudpid's own identity on GitHub, installed on the owner's account and on the organizations whose repos the agent works on, which the agent's pushes, pull requests and comments come from.
+_Avoid_: Bot account, PAT
+
+**GitHub token**:
+A short-lived token minted from the GitHub App, for one account it is installed on, for the agent's commands and cloudpid's own calls to GitHub.
+_Avoid_: PAT, installation token (outside the code)
+
 **Terminal**:
 An interactive shell the owner runs on a Workspace's Container from a Session, in the Session's directory, shown as a Pane. The agent does not see it.
 _Avoid_: Console, shell (alone), PTY

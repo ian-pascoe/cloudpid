@@ -60,8 +60,11 @@ export type SnapshotRecord = {
 export type ContainerSnapshotDeps = {
   /** Off where the Container is not the real thing (`alchemy dev`), which has no snapshots. */
   readonly enabled: boolean;
-  /** The GitHub token commands run with, to keep off the snapshot; none means no token to scan for. */
-  readonly secret: string | undefined;
+  /**
+   * The GitHub tokens handed to commands that have not expired, to keep off the snapshot (one that has expired is
+   * harmless); none means no token to scan for.
+   */
+  readonly tokens: () => ReadonlyArray<string>;
   /**
    * The Environment's kept Secrets the Workspace holds, to keep off the snapshot too; when it cannot show them, no
    * snapshot is taken. Without it, there are none.
@@ -194,7 +197,7 @@ export class ContainerSnapshots {
 
         if (!held.ok) return { leaked: true, reason: held.reason } as const;
 
-        const patterns = scanPatterns(deps.secret, held.secrets);
+        const patterns = scanPatterns(deps.tokens(), held.secrets);
 
         if (patterns.length > 0) {
           const leaks = await deps.scan(patterns);
@@ -380,16 +383,16 @@ const excerpt = (text: string): string => {
 };
 
 /**
- * What the scan before a snapshot searches for (one line each, as `grep -F` takes them): the GitHub token in its forms
+ * What the scan before a snapshot searches for (one line each, as `grep -F` takes them): each GitHub token in its forms
  * (`secretForms`), and each kept Secret as it is and as base64 of its UTF-8, each cut to a part of its middle when
  * long. A Secret of several lines is searched for by its longest line (a key's body, not a header any file can hold),
  * which every file holding the whole value holds. A Secret shorter than `MIN_SCANNED_LENGTH` is not searched for.
  */
 export const scanPatterns = (
-  token: string | undefined,
+  tokens: ReadonlyArray<string>,
   secrets: ReadonlyArray<KeptSecret>,
 ): string[] => {
-  const patterns = token === undefined || token === "" ? [] : [...secretForms(token)];
+  const patterns = tokens.flatMap((token) => (token === "" ? [] : secretForms(token)));
 
   for (const { value } of secrets) {
     if (value.length < MIN_SCANNED_LENGTH) continue;

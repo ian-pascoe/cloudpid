@@ -1,8 +1,9 @@
 // GitHub's API for pull requests (docs/spec.md → Diffs and review → Comparisons): the open pull requests of a repo for the
 // Diff pane's picker (one GraphQL query, counts and heads included), one pull request's state and head for a Comparison
-// (REST), and the base of a branch's open pull request (REST). The Workspace DO asks with `CLOUDPID_GITHUB_TOKEN`; opening
-// the picker never starts the Container. A list is kept for 60 s per repo, and a failure for a few seconds, so a refused
-// or rate-limited token is not asked again on every call. The main Worker asks the same client for a repo's branches,
+// (REST), and the base of a branch's open pull request (REST). The Workspace DO asks with a GitHub token from the GitHub
+// App (ADR-0025), and again with a new one when GitHub refuses it with a 401; opening the picker never starts the
+// Container. A list is kept for 60 s per repo, and a failure for a few seconds, so a refused or rate-limited token is
+// not asked again on every call. The main Worker asks the same client for a repo's branches,
 // for the draft's Start from menu (`docs/spec.md` → Session list → New session), kept the same way.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off globalFetch:off missedPipeableOpportunity:off
 import {
@@ -16,6 +17,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type { GitHubTokens } from "../github/app.ts";
 
 /** How long a repo's list is kept before the next picker opening asks GitHub again. */
 export const PULLS_CACHE_MS = 60_000;
@@ -234,8 +236,11 @@ const byRecency = (a: RemoteBranch, b: RemoteBranch): number =>
 export type GithubOptions = {
   /** GitHub's API; a test Worker replaces it. */
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
-  /** The GitHub token (`CLOUDPID_GITHUB_TOKEN`); absent, REST is asked without one (public repos only). */
-  readonly token: () => string | undefined;
+  /**
+   * Where the GitHub tokens come from (the GitHub App, a token for the installation on the repo's owner), told of one
+   * GitHub refused; absent, GitHub is asked without one (public repos only, REST alone).
+   */
+  readonly github: Pick<GitHubTokens, "token" | "invalidate"> | undefined;
   /** The time in ms: the 60 s the list is kept, and how long a failure is, are counted by it. */
   readonly now: () => number;
   readonly warn: (message: string) => void;
@@ -262,6 +267,22 @@ type Failure = GithubProblem & { readonly limitMs?: number };
 
 type Request = { readonly method?: "POST"; readonly body?: string };
 
+/** A token for the installation on `owner`, else the app owner's; the first failure when neither can be had. */
+const ownerToken = async (
+  github: NonNullable<GithubOptions["github"]>,
+  owner: string,
+): Promise<string> => {
+  try {
+    return await github.token(owner);
+  } catch (cause) {
+    try {
+      return await github.token();
+    } catch {
+      throw cause;
+    }
+  }
+};
+
 export class GithubPulls {
   readonly #options: GithubOptions;
   readonly #lists = new Map<
@@ -283,9 +304,44 @@ export class GithubPulls {
     this.#options = options;
   }
 
-  async #request(url: string, request: Request): Promise<GithubResult<unknown> | Failure> {
-    const token = this.#options.token();
+  /**
+   * `url`, about `repo`, asked with a GitHub token for its owner, else the app owner's (which reads any public repo):
+   * when GitHub refuses it with a 401, the token is invalidated and the request made once more with a new one.
+   */
+  async #request(
+    repo: GitHubRepo,
+    url: string,
+    request: Request,
+  ): Promise<GithubResult<unknown> | Failure> {
+    const github = this.#options.github;
 
+    if (github === undefined) return this.#askOnce(url, request, undefined);
+
+    for (let attempt = 1; ; attempt++) {
+      let token: string;
+
+      try {
+        token = await ownerToken(github, repo.owner);
+      } catch (cause) {
+        return {
+          kind: "failed",
+          message: `No GitHub token: ${cause instanceof Error ? cause.message : String(cause)}`,
+        };
+      }
+
+      const answer = await this.#askOnce(url, request, token);
+
+      if (!("unauthorized" in answer) || attempt > 1) return answer;
+
+      github.invalidate(token);
+    }
+  }
+
+  async #askOnce(
+    url: string,
+    request: Request,
+    token: string | undefined,
+  ): Promise<GithubResult<unknown> | (Failure & { readonly unauthorized?: true })> {
     const headers = new Headers({
       accept: "application/vnd.github+json",
       "x-github-api-version": "2022-11-28",
@@ -329,9 +385,11 @@ export class GithubPulls {
         return { kind: "failed", message: RATE_LIMITED_MESSAGE, limitMs: waits ?? 60_000 };
       }
 
-      if (response.status === 401 || response.status === 403) {
-        return { kind: "refused", message: REFUSED_MESSAGE };
+      if (response.status === 401) {
+        return { kind: "refused", message: REFUSED_MESSAGE, unauthorized: true };
       }
+
+      if (response.status === 403) return { kind: "refused", message: REFUSED_MESSAGE };
 
       return response.status === 404
         ? { kind: "failed", message: NOT_FOUND_MESSAGE }
@@ -345,8 +403,16 @@ export class GithubPulls {
     }
   }
 
-  /** A request, unless the rate limit holds it or the same one failed a moment ago; failures are remembered. */
-  async #send(key: string, url: string, request: Request = {}): Promise<GithubResult<unknown>> {
+  /**
+   * A request about `repo`, unless the rate limit holds it or the same one failed a moment ago; failures are
+   * remembered.
+   */
+  async #send(
+    repo: GitHubRepo,
+    key: string,
+    url: string,
+    request: Request = {},
+  ): Promise<GithubResult<unknown>> {
     const now = this.#options.now();
 
     if (now < this.#limitedUntil) {
@@ -363,7 +429,7 @@ export class GithubPulls {
       };
     }
 
-    const answer = await this.#request(url, request);
+    const answer = await this.#request(repo, url, request);
 
     if ("status" in answer) {
       this.#failures.delete(key);
@@ -391,7 +457,7 @@ export class GithubPulls {
   /** One pull request of `repo`: its state, head and base (and counts, which a list has anyway). */
   async get(repo: GitHubRepo, number: number): Promise<GithubResult<GithubPull>> {
     const path = `/repos/${repo.owner}/${repo.name}/pulls/${number}`;
-    const answer = await this.#send(path, `https://api.github.com${path}`);
+    const answer = await this.#send(repo, path, `https://api.github.com${path}`);
 
     if (answer.status === "error") return answer;
 
@@ -436,7 +502,7 @@ export class GithubPulls {
     });
 
     const path = `/repos/${repo.owner}/${repo.name}/pulls?${query.toString()}`;
-    const answer = await this.#send(path, `https://api.github.com${path}`);
+    const answer = await this.#send(repo, path, `https://api.github.com${path}`);
 
     if (answer.status === "error") return answer;
 
@@ -455,6 +521,7 @@ export class GithubPulls {
 
   async #fetchList(repo: GitHubRepo): Promise<GithubResult<readonly GithubPull[]>> {
     const answer = await this.#send(
+      repo,
       `graphql:${fullName(repo).toLowerCase()}`,
       "https://api.github.com/graphql",
       {
@@ -552,6 +619,7 @@ export class GithubPulls {
 
     for (let page = 0; page < BRANCH_PAGES; page += 1) {
       const answer = await this.#send(
+        repo,
         `graphql:branches:${key}:${after ?? ""}`,
         "https://api.github.com/graphql",
         {

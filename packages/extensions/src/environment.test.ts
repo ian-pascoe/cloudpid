@@ -510,6 +510,40 @@ describe("environment_variable_set", () => {
     expect(environments.changes).toEqual([]);
   });
 
+  it("refuses a value or reason holding anything shaped like a GitHub token, which the Session never saw", async () => {
+    const environments = fakeEnvironments();
+    const tool = await toolsOver(environments.service);
+
+    for (const token of [
+      `ghs_${"a1".repeat(18)}`,
+      `gho_${"B2".repeat(18)}`,
+      `github_pat_${"c3_".repeat(10)}`,
+      // Run on from a name, with no word boundary before it.
+      `GH_TOKEN_ghu_${"d4".repeat(18)}`,
+    ]) {
+      expect(
+        await failure(
+          run(tool("environment_variable_set"), {
+            name: "TOKEN",
+            value: `Bearer ${token}`,
+            reason: "r",
+          }),
+        ),
+      ).toContain("GitHub token");
+      expect(
+        await failure(
+          run(tool("environment_variable_set"), {
+            name: "TOKEN",
+            value: "x",
+            reason: `it is ${token}`,
+          }),
+        ),
+      ).toContain("GitHub token");
+    }
+
+    expect(environments.changes).toEqual([]);
+  });
+
   it("refuses a value or reason holding a Secret Reference, held or not, and saves nothing", async () => {
     const environments = fakeEnvironments();
     const tool = await toolsOver(environments.service, { held: { API_KEY: "sk-live-0123456789" } });

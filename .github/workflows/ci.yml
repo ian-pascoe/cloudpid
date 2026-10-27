@@ -148,9 +148,10 @@ jobs:
           # empty secret binding is not verified, so set both (or remove the line of one you will never set).
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}
-          # The GitHub token commands on the Workspace's Container get as GH_TOKEN/GITHUB_TOKEN (read by the Workspaces
-          # Worker's `Config.Redacted`, bound as a Worker secret). Set in `production`.
-          CLOUDPID_GITHUB_TOKEN: ${{ secrets.CLOUDPID_GITHUB_TOKEN }}
+          # The GitHub App the Workers mint GitHub tokens from (ADR-0025; read by `Config.Redacted`, bound as Worker
+          # secrets). Written into `production` and `preview` by `pnpm --filter @cloudpid/infra run github-app:setup`.
+          CLOUDPID_GITHUB_APP_ID: ${{ secrets.CLOUDPID_GITHUB_APP_ID }}
+          CLOUDPID_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLOUDPID_GITHUB_APP_PRIVATE_KEY }}
           # The read-only analytics token the Workspace DO reads its Containers' usage with (optional; bound as a Worker
           # secret). Written into `production` and `preview` by infra/github.ts, not by hand.
           CLOUDPID_ANALYTICS_TOKEN: ${{ secrets.CLOUDPID_ANALYTICS_TOKEN }}
@@ -216,7 +217,8 @@ jobs:
           SECRETS_ENCRYPTION_KEY: ${{ secrets.SECRETS_ENCRYPTION_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}
-          CLOUDPID_GITHUB_TOKEN: ${{ secrets.CLOUDPID_GITHUB_TOKEN }}
+          CLOUDPID_GITHUB_APP_ID: ${{ secrets.CLOUDPID_GITHUB_APP_ID }}
+          CLOUDPID_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLOUDPID_GITHUB_APP_PRIVATE_KEY }}
           CLOUDPID_ANALYTICS_TOKEN: ${{ secrets.CLOUDPID_ANALYTICS_TOKEN }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
