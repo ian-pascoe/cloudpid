@@ -203,6 +203,7 @@ export const readSkillFolder = (
 
     for (const entry of entries) {
       const file = `${directory}/${entry.path}`;
+
       const size = yield* attempt(`Cannot read ${entry.path}`, () =>
         env.fileInfo(file, BACKGROUND_CONTEXT),
       );

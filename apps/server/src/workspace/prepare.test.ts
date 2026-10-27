@@ -179,6 +179,7 @@ describe("readying a Workspace", () => {
       hash: "merged-1",
       files: { "release/SKILL.md": "---\nname: release\n---\n" },
     };
+
     const handed = host([], [{ exitCode: 0, output: "" }]);
 
     await handed.prepare({ ...setup, skills: set });

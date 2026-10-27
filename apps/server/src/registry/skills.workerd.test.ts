@@ -157,6 +157,7 @@ describe("saving an Environment's Skill", () => {
 
   it("hides a bundled Skill of the same name", async () => {
     const own = { "SKILL.md": skillMd("pr", "Our own pr.") };
+
     const [saved, set] = await inRegistry(async ({ save, set }) => [
       await save("pr", own),
       await set(),
@@ -352,12 +353,12 @@ describe("a Skill's Agent changes", () => {
 
         const [latest, first] = changes.list(DEFAULT_ENVIRONMENT);
 
-        expect(await revert(latest!.id)).toMatchObject({ status: "reverted" });
+        expect(revert(latest!.id)).toMatchObject({ status: "reverted" });
 
         const restored = skills.get(DEFAULT_ENVIRONMENT, "release");
 
         // The first save's own revert: the Skill it made is removed.
-        expect(await revert(first!.id, 4_000)).toMatchObject({ status: "reverted" });
+        expect(revert(first!.id, 4_000)).toMatchObject({ status: "reverted" });
 
         return [restored, skills.get(DEFAULT_ENVIRONMENT, "release")];
       },
@@ -377,7 +378,7 @@ describe("a Skill's Agent changes", () => {
         const [removal] = changes.list(DEFAULT_ENVIRONMENT);
 
         expect(removal).toMatchObject({ field: skillField("release"), after: null });
-        expect(await revert(removal!.id)).toMatchObject({
+        expect(revert(removal!.id)).toMatchObject({
           status: "reverted",
           change: { actor: "owner", before: null },
         });

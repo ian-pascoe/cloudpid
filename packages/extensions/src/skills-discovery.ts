@@ -86,14 +86,32 @@ const Frontmatter = Schema.Struct({
 
 const decodeFrontmatter = Schema.decodeUnknownOption(Frontmatter);
 
-/** The frontmatter of a `SKILL.md`'s `text`, parsed: undefined when it has none, or it is not YAML. */
-export const readFrontmatter = (text: string): unknown => {
+/** The fields of a `SKILL.md`'s frontmatter that a skill is read from, as YAML gives them: not checked yet. */
+const FrontmatterFields = Schema.Struct({
+  name: Schema.optionalKey(Schema.Unknown),
+  description: Schema.optionalKey(Schema.Unknown),
+  "disable-model-invocation": Schema.optionalKey(Schema.Unknown),
+});
+
+export type FrontmatterFields = typeof FrontmatterFields.Type;
+
+const decodeFields = Schema.decodeUnknownOption(FrontmatterFields);
+
+/**
+ * The frontmatter of a `SKILL.md`'s `text`, parsed: undefined when it has none, it is not YAML, or it is not a mapping
+ * of fields.
+ */
+export const readFrontmatter = (text: string): FrontmatterFields | undefined => {
   const source = frontmatterOf(text);
 
   if (source === undefined) return undefined;
 
   try {
-    return parse(source);
+    const parsed: unknown = parse(source);
+
+    return Predicate.isObject(parsed) && !Arr.isArray(parsed)
+      ? Option.getOrUndefined(decodeFields(parsed))
+      : undefined;
   } catch {
     return undefined;
   }

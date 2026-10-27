@@ -3,6 +3,7 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, called from React.
 import type { AgentChange, SkillChangeFiles } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 
 /** One line of a diff: kept (`same`), taken out (`removed`) or put in (`added`). */
@@ -145,9 +146,8 @@ export const skillFileDiffs = ({
 }: SkillChangeFiles): ReadonlyArray<SkillFileDiff> => {
   const left = new Map(Arr.map(before ?? [], (file) => [file.path, file.text] as const));
   const right = new Map(Arr.map(after ?? [], (file) => [file.path, file.text] as const));
-  const paths = Arr.sort(Arr.dedupe([...left.keys(), ...right.keys()]), (a: string, b: string) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
+
+  const paths = Arr.sort(Arr.dedupe([...left.keys(), ...right.keys()]), Order.String);
 
   return Arr.flatMap(paths, (path): ReadonlyArray<SkillFileDiff> => {
     const was = left.get(path);

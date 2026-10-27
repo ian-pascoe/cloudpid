@@ -26,11 +26,13 @@ export const fakeSkills = () => {
 
   /** What each Environment keeps, by `<environment>:<name>`. */
   const kept = new Map<string, Readonly<Record<string, string>>>();
+
   const saves: Array<{
     environment: string;
     folder: string;
     files: Readonly<Record<string, string>>;
   }> = [];
+
   let refusal: string | undefined;
   let next = 1;
 
@@ -138,7 +140,7 @@ export const fakeFolderEnv = (
   links: ReadonlyArray<string> = [],
 ): Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile"> => {
   const bytes = (content: string | Uint8Array) =>
-    typeof content === "string" ? new TextEncoder().encode(content) : content;
+    content instanceof Uint8Array ? content : new TextEncoder().encode(content);
 
   const isDirectory = (path: string) =>
     Arr.some([...Record.keys(files), ...links], (file) => file.startsWith(`${path}/`));

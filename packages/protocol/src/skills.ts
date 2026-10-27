@@ -43,8 +43,8 @@ export type SkillFile = typeof SkillFile.Type;
 
 /** A Skill's files before and after an Agent change, by path; null where the Skill was not there. */
 export const SkillChangeFiles = Schema.Struct({
-  before: Schema.NullOr(Schema.Array(SkillFile)),
-  after: Schema.NullOr(Schema.Array(SkillFile)),
+  before: SkillFile.pipe(Schema.Array, Schema.NullOr),
+  after: SkillFile.pipe(Schema.Array, Schema.NullOr),
 });
 
 export type SkillChangeFiles = typeof SkillChangeFiles.Type;

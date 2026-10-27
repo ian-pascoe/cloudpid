@@ -210,17 +210,14 @@ const declaredSkill = (
 ): { readonly name: string; readonly description: string } | { readonly problem: string } => {
   const frontmatter = readFrontmatter(text);
 
-  if (!Predicate.isObject(frontmatter) || Arr.isArray(frontmatter)) {
+  if (frontmatter === undefined) {
     return {
       problem:
         "SKILL.md has no YAML frontmatter: it must start with a --- block that sets name and description",
     };
   }
 
-  const { name, description } = frontmatter as {
-    readonly name?: unknown;
-    readonly description?: unknown;
-  };
+  const { name, description } = frontmatter;
 
   if (!Predicate.isString(name)) return { problem: "SKILL.md's frontmatter sets no name" };
 

@@ -720,7 +720,7 @@ export const RegistryLive = Registry.make(
                 setup.build === undefined
                   ? (store.getBuild(setup.environment)?.build ?? null)
                   : setup.build,
-              ...(skillSet === undefined ? {} : { skills: skillSet }),
+              skills: skillSet,
               ...handover,
             }),
           );
