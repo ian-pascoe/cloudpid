@@ -104,7 +104,7 @@ const skillsOf = (
     : discoverSkills(env);
 
 /** The section's key; also the tag that wraps its text. */
-export const SECTION_KEY = "skills";
+const SECTION_KEY = "skills";
 
 /**
  * The section: the Skills found when the context first shows it, then shown as they were (`PromptInput.shown`, as the
