@@ -339,11 +339,7 @@ export const sessionEnvironments = ({
       }),
     markSecret: ({ environment, name, build, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) {
-          return yield* EnvironmentsError.make({
-            message: "This Session is not one the Registry lists, so it changes no Environment.",
-          });
-        }
+        if (session === undefined) return yield* unlisted;
 
         const marked = yield* registry.agentMarkSecretBuild({
           environment,
@@ -361,11 +357,7 @@ export const sessionEnvironments = ({
       }),
     change: ({ environment, change, expected, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) {
-          return yield* EnvironmentsError.make({
-            message: "This Session is not one the Registry lists, so it changes no Environment.",
-          });
-        }
+        if (session === undefined) return yield* unlisted;
 
         const own = yield* where;
 

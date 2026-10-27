@@ -1286,6 +1286,11 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
         name is served again. Sessions already running keep it in their skills list until their next
         context window.
       </p>
+      <p className="text-sm">
+        This cannot be undone: your removal is not an agent change, so it has no revert, and a later
+        revert of the agent's save of this skill is refused. To get it back, ask the agent to save
+        it again.
+      </p>
       <DialogProblem problem={settledFailureOf(removed)} />
       <DialogActions>
         <Button

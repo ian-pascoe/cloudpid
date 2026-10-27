@@ -53,9 +53,9 @@ import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import { type WorkspaceSecrets, workspaceSecretsStore } from "./environment-secrets.ts";
+import type { SkillSet } from "./bundled-skill-set.ts";
 import {
   checkSkillSet,
-  type SkillSet,
   type SkillSetAnswer,
   skillSetMount,
   skillSetStore,

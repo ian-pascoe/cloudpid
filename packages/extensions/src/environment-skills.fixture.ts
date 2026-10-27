@@ -138,8 +138,8 @@ const notFound = (path: string) =>
 export const fakeFolderEnv = (
   files: Readonly<Record<string, string | Uint8Array>>,
   links: ReadonlyArray<string> = [],
-  /** Whether a path is Container-only; without it, the environment cannot say. */
-  containerOnly?: (path: string) => boolean,
+  /** Whether a path is Container-only; without it, the environment cannot say; `"fails"`: the check fails. */
+  containerOnly?: ((path: string) => boolean) | "fails",
 ): Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile"> => {
   const bytes = (content: string | Uint8Array) =>
     content instanceof Uint8Array ? content : new TextEncoder().encode(content);
@@ -192,7 +192,13 @@ export const fakeFolderEnv = (
   const classifying = {
     ...env,
     containerOnly: (paths: readonly string[]) =>
-      Promise.resolve(ok(Arr.map(paths, (path) => containerOnly(path)))),
+      Promise.resolve(
+        containerOnly === "fails"
+          ? err<readonly boolean[], FileError>(
+              new FileError("unknown", "The Workspace did not answer", paths[0]),
+            )
+          : ok(Arr.map(paths, (path) => containerOnly(path))),
+      ),
   };
 
   return classifying;

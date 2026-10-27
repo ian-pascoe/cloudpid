@@ -36,12 +36,7 @@ import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
 import { everyVariablesOf, writeEveryEnvironment } from "./every-environment.ts";
 import { revertSecretBuild } from "./secret-changes.ts";
-import {
-  dropUnreferencedSkillFiles,
-  type HashedBundle,
-  revertSkillChange,
-  type Skills,
-} from "./skills.ts";
+import { dropUnreferencedSkillFiles, type KeptSkills, revertSkillChange } from "./skills.ts";
 import {
   type EnvironmentRecord,
   EVERY_ENVIRONMENT_SCOPE,
@@ -628,7 +623,7 @@ export const revertAgentChange = (
   { environment, id }: { readonly environment: string; readonly id: number },
   now: number,
   /** The Skills, and the bundle a Skill brought back must fit with, for the revert of a Skill's change. */
-  kept?: { readonly skills: Skills; readonly bundle: HashedBundle },
+  kept: KeptSkills,
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {
     // The Secrets and variables kept for every Environment have a history of their own, in the scope `*`.
@@ -669,9 +664,7 @@ export const revertAgentChange = (
     if (known === null) return { status: "missing" };
 
     if (fieldSkill(change.field) !== null) {
-      return kept === undefined
-        ? { status: "refused", message: "A Skill's change is reverted by the Registry only" }
-        : revertSkillChange(kept.skills, changes, kept.bundle, environment, change, now);
+      return revertSkillChange({ ...kept, changes, now }, environment, change);
     }
 
     if (isLifecycleField(change.field)) {

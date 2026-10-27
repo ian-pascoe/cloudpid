@@ -319,6 +319,24 @@ describe("environment_skill_save", () => {
     expect(saves).toEqual([]);
   });
 
+  it("refuses a folder whose place the environment cannot check, failing closed", async () => {
+    const { tool, saves } = await setUp();
+
+    const message = await failure(
+      run(
+        tool("environment_skill_save"),
+        { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+        fakeFolderEnv({ "/workspace/.cloudpid/tmp/release/SKILL.md": SKILL_MD }, [], "fails"),
+      ),
+    );
+
+    expect(message).toContain(
+      "Nothing was saved: could not check whether the folder is a Workspace path",
+    );
+    expect(message).toContain("The Workspace did not answer");
+    expect(saves).toEqual([]);
+  });
+
   it("refuses the id *, which names what is kept for every Environment", async () => {
     const { tool } = await setUp();
 

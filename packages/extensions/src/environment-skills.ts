@@ -20,8 +20,9 @@ import {
   type ChangeAuthor,
   type ChangedEnvironment,
   EnvironmentsError,
-  MAX_CHANGE_REASON,
   type EnvironmentsService,
+  Id,
+  Reason,
   type RunChange,
 } from "./environment.ts";
 import { MAX_FILE_BYTES, MAX_SKILL_BYTES, problemsIn } from "./skill-checks.ts";
@@ -141,7 +142,8 @@ const knowsContainerOnly = (env: FolderEnv): env is FolderEnv & ContainerOnlyEnv
 
 /**
  * Refuse `paths` when `env` says any is Container-only: only the Container has their files, so a save would start it
- * and read what the Workspace does not hold. Nothing is refused when `env` cannot say.
+ * and read what the Workspace does not hold. An environment that has no such check (a test's) refuses nothing; one
+ * whose check fails refuses all, since the folder's place is not known.
  */
 const refuseContainerOnly = (
   env: FolderEnv,
@@ -150,11 +152,19 @@ const refuseContainerOnly = (
   Effect.gen(function* () {
     if (!knowsContainerOnly(env) || paths.length === 0) return;
 
+    const unchecked = (why: string) =>
+      refused(
+        `could not check whether the folder is a Workspace path or a Container-only one (${why}); try again, or copy it to ${WORKSPACE_ROOT}/.cloudpid/tmp/<name> and save it from there`,
+      );
+
     const answer = yield* attempt("Cannot tell where the folder is", () =>
       env.containerOnly(paths, BACKGROUND_CONTEXT),
-    );
+    ).pipe(Effect.catch((error) => unchecked(error.message)));
 
-    const found = answer.ok ? Arr.filter(paths, (_, at) => answer.value[at] === true) : [];
+    // Fail closed: a folder whose place is not known is not read.
+    if (!answer.ok) return yield* unchecked(answer.error.message);
+
+    const found = Arr.filter(paths, (_, at) => answer.value[at] === true);
 
     if (found.length === 0) return;
 
@@ -336,17 +346,9 @@ export const skillTools = ({
   target,
   notFound,
 }: SkillToolDeps) => {
-  const Reason = Schema.String.check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(MAX_CHANGE_REASON),
-  ).annotate({
+  const SkillReason = Reason.annotate({
     description:
       "Why you save or remove the Skill, for the user to read in the Environment's Agent changes, such as 'the release steps are the same every time'",
-  });
-
-  const Id = Schema.String.annotate({
-    description:
-      "The Environment's id, as environment_list shows it (default: this Session's Environment)",
   });
 
   const save = defineEffectTool({
@@ -364,7 +366,7 @@ export const skillTools = ({
       path: Schema.String.check(Schema.isMinLength(1)).annotate({
         description: `The Skill's folder in the Workspace, absolute or relative to the working directory, such as ${WORKSPACE_ROOT}/.cloudpid/tmp/release-notes`,
       }),
-      reason: Reason,
+      reason: SkillReason,
     }),
     executionMode: "sequential",
     replay: "unsafe",
@@ -459,7 +461,7 @@ export const skillTools = ({
       name: Schema.String.check(Schema.isMinLength(1)).annotate({
         description: "The Skill's name, as environment_get lists it",
       }),
-      reason: Reason,
+      reason: SkillReason,
     }),
     executionMode: "sequential",
     replay: "unsafe",

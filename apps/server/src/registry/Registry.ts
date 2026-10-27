@@ -1052,13 +1052,8 @@ export const RegistryLive = Registry.make(
               const now = yield* Clock.currentTimeMillis;
 
               return saveSkillAs(
-                state.raw.storage,
-                store,
-                skills,
-                changes,
-                hashedBundle,
+                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
                 { environment, folder, files, hashed, author },
-                now,
               );
             }),
           agentRemoveSkill: ({ environment, name, author }) =>
@@ -1067,13 +1062,8 @@ export const RegistryLive = Registry.make(
               const now = yield* Clock.currentTimeMillis;
 
               return removeSkillAs(
-                state.raw.storage,
-                store,
-                skills,
-                changes,
-                hashedBundle,
+                { storage: state.raw.storage, store, skills, changes, bundle: hashedBundle, now },
                 { environment, name, author },
-                now,
               );
             }),
           listSkills: ({ environment }) =>

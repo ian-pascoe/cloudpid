@@ -530,6 +530,22 @@ export type SkillRemoval =
 /** The part of the store a Skill's change uses. */
 export type SkillStore = { readonly getEnvironment: (id: string) => EnvironmentRecord | null };
 
+/** The Skills kept, and the bundle a Skill set must fit with: what reverting a Skill's change needs besides the changes. */
+export type KeptSkills = { readonly skills: Skills; readonly bundle: HashedBundle };
+
+/**
+ * What a change of a Skill reads and writes: the Registry's storage (for the transaction) and store, the Skills kept,
+ * the Agent changes, the bundle the merged set must fit with, and the time of the change.
+ */
+export type SkillChangeContext = {
+  readonly storage: Pick<RegistryStorage, "transactionSync">;
+  readonly store: SkillStore;
+  readonly skills: Skills;
+  readonly changes: AgentChanges;
+  readonly bundle: HashedBundle;
+  readonly now: number;
+};
+
 /**
  * The agent saves the Skill in folder `folder` with `files` (hashed beforehand, `hashFiles`) for `environment`, in
  * place of one of its name: checked as `checkSkill` checks it, and refused when the Environment's Skill set would hold
@@ -537,11 +553,7 @@ export type SkillStore = { readonly getEnvironment: (id: string) => EnvironmentR
  * and after; the same files as kept records nothing.
  */
 export const saveSkillAs = (
-  storage: Pick<RegistryStorage, "transactionSync">,
-  store: SkillStore,
-  skills: Skills,
-  changes: AgentChanges,
-  bundle: HashedBundle,
+  { storage, store, skills, changes, bundle, now }: SkillChangeContext,
   {
     environment,
     folder,
@@ -555,7 +567,6 @@ export const saveSkillAs = (
     readonly hashed: Hashed;
     readonly author: AgentChangeAuthor;
   },
-  now: number,
 ): SkillSave =>
   storage.transactionSync((): SkillSave => {
     const record = store.getEnvironment(environment);
@@ -611,17 +622,12 @@ export const saveSkillAs = (
 
 /** The agent removes Skill `name` kept for `environment`, recorded as an Agent change by `author` with its files before. */
 export const removeSkillAs = (
-  storage: Pick<RegistryStorage, "transactionSync">,
-  store: SkillStore,
-  skills: Skills,
-  changes: AgentChanges,
-  bundle: HashedBundle,
+  { storage, store, skills, changes, bundle, now }: SkillChangeContext,
   {
     environment,
     name,
     author,
   }: { readonly environment: string; readonly name: string; readonly author: AgentChangeAuthor },
-  now: number,
 ): SkillRemoval =>
   storage.transactionSync((): SkillRemoval => {
     const record = store.getEnvironment(environment);
@@ -716,12 +722,14 @@ const descriptionOf = (text: string | undefined): string => {
  * Skill no longer has the files the change gave it.
  */
 export const revertSkillChange = (
-  skills: Skills,
-  changes: AgentChanges,
-  bundle: HashedBundle,
+  {
+    skills,
+    changes,
+    bundle,
+    now,
+  }: Pick<SkillChangeContext, "skills" | "changes" | "bundle" | "now">,
   environment: string,
   change: AgentChange,
-  now: number,
 ): AgentChangeRevert => {
   const name = fieldSkill(change.field);
 

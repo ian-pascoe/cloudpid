@@ -454,23 +454,23 @@ export const removeSkillAtom = Atom.family((id: string) =>
   ),
 );
 
-/**
- * The files of a Skill before and after an Agent change, keyed `<environment>:<change id>`, to show as diffs. A change
- * does not change: asked once.
- */
-export const skillChangeFilesAtom = Atom.family((key: string) => {
-  const at = key.lastIndexOf(":");
+/** One Agent change of an Environment, as `skillChangeFilesAtom` is keyed. */
+export interface SkillChangeKey {
+  readonly environment: string;
+  readonly change: number;
+}
 
-  return RegistryClient.query("skillChangeFiles", {
-    environment: key.slice(0, at),
-    change: Number(key.slice(at + 1)),
-  });
+/** The key of Agent change `change` of Environment `environment`, so equal keys are equal values, as a family compares them. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain constructor of a key, called from React.
+export const skillChangeKey = (environment: string, change: number): SkillChangeKey => ({
+  environment,
+  change,
 });
 
-/** The key of `skillChangeFilesAtom` for Agent change `change` of Environment `environment`. */
-// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain key, called from React.
-export const skillChangeKey = (environment: string, change: number): string =>
-  `${environment}:${change}`;
+/** The files of a Skill before and after an Agent change, to show as diffs. A change does not change: asked once. */
+export const skillChangeFilesAtom = Atom.family(({ environment, change }: SkillChangeKey) =>
+  RegistryClient.query("skillChangeFiles", { environment, change }),
+);
 
 /**
  * Dismiss one of Environment `id`'s Agent changes, by its id: it leaves the history, and what it changed stays. The

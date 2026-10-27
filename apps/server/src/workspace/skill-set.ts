@@ -1,13 +1,11 @@
 // The Skill set a Workspace holds (ADR-0026): the files its read-only mount at `/workspace/.agents/skills` serves and its
 // Skill discovery reads, with their content hash. It is kept in the Workspace DO's own storage, and is the bundle
-// (`BUNDLED_SKILLS`) until one is handed over (`Workspace.updateSkills`).
+// (`BUNDLED_SKILL_SET`, `bundled-skill-set.ts`) until one is handed over (`Workspace.updateSkills`).
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import { type EagerMount, type MountWriteAPI, WorkerBundle } from "@cloudflare/computer";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { BUNDLED_SKILL_SET, SkillSet } from "./bundled-skill-set.ts";
-
-export { BUNDLED_SKILL_SET, SkillSet } from "./bundled-skill-set.ts";
 
 /** What a hand-over of a Skill set answers: whether the Workspace holds it now, or why not. */
 export type SkillSetAnswer =

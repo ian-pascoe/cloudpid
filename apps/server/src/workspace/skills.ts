@@ -12,7 +12,7 @@ import {
 import { discoverPrompts, type PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import * as Effect from "effect/Effect";
 import { SKILLS_MOUNT } from "./binding.ts";
-import type { SkillSet } from "./skill-set.ts";
+import type { SkillSet } from "./bundled-skill-set.ts";
 
 /**
  * How many parsed Skill sets an isolate keeps: its Workspaces may each hold another set, and a set is fixed for its

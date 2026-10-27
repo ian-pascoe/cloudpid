@@ -28,6 +28,7 @@ import {
   type AgentChange,
   type BuildView,
   type EnvironmentRepo,
+  type EnvironmentSkill,
   SKILLS_ROOT,
   variableField,
 } from "@cloudpid/protocol";
@@ -84,14 +85,6 @@ export type KeptSecretListing = {
   readonly build: boolean;
 };
 
-/** A Skill an Environment keeps, as `environment_get` lists it. */
-export type SkillListing = {
-  readonly name: string;
-  readonly description: string;
-  /** When it was last saved, epoch milliseconds. */
-  readonly savedAt: number;
-};
-
 /**
  * An Environment as `environment_get` shows it: its listing, every Container setting, its kept Secrets' names and its
  * own Skills.
@@ -103,7 +96,8 @@ export type EnvironmentDetails = EnvironmentListing & {
   readonly secrets: ReadonlyArray<KeptSecretListing>;
   /** The variables kept for every Environment, which the Environment's own of the same name override. */
   readonly everyVariables: Readonly<Record<string, string>>;
-  readonly skills: ReadonlyArray<SkillListing>;
+  /** The Skills it keeps, as `environment_get` lists them. */
+  readonly skills: ReadonlyArray<EnvironmentSkill>;
 };
 
 /**
@@ -470,7 +464,8 @@ const plainValue = (value: Schema.Json | null): string =>
 const pathsLine = (value: Schema.Json | null): string =>
   Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
-const Id = Schema.String.annotate({
+/** A tool's `id`: one Environment, the Session's own by default. */
+export const Id = Schema.String.annotate({
   description:
     "The Environment's id, as environment_list shows it (default: this Session's Environment)",
 });
@@ -495,7 +490,8 @@ export const refuseEveryEnvironment = (id: string | undefined) =>
       })
     : Effect.void;
 
-const Reason = Schema.String.check(
+/** A changing tool's required `reason`, 1 to `MAX_CHANGE_REASON` characters; a tool may annotate its own example. */
+export const Reason = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(MAX_CHANGE_REASON),
 ).annotate({

@@ -81,27 +81,17 @@ const inRegistry = <A>(
         skills,
         save: async (folder, files, at = 1_000, environment = DEFAULT_ENVIRONMENT) =>
           saveSkillAs(
-            state.storage,
-            store,
-            skills,
-            changes,
-            bundle,
+            { storage: state.storage, store, skills, changes, bundle, now: at },
             { environment, folder, files, hashed: await hashFiles(files), author },
-            at,
           ),
         remove: (name, at = 2_000) =>
           removeSkillAs(
-            state.storage,
-            store,
-            skills,
-            changes,
-            bundle,
+            { storage: state.storage, store, skills, changes, bundle, now: at },
             {
               environment: DEFAULT_ENVIRONMENT,
               name,
               author: { ...author, tool: "environment_skill_remove" },
             },
-            at,
           ),
         revert: (id, at = 3_000) =>
           revertAgentChange(
