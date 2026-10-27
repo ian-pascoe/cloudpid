@@ -5,6 +5,7 @@ import {
   EnvironmentError,
   fieldRepo,
   fieldSecret,
+  fieldSkill,
   fieldVariable,
   MAX_ENVIRONMENT_SECRETS,
   NEW_WORKSPACE,
@@ -769,6 +770,9 @@ export const serveRegistryRpc = <R = never>(
           Effect.flatMap((revert) => {
             switch (revert.status) {
               case "reverted":
+                // A Skill is not part of a Build: its Workspaces take the set at their next readying.
+                if (fieldSkill(revert.change.field) !== null) return Effect.succeed(revert.change);
+
                 // A variable put back: as after the owner's save, every Environment's Build is looked at again.
                 if (
                   environment === EVERY_ENVIRONMENT_SCOPE &&
@@ -812,6 +816,33 @@ export const serveRegistryRpc = <R = never>(
             failed(`Environment "${environment}" has no change ${change}`),
           ),
           Effect.asVoid,
+        ),
+      skillChangeFiles: ({ environment, change }) =>
+        registry
+          .skillChangeFiles({ environment, change })
+          .pipe(
+            Effect.filterOrFail(Predicate.isNotNull, () =>
+              failed(`Environment "${environment}" has no change ${change} of a Skill`),
+            ),
+          ),
+      listEnvironmentSkills: ({ environment }) =>
+        registry
+          .listSkills({ environment })
+          .pipe(Effect.filterOrFail(Predicate.isNotNull, () => failed(noEnvironment(environment)))),
+      // Each Workspace of the Environment is handed its Skill set without it at its next readying; Skills are not part
+      // of a Build, so no upkeep runs.
+      removeEnvironmentSkill: ({ environment, name }) =>
+        registry.removeSkill({ environment, name }).pipe(
+          Effect.flatMap((removed) => {
+            switch (removed) {
+              case "removed":
+                return Effect.void;
+              case "absent":
+                return failed(`The environment keeps no Skill named ${JSON.stringify(name)}`);
+              case "missing":
+                return failed(noEnvironment(environment));
+            }
+          }),
         ),
       listBuilds: () =>
         registry.listBuilds().pipe(

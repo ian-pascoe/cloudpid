@@ -86,22 +86,27 @@ const Frontmatter = Schema.Struct({
 
 const decodeFrontmatter = Schema.decodeUnknownOption(Frontmatter);
 
+/** The frontmatter of a `SKILL.md`'s `text`, parsed: undefined when it has none, or it is not YAML. */
+export const readFrontmatter = (text: string): unknown => {
+  const source = frontmatterOf(text);
+
+  if (source === undefined) return undefined;
+
+  try {
+    return parse(source);
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * The skill a `SKILL.md` at `filePath` declares, or undefined when its frontmatter is missing, is not YAML, or holds no
  * description (pi loads no such skill). A skill without a `name` takes its directory's.
  */
 export const parseSkill = (filePath: string, text: string): Skill | undefined => {
-  const source = frontmatterOf(text);
+  const frontmatter = readFrontmatter(text);
 
-  if (source === undefined) return undefined;
-
-  let frontmatter: unknown;
-
-  try {
-    frontmatter = parse(source);
-  } catch {
-    return undefined;
-  }
+  if (frontmatter === undefined) return undefined;
 
   const declared = decodeFrontmatter(frontmatter);
 

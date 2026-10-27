@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
+import { EnvironmentSkill, SkillChangeFiles } from "./skills.ts";
 
 /** Where the main Worker serves `RegistryRpcs`, with JSON serialization. */
 export const RPC_PATH = "/rpc";
@@ -657,6 +658,30 @@ export class RegistryRpcs extends RpcGroup.make(
    */
   Rpc.make("dismissAgentChange", {
     payload: { environment: AgentChangeScope, change: Schema.Finite },
+    error: EnvironmentError,
+  }),
+  /**
+   * The files before and after Agent change `change` of a Skill of `environment` (`docs/spec.md` → Agent changes →
+   * Skills), with their texts, for the Environments page to show as diffs. Fails with an `EnvironmentError` when
+   * `environment` has no such change, or it is not a Skill's.
+   */
+  Rpc.make("skillChangeFiles", {
+    payload: { environment: EnvironmentId, change: Schema.Finite },
+    success: SkillChangeFiles,
+    error: EnvironmentError,
+  }),
+  /** The Skills kept for an Environment (ADR-0026), by name, each with its description and when it was saved. */
+  Rpc.make("listEnvironmentSkills", {
+    payload: { environment: EnvironmentId },
+    success: Schema.Array(EnvironmentSkill),
+    error: EnvironmentError,
+  }),
+  /**
+   * Remove a Skill kept for an Environment. Its Workspaces stop serving it at their next readying (a bundled Skill of
+   * the name is served again). Fails with an `EnvironmentError` when the Environment keeps no Skill of the name.
+   */
+  Rpc.make("removeEnvironmentSkill", {
+    payload: { environment: EnvironmentId, name: Schema.String },
     error: EnvironmentError,
   }),
   /**

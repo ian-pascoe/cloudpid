@@ -15,6 +15,7 @@ import {
   type AgentChange,
   CREATED_FIELD,
   fieldSecret,
+  fieldSkill,
   fieldVariable,
   MAX_AGENT_CHANGES,
   unrevertableField,
@@ -35,6 +36,12 @@ import { buildKey, buildWanted } from "../workspace/build-record.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
 import { everyVariablesOf, writeEveryEnvironment } from "./every-environment.ts";
 import { revertSecretBuild } from "./secret-changes.ts";
+import {
+  dropUnreferencedSkillFiles,
+  type HashedBundle,
+  revertSkillChange,
+  type Skills,
+} from "./skills.ts";
 import {
   type EnvironmentRecord,
   EVERY_ENVIRONMENT_SCOPE,
@@ -301,7 +308,7 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
         )
         .toArray();
 
-      sql.exec(
+      const pruned = sql.exec(
         `DELETE FROM agent_changes WHERE scope = ? AND id NOT IN (
            SELECT id FROM agent_changes WHERE scope = ? ORDER BY id DESC LIMIT ?
          )`,
@@ -309,6 +316,9 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
         change.scope,
         MAX_AGENT_CHANGES,
       );
+
+      // A Skill's files are kept for the changes that refer to them: those only the pruned ones did go with them.
+      if (pruned.rowsWritten > 0) dropUnreferencedSkillFiles(sql);
 
       // SQLite answers the row it inserted; one that does not is a broken store, not a change to report.
       if (row === undefined) throw new Error("Recording an Agent change returned no id");
@@ -617,6 +627,8 @@ export const revertAgentChange = (
   changes: AgentChanges,
   { environment, id }: { readonly environment: string; readonly id: number },
   now: number,
+  /** The Skills, and the bundle a Skill brought back must fit with, for the revert of a Skill's change. */
+  kept?: { readonly skills: Skills; readonly bundle: HashedBundle },
 ): AgentChangeRevert =>
   storage.transactionSync((): AgentChangeRevert => {
     // The Secrets and variables kept for every Environment have a history of their own, in the scope `*`.
@@ -655,6 +667,12 @@ export const revertAgentChange = (
       return revertEveryVariable(store, changes, change, variable, now);
 
     if (known === null) return { status: "missing" };
+
+    if (fieldSkill(change.field) !== null) {
+      return kept === undefined
+        ? { status: "refused", message: "A Skill's change is reverted by the Registry only" }
+        : revertSkillChange(kept.skills, changes, kept.bundle, environment, change, now);
+    }
 
     if (isLifecycleField(change.field)) {
       const reverted = revertLifecycleChange(store, changes, known.record, change, now);

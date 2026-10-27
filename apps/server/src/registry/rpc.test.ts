@@ -8,8 +8,10 @@ import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
+  type EnvironmentSkill,
   EVERY_ENVIRONMENT_SCOPE,
   fieldRepo,
+  fieldSkill,
   fieldVariable,
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
@@ -21,6 +23,8 @@ import {
   SessionActionError,
   SessionNotFound,
   SETTINGS_SCOPE,
+  type SkillChangeFiles,
+  skillField,
   workspaceDirectory,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -110,6 +114,10 @@ const fakeRegistries = () => {
   const keptSecrets: Array<EnvironmentSecretRecord & { readonly value: string }> = [];
   /** The Agent changes recorded, oldest first. */
   const agentChanges: AgentChange[] = [];
+  /** The Skills kept for each Environment, by its id. */
+  const skillsKept = new Map<string, ReadonlyArray<EnvironmentSkill>>();
+  /** The files before and after each Agent change of a Skill, by `<environment>:<change>`. */
+  const skillFiles = new Map<string, SkillChangeFiles>();
   /** The Settings' Agent changes recorded, oldest first. */
   const settingsChanges: AgentChange[] = [];
   /** The Agent changes the owner dismissed, each as `<scope>:<id>`. */
@@ -732,6 +740,34 @@ const fakeRegistries = () => {
     agentMarkSecretBuild: () => Effect.die("The endpoint makes no Agent change"),
     agentDeleteSecret: () => Effect.die("The endpoint makes no Agent change"),
     keepAskedSecrets: () => Effect.die("The endpoint keeps no Secret for an ask"),
+    agentSaveSkill: () => Effect.die("The endpoint makes no Agent change"),
+    agentRemoveSkill: () => Effect.die("The endpoint makes no Agent change"),
+    listSkills: ({ environment }) =>
+      Effect.sync(() =>
+        Arr.some(environments, (item) => item.id === environment)
+          ? (skillsKept.get(environment) ?? [])
+          : null,
+      ),
+    removeSkill: ({ environment, name }) =>
+      Effect.sync(() => {
+        calls.push(`removeSkill:${environment}:${name}`);
+
+        if (!Arr.some(environments, (item) => item.id === environment)) return "missing" as const;
+
+        const kept = skillsKept.get(environment) ?? [];
+
+        if (!Arr.some(kept, (skill) => skill.name === name)) return "absent" as const;
+
+        skillsKept.set(
+          environment,
+          Arr.filter(kept, (skill) => skill.name !== name),
+        );
+
+        return "removed" as const;
+      }),
+    skillChangeFiles: ({ environment, change }) =>
+      Effect.sync(() => skillFiles.get(`${environment}:${change}`) ?? null),
+    workspaceSkillSet: () => Effect.die("The endpoint hands no Skill set"),
     listAgentChanges: ({ environment }) =>
       Effect.sync(() =>
         environment === "*" || Arr.some(environments, (item) => item.id === environment)
@@ -757,8 +793,9 @@ const fakeRegistries = () => {
         if (found.value.actor === "owner")
           return { status: "refused", message: "A revert is not undone" };
 
-        // A Repo put back or taken out changes the Environment's record, which the fake does not model.
-        if (fieldRepo(found.value.field) !== null) {
+        // A Repo put back or taken out changes the Environment's record, and a Skill's files are the Registry's, which
+        // the fake does not model.
+        if (fieldRepo(found.value.field) !== null || fieldSkill(found.value.field) !== null) {
           const repoRevert: AgentChange = {
             ...found.value,
             id: agentChanges.length + 1,
@@ -1144,6 +1181,8 @@ const fakeRegistries = () => {
     workspaces,
     environments,
     agentChanges,
+    skillsKept,
+    skillFiles,
     settingsChanges,
     sessionObjects,
     workspaceObjects,
@@ -2738,6 +2777,89 @@ it("dismisses an Agent change from the list, leaving what it changed, and refuse
   expect(missing).toBeInstanceOf(EnvironmentError);
   expect(missing.message).toBe('Environment "default" has no change 9');
   expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "2" } });
+});
+
+it("lists an Environment's Skills, removes one on the owner's word, and refuses one it does not keep", async () => {
+  const fake = fakeRegistries();
+
+  fake.skillsKept.set(DEFAULT_ENVIRONMENT, [
+    { name: "release", description: "Cut a release.", savedAt: 1_000 },
+    { name: "triage", description: "Sort issues.", savedAt: 2_000 },
+  ]);
+
+  const listed = await call(fake, (registry) =>
+    registry.listEnvironmentSkills({ environment: DEFAULT_ENVIRONMENT }),
+  );
+
+  await call(fake, (registry) =>
+    registry.removeEnvironmentSkill({ environment: DEFAULT_ENVIRONMENT, name: "release" }),
+  );
+
+  const absent = await call(fake, (registry) =>
+    Effect.flip(
+      registry.removeEnvironmentSkill({ environment: DEFAULT_ENVIRONMENT, name: "release" }),
+    ),
+  );
+
+  const unknown = await call(fake, (registry) =>
+    Effect.flip(registry.listEnvironmentSkills({ environment: "0000beef" })),
+  );
+
+  expect(Arr.map(listed, (skill) => skill.name)).toEqual(["release", "triage"]);
+  expect(fake.skillsKept.get(DEFAULT_ENVIRONMENT)).toEqual([
+    { name: "triage", description: "Sort issues.", savedAt: 2_000 },
+  ]);
+  expect(absent.message).toBe('The environment keeps no Skill named "release"');
+  expect(unknown.message).toBe('Environment "0000beef" does not exist');
+  // Skills are not part of a Build: nothing else runs.
+  expect(fake.calls.filter((name) => name.startsWith("removeSkill"))).toEqual([
+    "removeSkill:default:release",
+    "removeSkill:default:release",
+  ]);
+});
+
+it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {
+  const fake = fakeRegistries();
+
+  fake.skillFiles.set(`${DEFAULT_ENVIRONMENT}:3`, {
+    before: null,
+    after: [{ path: "SKILL.md", text: "---\nname: release\n---\n" }],
+  });
+
+  const files = await call(fake, (registry) =>
+    registry.skillChangeFiles({ environment: DEFAULT_ENVIRONMENT, change: 3 }),
+  );
+
+  const other = await call(fake, (registry) =>
+    Effect.flip(registry.skillChangeFiles({ environment: DEFAULT_ENVIRONMENT, change: 4 })),
+  );
+
+  expect(files).toEqual({
+    before: null,
+    after: [{ path: "SKILL.md", text: "---\nname: release\n---\n" }],
+  });
+  expect(other.message).toBe('Environment "default" has no change 4 of a Skill');
+});
+
+it("reverts a Skill's Agent change without running a Build's upkeep", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "environment_skill_save",
+    field: skillField("release"),
+    before: null,
+    after: { files: { "SKILL.md": "abc" } },
+  });
+
+  const reverted = await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  await fake.runBackground();
+
+  expect(reverted).toMatchObject({ field: skillField("release"), reverts: 1 });
+  expect(fake.calls.filter((name) => name.startsWith("buildWork"))).toEqual([]);
 });
 
 /** A Settings change that set the model from `before` to `after`, as the Registry records it. */
