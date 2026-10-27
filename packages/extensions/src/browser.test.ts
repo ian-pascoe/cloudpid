@@ -143,6 +143,22 @@ describe("the browser extension", () => {
     expect(tool?.description).toMatch(/jpeg/i);
   });
 
+  it("tells the agent where a dev server on the Container opens: not localhost, which Browser Run refuses, but its port's own host, listening on 0.0.0.0", async () => {
+    const { host } = fakeHost(() => completed([]));
+    const extension = await extensionOver(host);
+    const description = extension.tools?.[0]?.description ?? "";
+
+    expect(description).toMatch(/localhost/);
+    expect(description).toContain("http://5173.cloudpid.internal/");
+    expect(description).toContain("0.0.0.0");
+
+    for (const port of [3000, 3001, 4173, 4321, 5173, 5174, 8000, 8787]) {
+      expect(description).toContain(String(port));
+    }
+
+    expect(description).not.toMatch(/\b8080\b.*cloudpid\.internal|cloudpid\.internal.*\b8080\b/);
+  });
+
   it("still offers the tool, with a short description, when the host cannot be reached for it", async () => {
     const { host } = fakeHost(() => completed([]));
 
