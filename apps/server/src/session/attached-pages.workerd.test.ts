@@ -5,6 +5,7 @@
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off
 import { ATTACHED_PAGE_GONE } from "@cloudpid/extensions/browser";
+import { secretReference } from "@cloudpid/extensions/secrets";
 import {
   type ClientMessage,
   isPageBlock,
@@ -290,6 +291,47 @@ describe("pages attached to a message", () => {
     expect(shown[0]?.pages?.[0]?.title).toContain("API_TOKEN");
     expect(shown[0]?.pages?.[0]?.selection).toContain("API_TOKEN");
     expect(JSON.stringify(request)).toContain("API_TOKEN");
+  });
+
+  it("redacts a held Secret the page split with characters the cleaning drops or folds", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    const secret = "open sesame-9";
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["Seen."]);
+      instance.setOwnerTabPages([
+        {
+          ownerTabId: "tab-1",
+          url: "https://docs.example.com/",
+          // A line break, which the title is put on one line over; a control and a bidirectional character, dropped.
+          title: "Token open\n\tsesame-9 page",
+          selection: "Paste this: open ses\u0007ame-9 and op\u202Een sesame-9",
+        },
+      ]);
+      await instance.hold({ API_TOKEN: secret });
+    });
+
+    const owner = await connect(stub);
+
+    owner.send({ type: "submit", id: "s-1", input: "What?", pages: [{ ownerTabId: "tab-1" }] });
+    expect((await owner.answer("s-1")).type).toBe("result");
+    await idle(stub);
+
+    const [request] = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.requestUserMessages(),
+    );
+
+    const stored = await runInDurableObject(stub, (instance: TestSession) => instance.snapshot());
+    const shown = projectEntries(stored.entries).filter((message) => message.role === "user");
+
+    for (const where of [JSON.stringify(request), JSON.stringify(stored), JSON.stringify(shown)]) {
+      expect(where).not.toContain(secret);
+    }
+
+    expect(shown[0]?.pages?.[0]?.title).toBe(`Token ${secretReference("API_TOKEN")} page`);
+    expect(shown[0]?.pages?.[0]?.selection).toBe(
+      `Paste this: ${secretReference("API_TOKEN")} and ${secretReference("API_TOKEN")}`,
+    );
   });
 
   it("reads the pages once for a resent request, finding the first message even when the page has closed since", async () => {

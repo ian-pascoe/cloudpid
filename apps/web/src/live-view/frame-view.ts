@@ -4,8 +4,10 @@
 // fitted inside the Pane in both dimensions (another device's viewport may win, and its frames be taller or wider than
 // this Pane), times the Desktop layout's local zoom; and points and rects between the screen and the tab.
 
+import type { PageCrop, PageRect } from "@cloudpid/protocol";
 import type { Point } from "./cdp.ts";
 import type { Frame, FrameMetadata } from "./connection.ts";
+import { cropFrame } from "./crop.ts";
 import { fromPage, toPage, type FrameMeta } from "./viewport.ts";
 
 /** A width and a height, in CSS px. */
@@ -14,8 +16,8 @@ export interface Size {
   readonly height: number;
 }
 
-/** A rect in the tab's viewport. */
-interface PageRect {
+/** A rect in the tab's viewport, or over the screen. */
+export interface ScreenRect {
   readonly x: number;
   readonly y: number;
   readonly w: number;
@@ -49,6 +51,8 @@ export class FrameView {
     private readonly container: HTMLDivElement,
     /** A frame shows the tab scrolled, resized or zoomed: what was placed over the last one no longer fits. */
     private readonly moved: () => void,
+    /** The frame was drawn again, or sized to the Pane: what is placed over it moves with it. */
+    private readonly painted: () => void = () => undefined,
   ) {}
 
   /** What the last frame said of the tab, if one came. */
@@ -93,6 +97,12 @@ export class FrameView {
     if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
 
     canvas.getContext("2d")?.drawImage(this.image, 0, 0, pixelWidth, pixelHeight);
+    this.painted();
+  }
+
+  /** A crop of `rect` of the tab's viewport from the last frame drawn, for a page Annotation; undefined without one. */
+  crop(rect: PageRect): PageCrop | undefined {
+    return this.meta === undefined ? undefined : cropFrame(this.image, this.frameMeta(), rect);
   }
 
   /** Where a point on the screen is in the tab's viewport. */
@@ -107,7 +117,7 @@ export class FrameView {
   }
 
   /** A rect in the tab's viewport, in the screen wrapper's coordinates (where the overlays are placed). */
-  overlayRect(rect: PageRect): PageRect {
+  overlayRect(rect: ScreenRect): ScreenRect {
     const canvas = this.canvas.getBoundingClientRect();
     const wrapper = this.wrapperRect();
     const frame = { left: canvas.left, top: canvas.top, width: canvas.width };

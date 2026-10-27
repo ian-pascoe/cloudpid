@@ -10,7 +10,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { settle } from "../session/client.testing.ts";
 import { keyPress } from "./cdp.ts";
 import { fakeBrowser, frame, link } from "./connection.testing.ts";
-import { GONE_GRACE_MS, make, RETURN_PING_MS, type Frame } from "./connection.ts";
+import { GONE_GRACE_MS, make, RETURN_PING_MS, type Frame, whenEnded } from "./connection.ts";
 import { deviceMetrics } from "./viewport.ts";
 
 /** A Live View over a fake Browser Run, its links from a fake link source that knows nothing of handoffs. */
@@ -121,6 +121,25 @@ describe("a Live View's connection", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("says when it has ended, and not before", () =>
+    Effect.gen(function* () {
+      const { view, finish, killAll } = yield* setup();
+      const ended = yield* Effect.forkChild(whenEnded(view));
+
+      yield* settle;
+      expect(ended.pollUnsafe()).toBeUndefined();
+
+      finish();
+      killAll();
+
+      const returned = yield* Effect.forkChild(view.returned);
+
+      yield* TestClock.adjust(RETURN_PING_MS);
+      yield* Fiber.join(returned);
+      yield* Fiber.join(ended);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps its connection on return when it answers the ping", () =>
     Effect.gen(function* () {
       const { view, pages, mints } = yield* setup();
@@ -161,6 +180,40 @@ describe("a Live View's connection", () => {
         });
         expect(to("T")[1]?.methods()).toContain("Page.startScreencast");
         expect(state().status).toBe("live");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "enables the DOM agent once per connection before its first DOM call, again after a reconnect",
+    () =>
+      Effect.gen(function* () {
+        const { view, to, killAll } = yield* setup();
+
+        const domCalls = (index: number) =>
+          (to("T")[index]?.methods() ?? []).filter((method) => method.startsWith("DOM."));
+
+        yield* view.call("Runtime.releaseObject", { objectId: "o" }, Schema.Unknown);
+        expect(domCalls(0)).toEqual([]);
+
+        yield* view.call("DOM.getNodeForLocation", { x: 1, y: 2 }, Schema.Unknown);
+        yield* view.call("DOM.getBoxModel", { backendNodeId: 3 }, Schema.Unknown);
+        expect(domCalls(0)).toEqual(["DOM.enable", "DOM.getNodeForLocation", "DOM.getBoxModel"]);
+
+        // The socket dies; the Live View reconnects on return: a new connection, enabled again.
+        killAll();
+
+        const returned = yield* Effect.forkChild(view.returned);
+
+        yield* TestClock.adjust(RETURN_PING_MS);
+        yield* Fiber.join(returned);
+        yield* view.call("DOM.getNodeForLocation", { x: 1, y: 2 }, Schema.Unknown);
+        yield* view.call("DOM.getNodeForLocation", { x: 3, y: 4 }, Schema.Unknown);
+
+        expect(domCalls(1)).toEqual([
+          "DOM.enable",
+          "DOM.getNodeForLocation",
+          "DOM.getNodeForLocation",
+        ]);
       }).pipe(Effect.scoped),
   );
 

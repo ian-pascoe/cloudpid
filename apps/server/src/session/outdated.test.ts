@@ -1,9 +1,9 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over lines.
-import type { Annotation, RepoChanges } from "@cloudpid/protocol";
+import type { DiffAnnotation, RepoChanges } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { checked, checkQuote, comparedFile, linesOf, listedFile, sideLines } from "./outdated.ts";
 
-const draft = (overrides: Partial<Annotation> = {}): Annotation => ({
+const draft = (overrides: Partial<DiffAnnotation> = {}): DiffAnnotation => ({
   id: "a1",
   source: { kind: "changes", repo: "app", head: "old-head" },
   path: "src/a.ts",

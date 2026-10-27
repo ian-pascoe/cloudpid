@@ -24,6 +24,7 @@ import {
   type ClientMessage,
   type ServerMessage,
   ServerMessageJson,
+  cleanPage,
 } from "@cloudpid/protocol";
 import { parseModelId } from "@cloudpid/config";
 import {
@@ -616,11 +617,12 @@ export const sessionSocketsLayer = (
             const { type: _type, id: _id, pages: refs, annotations: ids, ...typed } = message;
 
             // The pages are read from the browser as the message is admitted (in arrival order, and not again for a
-            // resent request), redacted of held Secrets before they are stored, escaped or sent to any client; one that
-            // is gone fails the command, so the owner removes its chip, rather than going without it.
+            // resent request), cleaned and then redacted of held Secrets before they are cut, stored, escaped or sent to
+            // any client (so a Secret split by a character the cleaning drops is whole when redacted); one that is gone
+            // fails the command, so the owner removes its chip, rather than going without it.
             const attachPages = secrets.refresh.pipe(
               Effect.andThen(browserPane.attach(refs ?? [])),
-              Effect.map((pages) => secrets.redact(pages)),
+              Effect.map((pages) => secrets.redact(Arr.map(pages, (page) => cleanPage(page)))),
               Effect.mapError((error) =>
                 SessionError.make({ operation: "submit", message: error.message }),
               ),
