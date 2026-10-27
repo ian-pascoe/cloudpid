@@ -5,7 +5,77 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { remoteBrowserHost } from "./browser.ts";
 
+/** A Session with no Workspace: the host is told none. */
+const noWorkspace = () => Promise.resolve(null);
+
 describe("the Session's browser host", () => {
+  it("names the Session's Workspace on every call, and none when it cannot be told, without failing the call", async () => {
+    const named: unknown[] = [];
+    const note =
+      <A>(answer: A) =>
+      (workspace: string | null) => {
+        named.push(workspace);
+
+        return Promise.resolve(answer);
+      };
+    const listing = { tabs: [] };
+
+    let placement: () => Promise<string | null> = () => Promise.resolve("ws:abc");
+
+    const host = remoteBrowserHost(
+      {
+        getByName: () => ({
+          describe: note("described"),
+          run: note({ output: [] }),
+          close: note(true),
+          startHandoff: note({ startedAt: 1 }),
+          liveView: note({ tab: { targetId: "t", link: "wss://l" }, windows: [] }),
+          ownerTabView: note({
+            ownerTabId: "a",
+            tab: { targetId: "t", link: "wss://l" },
+            windows: [],
+            opened: false,
+            replaced: false,
+          }),
+          ownerTabs: note(listing),
+          openOwnerTab: note(listing),
+          showOwnerTab: note(listing),
+          closeOwnerTab: note(listing),
+          readOwnerTabPages: note([]),
+          waitHandoff: note({ state: "waiting" as const }),
+          endHandoff: note({}),
+        }),
+      },
+      "session-1",
+      () => placement(),
+    );
+
+    await Effect.runPromise(
+      Effect.all([
+        host.describe,
+        host.run({ code: "async () => 1", conversationId: 1 }),
+        host.close,
+        host.startHandoff({ requestId: "1", conversationId: 1, instructions: "x", timeoutMs: 1 }),
+        host.liveView("1"),
+        host.ownerTabView(true),
+        host.ownerTabs,
+        host.openOwnerTab,
+        host.showOwnerTab("a"),
+        host.closeOwnerTab("a"),
+        host.readOwnerTabPages(["a"]),
+        host.waitHandoff("1", 1),
+        host.endHandoff("1"),
+      ]),
+    );
+    expect(named).toEqual(Array.from({ length: 13 }, () => "ws:abc"));
+
+    // The Registry could not be asked where the Session works: the call goes on, naming none.
+    placement = () => Promise.reject(new Error("Registry overloaded"));
+    named.length = 0;
+    expect(await Effect.runPromise(host.ownerTabs)).toEqual(listing);
+    expect(named).toEqual([null]);
+  });
+
   it("runs code in the object named for the Session, in the conversation's tab or an Owner tab", async () => {
     const calls: unknown[] = [];
 
@@ -13,7 +83,7 @@ describe("the Session's browser host", () => {
       {
         getByName: (name) => ({
           describe: () => Promise.resolve("described"),
-          run: (code, conversationId, ownerTabId) => {
+          run: (_workspace, code, conversationId, ownerTabId) => {
             calls.push({ name, code, conversationId, ownerTabId });
 
             return Promise.resolve({ output: [{ type: "text", text: "ok" }] });
@@ -32,6 +102,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await Effect.runPromise(host.run({ code: "async () => 1", conversationId: 3 }))).toEqual(
@@ -66,6 +137,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await host.close.pipe(Effect.flip, Effect.runPromise)).toEqual(
@@ -82,12 +154,12 @@ describe("the Session's browser host", () => {
           describe: () => Promise.resolve("described"),
           run: () => Promise.resolve({ output: [] }),
           close: () => Promise.resolve(true),
-          startHandoff: (input) => {
+          startHandoff: (_workspace, input) => {
             calls.push({ name, start: input });
 
             return Promise.resolve({ startedAt: 5 });
           },
-          liveView: (requestId) => {
+          liveView: (_workspace, requestId) => {
             calls.push({ name, liveView: requestId });
 
             return Promise.resolve({
@@ -101,12 +173,12 @@ describe("the Session's browser host", () => {
           showOwnerTab: () => Promise.reject(new Error("not here")),
           closeOwnerTab: () => Promise.reject(new Error("not here")),
           readOwnerTabPages: () => Promise.reject(new Error("not here")),
-          waitHandoff: (requestId, maxMs) => {
+          waitHandoff: (_workspace, requestId, maxMs) => {
             calls.push({ name, wait: [requestId, maxMs] });
 
             return Promise.resolve({ state: "complete", success: true });
           },
-          endHandoff: (requestId) => {
+          endHandoff: (_workspace, requestId) => {
             calls.push({ name, end: requestId });
 
             return Promise.resolve({ windowOrigins: ["https://accounts.example.com"] });
@@ -114,6 +186,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     const input = { requestId: "7", conversationId: 3, instructions: "Log in", timeoutMs: 1_000 };
@@ -158,6 +231,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     const error = await Effect.runPromise(
@@ -188,7 +262,7 @@ describe("the Session's browser host", () => {
           close: () => Promise.resolve(true),
           startHandoff: () => Promise.reject(new Error("not here")),
           liveView: () => Promise.reject(new Error("not here")),
-          ownerTabView: (open) => {
+          ownerTabView: (_workspace, open) => {
             calls.push({ name, open });
 
             return open
@@ -205,6 +279,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await Effect.runPromise(host.ownerTabView(true))).toEqual(links);
@@ -240,17 +315,17 @@ describe("the Session's browser host", () => {
 
             return Promise.resolve(listing);
           },
-          showOwnerTab: (id) => {
+          showOwnerTab: (_workspace, id) => {
             calls.push({ name, call: "show", id });
 
             return Promise.reject(new Error("the Owner tab is gone"));
           },
-          closeOwnerTab: (id) => {
+          closeOwnerTab: (_workspace, id) => {
             calls.push({ name, call: "close", id });
 
             return Promise.resolve({ tabs: [] });
           },
-          readOwnerTabPages: (ids) => {
+          readOwnerTabPages: (_workspace, ids) => {
             calls.push({ name, call: "read", ids });
 
             return Promise.resolve([
@@ -262,6 +337,7 @@ describe("the Session's browser host", () => {
         }),
       },
       "session-1",
+      noWorkspace,
     );
 
     expect(await Effect.runPromise(host.ownerTabs)).toEqual(listing);

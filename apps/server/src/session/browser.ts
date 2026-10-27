@@ -3,7 +3,7 @@
 // per Session, named by the Session's ID and reached over a Durable Object binding, as the codemode sandbox is
 // (`./codemode.ts`).
 import { BrowserError, type BrowserHostService } from "@cloudpid/extensions/browser";
-import type { BrowserHostRpc } from "@cloudpid/extensions/browser/contract";
+import type { BrowserHostRpc, PreviewWorkspace } from "@cloudpid/extensions/browser/contract";
 import * as Effect from "effect/Effect";
 
 /** The browser host Durable Object namespace, as a Session DO binds it from the browser Worker (`script_name`). */
@@ -12,34 +12,41 @@ export type BrowserHostNamespace = {
 };
 
 /**
- * The Session's browser host: the object of `namespace` named `name`, found anew at each call. A failed call (the object
- * is unreachable, or threw) fails with a `BrowserError` that says which call.
+ * The Session's browser host: the object of `namespace` named `name`, found anew at each call. Every call names the
+ * Session's Workspace (`workspace`), which the browsers the host acquires route their Container previews to (ADR-0023);
+ * when it cannot be told, the call names none and the host keeps the one it was last told. A failed call (the object is
+ * unreachable, or threw) fails with a `BrowserError` that says which call.
  */
 export const remoteBrowserHost = (
   namespace: BrowserHostNamespace,
   name: string,
+  workspace: () => Promise<PreviewWorkspace>,
 ): BrowserHostService => {
-  const call = <A>(operation: string, run: (host: BrowserHostRpc) => Promise<A>) =>
+  const call = <A>(
+    operation: string,
+    run: (host: BrowserHostRpc, workspace: PreviewWorkspace) => Promise<A>,
+  ) =>
     Effect.tryPromise({
-      try: () => run(namespace.getByName(name)),
+      try: async () => run(namespace.getByName(name), await workspace().catch(() => null)),
       catch: (cause) => BrowserError.make({ message: `${operation}: ${String(cause)}` }),
     });
 
   return {
-    describe: call("describe", (host) => host.describe()),
+    describe: call("describe", (host, at) => host.describe(at)),
     run: ({ code, conversationId, ownerTabId }) =>
-      call("run", (host) => host.run(code, conversationId, ownerTabId)),
-    close: call("close", (host) => host.close()),
-    startHandoff: (input) => call("startHandoff", (host) => host.startHandoff(input)),
-    liveView: (requestId) => call("liveView", (host) => host.liveView(requestId)),
-    ownerTabView: (open) => call("ownerTabView", (host) => host.ownerTabView(open)),
-    ownerTabs: call("ownerTabs", (host) => host.ownerTabs()),
-    openOwnerTab: call("openOwnerTab", (host) => host.openOwnerTab()),
-    showOwnerTab: (id) => call("showOwnerTab", (host) => host.showOwnerTab(id)),
-    closeOwnerTab: (id) => call("closeOwnerTab", (host) => host.closeOwnerTab(id)),
-    readOwnerTabPages: (ids) => call("readOwnerTabPages", (host) => host.readOwnerTabPages(ids)),
+      call("run", (host, at) => host.run(at, code, conversationId, ownerTabId)),
+    close: call("close", (host, at) => host.close(at)),
+    startHandoff: (input) => call("startHandoff", (host, at) => host.startHandoff(at, input)),
+    liveView: (requestId) => call("liveView", (host, at) => host.liveView(at, requestId)),
+    ownerTabView: (open) => call("ownerTabView", (host, at) => host.ownerTabView(at, open)),
+    ownerTabs: call("ownerTabs", (host, at) => host.ownerTabs(at)),
+    openOwnerTab: call("openOwnerTab", (host, at) => host.openOwnerTab(at)),
+    showOwnerTab: (id) => call("showOwnerTab", (host, at) => host.showOwnerTab(at, id)),
+    closeOwnerTab: (id) => call("closeOwnerTab", (host, at) => host.closeOwnerTab(at, id)),
+    readOwnerTabPages: (ids) =>
+      call("readOwnerTabPages", (host, at) => host.readOwnerTabPages(at, ids)),
     waitHandoff: (requestId, maxMs) =>
-      call("waitHandoff", (host) => host.waitHandoff(requestId, maxMs)),
-    endHandoff: (requestId) => call("endHandoff", (host) => host.endHandoff(requestId)),
+      call("waitHandoff", (host, at) => host.waitHandoff(at, requestId, maxMs)),
+    endHandoff: (requestId) => call("endHandoff", (host, at) => host.endHandoff(at, requestId)),
   };
 };
