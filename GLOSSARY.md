@@ -248,6 +248,10 @@ _Avoid_: Plugin, command, global Skill (say: for every Environment), Bundled Ski
 Where a Skill was installed from: a GitHub repo, the Skill's path in it, the ref named and the commit it was fetched at. An update fetches the Skill again at the ref's latest commit; until then it changes only when the agent edits it, which makes it **modified**. A Skill is marked **update available** when its ref has moved on. A Skill the agent wrote has none.
 _Avoid_: Upstream (alone), origin, registry
 
+**Skill set**:
+The Skills a Workspace serves at `/workspace/.agents/skills`: its Environment's own, then those kept for every Environment, merged so the nearer wins. It changes only when one of them does, and a Repo's own Skills are not part of it.
+_Avoid_: Skill bundle, skills mount (for the Skills themselves)
+
 **Toolchain**:
 A program an Environment or Repo declares in its mise configuration, which the Container finds among the image's preinstalled versions or installs on demand.
 _Avoid_: Dependency, package (for tools)

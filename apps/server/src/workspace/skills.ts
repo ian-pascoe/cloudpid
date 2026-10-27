@@ -1,8 +1,8 @@
 // The Workspace DO's side of skills, Prompt templates and project instructions (docs/spec.md → Filesystem and tools):
-// finding them next to the files, so a Session's request is one RPC, and keeping what a Workspace had at the bundled
-// skills' mount before the mount existed.
+// finding them next to the files, so a Session's request is one RPC, and keeping what a Workspace had at the skills'
+// mount before the mount existed.
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
-import type { Workspace as ComputerWorkspace, WorkerBundleSource } from "@cloudflare/computer";
+import type { Workspace as ComputerWorkspace } from "@cloudflare/computer";
 import { posixCode, type ReadEnv } from "@cloudpid/computer-env";
 import { discoverSkills, type Skill, skillsOfFiles } from "@cloudpid/extensions/skills-discovery";
 import {
@@ -11,13 +11,17 @@ import {
 } from "@cloudpid/extensions/agents-md-discovery";
 import { discoverPrompts, type PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
 import { SKILLS_MOUNT } from "./binding.ts";
+import type { SkillSet } from "./skill-set.ts";
 
-/** The bundled skills of the version and mount last asked for: a bundle is fixed for the life of the Worker's code. */
-let cached:
-  | { readonly version: string; readonly mount: string; readonly skills: ReadonlyArray<Skill> }
-  | undefined;
+/**
+ * How many parsed Skill sets an isolate keeps: its Workspaces may each hold another set, and a set is fixed for its
+ * hash, so one parse serves every Workspace that holds it.
+ */
+const PARSED_SETS = 16;
+
+/** The Skills of the sets last asked for, by hash and mount, the least recently asked first. */
+const parsed = new Map<string, ReadonlyArray<Skill>>();
 
 const byPathSegments = (a: string, b: string): number => {
   const left = a.split("/");
@@ -31,44 +35,52 @@ const byPathSegments = (a: string, b: string): number => {
 };
 
 /**
- * The skills `bundle` mounts at `mount`, read from the bundle in memory instead of from the mounted files. The mount is
- * read-only and holds exactly the bundle (`WorkerBundle` copies it again when its version changes), so this is what a
- * walk of the mount finds, without a listing and a read per skill. Parsed once per version, so asking costs nothing.
+ * The Skills `set` mounts at `mount`, read from the set in memory instead of from the mounted files. The mount is
+ * read-only and holds exactly the set the Workspace holds (`skillSetMount` copies it again when its hash changes), so
+ * this is what a walk of the mount finds, without a listing and a read per Skill. Parsed once per hash, so asking costs
+ * nothing.
  */
-export const bundledSkills = (
-  bundle: WorkerBundleSource,
+export const mountedSkills = (
+  set: SkillSet,
   mount: string = SKILLS_MOUNT,
 ): ReadonlyArray<Skill> => {
-  const version = bundle.version;
+  const key = `${set.hash}\0${mount}`;
+  const known = parsed.get(key);
 
-  if (version !== undefined && cached?.version === version && cached.mount === mount) {
-    return cached.skills;
+  if (known !== undefined) {
+    parsed.delete(key);
+    parsed.set(key, known);
+
+    return known;
   }
 
   const skills = skillsOfFiles(
     mount,
-    // In the order a walk of the mount lists them (by name, directory by directory), whatever order the manifest has.
-    Object.entries(bundle.files)
-      .sort(([a], [b]) => byPathSegments(a, b))
-      .flatMap(([path, content]) =>
-        Predicate.isString(content) ? [[path, content] as const] : [],
-      ),
+    // In the order a walk of the mount lists them (by name, directory by directory), whatever order the set has.
+    Object.entries(set.files).sort(([a], [b]) => byPathSegments(a, b)),
   );
 
-  if (version !== undefined) cached = { version, mount, skills };
+  parsed.set(key, skills);
+
+  for (const oldest of parsed.keys()) {
+    if (parsed.size <= PARSED_SETS) break;
+
+    parsed.delete(oldest);
+  }
 
   return skills;
 };
 
 /**
  * The skills a conversation in `env`'s `cwd` can use. Everything above the Workspace root's `.agents/skills` is walked
- * in process (a listing and the reads of each skill, next to the storage); the bundled skills are not walked at all.
+ * in process (a listing and the reads of each skill, next to the storage); the Skill set the Workspace holds is not
+ * walked at all.
  */
 export const discoverWorkspaceSkills = (
   env: ReadEnv,
-  bundle: WorkerBundleSource,
+  set: SkillSet,
 ): Promise<ReadonlyArray<Skill>> =>
-  Effect.runPromise(discoverSkills(env, new Map([[SKILLS_MOUNT, bundledSkills(bundle)]])));
+  Effect.runPromise(discoverSkills(env, new Map([[SKILLS_MOUNT, mountedSkills(set)]])));
 
 /** The Prompt templates of `env`'s `cwd` and the directories above it, walked in process as the skills are. */
 export const discoverWorkspacePrompts = (env: ReadEnv): Promise<ReadonlyArray<PromptTemplate>> =>
@@ -108,7 +120,7 @@ export type PriorSkillsOptions = {
  * What is at the mount before the Workspace first indexes it is the Workspace's own (an agent wrote a skill there before
  * the bundled skills existed). computer clears a mount's root when it indexes it, so those files are moved to
  * `PRIOR_SKILLS` first, unless there are none (no directory, or an empty one). A mount that was indexed once is
- * read-only, so what is there is the bundle's and is left to computer, which replaces it when the bundle changes.
+ * read-only, so what is there is the Skill set's and is left to computer, which replaces it when the set changes.
  * Returns where the files went.
  */
 export const keepPriorSkills = async (options: PriorSkillsOptions): Promise<string | undefined> => {
@@ -131,7 +143,7 @@ export const keepPriorSkills = async (options: PriorSkillsOptions): Promise<stri
   await fs.rename(SKILLS_MOUNT, target);
 
   options.warn(
-    `${SKILLS_MOUNT} is the bundled skills' read-only mount now: what the Workspace had there was moved to ${target}`,
+    `${SKILLS_MOUNT} is the Skills' read-only mount now: what the Workspace had there was moved to ${target}`,
   );
 
   return target;
