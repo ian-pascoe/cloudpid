@@ -1,5 +1,5 @@
-// A Session's subagents in the Session list (ADR-0024): the button under the Session's row that shows and hides them,
-// and their rows, a tree by parent, each opening its Subagent page, with a Stop while it works.
+// A Session's subagents in the Session list (ADR-0024): the chevron at the left of the Session's row that shows and
+// hides them, and their rows, a tree by parent, each opening its Subagent page, with a Stop while it works.
 
 import { type SessionRecord, UNTITLED_SESSION } from "@cloudpid/protocol";
 import { useAtomSet } from "@effect/atom-react";
@@ -8,7 +8,7 @@ import { ChevronRight, Square } from "lucide-react";
 import type { CSSProperties } from "react";
 import { InAppLink } from "./in-app-link.tsx";
 import { cn } from "./lib/utils.ts";
-import { indentOf, workingCount, type SubagentRow } from "./list-subagents.ts";
+import { indentOf, type SubagentRow } from "./list-subagents.ts";
 import { subagentPath } from "./router.ts";
 import { stopAgentAtom } from "./session/atoms.ts";
 
@@ -52,8 +52,8 @@ const SubagentItem = ({
   const { agent } = row;
   const working = agent.status === "working";
   const stoppable = working && session.archivedAt === null;
-  // One step is 0.75rem past the Session's own text, which starts at 0.75rem.
-  const indent: CSSProperties = { paddingLeft: `${1.5 + indentOf(row.depth) * 0.75}rem` };
+  // One step is 0.75rem past the Session's own text, which starts at 1.5rem, after the chevron's gutter.
+  const indent: CSSProperties = { paddingLeft: `${2.25 + indentOf(row.depth) * 0.75}rem` };
 
   return (
     <li className="group/agent relative">
@@ -123,9 +123,9 @@ export const SubagentList = ({
 );
 
 /**
- * The button that shows and hides a Session's subagents under its row, with how many it has; collapsed, a pulse dot
- * while one works. Apart from the row's link, so a click on the row still opens the Session. While one of the Session's
- * Subagent pages is shown, the tree stays shown (`locked`), so the page's row is in view.
+ * The chevron that shows and hides a Session's subagents under its row, in the gutter every Session row keeps at its
+ * left, beside the title and the line under it. Apart from the row's link, so a click on the row still opens the Session.
+ * While one of the Session's Subagent pages is shown, the tree stays shown (`locked`), so the page's row is in view.
  */
 export const SubagentsToggle = ({
   session,
@@ -141,9 +141,7 @@ export const SubagentsToggle = ({
   onToggle: () => void;
 }) => {
   const count = session.agents?.length ?? 0;
-  const working = workingCount(session);
-  const showsWorking = !expanded && working > 0;
-  const label = `${count} ${count === 1 ? "subagent" : "subagents"}${working > 0 ? `, ${working} working` : ""}`;
+  const label = `${count} ${count === 1 ? "subagent" : "subagents"}`;
   const action = locked ? "Shown while a subagent's page is open" : expanded ? "Hide" : "Show";
 
   return (
@@ -156,20 +154,14 @@ export const SubagentsToggle = ({
       title={locked ? action : `${action} subagents`}
       onClick={locked ? undefined : onToggle}
       className={cn(
-        "absolute right-1.5 bottom-1 flex h-[1.125rem] items-center gap-1 rounded px-1 text-xs text-muted-foreground transition-colors",
-        !locked && "hover:bg-accent hover:text-foreground",
+        "absolute top-1/2 left-1 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors",
+        locked ? "cursor-default" : "hover:bg-accent hover:text-foreground",
       )}
     >
       <ChevronRight
-        className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")}
+        className={cn("size-3.5 shrink-0 transition-transform", expanded && "rotate-90")}
         aria-hidden
       />
-      <span className="tabular" aria-hidden>
-        {count}
-      </span>
-      {showsWorking && (
-        <span className="pulse-dot size-1.5 shrink-0 rounded-full bg-success" aria-hidden />
-      )}
     </button>
   );
 };
