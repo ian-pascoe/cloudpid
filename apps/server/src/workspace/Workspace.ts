@@ -475,14 +475,14 @@ export class Workspace extends ContainerHost {
 
     // Before the first command of each Container start, the Toolchains are installed (the lockfile's), the Environment's
     // and the repos' Setup Scripts that are due run, then their Start Scripts; every command gets the Environment's
-    // variables, a GitHub token and mise's settings, and the tokens are taken out of its output. The Workspace sees this
+    // variables, the GitHub tokens and mise's settings, and the tokens are taken out of its output. The Workspace sees this
     // as the Container's backend.
     const toolchains = new ToolchainBackend({
       backend: this.#container,
       github,
       // A command's `GH_TOKEN` is the token of the account that owns the repos of its working directory.
       repoAccount: (directory) => this.#comparison.githubAccountOf(directory),
-      // Taken out of output as the token is, each as its Secret Reference.
+      // Taken out of output as the tokens are, each as its Secret Reference.
       secrets: {
         read: async () => {
           const held = await environmentSecrets.read();
@@ -885,7 +885,7 @@ export class Workspace extends ContainerHost {
   }
 
   /**
-   * `text`, a report of this object's Container (`ContainerExitReports`), with the GitHub token and the Environment's
+   * `text`, a report of this object's Container (`ContainerExitReports`), with the GitHub tokens and the Environment's
    * kept Secrets taken out; null when the copy of them does not open, so it cannot be shown free of them. Not a use of
    * the Workspace: a spare's preparation goes on.
    */

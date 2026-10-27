@@ -203,7 +203,7 @@ export const toolchainEnv = (): ToolchainEnv => ({
  */
 export const githubTokenEnv = (
   token: string | undefined,
-  byAccount: Readonly<Record<string, string>> = {},
+  byAccount: Readonly<Record<string, string>>,
 ): Pick<ToolchainEnv, "GH_TOKEN" | "GITHUB_TOKEN" | "CLOUDPID_GITHUB_TOKENS"> => {
   const pairs = Object.entries(byAccount)
     .filter(([, value]) => value !== "")
@@ -275,8 +275,8 @@ has_mise_config() {
  *    in each repo directory that has a mise config, and exits with the first failure's status after trying all,
  * 4. with git installed, sets the commit identity from `CLOUDPID_GIT_NAME` and `CLOUDPID_GIT_EMAIL` unless the
  *    Container's global config has one, and points git's credentials for github.com at the token for the repo's owner
- *    (`$CLOUDPID_GITHUB_TOKENS`, else `$GITHUB_TOKEN`) at the time git asks. Those go to the Container's `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds
- *    the token,
+ *    (`$CLOUDPID_GITHUB_TOKENS`, else `$GITHUB_TOKEN`) at the time git asks. Those go to the Container's
+ *    `~/.gitconfig`, not the Workspace: nothing here syncs, and no file holds a token,
  * 5. writes the Container's global pnpm configuration (`PNPM_GLOBAL_CONFIG`), each key only when the file does not have it,
  * 6. ends its output with `BOOTSTRAP_CHANGED` when a step set `changed=1` (step 3 does when mise's installs differ
  *    from before it).

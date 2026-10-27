@@ -26,7 +26,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
-import { GitHubApp } from "@cloudpid/server/github/app";
+import { GitHubApp, notInstalledOn } from "@cloudpid/server/github/app";
 import { type GitHubAppManifest, githubAppManifest, withDevEnvValues } from "./src/github-app.ts";
 
 /** The GitHub environments whose deploys bind the app's secrets. */
@@ -194,39 +194,50 @@ const storeSecrets = async (app: Registered) => {
   }
 };
 
-/** Waits for the owner to install the app, then checks it by minting a token. */
+/**
+ * Waits for the owner to install the app on their account and on each organization they name by pressing Enter, then
+ * checks every installation by minting a token for it.
+ */
 const install = async (app: Registered) => {
-  const github = new GitHubApp({
-    appId: String(app.id),
-    privateKey: app.pem,
-    fetch: (url, init) => fetch(url, init),
-    now: () => Date.now(),
-  });
-
+  const owner = app.owner?.login ?? "your account";
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
 
   console.log(
-    `\nInstall it on ${app.owner?.login ?? "your account"} and on each organization whose repos the agent works on, choosing All repositories each time (it opens by itself, or open this):`,
+    `\nInstall it on ${owner} and on each organization whose repos the agent works on, choosing All repositories each time (it opens by itself, or open this):`,
   );
   openInBrowser(`https://github.com/apps/${app.slug}/installations/new`);
 
+  let question = "Press Enter once it is installed. ";
+  let ownerHasIt = false;
+
   try {
     for (;;) {
-      await prompt.question("Press Enter once it is installed. ");
+      const answer = await prompt.question(question);
 
-      const installed = await github.tokens();
+      if (ownerHasIt && answer.trim() === "done") return;
+
+      // A new one each time: one keeps the installations it listed, and a failure, for minutes.
+      const installed = await new GitHubApp({
+        appId: String(app.id),
+        privateKey: app.pem,
+        fetch: (url, init) => fetch(url, init),
+        now: () => Date.now(),
+      }).tokens();
 
       for (const problem of installed.problems) console.log(problem);
 
-      const accounts = Object.keys(installed.byAccount);
+      const accounts = Object.keys(installed.byAccount).sort();
 
-      if (installed.appAccount !== undefined && accounts.includes(installed.appAccount)) {
-        console.log(`Installed on ${accounts.join(", ")}: a GitHub token was minted for each.`);
+      ownerHasIt = installed.appAccount !== undefined && accounts.includes(installed.appAccount);
 
-        return;
+      if (!ownerHasIt) {
+        console.log(notInstalledOn(owner));
+
+        continue;
       }
 
-      console.log(`It is not installed on ${app.owner?.login ?? "your account"} yet.`);
+      console.log(`Installed on ${accounts.join(", ")}: a GitHub token was minted for each.`);
+      question = 'Install it on another organization and press Enter to check it, or type "done": ';
     }
   } finally {
     prompt.close();

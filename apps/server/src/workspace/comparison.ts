@@ -133,11 +133,11 @@ export type ComparisonOptions = {
   };
   /** GitHub's REST API (the base of the branch's open pull request, and the pull requests). */
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
-  /** Where the GitHub token comes from (the GitHub App); absent, the API is asked without one. */
+  /** Where the GitHub tokens come from (the GitHub App); absent, the API is asked without one. */
   readonly github: GithubOptions["github"];
   /** The time in ms (the 60 s a pull request list is kept are counted by it); `Date.now` by default. */
   readonly now?: () => number;
-  /** `text` with the GitHub token and the Environment's kept Secrets taken out. */
+  /** `text` with the GitHub tokens and the Environment's kept Secrets taken out. */
   readonly redact: (text: string) => string;
   readonly warn: (message: string) => void;
 };

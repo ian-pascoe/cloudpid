@@ -1,7 +1,7 @@
 // cloudpid's GitHub App (ADR-0025, GLOSSARY.md → GitHub App): GitHub tokens minted on demand from the app's private
 // key, one per installation (an account the app is installed on). A Worker or a Workspace DO holds one `GitHubApp`,
 // which keeps the installations it found and the tokens it minted.
-// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
+// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
 
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -26,12 +26,17 @@ const RETRY_AFTER_MS = 60_000;
 /** The longest wait between attempts. */
 const MAX_RETRY_AFTER_MS = 15 * 60_000;
 
-/** How long the list of the app's installations is kept: an account the app is installed on later is found after it. */
+/**
+ * How long the list of the app's installations is kept: an account the app is installed on later is found after it.
+ */
 const INSTALLATIONS_TTL_MS = 5 * 60_000;
 
-/** A minted token, the account (lower case) of the installation it is for, and when it expires (ms). */
+/**
+ * A minted token, the account (lower case) of the installation it is for (absent on one kept before tokens named
+ * theirs), and when it expires (ms).
+ */
 export type MintedToken = {
-  readonly account: string;
+  readonly account?: string | undefined;
   readonly token: string;
   readonly expiresAt: number;
 };
@@ -45,6 +50,21 @@ export type InstallationTokens = {
   /** Why an installation, or the app's own account, has no token: a sentence each. */
   readonly problems: ReadonlyArray<string>;
 };
+
+/**
+ * From `tokens`, the token for the installation on `account`, else the app owner's (which reads any public repo): what
+ * a command in `account`'s repos gets.
+ */
+export const tokenFor = (
+  tokens: InstallationTokens,
+  account: string | undefined,
+): string | undefined =>
+  (account === undefined ? undefined : tokens.byAccount[account.toLowerCase()]) ??
+  (tokens.appAccount === undefined ? undefined : tokens.byAccount[tokens.appAccount]);
+
+/** What is said of `account` when the app is not installed on it. */
+export const notInstalledOn = (account: string): string =>
+  `The GitHub App is not installed on ${account}: install it there, on all repositories`;
 
 /** `cause` as a sentence. */
 const messageOf = (cause: unknown): string =>
@@ -265,7 +285,12 @@ export class GitHubApp implements GitHubTokens {
     }
 
     try {
-      return (await this.#once(`token:${name}`, () => this.#mint(name))).token;
+      // Found before the mint's own wait, so a failure to list waits only on the list's.
+      const installation = (await this.#installationIds()).get(name);
+
+      if (installation === undefined) throw new Error(notInstalledOn(name));
+
+      return (await this.#once(`token:${name}`, () => this.#mint(name, installation))).token;
     } catch (cause) {
       if (usable !== undefined && usable.expiresAt > this.#options.now()) return usable.token;
 
@@ -277,21 +302,20 @@ export class GitHubApp implements GitHubTokens {
   async tokens(): Promise<InstallationTokens> {
     const problems: string[] = [];
 
-    const appAccount = await this.#ownAccount().catch((cause: unknown) => {
+    const told = (cause: unknown): undefined => {
       problems.push(messageOf(cause));
 
       return undefined;
-    });
+    };
 
-    const listed = await this.#installationIds().catch((cause: unknown) => {
-      problems.push(messageOf(cause));
-
-      return undefined;
-    });
+    const appAccount = await this.#ownAccount().catch(told);
+    const listed = await this.#installationIds().catch(told);
 
     // Without the list, the accounts it had tokens for still get theirs.
     const accounts =
-      listed === undefined ? new Set(this.#minted.map(({ account }) => account)) : listed.keys();
+      listed === undefined
+        ? new Set(this.#minted.flatMap(({ account }) => (account === undefined ? [] : [account])))
+        : listed.keys();
 
     const byAccount: Record<string, string> = {};
 
@@ -373,15 +397,7 @@ export class GitHubApp implements GitHubTokens {
     return (await running) as T;
   }
 
-  async #mint(account: string): Promise<MintedToken> {
-    const installation = (await this.#installationIds()).get(account);
-
-    if (installation === undefined) {
-      throw new Error(
-        `The GitHub App is not installed on ${account}: install it there, on all repositories`,
-      );
-    }
-
+  async #mint(account: string, installation: number): Promise<MintedToken> {
     const answer = await this.#ask(`${API}/app/installations/${installation}/access_tokens`, {
       method: "POST",
       body:

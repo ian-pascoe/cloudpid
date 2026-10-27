@@ -186,7 +186,7 @@ describe("the image's preinstalled Toolchains", () => {
 
 describe("a command's environment", () => {
   it("carries the GitHub token as GH_TOKEN and GITHUB_TOKEN", () => {
-    const env = githubTokenEnv("ghs_secret");
+    const env = githubTokenEnv("ghs_secret", {});
 
     expect(env.GH_TOKEN).toBe("ghs_secret");
     expect(env.GITHUB_TOKEN).toBe("ghs_secret");
@@ -206,8 +206,8 @@ describe("a command's environment", () => {
   });
 
   it("carries no token variable when there is none, so a blank one cannot shadow a user's", () => {
-    expect(githubTokenEnv("")).toEqual({});
-    expect(githubTokenEnv(undefined)).toEqual({});
+    expect(githubTokenEnv("", {})).toEqual({});
+    expect(githubTokenEnv(undefined, {})).toEqual({});
     expect(toolchainEnv()).not.toHaveProperty("GH_TOKEN");
   });
 

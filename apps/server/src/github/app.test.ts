@@ -272,6 +272,65 @@ describe("GitHubApp", () => {
     expect(await app.token()).toBe("ghs_token1");
   });
 
+  it("mints for an account as soon as the installations are listed again, however often it was asked meanwhile", async () => {
+    let now = Date.UTC(2026, 0, 1, 12);
+    let listing = false;
+
+    const github = fakeGitHub({
+      now: () => now,
+      installations: [
+        { id: 42, login: "ian-pascoe" },
+        { id: 43, login: "spiritledsoftware" },
+      ],
+    });
+
+    const app = new GitHubApp({
+      appId: "1",
+      privateKey: KEYS.privateKey,
+      fetch: (url, init) =>
+        !listing && url.endsWith("/app/installations?per_page=100")
+          ? Promise.resolve(Response.json({ message: "Server Error" }, { status: 500 }))
+          : github.fetch(url, init),
+      now: () => now,
+    });
+
+    const refusal = "GitHub refused the GitHub App's request (500: Server Error)";
+
+    await expect(app.token()).rejects.toThrow(refusal);
+
+    // Asked while the list waits, another account's token adds no wait of its own.
+    now += 50_000;
+    await expect(app.token("spiritledsoftware")).rejects.toThrow(refusal);
+
+    listing = true;
+    now += 10_000;
+    expect(await app.token()).toBe("ghs_token1");
+    expect(await app.token("spiritledsoftware")).toBe("ghs_token2");
+  });
+
+  it("lists a token kept from before tokens named their account, and gives it to no account", async () => {
+    const now = Date.UTC(2026, 0, 1, 12);
+    const old: MintedToken[] = [{ token: "ghs_old", expiresAt: now + 30 * MINUTE }];
+
+    const app = new GitHubApp({
+      appId: "1",
+      privateKey: KEYS.privateKey,
+      fetch: () => Promise.reject(new Error("connection refused")),
+      now: () => now,
+      kept: { load: () => old, save: () => undefined },
+    });
+
+    expect(app.live()).toEqual(["ghs_old"]);
+
+    const all = await app.tokens();
+
+    expect(all.byAccount).toEqual({});
+    expect(all.problems).toEqual([
+      "GitHub could not be reached: connection refused",
+      "GitHub could not be reached: connection refused",
+    ]);
+  });
+
   it("hands out its last token while it has not expired when no new one can be minted", async () => {
     let now = Date.UTC(2026, 0, 1, 12);
     let down = false;

@@ -308,6 +308,20 @@ describe("the open pull requests of a repo", () => {
     expect(refusing.calls).toHaveLength(2);
   });
 
+  it("asks with the app owner's token about a repo whose owner has no installation, which reads public repos", async () => {
+    const { pulls, calls } = client(OPEN_ROUTES, {
+      token: async (account?: string) => {
+        if (account !== undefined) throw new Error(`The GitHub App is not installed on ${account}`);
+
+        return "ghs_owner";
+      },
+      invalidate: () => undefined,
+    });
+
+    expect(await pulls.list(REPO, null)).toMatchObject({ status: "ok" });
+    expect(calls.map((call) => call.authorization)).toEqual(["Bearer ghs_owner"]);
+  });
+
   it("says why it has no token when none could be minted, asking GitHub nothing", async () => {
     const { pulls, calls } = client(OPEN_ROUTES, {
       token: () => Promise.reject(new Error("The GitHub App is not installed")),

@@ -15,7 +15,7 @@
 // - Then, after the hook that snapshots the disk (so no service is writing to it meanwhile), the Start Scripts run: the
 //   Environment's, then each repo's `.cloudpid/start.sh`, at every Container start, each bounded by 5 minutes and
 //   reported like a Setup Script.
-// - Every command's environment carries the Environment's variables, under mise's settings and a GitHub token
+// - Every command's environment carries the Environment's variables, under mise's settings and the GitHub tokens
 //   (`toolchainEnv`), under what the caller passes, and the GitHub tokens and the Environment's kept Secrets are taken
 //   out of what a command prints (a Secret as its reference). The variables, the Environment's scripts and its
 //   Toolchains (the root `mise.toml` the bootstrap writes) are read once per Container start, at its bootstrap.
@@ -23,12 +23,13 @@
 // The GitHub tokens are minted from the GitHub App when a command starts (the bootstrap's at its start, for it and its
 // scripts), one for each account the app is installed on, so each command gets them with at least
 // `TOKEN_MIN_LIFETIME_MS` left (ADR-0025): git picks the one for the repo's owner, and `GH_TOKEN` is the one for the
-// account that owns the repos of the command's working directory, else the app's own account's. They reach the
+// account that owns the repos of the command's working directory (a repo's Setup or Start Script: its repo), else the
+// app's own account's. They reach the
 // Container only in a process's environment: no file holds one, and nothing here logs one. A command that cannot have
 // them runs without, its stderr saying why first.
 //
 // The app's private key never reaches this module, only the tokens.
-// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalTimers:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off globalTimers:off preferEffectArray:off preferEffectRecord:off
 import type { BackendHandle, WorkspaceBackend } from "@cloudflare/computer";
 import type { ContainerSettings } from "@cloudpid/config";
 import { type KeptSecret, secretReference } from "@cloudpid/extensions/secrets/core";
@@ -55,7 +56,12 @@ import {
   toolchainEnv,
   WORKSPACE_ROOT,
 } from "@cloudpid/sandbox-image/toolchains";
-import type { GitHubTokens } from "../github/app.ts";
+import {
+  type GitHubTokens,
+  type InstallationTokens,
+  notInstalledOn,
+  tokenFor,
+} from "../github/app.ts";
 import { buildSecretEnvironment } from "./environment-secrets.ts";
 import type { IdleStop } from "./idle.ts";
 import { type Redaction, Redactor } from "./redact.ts";
@@ -152,11 +158,13 @@ export class ToolchainBackend implements WorkspaceBackend {
   readonly #toolchainEnv: CommandEnv;
   /**
    * What the commands of the Container start bootstrapped last get: the Environment's variables under `#toolchainEnv`,
-   * and then the GitHub token minted for the command.
+   * and then the GitHub tokens minted for the command.
    */
   #env: CommandEnv;
-  /** What the bootstrap under way and its scripts get: `#env` and the token minted at its start. */
+  /** What the bootstrap under way and its scripts get: `#env` and the tokens minted at its start, for `/workspace`. */
   #bootstrapEnv: CommandEnv;
+  /** The GitHub tokens minted at the start of the bootstrap under way, which a repo's script gets for its repo. */
+  #bootstrapTokens: InstallationTokens | undefined;
   /** The Container run the bootstrap last finished in: a new connection to the same Container needs none. */
   #bootstrapped: string | undefined;
   /**
@@ -199,34 +207,61 @@ export class ToolchainBackend implements WorkspaceBackend {
    * The GitHub tokens' variables for a command about to start in `directory`, and the note for its stderr when it has
    * no `GH_TOKEN`, or no token for an account the app is installed on. Never throws.
    */
-  async #githubEnv(
-    directory: string,
-  ): Promise<{ readonly env: CommandEnv; readonly note?: string }> {
+  async #githubEnv(directory: string): Promise<{
+    readonly env: CommandEnv;
+    readonly note?: string;
+    readonly tokens?: InstallationTokens;
+  }> {
     const github = this.#options.github;
 
     if (github === undefined) return { env: {} };
 
-    const [all, repoAccount] = await Promise.all([
+    const [tokens, repoAccount] = await Promise.all([
       github.tokens(),
-      this.#options.repoAccount?.(directory).catch(() => undefined),
+      this.#repoAccount(directory),
     ]);
 
-    const chosen =
-      (repoAccount === undefined ? undefined : all.byAccount[repoAccount.toLowerCase()]) ??
-      (all.appAccount === undefined ? undefined : all.byAccount[all.appAccount]);
+    const chosen = tokenFor(tokens, repoAccount);
 
     const problems =
-      chosen === undefined && all.problems.length === 0
-        ? [`the GitHub App is not installed on ${all.appAccount ?? "its own account"}`]
-        : all.problems;
+      chosen === undefined && tokens.problems.length === 0
+        ? [notInstalledOn(tokens.appAccount ?? "its own account")]
+        : tokens.problems;
 
-    const env = githubTokenEnv(chosen, all.byAccount);
+    const env = githubTokenEnv(chosen, tokens.byAccount);
 
-    if (problems.length === 0) return { env };
+    if (problems.length === 0) return { env, tokens };
 
     const why = this.#redact(problems.join("; "));
+    const accounts = Object.keys(tokens.byAccount).sort();
 
-    return { env, note: chosen === undefined ? noTokenNote(why) : someTokensNote(why) };
+    const note =
+      chosen !== undefined
+        ? someTokensNote(why)
+        : accounts.length === 0
+          ? noTokenNote(why)
+          : noGhTokenNote(why, accounts);
+
+    return { env, note, tokens };
+  }
+
+  /** The account that owns the repos of `directory`, if the Workspace can tell. Never throws. */
+  async #repoAccount(directory: string): Promise<string | undefined> {
+    return this.#options.repoAccount?.(directory).catch(() => undefined);
+  }
+
+  /**
+   * What a repo's Setup or Start Script, run in `directory`, gets: `env` with the bootstrap's GitHub tokens, its
+   * `GH_TOKEN` the one for the repo's owner.
+   */
+  async #repoScriptEnv(env: CommandEnv, directory: string): Promise<CommandEnv> {
+    const tokens = this.#bootstrapTokens;
+
+    if (tokens === undefined) return env;
+
+    const token = tokenFor(tokens, await this.#repoAccount(directory));
+
+    return { ...env, ...githubTokenEnv(token, tokens.byAccount) };
   }
 
   /** What to take out of output: the GitHub tokens (as `***`) and each kept Secret (as its reference). */
@@ -415,6 +450,7 @@ export class ToolchainBackend implements WorkspaceBackend {
 
       this.#env = { ...environment.variables, ...this.#toolchainEnv };
       this.#bootstrapEnv = { ...this.#env, ...github.env };
+      this.#bootstrapTokens = github.tokens;
 
       return await this.#installAndSetUp(shell, environment);
     } finally {
@@ -549,7 +585,7 @@ export class ToolchainBackend implements WorkspaceBackend {
           source: setupScriptRun(script),
           cwd: script.directory,
           timeoutMs: SETUP_EXEC_TIMEOUT_MS,
-          env,
+          env: ofEnvironment ? env : await this.#repoScriptEnv(env, script.directory),
         },
         SETUP_TIMEOUT_SECONDS,
       );
@@ -650,6 +686,7 @@ export class ToolchainBackend implements WorkspaceBackend {
         shell,
         startScriptRun({ directory, file: START_SCRIPT }),
         directory,
+        await this.#repoScriptEnv(this.#bootstrapEnv, directory),
       );
 
       if (failure === undefined) continue;
@@ -672,11 +709,19 @@ export class ToolchainBackend implements WorkspaceBackend {
       : { note: notes.join("\n"), pointer: pointers.join("\n") };
   }
 
-  /** Run the Start Script run `source` in `directory`; why it failed, if it did. Never throws. */
-  #runStartScript(shell: Shell, source: string, directory: string): Promise<Failure | undefined> {
+  /**
+   * Run the Start Script run `source` in `directory`, with `env` or a command's environment; why it failed, if it did.
+   * Never throws.
+   */
+  #runStartScript(
+    shell: Shell,
+    source: string,
+    directory: string,
+    env?: CommandEnv,
+  ): Promise<Failure | undefined> {
     return this.#runScript(
       shell,
-      { source, cwd: directory, timeoutMs: START_EXEC_TIMEOUT_MS },
+      { source, cwd: directory, timeoutMs: START_EXEC_TIMEOUT_MS, env },
       START_TIMEOUT_SECONDS,
       // The one way a Start Script that works runs past its time: a service it started holds the exec's output.
       " (a service it starts must detach: `setsid nohup cmd >/tmp/cmd.log 2>&1 &`)",
@@ -737,7 +782,16 @@ const NO_BOOTSTRAP_SETTINGS: BootstrapSettings = {
 const noTokenNote = (problem: string): string =>
   `cloudpid: this command has no GitHub token (${problem}), so git and gh reach GitHub without one. A later command asks for one again.`;
 
-/** What a command that has a GitHub token, but not one for every account the GitHub App is installed on, is told first. */
+/**
+ * What a command that has no `GH_TOKEN` (none for the account of its repos nor the app's own) but has the tokens of
+ * `accounts` for git is told first.
+ */
+const noGhTokenNote = (problem: string, accounts: ReadonlyArray<string>): string =>
+  `cloudpid: this command has no GH_TOKEN (${problem}), so gh reaches GitHub without one; git has a token for the repos of ${accounts.join(", ")}. A later command asks for one again.`;
+
+/**
+ * What a command that has a GitHub token, but not one for every account the GitHub App is installed on, is told first.
+ */
 const someTokensNote = (problem: string): string =>
   `cloudpid: this command has no GitHub token for some accounts (${problem}), so git reaches their repos without one. A later command asks for them again.`;
 

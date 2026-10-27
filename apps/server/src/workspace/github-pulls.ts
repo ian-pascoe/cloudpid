@@ -267,6 +267,22 @@ type Failure = GithubProblem & { readonly limitMs?: number };
 
 type Request = { readonly method?: "POST"; readonly body?: string };
 
+/** A token for the installation on `owner`, else the app owner's; the first failure when neither can be had. */
+const ownerToken = async (
+  github: NonNullable<GithubOptions["github"]>,
+  owner: string,
+): Promise<string> => {
+  try {
+    return await github.token(owner);
+  } catch (cause) {
+    try {
+      return await github.token();
+    } catch {
+      throw cause;
+    }
+  }
+};
+
 export class GithubPulls {
   readonly #options: GithubOptions;
   readonly #lists = new Map<
@@ -289,8 +305,8 @@ export class GithubPulls {
   }
 
   /**
-   * `url`, about `repo`, asked with a GitHub token for its owner: when GitHub refuses it with a 401, the token is
-   * invalidated and the request made once more with a new one.
+   * `url`, about `repo`, asked with a GitHub token for its owner, else the app owner's (which reads any public repo):
+   * when GitHub refuses it with a 401, the token is invalidated and the request made once more with a new one.
    */
   async #request(
     repo: GitHubRepo,
@@ -305,7 +321,7 @@ export class GithubPulls {
       let token: string;
 
       try {
-        token = await github.token(repo.owner);
+        token = await ownerToken(github, repo.owner);
       } catch (cause) {
         return {
           kind: "failed",
