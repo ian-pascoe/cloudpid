@@ -33,6 +33,7 @@ import {
   addRepoSourceAtom,
   agentChangesAtom,
   revertAgentChangeAtom,
+  dismissAgentChangeAtom,
   createEnvironmentAtom,
   deleteSecretAtom,
   environmentSecretsAtom,
@@ -1401,6 +1402,33 @@ describe("the Agent changes", () => {
       expect(settledFailureOf(yield* settled(registry, revertAgentChangeAtom("work")))).toBe(
         'variables.API_URL has changed since: it is "x" now, so the change is not reverted',
       );
+      registry.dispose();
+    }),
+  );
+
+  it.effect("leave the list once dismissed, which loads it again", () =>
+    Effect.gen(function* () {
+      const dismissed: Array<{ environment: string; change: number }> = [];
+
+      const registry = registryWith({
+        listAgentChanges: () =>
+          Effect.sync(() => (dismissed.length === 0 ? [change(2), change(1)] : [change(2)])),
+        dismissAgentChange: (input) =>
+          Effect.sync(() => {
+            dismissed.push(input);
+          }),
+      });
+
+      registry.mount(agentChangesAtom("work"));
+      yield* settled(registry, agentChangesAtom("work"));
+
+      registry.mount(dismissAgentChangeAtom("work"));
+      registry.set(dismissAgentChangeAtom("work"), 1);
+      yield* settled(registry, dismissAgentChangeAtom("work"));
+      yield* settled(registry, agentChangesAtom("work"));
+
+      expect(dismissed).toEqual([{ environment: "work", change: 1 }]);
+      expect(AsyncResult.getOrThrow(registry.get(agentChangesAtom("work")))).toEqual([change(2)]);
       registry.dispose();
     }),
   );

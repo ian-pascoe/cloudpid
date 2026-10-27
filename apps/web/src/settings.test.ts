@@ -10,6 +10,7 @@ import { failureOf } from "./registry.ts";
 import { registryWith, settled } from "./registry.testing.ts";
 import { spendLimitToText } from "./spend-limit.ts";
 import {
+  dismissSettingsChangeAtom,
   justSavedAtom,
   limitTextAtom,
   offeredTextAtom,
@@ -251,6 +252,33 @@ describe("the Settings' Agent changes", () => {
       expect(failureOf(yield* settled(registry, revertSettingsChangeAtom))).toBe(
         "model has changed since: it is x now, so not reverted",
       );
+      registry.dispose();
+    }),
+  );
+
+  it.effect("leave the list once dismissed, keeping the setting as it is", () =>
+    Effect.gen(function* () {
+      const dismissed: unknown[] = [];
+
+      const registry = registryWith({
+        listSettingsChanges: () =>
+          Effect.sync(() => (dismissed.length === 0 ? [change(2), change(1)] : [change(2)])),
+        dismissSettingsChange: (input) =>
+          Effect.sync(() => {
+            dismissed.push(input);
+          }),
+      });
+
+      registry.mount(settingsChangesAtom);
+      yield* settled(registry, settingsChangesAtom);
+
+      registry.mount(dismissSettingsChangeAtom);
+      registry.set(dismissSettingsChangeAtom, 1);
+      yield* settled(registry, dismissSettingsChangeAtom);
+      yield* settled(registry, settingsChangesAtom);
+
+      expect(dismissed).toEqual([{ change: 1 }]);
+      expect(AsyncResult.getOrThrow(registry.get(settingsChangesAtom))).toEqual([change(2)]);
       registry.dispose();
     }),
   );

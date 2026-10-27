@@ -195,6 +195,7 @@ type AgentChangeRow = {
   reverts: number | null;
   reverted_by: number | null;
   approved: number;
+  dismissed: number;
 };
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
@@ -251,10 +252,15 @@ export const asRecorded = (change: NewAgentChange, id: number): AgentChange => {
 export type AgentChanges = {
   /** Record `change`, keeping only the newest `MAX_AGENT_CHANGES` of its scope; answers it as recorded. */
   readonly record: (change: NewAgentChange) => AgentChange;
-  /** The changes of `scope`, newest first. */
+  /** The changes of `scope` the owner has not dismissed, newest first. */
   readonly list: (scope: string) => ReadonlyArray<AgentChange>;
-  /** Change `id` of `scope`, or null. */
+  /** Change `id` of `scope`, dismissed or not, or null. */
   readonly get: (scope: string, id: number) => AgentChange | null;
+  /**
+   * Take change `id` of `scope` out of the list, leaving what it changed and its record: false when `scope` has no such
+   * change. Dismissing one dismissed already changes nothing.
+   */
+  readonly dismiss: (scope: string, id: number) => boolean;
 };
 
 const SELECT_CHANGES = `SELECT changes.*, revert.id AS reverted_by FROM agent_changes AS changes
@@ -313,13 +319,24 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
       Arr.map(
         sql
           .exec<AgentChangeRow>(
-            `${SELECT_CHANGES} WHERE changes.scope = ? ORDER BY changes.id DESC`,
+            `${SELECT_CHANGES} WHERE changes.scope = ? AND changes.dismissed = 0 ORDER BY changes.id DESC`,
             scope,
           )
           .toArray(),
         toChange,
       ),
     get,
+    dismiss: (scope, id) => {
+      const [row] = sql
+        .exec<{ id: number }>(
+          "UPDATE agent_changes SET dismissed = 1 WHERE scope = ? AND id = ? RETURNING id",
+          scope,
+          id,
+        )
+        .toArray();
+
+      return row !== undefined;
+    },
   };
 };
 

@@ -23,6 +23,7 @@ import * as Atom from "effect/reactivity/Atom";
 import {
   ArrowLeft,
   Bot,
+  Check,
   GitBranch,
   GitFork,
   KeyRound,
@@ -57,6 +58,7 @@ import {
   addRepoAtom,
   addRepoNameAtom,
   agentChangesAtom,
+  dismissAgentChangeAtom,
   revertAgentChangeAtom,
   addRepoSourceAtom,
   createEnvironmentAtom,
@@ -1271,18 +1273,25 @@ const ChangeValue = ({ label, value }: { label: string; value: AgentChange["befo
   </div>
 );
 
-/** One Agent change: the setting, its values before and after, who made it and why, and a revert while it is the agent's. */
+/**
+ * One Agent change: the setting, its values before and after, who made it and why, a revert while it is the agent's,
+ * and a dismissal that takes it off the list and keeps what it changed.
+ */
 export const AgentChangeRow = ({
   change,
   session,
   reverting,
   onRevert,
+  dismissing,
+  onDismiss,
 }: {
   change: AgentChange;
   /** The Session that made it, when it is still listed. */
   session: SessionRecord | undefined;
   reverting: boolean;
   onRevert: () => void;
+  dismissing: boolean;
+  onDismiss: () => void;
 }) => {
   // A script or the Toolchains is long: it shows as the lines that changed.
   const diff = changeDiff(change.field, change.before, change.after);
@@ -1304,21 +1313,35 @@ export const AgentChangeRow = ({
             <SessionLink session={session} active={false} className="-ml-2 text-xs" />
           )}
         </div>
-        {revertible(change) ? (
+        <div className="flex shrink-0 items-center gap-1">
+          {revertible(change) ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={reverting}
+              aria-label={`Revert change ${change.id}: ${changeFieldText(change.field)}`}
+              onClick={onRevert}
+            >
+              <Undo2 aria-hidden />
+              Revert
+            </Button>
+          ) : change.revertedBy !== null ? (
+            <span className="text-xs text-muted-foreground">Reverted</span>
+          ) : null}
           <Button
             type="button"
             size="sm"
-            variant="outline"
-            disabled={reverting}
-            aria-label={`Revert change ${change.id}: ${changeFieldText(change.field)}`}
-            onClick={onRevert}
+            variant="ghost"
+            disabled={dismissing}
+            aria-label={`Dismiss change ${change.id}: ${changeFieldText(change.field)}`}
+            title="Keep the change and take it off this list"
+            onClick={onDismiss}
           >
-            <Undo2 aria-hidden />
-            Revert
+            <Check aria-hidden />
+            Dismiss
           </Button>
-        ) : change.revertedBy !== null ? (
-          <span className="shrink-0 text-xs text-muted-foreground">Reverted</span>
-        ) : null}
+        </div>
       </div>
       {change.reason !== "" && <p className="text-sm break-words">{change.reason}</p>}
       {diff === undefined ? (
@@ -1334,8 +1357,8 @@ export const AgentChangeRow = ({
 };
 
 /**
- * Environment `id`'s Agent changes, newest first (`docs/spec.md` → Agent changes), each with the Session that made it
- * and a revert. A revert the Registry refuses (its field has changed since) says why.
+ * Environment `id`'s Agent changes, newest first (`docs/spec.md` → Agent changes), each with the Session that made it,
+ * a revert and a dismissal. A revert the Registry refuses (its field has changed since) says why.
  */
 const AgentChangesSection = ({
   id,
@@ -1347,6 +1370,7 @@ const AgentChangesSection = ({
 }) => {
   const loaded = useAtomValue(agentChangesAtom(id));
   const [reverted, revert] = useAtom(revertAgentChangeAtom(id));
+  const [dismissed, dismiss] = useAtom(dismissAgentChangeAtom(id));
   const changes = loaded.pipe(AsyncResult.value, Option.getOrNull);
   const loadError = failureOf(loaded);
 
@@ -1368,11 +1392,16 @@ const AgentChangesSection = ({
               onRevert={() => {
                 revert(change.id);
               }}
+              dismissing={dismissed.waiting}
+              onDismiss={() => {
+                dismiss(change.id);
+              }}
             />
           ))}
         </ul>
       )}
       <DialogProblem problem={settledFailureOf(reverted)} />
+      <DialogProblem problem={settledFailureOf(dismissed)} />
     </div>
   );
 };

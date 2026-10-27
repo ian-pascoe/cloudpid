@@ -26,6 +26,7 @@ import { navigate } from "./router.ts";
 import { sessionListAtom } from "./sessions.ts";
 import {
   justSavedAtom,
+  dismissSettingsChangeAtom,
   limitTextAtom,
   offeredTextAtom,
   revertSettingsChangeAtom,
@@ -86,13 +87,15 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 );
 
 /**
- * What the agent changed in the Settings, newest first (`docs/spec.md` → Agent changes), each with a revert. A revert the
- * Registry refuses (its setting has changed since) says why.
+ * What the agent changed in the Settings, newest first (`docs/spec.md` → Agent changes), each with a revert and a
+ * dismissal. A revert the Registry refuses (its setting has changed since) says why.
  */
 const AgentChangesSection = () => {
   const loaded = useAtomValue(settingsChangesAtom);
   const sessions = useAtomValue(sessionListAtom);
   const [reverted, revert] = useAtom(revertSettingsChangeAtom);
+  const [dismissed, dismiss] = useAtom(dismissSettingsChangeAtom);
+  const problem = settledFailureOf(reverted) ?? settledFailureOf(dismissed);
   const changes = loaded.pipe(AsyncResult.value, Option.getOrNull);
   const loadError = failureOf(loaded);
 
@@ -100,7 +103,8 @@ const AgentChangesSection = () => {
     <Section title="Agent changes">
       <p className="text-sm text-muted-foreground">
         What the agent changed here when you asked it to, newest first. Reverting one writes its old
-        value back, unless the setting has changed since.
+        value back, unless the setting has changed since. Dismissing one keeps it and takes it off
+        this list.
       </p>
       {changes === null ? (
         <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
@@ -117,13 +121,17 @@ const AgentChangesSection = () => {
               onRevert={() => {
                 revert(change.id);
               }}
+              dismissing={dismissed.waiting}
+              onDismiss={() => {
+                dismiss(change.id);
+              }}
             />
           ))}
         </ul>
       )}
-      {settledFailureOf(reverted) !== null && (
+      {problem !== null && (
         <p role="alert" className="text-sm whitespace-pre-wrap text-destructive">
-          {settledFailureOf(reverted)}
+          {problem}
         </p>
       )}
     </Section>
