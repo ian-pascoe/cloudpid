@@ -30,11 +30,11 @@ export const paneDrafts = (changes: ConversationKey): boolean =>
   changes.conversationId === undefined;
 
 /**
- * What drafts on `file` anchor to: its repo's Changes at the HEAD listed, and its path in the repo (a rename's new one,
- * with the old). They go to the active branch's composer.
+ * What drafts on `file` anchor to: its repo's Changes at the HEAD listed, or the Comparison it is a file of (This
+ * branch), and its path in the repo (a rename's new one, with the old). They go to the active branch's composer.
  */
 export const paneAnchor = (file: PaneFile, repos: readonly RepoChanges[]): DiffAnchor => ({
-  source: {
+  source: file.branch ?? {
     kind: "changes",
     repo: file.repo,
     head: repos.find((repo) => repo.repo === file.repo)?.head.commit ?? null,

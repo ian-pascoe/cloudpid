@@ -9,7 +9,7 @@
 //   16 MB, root `.gitattributes` rules git applies when it compares (`text`, `eol`, `binary`, `filter`), or one
 //   isomorphic-git fails on. Only a call that may start the Container does so: otherwise a running Container is used,
 //   and a stopped one leaves the repo's last list, kept in storage, marked "may be out of date".
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off missingPipeableSignature:off
 import {
   BINARY_SNIFF_BYTES,
   type ChangeEntry,
@@ -148,6 +148,33 @@ export type ChangeFileRequest = {
   readonly oldPath?: string;
 };
 
+/** The repos `directory` covers: its own repo, or every repo directly below the Workspace's root, by name. */
+export const coveredRepos = async (files: ChangesFiles, directory: string): Promise<string[]> => {
+  const below = directory.startsWith(`${WORKSPACE_ROOT}/`)
+    ? directory.slice(WORKSPACE_ROOT.length + 1).split("/")[0]
+    : undefined;
+
+  const names =
+    below !== undefined && below !== ""
+      ? [below]
+      : namesOf(await files.readdir(WORKSPACE_ROOT).catch(() => []));
+
+  const repos: string[] = [];
+
+  for (const name of [...names].sort()) {
+    if (!isRepoName(name)) continue;
+
+    try {
+      await files.stat(`${WORKSPACE_ROOT}/${name}/.git`);
+      repos.push(name);
+    } catch {
+      // Not a repo.
+    }
+  }
+
+  return repos;
+};
+
 /** A turn of the event loop, in which the Workspace DO's other calls run. */
 const pause = () =>
   new Promise<void>((resolve) => {
@@ -159,7 +186,7 @@ const pause = () =>
  * synchronously (a path it cannot resolve), and isomorphic-git takes a file system whose `readFile()` throws for a
  * callback one, whose calls never end.
  */
-const settled = (files: ChangesFiles): ChangesFiles => {
+export const settled = (files: ChangesFiles): ChangesFiles => {
   let calls = 0;
   // The pause every call waits for while it lasts: isomorphic-git reads a directory's files at once, so a pause of one
   // read alone would leave the others running and the Workspace DO as busy as before.
@@ -191,7 +218,7 @@ const settled = (files: ChangesFiles): ChangesFiles => {
 };
 
 /** What isomorphic-git reads the files through: `settled` files, with every write refused. */
-const readOnly = (files: ChangesFiles) => {
+export const readOnly = (files: ChangesFiles) => {
   const refuse = (path: string) =>
     Promise.reject(
       Object.assign(new Error(`EROFS: Changes read the files only, ${String(path)}`), {
@@ -216,7 +243,7 @@ const readOnly = (files: ChangesFiles) => {
   };
 };
 
-type Fs = ReturnType<typeof readOnly>;
+export type Fs = ReturnType<typeof readOnly>;
 
 /** The read-only file system isomorphic-git reads `files` through, as the listing does (for the measurements). */
 export const gitFs = (files: ChangesFiles): Fs => readOnly(settled(files));
@@ -227,11 +254,11 @@ const decoder = new TextDecoder();
 const toBytes = (data: string | Uint8Array): Uint8Array =>
   data instanceof Uint8Array ? data : encoder.encode(data);
 
-const toText = (data: string | Uint8Array): string =>
+export const toText = (data: string | Uint8Array): string =>
   data instanceof Uint8Array ? decoder.decode(data) : data;
 
 /** The names `readdir` lists. */
-const namesOf = (entries: ReadonlyArray<string | { readonly name: string }>): string[] =>
+export const namesOf = (entries: ReadonlyArray<string | { readonly name: string }>): string[] =>
   Arr.map(entries, (entry) => (Predicate.isString(entry) ? entry : entry.name));
 
 /** git's blob id of `bytes`. */
@@ -259,10 +286,10 @@ const lineCount = (bytes: Uint8Array): number => {
   return bytes.length > 0 && bytes[bytes.length - 1] !== 10 ? count + 1 : count;
 };
 
-const errorText = (cause: unknown): string =>
+export const errorText = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-const isNotFound = (cause: unknown): boolean =>
+export const isNotFound = (cause: unknown): boolean =>
   Predicate.hasProperty(cause, "code") &&
   (cause.code === "NotFoundError" || cause.code === "ENOENT");
 
@@ -321,32 +348,8 @@ export class WorkspaceChangesModule {
   }
 
   /** The repos `directory` covers: its own repo, or every repo directly below the Workspace's root. */
-  async #repos(directory: string): Promise<string[]> {
-    const files = this.#files();
-
-    const below = directory.startsWith(`${WORKSPACE_ROOT}/`)
-      ? directory.slice(WORKSPACE_ROOT.length + 1).split("/")[0]
-      : undefined;
-
-    const names =
-      below !== undefined && below !== ""
-        ? [below]
-        : namesOf(await files.readdir(WORKSPACE_ROOT).catch(() => []));
-
-    const repos: string[] = [];
-
-    for (const name of [...names].sort()) {
-      if (!isRepoName(name)) continue;
-
-      try {
-        await files.stat(`${WORKSPACE_ROOT}/${name}/.git`);
-        repos.push(name);
-      } catch {
-        // Not a repo.
-      }
-    }
-
-    return repos;
+  #repos(directory: string): Promise<string[]> {
+    return coveredRepos(this.#files(), directory);
   }
 
   /** The Changes of the repos `request` covers, in order of name, at most `maxFiles` across them. */
@@ -821,14 +824,14 @@ class RenameCount {
 }
 
 /** `bytes` as a side: too large, binary, or its text. */
-const sideOf = (bytes: Uint8Array, size: number): ChangeSide => {
+export const sideOf = (bytes: Uint8Array, size: number): ChangeSide => {
   if (size > MAX_CHANGE_SIDE_BYTES) return { kind: "too_large", bytes: size };
 
   return isBinary(bytes) ? { kind: "binary" } : { kind: "text", text: decoder.decode(bytes) };
 };
 
 /** A path inside a repo: relative, with no `.`, `..` or empty segment, and not in `.git`. */
-const isRepoPath = (path: string): boolean => {
+export const isRepoPath = (path: string): boolean => {
   const segments = path.split("/");
 
   return (
@@ -838,7 +841,7 @@ const isRepoPath = (path: string): boolean => {
 };
 
 /** The repo's HEAD: its commit (null before the first) and branch (null when detached). */
-const readHead = async (fs: Fs, dir: string): Promise<RepoHead> => {
+export const readHead = async (fs: Fs, dir: string): Promise<RepoHead> => {
   const commit = await git.resolveRef({ fs, dir, ref: "HEAD" }).catch(() => null);
   const branch = await git.currentBranch({ fs, dir, fullname: false }).catch(() => undefined);
 
@@ -917,7 +920,7 @@ const withRenames = (rows: readonly Row[]): ChangeEntry[] => {
 };
 
 /** What a file entry says, each flag false when it does not apply. */
-type EntryFacts = {
+export type EntryFacts = {
   readonly path: string;
   readonly oldPath: string | undefined;
   readonly status: ChangeStatus;
@@ -929,7 +932,7 @@ type EntryFacts = {
 };
 
 /** The entry `facts` make: an old path and flags only where they apply, as the protocol leaves them out otherwise. */
-const entryOf = (facts: EntryFacts): ChangeEntry => {
+export const entryOf = (facts: EntryFacts): ChangeEntry => {
   const entry: Types.Mutable<ChangeEntry> = {
     path: facts.path,
     status: facts.status,
@@ -949,7 +952,7 @@ const entryOf = (facts: EntryFacts): ChangeEntry => {
 };
 
 /** `entry` with its root `.gitattributes` linguist flags. */
-const withFlags = (entry: ChangeEntry, attributes: RootAttributes): ChangeEntry => {
+export const withFlags = (entry: ChangeEntry, attributes: RootAttributes): ChangeEntry => {
   const flags: LinguistFlags = attributes.linguist(entry.path);
 
   return { ...entry, ...flags };

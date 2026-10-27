@@ -14,6 +14,8 @@ import {
   Catalog,
   ChangeFile,
   CommandOutcome,
+  CompareResult,
+  ComparisonSources,
   EMPTY_VIEW,
   FileMatches,
   HEARTBEAT,
@@ -202,6 +204,25 @@ export interface SessionClient {
   readonly changeFile: (
     query: Omit<Extract<ClientMessage, { type: "change_file" }>, "type" | "id" | "conversationId">,
     conversationId?: number,
+  ) => Effect.Effect<ChangeFile, SessionCommandError>;
+  /**
+   * The repos the Diff pane's picker lists, each with its HEAD (`docs/spec.md` → Diffs and review → Comparisons). It never
+   * starts the Container. Fails as `catalog` does.
+   */
+  readonly comparisonSources: Effect.Effect<ComparisonSources, SessionCommandError>;
+  /**
+   * Compare `repo`'s branch with its base: the Comparison, or why there is none (an answer, not a failure). Only
+   * `startContainer` (the owner's pick or Refresh) may start a stopped Container, and `fetch` (Refresh) fetches the base
+   * again. Fails as `catalog` does.
+   */
+  readonly compare: (query: {
+    readonly repo: string;
+    readonly startContainer?: boolean;
+    readonly fetch?: boolean;
+  }) => Effect.Effect<CompareResult, SessionCommandError>;
+  /** One file of a Comparison, between its merge-base and head. It never starts the Container. Fails as `catalog` does. */
+  readonly comparisonFile: (
+    query: Omit<Extract<ClientMessage, { type: "comparison_file" }>, "type" | "id">,
   ) => Effect.Effect<ChangeFile, SessionCommandError>;
   /**
    * Save draft Annotation `annotation`, new or edited (`docs/spec.md` → Diffs and review → Annotations and Reviews): done
@@ -401,6 +422,10 @@ const decodeOwnerTabLinks = Schema.decodeUnknownOption(OwnerTabLinks);
 const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
 
 const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
+
+const decodeComparisonSources = Schema.decodeUnknownOption(ComparisonSources);
+
+const decodeCompareResult = Schema.decodeUnknownOption(CompareResult);
 
 const SubmitResult = Schema.Struct({ submissionId: Schema.Union([Schema.String, Schema.Finite]) });
 
@@ -1482,6 +1507,24 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
             : { type: "change_file", id, conversationId: conversation(conversationId), ...query },
         decodeChangeFile,
       ),
+    comparisonSources: request(
+      (id) => ({ type: "comparison_sources", id }),
+      decodeComparisonSources,
+    ),
+    compare: ({ repo, startContainer, fetch }) =>
+      request(
+        (id) => ({
+          type: "compare",
+          id,
+          repo,
+          source: "branch",
+          startContainer: startContainer === true,
+          fetch: fetch === true,
+        }),
+        decodeCompareResult,
+      ),
+    comparisonFile: (query) =>
+      request((id) => ({ type: "comparison_file", id, ...query }), decodeChangeFile),
     saveAnnotation: (annotation) =>
       request(
         (id) => ({ type: "annotation_save", id, annotation }),

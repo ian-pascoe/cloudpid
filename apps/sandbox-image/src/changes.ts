@@ -71,13 +71,13 @@ exit 0
 `;
 
 /** The bytes `text` (base64) holds. */
-const bytesOf = (text: string): Uint8Array =>
+export const bytesOf = (text: string): Uint8Array =>
   Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
 
 const decoder = new TextDecoder();
 
 /** The NUL-separated fields of base64 `text`, the trailing empty one dropped. */
-const fieldsOf = (text: string): string[] => {
+export const fieldsOf = (text: string): string[] => {
   const fields = decoder.decode(bytesOf(text)).split("\0");
 
   if (fields.at(-1) === "") fields.pop();
@@ -114,10 +114,10 @@ const rawRecords = (fields: readonly string[]): RawRecord[] => {
   return records;
 };
 
-type Counts = { readonly additions: number | null; readonly deletions: number | null };
+export type Counts = { readonly additions: number | null; readonly deletions: number | null };
 
 /** `git diff --numstat -z`'s counts, in order: `-` for a binary file. A rename's paths follow in fields of their own. */
-const numstatCounts = (fields: readonly string[]): Counts[] => {
+export const numstatCounts = (fields: readonly string[]): Counts[] => {
   const counts: Counts[] = [];
 
   for (let at = 0; at < fields.length;) {
@@ -136,7 +136,7 @@ const numstatCounts = (fields: readonly string[]): Counts[] => {
 };
 
 /** `cat-file --batch-check`'s `<id> <size>` lines; a `<id> missing` line is left out. */
-const blobSizes = (text: string): Map<string, number> => {
+export const blobSizes = (text: string): Map<string, number> => {
   const sizes = new Map<string, number>();
 
   for (const line of decoder.decode(bytesOf(text)).split("\n")) {
@@ -148,7 +148,7 @@ const blobSizes = (text: string): Map<string, number> => {
   return sizes;
 };
 
-const statusOf = (letter: string): ContainerChange["status"] => {
+export const statusOf = (letter: string): ContainerChange["status"] => {
   switch (letter) {
     case "A":
       return "added";

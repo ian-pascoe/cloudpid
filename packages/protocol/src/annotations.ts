@@ -4,6 +4,7 @@
 // Changes (the repo and the HEAD it was written against, checked again as the files change).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over an Annotation's fields.
 import * as Schema from "effect/Schema";
+import { MAX_COMPARISON_BRANCH } from "./comparison.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { WORKSPACE_ROOT } from "./repo.ts";
 
@@ -57,8 +58,24 @@ export const ChangesSource = Schema.Struct({
 
 export type ChangesSource = typeof ChangesSource.Type;
 
+/**
+ * An Annotation on a repo's This branch Comparison: the repo, the branch's name (null when HEAD was detached), the base
+ * it was compared with, and the merge-base and head SHAs it was written against. A new head moves the drafts that still
+ * hold to the new pair.
+ */
+export const BranchSource = Schema.Struct({
+  kind: Schema.Literal("branch"),
+  repo: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  branch: Schema.NullOr(Schema.String.check(Schema.isMaxLength(MAX_COMPARISON_BRANCH))),
+  base: Schema.String.check(Schema.isMaxLength(MAX_COMPARISON_BRANCH)),
+  mergeBase: Schema.String.check(Schema.isMaxLength(64)),
+  head: Schema.String.check(Schema.isMaxLength(64)),
+});
+
+export type BranchSource = typeof BranchSource.Type;
+
 /** Where an Annotation was drawn. */
-export const AnnotationSource = Schema.Union([CallDiffSource, ChangesSource]);
+export const AnnotationSource = Schema.Union([CallDiffSource, ChangesSource, BranchSource]);
 
 export type AnnotationSource = typeof AnnotationSource.Type;
 
@@ -171,11 +188,14 @@ export const cutQuote = (lines: readonly string[], more = 0, clipped = false): Q
   return isClipped ? { quote: kept, more: left, clipped: true } : { quote: kept, more: left };
 };
 
-/** The absolute path of an Annotation's file: a Call diff's as recorded, a changed file's in its repo's clone. */
+/**
+ * The absolute path of an Annotation's file: a Call diff's as recorded, a changed file's (in the Changes or a
+ * Comparison) in its repo's clone.
+ */
 export const annotationPath = (annotation: Pick<AnnotationDraft, "source" | "path">): string =>
-  annotation.source.kind === "changes"
-    ? `${WORKSPACE_ROOT}/${annotation.source.repo}/${annotation.path}`
-    : annotation.path;
+  annotation.source.kind === "call"
+    ? annotation.path
+    : `${WORKSPACE_ROOT}/${annotation.source.repo}/${annotation.path}`;
 
 /**
  * `path` resolved against directory `cwd`, as a tool resolves the path the model gives it: an absolute path as it is,
@@ -203,11 +223,22 @@ export const rangeLabel = (annotation: Pick<AnnotationDraft, "start" | "end">): 
     ? String(annotation.start)
     : `${annotation.start}–${annotation.end}`;
 
-/** Whether two sources are the same diff: the same call (and nested call), or the same repo's Changes. */
-export const sameSource = (a: AnnotationSource, b: AnnotationSource): boolean =>
-  a.kind === "call"
-    ? b.kind === "call" &&
-      a.conversationId === b.conversationId &&
-      a.callId === b.callId &&
-      a.nested === b.nested
-    : b.kind === "changes" && a.repo === b.repo;
+/**
+ * Whether two sources are the same diff: the same call (and nested call), the same repo's Changes, or the same repo's
+ * This branch (whatever pair of commits it was written against).
+ */
+export const sameSource = (a: AnnotationSource, b: AnnotationSource): boolean => {
+  switch (a.kind) {
+    case "call":
+      return (
+        b.kind === "call" &&
+        a.conversationId === b.conversationId &&
+        a.callId === b.callId &&
+        a.nested === b.nested
+      );
+    case "changes":
+      return b.kind === "changes" && a.repo === b.repo;
+    case "branch":
+      return b.kind === "branch" && a.repo === b.repo;
+  }
+};

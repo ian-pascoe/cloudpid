@@ -14,7 +14,7 @@ import * as Atom from "effect/reactivity/Atom";
 import { diffDrafts } from "../review/drafts.ts";
 import { editorAtom, type EditorState } from "../review/editor.ts";
 import { appRuntime } from "../runtime.ts";
-import { annotationsAtom, changesAtom, sessionClientAtom } from "../session/atoms.ts";
+import { annotationsAtom, sessionClientAtom } from "../session/atoms.ts";
 import {
   type Annotated,
   type AnnotatedItem,
@@ -83,7 +83,7 @@ export interface ViewAtoms {
 
 /** The atoms of the scroll of `pane`. */
 export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
-  const { changes, files, folded } = pane;
+  const { changes, files, folded, list } = pane;
 
   const held = appRuntime.atom((get) =>
     Effect.gen(function* () {
@@ -103,6 +103,7 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
       const loader = yield* fileLoader({
         // From the Workspace whose Changes the Pane shows.
         changeFile: (query) => client.changeFile(query, changes.conversationId),
+        comparisonFile: client.comparisonFile,
         lineUp: lineUp.lineUp,
       });
 
@@ -151,7 +152,7 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
 
     if (at === null) return [];
 
-    const listing = get(changesAtom(changes))?.listing ?? 0;
+    const { listing } = get(list);
     const shut = get(folded);
     const byId = new Map(get(files).map((file) => [file.id, file]));
 
@@ -176,7 +177,7 @@ export const viewAtomsOf = (pane: PaneAtoms): ViewAtoms => {
 
   const annotatedById = Atom.make((get): Annotated => {
     const drafts = get(annotationsAtom(changes.sessionId));
-    const repos = get(changesAtom(changes))?.repos ?? [];
+    const { repos } = get(list);
     const open = get(editor);
     const byId = new Map(get(files).map((file) => [file.id, file]));
 

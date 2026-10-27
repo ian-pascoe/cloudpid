@@ -4,18 +4,11 @@
 // tests write the working tree from the same generator.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off processEnv:off
 import { execFileSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import type { TestProject } from "vitest/node";
+import { collect } from "./changes.collect.ts";
 import {
   BENCH_SIZES,
   benchEdit,
@@ -37,27 +30,6 @@ const env = {
 };
 
 type Content = string | Uint8Array;
-
-/** Every file below `root` (`.git` included), but those `skip` names, base64. */
-const collect = (root: string, skip: (path: string) => boolean): RepoFiles => {
-  const files: Record<string, string> = {};
-
-  const walk = (directory: string) => {
-    for (const name of readdirSync(directory)) {
-      const full = join(directory, name);
-      const path = relative(root, full);
-
-      if (skip(path)) continue;
-
-      if (statSync(full).isDirectory()) walk(full);
-      else files[path] = readFileSync(full).toString("base64");
-    }
-  };
-
-  walk(root);
-
-  return files;
-};
 
 /**
  * A repo real git made: `head` committed on `main` (and packed), then the working tree changed by `change`. What is

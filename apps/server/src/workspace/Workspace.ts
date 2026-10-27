@@ -3,7 +3,7 @@
 // object schedules itself (ADR-0004; `durable_object` scheduling). It is a plain class rather than an alchemy
 // Effect DO: computer reaches it through `__getWorkspaceStub()` with raw Workers RPC (its Worker Shell calls back into
 // it through `WorkspaceServiceProxy`), which alchemy's Effect bridge would wrap in its own envelopes.
-// @effect-diagnostics asyncFunction:off globalDate:off globalConsole:off cryptoRandomUUID:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off globalDate:off globalConsole:off cryptoRandomUUID:off preferEffectArray:off globalFetch:off
 import {
   noopObserver,
   Workspace as ComputerWorkspace,
@@ -37,7 +37,13 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import type { PromptTemplate } from "@cloudpid/extensions/prompt-templates";
 import type { InstructionFile } from "@cloudpid/extensions/agents-md-discovery";
-import type { ChangeFile, ContainerUsage, WorkspaceChanges } from "@cloudpid/protocol";
+import type {
+  ChangeFile,
+  CompareResult,
+  ComparisonSources,
+  ContainerUsage,
+  WorkspaceChanges,
+} from "@cloudpid/protocol";
 import { currentInstanceName, type InstanceType, type StoredInstanceType } from "@cloudpid/config";
 import type { ContainerResizeOutcome } from "@cloudpid/extensions/container";
 import { DurableObject } from "cloudflare:workers";
@@ -53,6 +59,11 @@ import {
   type KeptChanges,
   WorkspaceChangesModule,
 } from "./changes.ts";
+import {
+  type CompareRequest,
+  type ComparisonFileRequest,
+  WorkspaceComparisonModule,
+} from "./comparison.ts";
 import { IdleStop } from "./idle.ts";
 import { containerAnalytics, workspaceLabels } from "./container-analytics.ts";
 import { ContainerUsageLedger, type StoredUsageRecord } from "./container-usage.ts";
@@ -215,6 +226,8 @@ export class Workspace extends ContainerHost {
   readonly #sql: SqlStorage;
   /** The Changes of the Workspace's repos (`changes`, `changeFile`). */
   readonly #changes: WorkspaceChangesModule;
+  /** This branch of the Workspace's repos (`comparisonSources`, `compare`, `comparisonFile`). */
+  readonly #comparison: WorkspaceComparisonModule;
   /** What the Workspace had at the skills' mount before it was mounted, dealt with once (`#ready`). */
   #mountChecked: Promise<void> | undefined;
 
@@ -549,6 +562,40 @@ export class Workspace extends ContainerHost {
       },
       warn: (message) => console.warn(message),
     });
+
+    // This branch: the Container's git makes the Comparison (only a call that may start it does), the list is kept by
+    // (merge-base, head), and a file's contents are read here (ADR-0022).
+    this.#comparison = new WorkspaceComparisonModule({
+      files: () => this.#workspace.provider(),
+      running: () => this.containerRunning(),
+      run: (script) => this.runContainerScript(script),
+      store: {
+        get: async (key) => ctx.storage.kv.get(key),
+        put: async (key, value) => ctx.storage.kv.put(key, value),
+        delete: async (key) => {
+          ctx.storage.kv.delete(key);
+        },
+      },
+      fetch: (url, init) => this.githubFetch(url, init),
+      token: () => env.CLOUDPID_GITHUB_TOKEN,
+      redact,
+      warn: (message) => console.warn(message),
+    });
+  }
+
+  /** Whether the Container runs now. A test Worker replaces it. */
+  protected containerRunning(): boolean {
+    return this.ctx.container?.running === true;
+  }
+
+  /** Run `script` on the Container, starting it if it is stopped. A test Worker replaces it. */
+  protected runContainerScript(script: string): Promise<ContainerScriptRun> {
+    return this.#runOnContainer(script, {});
+  }
+
+  /** GitHub's REST API (the base of a branch's pull request). A test Worker replaces it. */
+  protected githubFetch(url: string, init: RequestInit): Promise<Response> {
+    return fetch(url, init);
   }
 
   /**
@@ -1046,6 +1093,36 @@ export class Workspace extends ContainerHost {
     await this.#ready();
 
     return this.#changes.file(request);
+  }
+
+  /**
+   * The picker's repos (docs/spec.md → Diffs and review → Comparisons): the repos `directory` covers, the Session's own
+   * first, each with its HEAD. It never starts the Container.
+   */
+  async comparisonSources(directory: string): Promise<ComparisonSources> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#comparison.sources(directory);
+  }
+
+  /**
+   * The Comparison of `request.repo`'s branch, or why there is none: made by the Container's git, which only a request
+   * with `startContainer` starts; kept by (merge-base, head), so one for the HEAD it was made for needs no Container.
+   */
+  async compare(request: CompareRequest): Promise<CompareResult> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#comparison.compare(request);
+  }
+
+  /** One file's two sides of a Comparison. It never starts the Container. */
+  async comparisonFile(request: ComparisonFileRequest): Promise<ChangeFile> {
+    this.#spare.noteUse();
+    await this.#ready();
+
+    return this.#comparison.file(request);
   }
 
   /** computer's Workspace RPC, for `getWorkspace()`: the caller disposes the stub. */

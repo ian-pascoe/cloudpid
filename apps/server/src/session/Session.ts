@@ -77,6 +77,7 @@ import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import { annotationsMessage, send, SessionSockets, sessionSocketsLayer } from "./sockets.ts";
 import { AnnotationStore, annotationStoreLayer } from "./annotations.ts";
 import { changesRefreshingTools, SessionChanges, sessionChangesLayer } from "./changes.ts";
+import { sessionComparisonsLayer } from "./comparisons.ts";
 import { annotationsPruningTools, SessionReviews, sessionReviewsLayer } from "./reviews.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
 import { onIdle, wakeAt } from "./wake.ts";
@@ -518,6 +519,35 @@ export const SessionLive = Session.make(
           }),
         });
 
+        // This branch's Comparisons, in the directory the Session works in: asked of the Workspace, which starts its
+        // Container only for a request that says so (the owner's pick or Refresh).
+        const sessionComparisons = sessionComparisonsLayer({
+          // @effect-diagnostics-next-line asyncFunction:off
+          sources: async () => {
+            const { workspace: id, object, directory } = await placement();
+
+            if (id === null) return null;
+
+            return workspaces.getByName(object).comparisonSources(directory);
+          },
+          // @effect-diagnostics-next-line asyncFunction:off
+          compare: async (query) => {
+            const { workspace: id, object } = await placement();
+
+            if (id === null) throw new Error("This Session has no Workspace");
+
+            return workspaces.getByName(object).compare(query);
+          },
+          // @effect-diagnostics-next-line asyncFunction:off
+          file: async (query) => {
+            const { workspace: id, object } = await placement();
+
+            if (id === null) throw new Error("This Session has no Workspace");
+
+            return workspaces.getByName(object).comparisonFile(query);
+          },
+        });
+
         // The Browser Handoffs waiting for the owner: kept here, shown on the sockets, and pushed (with no Live View link).
         const sessionBrowserHandoffs = sessionBrowserHandoffsLayer({
           host: browser,
@@ -655,6 +685,7 @@ export const SessionLive = Session.make(
             ),
             Layer.provideMerge(sessionSecrets),
             Layer.provideMerge(sessionChanges),
+            Layer.provideMerge(sessionComparisons),
             Layer.provideMerge(sessionAnnotations),
             Layer.provideMerge(sessionApprovals),
             Layer.provideMerge(sessionBrowserHandoffs),

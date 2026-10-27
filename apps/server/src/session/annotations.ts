@@ -72,12 +72,18 @@ export type AnnotationStoreOptions = {
   readonly announce: (drafts: ReadonlyArray<Annotation>) => Effect.Effect<void>;
 };
 
-/** Whether a check found what the draft already says: the same range, mark and HEAD. */
+/** Whether a check found what the draft already says: the same range, mark, and HEAD (or pair of commits). */
 const sameFinding = (a: Annotation, b: Annotation) =>
   a.start === b.start &&
   a.end === b.end &&
   a.status === b.status &&
-  (a.source.kind !== "changes" || b.source.kind !== "changes" || a.source.head === b.source.head);
+  (a.source.kind !== "changes" || b.source.kind !== "changes" || a.source.head === b.source.head) &&
+  (a.source.kind !== "branch" ||
+    b.source.kind !== "branch" ||
+    (a.source.head === b.source.head &&
+      a.source.mergeBase === b.source.mergeBase &&
+      a.source.base === b.source.base &&
+      a.source.branch === b.source.branch));
 
 /** Whether two drafts cover the same lines of the same file. */
 const sameRange = (a: Annotation, b: AnnotationDraft) =>

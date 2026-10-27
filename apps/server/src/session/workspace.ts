@@ -41,6 +41,9 @@ export type WorkspaceNamespace = {
       | "containerUsage"
       | "changes"
       | "changeFile"
+      | "comparisonSources"
+      | "compare"
+      | "comparisonFile"
       | "stopContainer"
       | "resizeContainer"
     >;

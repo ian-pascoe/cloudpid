@@ -61,6 +61,10 @@ export interface LoaderServices {
   readonly changeFile: (
     query: ChangeFileQuery,
   ) => Effect.Effect<ChangeFile, { readonly message: string }>;
+  /** A file of a Comparison (This branch), between its merge-base and head. */
+  readonly comparisonFile: (
+    query: ChangeFileQuery & { readonly mergeBase: string; readonly head: string },
+  ) => Effect.Effect<ChangeFile, { readonly message: string }>;
   readonly lineUp: (request: LineUpRequest) => Effect.Effect<LineUp, { readonly message: string }>;
 }
 
@@ -109,7 +113,7 @@ const contentsOf = (
         oldText: old.text,
         newText: now.text,
         patch,
-        cacheKey: `${file.id}@${wanted.listing}`,
+        cacheKey: `${file.id}@${wanted.listing}@${file.signature}`,
       });
 
       return diff === undefined
@@ -170,7 +174,14 @@ export const fileLoader = (
 
       return Effect.gen(function* () {
         const before = (yield* SubscriptionRef.get(loads)).loaded.get(file.id)?.contents;
-        const answer = yield* services.changeFile(query);
+
+        const answer = yield* file.branch === undefined
+          ? services.changeFile(query)
+          : services.comparisonFile({
+              ...query,
+              mergeBase: file.branch.mergeBase,
+              head: file.branch.head,
+            });
 
         return yield* contentsOf(services, want, answer, before);
       }).pipe(

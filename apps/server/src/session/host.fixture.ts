@@ -43,6 +43,8 @@ import type {
   AnnotationDraft,
   Catalog,
   CommandOutcome,
+  CompareResult,
+  Comparison,
   ConversationId,
   FileMatches,
   HistoryPage,
@@ -130,6 +132,12 @@ import {
   sessionChangesLayer,
   type SessionChangesService,
 } from "./changes.ts";
+import {
+  type CompareQuery,
+  type ComparisonsSource,
+  SessionComparisons,
+  sessionComparisonsLayer,
+} from "./comparisons.ts";
 import type { PushEvent } from "../push/notification.ts";
 import { ReportError, SessionRegistry, type SessionStatus } from "./status.ts";
 
@@ -159,6 +167,17 @@ export type ChangesFixture = {
   readonly fails?: boolean;
   readonly started?: boolean;
   /** Each file's working text, by `repo/path`; one not named reads as its own name. */
+  readonly files?: Readonly<Record<string, string>>;
+};
+
+const COMPARISON_FIXTURE_KEY = "test:comparison";
+const COMPARE_CALLS_KEY = "test:compare-calls";
+
+/** The Comparisons a test Session's Workspace makes (`setComparison`). */
+export type ComparisonFixture = {
+  /** What `compare` answers for each repo. */
+  readonly results: Readonly<Record<string, CompareResult>>;
+  /** Each file's text on the head, by `repo/path`; one not named reads as its own name. */
   readonly files?: Readonly<Record<string, string>>;
 };
 
@@ -525,6 +544,7 @@ export class TestSession extends DurableObject {
     | SessionHost
     | SessionSockets
     | SessionChanges
+    | SessionComparisons
     | Harness
     | Secrets
     | AnnotationStore
@@ -687,6 +707,7 @@ export class TestSession extends DurableObject {
               { debounceMs: CHANGES_TEST_DEBOUNCE_MS },
             ),
           ),
+          Layer.provideMerge(sessionComparisonsLayer(this.#comparisonsSource())),
           Layer.provideMerge(
             annotationStoreLayer({
               storage: ctx.storage.kv,
@@ -796,6 +817,49 @@ export class TestSession extends DurableObject {
         return { old: null, new: { kind: "text", text } };
       },
     };
+  }
+
+  /** The Comparisons as the test set them (`setComparison`); each `compare` is recorded. */
+  #comparisonsSource(): ComparisonsSource {
+    const kv = this.ctx.storage.kv;
+
+    return {
+      sources: async () => ({
+        repos: Object.keys(kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.results ?? {}).map(
+          (repo) => ({ repo, head: { commit: null, branch: null } }),
+        ),
+      }),
+      compare: async (query) => {
+        kv.put(COMPARE_CALLS_KEY, [...(kv.get<unknown[]>(COMPARE_CALLS_KEY) ?? []), query]);
+
+        const result = kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.results[query.repo];
+
+        if (result === undefined) throw new Error("No such repo");
+
+        return result;
+      },
+      file: async (query) => {
+        const key = `${query.repo}/${query.path}`;
+        const text = kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.files?.[key] ?? `${key}\n`;
+
+        return { old: null, new: { kind: "text", text } };
+      },
+    };
+  }
+
+  /** What the Session's Workspace compares from now on. */
+  setComparison(fixture: ComparisonFixture): void {
+    this.ctx.storage.kv.put(COMPARISON_FIXTURE_KEY, fixture);
+  }
+
+  /** Each `compare` so far. */
+  compareCalls(): ReadonlyArray<CompareQuery> {
+    return this.ctx.storage.kv.get<CompareQuery[]>(COMPARE_CALLS_KEY) ?? [];
+  }
+
+  /** A Comparison was made for a client: the drafts on its branch are checked, as the sockets do. */
+  compared(comparison: Comparison): Promise<void> {
+    return Effect.runPromise(this.#reviews.compared(comparison));
   }
 
   /** What the Session's Workspace lists as its Changes from now on. */

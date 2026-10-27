@@ -24,16 +24,22 @@ const filesOf = (entries: readonly ChangeEntry[]): readonly PaneFile[] =>
 const wanted = (files: readonly PaneFile[], listing = 1, inView = false): WantedFile[] =>
   files.map((file) => ({ file, signature: file.signature, listing, inView }));
 
-/** A Session whose `change_file` answers each ask when the test says, recording the asks. */
+/** A Session whose `change_file` and `comparison_file` answer each ask when the test says, recording the asks. */
 const fakeSession = () => {
-  const asks: { readonly path: string; readonly answer: Deferred.Deferred<ChangeFile> }[] = [];
+  const asks: {
+    readonly path: string;
+    /** The merge-base and head a Comparison's file was asked at; null for a Changes file. */
+    readonly pair: string | null;
+    readonly answer: Deferred.Deferred<ChangeFile>;
+  }[] = [];
+
   const interrupted: string[] = [];
 
-  const changeFile = (query: ChangeFileQuery) =>
+  const ask = (query: ChangeFileQuery, pair: string | null) =>
     Effect.suspend(() => {
       const answer = Deferred.makeUnsafe<ChangeFile>();
 
-      asks.push({ path: query.path, answer });
+      asks.push({ path: query.path, pair, answer });
 
       return Deferred.await(answer).pipe(
         Effect.onInterrupt(() =>
@@ -44,23 +50,75 @@ const fakeSession = () => {
       );
     });
 
+  const changeFile = (query: ChangeFileQuery) => ask(query, null);
+
+  const comparisonFile = (query: ChangeFileQuery & { mergeBase: string; head: string }) =>
+    ask(query, `${query.mergeBase}..${query.head}`);
+
   const answer = (path: string, oldText: string, newText: string) =>
     Deferred.succeed(asks.findLast((ask) => ask.path === path)!.answer, {
       old: { kind: "text", text: oldText },
       new: { kind: "text", text: newText },
     });
 
-  return { asks, interrupted, changeFile, answer };
+  return { asks, interrupted, changeFile, comparisonFile, answer };
 };
 
 const services = (session: ReturnType<typeof fakeSession>) => ({
   changeFile: session.changeFile,
+  comparisonFile: session.comparisonFile,
   lineUp: (request: Parameters<typeof lineUp>[0]) => Effect.sync(() => lineUp(request)),
 });
 
 const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 20 }));
 
 describe("the Diff pane's loader", () => {
+  it.effect(
+    "asks for a Comparison's file between its merge-base and head, and again for a new head",
+    () =>
+      Effect.gen(function* () {
+        const session = fakeSession();
+        const loader = yield* fileLoader(services(session));
+        const entries = [entry("a.ts")];
+
+        const repos = (head: string) => [
+          {
+            repo: "web",
+            head: { commit: head, branch: "feat" },
+            files: entries,
+            more: 0,
+            stale: false,
+          },
+        ];
+
+        const branch = (head: string) =>
+          paneFilesOf(repos(head), {
+            kind: "branch",
+            repo: "web",
+            branch: "feat",
+            base: "main",
+            mergeBase: "mb",
+            head,
+          });
+
+        yield* loader.want(wanted(branch("h1")));
+        yield* settle;
+        expect(session.asks.map((ask) => ask.pair)).toEqual(["mb..h1"]);
+
+        yield* session.answer("a.ts", "x\n", "y\n");
+        yield* settle;
+
+        // The same pair is not asked for again, in view or not (a Comparison has one listing); a new head is, whatever the counts say.
+        yield* loader.want(wanted(branch("h1"), 1, true));
+        yield* settle;
+        expect(session.asks).toHaveLength(1);
+
+        yield* loader.want(wanted(branch("h2")));
+        yield* settle;
+        expect(session.asks.map((ask) => ask.pair)).toEqual(["mb..h1", "mb..h2"]);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("loads at most 4 files at once, the first wanted first, and the next as one ends", () =>
     Effect.gen(function* () {
       const session = fakeSession();
