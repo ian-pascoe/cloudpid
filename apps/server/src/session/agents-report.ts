@@ -64,8 +64,9 @@ export class AgentsReport {
   }
 
   /**
-   * Write now what is due, without waiting for the interval, and say whether the Registry has the agents as they were
-   * then read. Never rejects.
+   * Read the agents now and write them if they differ from what the Registry was last given, without waiting for the
+   * interval, and say whether the Registry has them as they were then read. It reads whether or not a change was
+   * noticed: the task graph's watch tells of one asynchronously, so a stop can settle before it did. Never rejects.
    */
   async settle(): Promise<boolean> {
     while (this.#running !== undefined) await this.#running;
@@ -77,7 +78,7 @@ export class AgentsReport {
       this.#timer = undefined;
     }
 
-    return this.#due ? this.#start() : true;
+    return this.#start();
   }
 
   /** Write nothing more: the Harness is closing. */

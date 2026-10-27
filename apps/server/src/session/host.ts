@@ -869,7 +869,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     },
   });
 
-  /** Write the subagents now if they are due, and say whether the Registry has them. */
+  /** Read the subagents now, write them if the Registry has them otherwise, and say whether it has them. */
   const settleAgents = Effect.promise(() => agentsReport.settle());
 
   /** The alarm once no work is live: deleted, unless the object must wake later anyway. */

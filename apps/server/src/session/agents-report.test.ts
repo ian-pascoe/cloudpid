@@ -127,6 +127,23 @@ describe("the agents report", () => {
     expect(writes).toHaveLength(2);
   });
 
+  it("writes a change no one announced when settled, and only once", async () => {
+    const state = { agents: [agent("agent-1", "working")] };
+    const { report, writes } = reporting(state);
+
+    expect(await report.settle()).toBe(true);
+    // A stop ends the agent before the task graph's watch says `changed`: settling reads it anyway.
+    state.agents = [agent("agent-1", "idle")];
+    expect(await report.settle()).toBe(true);
+    expect(await report.settle()).toBe(true);
+    expect(writes).toEqual([[agent("agent-1", "working")], [agent("agent-1", "idle")]]);
+
+    // The watch's late `changed` finds nothing new to write.
+    report.changed();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(writes).toHaveLength(2);
+  });
+
   it("logs a write that fails and writes it again when retried or settled", async () => {
     const state: Fixture = { agents: [agent("agent-1", "working")], failing: true };
 
