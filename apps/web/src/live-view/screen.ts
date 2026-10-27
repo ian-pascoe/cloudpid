@@ -15,8 +15,11 @@
 // `viewport.ts`); every effect runs in the Live View's scope (`LiveView.run`), and every timer in one `TimerGroup`, so
 // none outlives the Pane.
 
+import type { PageCrop, PageRect as ViewportRect } from "@cloudpid/protocol";
+import type * as Schema from "effect/Schema";
 import type { Point } from "./cdp.ts";
-import type { LiveView } from "./connection.ts";
+import type { CdpParams } from "./cdp-socket.ts";
+import type { FrameMetadata, LiveView } from "./connection.ts";
 import { EditMenuController } from "./edit-menu-controller.ts";
 import {
   EMPTY_FIELD_MAP,
@@ -28,7 +31,7 @@ import {
   type Field,
   type FieldMap,
 } from "./field-map.ts";
-import { FrameView } from "./frame-view.ts";
+import { FrameView, type PageRect } from "./frame-view.ts";
 import type { Gesture } from "./input.ts";
 import { Keyboard } from "./keyboard.ts";
 import { KeysController } from "./keys-controller.ts";
@@ -52,6 +55,35 @@ const RESIZE_DEBOUNCE_MS = 150;
 
 /** How long after a long-press selection ends the edit menu is asked for, in ms: the tab's release lands first. */
 const AFTER_SELECT_MS = 200;
+
+/**
+ * The screen as what is drawn over it reads it (the Browser Pane's Annotate mode and pins): points and rects between the
+ * screen and the tab, the last frame, and the tab shown, over the Live View's own connection.
+ */
+export interface ScreenPage {
+  /** Where a point on the screen is in the tab's viewport. */
+  readonly toPage: (clientX: number, clientY: number) => Point;
+  /** A rect of the tab's viewport, in the screen wrapper's coordinates. */
+  readonly overlayRect: (rect: ViewportRect) => PageRect;
+  /** What the last frame said of the tab. */
+  readonly metadata: () => FrameMetadata | undefined;
+  /** A crop of `rect` of the viewport from the last frame drawn. */
+  readonly crop: (rect: ViewportRect) => PageCrop | undefined;
+  /** Hear the tab scroll or resize; returns how to stop. */
+  readonly moved: (listener: () => void) => () => void;
+  /** Hear the frame drawn again or sized anew; returns how to stop. */
+  readonly painted: (listener: () => void) => () => void;
+  /** Send the wheel to the tab, as over the frame. */
+  readonly wheel: (event: WheelEvent) => void;
+  /** Call `method` on the tab shown: undefined when it failed, or the Live View closed first. */
+  readonly call: <A>(
+    method: string,
+    params: CdpParams,
+    schema: Schema.Decoder<A>,
+  ) => Promise<A | undefined>;
+  /** Evaluate `expression` in the tab shown: undefined when it failed, or the Live View closed first. */
+  readonly evaluate: <A>(expression: string, schema: Schema.Decoder<A>) => Promise<A | undefined>;
+}
 
 /** A value the screen reads and follows: an atom, through the Pane's registry. */
 export interface Followed<A> {
@@ -78,6 +110,11 @@ export class LiveViewScreen {
   /** The field a tap that landed on a native picker was for: opened locally once the tap ends. */
   private pickerHit: Field | undefined;
   private disposed = false;
+  private readonly movedListeners = new Set<() => void>();
+  private readonly paintedListeners = new Set<() => void>();
+
+  /** The screen as what is drawn over it reads it. */
+  readonly page: ScreenPage;
 
   constructor(
     private readonly elements: ScreenElements,
@@ -100,12 +137,21 @@ export class LiveViewScreen {
       this.map.schedule();
     };
 
-    this.frame = new FrameView(elements.canvas, elements.container, () => {
-      changed();
-      // A local picker or the menu no longer covers its element once the tab scrolls.
-      this.pickers.close();
-      this.menu.hide();
-    });
+    this.frame = new FrameView(
+      elements.canvas,
+      elements.container,
+      () => {
+        changed();
+        // A local picker or the menu no longer covers its element once the tab scrolls.
+        this.pickers.close();
+        this.menu.hide();
+
+        for (const listener of Array.from(this.movedListeners)) listener();
+      },
+      () => {
+        for (const listener of Array.from(this.paintedListeners)) listener();
+      },
+    );
     this.menu = new EditMenuController(
       elements.menu,
       elements.pasteBox,
@@ -167,6 +213,37 @@ export class LiveViewScreen {
       changed,
       listeners,
     );
+
+    const hear = (set: Set<() => void>) => (listener: () => void) => {
+      set.add(listener);
+
+      return () => {
+        set.delete(listener);
+      };
+    };
+
+    this.page = {
+      toPage: (clientX, clientY) => this.frame.toPage(clientX, clientY),
+      overlayRect: (rect) =>
+        this.frame.overlayRect({ x: rect.x, y: rect.y, w: rect.width, h: rect.height }),
+      metadata: () => this.frame.metadata(),
+      crop: (rect) => this.frame.crop(rect),
+      moved: hear(this.movedListeners),
+      painted: hear(this.paintedListeners),
+      wheel: (event) => {
+        this.pointer.wheel(event);
+      },
+      call: (method, params, schema) =>
+        view.run(view.call(method, params, schema)).then(
+          (value) => value,
+          () => undefined,
+        ),
+      evaluate: (expression, schema) => this.tab.evaluate(expression, schema),
+    };
+    listeners.add(() => {
+      this.movedListeners.clear();
+      this.paintedListeners.clear();
+    });
 
     listeners.add(view.frames((frame) => this.frame.show(frame)));
     listeners.add(

@@ -26,7 +26,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Socket from "effect/socket/Socket";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { CdpCommand } from "./cdp.ts";
-import { LiveViewError, openPage, type CdpPage } from "./cdp-socket.ts";
+import { LiveViewError, openPage, type CdpPage, type CdpParams } from "./cdp-socket.ts";
 import { coalesced } from "./coalesced.ts";
 import type { DeviceMetrics, ScreencastSize } from "./viewport.ts";
 import { selectWindow, stripOf, windowClosed, type WindowStrip } from "./windows.ts";
@@ -152,6 +152,15 @@ export interface LiveView {
   /** Evaluate `expression` in the page shown, its value read by `schema`. */
   readonly evaluate: <A>(
     expression: string,
+    schema: Schema.Decoder<A>,
+  ) => Effect.Effect<A, LiveViewError>;
+  /**
+   * Call `method` on the page shown, over this Live View's own connection to it, its answer read by `schema` (the Browser
+   * Pane's Annotate mode asks what is under the pointer).
+   */
+  readonly call: <A>(
+    method: string,
+    params: CdpParams,
     schema: Schema.Decoder<A>,
   ) => Effect.Effect<A, LiveViewError>;
   /** Show the tab or one of its windows (the strip's buttons). */
@@ -589,6 +598,12 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
             ),
           );
       }),
+    call: (method, params, schema) =>
+      Effect.suspend(() =>
+        shown === null
+          ? Effect.fail(LiveViewError.make({ message: "The Live View is not connected." }))
+          : shown.call(method, params, schema),
+      ),
     show: (targetId) =>
       lock.withPermits(1)(
         Effect.gen(function* () {

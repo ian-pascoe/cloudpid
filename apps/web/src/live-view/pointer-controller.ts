@@ -74,12 +74,17 @@ export class PointerController {
       canvas,
       "wheel",
       (event) => {
-        event.preventDefault();
-        this.host.touched(false);
-        this.host.send(this.input.wheel(this.wheelSample(event), event.deltaX, event.deltaY));
+        this.wheel(event);
       },
       { passive: false },
     );
+  }
+
+  /** Send the wheel to the tab, as the mouse where it is: the frame's, or one over it (Annotate mode's). */
+  wheel(event: WheelEvent): void {
+    event.preventDefault();
+    this.host.touched(false);
+    this.host.send(this.input.wheel(this.wheelSample(event), event.deltaX, event.deltaY));
   }
 
   /** The Desktop layout went on or off: back to the frame fitted inside the Pane. */
