@@ -26,6 +26,7 @@ import {
   secretNameProblem,
   secretValueProblem,
   type SessionRecord,
+  SkillChangeValue,
 } from "@cloudpid/protocol";
 import {
   DEFAULT_CONTAINER_SETTINGS,
@@ -45,6 +46,7 @@ import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { relativeTime } from "./format.ts";
 
 /** An Environment's Sessions, newest first. */
@@ -326,13 +328,7 @@ export const buildLine = (build: BuildView, now: number): string => {
  * hash } }`); undefined for any other value.
  */
 const skillFilesOf = (value: AgentChange["before"]): readonly string[] | undefined =>
-  Predicate.isObject(value) &&
-  !Arr.isArray(value) &&
-  Predicate.isObject(value.files) &&
-  !Arr.isArray(value.files) &&
-  Record.keys(value).length === 1
-    ? Record.keys(value.files).toSorted()
-    : undefined;
+  Schema.is(SkillChangeValue)(value) ? Record.keys(value.files).toSorted() : undefined;
 
 /**
  * A value an Agent change shows, in full: a Skill's as its files' paths, a variable's, a script's or the Toolchains' as written, a list of paths a line

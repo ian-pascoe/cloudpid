@@ -292,6 +292,9 @@ export const sessionEnvironments = ({
           case "missing":
             return saved;
           case "unchanged":
+            // Nothing changed, but the Session's Workspace may not have taken the set when it was saved.
+            yield* handSkillsIfOwn(environment);
+
             return {
               status: "unchanged",
               environment: changedEnvironment(saved.environment),

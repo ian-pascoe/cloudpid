@@ -1282,8 +1282,8 @@ const RemoveSkillDialog = ({ id, name }: { id: string; name: string }) => {
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
       <p className="text-sm">
-        Its workspaces stop serving it at their next readying, and a bundled skill of the same name
-        is served again. Sessions already running keep it in their skills list until their next
+        Its workspaces stop serving it at their next readying, and the bundle's skill of the same
+        name is served again. Sessions already running keep it in their skills list until their next
         context window.
       </p>
       <DialogProblem problem={settledFailureOf(removed)} />
@@ -1325,7 +1325,7 @@ const SkillsSection = ({ id }: { id: string }) => {
         <p className="text-xs text-muted-foreground">{loadError ?? "Loading…"}</p>
       ) : skills.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          None of its own: its workspaces serve the bundled skills. The agent saves one with
+          None of its own: its workspaces serve the bundle's skills. The agent saves one with
           environment_skill_save.
         </p>
       ) : (

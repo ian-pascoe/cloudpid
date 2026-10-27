@@ -1,5 +1,5 @@
-// The `environment` extension's tools for an Environment's own Skills (ADR-0026, `docs/spec.md` → Agent changes →
-// Skills): `environment_skill_save` reads a Skill's folder from the Workspace (one the agent wrote, or one
+// The `environment` extension's tools for an Environment's own Skills (ADR-0026, `docs/spec.md` → Agent changes, and
+// → The Environment's own Skills): `environment_skill_save` reads a Skill's folder from the Workspace (one the agent wrote, or one
 // `npx skills add --copy` made) and saves it for the Environment, in place of one of its name, and
 // `environment_skill_remove` removes one. The Registry checks a save (the Agent Skills name rules, text only, 128 KB a
 // file, 1 MB a Skill, nothing that looks like a credential or a local path, at most 100 Skills in the set) and records
@@ -8,10 +8,10 @@
 // next readying. The skills list in the prompt changes at the next Context Window.
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import { type AgentChange, SKILLS_ROOT } from "@cloudpid/protocol";
+import { type AgentChange, SKILLS_ROOT, skillField } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
-import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { ExecutionEnv, FileError, Result } from "@earendil-works/pi-durable/env";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
@@ -34,7 +34,7 @@ export type SkillSaved =
       /** The change as the Registry recorded it, with the files before and after by hash. */
       readonly change: AgentChange;
       readonly name: string;
-      /** Whether it hides a bundled Skill of the name. */
+      /** Whether it hides the bundle's Skill of the name. */
       readonly shadows: boolean;
       /** Whether this Session's own Workspace serves it now: it is the Environment's, and took the new Skill set. */
       readonly handed: boolean;
@@ -55,7 +55,7 @@ export type SkillRemoved =
       readonly status: "removed";
       readonly environment: ChangedEnvironment;
       readonly change: AgentChange;
-      /** Whether a bundled Skill of the name is served in its place. */
+      /** Whether the bundle's Skill of the name is served in its place. */
       readonly bundled: boolean;
       /** Whether this Session's own Workspace no longer serves it: it is the Environment's, and took the new Skill set. */
       readonly handed: boolean;
@@ -110,6 +110,9 @@ const WORKSPACE_ROOT = "/workspace";
 /** The most files a Skill's folder may hold, far above any real one. */
 const MAX_FILES = 500;
 
+/** The most files and folders a listing of a Skill's folder takes. */
+const MAX_ENTRIES = MAX_FILES * 4;
+
 /** What the save reads of the call's environment: the Workspace's files, never a command. */
 type FolderEnv = Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile">;
 
@@ -123,6 +126,41 @@ const attempt = <A>(what: string, run: () => Promise<A>) =>
       EnvironmentsError.make({
         message: `${what}: ${cause instanceof Error ? cause.message : String(cause)}`,
       }),
+  });
+
+/** An environment that can say which paths are Container-only (the Workspace DO's, `ComputerExecutionEnv`). */
+type ContainerOnlyEnv = {
+  readonly containerOnly: (
+    paths: readonly string[],
+    context: typeof BACKGROUND_CONTEXT,
+  ) => Promise<Result<readonly boolean[], FileError>>;
+};
+
+const knowsContainerOnly = (env: FolderEnv): env is FolderEnv & ContainerOnlyEnv =>
+  "containerOnly" in env;
+
+/**
+ * Refuse `paths` when `env` says any is Container-only: only the Container has their files, so a save would start it
+ * and read what the Workspace does not hold. Nothing is refused when `env` cannot say.
+ */
+const refuseContainerOnly = (
+  env: FolderEnv,
+  paths: readonly string[],
+): Effect.Effect<void, EnvironmentsError> =>
+  Effect.gen(function* () {
+    if (!knowsContainerOnly(env) || paths.length === 0) return;
+
+    const answer = yield* attempt("Cannot tell where the folder is", () =>
+      env.containerOnly(paths, BACKGROUND_CONTEXT),
+    );
+
+    const found = answer.ok ? Arr.filter(paths, (_, at) => answer.value[at] === true) : [];
+
+    if (found.length === 0) return;
+
+    return yield* refused(
+      `${Arr.join(found, ", ")} ${found.length === 1 ? "is a Container-only path" : "are Container-only paths"}: only the Container has the files, not the Workspace. Copy the Skill's folder to a Workspace path such as ${WORKSPACE_ROOT}/.cloudpid/tmp/<name> and save it from there`,
+    );
   });
 
 /**
@@ -152,6 +190,8 @@ export const readSkillFolder = (
       );
     }
 
+    yield* refuseContainerOnly(env, [directory]);
+
     const info = yield* attempt("Cannot read the folder", () =>
       env.fileInfo(directory, BACKGROUND_CONTEXT),
     );
@@ -173,7 +213,12 @@ export const readSkillFolder = (
     const listing = yield* attempt("Cannot list the folder", () =>
       env.listFiles!(
         directory,
-        { hidden: true, gitignore: false, exclude: ["node_modules"], maxEntries: MAX_FILES * 2 },
+        {
+          hidden: true,
+          gitignore: false,
+          exclude: [".git", "node_modules"],
+          maxEntries: MAX_ENTRIES,
+        },
         BACKGROUND_CONTEXT,
       ),
     );
@@ -194,8 +239,15 @@ export const readSkillFolder = (
     const entries = Arr.filter(listing.value.entries, (entry) => entry.kind === "file");
 
     if (listing.value.truncated || entries.length > MAX_FILES) {
-      return yield* refused(`the folder holds more than ${MAX_FILES} files`);
+      return yield* refused(
+        `the folder holds more than ${MAX_FILES} files, or ${MAX_ENTRIES} files and folders`,
+      );
     }
+
+    yield* refuseContainerOnly(
+      env,
+      Arr.map(entries, (entry) => `${directory}/${entry.path}`),
+    );
 
     const problems: string[] = [];
     const files: Record<string, string> = {};
@@ -208,14 +260,20 @@ export const readSkillFolder = (
         env.fileInfo(file, BACKGROUND_CONTEXT),
       );
 
-      if (size.ok && size.value.size > MAX_FILE_BYTES) {
+      // A file whose size is not known is not read: it could be of any size.
+      if (!size.ok) {
+        problems.push(`${entry.path}: ${size.error.message}`);
+        continue;
+      }
+
+      if (size.value.size > MAX_FILE_BYTES) {
         problems.push(
           `${entry.path}: ${size.value.size} bytes, more than the ${MAX_FILE_BYTES} a Skill's file may be`,
         );
         continue;
       }
 
-      total += size.ok ? size.value.size : 0;
+      total += size.value.size;
 
       if (total > MAX_SKILL_BYTES) {
         problems.push(
@@ -295,8 +353,8 @@ export const skillTools = ({
     name: "environment_skill_save",
     description: Arr.join(
       [
-        `Save a Skill for an Environment (this Session's unless id names another), from its folder in the Workspace: a folder you wrote (such as ${WORKSPACE_ROOT}/.cloudpid/tmp/<name>), or one \`npx skills add <source> --copy\` made. Every Workspace of the Environment then serves it read-only at ${SKILLS_ROOT}/<name>, over a bundled Skill of the same name, and lists it among the skills; Workspaces of other Environments do not. A Skill of the same name the Environment keeps is replaced.`,
-        "The folder holds a SKILL.md whose YAML frontmatter sets name (1 to 64 lowercase letters, digits and hyphens, not starting or ending with a hyphen, no two in a row, and the folder's own name) and description (at most 1024 characters, saying what the Skill does and when to use it), and any files it refers to. The files must be text, at most 128 KB each and 1 MB together, with nothing that looks like a credential or a path on somebody's machine (/home/<user>/…), nor the value of a Secret this Session holds. A Skill set holds at most 100 Skills, the bundled ones counted.",
+        `Save a Skill for an Environment (this Session's unless id names another), from its folder in the Workspace: a folder you wrote (such as ${WORKSPACE_ROOT}/.cloudpid/tmp/<name>), or one \`npx skills add <source> --copy\` made. Every Workspace of the Environment then serves it read-only at ${SKILLS_ROOT}/<name>, over the bundle's Skill of the same name if there is one, and lists it among the skills; Workspaces of other Environments do not. A Skill of the same name the Environment keeps is replaced.`,
+        "The folder holds a SKILL.md whose YAML frontmatter sets name (1 to 64 lowercase letters, digits and hyphens, not starting or ending with a hyphen, no two in a row, and the folder's own name) and description (at most 1024 characters, saying what the Skill does and when to use it), and any files it refers to. The files must be text, at most 128 KB each and 1 MB together, with nothing that looks like a credential or a path on somebody's machine (/home/<user>/…), nor the value of a Secret this Session holds. A Skill set holds at most 100 Skills and 8 MB, the bundle's counted.",
         "To change a Skill, copy its folder from the skills directory to a scratch folder, edit it there, and save it again. The change is recorded with your reason and the files before and after, and the user can see the difference and revert it on the Environments page.",
       ],
       "\n\n",
@@ -345,7 +403,7 @@ export const skillTools = ({
                 },
               ],
               details: {
-                unchanged: { environment: saved.environment, field: `skills.${saved.name}` },
+                unchanged: { environment: saved.environment, field: skillField(saved.name) },
               },
             };
           case "saved": {
@@ -364,7 +422,7 @@ export const skillTools = ({
                   type: "text" as const,
                   text: Arr.join(
                     [
-                      `${change.before === null ? "Saved the new Skill" : "Saved the Skill"} ${saved.name} for ${named(saved.environment)} (${count} file${count === 1 ? "" : "s"})${saved.shadows ? ", over the bundled Skill of that name" : ""}.`,
+                      `${change.before === null ? "Saved the new Skill" : "Saved the Skill"} ${saved.name} for ${named(saved.environment)} (${count} file${count === 1 ? "" : "s"})${saved.shadows ? ", over the bundle's Skill of that name" : ""}.`,
                       saved.handed
                         ? `It is served now at ${servedAt(saved.name)} (read-only): read ${servedAt(saved.name)}/SKILL.md to use it.`
                         : `It is served at ${servedAt(saved.name)} (read-only) in each Workspace of the Environment.`,
@@ -395,8 +453,7 @@ export const skillTools = ({
 
   const remove = defineEffectTool({
     name: "environment_skill_remove",
-    description:
-      "Remove a Skill the Environment keeps (this Session's Environment unless id names another): its Workspaces stop serving it at /workspace/.agents/skills/<name>, and serve the bundled Skill of that name again if there is one. environment_get lists the Environment's own Skills; a bundled Skill is not the Environment's and cannot be removed. The change is recorded with your reason and the files the Skill had, and the user can revert it on the Environments page.",
+    description: `Remove a Skill the Environment keeps (this Session's Environment unless id names another): its Workspaces stop serving it at ${SKILLS_ROOT}/<name>, and serve the bundle's Skill of that name again if there is one. environment_get lists the Environment's own Skills; the bundle's are not the Environment's and cannot be removed. The change is recorded with your reason and the files the Skill had, and the user can revert it on the Environments page.`,
     parameters: Schema.Struct({
       id: Schema.optionalKey(Id),
       name: Schema.String.check(Schema.isMinLength(1)).annotate({
@@ -423,7 +480,7 @@ export const skillTools = ({
             return yield* notFound(environment);
           case "absent":
             return yield* EnvironmentsError.make({
-              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}". environment_get lists the Skills it keeps; a bundled Skill is not the Environment's.`,
+              message: `Nothing was removed: ${named(removed.environment)} keeps no Skill named "${name}". environment_get lists the Skills it keeps; the bundle's are not the Environment's.`,
             });
           case "removed": {
             const { change } = removed;
@@ -442,7 +499,7 @@ export const skillTools = ({
                     [
                       `Removed the Skill ${name} from ${named(removed.environment)}.`,
                       removed.bundled
-                        ? `The bundled Skill of that name is served at ${servedAt(name)} again.`
+                        ? `The bundle's Skill of that name is served at ${servedAt(name)} again.`
                         : `Nothing is served at ${servedAt(name)} any more.`,
                       reach(removed.environment, removed.handed, own),
                       PROMPT_NOTE,

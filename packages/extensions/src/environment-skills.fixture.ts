@@ -138,6 +138,8 @@ const notFound = (path: string) =>
 export const fakeFolderEnv = (
   files: Readonly<Record<string, string | Uint8Array>>,
   links: ReadonlyArray<string> = [],
+  /** Whether a path is Container-only; without it, the environment cannot say. */
+  containerOnly?: (path: string) => boolean,
 ): Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile"> => {
   const bytes = (content: string | Uint8Array) =>
     content instanceof Uint8Array ? content : new TextEncoder().encode(content);
@@ -145,7 +147,7 @@ export const fakeFolderEnv = (
   const isDirectory = (path: string) =>
     Arr.some([...Record.keys(files), ...links], (file) => file.startsWith(`${path}/`));
 
-  return {
+  const env: Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "listFiles" | "readBinaryFile"> = {
     absolutePath: (path) => Promise.resolve(ok(path.startsWith("/") ? path : `/workspace/${path}`)),
     fileInfo: (path) => {
       const content = files[path];
@@ -184,4 +186,14 @@ export const fakeFolderEnv = (
       return Promise.resolve(content === undefined ? notFound(path) : ok(bytes(content)));
     },
   };
+
+  if (containerOnly === undefined) return env;
+
+  const classifying = {
+    ...env,
+    containerOnly: (paths: readonly string[]) =>
+      Promise.resolve(ok(Arr.map(paths, (path) => containerOnly(path)))),
+  };
+
+  return classifying;
 };

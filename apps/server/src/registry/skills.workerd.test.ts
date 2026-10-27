@@ -1,4 +1,4 @@
-// An Environment's own Skills over real Durable Object SQLite (ADR-0026, docs/spec.md → Agent changes → Skills): saved
+// An Environment's own Skills over real Durable Object SQLite (ADR-0026, docs/spec.md → The Environment's own Skills): saved
 // and removed by the agent as Agent changes with their files before and after, merged over the bundle into the Skill
 // set its Workspaces serve, each text kept once, and reverted unless saved again since.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
@@ -292,6 +292,35 @@ describe("saving an Environment's Skill", () => {
     expect(saved[1]).toMatchObject({
       status: "rejected",
       message: expect.stringContaining("101 Skills, more than the 100"),
+    });
+  });
+
+  it("refuses a Skill that would take the Environment's set past 8 MB, the bundle's counted", async () => {
+    // About 1 MB a Skill: 8 files of 126 KB.
+    const big = (name: string): SkillFiles => ({
+      "SKILL.md": skillMd(name),
+      ...Object.fromEntries(
+        Array.from({ length: 8 }, (_, at) => [
+          `references/${at}.md`,
+          `${name} ${at}.\n`.repeat(14_000),
+        ]),
+      ),
+    });
+
+    const saved = await inRegistry(async ({ save }) => {
+      const kept = [];
+
+      for (let index = 0; index < 9; index += 1) {
+        kept.push(await save(`big-${index}`, big(`big-${index}`)));
+      }
+
+      return kept;
+    });
+
+    expect(saved.slice(0, 8).map((each) => each.status)).toEqual(Array(8).fill("saved"));
+    expect(saved[8]).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("more than the 8388608 a set may"),
     });
   });
 

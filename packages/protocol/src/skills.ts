@@ -1,4 +1,4 @@
-// An Environment's own Skills (ADR-0026, `docs/spec.md` → Agent changes → Skills): what the Environments page lists of
+// An Environment's own Skills (ADR-0026, `docs/spec.md` → The Environment's own Skills): what the Environments page lists of
 // them, and how an Agent change records one. Shared by the server (which keeps and changes them) and the web app (which
 // lists them and shows a change's files as diffs).
 import * as Schema from "effect/Schema";

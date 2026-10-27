@@ -661,8 +661,8 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * The files before and after Agent change `change` of a Skill of `environment` (`docs/spec.md` → Agent changes →
-   * Skills), with their texts, for the Environments page to show as diffs. Fails with an `EnvironmentError` when
+   * The files before and after Agent change `change` of a Skill of `environment` (`docs/spec.md` → Agent changes),
+   * with their texts, for the Environments page to show as diffs. Fails with an `EnvironmentError` when
    * `environment` has no such change, or it is not a Skill's.
    */
   Rpc.make("skillChangeFiles", {
@@ -677,8 +677,8 @@ export class RegistryRpcs extends RpcGroup.make(
     error: EnvironmentError,
   }),
   /**
-   * Remove a Skill kept for an Environment. Its Workspaces stop serving it at their next readying (a bundled Skill of
-   * the name is served again). Fails with an `EnvironmentError` when the Environment keeps no Skill of the name.
+   * Remove a Skill kept for an Environment. Its Workspaces stop serving it at their next readying (the bundle's Skill
+   * of the name is served again). Fails with an `EnvironmentError` when the Environment keeps no Skill of the name.
    */
   Rpc.make("removeEnvironmentSkill", {
     payload: { environment: EnvironmentId, name: Schema.String },

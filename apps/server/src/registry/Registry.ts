@@ -434,7 +434,7 @@ export type RegistryMethods = {
     readonly change: number;
   }) => Effect.Effect<boolean>;
   /**
-   * An Agent change (`docs/spec.md` → Agent changes → Skills): save the Skill in folder `folder` with `files` (each by
+   * An Agent change (`docs/spec.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
    * its path in the folder) for `environment`, in place of one of its name, if it passes a save's checks, and record it
    * with its files before and after. The same files as kept record nothing. The caller hands the Session's own Workspace
    * its new Skill set after.

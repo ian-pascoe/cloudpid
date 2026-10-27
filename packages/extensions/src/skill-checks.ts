@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off
-// What a Skill may hold (ADR-0026, docs/spec.md → Agent changes → Skills): the checks a Skill's files pass before they
+// What a Skill may hold (ADR-0026, docs/spec.md → The Environment's own Skills): the checks a Skill's files pass before they
 // are saved, by the Registry and by `environment_skill_save`, and the Agent Skills name rules. The bundle in `skills/`
 // passes the same checks: `scripts/sync-skills.mjs` refuses what they forbid at sync time, and
 // `apps/server/src/workspace/bundled-skills.test.ts` in CI, until the bundle is removed. Plain TypeScript with no

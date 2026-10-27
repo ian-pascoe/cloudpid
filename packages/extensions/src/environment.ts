@@ -338,7 +338,7 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
           ? "none"
           : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
       }`,
-      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over the bundled ones of the same name; environment_skill_save and environment_skill_remove change them): ${
+      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over the bundle's of the same name; environment_skill_save and environment_skill_remove change them): ${
         details.skills.length === 0
           ? "none"
           : Arr.join(

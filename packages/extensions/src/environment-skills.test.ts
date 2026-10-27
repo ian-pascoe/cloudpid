@@ -1,4 +1,4 @@
-// The `environment` extension's tools for an Environment's own Skills (docs/spec.md → Agent changes → Skills):
+// The `environment` extension's tools for an Environment's own Skills (docs/spec.md → The Environment's own Skills):
 // `environment_skill_save` reads a Skill's folder from the Workspace and saves it, `environment_skill_remove` removes
 // one, over fake Skills that keep them as the Registry does.
 // @effect-diagnostics asyncFunction:off
@@ -284,6 +284,38 @@ describe("environment_skill_save", () => {
         ),
       ),
     ).toContain("symbolic links (linked)");
+    expect(saves).toEqual([]);
+  });
+
+  it("refuses a folder that is, or holds, a Container-only path, which the Workspace does not hold", async () => {
+    const { tool, saves } = await setUp();
+
+    const files = {
+      "/workspace/app/dist/release/SKILL.md": SKILL_MD,
+      "/workspace/.cloudpid/tmp/release/SKILL.md": SKILL_MD,
+      "/workspace/.cloudpid/tmp/release/build/out.md": "x",
+    };
+
+    const onContainer = (path: string) => path.includes("/dist") || path.includes("/build/");
+
+    expect(
+      await failure(
+        run(
+          tool("environment_skill_save"),
+          { path: "/workspace/app/dist/release", reason: "r" },
+          fakeFolderEnv(files, [], onContainer),
+        ),
+      ),
+    ).toContain("/workspace/app/dist/release is a Container-only path");
+    expect(
+      await failure(
+        run(
+          tool("environment_skill_save"),
+          { path: "/workspace/.cloudpid/tmp/release", reason: "r" },
+          fakeFolderEnv(files, [], onContainer),
+        ),
+      ),
+    ).toContain("/workspace/.cloudpid/tmp/release/build/out.md is a Container-only path");
     expect(saves).toEqual([]);
   });
 
