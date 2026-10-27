@@ -5,6 +5,7 @@
 // it through `WorkspaceServiceProxy`), which alchemy's Effect bridge would wrap in its own envelopes.
 // @effect-diagnostics asyncFunction:off globalDate:off globalConsole:off cryptoRandomUUID:off preferEffectArray:off globalFetch:off
 import {
+  type MountWriteAPI,
   noopObserver,
   Workspace as ComputerWorkspace,
   type WorkspaceObserver,
@@ -52,7 +53,14 @@ import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import { type WorkspaceSecrets, workspaceSecretsStore } from "./environment-secrets.ts";
-import { checkSkillSet, type SkillSet, skillSetMount, skillSetStore } from "./skill-set.ts";
+import {
+  checkSkillSet,
+  type SkillSet,
+  type SkillSetAnswer,
+  skillSetMount,
+  skillSetStore,
+  writeSkillSet,
+} from "./skill-set.ts";
 import { type ExitReportProps, withExitReports } from "./exit-report.ts";
 import { workerShellGit } from "./git.ts";
 import {
@@ -517,7 +525,12 @@ export class Workspace extends ContainerHost {
       storage: ctx.storage,
       // The Skill set the Workspace holds (the bundled skills, `skills/`, until another is handed over) appears
       // read-only: a write under the mount fails with EROFS, and a set of another hash replaces the copy.
-      mounts: { [SKILLS_MOUNT]: skillSetMount(() => skills.current()) },
+      mounts: {
+        [SKILLS_MOUNT]: skillSetMount(
+          () => skills.current(),
+          (set, api) => this.writeSkillSet(set, api),
+        ),
+      },
       observer: this.#containerUseObserver(),
       // The Worker Shell's `git` runs on computer's git client. `bash` routes only a few read-only subcommands there
       // (`bash-routing.ts`): the Container's real git is the only one that writes `.git`.
@@ -1193,36 +1206,62 @@ export class Workspace extends ContainerHost {
   /**
    * Keep `set` as the Skill set the mount at `/workspace/.agents/skills` serves (ADR-0026), and copy it into the files
    * at once: computer clears the mount and writes the set, so a file the set lacks is gone. A set with the hash held does
-   * nothing; one whose paths leave the mount is refused, and nothing changes. No other call of this object runs during
-   * the copy, so each sees the whole old set or the whole new one. A Container that runs keeps its copy of the old set
-   * until it starts again (docs/spec.md → Filesystem and tools → Skills).
+   * nothing. One that is not a set, or whose paths are not the mount's, is refused, and so is one that cannot be
+   * written: the set held before is mounted again. No other call of this object runs meanwhile, so each sees the whole
+   * old set or the whole new one, never a mount that is cleared or writable (docs/spec.md → Filesystem and tools →
+   * Skills).
    */
-  async updateSkills(set: SkillSet): Promise<void> {
+  async updateSkills(set: SkillSet): Promise<SkillSetAnswer> {
     this.#spare.noteUse();
 
     const checked = checkSkillSet(set);
 
-    if (checked.hash === this.#skills.current().hash) return;
+    if (!checked.ok) return checked;
+
+    if (checked.set.hash === this.#skills.current().hash) return { ok: true };
 
     // The first index (and the move of what the Workspace had at the mount before) happens before any hand-over.
     await this.#ready();
 
-    // A failure inside `blockConcurrencyWhile` resets the object: it is carried out and thrown here instead.
-    const failed = await this.ctx.blockConcurrencyWhile(async () => {
-      if (checked.hash === this.#skills.current().hash) return undefined;
+    return this.ctx.blockConcurrencyWhile(() => this.#mountSkills(checked.set));
+  }
 
+  /**
+   * Keep and mount `set`, inside `blockConcurrencyWhile`, so it never throws: a failure there resets the object. When
+   * computer cannot write it, it leaves the mount cleared and writable, so the set held before is kept and mounted again
+   * before any other call runs.
+   */
+  async #mountSkills(set: SkillSet): Promise<SkillSetAnswer> {
+    const previous = this.#skills.current();
+
+    if (set.hash === previous.hash) return { ok: true };
+
+    try {
+      this.#skills.replace(set);
+      await this.#workspace.remount();
+
+      return { ok: true };
+    } catch (cause) {
       try {
-        this.#skills.replace(checked);
+        this.#skills.replace(previous);
         await this.#workspace.remount();
-
-        return undefined;
-      } catch (cause) {
+      } catch (again) {
         // computer indexes the mount again at the next call (`#ready`), from the set kept.
-        return { cause };
+        console.warn("skills: the Skill set held before could not be mounted again", again);
       }
-    });
 
-    if (failed !== undefined) throw failed.cause;
+      return {
+        ok: false,
+        message: `The Skill set could not be mounted, and the Workspace keeps the one it held: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      };
+    }
+  }
+
+  /** Write a Skill set's files under the mount's root, when computer copies it into the files. A test Worker replaces it. */
+  protected writeSkillSet(set: SkillSet, api: MountWriteAPI): Promise<void> {
+    return writeSkillSet(set, api);
   }
 
   /**

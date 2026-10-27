@@ -5,14 +5,15 @@
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { BUNDLED_SKILLS } from "./bundled-skills.generated.ts";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
+import { skillFile } from "./skills.fixtures.ts";
+import { UNWRITABLE_SKILL_SET } from "./workerd.fixture.ts";
 
-const DEPLOY_SKILL =
-  "---\nname: deploy\ndescription: Deploy this repo to staging.\n---\n\nRun `./deploy.sh`.\n";
+const DEPLOY_SKILL = skillFile("deploy", "Deploy this repo to staging.", "Run `./deploy.sh`.");
 
 describe("the bundled skills", () => {
   it("are listed in the system prompt with the skills of the repo the Session works in", async () => {
@@ -118,9 +119,6 @@ describe("the bundled skills", () => {
 });
 
 describe("the Skill set a Workspace holds", () => {
-  const skill = (name: string, description: string) =>
-    `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
-
   /** What the Worker Shell lists under the mount, one path per line, and the Skills the `skills` section lists. */
   const seen = async (slug: string) => {
     const { results, sections } = await sessionOn(slug).runFull([
@@ -155,14 +153,16 @@ describe("the Skill set a Workspace holds", () => {
     // The bundle is mounted first, as in a Workspace a Session already used.
     expect((await seen(slug)).section).toContain("<name>tdd</name>");
 
-    await workspace.updateSkills({
-      hash: "sha256:one",
-      files: {
-        "deploy/SKILL.md": skill("deploy", "Deploy to staging."),
-        "deploy/steps.md": "1. build\n",
-        "review/SKILL.md": skill("review", "Review a change."),
-      },
-    });
+    expect(
+      await workspace.updateSkills({
+        hash: "sha256:one",
+        files: {
+          "deploy/SKILL.md": skillFile("deploy", "Deploy to staging."),
+          "deploy/steps.md": "1. build\n",
+          "review/SKILL.md": skillFile("review", "Review a change."),
+        },
+      }),
+    ).toEqual({ ok: true });
 
     const first = await seen(slug);
 
@@ -175,13 +175,15 @@ describe("the Skill set a Workspace holds", () => {
     expect(await workspace.skillSetHash()).toBe("sha256:one");
 
     // A file changed, one added, and a file and a whole Skill removed.
-    await workspace.updateSkills({
-      hash: "sha256:two",
-      files: {
-        "deploy/SKILL.md": skill("deploy", "Deploy to production."),
-        "lint/SKILL.md": skill("lint", "Lint the repo."),
-      },
-    });
+    expect(
+      await workspace.updateSkills({
+        hash: "sha256:two",
+        files: {
+          "deploy/SKILL.md": skillFile("deploy", "Deploy to production."),
+          "lint/SKILL.md": skillFile("lint", "Lint the repo."),
+        },
+      }),
+    ).toEqual({ ok: true });
 
     const second = await seen(slug);
 
@@ -204,12 +206,14 @@ describe("the Skill set a Workspace holds", () => {
 
     await workspace.updateSkills({
       hash: "sha256:same",
-      files: { "deploy/SKILL.md": skill("deploy", "Deploy to staging.") },
+      files: { "deploy/SKILL.md": skillFile("deploy", "Deploy to staging.") },
     });
-    await workspace.updateSkills({
-      hash: "sha256:same",
-      files: { "other/SKILL.md": skill("other", "Something else.") },
-    });
+    expect(
+      await workspace.updateSkills({
+        hash: "sha256:same",
+        files: { "other/SKILL.md": skillFile("other", "Something else.") },
+      }),
+    ).toEqual({ ok: true });
 
     const { files, section } = await seen(slug);
 
@@ -223,7 +227,7 @@ describe("the Skill set a Workspace holds", () => {
     await seen(slug);
     await env.WORKSPACES.getByName(slug).updateSkills({
       hash: "sha256:ro",
-      files: { "deploy/SKILL.md": skill("deploy", "Deploy to staging.") },
+      files: { "deploy/SKILL.md": skillFile("deploy", "Deploy to staging.") },
     });
 
     const { results } = await sessionOn(slug).runFull([
@@ -243,22 +247,82 @@ describe("the Skill set a Workspace holds", () => {
     expect((await seen(slug)).files).toEqual(["./deploy/SKILL.md"]);
   });
 
-  it("refuses a set whose paths leave the mount, and keeps the one it holds", async () => {
+  it("refuses a set whose paths are not the mount's as a walk lists them, and keeps the one it holds", async () => {
     const slug = uniqueWorkspace();
     const workspace = env.WORKSPACES.getByName(slug);
 
-    // In the object: a stub's rejected call is reported as an unhandled rejection by the test pool.
-    const refused = await runInDurableObject(workspace, (instance) =>
-      instance.updateSkills({ hash: "sha256:bad", files: { "../escape/SKILL.md": "x" } }).then(
-        () => "handed over",
-        (cause: unknown) => String(cause),
-      ),
-    );
+    for (const path of [
+      "../escape/SKILL.md",
+      "./deploy/SKILL.md",
+      "deploy//SKILL.md",
+      "/deploy/SKILL.md",
+      "deploy/SKILL.md/",
+      "deploy\\SKILL.md",
+    ]) {
+      const answer = await workspace.updateSkills({
+        hash: "sha256:bad",
+        files: { [path]: skillFile("deploy") },
+      });
 
-    expect(refused).toContain("must not contain '..' segments");
+      expect(answer).toMatchObject({ ok: false, message: expect.stringContaining(path) });
+    }
+
+    // A path that is both a file and a directory.
+    expect(
+      await workspace.updateSkills({
+        hash: "sha256:bad",
+        files: { "deploy/SKILL.md": skillFile("deploy"), deploy: "x" },
+      }),
+    ).toMatchObject({ ok: false });
 
     expect(await workspace.skillSetHash()).toBe(BUNDLED_SKILLS.version);
     expect((await seen(slug)).section).toContain("<name>tdd</name>");
+  });
+
+  it("keeps the set it holds, mounted and read-only, when a new one cannot be written", async () => {
+    const slug = uniqueWorkspace();
+    const workspace = env.WORKSPACES.getByName(slug);
+
+    await workspace.updateSkills({
+      hash: "sha256:held",
+      files: { "deploy/SKILL.md": skillFile("deploy", "Deploy to staging.") },
+    });
+
+    const answer = await workspace.updateSkills({
+      hash: `${UNWRITABLE_SKILL_SET}:new`,
+      files: { "lint/SKILL.md": skillFile("lint"), "review/SKILL.md": skillFile("review") },
+    });
+
+    expect(answer).toEqual({
+      ok: false,
+      message:
+        "The Skill set could not be mounted, and the Workspace keeps the one it held: the Skill set's files could not be written",
+    });
+    expect(await workspace.skillSetHash()).toBe("sha256:held");
+
+    const { files, section } = await seen(slug);
+
+    expect(files).toEqual(["./deploy/SKILL.md"]);
+    expect(section).toContain("<name>deploy</name>");
+    expect(section).not.toContain("<name>lint</name>");
+
+    const { results } = await sessionOn(slug).runFull([
+      call("write", { path: "/workspace/.agents/skills/mine/SKILL.md", content: DEPLOY_SKILL }),
+      call("bash", {
+        command: "echo x > /workspace/.agents/skills/deploy/SKILL.md",
+        backend: "worker",
+      }),
+    ]);
+
+    for (const result of results) {
+      expect(result).toContain("read-only mount at /workspace/.agents/skills");
+    }
+
+    // And after an eviction, the set kept is the one held.
+    await evictDurableObject(workspace);
+
+    expect(await workspace.skillSetHash()).toBe("sha256:held");
+    expect((await seen(slug)).files).toEqual(["./deploy/SKILL.md"]);
   });
 });
 

@@ -23,6 +23,7 @@ import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
 import { ContainerResizes } from "./resize.ts";
 import { workspaceObjectsRemote } from "./lifecycle.ts";
 import { BUNDLED_SKILL_SET } from "./skill-set.ts";
+import { skillFile } from "./skills.fixtures.ts";
 import { mountedSkills, PRIOR_SKILLS } from "./skills.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
@@ -436,10 +437,6 @@ describe("the agent's resize, over ContainerLaunch and IdleStop in a Durable Obj
     });
   });
 });
-
-/** A skill's `SKILL.md`. */
-const skillFile = (name: string) =>
-  `---\nname: ${name}\ndescription: The ${name} skill.\n---\n\n# ${name}\n`;
 
 /** An environment on `workspace` whose calls to the Workspace DO are listed, with the Workspace's skills in `/workspace/<repo>`. */
 const countingEnv = (workspace: DurableObjectStub<TestWorkspace>, cwd: string) => {
