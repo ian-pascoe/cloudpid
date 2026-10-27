@@ -42,9 +42,12 @@ import {
   type ContextUsage,
   type TaskGraphSummary,
   type TodoTask,
+  type Annotation,
   type AttachedPage,
   clampPage,
   pageBlock,
+  type RenderedReview,
+  renderReview,
   type ReviewData,
   reviewMessage,
   UPLOADS_ROOT,
@@ -128,7 +131,7 @@ import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
 import { historyPage } from "./history.ts";
 import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file-search.ts";
-import { cropParts, fitCrops, type ReviewCrop } from "./crops.ts";
+import { cropParts, fitCrops } from "./crops.ts";
 import { inputProblem, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
@@ -315,23 +318,17 @@ export type Prompt = {
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
   /**
-   * A Review's Markdown and what its entry keeps (`reviews.ts`): the input is its summary, and the model gets the
-   * Markdown after it, and the page Annotations' `crops` the message has room for after its other parts (`crops.ts`).
+   * A Review's Annotations, as they are sent (`reviews.ts`): the input is its summary, and the model gets the Review's
+   * Markdown after it (`renderReview`), and the page Annotations' crops the message has room for after its other parts
+   * (`crops.ts`), the Markdown rendered with only those marked; the entry keeps the Review's data.
    */
-  readonly review?: {
-    readonly markdown: string;
-    readonly data: ReviewData;
-    readonly crops?: ReadonlyArray<ReviewCrop>;
-    /**
-     * The Markdown and data again with only the crops of `sent` (by number) marked as going: the Session renders it
-     * again once it has fitted them, so no block says it has a crop the message left out.
-     */
-    readonly withCropsSent?: (sent: ReadonlySet<number>) => {
-      readonly markdown: string;
-      readonly data: ReviewData;
-    };
-  };
+  readonly review?: { readonly annotations: ReadonlyArray<Annotation> };
 };
+
+/** The draft of a message, made with its Review rendered (`undefined`: it has none). */
+type DraftOf = (
+  review: Pick<RenderedReview, "markdown" | "data"> | undefined,
+) => InputSubmissionDraft;
 
 /** One of the Session's Slash commands, as the owner typed it. */
 export type SlashCommand = {
@@ -1436,20 +1433,22 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * (docs/adr/0001-expand-skills-and-prompt-templates-at-submit.md). A message the Workspace cannot be asked about
    * goes as typed.
    */
-  const expandedDraft = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> => {
+  const expandedDraft = (prompt: Prompt): Effect.Effect<DraftOf, SessionError> => {
     const { conversationId, input, review, attachPages: _attachPages, ...rest } = prompt;
     const typed = typedText(input);
 
     // A Review is the owner's message too: the summary as typed (or expanded), then its Markdown; its entry keeps both.
-    const reviewed = (content: string, skills: UserEntryData["skills"]): InputSubmissionDraft =>
-      review === undefined
-        ? { type: "input", content: input, ...rest }
-        : {
-            type: "input",
-            content: withReviewText(input, reviewMessage(content, review.markdown)),
-            ...rest,
-            entry: ownerEntry({ display: typedBeside(input), skills, review: review.data }),
-          };
+    const reviewed =
+      (content: string, skills: UserEntryData["skills"]): DraftOf =>
+      (rendered) =>
+        rendered === undefined
+          ? { type: "input", content: input, ...rest }
+          : {
+              type: "input",
+              content: withReviewText(input, reviewMessage(content, rendered.markdown)),
+              ...rest,
+              entry: ownerEntry({ display: typedBeside(input), skills, review: rendered.data }),
+            };
 
     const plain = reviewed(typedBeside(input), []);
 
@@ -1502,16 +1501,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     // A conversation that is neither the root nor a subagent fails here, as the submit would.
     return addressed(conversationId).pipe(
       Effect.flatMap(expansion),
-      Effect.map((expanded): InputSubmissionDraft => {
+      Effect.map((expanded): DraftOf => {
         if (expanded === undefined) return plain;
 
         if (review !== undefined) return reviewed(expanded.content, expanded.data.skills);
 
-        return {
-          ...plain,
+        const draft: InputSubmissionDraft = {
+          ...plain(undefined),
           content: withText(input, expanded.content),
           entry: ownerEntry(expanded.data),
         };
+
+        return () => draft;
       }),
     );
   };
@@ -1523,83 +1524,71 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    */
   const draftOf = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> =>
     expandedDraft(prompt).pipe(
-      Effect.flatMap((draft) =>
+      Effect.flatMap((expanded) =>
         attachedPages(prompt).pipe(
-          Effect.map((pages) =>
-            pages.length === 0 ? draft : withPages(draft, prompt.input, pages),
+          Effect.map(
+            (pages): DraftOf =>
+              (rendered) =>
+                pages.length === 0
+                  ? expanded(rendered)
+                  : withPages(expanded(rendered), prompt.input, pages),
           ),
         ),
       ),
       Effect.flatMap((draft) => {
         const { review } = prompt;
 
-        if (review?.crops === undefined || review.crops.length === 0) return Effect.succeed(draft);
+        if (review === undefined) return Effect.succeed(draft(undefined));
+
+        const all = renderReview(review.annotations);
+
+        if (all.crops.length === 0) return Effect.succeed(draft(all));
 
         return queuedBytes(prompt.conversationId).pipe(
-          Effect.map((queued) => withCrops(draft, review, queued)),
+          Effect.map((queued) => withCrops(draft, review.annotations, all, queued)),
         );
       }),
     );
 
   /**
-   * `draft` (a Review's, with its pages) with the crops of its page Annotations it has room for (`fitCrops`, beside the
-   * `queued` bytes of the messages waiting in the inbox) as its last parts, each after the line that names its
-   * Annotation, its Review rendered again with only those marked, and its entry's `review` naming them, for the
-   * transcript to show them on the Review's chips rather than in the message.
+   * The draft of a Review of `annotations` (`all`, rendered with every crop) with the crops of its page Annotations it
+   * has room for (`fitCrops`, beside the `queued` bytes of the messages waiting in the inbox) as its last parts, each
+   * after the line that names its Annotation; the Review rendered with only those marked `crop`, and its entry's
+   * `review` naming them, for the transcript to show them on the Review's chips rather than in the message.
    */
   const withCrops = (
-    draft: InputSubmissionDraft,
-    review: NonNullable<Prompt["review"]>,
+    draft: DraftOf,
+    annotations: ReadonlyArray<Annotation>,
+    all: RenderedReview,
     queued: number,
   ): InputSubmissionDraft => {
-    const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+    // Measured with every crop marked: the Review rendered with fewer is no longer.
+    const measured = draft(all);
 
-    if (data?.review === undefined) return draft;
-
-    const parts = Predicate.isString(draft.content)
-      ? [{ type: "text" as const, text: draft.content }]
-      : [...draft.content];
-
-    const images = Arr.reduce(parts, 0, (sum, part) =>
+    const images = Arr.reduce(partsOf(measured), 0, (sum, part) =>
       part.type === "image" ? sum + part.data.length : sum,
     );
 
-    // Measured with every crop marked: the Review rendered with fewer is no longer.
-    const fitted = fitCrops(review.crops ?? [], {
-      bytes: storedBytes({ content: draft.content, entry: draft.entry }) + queued,
+    const fitted = fitCrops(all.crops, {
+      bytes: storedBytes({ content: measured.content, entry: measured.entry }) + queued,
       images,
     });
 
-    const sent = new Set(Arr.map(fitted, ({ number }) => number));
-    const again = review.withCropsSent?.(sent);
-    const at = Option.getOrUndefined(Arr.findFirstIndex(parts, (part) => part.type === "text"));
-    const first = at === undefined ? undefined : parts[at];
+    const sent = Arr.map(fitted, ({ number }) => number);
+    const { markdown, data } = renderReview(annotations, new Set(sent));
 
-    // The Review's Markdown ends the message's first text: it is rendered again, its data with it.
-    const rendered =
-      again !== undefined && first?.type === "text" && first.text.endsWith(review.markdown)
-        ? again
-        : undefined;
+    if (fitted.length === 0) return draft({ markdown, data });
 
-    if (rendered !== undefined && at !== undefined && first?.type === "text") {
-      const before = first.text.slice(0, first.text.length - review.markdown.length);
+    const final = draft({ markdown, data: { ...data, crops: sent } });
 
-      parts[at] = { type: "text", text: `${before}${rendered.markdown}` };
-    }
-
-    if (fitted.length === 0 && rendered === undefined) return draft;
-
-    const reviewData = rendered?.data ?? data.review;
-
-    return {
-      ...draft,
-      content: [...parts, ...Arr.flatMap(fitted, cropParts)],
-      entry: ownerEntry({
-        ...data,
-        review: fitted.length === 0 ? reviewData : { ...reviewData, crops: [...sent] },
-      }),
-    };
+    return { ...final, content: [...partsOf(final), ...Arr.flatMap(fitted, cropParts)] };
   };
+
+  /** A draft's content as parts. */
+  const partsOf = (draft: InputSubmissionDraft) =>
+    Predicate.isString(draft.content)
+      ? [{ type: "text" as const, text: draft.content }]
+      : [...draft.content];
 
   /** The bytes of the messages waiting in the conversation's inbox, as `input-guard.ts` measures them. */
   const queuedBytes = (conversationId: ConversationId | undefined) =>

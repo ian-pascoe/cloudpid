@@ -23,7 +23,6 @@ import {
   isDiffAnnotation,
   isPageAnnotation,
   pageQuote,
-  renderReview,
   resolvePath,
   WORKSPACE_ROOT,
 } from "@cloudpid/protocol";
@@ -641,10 +640,7 @@ export const sessionReviewsLayer = (
 
           // A send that fails after the message is placed leaves the drafts: sent again with its `requestId`, as the
           // composer does, the host finds the first submission rather than placing a second.
-          const submissionId = yield* host.submit({
-            ...rest,
-            review: { ...renderReview(final), withCropsSent: (sent) => renderReview(final, sent) },
-          });
+          const submissionId = yield* host.submit({ ...rest, review: { annotations: final } });
 
           // What follows is written at once, with no wait between: the drafts it sent (one key each, as the drafts are),
           // the Review pending until it settles, and its `requestId`.

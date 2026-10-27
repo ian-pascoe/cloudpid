@@ -28,7 +28,13 @@ import { hidePopover, Popover } from "../components/ui/popover.tsx";
 import { cn } from "../lib/utils.ts";
 import { EditorBox, useSave } from "../review/annotations-ui.tsx";
 import { editedDraft, pageTarget } from "../review/drafts.ts";
-import { AnnotationEditor, CLOSED, type PagePick } from "../review/editor.ts";
+import {
+  AnnotationEditor,
+  editingId,
+  openOn,
+  type PagePick,
+  type Picked,
+} from "../review/editor.ts";
 import { PageDetails } from "../review/review-chips.tsx";
 import { annotationsAtom, deleteAnnotationAtom } from "../session/atoms.ts";
 import {
@@ -48,7 +54,6 @@ import {
   draftsOnPage,
   isDrag,
   NodeForLocation,
-  type Picked,
   pickedElement,
   pageDraft,
   placePins,
@@ -223,8 +228,8 @@ const valueOf = <A,>(schema: Schema.Decoder<A>, called: typeof CalledFunction.Ty
     : Option.getOrUndefined(Schema.decodeUnknownOption(schema)(called.result.value));
 
 /**
- * The element under `point` of the viewport, and its box: `DOM.getNodeForLocation`, then `DOM.getBoxModel` (the page's DOM
- * agent is enabled as Annotate mode starts).
+ * The element under `point` of the viewport, and its box: `DOM.getNodeForLocation`, then `DOM.getBoxModel` (the Live View
+ * enables the DOM agent of each connection before its first `DOM.` call: `LiveView.call`).
  */
 const elementAt = async (page: ScreenPage, point: Point) => {
   const at = { x: Math.round(point.x), y: Math.round(point.y), ignorePointerEventsNone: true };
@@ -334,7 +339,7 @@ const AnnotateLayer = ({
   };
 
   const pick = (picked: Picked, crop: PagePick["crop"]) => {
-    setEditor({ ...CLOSED, page: { picked, crop, url, ownerTabId } });
+    setEditor(openOn({ kind: "page", pick: { picked, crop, url, ownerTabId } }));
   };
 
   const pickElement = async (point: Point) => {
@@ -534,7 +539,7 @@ const Pins = ({
               <PinCard
                 draft={draft}
                 onEdit={() => {
-                  setEditor({ ...CLOSED, editing: draft.id, text: draft.text });
+                  setEditor(openOn({ kind: "draft", id: draft.id }, draft.text));
                 }}
                 onDelete={() => {
                   void remove(draft.id);
@@ -576,17 +581,12 @@ const Layer = ({
   const drafts = useMemo(() => draftsOnPage(annotations, url), [annotations, url]);
   const editor = useAtomValue(AnnotationEditor.use());
 
-  // The page's DOM agent answers what is under the pointer: enabled once as Annotate mode starts in a tab.
-  useEffect(() => {
-    if (annotating) void page.call("DOM.enable", {}, Ignored);
-  }, [page, annotating, ownerTabId]);
-
   // A pick made on another page, or a draft deleted elsewhere, is not edited any longer.
-  const editing = drafts.find((draft) => draft.id === editor.editing);
+  const editing = drafts.find((draft) => draft.id === editingId(editor));
 
   const open: Open | null =
-    editor.page !== null && editor.page.url === url
-      ? { kind: "new", pick: editor.page }
+    editor.on?.kind === "page" && editor.on.pick.url === url
+      ? { kind: "new", pick: editor.on.pick }
       : editing === undefined
         ? null
         : { kind: "draft", draft: editing };

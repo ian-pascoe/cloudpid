@@ -25,7 +25,7 @@ import {
   newDraft,
   statusLabel,
 } from "./drafts.ts";
-import { AnnotationEditor, CLOSED } from "./editor.ts";
+import { AnnotationEditor, CLOSED, editingId, openOn } from "./editor.ts";
 import { QuotedLines } from "./review-chips.tsx";
 import { pickLines } from "./selection.ts";
 
@@ -46,7 +46,7 @@ export const useOpenEditor = () => {
     (diff: string, fileDiff: FileDiffMetadata, range: SelectedLineRange) => {
       const picked = pickLines(fileDiff, range);
 
-      if (picked !== undefined) setEditor({ ...CLOSED, diff, picked });
+      if (picked !== undefined) setEditor(openOn({ kind: "lines", diff, picked }));
     },
     [setEditor],
   );
@@ -179,7 +179,7 @@ export const useSave = (sessionId: string) => {
 const NewDraft = ({ sessionId, anchor }: { sessionId: string; anchor: DiffAnchor }) => {
   const [editor] = useAtom(AnnotationEditor.use());
   const save = useSave(sessionId);
-  const { picked } = editor;
+  const picked = editor.on?.kind === "lines" ? editor.on.picked : null;
 
   if (picked === null) return null;
 
@@ -211,7 +211,7 @@ const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: DiffAnnotat
     </p>
   );
 
-  if (editor.editing === draft.id) {
+  if (editingId(editor) === draft.id) {
     return (
       <Frame outdated={status !== undefined}>
         {header}
@@ -238,7 +238,7 @@ const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: DiffAnnotat
           size="sm"
           className="px-2 text-xs text-muted-foreground"
           onClick={() => {
-            setEditor({ ...CLOSED, editing: draft.id, text: draft.text });
+            setEditor(openOn({ kind: "draft", id: draft.id }, draft.text));
           }}
         >
           Edit

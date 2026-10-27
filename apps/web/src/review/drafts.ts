@@ -21,6 +21,7 @@ import {
 } from "@cloudpid/protocol";
 import type { DiffLineAnnotation } from "@pierre/diffs";
 import type * as Types from "effect/Types";
+import { type EditorState, pickedIn } from "./editor.ts";
 import { librarySide, type PickedLines } from "./selection.ts";
 
 /**
@@ -64,20 +65,18 @@ export interface DiffDrafts {
 
 /**
  * The drafts of one diff of a view (`diff`: the Pane's file ID, or a card's one diff) on `anchor`, and where they show,
- * with the editor of a new draft when the view's editor (`open`) is open in that diff. Undefined `anchor`: none.
+ * with the editor of a new draft when the view's editor (`editor`) is open on lines of that diff. Undefined `anchor`:
+ * none.
  */
 export const diffDrafts = (
   annotations: readonly Annotation[],
   anchor: DiffAnchor | undefined,
-  open: { readonly diff: string | null; readonly picked: PickedLines | null },
+  editor: EditorState,
   diff: string,
 ): DiffDrafts => {
   const drafts = anchor === undefined ? [] : draftsOn(annotations, anchor);
 
-  return {
-    drafts,
-    lineAnnotations: lineAnnotationsOf(drafts, open.diff === diff ? open.picked : null),
-  };
+  return { drafts, lineAnnotations: lineAnnotationsOf(drafts, pickedIn(editor, diff)) };
 };
 
 /** What a line annotation of a diff holds: a draft, by its ID, or the editor of a new one. */

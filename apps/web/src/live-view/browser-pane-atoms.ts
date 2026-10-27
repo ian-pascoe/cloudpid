@@ -15,7 +15,7 @@ import { ownerTabsAtom, sessionClientAtom } from "../session/atoms.ts";
 import type { SessionClient } from "../session/client.ts";
 import { liveViewStateAtom } from "./atoms.ts";
 import { INITIAL_OWNER_TAB_PAGE, openBrowserPaneView, type OwnerTabPage } from "./browser-pane.ts";
-import type { LiveView } from "./connection.ts";
+import { type LiveView, whenEnded } from "./connection.ts";
 import { keepScreen, latestScreenAtom } from "./owner-tab-screen.ts";
 
 /** Which Browser Pane: its Session's, and whether that Session is archived (its Pane opens nothing). */
@@ -53,9 +53,17 @@ const windowOpenedIn = (client: SessionClient) =>
  * the first ask opening an Owner tab when the owner has none, unless the Session is archived. Refreshing it (Open a new
  * Owner tab) builds it again.
  */
-export const browserPaneViewAtom = Atom.family(({ sessionId, archived }: BrowserPaneKey) =>
-  appRuntime.atom((get) =>
-    get.result(sessionClientAtom(sessionId)).pipe(
+export const browserPaneViewAtom = Atom.family((key: BrowserPaneKey) =>
+  appRuntime.atom((get) => {
+    const { sessionId, archived } = key;
+
+    // Annotate mode was turned on in `view`: it is off, and holds nothing of it.
+    const leaveAnnotateMode = (view: LiveView) =>
+      Effect.sync(() => {
+        if (get.once(annotateOnAtom(key)) === view) get.set(annotateOnAtom(key), null);
+      });
+
+    return get.result(sessionClientAtom(sessionId)).pipe(
       Effect.flatMap((client) =>
         openBrowserPaneView((open) => client.ownerTabView(open), {
           opens: !archived,
@@ -73,8 +81,12 @@ export const browserPaneViewAtom = Atom.family(({ sessionId, archived }: Browser
           (stop) => Effect.sync(stop),
         ),
       ),
-    ),
-  ),
+      // Annotate mode ends with the Live View it was turned on in, which ends before the Pane is built again.
+      Effect.tap((view) =>
+        whenEnded(view).pipe(Effect.andThen(leaveAnnotateMode(view)), Effect.forkScoped),
+      ),
+    );
+  }),
 );
 
 const pageRefAtom = Atom.family((key: BrowserPaneKey) =>

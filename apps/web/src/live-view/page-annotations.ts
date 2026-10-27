@@ -13,7 +13,6 @@ import {
   type PageAnnotation,
   type PageAnnotationDraft,
   type PageCrop,
-  type PageElement,
   pageQuote,
   type PageRect,
   type PageSource,
@@ -21,6 +20,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
+import type { Picked } from "../review/editor.ts";
 import type { Point } from "./cdp.ts";
 
 /** How far a pointer moves, in CSS px of the screen, before a press is a drag (an area) and not a click (an element). */
@@ -271,16 +271,6 @@ export const locatedBySelector = (
 
   return new Map(selectors.map((selector, index) => [selector, located.rects[index] ?? null]));
 };
-
-/** What a pick in Annotate mode found: an element (with its text), or an area; where, and the page's state then. */
-export interface Picked {
-  readonly box: PageRect;
-  readonly element?: PageElement | undefined;
-  readonly text: readonly string[];
-  readonly more: number;
-  readonly scroll: Point;
-  readonly viewport: { readonly width: number; readonly height: number };
-}
 
 /** The pick of an element `described` at `box`: an area at its box when no selector finds it again. */
 export const pickedElement = (
