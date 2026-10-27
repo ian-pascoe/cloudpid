@@ -1,29 +1,28 @@
 // What shows where a lazy part is: its fallback while the chunk loads, and, if the chunk is gone because the app was
-// deployed again, "This app was updated — Reload" in place of the part, not a crashed card (`stale-build.ts`).
+// deployed again, a notice with a Reload button in place of the part (`stale-build.ts`), not a crashed card.
 
 import { Component, type ReactNode, Suspense } from "react";
-import { Button } from "./components/ui/button.tsx";
 import { ChunkLoadError } from "./lazy-chunk.ts";
 
-/** The notice for a part whose chunk is gone, with the button that fetches the new build. */
-export const UpdatedNotice = () => (
-  <div role="alert" className="flex flex-wrap items-center gap-2 p-2 text-sm text-muted-foreground">
-    <span>This app was updated —</span>
-    <Button
+/** The notice for a part whose chunk is gone, in the voice of the sign-in notice (`session-chat.tsx`). */
+const UpdatedNotice = () => (
+  <p role="status" className="p-2 text-sm text-muted-foreground">
+    The app was updated.{" "}
+    <button
       type="button"
-      variant="outline"
-      size="sm"
+      className="font-medium text-foreground underline underline-offset-2"
       onClick={() => {
         window.location.reload();
       }}
     >
       Reload
-    </Button>
-  </div>
+    </button>{" "}
+    to open this.
+  </p>
 );
 
 interface BoundaryState {
-  readonly failure: { readonly error: Error } | null;
+  readonly error: Error | null;
 }
 
 /**
@@ -32,25 +31,24 @@ interface BoundaryState {
  * app's (ADR-0011).
  */
 class StaleChunkBoundary extends Component<{ children: ReactNode }, BoundaryState> {
-  override state: BoundaryState = { failure: null };
+  override state: BoundaryState = { error: null };
 
   static getDerivedStateFromError(error: Error): BoundaryState {
-    return { failure: { error } };
+    return { error };
   }
 
   override render() {
-    const { failure } = this.state;
+    const { error } = this.state;
 
-    if (failure === null) return this.props.children;
+    if (error === null) return this.props.children;
 
-    if (failure.error instanceof ChunkLoadError) return <UpdatedNotice />;
+    if (error instanceof ChunkLoadError) return <UpdatedNotice />;
 
-    // eslint-disable-next-line @typescript-eslint/only-throw-error -- passing on whatever was thrown.
-    throw failure.error;
+    throw error;
   }
 }
 
-/** A lazy part: `fallback` while its chunk loads, the "This app was updated" notice if the chunk is gone. */
+/** A lazy part: `fallback` while its chunk loads, the "The app was updated" notice if the chunk is gone. */
 export const LazyView = ({ fallback, children }: { fallback: ReactNode; children: ReactNode }) => (
   <StaleChunkBoundary>
     <Suspense fallback={fallback}>{children}</Suspense>

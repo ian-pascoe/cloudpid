@@ -1,7 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off extendsNativeError:off -- plain helpers over a dynamic import, which React.lazy takes as a promise; a native error, as the import's own rejection is one.
 
 // The lazy parts' chunks (`call-diff-card.tsx` → `patch-view.tsx`, `diff-pane.tsx` → `changes-view.tsx`) are fetched
-// when first shown. After a deploy, a tab from the older build asks for files that are gone (`stale-build.ts`).
+// when first shown; one that is gone after a deploy is a `ChunkLoadError` (`stale-build.ts`, `lazy-view.tsx`).
 
 import { type ComponentType, lazy, type LazyExoticComponent } from "react";
 

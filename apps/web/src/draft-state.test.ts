@@ -20,6 +20,7 @@ import {
   type FirstMessage,
   draftBranchAtom,
   draftEnvironmentAtom,
+  draftHeldAtom,
   draftTextAtom,
   draftWorkspaceAtom,
   pendingFirstMessagesAtom,
@@ -292,6 +293,27 @@ describe("the draft's Attachments", () => {
       // The next draft starts with none.
       expect(summary()).toEqual([]);
     }),
+  );
+
+  it.effect(
+    "count as held by the draft while they are attached, for the reload of a stale build",
+    () =>
+      Effect.gen(function* () {
+        const { registry, add } = attaching();
+
+        expect(registry.get(draftHeldAtom)).toBe(false);
+
+        registry.set(draftTextAtom, "  \n");
+        expect(registry.get(draftHeldAtom)).toBe(false);
+
+        registry.set(draftTextAtom, "Fix it");
+        expect(registry.get(draftHeldAtom)).toBe(true);
+
+        registry.set(draftTextAtom, "");
+        yield* add(file("notes.txt"));
+
+        expect(registry.get(draftHeldAtom)).toBe(true);
+      }),
   );
 
   it.effect("make a message on their own", () =>
