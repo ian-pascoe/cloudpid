@@ -22,14 +22,18 @@ export const remoteBrowserHost = (
   name: string,
   workspace: () => Promise<PreviewWorkspace>,
 ): BrowserHostService => {
+  const named = Effect.tryPromise(workspace).pipe(Effect.orElseSucceed(() => null));
+
   const call = <A>(
     operation: string,
     run: (host: BrowserHostRpc, workspace: PreviewWorkspace) => Promise<A>,
   ) =>
-    Effect.tryPromise({
-      try: async () => run(namespace.getByName(name), await workspace().catch(() => null)),
-      catch: (cause) => BrowserError.make({ message: `${operation}: ${String(cause)}` }),
-    });
+    Effect.flatMap(named, (at) =>
+      Effect.tryPromise({
+        try: () => run(namespace.getByName(name), at),
+        catch: (cause) => BrowserError.make({ message: `${operation}: ${String(cause)}` }),
+      }),
+    );
 
   return {
     describe: call("describe", (host, at) => host.describe(at)),

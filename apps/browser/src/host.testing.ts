@@ -3,7 +3,7 @@
 // (`./preview.test.ts`). The model's code runs in a Worker Loader isolate and drives the fake over CDP, which records
 // what it is sent and in which page.
 // workerd's WebSocketPair, Durable Object state and RPC are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off preferSchemaOverJson:off missingPipeableSignature:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type {

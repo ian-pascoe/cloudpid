@@ -11,6 +11,7 @@ import {
 } from "@cloudpid/extensions/browser/contract";
 import type { BrowserBinding } from "agents/browser";
 import { WorkerEntrypoint } from "cloudflare:workers";
+import * as Arr from "effect/Array";
 import { PREVIEW_WORKSPACES_BINDING } from "./binding.ts";
 
 /** The Workspace DO, as the browser Worker binds it from the Workspaces Worker: its Container preview alone. */
@@ -122,7 +123,7 @@ export class ContainerPreviewRoutes {
 
     return {
       outboundByHost: Object.fromEntries(
-        CONTAINER_PREVIEW_PORTS.map((port) => [containerPreviewHost(port), entry]),
+        Arr.map(CONTAINER_PREVIEW_PORTS, (port) => [containerPreviewHost(port), entry] as const),
       ),
     };
   }
