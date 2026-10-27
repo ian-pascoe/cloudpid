@@ -13,6 +13,7 @@ import { RpcTarget } from "cloudflare:workers";
 import * as git from "isomorphic-git";
 import { type ChangesFiles, gitFs, WorkspaceChangesModule } from "./changes.ts";
 import type { Answers } from "./github-pulls.fixtures.ts";
+import type { PreviewActivity } from "./preview.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
 
@@ -27,6 +28,30 @@ export type LiveStubs = {
   readonly opened: number;
   readonly workspaces: number;
   readonly execs: number;
+};
+
+/** A WebSocket the fake dev server opened: its path, what it was sent, and how it closed (null while open). */
+export type DevServerSocket = {
+  readonly path: string;
+  readonly received: string[];
+  closed: { readonly code: number; readonly reason: string } | null;
+};
+
+/** How many times Container previews touched the Container, and began and ended a socket's hold on it. */
+export type PreviewUses = { touch: number; begin: number; end: number };
+
+/** What the fake dev server was asked, by any port, and the WebSockets it opened. */
+export type DevServerState = {
+  readonly requests: Array<{
+    readonly port: number;
+    readonly method: string;
+    readonly url: string;
+    readonly origin: string | null;
+    readonly cookie: string | null;
+    readonly upgrade: string | null;
+    readonly protocols: string | null;
+  }>;
+  readonly sockets: DevServerSocket[];
 };
 
 /** Whether the fake Container runs, and the scripts run on it so far. */
@@ -372,6 +397,136 @@ export class TestWorkspace extends Workspace {
 
   protected override clock(): number {
     return this.#now ?? super.clock();
+  }
+
+  /**
+   * A dev server on the fake Container, as the Container preview tests have it (`preview.workerd.test.ts`): it listens on
+   * `ports` (another port is refused as a Container refuses it), answers `/` with an HTML page and anything else with a
+   * script that says `<head>`, and opens a WebSocket for an upgrade, answering each message with `echo:` and it. What it
+   * was asked, and each socket's messages and close, are recorded (`devServerState`). Without it, the Container's ports
+   * are the real Container's, which this test Worker does not have.
+   */
+  #devServer: { ports: readonly number[]; state: DevServerState; sockets: WebSocket[] } | undefined;
+
+  /** The uses Container previews made of the Container, as the idle stop is told of them. */
+  #previewUses: PreviewUses = { touch: 0, begin: 0, end: 0 };
+
+  fakeDevServer(options: { readonly ports: readonly number[] }): void {
+    this.#devServer = { ports: options.ports, state: { requests: [], sockets: [] }, sockets: [] };
+  }
+
+  /** How often an open socket's stream is written to: short, so a page gone is found within a test. */
+  protected override previewKeepAliveMs(): number {
+    return this.#devServer === undefined ? super.previewKeepAliveMs() : 50;
+  }
+
+  devServerState(): DevServerState {
+    return structuredClone(this.#devServer?.state ?? { requests: [], sockets: [] });
+  }
+
+  /** The dev server sends `text` on its socket `index`. */
+  devServerSend(index: number, text: string): void {
+    this.#devServer?.sockets[index]?.send(text);
+  }
+
+  /** The dev server closes its socket `index`, as a restart of it does. */
+  devServerClose(index: number): void {
+    this.#devServer?.sockets[index]?.close(1012, "restarting");
+  }
+
+  previewUses(): PreviewUses {
+    return { ...this.#previewUses };
+  }
+
+  protected override containerPort(port: number): Fetcher {
+    const server = this.#devServer;
+
+    if (server === undefined) return super.containerPort(port);
+
+    const answer = (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+
+      server.state.requests.push({
+        port,
+        method: request.method,
+        url: request.url,
+        origin: request.headers.get("origin"),
+        cookie: request.headers.get("cookie"),
+        upgrade: request.headers.get("upgrade"),
+        protocols: request.headers.get("sec-websocket-protocol"),
+      });
+
+      if (!server.ports.includes(port)) {
+        throw new Error(`The container is not listening in the TCP address 10.0.0.1:${port}`);
+      }
+
+      if (request.headers.get("upgrade") === "websocket") {
+        const pair = new WebSocketPair();
+        const socket = pair[1];
+        const record: DevServerSocket = { path: url.pathname, received: [], closed: null };
+
+        socket.accept();
+        socket.addEventListener("message", (event) => {
+          record.received.push(String(event.data));
+          socket.send(`echo:${String(event.data)}`);
+        });
+        socket.addEventListener("close", (event) => {
+          record.closed = { code: event.code, reason: event.reason };
+        });
+        server.state.sockets.push(record);
+        server.sockets.push(socket);
+
+        const protocol = request.headers.get("sec-websocket-protocol")?.split(",")[0]?.trim();
+
+        return new Response(null, {
+          status: 101,
+          webSocket: pair[0],
+          headers: protocol === undefined ? {} : { "sec-websocket-protocol": protocol },
+        });
+      }
+
+      if (url.pathname === "/") {
+        return new Response(
+          '<!doctype html><html lang="en"><head><title>App</title></head><body>app</body></html>',
+          { headers: { "content-type": "text/html; charset=utf-8", "content-length": "86" } },
+        );
+      }
+
+      return new Response('export const tag = "<head>";', {
+        headers: { "content-type": "text/javascript" },
+      });
+    };
+
+    return {
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => answer(input, init),
+      connect: () => {
+        throw new Error("No sockets on the fake Container");
+      },
+    };
+  }
+
+  protected override previewActivity(): PreviewActivity {
+    const idle = super.previewActivity();
+    const uses = this.#previewUses;
+
+    return {
+      touch: () => {
+        uses.touch++;
+
+        return idle.touch();
+      },
+      begin: () => {
+        uses.begin++;
+
+        return idle.begin();
+      },
+      end: () => {
+        uses.end++;
+
+        return idle.end();
+      },
+    };
   }
 
   /** The keys of the Workspace DO's storage that start with `prefix`. */

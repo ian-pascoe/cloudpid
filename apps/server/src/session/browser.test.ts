@@ -11,6 +11,7 @@ const noWorkspace = () => Promise.resolve(null);
 describe("the Session's browser host", () => {
   it("names the Session's Workspace on every call, and none when it cannot be told, without failing the call", async () => {
     const named: unknown[] = [];
+
     const note =
       <A>(answer: A) =>
       (workspace: string | null) => {
@@ -18,6 +19,7 @@ describe("the Session's browser host", () => {
 
         return Promise.resolve(answer);
       };
+
     const listing = { tabs: [] };
 
     let placement: () => Promise<string | null> = () => Promise.resolve("ws:abc");
