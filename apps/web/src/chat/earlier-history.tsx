@@ -10,6 +10,7 @@ import { settledFailureOf } from "../registry.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
 import type { ConversationKey } from "./conversation.ts";
+import { scrollerOf } from "./scroller.ts";
 
 /** Load the page of the conversation's History before entry `before` into its view; fails with why it could not. */
 export const loadEarlierAtom = Atom.family((key: ConversationKey) =>
@@ -19,21 +20,6 @@ export const loadEarlierAtom = Atom.family((key: ConversationKey) =>
       .pipe(Effect.flatMap((client) => client.loadEarlier(before, key.conversationId))),
   ),
 );
-
-/** The element `element` scrolls in: its nearest ancestor that scrolls vertically. */
-const scrollerOf = (element: HTMLElement | null): HTMLElement | null => {
-  let parent = element?.parentElement ?? null;
-
-  while (parent !== null) {
-    const { overflowY } = getComputedStyle(parent);
-
-    if (overflowY === "auto" || overflowY === "scroll") return parent;
-
-    parent = parent.parentElement;
-  }
-
-  return null;
-};
 
 /**
  * "Show earlier messages" at the top of a thread whose History goes back before what it shows (`before`, the view's).

@@ -24,6 +24,7 @@ import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
+import { keepClosedInView } from "./scroller.ts";
 import { toolSummary } from "./tool-summary.ts";
 
 /**
@@ -85,6 +86,12 @@ export const KeptDetails = ({
 /** `Omit` over each member of a union, so each keeps its own fields. */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
+/**
+ * A card that opens. Its line sticks to the top of its scroller (the transcript, or a subagent's thread) while the
+ * opened card runs past it, so it can be closed without scrolling back up. The body is a stacking context of its own,
+ * so nothing in it (a diff's gutter) draws over the stuck line; the line stays under the Session details, which float
+ * over the transcript at `z-10`. The group is named: a subagent's card around it is a `details` too.
+ */
 const Disclosure = ({
   disclosure,
   summary,
@@ -96,17 +103,20 @@ const Disclosure = ({
   held?: boolean | undefined;
   children: OpenContent;
 }) => (
-  <KeptDetails disclosure={disclosure} held={held} className="group my-2 rounded-md border">
+  <KeptDetails disclosure={disclosure} held={held} className="group/card my-2 rounded-md border">
     {(open) => (
       <>
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
+        <summary
+          onClick={keepClosedInView}
+          className="sticky top-0 z-[1] flex cursor-pointer list-none items-center gap-2 rounded-md bg-background px-3 py-1.5 text-sm text-muted-foreground select-none group-open/card:rounded-b-none group-open/card:border-b [&::-webkit-details-marker]:hidden"
+        >
           <ChevronRight
-            className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+            className="size-3.5 shrink-0 transition-transform group-open/card:rotate-90"
             aria-hidden
           />
           {summary}
         </summary>
-        <div className="border-t px-3 py-2">{shown(children, open)}</div>
+        <div className="isolate px-3 py-2">{shown(children, open)}</div>
       </>
     )}
   </KeptDetails>

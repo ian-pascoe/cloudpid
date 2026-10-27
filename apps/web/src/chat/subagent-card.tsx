@@ -16,6 +16,7 @@ import { abortAtom, taskGraphAtom } from "../session/atoms.ts";
 import { subagentCardOpenAtom } from "../session-layout-state.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { useShownLayoutKey, useShownSessionId } from "./conversation.ts";
+import { keepClosedInView } from "./scroller.ts";
 import type { StartedSubagent } from "./subagent.ts";
 
 /** How an agent is doing, as the card and the panel say it. */
@@ -131,7 +132,8 @@ type CardProps = {
 /**
  * The card of a subagent: its ID, role and model, and its status from the task graph. Opening it watches the agent's
  * conversation, and closing it stops, so a long list of subagents costs one watch per open card. Whether it is open is
- * kept in the Session's layout.
+ * kept in the Session's layout. Like a tool card's, its line sticks to the top of the transcript while the opened card
+ * runs past it; the group is named so the tool cards in its thread do not read as open with it.
  */
 export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
   const sessionId = useShownSessionId();
@@ -155,10 +157,16 @@ export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
         // A `details` rendered open fires a toggle too; only a change is kept.
         if (event.currentTarget.open !== open) setOpen(event.currentTarget.open);
       }}
-      className="group my-2 rounded-md border"
+      className="group/subagent my-2 rounded-md border"
     >
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
+      <summary
+        onClick={keepClosedInView}
+        className="sticky top-0 z-[1] flex cursor-pointer list-none items-center gap-2 rounded-md bg-background px-3 py-1.5 text-sm text-muted-foreground select-none group-open/subagent:rounded-b-none group-open/subagent:border-b [&::-webkit-details-marker]:hidden"
+      >
+        <ChevronRight
+          className="size-3.5 transition-transform group-open/subagent:rotate-90"
+          aria-hidden
+        />
         <Bot className="size-3.5" aria-hidden />
         <span className="font-mono text-[0.8125rem] text-foreground">{subagent.agentId}</span>
         {role !== undefined && (
@@ -174,7 +182,7 @@ export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
         <OpenPageLink agentId={subagent.agentId} className="-my-1 -mr-1.5" />
       </summary>
       {open && (
-        <div className="border-t px-3 py-2">
+        <div className="isolate px-3 py-2">
           <ChildThread conversationId={subagent.conversationId} messages={messages} />
         </div>
       )}
