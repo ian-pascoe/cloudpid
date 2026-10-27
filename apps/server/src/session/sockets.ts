@@ -7,6 +7,8 @@ import {
   type Catalog,
   type ChangeFile,
   type CommandOutcome,
+  type CompareResult,
+  type ComparisonSources,
   ConversationId,
   decodeClientMessage,
   type FileMatches,
@@ -54,6 +56,7 @@ import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { AnnotationStore } from "./annotations.ts";
 import { type ChangesMessage, type ChangesUpdate, SessionChanges } from "./changes.ts";
+import { SessionComparisons } from "./comparisons.ts";
 import { SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
@@ -323,6 +326,7 @@ export const sessionSocketsLayer = (
   never,
   | SessionHost
   | SessionChanges
+  | SessionComparisons
   | Secrets
   | BrowserHandoffs
   | BrowserPane
@@ -336,6 +340,7 @@ export const sessionSocketsLayer = (
     Effect.gen(function* () {
       const host = yield* SessionHost;
       const changes = yield* SessionChanges;
+      const comparisons = yield* SessionComparisons;
       const annotations = yield* AnnotationStore;
       const reviews = yield* SessionReviews;
       const secrets = yield* Secrets;
@@ -565,6 +570,8 @@ export const sessionSocketsLayer = (
         | Catalog
         | ChangeFile
         | CommandOutcome
+        | CompareResult
+        | ComparisonSources
         | FileMatches
         | HistoryPage
         | SessionTree
@@ -707,6 +714,29 @@ export const sessionSocketsLayer = (
             return changesWorkspace(conversationId).pipe(
               Effect.flatMap((workspace) => changes.file(workspace, query)),
             );
+          }
+
+          case "comparison_sources":
+            return comparisons.sources;
+          case "compare":
+            return comparisons
+              .compare({
+                repo: message.repo,
+                startContainer: message.startContainer === true,
+                fetch: message.fetch === true,
+              })
+              .pipe(
+                // The drafts on this branch are checked against the pair the client now sees, in the background.
+                Effect.tap((result) =>
+                  result.status === "ok"
+                    ? Effect.forkIn(reviews.compared(result.comparison), scope)
+                    : Effect.void,
+                ),
+              );
+          case "comparison_file": {
+            const { type: _type, id: _id, ...query } = message;
+
+            return comparisons.file(query);
           }
 
           case "secret_answer":

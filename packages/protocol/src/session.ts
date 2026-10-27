@@ -9,6 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { Annotation, AnnotationDraft, MAX_ANNOTATION_ID, MAX_ANNOTATIONS } from "./annotations.ts";
 import { WorkspaceChanges } from "./changes.ts";
+import { ComparisonSourceKind } from "./comparison.ts";
 import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
@@ -259,6 +260,48 @@ export const ChangeFileRequest = Schema.Struct({
 });
 
 /**
+ * Ask what the Diff pane's picker lists: each repo the Session works in, its own first, with its HEAD (Changes, and
+ * This branch under the branch's name). Answered with `ComparisonSources`. It never starts the Container.
+ */
+export const ComparisonSourcesRequest = Schema.Struct({
+  type: Schema.Literal("comparison_sources"),
+  id: CommandId,
+});
+
+/**
+ * Compare `repo`'s `source` (`docs/spec.md` → Diffs and review → Comparisons). Answered with a `CompareResult`: the base
+ * and head names, the merge-base and head SHAs and the file list, or why there is none (an error state, in place of the
+ * list). A result for the HEAD as it is now is kept in the Workspace's storage, so asking again after the Container's
+ * idle stop starts nothing. Only `startContainer` (the owner's pick or Refresh) may start a stopped Container; without
+ * it a Comparison that needs the Container answers `needs_container`, or, when HEAD has moved, the last result marked
+ * `behind`. `fetch` (the owner's Refresh) fetches the base again; without it a recomputed Comparison reuses the base it
+ * fetched before.
+ */
+export const CompareRequest = Schema.Struct({
+  type: Schema.Literal("compare"),
+  id: CommandId,
+  repo: Schema.String,
+  source: ComparisonSourceKind,
+  startContainer: Schema.optionalKey(Schema.Boolean),
+  fetch: Schema.optionalKey(Schema.Boolean),
+});
+
+/**
+ * Ask for one file of a Comparison: `path` in `repo` between `mergeBase` and `head`, and `oldPath` for a rename.
+ * Answered with a `ChangeFile` (`old` at the merge-base, `new` at the head). It never starts the Container: a file that
+ * needs it while it is stopped fails with why.
+ */
+export const ComparisonFileRequest = Schema.Struct({
+  type: Schema.Literal("comparison_file"),
+  id: CommandId,
+  repo: Schema.String,
+  mergeBase: Schema.String,
+  head: Schema.String,
+  path: Schema.String,
+  oldPath: Schema.optionalKey(Schema.String),
+});
+
+/**
  * Ask what the composer completes in the root conversation, or in the subagent conversation `conversationId` names: the
  * Session's Slash commands, and the Prompt templates and Skills of the conversation's directory. Answered with a
  * `Catalog`.
@@ -496,6 +539,9 @@ export const ClientMessage = Schema.Union([
   UnwatchChanges,
   RefreshChanges,
   ChangeFileRequest,
+  ComparisonSourcesRequest,
+  CompareRequest,
+  ComparisonFileRequest,
 ]);
 
 export type ClientMessage = typeof ClientMessage.Type;

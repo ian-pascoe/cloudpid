@@ -28,6 +28,28 @@ const onChanges = (overrides: Partial<Annotation> = {}): Annotation => ({
   ...overrides,
 });
 
+const onBranch = (overrides: Partial<Annotation> = {}): Annotation => ({
+  id: "b1",
+  source: {
+    kind: "branch",
+    repo: "app",
+    branch: "feat/x",
+    base: "main",
+    mergeBase: "abc1234def",
+    head: "0000000aaaa",
+  },
+  path: "src/a.ts",
+  side: "new",
+  start: 5,
+  end: 6,
+  quote: ["let a;", "let b;"],
+  more: 0,
+  text: "Why two?",
+  createdAt: 3,
+  updatedAt: 3,
+  ...overrides,
+});
+
 const onCall = (overrides: Partial<Annotation> = {}): Annotation => ({
   id: "c1",
   source: { kind: "call", conversationId: conversation, callId: "call-7", tool: "edit" },
@@ -153,6 +175,36 @@ describe("renderReview", () => {
         "> Say more here.",
       ].join("\n"),
     );
+  });
+
+  it('heads a branch\'s group "Branch x against main at abc1234", between the Changes and the Call diffs', () => {
+    const { markdown } = renderReview([
+      onCall(),
+      onBranch(),
+      onBranch({
+        id: "b2",
+        source: {
+          kind: "branch",
+          repo: "lib",
+          branch: null,
+          base: "develop",
+          mergeBase: "fedcba9876",
+          head: "1111111",
+        },
+      }),
+      onChanges(),
+    ]);
+
+    const headings = markdown.split("\n").filter((line) => line.startsWith("### "));
+
+    expect(headings).toEqual([
+      "### Uncommitted Changes in `app`",
+      "### Branch `feat/x` against `main` at `abc1234`",
+      "### Detached HEAD against `develop` at `fedcba9`",
+      "### Your `edit` call on `/workspace/app/README.md`: lines as of that call",
+    ]);
+    expect(markdown).toContain("**Annotation 2**: `/workspace/app/src/a.ts`, lines 5–6");
+    expect(markdown).toContain("**Annotation 3**: `/workspace/lib/src/a.ts`, lines 5–6");
   });
 
   it("says when the lines have changed since, or are no longer in the diff", () => {

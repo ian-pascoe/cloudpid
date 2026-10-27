@@ -1862,6 +1862,71 @@ describe("the Changes on a Session connection", () => {
       yield* Fiber.join(file);
     }),
   );
+
+  it.effect(
+    "asks for the picker's repos, a branch's Comparison (starting the Container only when told) and its files",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const sources = yield* asking(client.comparisonSources);
+        const plain = yield* asking(client.compare({ repo: "web" }));
+
+        const manual = yield* asking(
+          client.compare({ repo: "web", startContainer: true, fetch: true }),
+        );
+
+        const file = yield* asking(
+          client.comparisonFile({ repo: "web", mergeBase: "m", head: "h", path: "src/b.ts" }),
+        );
+
+        const commands = latest().commands();
+        const sourcesAsk = commands.find((command) => command.type === "comparison_sources");
+        const [plainAsk, manualAsk] = commands.filter((command) => command.type === "compare");
+        const fileAsk = commands.find((command) => command.type === "comparison_file");
+
+        expect(plainAsk).toEqual({
+          type: "compare",
+          id: plainAsk?.id,
+          repo: "web",
+          source: "branch",
+          startContainer: false,
+          fetch: false,
+        });
+        expect(manualAsk).toEqual({
+          type: "compare",
+          id: manualAsk?.id,
+          repo: "web",
+          source: "branch",
+          startContainer: true,
+          fetch: true,
+        });
+        expect(fileAsk).toEqual({
+          type: "comparison_file",
+          id: fileAsk?.id,
+          repo: "web",
+          mergeBase: "m",
+          head: "h",
+          path: "src/b.ts",
+        });
+
+        const repos = { repos: [{ repo: "web", head: { commit: "h", branch: "feat" } }] };
+        const refused = { status: "error", error: { kind: "needs_container", message: "stopped" } };
+        const sides = { old: null, new: { kind: "text", text: "a\n" } } as const;
+
+        yield* latest().say({ type: "result", id: sourcesAsk?.id, result: repos });
+        yield* latest().say({ type: "result", id: plainAsk?.id, result: refused });
+        yield* latest().say({ type: "result", id: manualAsk?.id, result: refused });
+        yield* latest().say({ type: "result", id: fileAsk?.id, result: sides });
+
+        expect(yield* Fiber.join(sources)).toEqual(repos);
+        expect(yield* Fiber.join(plain)).toEqual(refused);
+        expect(yield* Fiber.join(manual)).toEqual(refused);
+        expect(yield* Fiber.join(file)).toEqual(sides);
+      }),
+  );
 });
 
 describe("Todo Lists on a Session connection", () => {

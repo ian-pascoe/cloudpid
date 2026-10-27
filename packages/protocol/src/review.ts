@@ -126,10 +126,18 @@ export const rangeText = (annotation: Pick<Annotation, "side" | "start" | "end">
 };
 
 /** The source an Annotation was drawn on, as one group of the Review. */
-const groupKey = (annotation: Annotation): string =>
-  annotation.source.kind === "changes"
-    ? `changes:${annotation.source.repo}`
-    : `call:${annotation.source.conversationId}:${annotation.source.callId}:${annotation.source.nested ?? ""}`;
+const groupKey = (annotation: Annotation): string => {
+  const { source } = annotation;
+
+  switch (source.kind) {
+    case "changes":
+      return `changes:${source.repo}`;
+    case "branch":
+      return `branch:${source.repo}`;
+    case "call":
+      return `call:${source.conversationId}:${source.callId}:${source.nested ?? ""}`;
+  }
+};
 
 /** The longest run of backticks in `lines`. */
 const longestBackticks = (lines: readonly string[]): number => {
@@ -154,10 +162,18 @@ export const inlineCode = (text: string): string => {
 };
 
 /** The heading of a source's group. */
-const groupHeading = (annotation: Annotation): string =>
-  annotation.source.kind === "changes"
-    ? `Uncommitted Changes in ${inlineCode(annotation.source.repo)}`
-    : `Your ${inlineCode(annotation.source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
+const groupHeading = (annotation: Annotation): string => {
+  const { source } = annotation;
+
+  switch (source.kind) {
+    case "changes":
+      return `Uncommitted Changes in ${inlineCode(source.repo)}`;
+    case "branch":
+      return `${source.branch === null ? "Detached HEAD" : `Branch ${inlineCode(source.branch)}`} against ${inlineCode(source.base)} at ${inlineCode(source.mergeBase.slice(0, 7))}`;
+    case "call":
+      return `Your ${inlineCode(source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
+  }
+};
 
 /** A fence longer than any run of backticks in `lines`. */
 const fenceFor = (lines: readonly string[]): string =>
@@ -206,9 +222,22 @@ const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 
 /** Removed lines before added ones. */
 const sideOrder = (annotation: Annotation): number => (annotation.side === "old" ? 0 : 1);
 
+/** Where a source's group sits in a Review: the Changes, then the branches, then the Call diffs. */
+const sourceRank = (annotation: Annotation): number => {
+  switch (annotation.source.kind) {
+    case "changes":
+      return 0;
+    case "branch":
+      return 1;
+    case "call":
+      return 2;
+  }
+};
+
 /**
- * The groups of a Review: the Changes first, by repo, then the Call diffs, in the order of their first draft; within
- * each, its Annotations by file, then line, then side (removed lines first where both sides start at one), then end.
+ * The groups of a Review: the Changes first, by repo, then the branches, by repo, then the Call diffs, in the order of
+ * their first draft; within each, its Annotations by file, then line, then side (removed lines first where both sides
+ * start at one), then end.
  */
 const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
   const groups = new Map<string, Annotation[]>();
@@ -236,9 +265,10 @@ const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
 
       if (x === undefined || y === undefined) return 0;
 
-      if (x.source.kind !== y.source.kind) return x.source.kind === "changes" ? -1 : 1;
+      if (sourceRank(x) !== sourceRank(y)) return sourceRank(x) - sourceRank(y);
 
-      return x.source.kind === "changes" && y.source.kind === "changes"
+      return (x.source.kind === "changes" && y.source.kind === "changes") ||
+        (x.source.kind === "branch" && y.source.kind === "branch")
         ? compareText(x.source.repo, y.source.repo)
         : first(a) - first(b);
     });

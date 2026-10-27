@@ -4,7 +4,13 @@
 // it is marked outdated, or "no longer in the diff" when its file has left the Changes. A Call diff never changes, so
 // its drafts are never checked. Pure: the Session reads the files and applies what this finds (`annotations.ts`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over lines of text.
-import type { Annotation, ChangeEntry, ChangeFile, RepoChanges } from "@cloudpid/protocol";
+import type {
+  Annotation,
+  ChangeEntry,
+  ChangeFile,
+  Comparison,
+  RepoChanges,
+} from "@cloudpid/protocol";
 
 /** What a check of a quote against its side's lines found. */
 export type QuoteCheck =
@@ -103,19 +109,55 @@ export const sideLines = (
   return side.kind === "text" ? linesOf(side.text) : undefined;
 };
 
+/** The pair of commits a Comparison is made of, and what it is named: where a draft on This branch moves to. */
+export type BranchPair = Pick<Comparison, "branch" | "base" | "mergeBase" | "head">;
+
+/** Where `annotation`'s file stands in a Comparison: its entry, gone from it, or not to be told. */
+export type ComparedFile =
+  | { readonly kind: "file"; readonly entry: ChangeEntry }
+  | { readonly kind: "gone" }
+  | { readonly kind: "unknown" };
+
+/**
+ * Find a draft's file in `comparison`, by its path (a rename's new path). A Comparison that lists only some of its files
+ * cannot say the file is gone, so the draft stays as it is.
+ */
+export const comparedFile = (
+  annotation: Pick<Annotation, "path">,
+  comparison: Pick<Comparison, "files" | "more">,
+): ComparedFile => {
+  const entry = comparison.files.find((file) => file.path === annotation.path);
+
+  if (entry !== undefined) return { kind: "file", entry };
+
+  return comparison.more > 0 ? { kind: "unknown" } : { kind: "gone" };
+};
+
 /**
  * `annotation` after a check: moved, marked, or back in place. A quote found where it was, or moved, clears an earlier
- * mark and takes the repo's HEAD now; a marked draft keeps its place, its quote and the HEAD it was written against.
+ * mark and takes the HEAD of the repo's Changes now (or, for a draft on This branch, the pair of commits now
+ * compared); a marked draft keeps its place, its quote and the HEAD or pair it was written against.
  */
 export const checked = (
   annotation: Annotation,
   result: QuoteCheck | { readonly kind: "gone" },
   head: string | null,
+  pair?: BranchPair,
 ): Annotation => {
   const { status: _status, ...rest } = annotation;
 
   const source =
-    annotation.source.kind === "changes" ? { ...annotation.source, head } : annotation.source;
+    annotation.source.kind === "changes"
+      ? { ...annotation.source, head }
+      : annotation.source.kind === "branch" && pair !== undefined
+        ? {
+            ...annotation.source,
+            branch: pair.branch,
+            base: pair.base,
+            mergeBase: pair.mergeBase,
+            head: pair.head,
+          }
+        : annotation.source;
 
   switch (result.kind) {
     case "same":

@@ -6,11 +6,13 @@ const workerd = "src/**/*.workerd.test.ts";
 
 /**
  * Tests of the Workspace DO alone, in a test Worker that hosts it and the Worker Shell's loader: the environment
- * conformance cases and the Changes (over repos real git made, `changes.setup.ts`).
+ * conformance cases, the Changes and the Comparisons (over repos real git made, `changes.setup.ts` and
+ * `comparison.setup.ts`).
  */
 const workspaceOnly = [
   "src/workspace/env.workerd.test.ts",
   "src/workspace/changes*.workerd.test.ts",
+  "src/workspace/comparison*.workerd.test.ts",
 ];
 
 /** Every other Workspace test (Sessions and tools on a Workspace) runs in a test Worker that also hosts a Session host. */
@@ -66,8 +68,9 @@ export default defineConfig({
           name: "workerd-workspace",
           include: workspaceOnly,
           testTimeout,
-          // Real git makes the repos the Changes tests read, in Node (`inject("changesRepos")`).
-          globalSetup: ["./src/workspace/changes.setup.ts"],
+          // Real git makes the repos the Changes and Comparison tests read, in Node (`inject("changesRepos")`,
+          // `inject("comparisonRepos")`).
+          globalSetup: ["./src/workspace/changes.setup.ts", "./src/workspace/comparison.setup.ts"],
         },
       }),
       defineProject({

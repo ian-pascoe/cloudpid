@@ -7,6 +7,8 @@ export * from "./attachments.ts";
 
 export * from "./changes.ts";
 
+export * from "./comparison.ts";
+
 export * from "./environment-secrets.ts";
 
 export * from "./lifecycle-changes.ts";

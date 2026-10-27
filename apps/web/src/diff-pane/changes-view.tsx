@@ -30,7 +30,7 @@ import { cn } from "../lib/utils.ts";
 import { AnnotationSlotView, DRAFTING_OPTIONS, useOpenEditor } from "../review/annotations-ui.tsx";
 import type { AnnotationSlot } from "../review/drafts.ts";
 import { AnnotationEditor } from "../review/editor.ts";
-import { annotationsAtom, changesAtom } from "../session/atoms.ts";
+import { annotationsAtom } from "../session/atoms.ts";
 import { paneAnchor, paneDrafts } from "./annotated-items.ts";
 import { useWidth } from "../use-width.ts";
 import { FOLD_REASON_LABEL } from "./folding.ts";
@@ -186,7 +186,7 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
   // A Subagent page's Pane draws no gutter +.
   const drafting = paneDrafts(pane.changes);
   const drafts = useAtomValue(annotationsAtom(sessionId));
-  const repos = useAtomValue(changesAtom(pane.changes))?.repos;
+  const { repos } = useAtomValue(pane.list);
   const open = useOpenEditor();
   const { ref: frame, width } = useWidth();
   const viewer = useRef<CodeViewHandle<AnnotationSlot, undefined>>(null);
@@ -262,7 +262,7 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
       // The Pane's items are diffs: their annotations name a side.
       if (file === undefined || !drafting || !("side" in annotation)) return null;
 
-      const anchor = paneAnchor(file, repos ?? []);
+      const anchor = paneAnchor(file, repos);
 
       return (
         <AnnotationSlotView

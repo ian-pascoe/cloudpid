@@ -4,7 +4,7 @@
 // the message; the drafts are deleted once it is taken, and come back when Stop withdraws it before it was placed. It
 // also checks the drafts on the Changes after each listing, and drops the drafts addressed to a deleted subagent.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- plain storage reads under Effect.sync, and pi-durable's Promise calls.
-import type { Annotation, AnnotationDraft, RepoChanges } from "@cloudpid/protocol";
+import type { Annotation, AnnotationDraft, Comparison, RepoChanges } from "@cloudpid/protocol";
 import { renderReview, resolvePath, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { Harness } from "@cloudpid/effect-durable";
 import { SubagentsDoc } from "@cloudpid/extensions/subagents";
@@ -27,9 +27,10 @@ import {
   type AnnotationStoreService,
 } from "./annotations.ts";
 import { SessionChanges } from "./changes.ts";
+import { SessionComparisons } from "./comparisons.ts";
 import { attempt, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
-import { checked, checkQuote, listedFile, sideLines } from "./outdated.ts";
+import { checked, checkQuote, comparedFile, listedFile, sideLines } from "./outdated.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -67,6 +68,12 @@ export type SessionReviewsService = {
   readonly save: (draft: AnnotationDraft) => Effect.Effect<void, SessionError>;
   /** Delete the drafts addressed to a subagent that no longer exists. */
   readonly prune: Effect.Effect<void>;
+  /**
+   * A Comparison of a repo's branch was made for a client (a new head, or a refresh that moved the merge-base): check the
+   * drafts on This branch against its pair, and move those that pass to it. A Comparison that is marked `behind` is the
+   * last one made, not the head's, and changes nothing.
+   */
+  readonly compared: (comparison: Comparison) => Effect.Effect<void>;
 };
 
 /** The Session's Reviews. */
@@ -87,12 +94,17 @@ const addressedToLive =
 /** The Session's Reviews over its storage; build it once per instance. */
 export const sessionReviewsLayer = (
   storage: AnnotationStorage,
-): Layer.Layer<SessionReviews, never, SessionHost | SessionChanges | AnnotationStore | Harness> =>
+): Layer.Layer<
+  SessionReviews,
+  never,
+  SessionHost | SessionChanges | SessionComparisons | AnnotationStore | Harness
+> =>
   Layer.effect(
     SessionReviews,
     Effect.gen(function* () {
       const host = yield* SessionHost;
       const changes = yield* SessionChanges;
+      const comparisons = yield* SessionComparisons;
       const store = yield* AnnotationStore;
       const harness = yield* Harness;
       const scope = yield* Effect.scope;
@@ -179,11 +191,157 @@ export const sessionReviewsLayer = (
         ).pipe(Effect.map((found) => found.flat()));
       };
 
+      /**
+       * What a check finds of the drafts `onRepo` (on This branch of one repo) against `comparison`: the ones written
+       * against another pair of commits, each read once in the new pair's file. They move to the pair when their quote holds,
+       * and are marked when it does not; a file the Comparison no longer lists marks them gone.
+       */
+      const againstComparison = (comparison: Comparison, onRepo: ReadonlyArray<Annotation>) => {
+        // A list marked `behind` is the last one made, for a head the repo has left: it says nothing of the new one.
+        if (comparison.behind !== undefined) return Effect.succeed([]);
+
+        const stale = onRepo.filter(
+          (draft) =>
+            draft.source.kind === "branch" &&
+            (draft.source.mergeBase !== comparison.mergeBase ||
+              draft.source.head !== comparison.head),
+        );
+
+        const files = new Map<string, Annotation[]>();
+
+        for (const draft of stale) files.set(draft.path, [...(files.get(draft.path) ?? []), draft]);
+
+        return Effect.forEach(
+          files.values(),
+          (onFile) => {
+            const [first] = onFile;
+
+            if (first === undefined) return Effect.succeed([]);
+
+            const compared = comparedFile(first, comparison);
+
+            if (compared.kind === "unknown") return Effect.succeed([]);
+
+            if (compared.kind === "gone") {
+              return Effect.succeed(
+                onFile.map((before) => ({
+                  before,
+                  after: checked(before, { kind: "gone" }, null),
+                })),
+              );
+            }
+
+            const { entry } = compared;
+
+            const at = {
+              repo: comparison.repo,
+              mergeBase: comparison.mergeBase,
+              head: comparison.head,
+              path: entry.path,
+            };
+
+            const query = entry.oldPath === undefined ? at : { ...at, oldPath: entry.oldPath };
+
+            return comparisons.file(query).pipe(
+              Effect.map((file) =>
+                onFile.flatMap((before) => {
+                  const lines = sideLines(before, file);
+
+                  return lines === undefined
+                    ? []
+                    : [
+                        {
+                          before,
+                          after: checked(before, checkQuote(before, lines), null, comparison),
+                        },
+                      ];
+                }),
+              ),
+              Effect.catch((error) =>
+                Effect.logWarning("Reading a file to check its drafts failed", error).pipe(
+                  Effect.as([]),
+                ),
+              ),
+            );
+          },
+          { concurrency: CHECK_READS },
+        ).pipe(Effect.map((found) => found.flat()));
+      };
+
+      /** The repos whose Comparison failed for the HEAD they have, so a listing does not ask for the same failure again. */
+      const failedAt = new Map<string, string | null>();
+
+      /**
+       * What a check finds of the drafts on This branch: for each repo with some, its Comparison as the Workspace has it now
+       * (made again if the Container runs, else the last one, which changes nothing); never starting the Container.
+       */
+      const branchFindings = (
+        drafts: ReadonlyArray<Annotation>,
+        repos: ReadonlyArray<RepoChanges>,
+      ) => {
+        const byRepo = new Map<string, Annotation[]>();
+
+        for (const draft of drafts) {
+          if (draft.source.kind !== "branch") continue;
+
+          byRepo.set(draft.source.repo, [...(byRepo.get(draft.source.repo) ?? []), draft]);
+        }
+
+        return Effect.forEach(
+          byRepo,
+          ([repo, onRepo]) =>
+            Effect.gen(function* () {
+              const head = repos.find((each) => each.repo === repo)?.head.commit ?? null;
+
+              if (failedAt.get(repo) === head && failedAt.has(repo)) return [];
+
+              const made = yield* comparisons
+                .compare({ repo, startContainer: false, fetch: false })
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Comparing to check the drafts failed", error).pipe(
+                      Effect.as(undefined),
+                    ),
+                  ),
+                );
+
+              if (made === undefined || made.status === "error") {
+                failedAt.set(repo, head);
+
+                return [];
+              }
+
+              failedAt.delete(repo);
+
+              return yield* againstComparison(made.comparison, onRepo);
+            }),
+          { concurrency: 1 },
+        ).pipe(Effect.map((found) => found.flat()));
+      };
+
       /** Check `drafts` against `repos` and put what was found in place, under the one permit; answer what was found. */
       const checkAndKeep = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) =>
-        findings(drafts, repos).pipe(
+        Effect.all([findings(drafts, repos), branchFindings(drafts, repos)]).pipe(
+          Effect.map(([onChanges, onBranch]) => [...onChanges, ...onBranch]),
           Effect.tap((found) => store.checked(found)),
           checking,
+        );
+
+      /** A Comparison was made for a client: check the drafts on its repo's branch against it. */
+      const compared = (comparison: Comparison) =>
+        store.list.pipe(
+          Effect.flatMap((drafts) =>
+            againstComparison(
+              comparison,
+              drafts.filter(
+                (draft) => draft.source.kind === "branch" && draft.source.repo === comparison.repo,
+              ),
+            ),
+          ),
+          Effect.tap((found) => store.checked(found)),
+          checking,
+          Effect.asVoid,
+          Effect.catchCause((cause) => Effect.logWarning("Checking the drafts failed", cause)),
         );
 
       const check = (repos: ReadonlyArray<RepoChanges>) =>
@@ -285,8 +443,8 @@ export const sessionReviewsLayer = (
             return yield* refused(DRAFTS_CHANGED);
           }
 
-          // The last check, against the files as they are now.
-          const onChanges = drafts.some((draft) => draft.source.kind === "changes");
+          // The last check, against the files as they are now (and This branch's Comparison, as the Workspace has it).
+          const onChanges = drafts.some((draft) => draft.source.kind !== "call");
           const listed = onChanges ? yield* changes.fresh : undefined;
           const found = yield* checkAndKeep(drafts, listed?.repos ?? []);
 
@@ -358,7 +516,7 @@ export const sessionReviewsLayer = (
           return yield* store.save(resolved);
         });
 
-      return { submit, save, prune } satisfies SessionReviewsService;
+      return { submit, save, prune, compared } satisfies SessionReviewsService;
     }),
   );
 

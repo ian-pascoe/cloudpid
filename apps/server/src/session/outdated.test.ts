@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over lines.
 import type { Annotation, RepoChanges } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { checked, checkQuote, linesOf, listedFile, sideLines } from "./outdated.ts";
+import { checked, checkQuote, comparedFile, linesOf, listedFile, sideLines } from "./outdated.ts";
 
 const draft = (overrides: Partial<Annotation> = {}): Annotation => ({
   id: "a1",
@@ -96,6 +96,16 @@ describe("listedFile", () => {
   });
 });
 
+describe("comparedFile", () => {
+  const entry = { path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0 };
+
+  it("finds the draft's file in the Comparison, says it is gone from a whole one, and cannot tell from a cut one", () => {
+    expect(comparedFile(draft(), { files: [entry], more: 0 })).toEqual({ kind: "file", entry });
+    expect(comparedFile(draft(), { files: [], more: 0 })).toEqual({ kind: "gone" });
+    expect(comparedFile(draft(), { files: [], more: 4 })).toEqual({ kind: "unknown" });
+  });
+});
+
 describe("sideLines", () => {
   it("reads the draft's side, a side that is not there having no lines, and one that is not text none to compare", () => {
     const changed = { old: { kind: "text" as const, text: "old\n" }, new: null };
@@ -117,5 +127,31 @@ describe("checked", () => {
       draft({ status: "outdated" }),
     );
     expect(checked(draft(), { kind: "gone" }, "new-head")).toEqual(draft({ status: "gone" }));
+  });
+
+  it("takes the pair of commits now for a draft on This branch, and keeps its pair when marked", () => {
+    const onBranch = draft({
+      source: {
+        kind: "branch",
+        repo: "app",
+        branch: "feat",
+        base: "main",
+        mergeBase: "old-base",
+        head: "old-head",
+      },
+    });
+
+    const pair = { branch: "feat", base: "main", mergeBase: "new-base", head: "new-head" };
+
+    expect(checked(onBranch, { kind: "moved", start: 9, end: 10 }, null, pair)).toEqual({
+      ...onBranch,
+      source: { kind: "branch", repo: "app", ...pair },
+      start: 9,
+      end: 10,
+    });
+    expect(checked(onBranch, { kind: "outdated" }, null, pair)).toEqual({
+      ...onBranch,
+      status: "outdated",
+    });
   });
 });

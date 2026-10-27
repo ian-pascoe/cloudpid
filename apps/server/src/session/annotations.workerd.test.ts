@@ -5,6 +5,8 @@ import { env } from "cloudflare:workers";
 import {
   type AnnotationDraft,
   type ClientMessage,
+  type CompareResult,
+  type Comparison,
   HEARTBEAT,
   MAX_ANNOTATION_TEXT,
   MAX_ANNOTATIONS,
@@ -98,6 +100,42 @@ const changes = (text: string, more = 0): ChangesFixture => ({
 const onChanges = (overrides: Partial<AnnotationDraft> = {}): AnnotationDraft => ({
   id: "on-changes",
   source: { kind: "changes", repo: "app", head: HEAD },
+  path: "src/a.ts",
+  side: "new",
+  start: 2,
+  end: 3,
+  quote: ["const b = 2;", "const c = 3;"],
+  more: 0,
+  text: "Why two constants?",
+  ...overrides,
+});
+
+const MERGE_BASE = "b".repeat(40);
+
+/** The Comparison of repo `app` at `head`: `src/a.ts` modified. */
+const comparison = (head: string): Comparison => ({
+  repo: "app",
+  base: "main",
+  branch: "feat",
+  mergeBase: MERGE_BASE,
+  head,
+  commits: 1,
+  files: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0 }],
+  more: 0,
+});
+
+const compared = (head: string): CompareResult => ({ status: "ok", comparison: comparison(head) });
+
+const onBranch = (overrides: Partial<AnnotationDraft> = {}): AnnotationDraft => ({
+  id: "on-branch",
+  source: {
+    kind: "branch",
+    repo: "app",
+    branch: "feat",
+    base: "main",
+    mergeBase: MERGE_BASE,
+    head: HEAD,
+  },
   path: "src/a.ts",
   side: "new",
   start: 2,
@@ -343,6 +381,106 @@ describe("draft Annotations", () => {
     );
     client.send({ type: "refresh_changes", id: "refresh-3" });
     await client.answer("refresh-3");
+    await client.until((messages) =>
+      messages.some(
+        (message) =>
+          message.type === "annotations" &&
+          message.annotations.some((draft) => draft.status === "gone"),
+      ),
+    );
+  });
+
+  it("on This branch move with their lines to a new head, are marked when the lines change, and when their file leaves", async () => {
+    const stub = fresh();
+    const second = "c".repeat(40);
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.setComparison({
+        results: { app: compared(HEAD) },
+        files: { "app/src/a.ts": FILE },
+      });
+    });
+
+    const client = await connect(stub);
+
+    client.send({ type: "annotation_save", id: "save", annotation: onBranch() });
+    await client.answer("save");
+
+    // A new head with two lines added above: asked for by the client, the draft moves and takes the new pair, silently.
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.setComparison({
+        results: { app: compared(second) },
+        files: { "app/src/a.ts": `// one\n// two\n${FILE}` },
+      });
+    });
+    client.send({ type: "compare", id: "compare", repo: "app", source: "branch" });
+    await client.answer("compare");
+    await client.until((messages) =>
+      messages.some(
+        (message) =>
+          message.type === "annotations" && message.annotations.some((draft) => draft.start === 4),
+      ),
+    );
+
+    const moved = await runInDurableObject(stub, (instance: TestSession) => instance.annotations());
+
+    expect(moved[0]).toMatchObject({
+      start: 4,
+      end: 5,
+      source: { kind: "branch", head: second, mergeBase: MERGE_BASE },
+    });
+    expect(moved[0]?.status).toBeUndefined();
+
+    // The next head changed its lines: marked, keeping its place, its quote and the pair it was written against.
+    const third = "d".repeat(40);
+    const changed = "// one\n// two\nconst a = 1;\nconst b = 20;\nconst c = 3;\n";
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.setComparison({
+        results: { app: compared(third) },
+        files: { "app/src/a.ts": changed },
+      });
+    });
+    client.send({ type: "compare", id: "compare-2", repo: "app", source: "branch" });
+    await client.answer("compare-2");
+    await client.until((messages) =>
+      messages.some(
+        (message) =>
+          message.type === "annotations" &&
+          message.annotations.some((draft) => draft.status === "outdated"),
+      ),
+    );
+
+    const marked = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.annotations(),
+    );
+
+    expect(marked[0]).toMatchObject({
+      status: "outdated",
+      start: 4,
+      source: { head: second },
+      quote: ["const b = 2;", "const c = 3;"],
+    });
+
+    // A list marked `behind` is the last one made: it changes nothing.
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.compared({ ...comparison("e".repeat(40)), behind: "f".repeat(40) }),
+    );
+    expect(
+      (await runInDurableObject(stub, (instance: TestSession) => instance.annotations()))[0]
+        ?.status,
+    ).toBe("outdated");
+
+    // Its file left the Comparison.
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.setComparison({
+        results: {
+          app: { status: "ok", comparison: { ...comparison("e".repeat(40)), files: [] } },
+        },
+      });
+    });
+    client.send({ type: "compare", id: "compare-3", repo: "app", source: "branch" });
+    await client.answer("compare-3");
     await client.until((messages) =>
       messages.some(
         (message) =>

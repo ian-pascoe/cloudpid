@@ -28,6 +28,12 @@ export type LiveStubs = {
   readonly execs: number;
 };
 
+/** Whether the fake Container runs, and the scripts run on it so far. */
+export type FakeContainerState = {
+  readonly running: boolean;
+  readonly scripts: readonly string[];
+};
+
 type Counter = {
   started: number;
   container: number;
@@ -275,6 +281,52 @@ export class TestWorkspace extends Workspace {
 
   releaseMeasured(): void {
     this.#measured = [];
+  }
+
+  /**
+   * The Container as the Comparison tests have it (`comparison.workerd.test.ts`): `running` says whether it runs, and each
+   * script run on it is answered with the next of `outputs` (what real git printed for it, made in Node) and starts it,
+   * as a real run would. Without this, the Container is the real one, which this test Worker does not have.
+   */
+  #fakeContainer: { running: boolean; outputs: string[]; scripts: string[] } | undefined;
+
+  fakeContainer(options: {
+    readonly running: boolean;
+    readonly outputs?: readonly string[];
+  }): void {
+    this.#fakeContainer = {
+      running: options.running,
+      outputs: [...(options.outputs ?? [])],
+      scripts: this.#fakeContainer?.scripts ?? [],
+    };
+  }
+
+  /** Whether the fake Container runs, and the scripts run on it so far. */
+  fakeContainerState(): FakeContainerState {
+    return {
+      running: this.#fakeContainer?.running === true,
+      scripts: [...(this.#fakeContainer?.scripts ?? [])],
+    };
+  }
+
+  protected override containerRunning(): boolean {
+    return this.#fakeContainer?.running ?? super.containerRunning();
+  }
+
+  protected override runContainerScript(script: string) {
+    const fake = this.#fakeContainer;
+
+    if (fake === undefined) return super.runContainerScript(script);
+
+    fake.scripts.push(script);
+    fake.running = true;
+
+    return Promise.resolve({ exitCode: 0, stdout: fake.outputs.shift() ?? "", stderr: "" });
+  }
+
+  /** The keys of the Workspace DO's storage that start with `prefix`. */
+  storageKeys(prefix: string): string[] {
+    return [...this.ctx.storage.kv.list({ prefix })].map(([key]) => key);
   }
 
   /** The bytes of file `path` in the Workspace. */

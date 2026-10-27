@@ -10,7 +10,8 @@
     "./memory-guard": "./src/memory-guard.ts",
     "./workspaces": "./src/workspaces.ts",
     "./builds": "./src/builds.ts",
-    "./changes": "./src/changes.ts"
+    "./changes": "./src/changes.ts",
+    "./comparison": "./src/comparison.ts"
   },
   "scripts": {
     "typecheck": "tsc",
