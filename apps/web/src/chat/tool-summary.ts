@@ -227,7 +227,10 @@ export const toolSummary = (toolName: string, args: Args): string | undefined =>
       case "environment_delete":
         return text(args, "id");
       case "environment_secret_delete":
+      case "environment_skill_remove":
         return variable(args);
+      case "environment_skill_save":
+        return inEnvironment(args, text(args, "path"));
       case "settings_spend_limit_set":
         return spendLimit(args);
       case "settings_subagent_depth_set":

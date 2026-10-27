@@ -7,6 +7,7 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type KeptSecret, secretEnvName } from "@cloudpid/extensions/secrets/core";
 import type { EnvironmentBuild } from "./build-record.ts";
+import type { SkillSet } from "./bundled-skill-set.ts";
 import {
   CLONE_TIMEOUT_SECONDS,
   prepareWorkspace,
@@ -58,6 +59,10 @@ const host = (
     held: null,
     written: [],
   };
+
+  /** Each Skill set handed to the object, with how many scripts had run by then. */
+  const skillSets: Array<{ handed: SkillSet; scriptsBefore: number }> = [];
+  let refuseSkills = false;
 
   let scriptsBeforeBuild: number | undefined;
   let refuse = false;
@@ -126,6 +131,17 @@ const host = (
           },
           read: () => Promise.resolve(heldSecrets),
         },
+        skills: {
+          write: (handed) => {
+            skillSets.push({ handed, scriptsBefore: scripts.length });
+
+            return Promise.resolve(
+              refuseSkills
+                ? { ok: false as const, message: "Skill file path a//b has an empty segment" }
+                : { ok: true as const },
+            );
+          },
+        },
         warn: (message) => {
           warnings.push(message);
         },
@@ -141,6 +157,10 @@ const host = (
     builds,
     secrets,
     unavailable,
+    skillSets,
+    refuseSkills: () => {
+      refuseSkills = true;
+    },
     hold: (secrets: ReadonlyArray<KeptSecret>) => {
       heldSecrets = secrets;
     },
@@ -154,6 +174,31 @@ const host = (
 const cloned = ["/workspace/app/.git", "/workspace/api/.git"];
 
 describe("readying a Workspace", () => {
+  it("hands the object its Environment's Skill set before any script runs, and none when the set-up has none", async () => {
+    const set: SkillSet = { hash: "merged-1", files: { "release/SKILL.md": "---\nname: release\n---\n" } };
+    const handed = host([], [{ exitCode: 0, output: "" }]);
+
+    await handed.prepare({ ...setup, skills: set });
+
+    const none = host(cloned);
+
+    await none.prepare();
+
+    expect(handed.skillSets).toEqual([{ handed: set, scriptsBefore: 0 }]);
+    expect(none.skillSets).toEqual([]);
+  });
+
+  it("only reports a Skill set the object refuses", async () => {
+    const refused = host(cloned);
+
+    refused.refuseSkills();
+    await refused.prepare({ ...setup, skills: { hash: "merged-1", files: { "a//b": "" } } });
+
+    expect(refused.warnings).toEqual([
+      "The Workspace refused its Environment's Skill set: Skill file path a//b has an empty segment",
+    ]);
+  });
+
   it("hands the object its Environment's Secrets before any script runs, and none when the set-up has none", async () => {
     const kept: KeptSecret = {
       name: "API_KEY",

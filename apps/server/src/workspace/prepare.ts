@@ -31,6 +31,8 @@ import type { WorkspaceNamespace } from "../session/workspace.ts";
 import type { EnvironmentBuild } from "./build-record.ts";
 import { buildSecretEnvironment } from "./environment-secrets.ts";
 import type { WorkspaceSettingsAnswer, WriteAnswer } from "./settings.ts";
+import type { SkillSet } from "./bundled-skill-set.ts";
+import type { SkillSetAnswer } from "./skill-set.ts";
 
 /**
  * What a Workspace is readied with: its clones' Repos, branch and base, its Environment's Container settings, and its
@@ -55,6 +57,11 @@ export type WorkspaceSetup = WorkspaceClones & {
    * them.
    */
   readonly secretsUnavailable?: string | undefined;
+  /**
+   * The Environment's Skill set (its own Skills over the bundle, ADR-0026), which the Workspace mounts at once. Absent,
+   * it keeps the one it holds: the Registry leaves it out when the Workspace holds it already.
+   */
+  readonly skills?: SkillSet | undefined;
 };
 
 /** How long cloning a Workspace's Repos may take, in seconds: full clones of big repos, after a cold start. */
@@ -113,6 +120,10 @@ export type PreparationHost = {
      */
     readonly read?: (() => Promise<ReadonlyArray<KeptSecret>>) | undefined;
   };
+  /** Hand the Workspace's Durable Object its Environment's Skill set (`Workspace.updateSkills`). */
+  readonly skills: {
+    readonly write: (set: SkillSet) => Promise<SkillSetAnswer>;
+  };
   readonly warn: (message: string) => void;
 };
 
@@ -152,13 +163,20 @@ const sameBuild = (left: EnvironmentBuild | null, right: EnvironmentBuild | null
  * the script runs again at the next Container start.
  */
 export const prepareWorkspace = async (
-  { readText, run, settings, build, secrets, warn }: PreparationHost,
+  { readText, run, settings, build, secrets, skills, warn }: PreparationHost,
   setup: WorkspaceSetup,
 ): Promise<void> => {
   // First, so the snapshot of any Container this readying starts is searched for them.
   if (setup.secrets !== undefined) await secrets.write(setup.secrets);
   else if (setup.secretsUnavailable !== undefined) {
     await secrets.unavailable(setup.secretsUnavailable);
+  }
+
+  // Before any script, so a Setup Script that reads a Skill finds the Environment's. A refused set leaves the one held.
+  if (setup.skills !== undefined) {
+    const handed = await skills.write(setup.skills);
+
+    if (!handed.ok) warn(`The Workspace refused its Environment's Skill set: ${handed.message}`);
   }
 
   const held = await settings.read();
@@ -295,6 +313,7 @@ export const preparationHost = (
   settings: PreparationHost["settings"],
   build: PreparationHost["build"],
   secrets: PreparationHost["secrets"],
+  skills: PreparationHost["skills"],
   warn: (message: string) => void,
 ): PreparationHost => {
   const env = async () => {
@@ -325,6 +344,7 @@ export const preparationHost = (
     settings,
     build,
     secrets,
+    skills,
     warn,
   };
 };
@@ -354,6 +374,7 @@ export const workspacePreparation =
           unavailable: (reason) =>
             namespace.getByName(objectName).environmentSecretsUnavailable(reason),
         },
+        { write: (set) => namespace.getByName(objectName).updateSkills(set) },
         warn,
       ),
       setup,

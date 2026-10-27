@@ -821,6 +821,8 @@ export class Workspace extends ContainerHost {
           return held.ok ? held.secrets : [];
         },
       },
+      // Its own work is not a Session's use of the spare.
+      { write: (set) => this.#updateSkills(set) },
       (message) => console.warn(message),
     );
   }
@@ -1096,12 +1098,19 @@ export class Workspace extends ContainerHost {
    * starts at the alarm, so this answers at once (`SparePreparation`).
    */
   async prepareSpare(setup: WorkspaceSetup): Promise<void> {
-    // The Secrets are kept sealed, never with the set-up the preparation stores.
-    const { secrets, secretsUnavailable, ...stored } = setup;
+    // The Secrets are kept sealed, never with the set-up the preparation stores. The Skill set is mounted now, so the
+    // set-up stored stays small and a Session that takes the spare before its preparation finds the Skills.
+    const { secrets, secretsUnavailable, skills, ...stored } = setup;
 
     if (secrets !== undefined) await this.#environmentSecrets.replace(secrets);
     else if (secretsUnavailable !== undefined) {
       await this.#environmentSecrets.markUnavailable(secretsUnavailable);
+    }
+
+    if (skills !== undefined) {
+      const mounted = await this.#updateSkills(skills);
+
+      if (!mounted.ok) console.warn(`workspace.spare: its Skill set was refused: ${mounted.message}`);
     }
 
     return this.#spare.request(stored);
@@ -1214,6 +1223,11 @@ export class Workspace extends ContainerHost {
   async updateSkills(set: SkillSet): Promise<SkillSetAnswer> {
     this.#spare.noteUse();
 
+    return this.#updateSkills(set);
+  }
+
+  /** `updateSkills`, for this object's own work too: a spare's set-up hands it its set, which is no Session's use. */
+  async #updateSkills(set: SkillSet): Promise<SkillSetAnswer> {
     const checked = checkSkillSet(set);
 
     if (!checked.ok) return checked;

@@ -56,6 +56,8 @@ const open = (
   overridesUnreadable = false,
 ) => {
   const handedOver: Array<{ object: string; overrides: Schema.Json }> = [];
+  const skillSetsHanded: Array<{ object: string; hash: string }> = [];
+  const skillsAsked: unknown[] = [];
   const upkept: string[] = [];
   const asked: unknown[] = [];
   const everyAsked: unknown[] = [];
@@ -130,6 +132,32 @@ const open = (
         directory: "/workspace",
         createdAt: 0,
       }),
+    listSkills: ({ environment }: { readonly environment: string }) =>
+      Effect.succeed(
+        environment === "default"
+          ? [{ name: "release", description: "Cut a release.", savedAt: 9 }]
+          : [],
+      ),
+    workspaceSkillSet: ({ environment }: { readonly environment: string }) =>
+      Effect.succeed({ hash: `set-of-${environment}`, files: {} }),
+    agentSaveSkill: (input: Parameters<EnvironmentsRegistry["agentSaveSkill"]>[0]) =>
+      Effect.sync(() => {
+        skillsAsked.push(input);
+
+        return {
+          status: "saved" as const,
+          environment: input.environment === "default" ? DEFAULT : OTHER,
+          change: { ...CHANGE, field: "skills.release", tool: "environment_skill_save" },
+          skill: { name: "release", description: "Cut a release.", files: {}, savedAt: 1 },
+          shadows: false,
+        };
+      }),
+    agentRemoveSkill: (input: Parameters<EnvironmentsRegistry["agentRemoveSkill"]>[0]) =>
+      Effect.sync(() => {
+        skillsAsked.push(input);
+
+        return { status: "absent" as const, environment: DEFAULT };
+      }),
     agentMarkSecretBuild: (input: Parameters<EnvironmentsRegistry["agentMarkSecretBuild"]>[0]) =>
       Effect.sync(() => {
         markAsked.push(input);
@@ -170,6 +198,11 @@ const open = (
 
       return Promise.resolve({ ok: true });
     },
+    handSkills: (object, set) => {
+      skillSetsHanded.push({ object, hash: set.hash });
+
+      return Promise.resolve({ ok: true });
+    },
     builds: {
       of: (environment) =>
         Effect.sync(() => {
@@ -182,6 +215,8 @@ const open = (
   return {
     environments,
     handedOver,
+    skillSetsHanded,
+    skillsAsked,
     upkept,
     asked,
     everyAsked,
@@ -215,6 +250,52 @@ describe("the Session's Environments", () => {
       { name: "NPM_TOKEN", scope: "every", build: false },
     ]);
     expect(await Effect.runPromise(environments.get("ghost"))).toBeNull();
+  });
+
+  it("list an Environment's own Skills in its details", async () => {
+    const { environments } = open();
+
+    expect((await Effect.runPromise(environments.get("default")))?.skills).toEqual([
+      { name: "release", description: "Cut a release.", savedAt: 9 },
+    ]);
+  });
+
+  it("hand the Session's own Workspace its Environment's Skill set after a save, and run no Build's upkeep", async () => {
+    const { environments, skillSetsHanded, skillsAsked, upkept } = open();
+    const files = { "SKILL.md": "---\nname: release\n---\n" };
+
+    const saved = await Effect.runPromise(
+      environments.saveSkill({ environment: "default", folder: "release", files, author }),
+    );
+
+    expect(skillsAsked).toEqual([
+      { environment: "default", folder: "release", files, author: { session: "s-1", ...author } },
+    ]);
+    expect(saved).toMatchObject({ status: "saved", name: "release", handed: true });
+    expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
+    expect(upkept).toEqual([]);
+  });
+
+  it("leave the Session's Workspace as it is after a Skill saved for another Environment", async () => {
+    const { environments, skillSetsHanded } = open();
+
+    const saved = await Effect.runPromise(
+      environments.saveSkill({ environment: "0000abcd", folder: "release", files: {}, author }),
+    );
+
+    expect(saved).toMatchObject({ status: "saved", handed: false });
+    expect(skillSetsHanded).toEqual([]);
+  });
+
+  it("hand nothing after removing a Skill the Environment does not keep", async () => {
+    const { environments, skillSetsHanded } = open();
+
+    const removed = await Effect.runPromise(
+      environments.removeSkill({ environment: "default", name: "nope", author }),
+    );
+
+    expect(removed).toEqual({ status: "absent", environment: { id: "default", name: "Default" } });
+    expect(skillSetsHanded).toEqual([]);
   });
 
   it("carry the variables kept for every Environment in an Environment's details", async () => {

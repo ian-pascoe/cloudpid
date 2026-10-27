@@ -36,6 +36,7 @@ import {
 } from "./environment.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
+import { unusedSkills } from "./environment-skills.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { secretEnvName, secretReference } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
@@ -58,6 +59,7 @@ const DEFAULT: EnvironmentDetails = {
     { name: "NPM_TOKEN", scope: "every", build: false },
   ],
   everyVariables: EVERY,
+  skills: [],
 };
 
 const OTHER: EnvironmentDetails = {
@@ -73,6 +75,7 @@ const OTHER: EnvironmentDetails = {
   settings: DEFAULT_CONTAINER_SETTINGS,
   secrets: [],
   everyVariables: EVERY,
+  skills: [],
 };
 
 const EVERY_ENVIRONMENT = { id: "*", name: "every Environment" };
@@ -108,6 +111,7 @@ const fakeEnvironments = (current: string | null = "default") => {
   const service: EnvironmentsService = {
     ...unusedLifecycle,
     ...unusedSecretMarks,
+    ...unusedSkills,
     current: Effect.succeed(current),
     list: Effect.sync(() => [...details.values()]),
     get: (id) =>

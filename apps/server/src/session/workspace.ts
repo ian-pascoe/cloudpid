@@ -38,6 +38,8 @@ export type WorkspaceNamespace = {
       | "updateEnvironmentBuild"
       | "updateEnvironmentSecrets"
       | "environmentSecretsUnavailable"
+      | "skillSetHash"
+      | "updateSkills"
       | "containerUsage"
       | "changes"
       | "changeFile"

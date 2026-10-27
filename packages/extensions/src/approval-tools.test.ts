@@ -33,6 +33,7 @@ import {
 } from "./environment.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
+import { unusedSkills } from "./environment-skills.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import { type SettingsFieldChange, SettingsAccess, SettingsReload } from "./settings.ts";
@@ -68,6 +69,7 @@ const details = (id: string, name: string, settings = {}): EnvironmentDetails =>
   settings: { ...DEFAULT_CONTAINER_SETTINGS, ...settings },
   secrets: [],
   everyVariables: {},
+  skills: [],
 });
 
 /** What a fake recorded being asked to do. */
@@ -163,6 +165,7 @@ const setUp = async ({
       Effect.provideService(Environments, {
         ...unusedLifecycle,
         ...unusedSecretMarks,
+        ...unusedSkills,
         current: Effect.succeed(current),
         list: Effect.succeed([]),
         get: (id) => Effect.succeed(held[id] ?? null),
