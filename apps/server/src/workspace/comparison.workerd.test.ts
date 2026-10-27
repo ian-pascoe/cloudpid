@@ -176,6 +176,20 @@ describe("This branch in the Workspace DO", () => {
     expect(scripts[1]).toContain(repos.blob.id);
   });
 
+  it("answers an error, not an added file, for a commit it does not have when the list is not kept", async () => {
+    const { stub, list } = await compared();
+
+    const refused = await stub
+      .comparisonFile({ repo: "app", mergeBase: "e".repeat(40), head: list.head, path: "new.txt" })
+      .then(
+        () => undefined,
+        (cause: unknown) => String(cause),
+      );
+
+    expect(refused).toMatch(/no longer kept/);
+    expect((await stub.fakeContainerState()).scripts).toHaveLength(1);
+  });
+
   it("sends a repo whose packs are over 16 MB to the Container for contents", async () => {
     const { stub, list } = await compared();
 

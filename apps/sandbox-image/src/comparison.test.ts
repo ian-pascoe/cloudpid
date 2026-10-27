@@ -524,6 +524,21 @@ describe("the blob fallback", () => {
     expect(blobs.has("0".repeat(40))).toBe(false);
   });
 
+  it("reads on past an id that is not a blob, whose bytes git prints too", () => {
+    const repo = workspace();
+    const commit = repo.sh("git rev-parse HEAD", repo.dir);
+    const tree = repo.sh("git rev-parse HEAD^{tree}", repo.dir);
+    const small = repo.sh("git rev-parse HEAD:README.md", repo.dir);
+
+    const blobs = parseBlobs(
+      repo.sh(blobsScript("app", [commit, tree, small, commit, small], 100, repo.root)),
+    );
+
+    expect(blobs.has(commit)).toBe(false);
+    expect(blobs.has(tree)).toBe(false);
+    expect(Buffer.from(blobs.get(small)?.blob ?? []).toString()).toBe("hello\n");
+  });
+
   it("refuses an id that is not a blob id", () => {
     expect(() => blobsScript("app", ["HEAD:x; rm -rf /"], 10)).toThrow("Not a blob id");
   });

@@ -282,6 +282,32 @@ describe("a Diff pane's This branch", () => {
     }),
   );
 
+  it.effect("follows a HEAD again after an owner's compare was cut off by the next", () =>
+    Effect.gen(function* () {
+      const { registry, pane, latest, compares, answer, live } = setup();
+
+      yield* live;
+      registry.mount(pane.following);
+      yield* latest().say(changes(HEAD));
+      registry.set(pane.source, { kind: "branch", repo: "app" });
+
+      // A double-click on Refresh: the second compare interrupts the first.
+      registry.set(pane.compare, { repo: "app", manual: true, fetch: true });
+      yield* settle;
+      registry.set(pane.compare, { repo: "app", manual: true, fetch: true });
+      yield* settle;
+      yield* answer(1, { status: "ok", comparison: comparison(HEAD) });
+
+      expect(compares()).toHaveLength(2);
+
+      yield* latest().say(changes(NEXT));
+      yield* settle;
+
+      expect(compares()).toHaveLength(3);
+      expect(compares()[2]).toMatchObject({ startContainer: false, fetch: false });
+    }),
+  );
+
   it.effect("asks for the picker's repos again only when a HEAD moves, not at every listing", () =>
     Effect.gen(function* () {
       const { registry, pane, latest, live } = setup();

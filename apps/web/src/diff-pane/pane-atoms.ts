@@ -11,6 +11,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
+import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { messageOf } from "../registry.ts";
 import { appRuntime } from "../runtime.ts";
 import { changesAtom, sessionClientAtom } from "../session/atoms.ts";
@@ -147,14 +148,18 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
   const branchView = Atom.make<BranchView>({ kind: "idle" });
 
   // How many of the owner's own compares (a pick, a Refresh) run: a count, since one interrupted by the next ends after
-  // the next began.
-  const manualRunning = Atom.make(0);
+  // the next began. Kept alive, and written through the registry rather than the fn's context: a new call disposes the
+  // old call's context before it interrupts the old fiber, and a disposed context drops writes, which would leave the
+  // count above zero and the Pane never following the HEAD again.
+  const manualRunning = Atom.make(0).pipe(Atom.keepAlive);
 
   const compare = appRuntime.fn((ask: CompareAsk, get) => {
     const count = (change: number) =>
-      Effect.sync(() => {
-        if (ask.manual) get.set(manualRunning, get(manualRunning) + change);
-      });
+      Effect.flatMap(Effect.service(AtomRegistry.AtomRegistry), (registry) =>
+        Effect.sync(() => {
+          if (ask.manual) registry.update(manualRunning, (running) => running + change);
+        }),
+      );
 
     const made = Effect.gen(function* () {
       const client = yield* get.result(sessionClientAtom(sessionId));

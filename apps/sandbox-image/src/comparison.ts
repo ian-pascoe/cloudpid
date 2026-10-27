@@ -379,15 +379,16 @@ ids=(${ids.join(" ")})
 if [ "\${#ids[@]}" -gt 0 ]; then
   # One \`cat-file --batch\` for all: a header line (\`<id> blob <size>\`, or \`<id> missing\`), then the size bytes and a newline.
   printf '%s\\n' "\${ids[@]}" | git -C "$dir" cat-file --batch 2>/dev/null | while IFS=' ' read -r id type size; do
-    if [ "$type" != blob ]; then
+    if [ "$type" = missing ]; then
       printf 'missing\\t%s\\n' "$id"
-    elif [ "$size" -le ${maxBytes} ]; then
+    elif [ "$type" = blob ] && [ "$size" -le ${maxBytes} ]; then
       printf 'blob\\t%s\\t%s\\t%s\\n' "$id" "$size" "$(head -c "$size" | base64 | tr -d '\\n')"
       read -r _
     else
+      # Whenever a size is printed its bytes follow, whatever the object is: read them, or the next header is lost.
       head -c "$size" >/dev/null
       read -r _
-      printf 'blob\\t%s\\t%s\\t\\n' "$id" "$size"
+      if [ "$type" = blob ]; then printf 'blob\\t%s\\t%s\\t\\n' "$id" "$size"; else printf 'missing\\t%s\\n' "$id"; fi
     fi
   done
 fi
