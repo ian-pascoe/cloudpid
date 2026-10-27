@@ -19,6 +19,10 @@ export type ComparisonRepos = {
   readonly withoutBlob: RepoFiles;
   /** The new file's blob id, and what `blobsScript` printed for it. */
   readonly blob: { readonly id: string; readonly stdout: string };
+  /** Pull request 7 at `first`'s head (the remote keeps it at `refs/pull/7/head`): its head, and what the command printed. */
+  readonly pull: { readonly head: string; readonly stdout: string };
+  /** Pull request 7 after the push of `second`'s commit: the new head, and what the command printed for it. */
+  readonly pullMoved: { readonly head: string; readonly stdout: string };
 };
 
 declare module "vitest" {

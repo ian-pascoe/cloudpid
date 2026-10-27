@@ -12,6 +12,7 @@ import { ensureDirectory } from "@cloudpid/computer-env";
 import { RpcTarget } from "cloudflare:workers";
 import * as git from "isomorphic-git";
 import { type ChangesFiles, gitFs, WorkspaceChangesModule } from "./changes.ts";
+import type { Answers } from "./github-pulls.fixtures.ts";
 import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
 
@@ -322,6 +323,55 @@ export class TestWorkspace extends Workspace {
     fake.running = true;
 
     return Promise.resolve({ exitCode: 0, stdout: fake.outputs.shift() ?? "", stderr: "" });
+  }
+
+  /**
+   * GitHub as the pull request tests have it (`comparison-pull.workerd.test.ts`): `answers` by request path, each
+   * answered 200 with its JSON (a path with no answer is a 404), or every request answered `status` when given; the
+   * requests made are recorded. Without it the real API is asked, which this test Worker never should.
+   */
+  #github: { answers: Answers; status: number | undefined; requests: string[] } | undefined;
+
+  setGithub(answers: Answers, status?: number): void {
+    this.#github = { answers, status, requests: this.#github?.requests ?? [] };
+  }
+
+  /** The paths asked of the GitHub stub so far, with their query. */
+  githubRequests(): string[] {
+    return [...(this.#github?.requests ?? [])];
+  }
+
+  protected override githubFetch(url: string, init: RequestInit): Promise<Response> {
+    const github = this.#github;
+
+    if (github === undefined) return super.githubFetch(url, init);
+
+    const { pathname, search } = new URL(url);
+
+    github.requests.push(`${pathname}${search}`);
+
+    if (github.status !== undefined) {
+      return Promise.resolve(Response.json({ message: "no" }, { status: github.status }));
+    }
+
+    const answer = github.answers[`${pathname}${search}`] ?? github.answers[pathname];
+
+    return Promise.resolve(
+      answer === undefined
+        ? Response.json({ message: "Not Found" }, { status: 404 })
+        : Response.json(answer),
+    );
+  }
+
+  /** The test's clock, which the pull request list's 60 s are counted by; the real one until set. */
+  #now: number | undefined;
+
+  setClock(ms: number): void {
+    this.#now = ms;
+  }
+
+  protected override clock(): number {
+    return this.#now ?? super.clock();
   }
 
   /** The keys of the Workspace DO's storage that start with `prefix`. */

@@ -68,6 +68,23 @@ const made = (): ComparisonRepos => {
   const firstOut = run(comparisonScript({ repo: "app", fetch: true }));
   const first = { files: collect(dir, () => false), stdout: firstOut };
 
+  // Pull request 7 is the branch's head, which the remote keeps at `refs/pull/7/head` as GitHub does.
+  git(dir, "push", "-q", "origin", "feat:refs/pull/7/head");
+
+  const pullHead = git(dir, "rev-parse", "HEAD").toString().trim();
+
+  const pull = {
+    head: pullHead,
+    stdout: run(
+      comparisonScript({
+        repo: "app",
+        base: "main",
+        fetch: true,
+        pull: { number: 7, head: pullHead },
+      }),
+    ),
+  };
+
   const blobId = git(dir, "rev-parse", "HEAD:new.txt").toString().trim();
   const blobOut = run(blobsScript("app", [blobId], 1024 * 1024));
 
@@ -83,9 +100,26 @@ const made = (): ComparisonRepos => {
     stdout: run(comparisonScript({ repo: "app", fetch: false })),
   };
 
+  // Someone pushes to the pull request: its head moves to the new commit.
+  git(dir, "push", "-q", "origin", "feat:refs/pull/7/head");
+
+  const movedHead = git(dir, "rev-parse", "HEAD").toString().trim();
+
+  const pullMoved = {
+    head: movedHead,
+    stdout: run(
+      comparisonScript({
+        repo: "app",
+        base: "main",
+        fetch: false,
+        pull: { number: 7, head: movedHead },
+      }),
+    ),
+  };
+
   rmSync(root, { recursive: true, force: true });
 
-  return { first, second, withoutBlob, blob: { id: blobId, stdout: blobOut } };
+  return { first, second, withoutBlob, blob: { id: blobId, stdout: blobOut }, pull, pullMoved };
 };
 
 export default function setup(project: TestProject) {

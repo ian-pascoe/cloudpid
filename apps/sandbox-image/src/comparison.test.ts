@@ -75,11 +75,24 @@ const workspace = () => {
     write,
     commit,
     /** The Comparison of `app` as the script makes it. */
-    compare: (options: { base?: string; fetch?: boolean } = {}) =>
+    compare: (
+      options: {
+        base?: string;
+        fetch?: boolean;
+        pull?: { number: number; head?: string };
+        drop?: number[];
+      } = {},
+    ) =>
       parseComparison(
         sh(
           comparisonScript(
-            { repo: "app", base: options.base, fetch: options.fetch ?? false },
+            {
+              repo: "app",
+              base: options.base,
+              fetch: options.fetch ?? false,
+              pull: options.pull,
+              drop: options.drop,
+            },
             root,
           ),
         ),
@@ -505,6 +518,169 @@ describe("This branch's Container command", () => {
 
   it("reads a stopped-short output as an error", () => {
     expect(parseComparison("base\tbWFpbg==\n")).toMatchObject({ ok: false, kind: "failed" });
+  });
+});
+
+/**
+ * The remote has pull request 7: a branch off `main` with two commits at `refs/pull/7/head` (as GitHub keeps it), `main`
+ * moved on after it left; `app` is on `main`, with a branch of its own it must not lose.
+ */
+const withPull = () => {
+  const repo = workspace();
+
+  repo.sh("git switch -q -c topic", repo.seed);
+  repo.commit(repo.seed, { "p.txt": "p1\n" }, "p1");
+  repo.commit(repo.seed, { "p.txt": "p1\np2\n", "lib/keep.txt": lines(31, "keep") }, "p2");
+  repo.sh("git push -q origin HEAD:refs/pull/7/head", repo.seed);
+  repo.sh("git switch -q main", repo.seed);
+  repo.commit(repo.seed, { "later.txt": "later\n" }, "later");
+  repo.sh("git push -q origin main", repo.seed);
+  repo.sh("git switch -q -c mine", repo.dir);
+  repo.commit(repo.dir, { "mine.txt": "mine\n" }, "mine");
+
+  return { ...repo, pullHead: repo.sh("git rev-parse topic", repo.seed) };
+};
+
+describe("a pull request's Container command", () => {
+  it("compares the pull request's head, fetched into refs/cloudpid/pr/<n>, with the merge-base of its base", () => {
+    const repo = withPull();
+    const result = repo.compare({ base: "main", pull: { number: 7, head: repo.pullHead } });
+
+    expect(result.ok).toBe(true);
+
+    if (!result.ok) return;
+
+    expect(result.comparison).toMatchObject({
+      remote: "origin",
+      base: "main",
+      branch: null,
+      head: repo.pullHead,
+      commits: 2,
+      fetched: true,
+    });
+    expect(result.comparison.mergeBase).toBe(repo.sh("git rev-parse main~1", repo.seed));
+    expect(result.comparison.files.map((file) => [file.path, file.status])).toEqual([
+      ["lib/keep.txt", "modified"],
+      ["p.txt", "added"],
+    ]);
+    expect(repo.sh("git rev-parse refs/cloudpid/pr/7", repo.dir)).toBe(repo.pullHead);
+  });
+
+  it("writes only the hidden refs: never refs/heads, refs/remotes, FETCH_HEAD, the index or the tree", () => {
+    const repo = withPull();
+    const { dir, sh } = repo;
+
+    repo.write(dir, "dirty.txt", "dirty\n");
+
+    const state = () => ({
+      refs: sh(
+        "git for-each-ref refs/heads refs/remotes refs/tags --format='%(refname) %(objectname)'",
+        dir,
+      ),
+      head: sh("cat .git/HEAD", dir),
+      index: readFileSync(join(dir, ".git/index")).toString("hex"),
+      status: sh("git --no-optional-locks status --porcelain -uall", dir),
+    });
+
+    const before = state();
+
+    expect(repo.compare({ base: "main", pull: { number: 7 } }).ok).toBe(true);
+    expect(state()).toEqual(before);
+    expect(existsSync(join(dir, ".git/FETCH_HEAD"))).toBe(false);
+    expect(sh("git for-each-ref --format='%(refname)' refs/cloudpid", dir)).toBe(
+      "refs/cloudpid/base/main\nrefs/cloudpid/pr/7",
+    );
+  });
+
+  it("fetches again only when the ref is missing, not the pull request's head, or asked", () => {
+    const repo = withPull();
+    const first = repo.compare({ base: "main", pull: { number: 7, head: repo.pullHead } });
+
+    expect(first.ok && first.comparison.fetched).toBe(true);
+
+    const same = repo.compare({ base: "main", pull: { number: 7, head: repo.pullHead } });
+
+    expect(same.ok && same.comparison.fetched).toBe(false);
+
+    // Someone pushes: the pull request's head moves.
+    repo.sh("git switch -q topic", repo.seed);
+    repo.commit(repo.seed, { "p.txt": "p1\np2\np3\n" }, "p3");
+    repo.sh("git push -q origin HEAD:refs/pull/7/head", repo.seed);
+
+    const moved = repo.sh("git rev-parse topic", repo.seed);
+    const stale = repo.compare({ base: "main", pull: { number: 7, head: repo.pullHead } });
+
+    // Asked for the head it knows: the ref is that, so nothing is fetched.
+    expect(stale.ok && stale.comparison.head).toBe(repo.pullHead);
+
+    const fresh = repo.compare({ base: "main", pull: { number: 7, head: moved } });
+
+    expect(fresh.ok && fresh.comparison).toMatchObject({ head: moved, commits: 3, fetched: true });
+
+    const refreshed = repo.compare({ base: "main", fetch: true, pull: { number: 7 } });
+
+    expect(refreshed.ok && refreshed.comparison.fetched).toBe(true);
+  });
+
+  it("compares the base the pull request has, so a stacked pull request shows only its own commits", () => {
+    const repo = withPull();
+
+    repo.sh("git switch -q topic", repo.seed);
+    repo.sh("git push -q origin topic:refs/heads/topic", repo.seed);
+    repo.sh("git switch -q -c stacked", repo.seed);
+    repo.commit(repo.seed, { "s.txt": "s\n" }, "s");
+    repo.sh("git push -q origin HEAD:refs/pull/8/head", repo.seed);
+
+    const result = repo.compare({ base: "topic", pull: { number: 8 } });
+
+    expect(result.ok && result.comparison).toMatchObject({ base: "topic", commits: 1 });
+    expect(result.ok && result.comparison.files.map((file) => file.path)).toEqual(["s.txt"]);
+  });
+
+  it("says when the pull request is not on the remote, and when the repo has no remote", () => {
+    const repo = withPull();
+
+    expect(repo.compare({ base: "main", pull: { number: 9 } })).toMatchObject({
+      ok: false,
+      kind: "failed",
+      message: "Pull request #9 is not on origin",
+    });
+
+    repo.sh("git remote remove origin", repo.dir);
+
+    expect(repo.compare({ base: "main", pull: { number: 7 } })).toMatchObject({
+      ok: false,
+      kind: "no_remote",
+    });
+  });
+
+  it("deletes the refs of pull requests no longer open, and only those", () => {
+    const repo = withPull();
+
+    repo.sh("git push -q origin HEAD:refs/pull/3/head", repo.seed);
+    expect(repo.compare({ base: "main", pull: { number: 7 } }).ok).toBe(true);
+    expect(repo.compare({ base: "main", pull: { number: 3 } }).ok).toBe(true);
+    repo.sh("git update-ref refs/cloudpid/run/x HEAD", repo.dir);
+
+    const result = repo.compare({ base: "main", pull: { number: 7 }, drop: [3, 99] });
+
+    expect(result.ok).toBe(true);
+    expect(repo.sh("git for-each-ref --format='%(refname)' refs/cloudpid", repo.dir)).toBe(
+      "refs/cloudpid/base/main\nrefs/cloudpid/pr/7\nrefs/cloudpid/run/x",
+    );
+    // The objects stay: nothing runs gc.
+    expect(repo.sh("git cat-file -t " + repo.sh("git rev-parse topic", repo.seed), repo.dir)).toBe(
+      "commit",
+    );
+  });
+
+  it("refuses a pull request number or head that is not one", () => {
+    expect(() => comparisonScript({ repo: "app", fetch: false, pull: { number: 0 } })).toThrow();
+    expect(() => comparisonScript({ repo: "app", fetch: false, pull: { number: 1.5 } })).toThrow();
+    expect(() =>
+      comparisonScript({ repo: "app", fetch: false, pull: { number: 1, head: "main; rm -rf /" } }),
+    ).toThrow();
+    expect(() => comparisonScript({ repo: "app", fetch: false, drop: [1, -2] })).toThrow();
   });
 });
 

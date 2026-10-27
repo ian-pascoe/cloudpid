@@ -110,6 +110,191 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const pulled = (head: string, extra: Record<string, Value> = {}) =>
+  comparison(head, {
+    branch: "topic",
+    pull: { number: 7, title: "Fix it", author: "dev", draft: false, state: "open" },
+    files: [
+      { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, blob: "blob-a" },
+      { path: "src/b.ts", status: "modified", additions: 2, deletions: 0, blob: "blob-b" },
+    ],
+    ...extra,
+  });
+
+describe("a Diff pane's pull request", () => {
+  it.effect("is asked for by its number, and its files anchor drafts on the pull request", () =>
+    Effect.gen(function* () {
+      const { registry, pane, compares, answer, live } = setup();
+
+      yield* live;
+      registry.set(pane.source, { kind: "pull", repo: "app", number: 7 });
+      registry.set(pane.compare, { repo: "app", pull: 7, manual: true, fetch: false });
+      yield* settle;
+
+      expect(compares()).toMatchObject([
+        { repo: "app", source: "pull", pull: 7, startContainer: false },
+      ]);
+      expect(registry.get(pane.branchView)).toEqual({ kind: "loading", repo: "app", pull: 7 });
+
+      yield* answer(0, { status: "ok", comparison: pulled(HEAD) });
+
+      expect(registry.get(pane.files).map((file) => file.id)).toEqual([
+        "app/src/a.ts",
+        "app/src/b.ts",
+      ]);
+      expect(registry.get(pane.files)[0]?.branch).toEqual({
+        kind: "pull",
+        repo: "app",
+        number: 7,
+        title: "Fix it",
+        mergeBase: MERGE_BASE,
+        head: HEAD,
+      });
+    }),
+  );
+
+  it.effect(
+    "shows This branch's Comparison for the branch and the pull request's for the pull request",
+    () =>
+      Effect.gen(function* () {
+        const { registry, pane, answer, live } = setup();
+
+        yield* live;
+        registry.set(pane.source, { kind: "pull", repo: "app", number: 7 });
+        registry.set(pane.compare, { repo: "app", pull: 7, manual: true, fetch: false });
+        yield* answer(0, { status: "ok", comparison: pulled(HEAD) });
+
+        expect(registry.get(pane.list).comparison?.pull?.number).toBe(7);
+
+        // The same repo's This branch is another Comparison: nothing of the pull request's shows under it.
+        registry.set(pane.source, { kind: "branch", repo: "app" });
+        expect(registry.get(pane.list).comparison).toBeUndefined();
+        expect(registry.get(pane.files)).toEqual([]);
+
+        // Another pull request of the repo is not shown the first's files either.
+        registry.set(pane.source, { kind: "pull", repo: "app", number: 8 });
+        expect(registry.get(pane.files)).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "starts the Container only for the owner's Refresh of a pull request that has new commits",
+    () =>
+      Effect.gen(function* () {
+        const { registry, pane, compares, answer, live } = setup();
+
+        yield* live;
+        registry.mount(pane.following);
+        registry.set(pane.source, { kind: "pull", repo: "app", number: 7 });
+        registry.set(pane.compare, { repo: "app", pull: 7, manual: false, fetch: false });
+        yield* answer(0, { status: "ok", comparison: pulled(HEAD, { behind: NEXT }) });
+
+        // Never followed by itself, though the repo's own HEAD is another thing.
+        expect(compares()).toHaveLength(1);
+
+        registry.set(pane.compare, { repo: "app", pull: 7, manual: true, fetch: false });
+        yield* answer(1, { status: "ok", comparison: pulled(HEAD, { behind: NEXT }) });
+
+        expect(registry.get(pane.branchView)).toEqual({ kind: "starting", repo: "app", pull: 7 });
+        expect(compares()[2]).toMatchObject({ pull: 7, startContainer: true });
+
+        yield* answer(2, { status: "ok", comparison: pulled(NEXT) });
+
+        expect(registry.get(pane.list).comparison?.head).toBe(NEXT);
+        expect(registry.get(pane.list).comparison?.behind).toBeUndefined();
+      }),
+  );
+
+  it.effect("keeps a closed pull request's last result, and shows its error states", () =>
+    Effect.gen(function* () {
+      const { registry, pane, answer, live } = setup();
+
+      yield* live;
+      registry.set(pane.source, { kind: "pull", repo: "app", number: 7 });
+      registry.set(pane.compare, { repo: "app", pull: 7, manual: true, fetch: false });
+      yield* answer(0, {
+        status: "ok",
+        comparison: pulled(HEAD, {
+          pull: { number: 7, title: "Fix it", author: "dev", draft: false, state: "merged" },
+        }),
+      });
+
+      expect(registry.get(pane.list).comparison?.pull?.state).toBe("merged");
+
+      registry.set(pane.compare, { repo: "app", pull: 7, manual: true, fetch: false });
+      yield* answer(1, {
+        status: "error",
+        error: { kind: "github_refused", message: "GitHub refused the token" },
+      });
+
+      expect(registry.get(pane.branchView)).toEqual({
+        kind: "error",
+        repo: "app",
+        pull: 7,
+        error: { kind: "github_refused", message: "GitHub refused the token" },
+      });
+    }),
+  );
+
+  it.effect(
+    "folds a viewed file, ticks and unticks through the Session, and loses the tick with the blob",
+    () =>
+      Effect.gen(function* () {
+        const { registry, pane, latest, answer, live } = setup();
+
+        yield* live;
+        registry.mount(pane.viewed);
+        registry.mount(pane.folded);
+        registry.mount(pane.setViewed);
+        registry.set(pane.source, { kind: "pull", repo: "app", number: 7 });
+        registry.set(pane.compare, { repo: "app", pull: 7, manual: true, fetch: false });
+        yield* answer(0, { status: "ok", comparison: pulled(HEAD) });
+
+        expect(registry.get(pane.viewed)).toEqual(new Set());
+        expect(registry.get(pane.folded)).toEqual(new Set());
+
+        registry.set(pane.setViewed, { repo: "app", pull: 7, path: "src/a.ts", blob: "blob-a" });
+        yield* settle;
+
+        const ask = latest()
+          .commands()
+          .find((command) => command.type === "viewed_set");
+
+        expect(ask).toMatchObject({
+          repo: "app",
+          pull: 7,
+          path: "src/a.ts",
+          blob: "blob-a",
+        });
+
+        yield* latest().say({ type: "result", id: ask?.id, result: null });
+        yield* latest().say({
+          type: "viewed",
+          viewed: [{ repo: "app", pull: 7, path: "src/a.ts", blob: "blob-a" }],
+        });
+        yield* settle;
+
+        expect(registry.get(pane.viewed)).toEqual(new Set(["app/src/a.ts"]));
+        expect(registry.get(pane.folded)).toEqual(new Set(["app/src/a.ts"]));
+
+        // The file changed in a push: the Comparison has its new blob, and the old tick no longer counts.
+        registry.set(pane.compare, { repo: "app", pull: 7, manual: true, fetch: false });
+        yield* answer(1, {
+          status: "ok",
+          comparison: pulled(NEXT, {
+            files: [
+              { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, blob: "blob-a2" },
+              { path: "src/b.ts", status: "modified", additions: 2, deletions: 0, blob: "blob-b" },
+            ],
+          }),
+        });
+
+        expect(registry.get(pane.viewed)).toEqual(new Set());
+        expect(registry.get(pane.folded)).toEqual(new Set());
+      }),
+  );
+});
+
 describe("a Diff pane's This branch", () => {
   it.effect(
     "is asked for without the Container, which starts only for the owner's own action",
@@ -310,23 +495,62 @@ describe("a Diff pane's This branch", () => {
     }),
   );
 
-  it.effect("offers no repo for This branch on a Subagent page, and asks the Session nothing", () =>
+  it.effect(
+    "offers no repo for This branch or a pull request on a Subagent page, and asks the Session nothing",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest, live } = setup();
+        const pane = paneAtomsOf(conversationKey("s1", 3));
+
+        yield* live;
+        registry.mount(pane.sources);
+        yield* settle;
+
+        const answer = registry.get(pane.sources);
+
+        expect(AsyncResult.isSuccess(answer) ? answer.value : undefined).toEqual({ repos: [] });
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "comparison_sources"),
+        ).toEqual([]);
+
+        // Nor does opening the picker ask.
+        registry.set(pane.pickerOpened, undefined);
+        yield* settle;
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "comparison_sources"),
+        ).toEqual([]);
+      }),
+  );
+
+  it.effect("asks for the picker's pull requests with its repos, and again at each opening", () =>
     Effect.gen(function* () {
-      const { registry, latest, live } = setup();
-      const pane = paneAtomsOf(conversationKey("s1", 3));
+      const { registry, pane, latest, live } = setup();
 
       yield* live;
       registry.mount(pane.sources);
       yield* settle;
 
-      const answer = registry.get(pane.sources);
-
-      expect(AsyncResult.isSuccess(answer) ? answer.value : undefined).toEqual({ repos: [] });
-      expect(
+      const asked = () =>
         latest()
           .commands()
-          .filter((command) => command.type === "comparison_sources"),
-      ).toEqual([]);
+          .filter((command) => command.type === "comparison_sources");
+
+      expect(asked()).toHaveLength(1);
+      expect(asked()[0]).toMatchObject({ pulls: true });
+
+      registry.set(pane.pickerOpened, undefined);
+      yield* settle;
+      expect(asked()).toHaveLength(2);
+      expect(asked()[1]).toMatchObject({ pulls: true });
+
+      registry.set(pane.pickerOpened, undefined);
+      yield* settle;
+      expect(asked()).toHaveLength(3);
+      expect(asked()[2]).toMatchObject({ pulls: true });
     }),
   );
 

@@ -12,6 +12,8 @@ import { SessionError } from "./errors.ts";
 /** What `compare` asks of the Workspace: a repo's Comparison, the Container started only when `startContainer`. */
 export type CompareQuery = {
   readonly repo: string;
+  /** Compare this open pull request instead of the branch. */
+  readonly pull?: number | undefined;
   readonly startContainer: boolean;
   readonly fetch: boolean;
 };
@@ -27,15 +29,15 @@ export type ComparisonFileQuery = {
 
 /** Where Comparisons come from: the Session's Workspace, in the directory the Session works in. */
 export type ComparisonsSource = {
-  /** The picker's repos; null with no Workspace. */
-  readonly sources: () => Promise<ComparisonSources | null>;
+  /** The picker's repos, with their open pull requests when `pulls`; null with no Workspace. */
+  readonly sources: (pulls: boolean) => Promise<ComparisonSources | null>;
   readonly compare: (query: CompareQuery) => Promise<CompareResult>;
   readonly file: (query: ComparisonFileQuery) => Promise<ChangeFile>;
 };
 
 export type SessionComparisonsService = {
-  /** The repos the picker lists, each with its HEAD; none for a Session with no Workspace. */
-  readonly sources: Effect.Effect<ComparisonSources, SessionError>;
+  /** The repos the picker lists, each with its HEAD (and open pull requests, with `pulls`); none with no Workspace. */
+  readonly sources: (pulls: boolean) => Effect.Effect<ComparisonSources, SessionError>;
   /** A repo's This branch Comparison, or why there is none (an error result is an answer, not a failure). */
   readonly compare: (query: CompareQuery) => Effect.Effect<CompareResult, SessionError>;
   /** One file's two sides. It never starts the Container. */
@@ -61,10 +63,11 @@ export const sessionComparisonsLayer = (
   source: ComparisonsSource,
 ): Layer.Layer<SessionComparisons> =>
   Layer.succeed(SessionComparisons, {
-    sources: Effect.tryPromise({
-      try: async () => (await source.sources()) ?? { repos: [] },
-      catch: failed("comparisonSources"),
-    }),
+    sources: (pulls) =>
+      Effect.tryPromise({
+        try: async () => (await source.sources(pulls)) ?? { repos: [] },
+        catch: failed("comparisonSources"),
+      }),
     compare: (query) =>
       Effect.tryPromise({ try: () => source.compare(query), catch: failed("compare") }),
     file: (query) =>

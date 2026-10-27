@@ -6,7 +6,13 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- a constructor of a Pane's atoms, not a combinator.
 
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
-import type { BranchSource, Comparison, ComparisonError, RepoChanges } from "@cloudpid/protocol";
+import type {
+  BranchSource,
+  Comparison,
+  ComparisonError,
+  PullSource,
+  RepoChanges,
+} from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -14,12 +20,18 @@ import * as Atom from "effect/reactivity/Atom";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { messageOf } from "../registry.ts";
 import { appRuntime } from "../runtime.ts";
-import { changesAtom, sessionClientAtom } from "../session/atoms.ts";
+import { changesAtom, sessionClientAtom, viewedAtom } from "../session/atoms.ts";
 import type { ConversationKey } from "../session/conversation-key.ts";
 import type { SessionCommandError } from "../session/client.ts";
-import { branchSourceOf, CHANGES_SOURCE, comparisonRepos, type PaneSource } from "./branch.ts";
+import {
+  branchSourceOf,
+  CHANGES_SOURCE,
+  comparisonRepos,
+  type PaneSource,
+  pullSourceOf,
+} from "./branch.ts";
 import { changesTotals, type ChangesTotals } from "./changes.ts";
-import { foldedFiles, paneFilesOf, type PaneFile } from "./pane-files.ts";
+import { foldedFiles, paneFilesOf, type PaneFile, viewedFileIds } from "./pane-files.ts";
 import {
   INITIAL_PANE_UI,
   reducePaneUi,
@@ -27,19 +39,38 @@ import {
   type PaneUi,
   type PaneUiAction,
 } from "./pane-ui.ts";
+import { browserPage, refreshOnReturn } from "./page-return.ts";
 import { diffTargetAtom } from "./target.ts";
 
 /**
- * Where the Comparison of the repo This branch shows stands: asked for, being made, the Container being started for it, made,
- * not made for a reason (an error state), or not asked for at all (a failure of the request itself).
+ * Where the Comparison of the repo This branch shows (or of its pull request `pull`) stands: asked for, being made, the
+ * Container being started for it, made, not made for a reason (an error state), or not asked for at all (a failure of the
+ * request itself).
  */
 export type BranchView =
   | { readonly kind: "idle" }
-  | { readonly kind: "loading"; readonly repo: string }
-  | { readonly kind: "starting"; readonly repo: string }
+  | { readonly kind: "loading"; readonly repo: string; readonly pull?: number | undefined }
+  | { readonly kind: "starting"; readonly repo: string; readonly pull?: number | undefined }
   | { readonly kind: "ready"; readonly comparison: Comparison }
-  | { readonly kind: "error"; readonly repo: string; readonly error: ComparisonError }
-  | { readonly kind: "failed"; readonly repo: string; readonly message: string };
+  | {
+      readonly kind: "error";
+      readonly repo: string;
+      readonly pull?: number | undefined;
+      readonly error: ComparisonError;
+    }
+  | {
+      readonly kind: "failed";
+      readonly repo: string;
+      readonly pull?: number | undefined;
+      readonly message: string;
+    };
+
+/** Whether `comparison` is the one `repo` and `pull` (a pull request's number, else This branch) name. */
+export const isComparisonOf = (
+  comparison: Comparison,
+  repo: string,
+  pull: number | undefined,
+): boolean => comparison.repo === repo && comparison.pull?.number === pull;
 
 /** What the Pane draws its files from: the Changes' repos, or the one repo of a Comparison. */
 export interface PaneList {
@@ -47,7 +78,7 @@ export interface PaneList {
   /** The Comparison, when the Pane shows This branch and has it. */
   readonly comparison: Comparison | undefined;
   /** The source drafts on the Comparison's files are written against. */
-  readonly branch: BranchSource | undefined;
+  readonly branch: BranchSource | PullSource | undefined;
   /** How many lists the Pane has had from the Changes: a Comparison's files are fixed by its commits, so it has none. */
   readonly listing: number;
 }
@@ -55,6 +86,8 @@ export interface PaneList {
 /** What `compare` is asked: a repo's Comparison, by the owner's own action (which may start the Container) or not. */
 export interface CompareAsk {
   readonly repo: string;
+  /** The pull request's number; without it, the repo's This branch. */
+  readonly pull?: number | undefined;
   /** The owner's pick or Refresh: a stopped Container may be started for it. */
   readonly manual: boolean;
   /** Fetch the base again (the header's Refresh). */
@@ -74,6 +107,27 @@ export interface PaneAtoms {
   /** The repos the picker lists, each with its HEAD; null until the Session answers. */
   readonly sources: Atom.Atom<
     AsyncResult.AsyncResult<import("@cloudpid/protocol").ComparisonSources, SessionCommandError>
+  >;
+  /**
+   * The picker opened: lists the repos and their open pull requests again (the Workspace asks GitHub once per 60 s per
+   * repo, however often this is asked).
+   */
+  readonly pickerOpened: Atom.Writable<number, void>;
+  /** What is typed in the picker's filter box over the pull requests. */
+  readonly pullFilter: Atom.Writable<string>;
+  /** Mounted while the Pane is: when the owner comes back to the page, the pull requests are listed again and the shown one is checked for a new head. */
+  readonly returned: Atom.Atom<AsyncResult.AsyncResult<void>>;
+  /** The IDs of the shown files whose Viewed box is ticked (pull request Comparisons only). */
+  readonly viewed: Atom.Atom<ReadonlySet<string>>;
+  /** Tick or untick a Viewed box; the Session then tells every client. */
+  readonly setViewed: Atom.Writable<
+    AsyncResult.AsyncResult<void, SessionCommandError>,
+    {
+      readonly repo: string;
+      readonly pull: number;
+      readonly path: string;
+      readonly blob: string | null;
+    }
   >;
   /** The Comparison of the repo This branch shows. */
   readonly branchView: Atom.Atom<BranchView>;
@@ -132,17 +186,32 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
       .join("\n"),
   );
 
+  // How many times the picker was opened (or the page came back): each lists the repos and pull requests again, which the
+  // Workspace keeps 60 s per repo.
+  const opens = Atom.make(0);
+  const pullFilter = Atom.make("");
+
+  const pickerOpened = Atom.writable(
+    (get) => get(opens),
+    (ctx) => {
+      ctx.set(opens, ctx.get(opens) + 1);
+    },
+  );
+
   const sources = appRuntime.atom((get) => {
-    // A Subagent page's Pane shows its subagent's Workspace, which This branch does not cover (the Session's Workspace
-    // makes the Comparisons): it lists no repo for it.
+    // A Subagent page's Pane shows its subagent's Workspace, which This branch and the pull requests do not cover (the
+    // Session's Workspace makes the Comparisons): it lists no repo for it.
+    // Nor does opening the picker ask.
     if (conversationId !== undefined) return Effect.succeed({ repos: [] });
 
     // Asked again as a repo's HEAD moves: a commit changes it, and a repo's branch is named by it.
     get(heads);
 
+    get(opens);
+
     return get
       .result(sessionClientAtom(sessionId))
-      .pipe(Effect.flatMap((client) => client.comparisonSources));
+      .pipe(Effect.flatMap((client) => client.comparisonSources({ pulls: true })));
   });
 
   const branchView = Atom.make<BranchView>({ kind: "idle" });
@@ -165,12 +234,12 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
       const client = yield* get.result(sessionClientAtom(sessionId));
       const before = get(branchView);
 
-      // What was shown stays while the next is made, unless it is another repo's.
-      if (!(before.kind === "ready" && before.comparison.repo === ask.repo)) {
-        get.set(branchView, { kind: "loading", repo: ask.repo });
+      // What was shown stays while the next is made, unless it is another repo's or another pull request's.
+      if (!(before.kind === "ready" && isComparisonOf(before.comparison, ask.repo, ask.pull))) {
+        get.set(branchView, { kind: "loading", repo: ask.repo, pull: ask.pull });
       }
 
-      let result = yield* client.compare({ repo: ask.repo, fetch: ask.fetch });
+      let result = yield* client.compare({ repo: ask.repo, pull: ask.pull, fetch: ask.fetch });
 
       // Only the owner's own action starts a stopped Container: when it needed it, or when the list it was answered is
       // the last one made, for a HEAD the repo has left ("New commits": Refresh).
@@ -179,15 +248,20 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
         ((result.status === "error" && result.error.kind === "needs_container") ||
           (result.status === "ok" && result.comparison.behind !== undefined))
       ) {
-        get.set(branchView, { kind: "starting", repo: ask.repo });
-        result = yield* client.compare({ repo: ask.repo, startContainer: true, fetch: ask.fetch });
+        get.set(branchView, { kind: "starting", repo: ask.repo, pull: ask.pull });
+        result = yield* client.compare({
+          repo: ask.repo,
+          pull: ask.pull,
+          startContainer: true,
+          fetch: ask.fetch,
+        });
       }
 
       get.set(
         branchView,
         result.status === "ok"
           ? { kind: "ready", comparison: result.comparison }
-          : { kind: "error", repo: ask.repo, error: result.error },
+          : { kind: "error", repo: ask.repo, pull: ask.pull, error: result.error },
       );
     }).pipe(
       // A request that supersedes this one interrupts it: that is not a failure.
@@ -195,7 +269,12 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
           Effect.sync(() => {
-            get.set(branchView, { kind: "failed", repo: ask.repo, message: messageOf(cause) });
+            get.set(branchView, {
+              kind: "failed",
+              repo: ask.repo,
+              pull: ask.pull,
+              message: messageOf(cause),
+            });
           }),
       ),
     );
@@ -231,7 +310,7 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
       shown.kind === "branch" &&
       head !== null &&
       view.kind === "ready" &&
-      view.comparison.repo === shown.repo &&
+      isComparisonOf(view.comparison, shown.repo, undefined) &&
       head !== view.comparison.head &&
       head !== view.comparison.behind
     ) {
@@ -240,6 +319,39 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
 
     return Effect.void;
   });
+
+  // The owner comes back to the page: the pull requests are listed again, and the pull request on show is asked for its
+  // head (never starting the Container), so a push brings "New commits: Refresh".
+  const returned = appRuntime.atom(() =>
+    Effect.gen(function* () {
+      const registry = yield* Effect.service(AtomRegistry.AtomRegistry);
+
+      yield* refreshOnReturn(
+        browserPage,
+        Effect.sync(() => {
+          registry.set(opens, registry.get(opens) + 1);
+
+          const shown = registry.get(source);
+          const view = registry.get(branchView);
+
+          if (
+            shown.kind === "pull" &&
+            view.kind === "ready" &&
+            isComparisonOf(view.comparison, shown.repo, shown.number) &&
+            view.comparison.pull?.state === "open" &&
+            registry.get(manualRunning) === 0
+          ) {
+            registry.set(compare, {
+              repo: shown.repo,
+              pull: shown.number,
+              manual: false,
+              fetch: false,
+            });
+          }
+        }),
+      );
+    }),
+  );
 
   const list = Atom.make((get): PaneList => {
     const shown = get(source);
@@ -261,14 +373,17 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
 
     const view = get(branchView);
 
-    if (view.kind !== "ready" || view.comparison.repo !== shown.repo) {
+    if (
+      view.kind !== "ready" ||
+      !isComparisonOf(view.comparison, shown.repo, shown.kind === "pull" ? shown.number : undefined)
+    ) {
       return { repos: [], comparison: undefined, branch: undefined, listing: 0 };
     }
 
     return {
       repos: comparisonRepos(view.comparison),
       comparison: view.comparison,
-      branch: branchSourceOf(view.comparison),
+      branch: pullSourceOf(view.comparison) ?? branchSourceOf(view.comparison),
       listing: 0,
     };
   });
@@ -280,7 +395,15 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
   });
 
   const totals = Atom.make((get) => changesTotals(get(list).repos));
-  const folded = Atom.make((get) => foldedFiles(get(files), get(ui).overrides));
+  const viewed = Atom.make((get) => viewedFileIds(get(files), get(viewedAtom(sessionId))));
+  const folded = Atom.make((get) => foldedFiles(get(files), get(ui).overrides, get(viewed)));
+
+  const setViewed = appRuntime.fn(
+    (box: { repo: string; pull: number; path: string; blob: string | null }, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.setViewed(box))),
+  );
 
   // Opening the Pane lists the Changes again (never starting the Container).
   const opened = appRuntime.atom((get) =>
@@ -302,6 +425,11 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
     ui,
     source,
     sources,
+    pickerOpened,
+    pullFilter,
+    returned,
+    viewed,
+    setViewed,
     branchView,
     compare,
     following,

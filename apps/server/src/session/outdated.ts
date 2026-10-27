@@ -110,7 +110,7 @@ export const sideLines = (
 };
 
 /** The pair of commits a Comparison is made of, and what it is named: where a draft on This branch moves to. */
-export type BranchPair = Pick<Comparison, "branch" | "base" | "mergeBase" | "head">;
+export type BranchPair = Pick<Comparison, "branch" | "base" | "mergeBase" | "head" | "pull">;
 
 /** Where `annotation`'s file stands in a Comparison: its entry, gone from it, or not to be told. */
 export type ComparedFile =
@@ -157,7 +157,14 @@ export const checked = (
             mergeBase: pair.mergeBase,
             head: pair.head,
           }
-        : annotation.source;
+        : annotation.source.kind === "pull" && pair !== undefined
+          ? {
+              ...annotation.source,
+              title: pair.pull?.title ?? annotation.source.title,
+              mergeBase: pair.mergeBase,
+              head: pair.head,
+            }
+          : annotation.source;
 
   switch (result.kind) {
     case "same":

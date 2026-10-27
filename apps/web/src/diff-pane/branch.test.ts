@@ -1,5 +1,5 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over values.
-import type { Comparison } from "@cloudpid/protocol";
+import type { Comparison, PullRequest } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   branchSourceOf,
@@ -7,6 +7,10 @@ import {
   comparisonRepos,
   commitsLabel,
   errorText,
+  filterKeyAction,
+  firstPull,
+  pullLabel,
+  pullSourceOf,
   sourceOfValue,
   sourceOptions,
   sourceValue,
@@ -89,6 +93,209 @@ describe("the source picker", () => {
   });
 });
 
+const pull = (number: number, overrides: Partial<PullRequest> = {}): PullRequest => ({
+  number,
+  title: `Pull ${number}`,
+  author: "dev",
+  draft: false,
+  additions: 12,
+  deletions: 3,
+  changedFiles: 4,
+  head: HEAD,
+  headRef: "topic",
+  base: "main",
+  updatedAt: "2026-01-01T00:00:00Z",
+  ...overrides,
+});
+
+describe("the source picker's pull requests", () => {
+  it("round-trips a pull request through its value, repo names with a # included", () => {
+    expect(sourceOfValue(sourceValue({ kind: "pull", repo: "web", number: 7 }))).toEqual({
+      kind: "pull",
+      repo: "web",
+      number: 7,
+    });
+    expect(sourceOfValue(sourceValue({ kind: "pull", repo: "c#", number: 12 }))).toEqual({
+      kind: "pull",
+      repo: "c#",
+      number: 12,
+    });
+    expect(sourceOfValue("pull:web#0")).toEqual({ kind: "changes" });
+    expect(sourceOfValue("pull:web#x")).toEqual({ kind: "changes" });
+    expect(sourceOfValue("pull:web")).toEqual({ kind: "changes" });
+  });
+
+  it("names each by number, title, author, draft, files, counts and head, and pins this branch's first", () => {
+    expect(pullLabel(pull(7, { draft: true }))).toBe(
+      "#7 Pull 7 · dev · draft · 4 files · +12 −3 · 1234567",
+    );
+    expect(pullLabel(pull(9, { changedFiles: 1 }))).toBe(
+      "#9 Pull 9 · dev · 1 file · +12 −3 · 1234567",
+    );
+    expect(pullLabel(pull(8, { additions: null, changedFiles: null, thisBranch: true }))).toBe(
+      "#8 Pull 8 · dev · 1234567 · this branch",
+    );
+
+    const head = { commit: HEAD, branch: "feat" };
+
+    expect(
+      sourceOptions({
+        repos: [
+          {
+            repo: "app",
+            head,
+            pulls: {
+              status: "ok",
+              fetchedAt: 1,
+              pulls: [pull(9), pull(7, { thisBranch: true }), pull(5)],
+            },
+          },
+        ],
+      })[0]?.options.map((option) => option.value),
+    ).toEqual(["changes", "branch:app", "pull:app#7", "pull:app#9", "pull:app#5"]);
+  });
+
+  it("filters them by number, title, author and head branch, keeping this branch's and the one on show", () => {
+    const head = { commit: HEAD, branch: "feat" };
+
+    const sources = {
+      repos: [
+        {
+          repo: "app",
+          head,
+          pulls: {
+            status: "ok" as const,
+            fetchedAt: 1,
+            pulls: [
+              pull(9, { title: "Fix the login", author: "sam" }),
+              pull(7, { thisBranch: true, title: "Unrelated" }),
+              pull(5, { title: "Docs", headRef: "docs/login-page" }),
+              pull(3, { title: "Refactor", draft: true }),
+            ],
+          },
+        },
+      ],
+    };
+
+    const values = (text: string, keep = "") =>
+      sourceOptions(sources, { text, keep })[0]
+        ?.options.map((option) => option.value)
+        .filter((value) => value.startsWith("pull"));
+
+    expect(values("")).toEqual(["pull:app#7", "pull:app#9", "pull:app#5", "pull:app#3"]);
+    expect(values("LOGIN")).toEqual(["pull:app#7", "pull:app#9", "pull:app#5"]);
+    expect(values("login sam")).toEqual(["pull:app#7", "pull:app#9"]);
+    expect(values("#5")).toEqual(["pull:app#7", "pull:app#5"]);
+    expect(values("draft")).toEqual(["pull:app#7", "pull:app#3"]);
+    expect(values("login", "pull:app#3")).toEqual([
+      "pull:app#7",
+      "pull:app#9",
+      "pull:app#5",
+      "pull:app#3",
+    ]);
+    expect(values("nothing like it")).toEqual(["pull:app#7", "pulls-none:app"]);
+  });
+
+  it("lists them in the repo's group when there are several, and says why there are none", () => {
+    const head = { commit: HEAD, branch: "feat" };
+
+    const groups = sourceOptions({
+      repos: [
+        { repo: "api", head, pulls: { status: "ok", fetchedAt: 1, pulls: [] } },
+        {
+          repo: "web",
+          head,
+          pulls: { status: "error", kind: "refused", message: "GitHub refused the token" },
+        },
+        {
+          repo: "lib",
+          head,
+          pulls: {
+            status: "error",
+            kind: "no_github",
+            message: "Pull requests need a GitHub remote",
+          },
+        },
+        { repo: "old", head },
+      ],
+    });
+
+    expect(groups.find(({ label }) => label === "api")?.options.at(-1)).toEqual({
+      value: "pulls-none:api",
+      label: "No open pull requests",
+      disabled: true,
+    });
+    expect(groups.find(({ label }) => label === "web")?.options.at(-1)).toEqual({
+      value: "pulls-error:web",
+      label: "Pull requests: GitHub refused the token",
+      disabled: true,
+    });
+    // A remote that is not GitHub's says so; pull requests not asked for yet list nothing.
+    expect(groups.find(({ label }) => label === "lib")?.options.at(-1)).toEqual({
+      value: "pulls-error:lib",
+      label: "Pull requests need a GitHub remote",
+      disabled: true,
+    });
+    expect(groups.find(({ label }) => label === "old")?.options).toHaveLength(2);
+  });
+
+  it("has the filter box's keys: Enter picks the first pull request left, Down goes to the list, Escape clears the text", () => {
+    expect(filterKeyAction("Enter", "login")).toBe("pick-first");
+    expect(filterKeyAction("ArrowDown", "")).toBe("focus-list");
+    expect(filterKeyAction("Escape", "login")).toBe("clear");
+    // An empty box leaves Escape to whatever closes the Pane.
+    expect(filterKeyAction("Escape", "")).toBe("none");
+    expect(filterKeyAction("a", "login")).toBe("none");
+
+    const head = { commit: HEAD, branch: "feat" };
+
+    const sources = {
+      repos: [
+        {
+          repo: "app",
+          head,
+          pulls: {
+            status: "ok" as const,
+            fetchedAt: 1,
+            pulls: [pull(9, { title: "Fix the login" }), pull(5, { title: "Docs" })],
+          },
+        },
+      ],
+    };
+
+    // What Enter picks follows the text: the first of the pull requests it leaves.
+    expect(firstPull(sourceOptions(sources, { text: "", keep: "" }))?.value).toBe("pull:app#9");
+    expect(firstPull(sourceOptions(sources, { text: "docs", keep: "" }))?.value).toBe("pull:app#5");
+    // Nothing matches: the line saying so is not a pull request to pick.
+    expect(firstPull(sourceOptions(sources, { text: "zzz", keep: "" }))).toBeUndefined();
+  });
+
+  it("anchors drafts on the pull request, its title cut to the limit, and names the Comparison by it", () => {
+    const pulled = comparison({
+      branch: "topic",
+      pull: { number: 7, title: "x".repeat(600), author: "dev", draft: false, state: "open" },
+    });
+
+    expect(pullSourceOf(pulled)).toEqual({
+      kind: "pull",
+      repo: "app",
+      number: 7,
+      title: "x".repeat(512),
+      mergeBase: MERGE_BASE,
+      head: HEAD,
+    });
+    expect(pullSourceOf(comparison())).toBeUndefined();
+    expect(
+      comparisonHeading(
+        comparison({
+          branch: "topic",
+          pull: { number: 7, title: "Fix it", author: "dev", draft: false, state: "open" },
+        }),
+      ),
+    ).toBe("#7 Fix it: topic against main at abcdef0");
+  });
+});
+
 describe("a Comparison in the Pane", () => {
   it("is one repo's list, with the files and how many more there are", () => {
     expect(comparisonRepos(comparison())).toEqual([
@@ -132,12 +339,16 @@ describe("errorText", () => {
       errorText({ kind: "no_common_ancestor", message: "", base: "main" }),
       errorText({ kind: "shallow", message: "" }),
       errorText({ kind: "too_big", message: "" }),
+      errorText({ kind: "no_github", message: "" }),
+      errorText({ kind: "github_refused", message: "" }),
+      errorText({ kind: "pull_closed", message: "" }),
+      errorText({ kind: "pull_merged", message: "" }),
       errorText({ kind: "failed", message: "boom" }),
     ];
 
     expect(new Set(texts).size).toBe(texts.length);
     expect(texts[2]).toContain("main");
     expect(texts[3]).toContain("main");
-    expect(texts[6]).toContain("boom");
+    expect(texts.at(-1)).toContain("boom");
   });
 });

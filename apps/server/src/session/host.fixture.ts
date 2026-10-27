@@ -49,8 +49,10 @@ import type {
   FileMatches,
   HistoryPage,
   Navigated,
+  PullList,
   SessionAgent,
   SessionTree,
+  ViewedFile,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
@@ -119,7 +121,9 @@ import {
   SessionSockets,
   sessionSocketsLayer,
   type SessionSocketsService,
+  viewedMessage,
 } from "./sockets.ts";
+import { ViewedStore, viewedStoreLayer, type ViewedStoreService } from "./viewed.ts";
 import {
   AnnotationStore,
   annotationStoreLayer,
@@ -179,6 +183,11 @@ export type ComparisonFixture = {
   readonly results: Readonly<Record<string, CompareResult>>;
   /** Each file's text on the head, by `repo/path`; one not named reads as its own name. */
   readonly files?: Readonly<Record<string, string>>;
+  /**
+   * The open pull requests `comparison_sources` lists (when asked for them), by repo. A pull request's `compare` is
+   * answered from `results` under `repo#number`.
+   */
+  readonly pulls?: Readonly<Record<string, PullList>>;
 };
 
 /** A tool to call, so a Run has a tool call in its transcript: `echo` answers `echo: <text>`. */
@@ -539,6 +548,7 @@ export class TestSession extends DurableObject {
   #sockets!: SessionSocketsService;
   #changes!: SessionChangesService;
   #annotations!: AnnotationStoreService;
+  #viewed!: ViewedStoreService;
   #reviews!: SessionReviewsService;
   #runtime!: ManagedRuntime.ManagedRuntime<
     | SessionHost
@@ -548,6 +558,7 @@ export class TestSession extends DurableObject {
     | Harness
     | Secrets
     | AnnotationStore
+    | ViewedStore
     | SessionReviews,
     unknown
   >;
@@ -722,6 +733,19 @@ export class TestSession extends DurableObject {
             }),
           ),
           Layer.provideMerge(
+            viewedStoreLayer({
+              storage: ctx.storage.kv,
+              announce: (viewed) =>
+                Effect.forEach(
+                  ctx.getWebSockets(),
+                  (socket) => send(socket, viewedMessage(viewed)),
+                  {
+                    discard: true,
+                  },
+                ),
+            }),
+          ),
+          Layer.provideMerge(
             sessionApprovalsLayer({
               storage: ctx.storage.kv,
               sockets: ctx,
@@ -761,8 +785,19 @@ export class TestSession extends DurableObject {
       this.#sockets = Context.get(context, SessionSockets);
       this.#changes = Context.get(context, SessionChanges);
       this.#annotations = Context.get(context, AnnotationStore);
+      this.#viewed = Context.get(context, ViewedStore);
       this.#reviews = Context.get(context, SessionReviews);
     });
+  }
+
+  /** The Viewed boxes as the Session keeps them. */
+  viewed(): Promise<ReadonlyArray<ViewedFile>> {
+    return Effect.runPromise(this.#viewed.list);
+  }
+
+  /** A pull request's Comparison was made for a client: its Viewed boxes are checked, as the sockets do. */
+  comparedPull(comparison: Comparison): Promise<void> {
+    return Effect.runPromise(this.#viewed.reset(comparison));
   }
 
   /** The draft Annotations as the Session keeps them. */
@@ -824,15 +859,23 @@ export class TestSession extends DurableObject {
     const kv = this.ctx.storage.kv;
 
     return {
-      sources: async () => ({
-        repos: Object.keys(kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.results ?? {}).map(
-          (repo) => ({ repo, head: { commit: null, branch: null } }),
-        ),
+      sources: async (pulls) => ({
+        repos: Object.keys(kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.results ?? {})
+          .filter((repo) => !repo.includes("#"))
+          .map((repo) => {
+            const list = kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.pulls?.[repo];
+            const head = { commit: null, branch: null };
+
+            return pulls && list !== undefined ? { repo, head, pulls: list } : { repo, head };
+          }),
       }),
       compare: async (query) => {
         kv.put(COMPARE_CALLS_KEY, [...(kv.get<unknown[]>(COMPARE_CALLS_KEY) ?? []), query]);
 
-        const result = kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.results[query.repo];
+        const result =
+          kv.get<ComparisonFixture>(COMPARISON_FIXTURE_KEY)?.results[
+            query.pull === undefined ? query.repo : `${query.repo}#${query.pull}`
+          ];
 
         if (result === undefined) throw new Error("No such repo");
 

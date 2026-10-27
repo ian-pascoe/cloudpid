@@ -207,6 +207,67 @@ describe("renderReview", () => {
     expect(markdown).toContain("**Annotation 3**: `/workspace/lib/src/a.ts`, lines 5–6");
   });
 
+  it("heads a pull request's group \"Pull request #123 'title' at abc1234\", after the branches and before the Call diffs", () => {
+    const onPull = (id: string, repo: string, number: number): Annotation => ({
+      ...onBranch({ id }),
+      source: {
+        kind: "pull",
+        repo,
+        number,
+        title: "Fix  the\nthing",
+        mergeBase: "abc1234def",
+        head: "0123456789",
+      },
+    });
+
+    const { markdown } = renderReview([
+      onCall(),
+      onPull("p2", "app", 124),
+      onPull("p1", "app", 123),
+      onBranch(),
+    ]);
+
+    const headings = markdown.split("\n").filter((line) => line.startsWith("### "));
+
+    expect(headings).toEqual([
+      "### Branch `feat/x` against `main` at `abc1234`",
+      "### Pull request #123 'Fix the thing' at `0123456`",
+      "### Pull request #124 'Fix the thing' at `0123456`",
+      "### Your `edit` call on `/workspace/app/README.md`: lines as of that call",
+    ]);
+  });
+
+  it("names the current head of a group, not its first draft's, and the repo when two repos share a number", () => {
+    const onPull = (
+      id: string,
+      repo: string,
+      head: string,
+      extra: Partial<Annotation>,
+    ): Annotation => ({
+      ...onBranch({ id }),
+      source: { kind: "pull", repo, number: 7, title: "T", mergeBase: "abc1234def", head },
+      ...extra,
+    });
+
+    // The first by path is marked, and keeps the old head; the others moved to the new one.
+    const { markdown } = renderReview([
+      onPull("old", "app", "1111111aaa", { path: "a.ts", status: "outdated", updatedAt: 9 }),
+      onPull("new", "app", "2222222bbb", { path: "b.ts", updatedAt: 5 }),
+      onPull("newer", "app", "3333333ccc", { path: "c.ts", updatedAt: 6 }),
+    ]);
+
+    expect(markdown).toContain("### Pull request #7 'T' at `3333333`");
+    expect(markdown).not.toContain("` in `");
+
+    const both = renderReview([
+      onPull("a", "app", "1111111aaa", {}),
+      onPull("b", "lib", "2222222bbb", {}),
+    ]).markdown;
+
+    expect(both).toContain("### Pull request #7 in `app` 'T' at `1111111`");
+    expect(both).toContain("### Pull request #7 in `lib` 'T' at `2222222`");
+  });
+
   it("says when the lines have changed since, or are no longer in the diff", () => {
     const { markdown } = renderReview([
       onChanges({ status: "outdated" }),

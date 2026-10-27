@@ -135,6 +135,8 @@ const groupKey = (annotation: Annotation): string => {
       return `changes:${source.repo}`;
     case "branch":
       return `branch:${source.repo}`;
+    case "pull":
+      return `pull:${source.repo}:${source.number}`;
     case "call":
       return `call:${source.conversationId}:${source.callId}:${source.nested ?? ""}`;
   }
@@ -162,8 +164,22 @@ export const inlineCode = (text: string): string => {
   return `${delimiter}${padded}${delimiter}`;
 };
 
-/** The heading of a source's group. */
-const groupHeading = (annotation: Annotation): string => {
+/**
+ * The draft a group is headed by: the newest of those not marked (a marked one keeps the pair it was written against, so
+ * after a refresh the others name the current head), else the newest.
+ */
+const headOf = (group: readonly Annotation[]): Annotation | undefined => {
+  const current = group.filter((annotation) => annotation.status === undefined);
+  const pool = current.length > 0 ? current : group;
+
+  return pool.reduce<Annotation | undefined>(
+    (best, each) => (best === undefined || each.updatedAt > best.updatedAt ? each : best),
+    undefined,
+  );
+};
+
+/** The heading of a source's group; a pull request's names its repo when `shared` says another repo has one of its number. */
+const groupHeading = (annotation: Annotation, shared: ReadonlySet<number>): string => {
   const { source } = annotation;
 
   switch (source.kind) {
@@ -171,6 +187,8 @@ const groupHeading = (annotation: Annotation): string => {
       return `Uncommitted Changes in ${inlineCode(source.repo)}`;
     case "branch":
       return `${source.branch === null ? `Detached at ${inlineCode(shortSha(source.head))}` : `Branch ${inlineCode(source.branch)}`} against ${inlineCode(source.base)} at ${inlineCode(shortSha(source.mergeBase))}`;
+    case "pull":
+      return `Pull request #${source.number}${shared.has(source.number) ? ` in ${inlineCode(source.repo)}` : ""} '${source.title.replace(/\s+/g, " ").trim()}' at ${inlineCode(shortSha(source.head))}`;
     case "call":
       return `Your ${inlineCode(source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
   }
@@ -223,21 +241,23 @@ const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 
 /** Removed lines before added ones. */
 const sideOrder = (annotation: Annotation): number => (annotation.side === "old" ? 0 : 1);
 
-/** Where a source's group sits in a Review: the Changes, then the branches, then the Call diffs. */
+/** Where a source's group sits in a Review: the Changes, the branches, the pull requests, then the Call diffs. */
 const sourceRank = (annotation: Annotation): number => {
   switch (annotation.source.kind) {
     case "changes":
       return 0;
     case "branch":
       return 1;
-    case "call":
+    case "pull":
       return 2;
+    case "call":
+      return 3;
   }
 };
 
 /**
- * The groups of a Review: the Changes first, by repo, then the branches, by repo, then the Call diffs, in the order of
- * their first draft; within each, its Annotations by file, then line, then side (removed lines first where both sides
+ * The groups of a Review: the Changes first, by repo, then the branches, by repo, then the pull requests, by repo and
+ * number, then the Call diffs, in the order of their first draft; within each, its Annotations by file, then line, then side (removed lines first where both sides
  * start at one), then end.
  */
 const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
@@ -267,6 +287,10 @@ const ordered = (annotations: readonly Annotation[]): Annotation[][] => {
       if (x === undefined || y === undefined) return 0;
 
       if (sourceRank(x) !== sourceRank(y)) return sourceRank(x) - sourceRank(y);
+
+      if (x.source.kind === "pull" && y.source.kind === "pull") {
+        return compareText(x.source.repo, y.source.repo) || x.source.number - y.source.number;
+      }
 
       return (x.source.kind === "changes" && y.source.kind === "changes") ||
         (x.source.kind === "branch" && y.source.kind === "branch")
@@ -300,12 +324,26 @@ export const renderReview = (annotations: readonly Annotation[]): RenderedReview
     return [from, markdown.length];
   };
 
+  // Pull request numbers that two repos of the Review both have.
+  const repoOf = new Map<number, string>();
+  const shared = new Set<number>();
+
+  for (const { source } of annotations) {
+    if (source.kind !== "pull") continue;
+
+    const known = repoOf.get(source.number);
+
+    if (known !== undefined && known !== source.repo) shared.add(source.number);
+
+    repoOf.set(source.number, source.repo);
+  }
+
   for (const group of ordered(annotations)) {
-    const [head] = group;
+    const head = headOf(group);
 
     if (head === undefined) continue;
 
-    markdown += `\n\n### ${groupHeading(head)}`;
+    markdown += `\n\n### ${groupHeading(head, shared)}`;
 
     for (const annotation of group) {
       number += 1;

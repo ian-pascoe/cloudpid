@@ -209,17 +209,30 @@ export interface SessionClient {
    * The repos the Diff pane's picker lists, each with its HEAD (`docs/spec.md` → Diffs and review → Comparisons). It never
    * starts the Container. Fails as `catalog` does.
    */
-  readonly comparisonSources: Effect.Effect<ComparisonSources, SessionCommandError>;
+  readonly comparisonSources: (options?: {
+    readonly pulls?: boolean;
+  }) => Effect.Effect<ComparisonSources, SessionCommandError>;
   /**
-   * Compare `repo`'s branch with its base: the Comparison, or why there is none (an answer, not a failure). Only
-   * `startContainer` (the owner's pick or Refresh) may start a stopped Container, and `fetch` (Refresh) fetches the base
-   * again. Fails as `catalog` does.
+   * Compare `repo`'s branch with its base, or its pull request `pull` with its own base: the Comparison, or why there is
+   * none (an answer, not a failure). Only `startContainer` (the owner's pick or Refresh) may start a stopped Container,
+   * and `fetch` (Refresh) fetches the base again. Fails as `catalog` does.
    */
   readonly compare: (query: {
     readonly repo: string;
+    readonly pull?: number | undefined;
     readonly startContainer?: boolean;
     readonly fetch?: boolean;
   }) => Effect.Effect<CompareResult, SessionCommandError>;
+  /**
+   * Tick (`blob`: the file's head blob in the pull request) or untick (`null`) the Viewed box of `path` in pull request
+   * `pull` of `repo`; every client is then sent the boxes (`viewed`). Fails as `catalog` does, and when past the limit.
+   */
+  readonly setViewed: (box: {
+    readonly repo: string;
+    readonly pull: number;
+    readonly path: string;
+    readonly blob: string | null;
+  }) => Effect.Effect<void, SessionCommandError>;
   /** One file of a Comparison, between its merge-base and head. It never starts the Container. Fails as `catalog` does. */
   readonly comparisonFile: (
     query: Omit<Extract<ClientMessage, { type: "comparison_file" }>, "type" | "id">,
@@ -626,6 +639,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "secretLifetimeMinutes"
         | "approvalRequests"
         | "annotations"
+        | "viewed"
         | "browserHandoffRequests"
         | "ownerTabs"
         | "ownerTabDrivers"
@@ -952,6 +966,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "annotations":
         update({ annotations: message.annotations });
+
+        return;
+      case "viewed":
+        update({ viewed: message.viewed });
 
         return;
       case "events": {
@@ -1507,21 +1525,31 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
             : { type: "change_file", id, conversationId: conversation(conversationId), ...query },
         decodeChangeFile,
       ),
-    comparisonSources: request(
-      (id) => ({ type: "comparison_sources", id }),
-      decodeComparisonSources,
-    ),
-    compare: ({ repo, startContainer, fetch }) =>
+    comparisonSources: (options) =>
+      request(
+        (id) =>
+          options?.pulls === true
+            ? { type: "comparison_sources", id, pulls: true }
+            : { type: "comparison_sources", id },
+        decodeComparisonSources,
+      ),
+    compare: ({ repo, pull, startContainer, fetch }) =>
       request(
         (id) => ({
           type: "compare",
           id,
           repo,
-          source: "branch",
+          ...(pull === undefined ? { source: "branch" } : { source: "pull", pull }),
           startContainer: startContainer === true,
           fetch: fetch === true,
         }),
         decodeCompareResult,
+      ),
+    setViewed: ({ repo, pull, path, blob }) =>
+      request(
+        (id) => ({ type: "viewed_set", id, repo, pull, path, blob }),
+        () => Option.some(undefined),
+        true,
       ),
     comparisonFile: (query) =>
       request((id) => ({ type: "comparison_file", id, ...query }), decodeChangeFile),

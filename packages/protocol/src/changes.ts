@@ -39,6 +39,11 @@ export const ChangeEntry = Schema.Struct({
   generated: Schema.optionalKey(Schema.Boolean),
   /** As `generated`, for `linguist-vendored`. */
   vendored: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A pull request's file: its head blob id (a deleted file's, its merge-base blob), which a Viewed box records so a push
+   * that changes the file unviews it.
+   */
+  blob: Schema.optionalKey(Schema.String),
 });
 
 export type ChangeEntry = typeof ChangeEntry.Type;
