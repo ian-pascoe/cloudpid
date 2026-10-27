@@ -20,6 +20,7 @@ import {
   isRepoName,
   MAX_CHANGE_SIDE_BYTES,
   MAX_CHANGED_FILES,
+  OBJECT_ID,
   WORKSPACE_ROOT,
 } from "@cloudpid/protocol";
 import {
@@ -30,6 +31,7 @@ import {
   parseComparison,
 } from "@cloudpid/sandbox-image/comparison";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as git from "isomorphic-git";
 import { readAttributes } from "./attributes.ts";
@@ -61,8 +63,6 @@ const GITHUB_TIMEOUT_MS = 8_000;
 
 /** The most characters of git's output an error shows (its end). */
 const MAX_ERROR_CHARS = 2_000;
-
-const OBJECT_ID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 /** Where Comparisons are kept, under `<key>:<repo>` and `<key>:<repo>:<merge-base>:<head>`. */
 export const COMPARISON_KEY = "cloudpid:comparison";
@@ -216,14 +216,11 @@ export class WorkspaceComparisonModule {
     const fs = readOnly(files);
     const covered = await coveredRepos(files, directory);
 
-    const own = directory.startsWith(`${WORKSPACE_ROOT}/`)
-      ? directory.slice(WORKSPACE_ROOT.length + 1).split("/")[0]
-      : undefined;
-
-    const ordered = [...covered].sort((a, b) => Number(b === own) - Number(a === own));
+    // The Session's own repo comes first by construction: a directory inside a repo covers that repo alone, and the
+    // Workspace's root every repo, in order of name.
     const repos: Array<ComparisonSources["repos"][number]> = [];
 
-    for (const repo of ordered) {
+    for (const repo of covered) {
       repos.push({ repo, head: await readHead(fs, `${WORKSPACE_ROOT}/${repo}`) });
     }
 
@@ -276,10 +273,12 @@ export class WorkspaceComparisonModule {
       return { status: "ok", comparison: kept.comparison };
     }
 
-    if (!request.startContainer && !this.#options.running()) {
+    const moved = head.commit;
+
+    const stopped = (): CompareResult => {
       // HEAD moved and the Container is stopped: the last result stands, marked, for the Pane's "New commits".
       if (kept !== undefined && !request.fetch) {
-        return { status: "ok", comparison: { ...kept.comparison, behind: head.commit } };
+        return { status: "ok", comparison: { ...kept.comparison, behind: moved } };
       }
 
       return problem(
@@ -288,9 +287,16 @@ export class WorkspaceComparisonModule {
         redact,
         last?.base,
       );
-    }
+    };
+
+    if (!request.startContainer && !this.#options.running()) return stopped();
 
     const base = await this.#chooseBase(fs, dir, head.branch, request.fetch, last);
+
+    // Looked at again right before the command: the base lookup waits on GitHub, and the Container may have stopped
+    // meanwhile. The Workspace DO has no call that runs a command only if the Container runs (Changes has none either), so
+    // what is left is the gap between this check and the command's start.
+    if (!request.startContainer && !this.#options.running()) return stopped();
 
     const input =
       base === undefined ? { repo, fetch: request.fetch } : { repo, base, fetch: request.fetch };
@@ -335,7 +341,8 @@ export class WorkspaceComparisonModule {
     fetching: boolean,
     last: LastComparison | undefined,
   ): Promise<string | undefined> {
-    if (!fetching && last !== undefined) return last.base;
+    // A branch that changed (a checkout) has another pull request, and so maybe another base.
+    if (!fetching && last !== undefined && last.branch === branch) return last.base;
 
     if (branch === null) return undefined;
 
@@ -467,19 +474,21 @@ export class WorkspaceComparisonModule {
     const key = `${COMPARISON_KEY}:${repo}:${mergeBase}:${head}`;
     const keys = `${COMPARISON_KEY}-keys:${repo}`;
 
+    // A list too big to store is made again when asked for. The repo's last pointer stays at the list before it: a pointer
+    // to a list that is not there would make a reopening after the idle stop answer `needs_container`.
+    if (JSON.stringify(made).length > MAX_KEPT_BYTES) return;
+
     try {
-      if (JSON.stringify(made).length <= MAX_KEPT_BYTES) {
-        await store.put(key, made);
+      await store.put(key, made);
 
-        const before = ((await store.get<string[]>(keys)) ?? []).filter((each) => each !== key);
-        const after = [...before, key];
+      const before = ((await store.get<string[]>(keys)) ?? []).filter((each) => each !== key);
+      const after = [...before, key];
 
-        for (const old of after.slice(0, Math.max(after.length - KEPT_COMPARISONS, 0))) {
-          await store.delete(old);
-        }
-
-        await store.put(keys, after.slice(-KEPT_COMPARISONS));
+      for (const old of after.slice(0, Math.max(after.length - KEPT_COMPARISONS, 0))) {
+        await store.delete(old);
       }
+
+      await store.put(keys, after.slice(-KEPT_COMPARISONS));
 
       const last: LastComparison = {
         mergeBase,
@@ -598,8 +607,11 @@ export class WorkspaceComparisonModule {
 
       return sideOf(blob, blob.length);
     } catch (cause) {
-      // Found by its path: no such file at that commit. Found by its id: an object the Workspace DO does not have yet.
-      if (isNotFound(cause)) return wanted.id === undefined ? null : undefined;
+      // Found by its id: an object the Workspace DO does not have yet. Found by its path: no such file at that commit is
+      // a side that does not exist, but a commit the Workspace DO does not have is not (it must not read as an added or
+      // deleted file): this module cannot say, and the caller compares again.
+      if (isNotFound(cause))
+        return wanted.id === undefined && fileIsMissing(cause) ? null : undefined;
 
       this.#options.warn(`comparison: readBlob failed in ${dir}: ${errorText(cause)}`);
 
@@ -631,6 +643,13 @@ export class WorkspaceComparisonModule {
     return sides;
   }
 }
+
+/** Whether isomorphic-git's not-found error is about the file at a commit, rather than the commit itself. */
+const fileIsMissing = (cause: unknown): boolean =>
+  Predicate.hasProperty(cause, "data") &&
+  Predicate.hasProperty(cause.data, "what") &&
+  Predicate.isString(cause.data.what) &&
+  cause.data.what.startsWith("file or directory found at");
 
 /** One side of a file asked for: where to find it, and what the list says of it. */
 type Wanted = {

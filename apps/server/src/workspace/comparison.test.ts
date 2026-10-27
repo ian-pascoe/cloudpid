@@ -103,7 +103,12 @@ class ContainerLog {
 /** A module over `space`, with the Container's runs, GitHub's requests and the kept lists recorded. */
 const module = (
   space: Space,
-  options: { readonly pulls?: ReadonlyArray<Pull>; readonly status?: number } = {},
+  options: {
+    readonly pulls?: ReadonlyArray<Pull>;
+    readonly status?: number;
+    /** Runs while GitHub is being asked, as the Container may stop meanwhile. */
+    readonly during?: (container: ContainerLog) => void;
+  } = {},
 ) => {
   const container = new ContainerLog();
   const store = new Map<string, unknown>();
@@ -119,7 +124,13 @@ const module = (
 
       // The script the Workspace DO runs, for `/workspace`, is run on the temp root instead.
       const local = script.replace(/^dir=.*$/mu, `dir='${space.root}/app'`);
-      const result = spawnSync("bash", ["-c", local], { cwd: space.root, encoding: "utf8", env });
+
+      const result = spawnSync("bash", ["-c", local], {
+        cwd: space.root,
+        encoding: "utf8",
+        env,
+        maxBuffer: 64 * 1024 * 1024,
+      });
 
       return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr };
     },
@@ -135,6 +146,8 @@ const module = (
     },
     fetch: async (url, init) => {
       requests.push({ url, headers: Object.fromEntries(new Headers(init.headers).entries()) });
+
+      options.during?.(container);
 
       return options.status === undefined
         ? Response.json(options.pulls ?? [])
@@ -360,6 +373,90 @@ describe("the Comparison module's kept list and Container use", () => {
     expect(behind).toEqual({ ...first, behind: moved });
     expect(container.runs).toHaveLength(1);
     expect(container.running).toBe(false);
+  });
+
+  it("looks the base up again when the branch changed, and reuses it while it did not", async () => {
+    const space = workspace();
+
+    onGitHub(space);
+    space.sh("git switch -q -c feat/a");
+    space.commit({ "a.txt": "a\n" }, "a");
+    space.sh("git push -q origin feat/a");
+    space.sh("git switch -q -c feat/b");
+    space.commit({ "b.txt": "b\n" }, "b");
+
+    const { comparison, requests } = module(space, { pulls: [{ base: { ref: "feat/a" } }] });
+
+    await ok(comparison.compare(start));
+    expect(requests).toHaveLength(1);
+
+    space.commit({ "b2.txt": "b\n" }, "b2");
+    await ok(comparison.compare({ repo: "app", startContainer: false, fetch: false }));
+    expect(requests).toHaveLength(1);
+
+    space.sh("git switch -q -c feat/c");
+    space.commit({ "c.txt": "c\n" }, "c");
+    expect(
+      await ok(comparison.compare({ repo: "app", startContainer: false, fetch: false })),
+    ).toMatchObject({ branch: "feat/c", base: "feat/a" });
+    expect(requests).toHaveLength(2);
+  });
+
+  it("does not start a Container that stopped while GitHub was being asked", async () => {
+    const space = workspace();
+
+    onGitHub(space);
+    space.sh("git switch -q -c feat");
+    space.commit({ "a.txt": "a\n" });
+
+    const { comparison, container } = module(space, {
+      during: (each) => {
+        each.running = false;
+      },
+    });
+
+    container.running = true;
+
+    expect(
+      await comparison.compare({ repo: "app", startContainer: false, fetch: false }),
+    ).toMatchObject({ status: "error", error: { kind: "needs_container" } });
+    expect(container.runs).toHaveLength(0);
+    expect(container.running).toBe(false);
+  });
+
+  it("does not point at a list too big to keep, so the pointer still names a list that is there", async () => {
+    const space = workspace();
+
+    space.sh("git switch -q -c feat");
+
+    const small = space.commit({ "a.txt": "a\n" });
+    const { comparison, container, store } = module(space);
+    const first = await ok(comparison.compare(start));
+
+    // 2,000 files under long paths: their list is over what is kept.
+    const deep = `${"d".repeat(60)}/`.repeat(5);
+
+    space.commit(
+      Object.fromEntries(
+        Array.from({ length: 2000 }, (_, index) => [`${deep}f${index}.txt`, "x\n"]),
+      ),
+      "many",
+    );
+
+    const big = await ok(comparison.compare({ ...start, repo: "app" }));
+
+    expect(big.files).toHaveLength(2000);
+    expect(store.get("cloudpid:comparison:app")).toMatchObject({ head: small });
+    expect(first.head).toBe(small);
+
+    // After the idle stop the last kept list is what is shown, marked, and nothing starts.
+    container.running = false;
+
+    const shown = await ok(
+      comparison.compare({ repo: "app", startContainer: false, fetch: false }),
+    );
+
+    expect(shown).toMatchObject({ head: small, behind: big.head });
   });
 
   it("drops the oldest of the lists it keeps", async () => {

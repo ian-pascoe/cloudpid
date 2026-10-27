@@ -123,13 +123,21 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
     },
   );
 
+  // The repos' HEADs as the Changes know them: a primitive, so what reads it runs only when a commit or a branch moved,
+  // not at every listing of the Changes.
+  const heads = Atom.make((get): string =>
+    (get(changesAtom(changes))?.repos ?? NO_REPOS)
+      .map(({ repo, head }) => [repo, head.commit ?? "", head.branch ?? ""].join("\u0000"))
+      .join("\n"),
+  );
+
   const sources = appRuntime.atom((get) => {
     // A Subagent page's Pane shows its subagent's Workspace, which This branch does not cover (the Session's Workspace
     // makes the Comparisons): it lists no repo for it.
     if (conversationId !== undefined) return Effect.succeed({ repos: [] });
 
-    // Asked again as the Changes are listed: a commit moves a repo's HEAD, and a repo's branch is named by it.
-    get(changesAtom(changes));
+    // Asked again as a repo's HEAD moves: a commit changes it, and a repo's branch is named by it.
+    get(heads);
 
     return get
       .result(sessionClientAtom(sessionId))
@@ -138,8 +146,17 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
 
   const branchView = Atom.make<BranchView>({ kind: "idle" });
 
-  const compare = appRuntime.fn((ask: CompareAsk, get) =>
-    Effect.gen(function* () {
+  // How many of the owner's own compares (a pick, a Refresh) run: a count, since one interrupted by the next ends after
+  // the next began.
+  const manualRunning = Atom.make(0);
+
+  const compare = appRuntime.fn((ask: CompareAsk, get) => {
+    const count = (change: number) =>
+      Effect.sync(() => {
+        if (ask.manual) get.set(manualRunning, get(manualRunning) + change);
+      });
+
+    const made = Effect.gen(function* () {
       const client = yield* get.result(sessionClientAtom(sessionId));
       const before = get(branchView);
 
@@ -150,8 +167,13 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
 
       let result = yield* client.compare({ repo: ask.repo, fetch: ask.fetch });
 
-      // Only the owner's own action starts a stopped Container.
-      if (ask.manual && result.status === "error" && result.error.kind === "needs_container") {
+      // Only the owner's own action starts a stopped Container: when it needed it, or when the list it was answered is
+      // the last one made, for a HEAD the repo has left ("New commits": Refresh).
+      if (
+        ask.manual &&
+        ((result.status === "error" && result.error.kind === "needs_container") ||
+          (result.status === "ok" && result.comparison.behind !== undefined))
+      ) {
         get.set(branchView, { kind: "starting", repo: ask.repo });
         result = yield* client.compare({ repo: ask.repo, startContainer: true, fetch: ask.fetch });
       }
@@ -171,8 +193,14 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
             get.set(branchView, { kind: "failed", repo: ask.repo, message: messageOf(cause) });
           }),
       ),
-    ),
-  );
+    );
+
+    return Effect.acquireUseRelease(
+      count(1),
+      () => made,
+      () => count(-1),
+    );
+  });
 
   // The shown repo's HEAD as the Changes know it: a primitive, so what reads it runs only when the HEAD moves.
   const shownHead = Atom.make((get): string | null => {
@@ -190,6 +218,10 @@ export const paneAtomsOf = (changes: ConversationKey): PaneAtoms => {
     const shown = get(source);
     const head = get(shownHead);
     const view = get.once(branchView);
+
+    // Not while the owner's own compare (a Refresh that fetches) runs: it would interrupt it. When that ends this runs
+    // again, and follows the HEAD if it moved meanwhile.
+    if (get(manualRunning) > 0) return Effect.void;
 
     if (
       shown.kind === "branch" &&

@@ -13,6 +13,7 @@ import {
   AnnotationSource,
   AnnotationStatus,
 } from "./annotations.ts";
+import { shortSha } from "./comparison.ts";
 
 /** Where a piece of text sits in the Review's Markdown: from, and up to, in UTF-16 code units. */
 const Span = Schema.Tuple([Schema.Int, Schema.Int]);
@@ -169,7 +170,7 @@ const groupHeading = (annotation: Annotation): string => {
     case "changes":
       return `Uncommitted Changes in ${inlineCode(source.repo)}`;
     case "branch":
-      return `${source.branch === null ? "Detached HEAD" : `Branch ${inlineCode(source.branch)}`} against ${inlineCode(source.base)} at ${inlineCode(source.mergeBase.slice(0, 7))}`;
+      return `${source.branch === null ? `Detached at ${inlineCode(shortSha(source.head))}` : `Branch ${inlineCode(source.branch)}`} against ${inlineCode(source.base)} at ${inlineCode(shortSha(source.mergeBase))}`;
     case "call":
       return `Your ${inlineCode(source.tool)} call on ${inlineCode(annotationPath(annotation))}: lines as of that call`;
   }

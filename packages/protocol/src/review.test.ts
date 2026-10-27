@@ -200,7 +200,7 @@ describe("renderReview", () => {
     expect(headings).toEqual([
       "### Uncommitted Changes in `app`",
       "### Branch `feat/x` against `main` at `abc1234`",
-      "### Detached HEAD against `develop` at `fedcba9`",
+      "### Detached at `1111111` against `develop` at `fedcba9`",
       "### Your `edit` call on `/workspace/app/README.md`: lines as of that call",
     ]);
     expect(markdown).toContain("**Annotation 2**: `/workspace/app/src/a.ts`, lines 5–6");

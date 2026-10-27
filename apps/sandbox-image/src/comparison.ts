@@ -41,8 +41,8 @@ export type ComparisonInput = {
  * - the remote is the branch's tracked one, else `origin`, else the only one;
  * - the base is `input.base`, else the remote's default branch (`refs/remotes/<remote>/HEAD`, else `ls-remote --symref`),
  *   else, without a usable remote, the first of `main`, `master`, `trunk`, `develop` that exists here;
- * - with a remote, `git fetch --refmap= --no-write-fetch-head --no-auto-maintenance --no-tags <remote>
- *   '+refs/heads/<base>:refs/cloudpid/base/<base>'` when `input.fetch` or the ref is missing (a second try on `cannot
+ * - with a remote, `git fetch --refmap= --no-write-fetch-head --no-auto-maintenance --no-tags --no-recurse-submodules
+ *   --no-prune -- <remote> '+refs/heads/<base>:refs/cloudpid/base/<base>'` when `input.fetch` or the ref is missing (a second try on `cannot
  *   lock ref`); without one, the local branch is the base. The empty `--refmap` is what keeps git from also updating
  *   `refs/remotes/<remote>/<base>` (the opportunistic update of a remote-tracking branch that a configured remote's
  *   `fetch` refspec matches);
@@ -89,7 +89,7 @@ if [ -z "$base" ] && [ -n "$remote" ]; then
   prefix="refs/remotes/$remote/"
   base=\${ref#"$prefix"}
   if [ -z "$base" ]; then
-    base=$(git ls-remote --symref "$remote" HEAD 2>>"$err" | sed -n 's|^ref: refs/heads/\\(.*\\)\\tHEAD$|\\1|p' | head -n 1)
+    base=$(git ls-remote --symref -- "$remote" HEAD 2>>"$err" | sed -n 's|^ref: refs/heads/\\(.*\\)\\tHEAD$|\\1|p' | head -n 1)
   fi
 fi
 if [ -z "$base" ]; then
@@ -110,7 +110,7 @@ fetched=0
 if [ -n "$remote" ]; then
   baseref="${BASE_REF_PREFIX}$base"
   if [ "$fetch" = 1 ] || ! git rev-parse --verify --quiet "$baseref^{commit}" >/dev/null; then
-    fetch_base=(git fetch --refmap= --no-write-fetch-head --no-auto-maintenance --no-tags "$remote" "+refs/heads/$base:$baseref")
+    fetch_base=(git fetch --refmap= --no-write-fetch-head --no-auto-maintenance --no-tags --no-recurse-submodules --no-prune -- "$remote" "+refs/heads/$base:$baseref")
     got=0
     if "\${fetch_base[@]}" 2>"$err"; then
       got=1
@@ -376,15 +376,21 @@ export const blobsScript = (
   return `set -u -o pipefail
 dir=${shellQuote(`${root}/${repo}`)}
 ids=(${ids.join(" ")})
-for id in \${ids[@]+"\${ids[@]}"}; do
-  if ! size=$(git -C "$dir" cat-file -s "$id" 2>/dev/null); then
-    printf 'missing\\t%s\\n' "$id"
-  elif [ "$size" -le ${maxBytes} ]; then
-    printf 'blob\\t%s\\t%s\\t%s\\n' "$id" "$size" "$(git -C "$dir" cat-file blob "$id" | base64 | tr -d '\\n')"
-  else
-    printf 'blob\\t%s\\t%s\\t\\n' "$id" "$size"
-  fi
-done
+if [ "\${#ids[@]}" -gt 0 ]; then
+  # One \`cat-file --batch\` for all: a header line (\`<id> blob <size>\`, or \`<id> missing\`), then the size bytes and a newline.
+  printf '%s\\n' "\${ids[@]}" | git -C "$dir" cat-file --batch 2>/dev/null | while IFS=' ' read -r id type size; do
+    if [ "$type" != blob ]; then
+      printf 'missing\\t%s\\n' "$id"
+    elif [ "$size" -le ${maxBytes} ]; then
+      printf 'blob\\t%s\\t%s\\t%s\\n' "$id" "$size" "$(head -c "$size" | base64 | tr -d '\\n')"
+      read -r _
+    else
+      head -c "$size" >/dev/null
+      read -r _
+      printf 'blob\\t%s\\t%s\\t\\n' "$id" "$size"
+    fi
+  done
+fi
 exit 0
 `;
 };

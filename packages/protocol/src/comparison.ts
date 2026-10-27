@@ -98,8 +98,5 @@ export type CompareResult = typeof CompareResult.Type;
 /** The first characters of a commit, as the Pane and the Review name it. */
 export const shortSha = (sha: string): string => sha.slice(0, 7);
 
-/**
- * How This branch is named: the branch, or "detached at `abc1234`" for a detached HEAD, null before the first commit.
- */
-export const branchLabel = (head: RepoHead): string | null =>
-  head.branch ?? (head.commit === null ? null : `detached at ${shortSha(head.commit)}`);
+/** A full object id of git (SHA-1, or SHA-256 in a repo that uses it): what a commit or blob id is checked against. */
+export const OBJECT_ID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;

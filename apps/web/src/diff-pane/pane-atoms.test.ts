@@ -226,4 +226,85 @@ describe("a Diff pane's This branch", () => {
       expect(registry.get(pane.list).comparison?.behind).toBe(NEXT);
     }),
   );
+
+  it.effect("starts the Container for the owner's Refresh of a list that is behind", () =>
+    Effect.gen(function* () {
+      const { registry, pane, latest, compares, answer, live } = setup();
+
+      yield* live;
+      registry.mount(pane.following);
+      yield* latest().say(changes(NEXT));
+      registry.set(pane.source, { kind: "branch", repo: "app" });
+      registry.set(pane.compare, { repo: "app", manual: false, fetch: false });
+      yield* answer(0, { status: "ok", comparison: comparison(HEAD, { behind: NEXT }) });
+
+      // "New commits: Refresh": the stopped Container answered the old list, and the owner's action starts it.
+      registry.set(pane.compare, { repo: "app", manual: true, fetch: false });
+      yield* answer(1, { status: "ok", comparison: comparison(HEAD, { behind: NEXT }) });
+
+      expect(registry.get(pane.branchView)).toEqual({ kind: "starting", repo: "app" });
+      expect(compares()).toHaveLength(3);
+      expect(compares()[1]).toMatchObject({ startContainer: false });
+      expect(compares()[2]).toMatchObject({ startContainer: true });
+
+      yield* answer(2, { status: "ok", comparison: comparison(NEXT) });
+
+      expect(registry.get(pane.list).comparison?.head).toBe(NEXT);
+      expect(registry.get(pane.list).comparison?.behind).toBeUndefined();
+    }),
+  );
+
+  it.effect("does not interrupt the owner's own compare to follow a HEAD", () =>
+    Effect.gen(function* () {
+      const { registry, pane, latest, compares, answer, live } = setup();
+
+      yield* live;
+      registry.mount(pane.following);
+      yield* latest().say(changes(HEAD));
+      registry.set(pane.source, { kind: "branch", repo: "app" });
+      registry.set(pane.compare, { repo: "app", manual: true, fetch: false });
+      yield* answer(0, { status: "ok", comparison: comparison(HEAD) });
+
+      // The owner's Refresh fetches; a commit lands meanwhile.
+      registry.set(pane.compare, { repo: "app", manual: true, fetch: true });
+      yield* settle;
+      yield* latest().say(changes(NEXT));
+      yield* settle;
+
+      expect(compares()).toHaveLength(2);
+
+      // It ends, and the HEAD that moved meanwhile is followed.
+      yield* answer(1, { status: "ok", comparison: comparison(HEAD) });
+      yield* settle;
+
+      expect(compares()).toHaveLength(3);
+      expect(compares()[2]).toMatchObject({ startContainer: false, fetch: false });
+    }),
+  );
+
+  it.effect("asks for the picker's repos again only when a HEAD moves, not at every listing", () =>
+    Effect.gen(function* () {
+      const { registry, pane, latest, live } = setup();
+
+      yield* live;
+      registry.mount(pane.sources);
+      yield* latest().say(changes(HEAD));
+      yield* settle;
+
+      const asked = () =>
+        latest()
+          .commands()
+          .filter((command) => command.type === "comparison_sources");
+
+      const before = asked().length;
+
+      yield* latest().say(changes(HEAD));
+      yield* settle;
+      expect(asked()).toHaveLength(before);
+
+      yield* latest().say(changes(NEXT));
+      yield* settle;
+      expect(asked()).toHaveLength(before + 1);
+    }),
+  );
 });

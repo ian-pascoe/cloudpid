@@ -378,7 +378,7 @@ const RetryButton = ({
       onClick={() => {
         compare({ repo, manual: true, fetch });
       }}
-      className="touch-target mt-3 h-8 px-3 text-xs"
+      className="touch-target mt-3 h-8 px-3 text-sm"
     >
       {label}
     </Button>

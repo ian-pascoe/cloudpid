@@ -4,7 +4,13 @@
 // the message; the drafts are deleted once it is taken, and come back when Stop withdraws it before it was placed. It
 // also checks the drafts on the Changes after each listing, and drops the drafts addressed to a deleted subagent.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off asyncFunction:off -- plain storage reads under Effect.sync, and pi-durable's Promise calls.
-import type { Annotation, AnnotationDraft, Comparison, RepoChanges } from "@cloudpid/protocol";
+import type {
+  Annotation,
+  AnnotationDraft,
+  ChangeFile,
+  Comparison,
+  RepoChanges,
+} from "@cloudpid/protocol";
 import { renderReview, resolvePath, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { Harness } from "@cloudpid/effect-durable";
 import { SubagentsDoc } from "@cloudpid/extensions/subagents";
@@ -30,7 +36,14 @@ import { SessionChanges } from "./changes.ts";
 import { SessionComparisons } from "./comparisons.ts";
 import { attempt, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
-import { checked, checkQuote, comparedFile, listedFile, sideLines } from "./outdated.ts";
+import {
+  checked,
+  checkQuote,
+  comparedFile,
+  listedFile,
+  type QuoteCheck,
+  sideLines,
+} from "./outdated.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -54,6 +67,19 @@ const KEPT_REQUESTS = 50;
 
 /** How many files a check reads at once. */
 const CHECK_READS = 4;
+
+/**
+ * A draft's file as a check finds it: not to be judged (`unknown`), no longer listed (`gone`), or read by `read`, with how
+ * a quote's check settles the draft (`after`).
+ */
+type Located =
+  | { readonly kind: "unknown" }
+  | { readonly kind: "gone" }
+  | {
+      readonly kind: "file";
+      readonly read: Effect.Effect<ChangeFile, SessionError>;
+      readonly after: (before: Annotation, result: QuoteCheck) => Annotation;
+    };
 
 /** A Review as `submit` sends it: the summary, and the IDs of the drafts it sends. */
 export type ReviewPrompt = Omit<Prompt, "review"> & { readonly annotations: ReadonlyArray<string> };
@@ -119,19 +145,24 @@ export const sessionReviewsLayer = (
       const requests = (): Record<string, number> =>
         storage.get<Record<string, number>>(REQUESTS_KEY) ?? {};
 
-      /** What a check finds of `drafts` (those on the Changes) against `repos`: each one it changes, before and after. */
-      const findings = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) => {
+      /**
+       * What a check finds of `drafts`, grouped by file (`groupOf`, undefined for a draft that is not being checked): each
+       * file is found by `locate` and read once, for every draft on it; one that cannot be read leaves its drafts as they
+       * are. Each draft it changes is answered, before and after.
+       */
+      const checkFiles = (
+        drafts: ReadonlyArray<Annotation>,
+        groupOf: (draft: Annotation) => string | undefined,
+        locate: (first: Annotation) => Located,
+      ) => {
         const files = new Map<string, Annotation[]>();
 
         for (const draft of drafts) {
-          if (draft.source.kind !== "changes") continue;
+          const key = groupOf(draft);
 
-          const key = `${draft.source.repo}\u0000${draft.path}`;
-
-          files.set(key, [...(files.get(key) ?? []), draft]);
+          if (key !== undefined) files.set(key, [...(files.get(key) ?? []), draft]);
         }
 
-        // Each file read once, for every draft on it; one that cannot be read leaves its drafts as they are.
         return Effect.forEach(
           files.values(),
           (onFile) => {
@@ -139,11 +170,11 @@ export const sessionReviewsLayer = (
 
             if (first === undefined) return Effect.succeed([]);
 
-            const listed = listedFile(first, repos);
+            const located = locate(first);
 
-            if (listed.kind === "unknown") return Effect.succeed([]);
+            if (located.kind === "unknown") return Effect.succeed([]);
 
-            if (listed.kind === "gone") {
+            if (located.kind === "gone") {
               return Effect.succeed(
                 onFile.map((before) => ({
                   before,
@@ -152,32 +183,14 @@ export const sessionReviewsLayer = (
               );
             }
 
-            const query =
-              listed.entry.oldPath === undefined
-                ? { repo: listed.repo.repo, path: listed.entry.path }
-                : {
-                    repo: listed.repo.repo,
-                    path: listed.entry.path,
-                    oldPath: listed.entry.oldPath,
-                  };
-
-            return changes.file(undefined, query).pipe(
+            return located.read.pipe(
               Effect.map((file) =>
                 onFile.flatMap((before) => {
                   const lines = sideLines(before, file);
 
                   return lines === undefined
                     ? []
-                    : [
-                        {
-                          before,
-                          after: checked(
-                            before,
-                            checkQuote(before, lines),
-                            listed.repo.head.commit,
-                          ),
-                        },
-                      ];
+                    : [{ before, after: located.after(before, checkQuote(before, lines)) }];
                 }),
               ),
               Effect.catch((error) =>
@@ -190,6 +203,31 @@ export const sessionReviewsLayer = (
           { concurrency: CHECK_READS },
         ).pipe(Effect.map((found) => found.flat()));
       };
+
+      /** What a check finds of `drafts` (those on the Changes) against `repos`: each one it changes, before and after. */
+      const findings = (drafts: ReadonlyArray<Annotation>, repos: ReadonlyArray<RepoChanges>) =>
+        checkFiles(
+          drafts,
+          (draft) =>
+            draft.source.kind === "changes" ? `${draft.source.repo}\u0000${draft.path}` : undefined,
+          (first): Located => {
+            const listed = listedFile(first, repos);
+
+            if (listed.kind !== "file") return listed;
+
+            const at = { repo: listed.repo.repo, path: listed.entry.path };
+
+            return {
+              kind: "file",
+              // The Session's own Workspace's Changes: the drafts are the Session page's.
+              read: changes.file(
+                undefined,
+                listed.entry.oldPath === undefined ? at : { ...at, oldPath: listed.entry.oldPath },
+              ),
+              after: (before, result) => checked(before, result, listed.repo.head.commit),
+            };
+          },
+        );
 
       /**
        * What a check finds of the drafts `onRepo` (on This branch of one repo) against `comparison`: the ones written
@@ -200,36 +238,18 @@ export const sessionReviewsLayer = (
         // A list marked `behind` is the last one made, for a head the repo has left: it says nothing of the new one.
         if (comparison.behind !== undefined) return Effect.succeed([]);
 
-        const stale = onRepo.filter(
+        return checkFiles(
+          onRepo,
           (draft) =>
             draft.source.kind === "branch" &&
             (draft.source.mergeBase !== comparison.mergeBase ||
-              draft.source.head !== comparison.head),
-        );
-
-        const files = new Map<string, Annotation[]>();
-
-        for (const draft of stale) files.set(draft.path, [...(files.get(draft.path) ?? []), draft]);
-
-        return Effect.forEach(
-          files.values(),
-          (onFile) => {
-            const [first] = onFile;
-
-            if (first === undefined) return Effect.succeed([]);
-
+              draft.source.head !== comparison.head)
+              ? draft.path
+              : undefined,
+          (first): Located => {
             const compared = comparedFile(first, comparison);
 
-            if (compared.kind === "unknown") return Effect.succeed([]);
-
-            if (compared.kind === "gone") {
-              return Effect.succeed(
-                onFile.map((before) => ({
-                  before,
-                  after: checked(before, { kind: "gone" }, null),
-                })),
-              );
-            }
+            if (compared.kind !== "file") return compared;
 
             const { entry } = compared;
 
@@ -240,36 +260,22 @@ export const sessionReviewsLayer = (
               path: entry.path,
             };
 
-            const query = entry.oldPath === undefined ? at : { ...at, oldPath: entry.oldPath };
-
-            return comparisons.file(query).pipe(
-              Effect.map((file) =>
-                onFile.flatMap((before) => {
-                  const lines = sideLines(before, file);
-
-                  return lines === undefined
-                    ? []
-                    : [
-                        {
-                          before,
-                          after: checked(before, checkQuote(before, lines), null, comparison),
-                        },
-                      ];
-                }),
+            return {
+              kind: "file",
+              read: comparisons.file(
+                entry.oldPath === undefined ? at : { ...at, oldPath: entry.oldPath },
               ),
-              Effect.catch((error) =>
-                Effect.logWarning("Reading a file to check its drafts failed", error).pipe(
-                  Effect.as([]),
-                ),
-              ),
-            );
+              after: (before, result) => checked(before, result, null, comparison),
+            };
           },
-          { concurrency: CHECK_READS },
-        ).pipe(Effect.map((found) => found.flat()));
+        );
       };
 
-      /** The repos whose Comparison failed for the HEAD they have, so a listing does not ask for the same failure again. */
-      const failedAt = new Map<string, string | null>();
+      /**
+       * The HEAD of each repo whose Comparison the drafts were last checked against, or that failed, so a listing of the
+       * Changes does not make the same Comparison again (and run the Container's command again) for a HEAD it has seen.
+       */
+      const comparedAt = new Map<string, string>();
 
       /**
        * What a check finds of the drafts on This branch: for each repo with some, its Comparison as the Workspace has it now
@@ -293,7 +299,18 @@ export const sessionReviewsLayer = (
             Effect.gen(function* () {
               const head = repos.find((each) => each.repo === repo)?.head.commit ?? null;
 
-              if (failedAt.get(repo) === head && failedAt.has(repo)) return [];
+              // What this repo's drafts are written against, with its HEAD: a check that has seen both has nothing new.
+              const pairs = new Set(
+                onRepo.flatMap((draft) =>
+                  draft.source.kind === "branch"
+                    ? [`${draft.source.mergeBase}:${draft.source.head}`]
+                    : [],
+                ),
+              );
+
+              const seen = [head ?? "", ...pairs].join(" ");
+
+              if (comparedAt.get(repo) === seen) return [];
 
               const made = yield* comparisons
                 .compare({ repo, startContainer: false, fetch: false })
@@ -305,13 +322,16 @@ export const sessionReviewsLayer = (
                   ),
                 );
 
+              // Only a Comparison the Container made, or one that failed for good, is remembered: a stopped Container
+              // answers the last list, and the next check may find it running.
               if (made === undefined || made.status === "error") {
-                failedAt.set(repo, head);
+                if (made === undefined || made.error.kind !== "needs_container")
+                  comparedAt.set(repo, seen);
 
                 return [];
               }
 
-              failedAt.delete(repo);
+              if (made.comparison.behind === undefined) comparedAt.set(repo, seen);
 
               return yield* againstComparison(made.comparison, onRepo);
             }),
