@@ -19,17 +19,45 @@ env:
   TURBO_CACHE_DIR: .turbo/cache
 
 jobs:
-  # Reusable by the deploy job: `needs: check`.
-  check:
-    name: Check
+  # What `pnpm check` runs, split over runners so they run at once: the server's tests alone took about 4½ minutes on
+  # one runner, sharing its 4 cores with every other task, while the rest was done in about 1½. Each part has its own
+  # turbo cache, so a part whose inputs did not change replays its logs.
+  checks:
+    name: ${{ matrix.name }}
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Job-level, not workflow-level: a new push cancels the PR's previous check, but never a preview deploy or destroy
-    # midway (the `preview` job has its own group).
+    # midway (the `preview` job has its own group). One group per part, or the parts would cancel each other.
     concurrency:
-      group: check-${{ github.ref }}
+      group: check-${{ matrix.part }}-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    strategy:
+      # Every part reports, so one push shows every failure.
+      fail-fast: false
+      matrix:
+        include:
+          # `check` does not build; the web app's bundle is what the server serves, so make sure it still builds.
+          - name: Typecheck, lint, format, build
+            part: static
+            run: >-
+              pnpm turbo run typecheck lint
+              && pnpm run format:check
+              && pnpm turbo run build --filter @cloudpid/web
+          - name: Tests
+            part: tests
+            run: pnpm turbo run test --filter '!@cloudpid/server'
+          # vitest splits the server's test files (all its projects) over the shards; the shard is part of the task's
+          # hash, so each shard is cached on its own.
+          - name: Server tests (1/3)
+            part: server-1
+            run: pnpm turbo run test --filter @cloudpid/server -- --shard=1/3
+          - name: Server tests (2/3)
+            part: server-2
+            run: pnpm turbo run test --filter @cloudpid/server -- --shard=2/3
+          - name: Server tests (3/3)
+            part: server-3
+            run: pnpm turbo run test --filter @cloudpid/server -- --shard=3/3
     env:
       # A run summary per turbo run (`.turbo/runs`), naming every task's hash, for the cache pruning below.
       TURBO_RUN_SUMMARY: "true"
@@ -39,22 +67,19 @@ jobs:
       # pnpm, Node, the pnpm store (cached by lockfile, with a fallback), and the install.
       - uses: ./.github/actions/setup
 
-      # Turbo's cache: the newest one of this branch, else of main (a pull request can read its base's caches).
+      # This part's turbo cache: the newest one of this branch, else of main (a pull request can read its base's caches).
       - uses: actions/cache@v6
         with:
           path: ${{ env.TURBO_CACHE_DIR }}
-          key: turbo-${{ runner.os }}-${{ github.sha }}
-          restore-keys: turbo-${{ runner.os }}-
+          key: turbo-${{ matrix.part }}-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ matrix.part }}-${{ runner.os }}-
 
-      - run: pnpm check
-
-      # `check` does not build; the web app's bundle is what the server serves, so make sure it still builds.
-      - run: pnpm turbo run build --filter @cloudpid/web
+      - run: ${{ matrix.run }}
 
       # Keep only the entries this commit's tasks used or made. Turbo never evicts, and each save carries the restored
-      # cache forward, so without this it grows with every commit. Every task runs in every check, so what this run
-      # names is all a later run can hit. Only after a passing run: a failed one stops early and names too few, and the
-      # cache step saves nothing then anyway.
+      # cache forward, so without this it grows with every commit. Every task of the part runs in every check, so what
+      # this run names is all a later run of the part can hit. Only after a passing run: a failed one stops early and
+      # names too few, and the cache step saves nothing then anyway.
       - name: Prune turbo cache
         run: |
           hashes=$(jq -r '.tasks[].hash' .turbo/runs/*.json | sort -u)
@@ -64,6 +89,20 @@ jobs:
             grep -qxF "${name%%[-.]*}" <<<"$hashes" || rm -f "$file"
           done
           echo "Turbo cache: $before → $(du -sh "$TURBO_CACHE_DIR" | cut -f1), $(wc -l <<<"$hashes") tasks kept"
+
+  # The one status the `main` ruleset requires (`Check`), and what the deploy jobs wait for: it passes only when every
+  # part did. It runs when one fails too (`!cancelled()`), so a failure reports as one rather than as skipped, which
+  # a required check would count as passing.
+  check:
+    name: Check
+    needs: checks
+    if: ${{ !cancelled() && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: test "$RESULT" = success
+        env:
+          RESULT: ${{ needs.checks.result }}
 
   # Deploys `prod` on push to main with a scoped API token from the `production` environment
   # (credentials as code: infra/github.ts, AGENTS.md → Infra).

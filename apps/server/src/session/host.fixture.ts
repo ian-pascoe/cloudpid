@@ -581,7 +581,10 @@ export class TestSession extends DurableObject {
                   sessionSettingsLayer({
                     read: Effect.orDie(Effect.tryPromise(() => this.#readSettings())),
                     kv: ctx.storage.kv,
-                    timeout: "200 millis",
+                    // No test makes the read hang, and a loaded runner can take longer than 200 ms for one that
+                    // lands: the Session then ran on the defaults (a `/compact` test kept everything and compacted
+                    // nothing).
+                    timeout: "5 seconds",
                   }),
                 ),
               ),
