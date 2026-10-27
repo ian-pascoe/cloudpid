@@ -85,10 +85,11 @@ export const ArchivedBanner = ({ archived }: { archived: Archived }) => (
 
 /**
  * A round button floating over the bottom of the transcript that scrolls to the latest message. assistant-ui disables
- * it while the transcript is already at the bottom, which fades it out of sight (and out of the tab order).
+ * it while the transcript is already at the bottom, which fades it out of sight (and out of the tab order). It is over
+ * the cards' sticky lines (`z-[1]`) that scroll under it.
  */
 const ScrollToBottom = () => (
-  <ThreadPrimitive.ViewportFooter className="pointer-events-none sticky bottom-0 h-0">
+  <ThreadPrimitive.ViewportFooter className="pointer-events-none sticky bottom-0 z-[2] h-0">
     <ThreadPrimitive.ScrollToBottom
       behavior="smooth"
       aria-label="Scroll to the latest message"

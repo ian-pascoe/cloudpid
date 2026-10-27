@@ -4,7 +4,7 @@ import {
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import { useAtom } from "@effect/atom-react";
-import type { MouseEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import * as Arr from "effect/Array";
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
 import { Check, ChevronRight, Loader, X } from "lucide-react";
@@ -24,6 +24,7 @@ import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { NestedCall } from "./nested-calls.ts";
+import { keepClosedInView } from "./scroller.ts";
 import { toolSummary } from "./tool-summary.ts";
 
 /**
@@ -85,44 +86,11 @@ export const KeptDetails = ({
 /** `Omit` over each member of a union, so each keeps its own fields. */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-/** The nearest ancestor that scrolls: the transcript, or a subagent's thread inside it. */
-const scrollerOf = (element: HTMLElement): HTMLElement | null => {
-  for (let parent = element.parentElement; parent !== null; parent = parent.parentElement) {
-    const { overflowY } = getComputedStyle(parent);
-
-    if (overflowY === "auto" || overflowY === "scroll") return parent;
-  }
-
-  return null;
-};
-
 /**
- * Closing a card from its line while the line is stuck to the top of its scroller (the card's top scrolled out of
- * sight) leaves the scroller where the card's end was; bring the closed card back to the top instead. Only that
- * scroller moves, so closing a card in a subagent's thread leaves the transcript around it where it was.
- */
-const keepClosedInView = (event: MouseEvent<HTMLElement>) => {
-  const line = event.currentTarget;
-  const details = line.parentElement;
-
-  if (!(details instanceof HTMLDetailsElement) || !details.open) return;
-
-  const stuck = line.getBoundingClientRect().top > details.getBoundingClientRect().top + 1;
-  const scroller = scrollerOf(details);
-
-  if (!stuck || scroller === null) return;
-
-  requestAnimationFrame(() => {
-    if (details.open) return;
-
-    scroller.scrollTop +=
-      details.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-  });
-};
-
-/**
- * A card that opens. Its line sticks to the top of the transcript while the opened card runs past it, so it can be
- * closed without scrolling back up.
+ * A card that opens. Its line sticks to the top of its scroller (the transcript, or a subagent's thread) while the
+ * opened card runs past it, so it can be closed without scrolling back up. The body is a stacking context of its own,
+ * so nothing in it (a diff's gutter) draws over the stuck line; the line stays under the Session details, which float
+ * over the transcript at `z-10`. The group is named: a subagent's card around it is a `details` too.
  */
 const Disclosure = ({
   disclosure,
@@ -135,20 +103,20 @@ const Disclosure = ({
   held?: boolean | undefined;
   children: OpenContent;
 }) => (
-  <KeptDetails disclosure={disclosure} held={held} className="group my-2 rounded-md border">
+  <KeptDetails disclosure={disclosure} held={held} className="group/card my-2 rounded-md border">
     {(open) => (
       <>
         <summary
           onClick={keepClosedInView}
-          className="sticky top-0 z-10 flex cursor-pointer list-none items-center gap-2 rounded-md bg-background px-3 py-1.5 text-sm text-muted-foreground select-none group-open:rounded-b-none group-open:border-b [&::-webkit-details-marker]:hidden"
+          className="sticky top-0 z-[1] flex cursor-pointer list-none items-center gap-2 rounded-md bg-background px-3 py-1.5 text-sm text-muted-foreground select-none group-open/card:rounded-b-none group-open/card:border-b [&::-webkit-details-marker]:hidden"
         >
           <ChevronRight
-            className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+            className="size-3.5 shrink-0 transition-transform group-open/card:rotate-90"
             aria-hidden
           />
           {summary}
         </summary>
-        <div className="px-3 py-2">{shown(children, open)}</div>
+        <div className="isolate px-3 py-2">{shown(children, open)}</div>
       </>
     )}
   </KeptDetails>
