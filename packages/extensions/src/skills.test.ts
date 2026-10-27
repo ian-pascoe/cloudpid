@@ -400,10 +400,11 @@ describe("the skills section", () => {
     expect(reads.length).toBeLessThanOrEqual(100);
   });
 
-  it("is absent when no skill is found", async () => {
+  it("adds nothing to the prompt when no skill is found", async () => {
+    // The section is there but empty: it records that the context read the Skills and found none.
     expect(
       await skillsSection("/workspace/repo", { "/workspace/repo/README.md": "# repo\n" }),
-    ).toBeUndefined();
+    ).toBe("");
   });
 
   it("takes the skills of an environment that discovers its own, without a read or a listing", async () => {
@@ -571,6 +572,35 @@ describe("the skills section over a conversation's Context Windows", () => {
     expect(sections[0]).toContain("<name>deploy</name>");
     expect(sections[0]).not.toContain("<name>lint</name>");
     expect(sections).toEqual(sections.map(() => sections[0]));
+  });
+
+  it("stays without a list when the first read found no Skills, though one is added later", async () => {
+    const sections = await run({}, [
+      (files) => {
+        files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+        return call("read", {});
+      },
+      () => call("read", {}),
+    ]);
+
+    expect(sections).toHaveLength(3);
+    // Nothing of the system prompt changed after the first request: no section was added meanwhile.
+    expect(sections).toEqual(sections.map(() => sections[0]));
+    expect(sections.join("")).not.toContain("<name>lint</name>");
+  });
+
+  it("lists the Skills of a later Context Window though the first one had none", async () => {
+    const sections = await run({}, [
+      (files) => {
+        files[`${SKILLS}/lint/SKILL.md`] = skillFile("lint", "Lint it.");
+
+        return call("context_rollover", { handoff: "Keep going." });
+      },
+    ]);
+
+    expect(sections[0]).not.toContain("<name>lint</name>");
+    expect(sections.at(-1)).toContain("<name>lint</name>");
   });
 
   it("lists the Skills as they are then after a Handoff", async () => {

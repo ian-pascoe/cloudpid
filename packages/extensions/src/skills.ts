@@ -111,6 +111,9 @@ const SECTION_KEY = "skills";
  * `project_context` section is). A Skill can change during a Session (a Skill saved or installed), and pi-durable sends
  * a changed section as a patch, which a provider without mid-conversation system messages folds into the system prompt,
  * the head of the cache prefix. A Handoff starts a context without it, so the next request lists the Skills again.
+ * When the first read finds none, the section is the empty string, not absent: a section that is absent cannot be told
+ * from one never read, so a Skill saved later would be added to the prompt as a patch. An empty section adds nothing
+ * to the prompt's text (pi-ai leaves empty parts out of it).
  * Skill expansion at submit does not read this list: it asks the Workspace for its Skills when a message is admitted.
  */
 const Section = effectSection(
@@ -125,7 +128,7 @@ const Section = effectSection(
       : Effect.map(skillsOf(input.env), (skills) => {
           const text = formatSkills(skills, readToolOf(input));
 
-          return text === undefined ? undefined : `<${SECTION_KEY}>\n${text}\n</${SECTION_KEY}>`;
+          return text === undefined ? "" : `<${SECTION_KEY}>\n${text}\n</${SECTION_KEY}>`;
         });
   },
   { tag: false },
