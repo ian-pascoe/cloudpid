@@ -36,9 +36,14 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
+import { type PageCrop, PageCropType } from "./annotations.ts";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
 import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
-import { skillBlocksIn, userEntryData } from "./user-entry.ts";
+import { skillBlocksIn, type UserEntryData, userEntryData } from "./user-entry.ts";
+
+/** Whether an image's type is one a crop may have. */
+const isCropType = Schema.is(PageCropType);
 
 /**
  * The display model of a transcript. The Session returns pi's own entries; the UI folds them into these messages, in
@@ -180,6 +185,29 @@ const withoutPageBlock = (parts: readonly TranscriptPart[]): TranscriptPart[] =>
 };
 
 /**
+ * `parts` without the crops of a Review's page Annotations (`ReviewData.crops`: a label and an image each, the last parts
+ * of the message), and the crops, in order, for the Review's chips.
+ */
+const withoutCrops = (parts: readonly TranscriptPart[], data: UserEntryData) => {
+  const count = data.review?.crops?.length ?? 0;
+  const none: readonly PageCrop[] = [];
+
+  if (count === 0 || parts.length < count * 2) return { parts, crops: none };
+
+  const at = parts.length - count * 2;
+
+  const crops = parts.slice(at).flatMap((part): PageCrop[] => {
+    if (part.type !== "image") return [];
+
+    const { mimeType } = part;
+
+    return isCropType(mimeType) ? [{ mimeType, data: part.data }] : [];
+  });
+
+  return { parts: parts.slice(0, at), crops };
+};
+
+/**
  * An owner's message the Session expanded or attached pages to, as the owner typed it: the typed text in place of the
  * expansion, which is the message's first text part (left as it is when the owner typed none), its other parts as they
  * were but for the block of page content, which a chip per page replaces, and each expanded Skill with the block the
@@ -192,12 +220,12 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
 
   if (data === undefined || message?.role !== "user") return undefined;
 
-  const all = userParts(message.content);
-  const parts = data.pages === undefined ? all : withoutPageBlock(all);
+  const { parts: carried, crops } = withoutCrops(userParts(message.content), data);
+  const parts = data.pages === undefined ? carried : withoutPageBlock(carried);
   const first = parts.findIndex((part) => part.type === "text");
   const expanded = parts[first];
   const text = expanded?.type === "text" ? expanded.text : "";
-  const review = data.review === undefined ? undefined : shownReview(text, data.review);
+  const review = data.review === undefined ? undefined : shownReview(text, data.review, crops);
 
   // The Skills' blocks are in what comes before the Review's Markdown.
   const blocks = skillBlocksIn(

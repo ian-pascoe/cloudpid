@@ -137,7 +137,7 @@ The change one file-writing tool call made to one file, as recorded when it ran.
 _Avoid_: Per-call diff, edit diff
 
 **Annotation**:
-What the owner writes on a range of lines on one side of a diff (a Call diff, the Changes, a Comparison, or the Last run), with those lines quoted as they were. It is a draft, kept in its Session and the same on every device, until it is sent in a Review. A draft on the Changes or a Comparison (This branch's or a pull request's) whose lines have changed since is outdated; one whose lines only moved goes with them (on a Comparison, to the new head).
+What the owner writes on a range of lines on one side of a diff (a Call diff, the Changes, a Comparison, or the Last run), with those lines quoted as they were; or on an element or an area of a page in the Browser Pane, with the page's address, the element's visible text and a crop of the spot from the Pane's screen. It is a draft, kept in its Session and the same on every device, until it is sent in a Review. A draft on the Changes or a Comparison (This branch's or a pull request's) whose lines have changed since is outdated; one whose lines only moved goes with them (on a Comparison, to the new head). A draft on a page shows as a pin on any Owner tab at its address, at its element wherever it is now, or listed as not found on the page; what it took from the page is untrusted page content, as an Attached page is.
 _Avoid_: Comment, remark, note (that is an agent's Note)
 
 **Review**:

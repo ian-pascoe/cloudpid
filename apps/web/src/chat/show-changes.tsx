@@ -1,12 +1,12 @@
 // "Show changes" under the final answer of the Session's latest writing Run (`docs/spec.md` → Diffs and review → Run
 // diff): what the Run changed, summed up as the Session details sum up the Changes ("1 file +13 −0"), which opens the
 // Diff pane on the Last run. Only that one answer has it: not an older Run's, not while the Run is live, and not a Run
-// that changed no file (a `bash` call that only read). Only on the Session's page: the Runs are the Session's, and a
+// that changed no file (a `bash` call that only read, or one whose diff lists no file: nothing captured, or nothing
+// changed in what was). Only on the Session's page: the Runs are the Session's, and a
 // Subagent page's Diff pane shows another Workspace's Changes.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- reads a derived atom; no combinators.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off missedPipeableOpportunity:off -- reads a derived atom; no combinators.
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import { FileDiff, PanelRightOpen } from "lucide-react";
 import { filesLabel, totalsText } from "../diff-pane/changes.ts";
@@ -15,7 +15,7 @@ import { DiffTally } from "../diff-pane/parts.tsx";
 import { openDiffPaneAtom } from "../diff-pane/target.ts";
 import { lastRunAtom, sessionViewAtom } from "../session/atoms.ts";
 import { useShownChanges, useShownSessionId, useShownSubagent } from "./conversation.ts";
-import { runTotalsAtom } from "./show-changes-state.ts";
+import { runLink, runTotalsAtom } from "./show-changes-state.ts";
 
 /**
  * The entry the Last run's final answer is, in the transcript the Session's page shows: undefined while the Run is live,
@@ -36,7 +36,8 @@ const runAnswerAtom = Atom.family((sessionId: string) =>
 
 /**
  * The link under `answer` (the entry its turn ended with), if that is the Last run's final answer: the Run's files and
- * lines once the Session has said them, "Show changes" until then, or when it could not, or no repo was captured.
+ * lines once the Session has said them, or "Show changes" when it could not. Nothing while the totals are asked for, and
+ * nothing when the Run's diff lists no file.
  */
 export const ShowChanges = ({ answer }: { answer: number | undefined }) => {
   const sessionId = useShownSessionId();
@@ -53,8 +54,11 @@ export const ShowChanges = ({ answer }: { answer: number | undefined }) => {
 const RunSummary = ({ sessionId, run }: { sessionId: string; run: string }) => {
   const open = useAtomSet(openDiffPaneAtom(useShownChanges()));
   const result = useAtomValue(runTotalsAtom({ sessionId, run }));
-  const totals = AsyncResult.isSuccess(result) ? result.value : null;
-  const summed = totals !== null && totals.files > 0;
+  const totals = runLink(result);
+
+  if (totals === "hidden") return null;
+
+  const summed = totals !== null;
 
   return (
     <button

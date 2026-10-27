@@ -1,13 +1,21 @@
 // The Session's draft Annotations (`docs/spec.md` → Diffs and review → Annotations and Reviews): kept in this object's
 // storage, one key a draft, and sent whole to every client whenever they change, as the Approval requests are. A save
 // replaces the draft of its ID, so the last save wins. Text still being typed stays in the browser that types it.
-// Drafts belong to their Session: a Fork or Clone copies none, as it copies only what `fork.ts` names.
+// Drafts belong to their Session: a Fork or Clone copies none, as it copies only what `fork.ts` names. A page's draft
+// keeps its crop (at most `MAX_ANNOTATION_CROP` characters), so 100 of them are at most 1.2 MB of images in all.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain storage reads, under Effect.sync.
 import {
   type Annotation,
   type AnnotationDraft,
+  clampPageSource,
   cutQuote,
+  type DiffAnnotation,
+  type DiffAnnotationDraft,
+  isPageAnnotation,
   MAX_ANNOTATIONS,
+  type PageAnnotation,
+  type PageAnnotationDraft,
+  pageQuote,
 } from "@cloudpid/protocol";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -45,10 +53,10 @@ export type AnnotationStoreService = {
   ) => Effect.Effect<ReadonlyArray<Annotation> | undefined>;
   /**
    * Put `checked` in place of the drafts they were made from, those not saved meanwhile (a later save wins over a check
-   * that read the draft before it); told to the clients only when something changed.
+   * that read the draft before it); told to the clients only when something changed. Only drafts on a diff are checked.
    */
   readonly checked: (
-    checked: ReadonlyArray<{ readonly before: Annotation; readonly after: Annotation }>,
+    checked: ReadonlyArray<{ readonly before: DiffAnnotation; readonly after: DiffAnnotation }>,
   ) => Effect.Effect<void>;
   /**
    * Delete the drafts a Review sent, `sent` as it took them: one saved again since (while the Review was being sent)
@@ -73,7 +81,7 @@ export type AnnotationStoreOptions = {
 };
 
 /** Whether a check found what the draft already says: the same range, mark, and HEAD (or pair of commits). */
-const sameFinding = (a: Annotation, b: Annotation) =>
+const sameFinding = (a: DiffAnnotation, b: DiffAnnotation) =>
   a.start === b.start &&
   a.end === b.end &&
   a.status === b.status &&
@@ -92,8 +100,75 @@ const sameFinding = (a: Annotation, b: Annotation) =>
   (a.source.kind !== "run" || b.source.kind !== "run" || a.source.end === b.source.end);
 
 /** Whether two drafts cover the same lines of the same file. */
-const sameRange = (a: Annotation, b: AnnotationDraft) =>
+const sameRange = (a: DiffAnnotation, b: DiffAnnotationDraft) =>
   a.path === b.path && a.side === b.side && a.start === b.start && a.end === b.end;
+
+/** A diff's draft as the store keeps it: its quote cut to the limits, and its mark while its range is the same. */
+const keptDiff = (
+  draft: DiffAnnotationDraft,
+  existing: Annotation | undefined,
+  now: number,
+): Effect.Effect<DiffAnnotation, SessionError> =>
+  Effect.suspend(() => {
+    if (draft.end < draft.start) {
+      return Effect.fail(
+        SessionError.make({
+          operation: "annotation",
+          message: "An Annotation's range must end at or after its start",
+        }),
+      );
+    }
+
+    const { quote, more, clipped } = cutQuote(draft.quote, draft.more, draft.clipped === true);
+    const { clipped: _clipped, ...rest } = draft;
+
+    const saved: Types.Mutable<DiffAnnotation> = {
+      ...rest,
+      quote,
+      more,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    if (clipped === true) saved.clipped = true;
+
+    if (
+      existing !== undefined &&
+      !isPageAnnotation(existing) &&
+      existing.status !== undefined &&
+      sameRange(existing, draft)
+    ) {
+      saved.status = existing.status;
+    }
+
+    return Effect.succeed(saved);
+  });
+
+/**
+ * A page's draft as the store keeps it: what the page supplied cleaned and cut to its bounds (`clampPageSource`), its
+ * quote cut as the Review measures it (`pageQuote`). Its crop was held to `MAX_ANNOTATION_CROP` by the socket's schema.
+ */
+const keptPage = (
+  draft: PageAnnotationDraft,
+  existing: Annotation | undefined,
+  now: number,
+): PageAnnotation => {
+  const { quote, more, clipped } = pageQuote(draft.quote, draft.more, draft.clipped === true);
+  const { clipped: _clipped, ...rest } = draft;
+
+  const saved: Types.Mutable<PageAnnotation> = {
+    ...rest,
+    source: clampPageSource(draft.source),
+    quote,
+    more,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  if (clipped === true) saved.clipped = true;
+
+  return saved;
+};
 
 /** The Session's drafts over its storage; build it once per instance. */
 export const annotationStoreLayer = ({
@@ -153,29 +228,9 @@ export const makeAnnotationStore = ({
           });
         }
 
-        if (draft.end < draft.start) {
-          return yield* SessionError.make({
-            operation: "annotation",
-            message: "An Annotation's range must end at or after its start",
-          });
-        }
-
-        const { quote, more, clipped } = cutQuote(draft.quote, draft.more, draft.clipped === true);
-        const { clipped: _clipped, ...rest } = draft;
-
-        const saved: Types.Mutable<Annotation> = {
-          ...rest,
-          quote,
-          more,
-          createdAt: existing?.createdAt ?? now,
-          updatedAt: now,
-        };
-
-        if (clipped === true) saved.clipped = true;
-
-        if (existing?.status !== undefined && sameRange(existing, draft)) {
-          saved.status = existing.status;
-        }
+        const saved: Annotation = isPageAnnotation(draft)
+          ? keptPage(draft, existing, now)
+          : yield* keptDiff(draft, existing, now);
 
         yield* Effect.sync(() => write(saved));
         yield* told;
@@ -194,7 +249,9 @@ export const makeAnnotationStore = ({
         for (const { before, after } of results) {
           const now = storage.get<Annotation>(draftKey(before.id));
 
-          if (now === undefined || now.updatedAt !== before.updatedAt) continue;
+          if (now === undefined || isPageAnnotation(now) || now.updatedAt !== before.updatedAt) {
+            continue;
+          }
 
           if (sameFinding(now, after)) continue;
 

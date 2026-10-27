@@ -2,10 +2,12 @@
 // quote compared with the lines of its side of the file as they are now. Still in place, nothing changes; found exactly
 // once elsewhere, the draft moves there silently (one edit above the drafts must not make them all outdated); otherwise
 // it is marked outdated, or "no longer in the diff" when its file has left the Changes. A Call diff never changes, so
-// its drafts are never checked. Pure: the Session reads the files and applies what this finds (`annotations.ts`).
+// its drafts are never checked. Nor are a page's: the Session cannot see the page, and the Browser Pane finds each
+// one's element again itself, saying "not found on the page" when it cannot. Pure: the Session reads the files and
+// applies what this finds (`annotations.ts`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over lines of text.
 import type {
-  Annotation,
+  DiffAnnotation,
   ChangeEntry,
   ChangeFile,
   Comparison,
@@ -32,7 +34,7 @@ export const linesOf = (text: string): readonly string[] => {
  * length), or neither. A clipped quote's last line need only start the same.
  */
 export const checkQuote = (
-  annotation: Pick<Annotation, "start" | "end" | "quote" | "clipped">,
+  annotation: Pick<DiffAnnotation, "start" | "end" | "quote" | "clipped">,
   lines: readonly string[],
 ): QuoteCheck => {
   const { quote } = annotation;
@@ -79,7 +81,7 @@ export type ListedFile =
  * that has more files than the list holds, cannot say the file is gone, so the draft stays as it is.
  */
 export const listedFile = (
-  annotation: Pick<Annotation, "source" | "path">,
+  annotation: Pick<DiffAnnotation, "source" | "path">,
   repos: readonly RepoChanges[],
 ): ListedFile => {
   const { source } = annotation;
@@ -99,7 +101,7 @@ export const listedFile = (
 
 /** The lines of the draft's side of `file`, or undefined when that side has no text to compare (binary, too large). */
 export const sideLines = (
-  annotation: Pick<Annotation, "side">,
+  annotation: Pick<DiffAnnotation, "side">,
   file: ChangeFile,
 ): readonly string[] | undefined => {
   const side = annotation.side === "old" ? file.old : file.new;
@@ -123,7 +125,7 @@ export type ComparedFile =
  * cannot say the file is gone, so the draft stays as it is.
  */
 export const comparedFile = (
-  annotation: Pick<Annotation, "path">,
+  annotation: Pick<DiffAnnotation, "path">,
   comparison: Pick<Comparison, "files" | "more">,
 ): ComparedFile => {
   const entry = comparison.files.find((file) => file.path === annotation.path);
@@ -139,11 +141,11 @@ export const comparedFile = (
  * compared); a marked draft keeps its place, its quote and the HEAD or pair it was written against.
  */
 export const checked = (
-  annotation: Annotation,
+  annotation: DiffAnnotation,
   result: QuoteCheck | { readonly kind: "gone" },
   head: string | null,
   pair?: BranchPair,
-): Annotation => {
+): DiffAnnotation => {
   const { status: _status, ...rest } = annotation;
 
   const source =

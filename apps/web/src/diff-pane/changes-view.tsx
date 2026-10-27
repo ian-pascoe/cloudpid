@@ -13,6 +13,7 @@
 // The owner drafts Annotations on the files from the gutter (`review/annotations-ui.tsx`): each item takes its file's
 // drafts as `annotations` (`annotated-items.ts`), drawn by `renderAnnotation`, with one editor for the whole scroll.
 
+import { isDiffAnnotation } from "@cloudpid/protocol";
 import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { SelectedLineRange } from "@pierre/diffs";
 import {
@@ -206,7 +207,8 @@ const Scroll = ({ pane, header }: ChangesViewProps) => {
   const { sessionId } = pane.changes;
   // A Subagent page's Pane draws no gutter +.
   const drafting = paneDrafts(pane.changes);
-  const drafts = useAtomValue(annotationsAtom(sessionId));
+  const annotations = useAtomValue(annotationsAtom(sessionId));
+  const drafts = useMemo(() => annotations.filter(isDiffAnnotation), [annotations]);
   const { repos } = useAtomValue(pane.list);
   const open = useOpenEditor();
   const { ref: frame, width } = useWidth();

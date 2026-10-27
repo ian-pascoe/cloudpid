@@ -6,7 +6,7 @@
 // One editor per diff view (a card's Call diff, the Diff pane's scroll), kept in its `AnnotationEditor` scope (`editor.ts`).
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- the drafts are native arrays; hooks, not combinators.
 
-import { type Annotation, MAX_ANNOTATION_TEXT, rangeText } from "@cloudpid/protocol";
+import { type DiffAnnotation, MAX_ANNOTATION_TEXT, rangeText } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
@@ -25,7 +25,7 @@ import {
   newDraft,
   statusLabel,
 } from "./drafts.ts";
-import { AnnotationEditor, CLOSED } from "./editor.ts";
+import { AnnotationEditor, CLOSED, editingId, openOn } from "./editor.ts";
 import { QuotedLines } from "./review-chips.tsx";
 import { pickLines } from "./selection.ts";
 
@@ -46,19 +46,24 @@ export const useOpenEditor = () => {
     (diff: string, fileDiff: FileDiffMetadata, range: SelectedLineRange) => {
       const picked = pickLines(fileDiff, range);
 
-      if (picked !== undefined) setEditor({ ...CLOSED, diff, picked });
+      if (picked !== undefined) setEditor(openOn({ kind: "lines", diff, picked }));
     },
     [setEditor],
   );
 };
 
-/** The text box of an editor, with Save and Cancel; Escape cancels, Mod+Enter saves. */
-const EditorBox = ({
+/**
+ * The text box of the editor this renders in (`AnnotationEditor`), with Save and Cancel; Escape cancels, Mod+Enter saves.
+ * The diffs' and the Browser Pane's.
+ */
+export const EditorBox = ({
   label,
+  placeholder = "What should the agent know about these lines?",
   onSave,
 }: {
-  /** What the box is for, read by a screen reader: the lines it is on. */
+  /** What the box is for, read by a screen reader: what it is on. */
   label: string;
+  placeholder?: string;
   onSave: (text: string) => void;
 }) => {
   const [editor, setEditor] = useAtom(AnnotationEditor.use());
@@ -78,7 +83,7 @@ const EditorBox = ({
         rows={3}
         maxLength={MAX_ANNOTATION_TEXT}
         value={editor.text}
-        placeholder="What should the agent know about these lines?"
+        placeholder={placeholder}
         onChange={(event) => {
           const text = event.currentTarget.value;
 
@@ -150,7 +155,7 @@ const Frame = ({ children, outdated }: { children: ReactNode; outdated?: boolean
 );
 
 /** Save `draft` through the Session; the editor closes once it has it, and says why it did not. */
-const useSave = (sessionId: string) => {
+export const useSave = (sessionId: string) => {
   const [, setEditor] = useAtom(AnnotationEditor.use());
   const save = useCall(saveAnnotationAtom(sessionId));
 
@@ -174,7 +179,7 @@ const useSave = (sessionId: string) => {
 const NewDraft = ({ sessionId, anchor }: { sessionId: string; anchor: DiffAnchor }) => {
   const [editor] = useAtom(AnnotationEditor.use());
   const save = useSave(sessionId);
-  const { picked } = editor;
+  const picked = editor.on?.kind === "lines" ? editor.on.picked : null;
 
   if (picked === null) return null;
 
@@ -193,7 +198,7 @@ const NewDraft = ({ sessionId, anchor }: { sessionId: string; anchor: DiffAnchor
 };
 
 /** A saved draft under its lines: its mark, its text, Edit and Delete; or the editor of it, while edited. */
-const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: Annotation }) => {
+const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: DiffAnnotation }) => {
   const [editor, setEditor] = useAtom(AnnotationEditor.use());
   const save = useSave(sessionId);
   const remove = useCall(deleteAnnotationAtom(sessionId));
@@ -206,7 +211,7 @@ const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: Annotation 
     </p>
   );
 
-  if (editor.editing === draft.id) {
+  if (editingId(editor) === draft.id) {
     return (
       <Frame outdated={status !== undefined}>
         {header}
@@ -233,7 +238,7 @@ const DraftCard = ({ sessionId, draft }: { sessionId: string; draft: Annotation 
           size="sm"
           className="px-2 text-xs text-muted-foreground"
           onClick={() => {
-            setEditor({ ...CLOSED, editing: draft.id, text: draft.text });
+            setEditor(openOn({ kind: "draft", id: draft.id }, draft.text));
           }}
         >
           Edit
@@ -263,7 +268,7 @@ export const AnnotationSlotView = ({
 }: {
   sessionId: string;
   anchor: DiffAnchor;
-  drafts: readonly Annotation[];
+  drafts: readonly DiffAnnotation[];
   annotation: DiffLineAnnotation<AnnotationSlot>;
 }) => {
   const slot = annotation.metadata;

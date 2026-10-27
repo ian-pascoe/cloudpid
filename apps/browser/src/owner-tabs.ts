@@ -33,6 +33,7 @@ import {
   type OwnerTabLinks,
   type OwnerTabListing,
   type OwnerTabPageRead,
+  withoutFragment,
 } from "@cloudpid/extensions/browser/contract";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
@@ -104,12 +105,6 @@ export type OwnerTabList = {
 
 /** An address the host records and reopens: a page over http(s), or a blank one. Not `file:`, `chrome:` or an error page. */
 const recordable = (url: string): boolean => /^https?:\/\//i.test(url) || url === "about:blank";
-
-/**
- * `url` without its `#fragment`, which is where a page keeps what it must not leak or replay (an OAuth `#access_token=`,
- * an `id_token`). A query string is kept: a `code=` or a signed URL in it is a residual risk the spec names.
- */
-const withoutFragment = (url: string): string => url.split("#", 1)[0] ?? url;
 
 /** The address to reopen an Owner tab at: the one recorded, if it can be reopened, else blank. */
 const reopenUrl = (url: string | undefined): string =>

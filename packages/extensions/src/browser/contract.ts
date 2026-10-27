@@ -126,6 +126,9 @@ export {
   MAX_PAGE_URL,
 } from "@cloudpid/protocol/live-view";
 
+/** An address without its `#fragment`, as the host records an Owner tab's. */
+export { withoutFragment } from "@cloudpid/protocol/live-view";
+
 /**
  * What the host read of an Owner tab the owner attached to a message: its URL and title now and the text selected in it,
  * for the Owner tab shown only (at most `MAX_PAGE_SELECTION_READ` units; the Session redacts and cuts it). All of it comes from the page, so it is untrusted: the Session fences it before the model

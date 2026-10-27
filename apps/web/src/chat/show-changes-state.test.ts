@@ -14,7 +14,7 @@ import { appRuntime } from "../runtime.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import { SessionProbe } from "../session/client.ts";
 import { FakeSocket, settle } from "../session/client.testing.ts";
-import { runTotalsAtom } from "./show-changes-state.ts";
+import { runLink, runTotalsAtom } from "./show-changes-state.ts";
 
 const START = "1".repeat(40);
 
@@ -127,4 +127,31 @@ describe("what Show changes sums up", () => {
       expect(AsyncResult.isSuccess(result) ? result.value : undefined).toBeNull();
     }),
   );
+});
+
+describe("whether Show changes is drawn", () => {
+  const totals = (files: number) => ({
+    files,
+    additions: files,
+    deletions: 0,
+    approximate: false,
+    stale: false,
+  });
+
+  it("is not while the totals are asked for", () => {
+    expect(runLink(AsyncResult.initial(true))).toBe("hidden");
+  });
+
+  it("is not when the Run's diff lists no file, or is another Run's", () => {
+    expect(runLink(AsyncResult.success(totals(0)))).toBe("hidden");
+    expect(runLink(AsyncResult.success(null))).toBe("hidden");
+  });
+
+  it("sums up the Run's files when it changed some", () => {
+    expect(runLink(AsyncResult.success(totals(2)))).toEqual(totals(2));
+  });
+
+  it("reads 'Show changes' when the ask failed, as the Run may have changed something", () => {
+    expect(runLink(AsyncResult.fail("disconnected"))).toBeNull();
+  });
 });

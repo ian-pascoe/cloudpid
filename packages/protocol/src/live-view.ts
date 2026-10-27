@@ -30,6 +30,17 @@ export const MAX_PAGE_SELECTION = 4000;
  */
 export const MAX_PAGE_SELECTION_READ = 16_000;
 
+/**
+ * `url` without its `#fragment`, which is where a page keeps what it must not leak or replay (an OAuth `#access_token=`,
+ * an `id_token`): as the browser host records an Owner tab's address and page Annotations record theirs. A query
+ * string is kept: a `code=` or a signed URL in it is a residual risk the spec names.
+ */
+export const withoutFragment = (url: string): string => {
+  const hash = url.indexOf("#");
+
+  return hash === -1 ? url : url.slice(0, hash);
+};
+
 /** The key of the Live View Pane of the Browser Handoff `requestId` names: `live-view:<requestId>`, as it is. */
 export const liveViewPaneKey = (requestId: string): string => `live-view:${requestId}`;
 

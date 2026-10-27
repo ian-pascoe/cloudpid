@@ -6,7 +6,9 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
-  type AnnotationDraft,
+  type Annotation,
+  type DiffAnnotationDraft,
+  isDiffAnnotation,
   type ClientMessage,
   type CompareResult,
   type Comparison,
@@ -261,7 +263,10 @@ describe("Viewed boxes", () => {
 describe("drafts on a pull request", () => {
   const FILE = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
 
-  const onPull = (): AnnotationDraft => ({
+  /** The drafts on a diff of `drafts`. */
+  const diffs = (drafts: ReadonlyArray<Annotation>) => drafts.filter(isDiffAnnotation);
+
+  const onPull = (): DiffAnnotationDraft => ({
     id: "on-pull",
     source: {
       kind: "pull",
@@ -318,12 +323,13 @@ describe("drafts on a pull request", () => {
     await client.until((messages) =>
       messages.some(
         (message) =>
-          message.type === "annotations" && message.annotations.some((draft) => draft.start === 4),
+          message.type === "annotations" &&
+          diffs(message.annotations).some((draft) => draft.start === 4),
       ),
     );
 
-    const [moved] = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.annotations(),
+    const [moved] = diffs(
+      await runInDurableObject(stub, (instance: TestSession) => instance.annotations()),
     );
 
     expect(moved).toMatchObject({
@@ -348,7 +354,7 @@ describe("drafts on a pull request", () => {
       messages.some(
         (message) =>
           message.type === "annotations" &&
-          message.annotations.some((draft) => draft.status === "outdated"),
+          diffs(message.annotations).some((draft) => draft.status === "outdated"),
       ),
     );
 
@@ -362,7 +368,7 @@ describe("drafts on a pull request", () => {
       );
     });
     expect(
-      (await runInDurableObject(stub, (instance: TestSession) => instance.annotations()))[0]
+      diffs(await runInDurableObject(stub, (instance: TestSession) => instance.annotations()))[0]
         ?.status,
     ).toBe("outdated");
   });

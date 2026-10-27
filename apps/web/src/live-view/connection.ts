@@ -24,9 +24,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Socket from "effect/socket/Socket";
+import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { CdpCommand } from "./cdp.ts";
-import { LiveViewError, openPage, type CdpPage } from "./cdp-socket.ts";
+import { LiveViewError, openPage, type CdpPage, type CdpParams } from "./cdp-socket.ts";
 import { coalesced } from "./coalesced.ts";
 import type { DeviceMetrics, ScreencastSize } from "./viewport.ts";
 import { selectWindow, stripOf, windowClosed, type WindowStrip } from "./windows.ts";
@@ -154,6 +155,16 @@ export interface LiveView {
     expression: string,
     schema: Schema.Decoder<A>,
   ) => Effect.Effect<A, LiveViewError>;
+  /**
+   * Call `method` on the page shown, over this Live View's own connection to it, its answer read by `schema` (the Browser
+   * Pane's Annotate mode asks what is under the pointer). The first `DOM.` call on a connection enables its DOM agent
+   * first, so each connection (after a reconnect, or another page shown) is enabled once.
+   */
+  readonly call: <A>(
+    method: string,
+    params: CdpParams,
+    schema: Schema.Decoder<A>,
+  ) => Effect.Effect<A, LiveViewError>;
   /** Show the tab or one of its windows (the strip's buttons). */
   readonly show: (targetId: string) => Effect.Effect<void>;
   /** Size the page shown, and the ones shown later, to `metrics`, with frames up to `size`. */
@@ -187,6 +198,14 @@ export interface LiveView {
    */
   readonly run: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
 }
+
+/** Done once `view` has ended: its tab gone, or its link source over. */
+export const whenEnded = (view: LiveView): Effect.Effect<void> =>
+  SubscriptionRef.changes(view.state).pipe(
+    Stream.filter((state) => state.status === "ended"),
+    Stream.runHead,
+    Effect.asVoid,
+  );
 
 /**
  * A Live View of the browser tab `source` mints links for, for as long as the scope is open, with `attach` (if any) run
@@ -279,6 +298,28 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
       yield* Effect.ignore(page.call("Page.enable", {}, Ignored));
       yield* Effect.ignore(page.call("Runtime.enable", {}, Ignored));
     });
+
+  /**
+   * The connections whose DOM agent is enabled. The first `DOM.` call on a connection enables it, once: a reconnect, or
+   * another page shown, is a new connection, and enables it again.
+   */
+  const domEnabled = new WeakSet<CdpPage>();
+
+  /** Enable the DOM agent of `page` before a `DOM.` call, unless it was already; a failed enable is tried again. */
+  const withDom = (page: CdpPage, method: string): Effect.Effect<void> => {
+    if (!method.startsWith("DOM.") || domEnabled.has(page)) return Effect.void;
+
+    domEnabled.add(page);
+
+    return page.call("DOM.enable", {}, Ignored).pipe(
+      Effect.catch(() =>
+        Effect.sync(() => {
+          domEnabled.delete(page);
+        }),
+      ),
+      Effect.asVoid,
+    );
+  };
 
   /** The viewport on `page`: the Pane's size, and touch emulation on a touch screen. */
   const applyViewport = (page: CdpPage) =>
@@ -589,6 +630,12 @@ export const make = Effect.fnUntraced(function* (source: LinkSource, attach?: At
             ),
           );
       }),
+    call: (method, params, schema) =>
+      Effect.suspend(() =>
+        shown === null
+          ? Effect.fail(LiveViewError.make({ message: "The Live View is not connected." }))
+          : withDom(shown, method).pipe(Effect.andThen(shown.call(method, params, schema))),
+      ),
     show: (targetId) =>
       lock.withPermits(1)(
         Effect.gen(function* () {

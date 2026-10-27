@@ -10,16 +10,19 @@
 // works in an Owner tab, the tab strip marks it, and over the screen the Pane says the agent (or which subagent) is
 // driving the one shown.
 //
+// The URL bar's Annotate toggle turns on Annotate mode, and the screen shows the pins of the drafts on the page shown
+// (`page-annotations-layer.tsx`, #243): Annotations on pages, drawn over the screen and never into the page.
+//
 // While it is in view (shown in the Pane area, the area not hidden, the page visible) its poll of the Owner tabs is the
 // heartbeat that keeps the Session's browser (#240); out of view the poll says nothing of it, and the browser closes once
 // the idle window passes. When the browser was closed or replaced, the Pane finds its Owner tab gone: in view, it asks to
 // open at once, which reopens every Owner tab at its address (no history, scroll, form state or logins) and says so.
 
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import type { OwnerTabDriver } from "@cloudpid/protocol";
-import { ArrowLeft, ArrowRight, Bot, Globe, RotateCw, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bot, Globe, MapPin, RotateCw, X } from "lucide-react";
 import {
   use,
   useEffect,
@@ -34,6 +37,7 @@ import { useShownSessionId } from "../chat/conversation.ts";
 import { TreeBarScope } from "../chat/tree-actions.ts";
 import { Button } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { cn } from "../lib/utils.ts";
 import { BROWSER_PANE } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
 import { settledFailureOf } from "../registry.ts";
@@ -41,6 +45,7 @@ import { ownerTabDriversAtom } from "../session/atoms.ts";
 import { addressOf } from "./address.ts";
 import { liveViewStateAtom } from "./atoms.ts";
 import {
+  annotateModeAtom,
   browserPaneInViewAtom,
   browserPaneKey,
   type BrowserPaneKey,
@@ -53,14 +58,17 @@ import {
   ownerTabPageAtom,
   ownerTabReplacedAtom,
   ownerTabsReopenedAtom,
+  ownerTabWindowShownAtom,
 } from "./browser-pane-atoms.ts";
 import { keepFocus, LiveScreen } from "./live-screen.tsx";
 import { OwnerTabStrip } from "./owner-tab-strip.tsx";
+import { PageAnnotationsOverlay } from "./page-annotations-layer.tsx";
 import { useDrivingNote } from "./use-driving-note.ts";
 
 /**
- * Back, forward, reload and the URL bar, over the Owner tab. `focusWhenLive` says the owner asked for a new Owner tab:
- * the field takes the focus once the tab is shown, and the flag is cleared.
+ * Back, forward, reload and the URL bar, over the Owner tab, and the Annotate mode toggle (`annotateModeAtom`), off while
+ * a window of the tab is shown. `focusWhenLive` says the owner asked for a new Owner tab: the field takes the focus once
+ * the tab is shown, and the flag is cleared.
  */
 const UrlBar = ({
   pane,
@@ -70,6 +78,8 @@ const UrlBar = ({
   focusWhenLive: RefObject<boolean>;
 }) => {
   const page = useAtomValue(ownerTabPageAtom(pane));
+  const [annotating, annotate] = useAtom(annotateModeAtom(pane));
+  const windowShown = useAtomValue(ownerTabWindowShownAtom(pane));
 
   const live = useAtomValue(
     liveViewStateAtom(browserPaneViewAtom(pane)),
@@ -194,6 +204,28 @@ const UrlBar = ({
             setRefused(null);
           }}
         />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "size-8 shrink-0",
+            annotating && "bg-primary text-primary-foreground hover:bg-primary/90",
+          )}
+          aria-label="Annotate"
+          aria-pressed={annotating}
+          title={
+            annotating
+              ? "Leave Annotate mode: the page takes your input again"
+              : "Annotate: click or tap an element of the page, or drag out an area"
+          }
+          disabled={!live || pane.archived || windowShown}
+          onClick={() => {
+            annotate(!annotating);
+          }}
+        >
+          <MapPin aria-hidden />
+        </Button>
       </form>
       {note !== null && (
         <p id={noteId} role="status" className="px-1 text-xs break-words text-destructive">
@@ -429,7 +461,11 @@ const BrowserPaneOf = ({ pane }: { pane: BrowserPaneKey }) => {
         <>
           <Replaced pane={pane} />
           <Driving pane={pane} shown={shown} />
-          <LiveScreen view={view} label="Owner tab" />
+          <LiveScreen
+            view={view}
+            label="Owner tab"
+            overlay={<PageAnnotationsOverlay pane={pane} ownerTabId={shown} inView={inView} />}
+          />
         </>
       )}
     </div>
