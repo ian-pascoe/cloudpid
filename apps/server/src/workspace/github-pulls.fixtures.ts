@@ -80,6 +80,55 @@ export const GRAPHQL_NOT_FOUND = {
   ],
 } as const;
 
+/**
+ * `POST /graphql` with the branches query for ian-pascoe/cloudpid (`refs(refPrefix: "refs/heads/", first: 3)`), its first
+ * page, recorded with `gh api graphql`: GitHub orders the branches by name, not by date.
+ */
+export const GRAPHQL_BRANCHES_PAGE_1 = {
+  data: {
+    repository: {
+      defaultBranchRef: { name: "main" },
+      refs: {
+        pageInfo: { hasNextPage: true, endCursor: "Mw" },
+        nodes: [
+          {
+            name: "cloudpid/subagent-pages-server",
+            target: { committedDate: "2026-10-27T01:16:01Z" },
+          },
+          {
+            name: "cloudpid/subagent-pages-web",
+            target: { committedDate: "2026-10-27T01:21:34Z" },
+          },
+          { name: "main", target: { committedDate: "2026-10-27T11:13:23Z" } },
+        ],
+      },
+    },
+  },
+} as const;
+
+/** The page after `GRAPHQL_BRANCHES_PAGE_1` (`after: "Mw"`), recorded the same way. */
+export const GRAPHQL_BRANCHES_PAGE_2 = {
+  data: {
+    repository: {
+      defaultBranchRef: { name: "main" },
+      refs: {
+        pageInfo: { hasNextPage: true, endCursor: "Ng" },
+        nodes: [
+          { name: "prototype/diff-pane", target: { committedDate: "2026-10-26T13:08:24Z" } },
+          {
+            name: "research/changes-without-container",
+            target: { committedDate: "2026-10-21T17:26:02Z" },
+          },
+          {
+            name: "research/comparison-in-container",
+            target: { committedDate: "2026-10-21T17:22:00Z" },
+          },
+        ],
+      },
+    },
+  },
+} as const;
+
 /** GraphQL's own rate limit, as GitHub documents it: a 200 with a `RATE_LIMITED` error. */
 export const GRAPHQL_RATE_LIMITED = {
   errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }],

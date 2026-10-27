@@ -4,7 +4,12 @@
 
 import * as Arr from "effect/Array";
 import type * as Types from "effect/Types";
-import { NEW_WORKSPACE, ownBranchProblem, type WorkspaceRecord } from "@cloudpid/protocol";
+import {
+  NEW_WORKSPACE,
+  ownBranchProblem,
+  type RepoBranches,
+  type WorkspaceRecord,
+} from "@cloudpid/protocol";
 import { optionalBranchProblem } from "./environments.ts";
 import type { SessionPlace } from "./sessions.ts";
 
@@ -47,6 +52,90 @@ export const draftSendable = (input: DraftInput, attached = false): boolean =>
   (input.text.trim() !== "" || attached) &&
   draftBranchProblem(input) === null &&
   draftBaseProblem(input) === null;
+
+/** One row of the Start from menu: a branch of one or more of the Environment's Repos. */
+export interface BaseChoice {
+  readonly name: string;
+  /**
+   * Which Repos have it and which it is the default branch of, when that says something: "default", "in app", "in app ·
+   * default in app"; undefined for a branch every listed Repo has and none starts from.
+   */
+  readonly note: string | undefined;
+}
+
+/** What the Start from menu lists: the branches that match what is typed, and the Repos whose branches it could not list. */
+export interface BaseChoices {
+  readonly choices: readonly BaseChoice[];
+  readonly unlisted: readonly { readonly repo: string; readonly message: string }[];
+}
+
+/** What is known of one branch across the Repos: the Repos with it, those it is the default of, and its latest commit. */
+interface Gathered {
+  readonly repos: string[];
+  readonly defaultOf: string[];
+  latest: number;
+}
+
+/**
+ * The Start from menu for `lists` (`draftBranches`' answer) and what is typed in the field: every branch of any listed
+ * Repo whose name holds `query` (any case), most recently committed to first in any Repo, each once. A branch only some
+ * of several Repos have says which (a Repo without it starts from its default branch), and the default branch says so.
+ */
+export const baseChoices = (lists: readonly RepoBranches[], query: string): BaseChoices => {
+  const wanted = query.trim().toLowerCase();
+  const gathered = new Map<string, Gathered>();
+  const unlisted: { repo: string; message: string }[] = [];
+  let listed = 0;
+
+  for (const list of lists) {
+    if (list.status === "error") {
+      unlisted.push({ repo: list.repo, message: list.message });
+
+      continue;
+    }
+
+    listed += 1;
+
+    for (const branch of list.branches) {
+      const known = gathered.get(branch.name) ?? { repos: [], defaultOf: [], latest: -Infinity };
+
+      known.repos.push(list.repo);
+
+      if (branch.name === list.defaultBranch) known.defaultOf.push(list.repo);
+
+      known.latest = Math.max(known.latest, branch.committedAt ?? -Infinity);
+      gathered.set(branch.name, known);
+    }
+  }
+
+  const noteOf = (known: Gathered): string | undefined => {
+    const several = listed > 1;
+
+    const parts = Arr.filter(
+      [
+        several && known.repos.length < listed ? `in ${Arr.join(known.repos, ", ")}` : undefined,
+        known.defaultOf.length === 0
+          ? undefined
+          : !several || known.defaultOf.length === listed
+            ? "default"
+            : `default in ${Arr.join(known.defaultOf, ", ")}`,
+      ],
+      (part) => part !== undefined,
+    );
+
+    return parts.length === 0 ? undefined : Arr.join(parts, " · ");
+  };
+
+  const matching = Arr.filter([...gathered], ([name]) => name.toLowerCase().includes(wanted));
+
+  // Most recent first; among branches of no date, by name.
+  const choices = Arr.map(
+    matching.sort(([a, one], [b, other]) => other.latest - one.latest || a.localeCompare(b)),
+    ([name, known]) => ({ name, note: noteOf(known) }),
+  );
+
+  return { choices, unlisted };
+};
 
 /**
  * What `createSession` is told for the draft: its Environment and Workspace, and for a new Workspace the branch and base

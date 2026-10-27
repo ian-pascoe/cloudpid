@@ -1,12 +1,14 @@
 // The GitHub client for pull requests, over recorded responses (`github-pulls.fixtures.ts`): the list in one GraphQL
 // request, the 60 s it is kept, the refusals (401, 403, and a repo the token cannot see), the rate limits, and how long a
-// failure is remembered.
+// failure is remembered; and a repo's branches, for the draft's Start from menu.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalFetch:off
 import { describe, expect, it } from "vitest";
 import {
   type Json,
   BAD_CREDENTIALS,
   FORBIDDEN,
+  GRAPHQL_BRANCHES_PAGE_1,
+  GRAPHQL_BRANCHES_PAGE_2,
   GRAPHQL_LIST,
   GRAPHQL_NOT_FOUND,
   GRAPHQL_RATE_LIMITED,
@@ -388,5 +390,144 @@ describe("the base of a branch's pull request", () => {
     const { pulls } = client({ [URL_OF]: () => json(FORBIDDEN, 403) });
 
     expect(await pulls.baseOf(REPO, "feat/x")).toMatchObject({ status: "error", kind: "refused" });
+  });
+});
+
+describe("the branches of a repo", () => {
+  const lastPage = {
+    data: {
+      repository: {
+        ...GRAPHQL_BRANCHES_PAGE_2.data.repository,
+        refs: {
+          ...GRAPHQL_BRANCHES_PAGE_2.data.repository.refs,
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      },
+    },
+  };
+
+  /** GitHub's pages in turn, the last one again for any request after them. */
+  const paged = (pages: readonly Json[]) => {
+    let asked = 0;
+
+    return {
+      [GRAPHQL]: () => {
+        const page = pages[Math.min(asked, pages.length - 1)] ?? null;
+
+        asked += 1;
+
+        return json(page);
+      },
+    };
+  };
+
+  it("lists the default branch and every page's branches, most recently committed to first", async () => {
+    const { pulls, calls } = client(paged([GRAPHQL_BRANCHES_PAGE_1, lastPage]));
+
+    expect(await pulls.branches(REPO)).toEqual({
+      status: "ok",
+      value: {
+        defaultBranch: "main",
+        branches: [
+          { name: "main", committedAt: Date.parse("2026-10-27T11:13:23Z") },
+          { name: "cloudpid/subagent-pages-web", committedAt: Date.parse("2026-10-27T01:21:34Z") },
+          {
+            name: "cloudpid/subagent-pages-server",
+            committedAt: Date.parse("2026-10-27T01:16:01Z"),
+          },
+          { name: "prototype/diff-pane", committedAt: Date.parse("2026-10-26T13:08:24Z") },
+          {
+            name: "research/changes-without-container",
+            committedAt: Date.parse("2026-10-21T17:26:02Z"),
+          },
+          {
+            name: "research/comparison-in-container",
+            committedAt: Date.parse("2026-10-21T17:22:00Z"),
+          },
+        ],
+      },
+    });
+
+    // The second page starts after the first one's cursor.
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toMatchObject({ variables: { after: null } });
+    expect(JSON.parse(calls[1]?.body ?? "{}")).toMatchObject({ variables: { after: "Mw" } });
+    expect(calls[0]?.authorization).toBe("Bearer ghp_secret");
+  });
+
+  it("reads at most three pages of a repo with more", async () => {
+    const { pulls, calls } = client(paged([GRAPHQL_BRANCHES_PAGE_1, GRAPHQL_BRANCHES_PAGE_2]));
+
+    expect(await pulls.branches(REPO)).toMatchObject({ status: "ok" });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("leaves out a branch a Workspace may not start from, and puts one with no date last", async () => {
+    const odd = {
+      data: {
+        repository: {
+          defaultBranchRef: null,
+          refs: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              { name: "renovate/@types+node", target: { committedDate: "2026-10-27T00:00:00Z" } },
+              { name: "tagged", target: {} },
+              { name: "feat/x", target: { committedDate: "2026-10-26T00:00:00Z" } },
+              null,
+            ],
+          },
+        },
+      },
+    };
+
+    const { pulls } = client({ [GRAPHQL]: () => json(odd) });
+
+    expect(await pulls.branches(REPO)).toEqual({
+      status: "ok",
+      value: {
+        defaultBranch: null,
+        branches: [
+          { name: "feat/x", committedAt: Date.parse("2026-10-26T00:00:00Z") },
+          { name: "tagged", committedAt: null },
+        ],
+      },
+    });
+  });
+
+  it("keeps the list for 60 s, and asks GitHub once for two drafts at the same time", async () => {
+    const { pulls, calls, clock } = client(paged([lastPage]));
+
+    await Promise.all([pulls.branches(REPO), pulls.branches(REPO)]);
+    expect(calls).toHaveLength(1);
+
+    clock.now += PULLS_CACHE_MS - 1;
+    await pulls.branches(REPO);
+    expect(calls).toHaveLength(1);
+
+    clock.now += 1;
+    await pulls.branches(REPO);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("fails as the pull requests do: a repo the token cannot see is a refusal, and so is a bad token", async () => {
+    const hidden = client({ [GRAPHQL]: () => json(GRAPHQL_NOT_FOUND) });
+
+    expect(await hidden.pulls.branches(REPO)).toEqual({
+      status: "error",
+      kind: "refused",
+      message: REFUSED_MESSAGE,
+    });
+
+    const bad = client({ [GRAPHQL]: () => json(BAD_CREDENTIALS, 401) });
+
+    expect(await bad.pulls.branches(REPO)).toMatchObject({ status: "error", kind: "refused" });
+
+    const limited = client({ [GRAPHQL]: () => json(GRAPHQL_RATE_LIMITED) });
+
+    expect(await limited.pulls.branches(REPO)).toEqual({
+      status: "error",
+      kind: "failed",
+      message: RATE_LIMITED_MESSAGE,
+    });
   });
 });

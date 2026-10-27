@@ -9,11 +9,13 @@ import {
   useAtomValue,
 } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import {
   AlertCircle,
   ArrowLeft,
   ArrowUp,
+  Check,
   ChevronDown,
   FolderGit2,
   FolderPlus,
@@ -26,8 +28,10 @@ import {
   type RefObject,
   type SubmitEvent,
   useContext,
+  useEffect,
   useId,
   useRef,
+  useState,
 } from "react";
 import { AttachmentTiles } from "./chat/attachment-tiles.tsx";
 import {
@@ -45,7 +49,7 @@ import { fileResults } from "./chat/file-search.ts";
 import { useCompletion } from "./chat/use-completion.ts";
 import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "./components/ui/menu.tsx";
-import { Popover } from "./components/ui/popover.tsx";
+import { hidePopover, Popover } from "./components/ui/popover.tsx";
 import {
   draftBaseAtom,
   draftBranchAtom,
@@ -55,6 +59,7 @@ import {
   sendDraftAtom,
 } from "./draft-state.ts";
 import {
+  baseChoices,
   draftBaseProblem,
   draftBranchProblem,
   draftSendable,
@@ -62,6 +67,7 @@ import {
   type DraftInput,
 } from "./draft.ts";
 import {
+  draftBranchesAtom,
   draftCatalogAtom,
   draftFileSearchAtom,
   draftLookups,
@@ -75,6 +81,7 @@ import {
 import { relativeTime } from "./format.ts";
 import { isTouchScreen } from "./lib/device.ts";
 import { cn } from "./lib/utils.ts";
+import { failureOf } from "./registry.ts";
 import { settledFailureOf } from "./registry.ts";
 import { ENVIRONMENTS_PATH, navigate } from "./router.ts";
 
@@ -286,17 +293,181 @@ const BranchField = ({
   );
 };
 
+/** The id of row `index` of the Start from list `listId`, for the field's `aria-activedescendant`. */
+const baseRowId = (listId: string, index: number): string => `${listId}-row-${index}`;
+
+/**
+ * The Start from field: a combobox over the branches of the Environment's Repos on GitHub (`draftBranches`), asked
+ * while the form is open. Typing filters the list and is used as typed when no branch matches (one pushed a moment ago,
+ * or a Repo GitHub did not list); the first row is each Repo's default branch, the field left empty. A row picked with a
+ * click, or with the arrows and Return, fills the field and closes the form.
+ */
+const BaseField = ({ field, environment }: { field: BranchInput; environment: string }) => {
+  const id = useId();
+  const listId = `${id}-list`;
+  const result = useAtomValue(draftBranchesAtom(environment));
+  // What is typed since the form opened, which filters the list; a branch picked or kept from before filters nothing.
+  const [query, setQuery] = useState("");
+  const [highlighted, setHighlighted] = useState(-1);
+  const lists = AsyncResult.isSuccess(result) ? result.value : null;
+  const { choices, unlisted } = baseChoices(lists ?? [], query);
+  const picked = field.value.trim();
+
+  // The default branch first, while nothing is typed: the field left empty.
+  const rows = [
+    ...(query.trim() === "" ? [{ name: "", note: "each repo's own" }] : []),
+    ...choices,
+  ];
+
+  useEffect(() => {
+    document.getElementById(baseRowId(listId, highlighted))?.scrollIntoView({ block: "nearest" });
+  }, [listId, highlighted]);
+
+  const pick = (name: string, from: HTMLElement) => {
+    field.onChange(name);
+    setQuery("");
+    setHighlighted(-1);
+    hidePopover(from.closest<HTMLElement>("[popover]"));
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || rows.length === 0) return;
+
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+
+      const step = event.key === "ArrowDown" ? 1 : -1;
+
+      setHighlighted(
+        (at) => (at + step + rows.length + (at < 0 && step < 0 ? 1 : 0)) % rows.length,
+      );
+
+      return;
+    }
+
+    const row = rows[highlighted];
+
+    // Return on a highlighted row picks it, and the form closes as it does for Return in any field.
+    if (event.key === "Enter" && row !== undefined) {
+      event.preventDefault();
+      pick(row.name, event.currentTarget);
+    }
+  };
+
+  const failure = failureOf(result);
+
+  const status =
+    failure !== null
+      ? `Could not list the branches: ${failure}`
+      : lists === null
+        ? "Listing the branches…"
+        : choices.length === 0 && query.trim() !== ""
+          ? "No branch matches: it is used as typed."
+          : null;
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={id} className="text-xs font-medium">
+        Start from
+      </label>
+      <Input
+        id={id}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={rows.length > 0}
+        aria-controls={listId}
+        aria-activedescendant={
+          rows[highlighted] === undefined ? undefined : baseRowId(listId, highlighted)
+        }
+        value={field.value}
+        onChange={(event) => {
+          field.onChange(event.target.value);
+          setQuery(event.target.value);
+          setHighlighted(-1);
+        }}
+        onKeyDown={onKeyDown}
+        placeholder="default branch"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        aria-invalid={field.problem !== null}
+        aria-describedby={`${id}-note`}
+        className="font-mono aria-invalid:border-destructive"
+      />
+      <div
+        id={listId}
+        role="listbox"
+        aria-label="Branches"
+        // The field keeps the focus: a press on a row must not take it.
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
+        className={cn(
+          "max-h-40 overflow-y-auto overscroll-contain rounded-md border p-1",
+          rows.length === 0 && "hidden",
+        )}
+      >
+        {rows.map((row, at) => (
+          <div
+            key={row.name}
+            id={baseRowId(listId, at)}
+            role="option"
+            aria-selected={at === highlighted}
+            onMouseMove={() => {
+              if (at !== highlighted) setHighlighted(at);
+            }}
+            onClick={(event) => {
+              pick(row.name, event.currentTarget);
+            }}
+            className="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-xs select-none aria-selected:bg-accent aria-selected:text-accent-foreground pointer-coarse:min-h-11"
+          >
+            <Check
+              className={cn("size-3.5 shrink-0", row.name !== picked && "invisible")}
+              aria-hidden
+            />
+            <span className={cn("min-w-0 truncate", row.name !== "" && "font-mono")}>
+              {row.name === "" ? "Default branch" : row.name}
+            </span>
+            {row.note !== undefined && (
+              <span className="ml-auto max-w-[50%] shrink-0 truncate pl-2 text-muted-foreground">
+                {row.note}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+      <div id={`${id}-note`} className="flex flex-col gap-0.5 text-xs">
+        <p className={field.problem === null ? "text-muted-foreground" : "text-destructive"}>
+          {field.problem ?? "Each repo's default branch when left empty."}
+        </p>
+        <p role="status" className={status === null ? "sr-only" : "text-muted-foreground"}>
+          {status}
+        </p>
+        {unlisted.map((repo) => (
+          <p key={repo.repo} className="text-muted-foreground">
+            Branches of <span className="font-mono">{repo.repo}</span> not listed: {repo.message}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 /** A new Workspace's branch and the branch it starts from, as a chip that opens a small form of both. */
 const BranchPicker = ({
   branch,
   base,
+  environment,
   disabled,
 }: {
   branch: BranchInput;
   base: BranchInput;
+  environment: string;
   disabled: boolean;
 }) => {
   const invalid = branch.problem !== null || base.problem !== null;
+  // The branches are asked for only while the form is open.
+  const [open, setOpen] = useState(false);
 
   return (
     <Popover
@@ -304,6 +475,7 @@ const BranchPicker = ({
       title="Name the branch and where it starts"
       align="start"
       disabled={disabled}
+      onToggle={setOpen}
       trigger={
         <>
           {invalid ? <AlertCircle aria-hidden /> : <GitBranch aria-hidden />}
@@ -316,7 +488,8 @@ const BranchPicker = ({
         </>
       }
       className={cn(chip, invalid && "text-destructive hover:text-destructive")}
-      panelClassName={cn(panelWidth, "p-3")}
+      // Never taller than the screen, which a short one (a phone held sideways) would cut the list off at.
+      panelClassName={cn(panelWidth, "max-h-[calc(100dvh-0.5rem)] overflow-y-auto p-3")}
     >
       <div className="flex flex-col gap-3">
         <BranchField
@@ -325,12 +498,7 @@ const BranchPicker = ({
           placeholder="cloudpid/<id>"
           hint="The workspace's own branch. Leave it empty for cloudpid/<id>."
         />
-        <BranchField
-          label="Start from"
-          field={base}
-          placeholder="default branch"
-          hint="Each repo's default branch when left empty."
-        />
+        {open && <BaseField field={base} environment={environment} />}
       </div>
     </Popover>
   );
@@ -582,6 +750,7 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
               <BranchPicker
                 branch={{ value: branch, problem: branchProblem, onChange: setBranch }}
                 base={{ value: base, problem: baseProblem, onChange: setBase }}
+                environment={environment}
                 disabled={sending}
               />
             )}

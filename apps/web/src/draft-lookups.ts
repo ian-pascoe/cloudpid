@@ -1,7 +1,8 @@
 // The draft composer's menus (`docs/spec.md` → Session list → New session): the Prompt templates and Skills after `/`
 // and `$`, and the files after `@`, of the directory the Session the draft makes would work in. There is no Session to
 // ask yet, so they are asked of the Registry (`draftCatalog`, `draftFiles`), for the Environment and Workspace the
-// draft is made in, and kept as a Session's composer keeps its own (`catalog.ts`, `file-search.ts`).
+// draft is made in, and kept as a Session's composer keeps its own (`catalog.ts`, `file-search.ts`). The Start from
+// menu's branches are asked of it too (`draftBranches`).
 
 // @effect-diagnostics missingPipeableSignature:off -- a plain constructor of a key, not a combinator.
 
@@ -39,6 +40,14 @@ export const draftPlaceAtom = Atom.make((get) => {
 
   return draftPlace(environment, effectiveWorkspace(get(draftWorkspaceAtom), workspaces));
 });
+
+/**
+ * The branches of Environment `environment`'s Repos on GitHub, for the Start from menu: asked while the menu is shown
+ * (the main Worker keeps each Repo's for 60 s), and again when the Environments change, as a Repo added has its own.
+ */
+export const draftBranchesAtom = Atom.family((environment: string) =>
+  RegistryClient.query("draftBranches", { environment }, { reactivityKeys: ["environments"] }),
+);
 
 /** The catalogs of the draft's places. */
 export const { catalogAtom: draftCatalogAtom, askCatalogAtom: askDraftCatalogAtom } = catalogLookup(

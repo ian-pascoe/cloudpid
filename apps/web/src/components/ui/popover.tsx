@@ -117,6 +117,7 @@ export const Popover = ({
   children,
   className,
   panelClassName,
+  onToggle,
 }: {
   /** What the panel is, to assistive technology, such as "Branch". */
   label: string;
@@ -129,10 +130,32 @@ export const Popover = ({
   children: ReactNode;
   className?: string | undefined;
   panelClassName?: string | undefined;
+  /** Told when the panel opens (`true`) and closes, so what it shows can be asked for only while it is open. */
+  onToggle?: ((open: boolean) => void) | undefined;
 }) => {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  // The latest `onToggle`, read when the panel toggles, so the listener is added once.
+  const onToggleRef = useRef(onToggle);
+
+  onToggleRef.current = onToggle;
+
+  useEffect(() => {
+    const element = panel.current;
+
+    if (element === null) return;
+
+    const toggled = (event: Event) => {
+      onToggleRef.current?.(event instanceof ToggleEvent && event.newState === "open");
+    };
+
+    element.addEventListener("toggle", toggled);
+
+    return () => {
+      element.removeEventListener("toggle", toggled);
+    };
+  }, []);
 
   useAnchoredPopover(trigger, panel, align, (element) => {
     element.querySelector<HTMLElement>(FOCUSABLE)?.focus();
