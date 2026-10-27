@@ -22,13 +22,20 @@ import {
 } from "./container-preview-script.ts";
 
 /**
- * How often a carried socket's stream is written to when nothing else is. A write that fails is the page gone, and one
- * that has not been read by the next is a page that stopped reading.
+ * How often a carried socket's stream is written to when nothing else is. A write that fails is the page gone, and a
+ * stream with something unread that the page read nothing of since the last tick is a page that stopped reading.
  */
 export const CONTAINER_PREVIEW_KEEP_ALIVE_MS = 15_000;
 
-/** How much of a carried socket's stream may wait unread before the page is taken to have stopped reading. */
-export const CONTAINER_PREVIEW_MAX_UNREAD_BYTES = 1024 * 1024;
+/**
+ * The most of a carried socket's stream that may wait unread, a bound on the memory a page that stopped reading holds
+ * between two ticks. Far above any one message (a WebSocket message is at most 32 MiB, 43 MiB in base64), so a page
+ * that reads is never cut off for a large one: it is the tick that finds a page stopped.
+ */
+export const CONTAINER_PREVIEW_MAX_UNREAD_BYTES = 96 * 1024 * 1024;
+
+/** The most of a carried socket's stream written at once: a large message goes in slices, each read on its own. */
+const CONTAINER_PREVIEW_SLICE_BYTES = 64 * 1024;
 
 /** The use of the Container a Container preview makes, as the idle stop counts it (`IdleStop`). */
 export type ContainerPreviewActivity = {
@@ -353,8 +360,9 @@ export class ContainerPreview {
     let ended = false;
     // What is written to the stream and not yet read: a page that stops reading holds it all.
     let unread = 0;
-    // Whether the last keep-alive comment was read by the time the next is due.
-    let keptAlive = true;
+    // How much the page has read, in all, and at the last tick: no progress across a tick with something unread is a stop.
+    let read = 0;
+    let readAtTick = 0;
 
     const end = (code: number, reason: string, stalled = false) => {
       if (ended) return;
@@ -396,18 +404,33 @@ export class ContainerPreview {
         return Promise.resolve();
       }
 
-      return writer.write(bytes).then(
-        () => void (unread -= bytes.byteLength),
+      // In slices, so a page reading a large message shows progress at every tick until it has it all.
+      const slices: Promise<void>[] = [];
+
+      for (let at = 0; at < bytes.byteLength; at += CONTAINER_PREVIEW_SLICE_BYTES) {
+        const slice = bytes.subarray(at, at + CONTAINER_PREVIEW_SLICE_BYTES);
+
+        slices.push(
+          writer.write(slice).then(() => {
+            unread -= slice.byteLength;
+            read += slice.byteLength;
+          }),
+        );
+      }
+
+      return Promise.all(slices).then(
+        () => undefined,
         () => end(1001, "The page went away"),
       );
     };
 
-    // A comment now and then: a write that fails is the page gone, and one not read by the next a page that stopped.
+    // A comment now and then: a write that fails is the page gone, and a tick that finds something unread and nothing
+    // read since the last one a page that stopped reading. A page slowly reading a large message is still reading.
     const keepAlive = setInterval(() => {
-      if (!keptAlive) return stalled();
+      if (unread > 0 && read === readAtTick) return stalled();
 
-      keptAlive = false;
-      void write(": keep-alive\n\n").then(() => void (keptAlive = true));
+      readAtTick = read;
+      void write(": keep-alive\n\n");
     }, this.#deps.keepAliveMs());
 
     // Listening before the socket is accepted: the dev server's first message (Vite's `connected`) comes at once.

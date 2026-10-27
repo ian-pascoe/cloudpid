@@ -2,7 +2,7 @@
 // `http://<port>.cloudpid.internal/`, handed to `containerPreview(request, port)` as the Workspaces Worker's
 // `WorkspaceContainerPreviews` entrypoint hands it, and answered from a fake dev server on the fake Container
 // (`TestWorkspace.fakeDevServer`).
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off newPromise:off globalTimers:off
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceContainerPreviews } from "./worker.ts";
@@ -327,6 +327,30 @@ describe("a WebSocket of a Container preview, a carried socket", () => {
       expect((await stub.devServerState()).sockets[0]?.closed).not.toBeNull(),
     );
     expect(await stub.containerPreviewUses()).toMatchObject({ begin: 1, end: 1 });
+  });
+
+  it("keeps the socket of a page that is reading, over several keep-alive ticks, while it receives one large message", async () => {
+    const stub = await workspace();
+    const { events } = await openSocket(stub);
+
+    expect(await events.next()).toEqual(CONNECTED);
+
+    // A 3 MiB message (an HMR payload, a large binary frame) is far more than a tick carries.
+    const large = "x".repeat(3 * 1024 * 1024);
+
+    await stub.devServerSend(0, large);
+    expect((await events.next()).data.text).toHaveLength(large.length);
+
+    // Several ticks (50 ms each here) pass while the page reads on, keep-alives and all.
+    const after = events.next();
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await stub.devServerSend(0, "after");
+    expect(await after).toEqual({ type: "message", data: { text: "after" } });
+    expect((await stub.devServerState()).sockets[0]?.closed).toBeNull();
+    expect(await stub.containerPreviewUses()).toMatchObject({ begin: 1, end: 0 });
+
+    await events.cancel();
   });
 
   it("closes the Container's socket, and fails its stream, when the page stops reading it without letting go", async () => {
