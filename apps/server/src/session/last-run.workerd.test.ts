@@ -6,8 +6,9 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
-  type AnnotationDraft,
   type ClientMessage,
+  type DiffAnnotationDraft,
+  isDiffAnnotation,
   HEARTBEAT,
   type RunDiff,
   ServerMessageJson,
@@ -94,7 +95,7 @@ const diff = (run: string, live: boolean): RunDiff => ({
   ],
 });
 
-const onRun = (run: string, overrides: Partial<AnnotationDraft> = {}): AnnotationDraft => ({
+const onRun = (run: string, overrides: Partial<DiffAnnotationDraft> = {}): DiffAnnotationDraft => ({
   id: "on-run",
   source: {
     kind: "run",
@@ -237,9 +238,9 @@ describe("the Last run on the Session", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const [draft] = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.annotations(),
-    );
+    const [draft] = (
+      await runInDurableObject(stub, (instance: TestSession) => instance.annotations())
+    ).filter(isDiffAnnotation);
 
     expect(draft?.source).toMatchObject({ kind: "run", run: "run0", end: "b".repeat(40) });
     expect(draft?.status).toBeUndefined();
@@ -389,17 +390,17 @@ describe("the Last run on the Session", () => {
 
     // The quote is gone from the file: outdated, not moved.
     for (let attempt = 0; attempt < 500; attempt++) {
-      const drafts = await runInDurableObject(stub, (instance: TestSession) =>
-        instance.annotations(),
-      );
+      const drafts = (
+        await runInDurableObject(stub, (instance: TestSession) => instance.annotations())
+      ).filter(isDiffAnnotation);
 
       if (drafts[0]?.status === "outdated") break;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const [draft] = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.annotations(),
-    );
+    const [draft] = (
+      await runInDurableObject(stub, (instance: TestSession) => instance.annotations())
+    ).filter(isDiffAnnotation);
 
     expect(draft?.status).toBe("outdated");
   });

@@ -514,7 +514,7 @@ export const sessionReviewsLayer = (
       const stopRuns = runs.observeEnded(() => {
         run(
           store.list.pipe(
-            Effect.flatMap((drafts) => runFindings(drafts)),
+            Effect.flatMap((drafts) => runFindings(drafts.filter(isDiffAnnotation))),
             Effect.tap((found) => store.checked(found)),
             checking,
             Effect.catchCause((cause) => Effect.logWarning("Checking the drafts failed", cause)),
